@@ -1,0 +1,7 @@
+name: prodbox
+runtime:
+  name: python
+  options:
+    virtualenv: .venv
+main: src/prodbox/infra/
+description: Home Kubernetes infrastructure with Pulumi

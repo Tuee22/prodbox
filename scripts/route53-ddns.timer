@@ -1,0 +1,19 @@
+[Unit]
+Description=Run Route 53 DDNS updater every 5 minutes
+Documentation=https://github.com/Tuee22/prodbox
+
+[Timer]
+# Run 2 minutes after boot
+OnBootSec=2min
+
+# Run every 5 minutes after last activation
+OnUnitActiveSec=5min
+
+# Persist timer state across reboots
+Persistent=true
+
+# Add randomized delay to prevent thundering herd
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

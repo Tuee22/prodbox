@@ -1,0 +1,32 @@
+[Unit]
+Description=Route 53 DDNS updater
+Documentation=https://github.com/Tuee22/prodbox
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/prodbox dns update
+
+# Environment file for credentials (optional)
+# Create /etc/prodbox/env with your credentials
+EnvironmentFile=-/etc/prodbox/env
+
+# Alternatively, set environment variables directly:
+# Environment=AWS_ACCESS_KEY_ID=...
+# Environment=AWS_SECRET_ACCESS_KEY=...
+# Environment=AWS_REGION=us-east-1
+# Environment=ROUTE53_ZONE_ID=...
+# Environment=DEMO_FQDN=demo.example.com
+# Environment=DEMO_TTL=60
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=route53-ddns
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes

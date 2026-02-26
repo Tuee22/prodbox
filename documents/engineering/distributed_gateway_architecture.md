@@ -4,201 +4,217 @@
 **Supersedes**: N/A
 **Referenced by**: documents/engineering/README.md, documents/README.md
 
-> **Purpose**: Define the multi-node gateway design for prodbox, including failover, peer discovery, and formal safety invariants.
+> **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
 ---
 
-## 1. Problem Statement
+## 1. Non-Negotiable Requirements
 
-prodbox currently assumes a single node owns the public gateway DNS record.
-Target behavior is:
+This design assumes:
 
-1. There are `N` prodbox nodes.
-2. Exactly one node is the active gateway at a time.
-3. The active gateway owns `prodbox.resolvefintech.com`.
-4. Every node has a stable per-node DNS record, e.g. `node-3.prodbox.resolvefintech.com`.
-5. Nodes can be offline for long periods and rejoin without cluster disruption.
-6. Leadership safety must be specified and model-checked with TLA+.
+1. No centralized coordinator (no DynamoDB, etc.).
+2. All nodes use mutual TLS and are fully trusted peers.
+3. A typed global Orders document exists (protobuf), with monotonic UTC version timestamp.
+4. Nodes immediately promote newer validated Orders.
+5. Every node maintains its own stable DNS record.
+6. Only gateway owner updates primary gateway DNS record.
+7. A global append-only event log is the source of truth and is recovered peer-to-peer.
 
 ---
 
-## 2. Current Repository Findings
+## 2. Current Repo Gaps
 
-### 2.1 DNS command path is still single-node
+Current implementation remains single-node oriented:
 
-- `dns update` currently builds a DAG whose root effect is only `FetchPublicIP`.
-- The builder has a TODO note indicating DNS workflow expansion is still pending.
+1. DNS DAG root is still a `FetchPublicIP` effect, not a multi-node leadership workflow.
+2. Infra provisions one public A record, but no node set / orders / log semantics.
+3. Runtime uses timer-driven DDNS, not peer leadership loop.
 
-Source:
+Source files:
 - `src/prodbox/cli/dag_builders.py`
-
-### 2.2 Route 53 effects exist but are not wired into the DNS DAG root
-
-- Interpreter handlers exist for querying/updating Route 53.
-- Prerequisites validate AWS credentials, but command DAG roots do not yet compose a full lease/election workflow.
-
-Source:
-- `src/prodbox/cli/interpreter.py`
-- `src/prodbox/cli/prerequisite_registry.py`
-
-### 2.3 Infrastructure defines one A record only
-
-- Pulumi deploys a single A record (`demo_fqdn`) and ignores record-value drift so DDNS can mutate it.
-- No concept of per-node DNS records, lease state, or leadership resource exists yet.
-
-Source:
 - `src/prodbox/infra/dns.py`
-- `src/prodbox/infra/__main__.py`
-
-### 2.4 Runtime model is timer-driven, not leader loop-driven
-
-- Systemd timer periodically invokes `prodbox dns update`.
-- This works for DDNS but not for robust lease renew/failover semantics.
-
-Source:
 - `scripts/route53-ddns.service`
 - `scripts/route53-ddns.timer`
 
 ---
 
-## 3. Key Design Constraint
+## 3. Architecture Overview
 
-**Route 53 alone cannot provide provable mutual exclusion for leadership.**
+## 3.1 Orders Plane (Control Intent)
 
-Reason: Route 53 has no conditional compare-and-swap primitive for record updates.
-Without linearizable CAS, two nodes can race and overwrite each other, which is exactly the tug-of-war failure mode.
+`Orders` protobuf is the declarative configuration object:
 
-Therefore:
+- `orders_version_utc` (int64, strictly increasing)
+- `orders_hash`
+- `nodes[]` (node_id, stable_fqdn, rank)
+- `gateway_rule` (schema-constrained rule)
+- `rule_parameters` (timeouts, windows, jitter, etc.)
 
-1. Leadership must be decided in a linearizable lease store.
-2. Route 53 must be treated as an eventually consistent projection of current leader state.
+Nodes validate signature + schema + monotonic timestamp before promotion.
 
----
+## 3.2 Event Plane (Source of Truth)
 
-## 4. Proposed Architecture
+Global append-only commit log events:
 
-## 4.1 Data Plane (Route 53)
+- Hash chained (`prev_hash`, `event_hash`)
+- Signed by emitter
+- Includes `emitter_node_id`, `event_ts_utc`, payload protobuf
 
-1. Gateway record:
-   - `prodbox.resolvefintech.com` (A) -> active leader public IP
-2. Stable node records:
-   - `node-{id}.prodbox.resolvefintech.com` (A/AAAA) -> node public IP
-3. Optional metadata record:
-   - `_gateway.prodbox.resolvefintech.com` (TXT) -> `owner=node-3,epoch=42`
+Event classes:
 
-## 4.2 Control Plane (DynamoDB Lease)
+- `OrdersPublished`
+- `NodeHeartbeat`
+- `GatewayClaim`
+- `GatewayYield`
+- domain events
 
-Single-item lease row keyed by `resource = "gateway"`:
+Replication is anti-entropy gossip over stable node DNS names.
 
-- `owner_id: str`
-- `lease_epoch: int` (monotonic fencing token)
-- `lease_expires_at: int` (unix seconds)
-- `owner_ip: str`
-- `updated_at: int`
+## 3.3 DNS Plane
 
-Acquire/renew uses conditional writes. This is the safety boundary.
+1. Per-node record: `node-k.prodbox.resolvefintech.com`
+2. Gateway record: `prodbox.resolvefintech.com`
 
-## 4.3 Node Runtime
-
-Replace timer-only leadership with a small daemon loop:
-
-1. Try acquire/renew lease every `renew_interval`.
-2. If lease held, project gateway A record (on IP change or periodic reconcile).
-3. If lease lost/expired, stop projecting immediately.
-4. Keep node-specific DNS fresh independently of leadership.
+All nodes own their node record updates.
+Only elected gateway owner updates gateway record.
 
 ---
 
-## 5. Lease + Fencing Algorithm
+## 4. Gateway Rule Model
 
-## 5.1 Acquire
+## 4.1 Safe-by-Construction Rule Schema
 
-Node `n` attempts conditional update:
+Only rule families with machine-checkable invariants are allowed.
+Initial allowed family:
 
-- Condition: lease missing OR expired OR already owned by `n`
-- Update:
-  - `owner_id = n`
-  - `lease_epoch = previous_epoch + 1` on takeover, unchanged on renew
-  - `lease_expires_at = now + lease_duration`
+- `RankedFailoverRule` with deterministic total order over nodes.
 
-## 5.2 Renew
+Inputs:
 
-Only current owner can renew before expiry.
-If renew fails condition, node demotes itself immediately.
+- ordered node ranks from Orders
+- heartbeat freshness from commit log
+- rule timeouts
 
-## 5.3 Project to Route 53
+Output:
 
-A node may update gateway DNS only while:
+- exactly one `intended_gateway_owner` for a given state snapshot
 
-1. It is current lease owner, and
-2. Its local epoch equals lease row epoch.
+Tie-break is fixed: `(rank, node_id)` lexicographic.
 
-Use jittered backoff for retries to reduce write contention.
+## 4.2 Required Failsafe
 
-## 5.4 Safety Model
+Rule schema must enforce:
 
-- Safety comes from lease ownership, not from Route 53 state.
-- Route 53 is a projection and may lag temporarily due propagation and TTL.
+- If a node has no fresh heartbeat from peers for `isolation_timeout`, it must become self-candidate.
+
+This satisfies the “all others down” takeover requirement.
 
 ---
 
-## 6. Eventually Consistent Cluster State
+## 5. Safety Boundary (Important)
 
-Gateway leadership and cluster state should be separated:
+In a fully asynchronous system, with partitions and no consensus primitive, you cannot guarantee both:
 
-1. Leadership: strict lease semantics (single-writer ownership).
-2. Shared node state: eventually consistent anti-entropy.
+1. absolute no-split-brain leadership safety, and
+2. always-available autonomous failover.
 
-Recommended shared state pattern:
+This is a fundamental distributed systems limit.
 
-- Per-key LWW register with version tuple `(logical_counter, node_id)`.
-- Periodic peer gossip over stable node DNS names.
-- On rejoin, node does full-state pull from one reachable peer, then resumes incremental gossip.
+Therefore the design contract is:
 
-This supports long offline periods and deterministic convergence.
+1. `NoTugOfWar` is proven for the modeled assumptions (bounded skew/delay or equivalent failure-detector assumptions in TLA+).
+2. Under severe partition uncertainty, implementation must choose explicit mode:
+   - safety-first fail-closed, or
+   - availability-first best effort.
 
----
-
-## 7. TLA+ Scope
-
-The TLA+ model should prove at minimum:
-
-1. `MutualExclusion`: at most one valid lease holder.
-2. `NoTugOfWar`: no two nodes can simultaneously satisfy gateway-serving lease predicate.
-3. `EpochMonotonicity`: lease epoch never regresses.
-4. `FailoverLiveness`: if a leader goes silent and at least one node is alive, leadership eventually reappears.
-
-Initial spec is provided at:
-
-- `documents/engineering/tla/gateway_lease.tla`
-- `documents/engineering/tla/gateway_lease.cfg`
+The schema can forbid ambiguous rule forms, but cannot bypass impossibility results.
 
 ---
 
-## 8. Incremental Migration Plan
+## 6. Rejoin + Eventual Consistency
 
-## Phase 1: Identity + infra primitives
+When a silent node returns:
 
-1. Add node identity settings (`node_id`, `node_fqdn`, `gateway_fqdn`).
-2. Add Pulumi resources for stable node records.
-3. Add Pulumi module for DynamoDB lease table.
+1. It reconnects via stable node DNS.
+2. It performs anti-entropy pull of missing log segments.
+3. It validates hash chain and schemas.
+4. It promotes latest Orders by UTC version.
+5. It recomputes gateway candidacy and either:
+   - yields immediately, or
+   - starts/continues gateway ownership actions if selected.
 
-## Phase 2: CLI runtime leadership
+This provides deterministic convergence.
 
-1. Add new effect types for lease acquire/renew/read.
-2. Add `prodbox gateway run` daemon command.
-3. Keep existing `dns update` as manual reconcile command.
+---
 
-## Phase 3: Peer sync
+## 7. P2P Protocol Requirements
 
-1. Add peer discovery from stable DNS records.
-2. Add anti-entropy state exchange loop.
-3. Add merge logic with deterministic ordering.
+## 7.1 Transport
 
-## Phase 4: Formal + chaos validation
+- Mutual TLS for all peer RPCs.
+- Node identity bound to cert subject + Orders node_id mapping.
 
-1. Expand TLA+ model with crash/recover and delayed DNS projection actions.
-2. Add simulation tests for split-brain and churn scenarios.
+## 7.2 Log Replication
+
+- Range pull by `(from_event_hash | from_index)`.
+- Merkle/hash frontier exchange for efficient diff.
+- Idempotent append.
+
+## 7.3 Corruption Resistance
+
+- Per-event schema validation.
+- Hash-chain integrity check.
+- Signature verification.
+- Reject-on-invalid, never partially apply.
+
+---
+
+## 8. TLA+ Scope
+
+TLA+ model must cover:
+
+1. `UniqueOwner`: at most one intended gateway owner per modeled state.
+2. `DeterministicRule`: same Orders + same observed state => same owner.
+3. `RejoinConvergence`: after gossip convergence, owners converge.
+4. `SingletonTakeover`: if one node remains alive, it eventually self-elects.
+
+Model files:
+
+- `documents/engineering/tla/gateway_orders_rule.tla`
+- `documents/engineering/tla/gateway_orders_rule.cfg`
+
+Execution requirement:
+
+- TLA+ checks must run via Docker using `tlaplatform/tlaplus`.
+- Use the Poetry entrypoint `poetry run prodbox-tla-check`.
+- The command runs a self-deleting container (`docker run --rm ...`) and writes the latest result to `documents/engineering/tla/tlc_last_run.txt`.
+
+---
+
+## 9. Implementation Plan
+
+## Phase 1
+
+1. Add Orders + log protobuf schemas.
+2. Add node identity settings and stable DNS settings.
+3. Add per-node DNS reconcile command.
+
+## Phase 2
+
+1. Add peer gossip service (mTLS) for log anti-entropy.
+2. Add gateway rule evaluator from active Orders + log-derived health.
+3. Add `prodbox-gateway-loop` daemon command (`poetry run prodbox-gateway-loop --config ...`).
+
+## Phase 3
+
+1. Gate gateway DNS writes behind rule-elected ownership.
+2. Emit `GatewayClaim` / `GatewayYield` events.
+3. Add rejoin reconciliation path and tests.
+
+## Phase 4
+
+1. Expand TLA+ model for message delay, crash, recovery.
+2. Validate invariants and liveness assumptions.
 3. Add failure-injection integration tests.
 
 ---

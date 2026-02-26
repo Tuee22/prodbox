@@ -49,6 +49,7 @@ from prodbox.cli.effects import (
     WriteStderr,
     WriteStdout,
 )
+from prodbox.cli.types import Success
 
 
 class TestExecutionSummary:
@@ -1042,6 +1043,26 @@ class TestEffectInterpreterDAG:
         assert summary.total_nodes == 2
         assert summary.successful_nodes == 2
 
+    @pytest.mark.asyncio
+    async def test_interpret_dag_with_values_returns_node_values(self) -> None:
+        """interpret_dag_with_values should expose per-node Result values."""
+        interpreter = EffectInterpreter()
+        node = EffectNode(
+            effect=Pure(effect_id="root", description="Root", value="root-value"),
+        )
+        dag = EffectDAG(nodes=frozenset([node]), roots=frozenset(["root"]))
+
+        summary, node_values = await interpreter.interpret_dag_with_values(dag)
+
+        assert summary.exit_code == 0
+        result = node_values.get("root")
+        assert result is not None
+        match result:
+            case Success(value):
+                assert value == "root-value"
+            case _:
+                pytest.fail("Expected Success result for root node")
+
 
 class TestProcessOutput:
     """Tests for ProcessOutput type."""
@@ -1307,6 +1328,10 @@ class TestEffectInterpreterKubectl:
         assert "--kubeconfig" in args
         assert "get" in args
         assert "pods" in args
+        kwargs = call[1]
+        env = kwargs.get("env")
+        assert isinstance(env, dict)
+        assert env.get("KUBECONFIG") == "/etc/rancher/rke2/rke2.yaml"
 
     @pytest.mark.asyncio
     async def test_capture_kubectl_output_json(self) -> None:
@@ -2661,6 +2686,9 @@ class TestKubectlEffects:
         assert "--kubeconfig" in call_args
         assert "--all" in call_args
         assert "--selector" in call_args
+        env = mock_subprocess.call_args[1].get("env")
+        assert isinstance(env, dict)
+        assert env.get("KUBECONFIG") == "/path/to/kubeconfig"
 
 
 class TestRoute53Effects:
@@ -3808,6 +3836,9 @@ class TestKubectlOptions:
 
         call_args = mock_subprocess.call_args[0][0]
         assert "--kubeconfig" in call_args
+        env = mock_subprocess.call_args[1].get("env")
+        assert isinstance(env, dict)
+        assert env.get("KUBECONFIG") == "/custom/kubeconfig"
 
     @pytest.mark.asyncio
     async def test_run_kubectl_with_kubeconfig(self) -> None:
@@ -3832,6 +3863,9 @@ class TestKubectlOptions:
 
         call_args = mock_subprocess.call_args[0][0]
         assert "--kubeconfig" in call_args
+        env = mock_subprocess.call_args[1].get("env")
+        assert isinstance(env, dict)
+        assert env.get("KUBECONFIG") == "/custom/kubeconfig"
 
 
 class TestPulumiOptions:

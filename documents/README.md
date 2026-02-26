@@ -22,8 +22,8 @@ documents/
     ├── effectful_dag_architecture.md  # DAG system design
     ├── tla/
     │   ├── README.md              # TLA+ model index
-    │   ├── gateway_lease.tla      # Lease safety model
-    │   └── gateway_lease.cfg      # TLC model configuration
+    │   ├── gateway_orders_rule.tla      # Orders/rule safety model
+    │   └── gateway_orders_rule.cfg      # TLC model configuration
     └── prerequisite_doctrine.md   # Fail-fast philosophy
 ```
 

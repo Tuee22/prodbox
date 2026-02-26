@@ -12,12 +12,19 @@
 
 | Model | Purpose |
 |-------|---------|
-| [gateway_lease.tla](./gateway_lease.tla) | Lease ownership and gateway leadership safety |
-| [gateway_lease.cfg](./gateway_lease.cfg) | TLC model configuration for `gateway_lease.tla` |
+| [gateway_orders_rule.tla](./gateway_orders_rule.tla) | Orders-driven gateway ownership rule model |
+| [gateway_orders_rule.cfg](./gateway_orders_rule.cfg) | TLC model configuration for `gateway_orders_rule.tla` |
 
 ---
 
 ## Notes
 
-- The gateway model proves lease-level mutual exclusion and epoch monotonicity.
-- Route 53 is modeled as a projection (`dnsOwner`, `dnsEpoch`) rather than the source of truth.
+- The model is peer-to-peer and has no centralized lease store.
+- Rule determinism and singleton takeover are explicit properties.
+- Split-brain freedom depends on model assumptions about view convergence.
+
+## Running Checks
+
+- TLA+ must be executed in Docker via `tlaplatform/tlaplus`.
+- Repository entrypoint: `poetry run prodbox-tla-check`.
+- The entrypoint invokes `docker run --rm ...` and stores the latest result at `documents/engineering/tla/tlc_last_run.txt`.

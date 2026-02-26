@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 
 import asyncio
+import os
 import platform as platform_module
 import shutil
 import sys
@@ -347,6 +348,22 @@ class EffectInterpreter:
         Returns:
             DAGExecutionSummary with per-node results
         """
+        summary, _ = await self.interpret_dag_with_values(dag)
+        return summary
+
+    async def interpret_dag_with_values(
+        self,
+        dag: EffectDAG,
+    ) -> tuple[DAGExecutionSummary, dict[str, Result[object, object]]]:
+        """
+        Execute an EffectDAG and return node values.
+
+        Args:
+            dag: The EffectDAG to execute
+
+        Returns:
+            Tuple of DAG summary and per-node Result values keyed by effect_id
+        """
         start = time.time()
         node_results: list[tuple[str, ExecutionSummary]] = []
         prereq_results: dict[str, Result[object, object]] = {}
@@ -390,14 +407,17 @@ class EffectInterpreter:
         root_summaries = tuple(s for eid, s in node_results if eid in dag.roots)
         exit_code = 0 if all(s.success for s in root_summaries) else 1
 
-        return DAGExecutionSummary(
-            exit_code=exit_code,
-            message="DAG execution complete",
-            node_results=tuple(node_results),
-            total_nodes=len(node_results),
-            successful_nodes=successful,
-            failed_nodes=failed,
-            elapsed_seconds=time.time() - start,
+        return (
+            DAGExecutionSummary(
+                exit_code=exit_code,
+                message="DAG execution complete",
+                node_results=tuple(node_results),
+                total_nodes=len(node_results),
+                successful_nodes=successful,
+                failed_nodes=failed,
+                elapsed_seconds=time.time() - start,
+            ),
+            prereq_results,
         )
 
     async def _execute_node(
@@ -868,11 +888,13 @@ class EffectInterpreter:
         if effect.namespace:
             command.extend(["--namespace", effect.namespace])
         command.extend(effect.args)
+        env = self._kubectl_env(effect.kubeconfig)
 
         try:
             output = await _run_subprocess(
                 tuple(command),
                 timeout=effect.timeout,
+                env=env,
                 capture_output=not effect.stream_stdout,
             )
 
@@ -906,11 +928,13 @@ class EffectInterpreter:
         if effect.namespace:
             command.extend(["--namespace", effect.namespace])
         command.extend(effect.args)
+        env = self._kubectl_env(effect.kubeconfig)
 
         try:
             output = await _run_subprocess(
                 tuple(command),
                 timeout=effect.timeout,
+                env=env,
             )
 
             if output.returncode == -1 and output.stderr == b"Timeout":
@@ -1423,9 +1447,11 @@ class EffectInterpreter:
             effect.resource,
             f"--timeout={effect.timeout}s",
         ])
+        env = self._kubectl_env(effect.kubeconfig)
 
         output = await _run_subprocess(
             tuple(cmd),
+            env=env,
             timeout=float(effect.timeout) + 5.0,  # Add buffer for kubectl timeout
         )
 
@@ -1436,6 +1462,15 @@ class EffectInterpreter:
             self.failed_effects += 1
             stderr = output.stderr.decode("utf-8", errors="replace")
             return self._create_error_summary(f"Wait timed out: {stderr}"), False
+
+    @staticmethod
+    def _kubectl_env(kubeconfig: Path | None) -> dict[str, str] | None:
+        """Build kubectl subprocess environment with explicit KUBECONFIG override."""
+        if kubeconfig is None:
+            return None
+        env = dict(os.environ)
+        env["KUBECONFIG"] = str(kubeconfig)
+        return env
 
     # =========================================================================
     # Composite Effects

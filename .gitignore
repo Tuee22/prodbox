@@ -77,3 +77,6 @@ secrets.yaml
 # Lock file is not version controlled - each developer generates locally
 # This ensures reproducible builds while allowing flexibility across environments
 poetry.lock
+
+# TLA+ proof artifacts
+documents/engineering/tla/tlc_last_run.txt

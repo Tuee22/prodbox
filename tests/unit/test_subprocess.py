@@ -134,7 +134,8 @@ class TestRunCommand:
             cwd="/tmp",
         )
 
-        assert result.stdout.strip() == "/tmp"
+        # On macOS, /tmp is a symlink to /private/tmp
+        assert result.stdout.strip() in ("/tmp", "/private/tmp")
 
     @pytest.mark.asyncio
     async def test_with_input_data(self) -> None:

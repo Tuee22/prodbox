@@ -4,20 +4,8 @@ from __future__ import annotations
 
 import click
 
-from prodbox.lib.logging import setup_logging
-from prodbox.settings import Settings, get_settings
-
 from prodbox.cli import dns, env, host, k8s, pulumi_cmd, rke2
-
-
-class SettingsContext:
-    """Click context object holding settings."""
-
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-
-
-pass_settings = click.make_pass_decorator(SettingsContext, ensure=True)
+from prodbox.lib.logging import setup_logging
 
 
 @click.group()
@@ -28,8 +16,7 @@ pass_settings = click.make_pass_decorator(SettingsContext, ensure=True)
     help="Enable verbose output",
 )
 @click.version_option(package_name="prodbox")
-@click.pass_context
-def cli(ctx: click.Context, verbose: bool) -> None:
+def cli(verbose: bool) -> None:
     """prodbox - Home Kubernetes cluster management.
 
     Manage RKE2 + MetalLB + Traefik + cert-manager + Route 53
@@ -41,16 +28,6 @@ def cli(ctx: click.Context, verbose: bool) -> None:
     """
     # Configure logging based on verbosity
     setup_logging(level="DEBUG" if verbose else "INFO")
-
-    # Initialize settings on every invocation
-    try:
-        settings = get_settings()
-        ctx.obj = SettingsContext(settings)
-    except Exception as e:
-        # Allow commands that don't need settings to still work
-        if verbose:
-            click.echo(f"Warning: Could not load settings: {e}", err=True)
-        ctx.obj = None
 
 
 # Register command groups

@@ -72,3 +72,8 @@ Thumbs.db
 *.key
 credentials.json
 secrets.yaml
+
+# Poetry
+# Lock file is not version controlled - each developer generates locally
+# This ensures reproducible builds while allowing flexibility across environments
+poetry.lock

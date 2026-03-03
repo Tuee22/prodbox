@@ -13,7 +13,7 @@ from prodbox.cli.effect_dag import (
     ReductionError,
     ReductionMonad,
 )
-from prodbox.cli.effects import Pure, ValidateTool
+from prodbox.cli.effects import Pure
 
 
 class TestReductionMonad:
@@ -131,9 +131,7 @@ class TestEffectNode:
         """build_effect uses effect_builder when set."""
         original_effect = Pure(effect_id="test", description="Test", value="original")
 
-        def custom_builder(
-            reduced_value: object, prereq_results: dict[str, object]
-        ) -> Pure[str]:
+        def custom_builder(reduced_value: object, _prereq_results: dict[str, object]) -> Pure[str]:
             return Pure(
                 effect_id="test",
                 description="Built",
@@ -306,9 +304,7 @@ class TestEffectDAG:
         root: EffectNode[str] = EffectNode(
             effect=root_effect,
             prerequisites=frozenset(["actual_prereq"]),
-            prerequisite_values=(
-                PrerequisiteValue(effect_id="non_existent", value="test"),
-            ),
+            prerequisite_values=(PrerequisiteValue(effect_id="non_existent", value="test"),),
         )
 
         actual_prereq = EffectNode(
@@ -442,12 +438,8 @@ class TestEffectDAG:
 
     def test_dag_multiple_roots(self) -> None:
         """DAG should support multiple root nodes."""
-        root1 = EffectNode(
-            effect=Pure(effect_id="root1", description="Root 1", value="r1")
-        )
-        root2 = EffectNode(
-            effect=Pure(effect_id="root2", description="Root 2", value="r2")
-        )
+        root1 = EffectNode(effect=Pure(effect_id="root1", description="Root 1", value="r1"))
+        root2 = EffectNode(effect=Pure(effect_id="root2", description="Root 2", value="r2"))
 
         registry: PrerequisiteRegistry = {}
 
@@ -458,9 +450,7 @@ class TestEffectDAG:
 
     def test_dag_duplicate_prerequisite_values_raises(self) -> None:
         """DAG should raise if duplicate prerequisite values defined."""
-        prereq = EffectNode(
-            effect=Pure(effect_id="prereq", description="Prereq", value="p")
-        )
+        prereq = EffectNode(effect=Pure(effect_id="prereq", description="Prereq", value="p"))
 
         root = EffectNode(
             effect=Pure(effect_id="root", description="Root", value="r"),
@@ -570,9 +560,7 @@ class TestEffectDAG:
 
     def test_dag_empty_nodes_defaults_roots(self) -> None:
         """DAG with empty roots should default to all nodes as roots."""
-        node = EffectNode(
-            effect=Pure(effect_id="only_node", description="Only", value="o")
-        )
+        node = EffectNode(effect=Pure(effect_id="only_node", description="Only", value="o"))
 
         # Manually construct with explicit empty roots (will default to all nodes)
         dag = EffectDAG(nodes=frozenset([node]))
@@ -582,12 +570,8 @@ class TestEffectDAG:
     def test_dag_duplicate_effect_id_in_roots_raises(self) -> None:
         """DAG should raise if duplicate effect_ids are provided in different nodes."""
         # Create two different nodes with same effect_id
-        node1 = EffectNode(
-            effect=Pure(effect_id="same_id", description="First", value="first")
-        )
-        node2 = EffectNode(
-            effect=Pure(effect_id="same_id", description="Second", value="second")
-        )
+        node1 = EffectNode(effect=Pure(effect_id="same_id", description="First", value="first"))
+        node2 = EffectNode(effect=Pure(effect_id="same_id", description="Second", value="second"))
 
         registry: PrerequisiteRegistry = {}
 
@@ -602,9 +586,7 @@ class TestEffectDAG:
         )
 
         # Root with same effect_id as registry entry (but different node)
-        root = EffectNode(
-            effect=Pure(effect_id="conflict_id", description="Root", value="root")
-        )
+        root = EffectNode(effect=Pure(effect_id="conflict_id", description="Root", value="root"))
 
         registry: PrerequisiteRegistry = {"conflict_id": prereq}
 

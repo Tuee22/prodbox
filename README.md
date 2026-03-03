@@ -1,5 +1,11 @@
 # Prodbox
 
+**Status**: Reference only
+**Supersedes**: N/A
+**Referenced by**: CLAUDE.md, AGENTS.md
+
+> **Purpose**: Project overview, installation guide, and documentation index for prodbox.
+
 Home Kubernetes cluster management with Pulumi.
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
@@ -251,6 +257,25 @@ DNS management with:
 - Pulumi-managed record existence
 - DDNS updater for dynamic IP changes
 - 60-second TTL for fast failover
+
+## Documentation
+
+- [PRODBOX_PLAN.md](PRODBOX_PLAN.md) - Comprehensive project plan, architecture, and roadmap
+
+### Engineering Documentation
+
+Architecture and design documentation lives in `documents/engineering/`:
+
+| Document | Purpose |
+|----------|---------|
+| [documentation_standards.md](documents/documentation_standards.md) | Documentation writing standards |
+| [effectful_dag_architecture.md](documents/engineering/effectful_dag_architecture.md) | Effect DAG system design |
+| [prerequisite_doctrine.md](documents/engineering/prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
+| [unit_testing_policy.md](documents/engineering/unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
+| [dependency_management.md](documents/engineering/dependency_management.md) | Poetry dependency standards |
+| [pure_fp_standards.md](documents/engineering/pure_fp_standards.md) | Pure FP coding standards |
+| [refactoring_patterns.md](documents/engineering/refactoring_patterns.md) | Imperative to pure FP migration patterns |
+| [distributed_gateway_architecture.md](documents/engineering/distributed_gateway_architecture.md) | P2P gateway design |
 
 ## License
 

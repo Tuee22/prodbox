@@ -15,7 +15,10 @@ from prodbox.settings import Settings, clear_settings_cache, get_settings
 class TestSettings:
     """Tests for Settings class."""
 
-    def test_settings_loads_from_env(self, mock_env: dict[str, str]) -> None:
+    def test_settings_loads_from_env(
+        self,
+        mock_env: dict[str, str],  # noqa: ARG002
+    ) -> None:
         """Settings should load from environment variables."""
         settings = Settings()
 
@@ -70,7 +73,10 @@ class TestSettings:
             error_fields = {e["loc"][0] for e in errors}
             assert "acme_email" in error_fields
 
-    def test_settings_default_values(self, mock_env: dict[str, str]) -> None:
+    def test_settings_default_values(
+        self,
+        mock_env: dict[str, str],  # noqa: ARG002
+    ) -> None:
         """Settings should use default values when not specified."""
         # Remove optional env vars to test defaults
         env = {
@@ -145,14 +151,20 @@ class TestDisplayDict:
 class TestGetSettings:
     """Tests for get_settings() function."""
 
-    def test_caches_settings(self, mock_env: dict[str, str]) -> None:
+    def test_caches_settings(
+        self,
+        mock_env: dict[str, str],  # noqa: ARG002
+    ) -> None:
         """get_settings should cache the settings instance."""
         settings1 = get_settings()
         settings2 = get_settings()
 
         assert settings1 is settings2
 
-    def test_clear_cache_reloads_settings(self, mock_env: dict[str, str]) -> None:
+    def test_clear_cache_reloads_settings(
+        self,
+        mock_env: dict[str, str],  # noqa: ARG002
+    ) -> None:
         """clear_settings_cache should force reload."""
         settings1 = get_settings()
         clear_settings_cache()

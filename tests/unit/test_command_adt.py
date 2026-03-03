@@ -15,6 +15,9 @@ from prodbox.cli.command_adt import (
     EnvShowCommand,
     EnvTemplateCommand,
     EnvValidateCommand,
+    GatewayConfigGenCommand,
+    GatewayStartCommand,
+    GatewayStatusCommand,
     HostCheckPortsCommand,
     HostEnsureToolsCommand,
     HostFirewallCommand,
@@ -40,10 +43,15 @@ from prodbox.cli.command_adt import (
     env_show_command,
     env_template_command,
     env_validate_command,
+    gateway_config_gen_command,
+    gateway_start_command,
+    gateway_status_command,
     host_check_ports_command,
     host_ensure_tools_command,
     host_firewall_command,
     host_info_command,
+    # Utility functions
+    is_linux,
     k8s_health_command,
     k8s_logs_command,
     k8s_wait_command,
@@ -52,16 +60,14 @@ from prodbox.cli.command_adt import (
     pulumi_refresh_command,
     pulumi_stack_init_command,
     pulumi_up_command,
+    requires_linux,
+    requires_settings,
     rke2_ensure_command,
     rke2_logs_command,
     rke2_restart_command,
     rke2_start_command,
     rke2_status_command,
     rke2_stop_command,
-    # Utility functions
-    is_linux,
-    requires_linux,
-    requires_settings,
 )
 from prodbox.cli.types import Failure, Success
 
@@ -502,6 +508,67 @@ class TestPulumiCommands:
                 assert "Invalid stack name" in error
 
 
+class TestGatewayCommands:
+    """Tests for gateway command smart constructors."""
+
+    def test_gateway_start_command_valid(self, tmp_path: Path) -> None:
+        """gateway_start_command succeeds with existing config file."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}", encoding="utf-8")
+        match gateway_start_command(config_path=config_file):
+            case Success(cmd):
+                assert isinstance(cmd, GatewayStartCommand)
+                assert cmd.config_path == config_file
+            case Failure(_):
+                pytest.fail("Expected Success")
+
+    def test_gateway_start_command_missing_config(self, tmp_path: Path) -> None:
+        """gateway_start_command fails when config file doesn't exist."""
+        missing = tmp_path / "missing.json"
+        match gateway_start_command(config_path=missing):
+            case Success(_):
+                pytest.fail("Expected Failure for missing config")
+            case Failure(error):
+                assert "not found" in error
+
+    def test_gateway_status_command_valid(self, tmp_path: Path) -> None:
+        """gateway_status_command succeeds with existing config file."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}", encoding="utf-8")
+        match gateway_status_command(config_path=config_file):
+            case Success(cmd):
+                assert isinstance(cmd, GatewayStatusCommand)
+            case Failure(_):
+                pytest.fail("Expected Success")
+
+    def test_gateway_status_command_missing_config(self, tmp_path: Path) -> None:
+        """gateway_status_command fails when config file doesn't exist."""
+        missing = tmp_path / "missing.json"
+        match gateway_status_command(config_path=missing):
+            case Success(_):
+                pytest.fail("Expected Failure for missing config")
+            case Failure(error):
+                assert "not found" in error
+
+    def test_gateway_config_gen_command_valid(self) -> None:
+        """gateway_config_gen_command succeeds with valid args."""
+        match gateway_config_gen_command(output_path=Path("/tmp/test.json"), node_id="node-a"):
+            case Success(cmd):
+                assert isinstance(cmd, GatewayConfigGenCommand)
+                assert cmd.node_id == "node-a"
+                assert cmd.output_path == Path("/tmp/test.json")
+            case Failure(_):
+                pytest.fail("Expected Success")
+
+    def test_gateway_config_gen_command_empty_node_id(self) -> None:
+        """gateway_config_gen_command fails with empty node_id."""
+        match gateway_config_gen_command(output_path=Path("/tmp/test.json"), node_id=""):
+            case Success(_):
+                pytest.fail("Expected Failure for empty node_id")
+            case Failure(error):
+                assert "required" in error
+
+
 class TestUtilityFunctions:
     """Tests for utility functions."""
 
@@ -604,3 +671,21 @@ class TestUtilityFunctions:
         assert requires_settings(RKE2RestartCommand()) is False
         assert requires_settings(RKE2EnsureCommand()) is False
         assert requires_settings(RKE2LogsCommand()) is False
+
+    def test_requires_linux_false_for_gateway(self) -> None:
+        """requires_linux should return False for gateway commands."""
+        assert requires_linux(GatewayStartCommand(config_path=Path("/tmp/c.json"))) is False
+        assert requires_linux(GatewayStatusCommand(config_path=Path("/tmp/c.json"))) is False
+        assert (
+            requires_linux(GatewayConfigGenCommand(output_path=Path("/tmp/o.json"), node_id="n"))
+            is False
+        )
+
+    def test_requires_settings_false_for_gateway(self) -> None:
+        """requires_settings should return False for gateway commands."""
+        assert requires_settings(GatewayStartCommand(config_path=Path("/tmp/c.json"))) is False
+        assert requires_settings(GatewayStatusCommand(config_path=Path("/tmp/c.json"))) is False
+        assert (
+            requires_settings(GatewayConfigGenCommand(output_path=Path("/tmp/o.json"), node_id="n"))
+            is False
+        )

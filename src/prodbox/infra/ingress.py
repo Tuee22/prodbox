@@ -9,8 +9,8 @@ import pulumi
 import pulumi_kubernetes as k8s
 
 if TYPE_CHECKING:
-    from prodbox.settings import Settings
     from prodbox.infra.metallb import MetalLBResources
+    from prodbox.settings import Settings
 
 # Pinned chart version for reproducibility
 TRAEFIK_CHART_VERSION = "32.0.0"
@@ -60,7 +60,7 @@ def deploy_ingress(
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(
             repo=TRAEFIK_REPO,
         ),
-        namespace=namespace.metadata.name,
+        namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
         values={
             # Service configuration
             "service": {

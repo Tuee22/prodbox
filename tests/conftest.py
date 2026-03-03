@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Generator
+from collections.abc import Generator
 from unittest.mock import patch
 
 import pytest
@@ -46,7 +46,7 @@ def mock_env() -> Generator[dict[str, str], None, None]:
 
 
 @pytest.fixture
-def settings(mock_env: dict[str, str]) -> Settings:
+def settings(mock_env: dict[str, str]) -> Settings:  # noqa: ARG001
     """Get a Settings instance with mock environment."""
     return Settings()
 

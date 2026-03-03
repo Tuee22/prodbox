@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from prodbox.lib.subprocess import run_command, CommandResult
 from prodbox.lib.exceptions import CommandError, TimeoutError
+from prodbox.lib.subprocess import CommandResult, run_command
 
 
 class TestCommandResult:

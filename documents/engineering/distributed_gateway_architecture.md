@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/README.md
+**Referenced by**: documents/engineering/README.md, README.md
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -22,19 +22,17 @@ This design assumes:
 
 ---
 
-## 2. Current Repo Gaps
+## 2. Implementation Status
 
-Current implementation remains single-node oriented:
+The distributed gateway system is fully implemented (Phases 1-8 complete):
 
-1. DNS DAG root is still a `FetchPublicIP` effect, not a multi-node leadership workflow.
-2. Infra provisions one public A record, but no node set / orders / log semantics.
-3. Runtime uses timer-driven DDNS, not peer leadership loop.
+- **Gateway daemon**: `src/prodbox/gateway_daemon.py` (1387 lines)
+- **CLI management**: `src/prodbox/cli/gateway.py` (`start`, `status`, `config-gen`)
+- **TLA+ models**: `documents/engineering/tla/gateway_orders_rule.tla`
+- **Unit tests**: 54 gateway daemon tests in `tests/unit/test_gateway_daemon.py`
+- **Integration tests**: `tests/integration/test_gateway_k8s_pods.py` (K8s pod deployment)
 
-Source files:
-- `src/prodbox/cli/dag_builders.py`
-- `src/prodbox/infra/dns.py`
-- `scripts/route53-ddns.service`
-- `scripts/route53-ddns.timer`
+The daemon runs as a local Python process via `poetry run prodbox-gateway-loop`. DDNS timer fallback (`scripts/`) remains for single-node operation.
 
 ---
 
@@ -189,33 +187,112 @@ Execution requirement:
 - Use the Poetry entrypoint `poetry run prodbox-tla-check`.
 - The command runs a self-deleting container (`docker run --rm ...`) and writes the latest result to `documents/engineering/tla/tlc_last_run.txt`.
 
+For modelling assumptions, variable correspondence, known divergences, and verification status, see [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
+
 ---
 
-## 9. Implementation Plan
+## 9. GatewayClaim / GatewayYield Event Lifecycle
 
-## Phase 1
+Ownership transitions are tracked via typed events in the commit log:
 
-1. Add Orders + log protobuf schemas.
-2. Add node identity settings and stable DNS settings.
-3. Add per-node DNS reconcile command.
+| Event | Trigger | Payload |
+|-------|---------|---------|
+| `GatewayClaim` | This node becomes elected gateway owner | `{"claiming_node_id": str, "previous_owner": str \| None}` |
+| `GatewayYield` | This node loses gateway ownership | `{"yielding_node_id": str, "new_owner": str}` |
 
-## Phase 2
+**Ordering guarantee**: `GatewayYield` from the old owner is emitted before `GatewayClaim` from the new owner when transitions occur within the same node's recomputation cycle.
 
-1. Add peer gossip service (mTLS) for log anti-entropy.
-2. Add gateway rule evaluator from active Orders + log-derived health.
-3. Add `prodbox-gateway-loop` daemon command (`poetry run prodbox-gateway-loop --config ...`).
+---
 
-## Phase 3
+## 10. DNS Write Gating
 
-1. Gate gateway DNS writes behind rule-elected ownership.
-2. Emit `GatewayClaim` / `GatewayYield` events.
-3. Add rejoin reconciliation path and tests.
+Only the elected gateway owner writes the primary DNS A record. Two conditions must be satisfied:
 
-## Phase 4
+1. **Ownership check**: `gateway_owner == self.node_id`
+2. **Claim check**: A `GatewayClaim` event from self exists in the local commit log
 
-1. Expand TLA+ model for message delay, crash, recovery.
-2. Validate invariants and liveness assumptions.
-3. Add failure-injection integration tests.
+This prevents stale writes from lagging nodes that haven't yet learned about ownership changes.
+
+### DnsWriteGate Configuration
+
+```python
+@dataclass(frozen=True)
+class DnsWriteGate:
+    zone_id: str        # Route 53 hosted zone ID
+    fqdn: str           # Gateway FQDN to update
+    ttl: int            # DNS record TTL (seconds)
+    aws_region: str
+    aws_access_key_id: str
+    aws_secret_access_key: str
+```
+
+When `dns_write_gate` is `None`, DNS write loop is a no-op (backward compatible).
+
+### Route53DnsWriteClient
+
+Implements the `DnsWriteClient` protocol:
+- `fetch_public_ip()` — via `checkip.amazonaws.com`
+- `update_route53_record()` — boto3 UPSERT A record wrapped with `asyncio.to_thread()`
+- Auto-wired in daemon startup when gate config is present and no mock injected
+
+---
+
+## 11. REST API
+
+### `POST /v1/handshake`
+
+Peer connection establishment with CN verification against expected peer node IDs.
+
+### `GET /v1/state`
+
+Returns current daemon state:
+
+```json
+{
+    "node_id": "node-a",
+    "gateway_owner": "node-a",
+    "event_count": 42,
+    "event_hashes": ["abc123", "def456"],
+    "mesh_peers": ["node-b", "node-c"]
+}
+```
+
+Used by integration tests for observability and by `prodbox gateway status` CLI.
+
+---
+
+## 12. Deployment Model
+
+The gateway daemon runs as a **local Python process** via `poetry run prodbox-gateway-loop --config <path>`. It is NOT containerized — Poetry handles all dependency management.
+
+- Docker is only used for the TLA+ model checker (`tla_check.py`)
+- RKE2 handles all Kubernetes containerization for pod integration tests
+- Pod images for integration tests are resolved via `PRODBOX_GATEWAY_IMAGE` environment variable
+
+### CLI Management
+
+```bash
+prodbox gateway start <config.json>           # Run gateway event loop
+prodbox gateway status <config.json>          # Query running daemon
+prodbox gateway config-gen <path> --node-id <id>  # Generate template config
+```
+
+---
+
+## 13. Implementation History
+
+All phases complete:
+
+| Phase | Deliverable |
+|-------|-------------|
+| **1** | Orders + CommitLog schemas, node identity, stable DNS settings |
+| **2** | mTLS peer gossip, gateway rule evaluator, `prodbox-gateway-loop` daemon |
+| **3** | GatewayClaim/GatewayYield typed events |
+| **4** | DNS write gating with claim requirement |
+| **5** | K8s pod infrastructure (manifests, fixtures, helpers) |
+| **6** | K8s pod integration tests (mesh, failover, partition, DNS) |
+| **7** | TLA+ model extension (bounded timestamps, claim/yield invariants) |
+| **8** | Gateway hardening (REST API, Route53 client, CLI command group) |
 
 ---
 

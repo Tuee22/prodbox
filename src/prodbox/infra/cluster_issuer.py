@@ -9,8 +9,8 @@ import pulumi
 import pulumi_kubernetes as k8s
 
 if TYPE_CHECKING:
-    from prodbox.settings import Settings
     from prodbox.infra.cert_manager import CertManagerResources
+    from prodbox.settings import Settings
 
 
 @dataclass

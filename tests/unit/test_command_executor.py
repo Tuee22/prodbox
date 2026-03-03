@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from io import StringIO
 from unittest.mock import AsyncMock, MagicMock, patch
-
-import pytest
 
 from prodbox.cli.command_adt import EnvTemplateCommand
 from prodbox.cli.command_executor import (
@@ -57,9 +54,7 @@ class TestExecuteCommand:
             failed_nodes=0,
         )
 
-        with patch(
-            "prodbox.cli.command_executor.create_interpreter"
-        ) as mock_create:
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
             mock_create.return_value = mock_interpreter
@@ -81,9 +76,7 @@ class TestExecuteCommand:
             failed_nodes=1,
         )
 
-        with patch(
-            "prodbox.cli.command_executor.create_interpreter"
-        ) as mock_create:
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
             mock_create.return_value = mock_interpreter
@@ -117,9 +110,7 @@ class TestExecuteEffect:
 
         mock_summary = ExecutionSummary(exit_code=0, message="Success")
 
-        with patch(
-            "prodbox.cli.command_executor.create_interpreter"
-        ) as mock_create:
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret = AsyncMock(return_value=mock_summary)
             mock_create.return_value = mock_interpreter
@@ -134,9 +125,7 @@ class TestExecuteEffect:
 
         mock_summary = ExecutionSummary(exit_code=1, message="Failed")
 
-        with patch(
-            "prodbox.cli.command_executor.create_interpreter"
-        ) as mock_create:
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret = AsyncMock(return_value=mock_summary)
             mock_create.return_value = mock_interpreter
@@ -165,9 +154,7 @@ class TestExecuteDAG:
             failed_nodes=0,
         )
 
-        with patch(
-            "prodbox.cli.command_executor.create_interpreter"
-        ) as mock_create:
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
             mock_create.return_value = mock_interpreter
@@ -192,9 +179,7 @@ class TestExecuteDAG:
             failed_nodes=1,
         )
 
-        with patch(
-            "prodbox.cli.command_executor.create_interpreter"
-        ) as mock_create:
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
             mock_create.return_value = mock_interpreter

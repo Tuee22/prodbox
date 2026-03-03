@@ -2,22 +2,12 @@
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
-import tempfile
 
 import pytest
 
-from prodbox.cli.interpreter import (
-    DAGExecutionSummary,
-    EffectInterpreter,
-    EnvironmentError,
-    ExecutionSummary,
-    ProcessOutput,
-    _assert_never,
-    _run_subprocess,
-    create_interpreter,
-)
 from prodbox.cli.effect_dag import EffectDAG, EffectNode
 from prodbox.cli.effects import (
     CaptureSubprocessOutput,
@@ -48,6 +38,16 @@ from prodbox.cli.effects import (
     WriteFile,
     WriteStderr,
     WriteStdout,
+)
+from prodbox.cli.interpreter import (
+    DAGExecutionSummary,
+    EffectInterpreter,
+    EnvironmentError,
+    ExecutionSummary,
+    ProcessOutput,
+    _assert_never,
+    _run_subprocess,
+    create_interpreter,
 )
 from prodbox.cli.types import Success
 
@@ -1284,9 +1284,7 @@ class TestEffectInterpreterSystemd:
         )
 
         with patch("prodbox.cli.interpreter._run_subprocess") as mock_run:
-            mock_run.return_value = ProcessOutput(
-                returncode=3, stdout=b"", stderr=b"inactive"
-            )
+            mock_run.return_value = ProcessOutput(returncode=3, stdout=b"", stderr=b"inactive")
             summary = await interpreter.interpret(effect)
 
         assert not summary.success
@@ -1299,8 +1297,9 @@ class TestEffectInterpreterKubectl:
     @pytest.mark.asyncio
     async def test_run_kubectl_get_pods(self) -> None:
         """RunKubectlCommand should execute kubectl get pods."""
-        from prodbox.cli.effects import RunKubectlCommand
         from pathlib import Path
+
+        from prodbox.cli.effects import RunKubectlCommand
 
         interpreter = EffectInterpreter()
         effect = RunKubectlCommand(
@@ -1347,9 +1346,7 @@ class TestEffectInterpreterKubectl:
 
         json_output = b'{"items": [{"metadata": {"name": "node1"}}]}'
         with patch("prodbox.cli.interpreter._run_subprocess") as mock_run:
-            mock_run.return_value = ProcessOutput(
-                returncode=0, stdout=json_output, stderr=b""
-            )
+            mock_run.return_value = ProcessOutput(returncode=0, stdout=json_output, stderr=b"")
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -1370,9 +1367,7 @@ class TestEffectInterpreterKubectl:
         )
 
         with patch("prodbox.cli.interpreter._run_subprocess") as mock_run:
-            mock_run.return_value = ProcessOutput(
-                returncode=-1, stdout=b"", stderr=b"Timeout"
-            )
+            mock_run.return_value = ProcessOutput(returncode=-1, stdout=b"", stderr=b"Timeout")
             summary = await interpreter.interpret(effect)
 
         assert not summary.success
@@ -1385,8 +1380,9 @@ class TestEffectInterpreterPulumi:
     @pytest.mark.asyncio
     async def test_pulumi_preview_success(self) -> None:
         """PulumiPreview should run pulumi preview."""
-        from prodbox.cli.effects import PulumiPreview
         from pathlib import Path
+
+        from prodbox.cli.effects import PulumiPreview
 
         interpreter = EffectInterpreter()
         effect = PulumiPreview(
@@ -1497,6 +1493,7 @@ class TestEffectInterpreterAWS:
     async def test_validate_aws_credentials_success(self) -> None:
         """ValidateAWSCredentials should succeed with valid credentials."""
         import sys
+
         from prodbox.cli.effects import ValidateAWSCredentials
 
         interpreter = EffectInterpreter()
@@ -1525,6 +1522,7 @@ class TestEffectInterpreterAWS:
     async def test_validate_aws_credentials_failure(self) -> None:
         """ValidateAWSCredentials should fail with invalid credentials."""
         import sys
+
         from prodbox.cli.effects import ValidateAWSCredentials
 
         interpreter = EffectInterpreter()
@@ -1555,6 +1553,7 @@ class TestEffectInterpreterAWS:
     async def test_query_route53_record_found(self) -> None:
         """QueryRoute53Record should return IP when found."""
         import sys
+
         from prodbox.cli.effects import QueryRoute53Record
 
         interpreter = EffectInterpreter()
@@ -1594,6 +1593,7 @@ class TestEffectInterpreterAWS:
     async def test_query_route53_record_not_found(self) -> None:
         """QueryRoute53Record should return None when not found."""
         import sys
+
         from prodbox.cli.effects import QueryRoute53Record
 
         interpreter = EffectInterpreter()
@@ -1612,9 +1612,7 @@ class TestEffectInterpreterAWS:
         mock_route53 = MagicMock()
         mock_boto3.Session.return_value = mock_session
         mock_session.client.return_value = mock_route53
-        mock_route53.list_resource_record_sets.return_value = {
-            "ResourceRecordSets": []
-        }
+        mock_route53.list_resource_record_sets.return_value = {"ResourceRecordSets": []}
 
         with patch.dict(sys.modules, {"boto3": mock_boto3}):
             summary, value = await interpreter.interpret_with_value(effect)
@@ -1626,6 +1624,7 @@ class TestEffectInterpreterAWS:
     async def test_update_route53_record_success(self) -> None:
         """UpdateRoute53Record should update DNS record."""
         import sys
+
         from prodbox.cli.effects import UpdateRoute53Record
 
         interpreter = EffectInterpreter()
@@ -1664,6 +1663,7 @@ class TestEffectInterpreterFetchPublicIP:
     async def test_fetch_public_ip_success(self) -> None:
         """FetchPublicIP should return IP address."""
         import sys
+
         from prodbox.cli.effects import FetchPublicIP
 
         interpreter = EffectInterpreter()
@@ -1696,6 +1696,7 @@ class TestEffectInterpreterFetchPublicIP:
     async def test_fetch_public_ip_network_error(self) -> None:
         """FetchPublicIP should handle network errors."""
         import sys
+
         from prodbox.cli.effects import FetchPublicIP
 
         interpreter = EffectInterpreter()
@@ -1909,7 +1910,9 @@ class TestWriteFileEdgeCases:
         )
 
         with patch("prodbox.cli.interpreter._run_subprocess") as mock_run:
-            mock_run.return_value = ProcessOutput(returncode=1, stdout=b"", stderr=b"Permission denied")
+            mock_run.return_value = ProcessOutput(
+                returncode=1, stdout=b"", stderr=b"Permission denied"
+            )
             summary = await interpreter.interpret(effect)
 
         assert not summary.success
@@ -2053,6 +2056,7 @@ class TestConfirmActionEdgeCases:
     async def test_confirm_action_declined_with_abort(self) -> None:
         """ConfirmAction should fail when user declines with abort_on_decline."""
         import click as click_module
+
         from prodbox.cli.effects import ConfirmAction
 
         interpreter = EffectInterpreter()
@@ -2074,6 +2078,7 @@ class TestConfirmActionEdgeCases:
     async def test_confirm_action_abort_exception(self) -> None:
         """ConfirmAction should handle click.Abort exception."""
         import click as click_module
+
         from prodbox.cli.effects import ConfirmAction
 
         interpreter = EffectInterpreter()
@@ -2124,10 +2129,7 @@ class TestSequenceAndParallelEdgeCases:
         effect = Parallel(
             effect_id="parallel_limited",
             description="Limited parallel",
-            effects=[
-                Pure(effect_id=f"p{i}", description=f"Pure {i}", value=i)
-                for i in range(5)
-            ],
+            effects=[Pure(effect_id=f"p{i}", description=f"Pure {i}", value=i) for i in range(5)],
             max_concurrent=2,
         )
 
@@ -2262,7 +2264,6 @@ class TestSystemdEffects:
     @pytest.mark.asyncio
     async def test_check_service_status_success(self) -> None:
         """CheckServiceStatus should return service status."""
-        from prodbox.cli.effects import CheckServiceStatus
 
         interpreter = EffectInterpreter()
         effect = CheckServiceStatus(
@@ -2284,7 +2285,6 @@ class TestSystemdEffects:
     @pytest.mark.asyncio
     async def test_check_service_status_os_error(self) -> None:
         """CheckServiceStatus should fail on OSError."""
-        from prodbox.cli.effects import CheckServiceStatus
 
         interpreter = EffectInterpreter()
         effect = CheckServiceStatus(
@@ -2502,9 +2502,7 @@ class TestKubectlEffects:
         with patch(
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
-            return_value=ProcessOutput(
-                returncode=0, stdout=b'{"items": []}', stderr=b""
-            ),
+            return_value=ProcessOutput(returncode=0, stdout=b'{"items": []}', stderr=b""),
         ):
             summary, value = await interpreter.interpret_with_value(effect)
 
@@ -2526,9 +2524,7 @@ class TestKubectlEffects:
         with patch(
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
-            return_value=ProcessOutput(
-                returncode=1, stdout=b"", stderr=b"not found"
-            ),
+            return_value=ProcessOutput(returncode=1, stdout=b"", stderr=b"not found"),
         ):
             summary, value = await interpreter.interpret_with_value(effect)
 
@@ -2620,9 +2616,7 @@ class TestKubectlEffects:
         with patch(
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
-            return_value=ProcessOutput(
-                returncode=0, stdout=b"condition met", stderr=b""
-            ),
+            return_value=ProcessOutput(returncode=0, stdout=b"condition met", stderr=b""),
         ):
             summary, value = await interpreter.interpret_with_value(effect)
 
@@ -2646,9 +2640,7 @@ class TestKubectlEffects:
         with patch(
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
-            return_value=ProcessOutput(
-                returncode=1, stdout=b"", stderr=b"timed out waiting"
-            ),
+            return_value=ProcessOutput(returncode=1, stdout=b"", stderr=b"timed out waiting"),
         ):
             summary, value = await interpreter.interpret_with_value(effect)
 
@@ -2658,8 +2650,9 @@ class TestKubectlEffects:
     @pytest.mark.asyncio
     async def test_kubectl_wait_with_options(self) -> None:
         """KubectlWait should include all options."""
-        from prodbox.cli.effects import KubectlWait
         from pathlib import Path
+
+        from prodbox.cli.effects import KubectlWait
 
         interpreter = EffectInterpreter()
         effect = KubectlWait(
@@ -2697,7 +2690,6 @@ class TestRoute53Effects:
     @pytest.mark.asyncio
     async def test_fetch_public_ip_success(self) -> None:
         """FetchPublicIP should return IP address."""
-        from prodbox.cli.effects import FetchPublicIP
 
         interpreter = EffectInterpreter()
         effect = FetchPublicIP(
@@ -2723,7 +2715,6 @@ class TestRoute53Effects:
     @pytest.mark.asyncio
     async def test_fetch_public_ip_failure(self) -> None:
         """FetchPublicIP should fail on network error."""
-        from prodbox.cli.effects import FetchPublicIP
 
         interpreter = EffectInterpreter()
         effect = FetchPublicIP(
@@ -2795,9 +2786,7 @@ class TestRoute53Effects:
         )
 
         mock_client = MagicMock()
-        mock_client.list_resource_record_sets.return_value = {
-            "ResourceRecordSets": []
-        }
+        mock_client.list_resource_record_sets.return_value = {"ResourceRecordSets": []}
 
         mock_session = MagicMock()
         mock_session.client.return_value = mock_client
@@ -3104,9 +3093,7 @@ class TestPulumiEffects:
         with patch(
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
-            return_value=ProcessOutput(
-                returncode=1, stdout=b"", stderr=b"stack not found"
-            ),
+            return_value=ProcessOutput(returncode=1, stdout=b"", stderr=b"stack not found"),
         ):
             summary, value = await interpreter.interpret_with_value(effect)
 
@@ -3515,7 +3502,7 @@ class TestPulumiEffects:
         assert value is None
 
 
-class TestDAGExecutionEdgeCases:
+class TestDAGExecutionAdditionalEdgeCases:
     """Tests for DAG execution edge cases."""
 
     @pytest.mark.asyncio
@@ -3545,7 +3532,7 @@ class TestDAGExecutionEdgeCases:
     @pytest.mark.asyncio
     async def test_dag_node_with_unexecuted_prerequisite(self) -> None:
         """Test _execute_node when prerequisite hasn't been executed yet (None case)."""
-        from prodbox.cli.types import Success, Failure
+        from prodbox.cli.types import Failure
 
         interpreter = EffectInterpreter()
 
@@ -3598,7 +3585,7 @@ class TestDAGExecutionEdgeCases:
         )
 
         with patch("prodbox.cli.interpreter.platform_module.system", return_value="Darwin"):
-            summary = await interpreter.interpret_dag(dag)
+            _summary = await interpreter.interpret_dag(dag)
 
         # Dependent node should be skipped due to failed prerequisite
         assert interpreter.skipped_effects >= 1
@@ -3624,6 +3611,7 @@ class TestDAGExecutionEdgeCases:
     async def test_confirm_action_success_confirmed(self) -> None:
         """ConfirmAction should succeed when user confirms."""
         import click as click_module
+
         from prodbox.cli.effects import ConfirmAction
 
         interpreter = EffectInterpreter()
@@ -3643,6 +3631,7 @@ class TestDAGExecutionEdgeCases:
     async def test_confirm_action_declined_no_abort(self) -> None:
         """ConfirmAction should succeed but return False when declined without abort."""
         import click as click_module
+
         from prodbox.cli.effects import ConfirmAction
 
         interpreter = EffectInterpreter()
@@ -3667,7 +3656,6 @@ class TestDAGExceptionHandling:
     @pytest.mark.asyncio
     async def test_dag_node_raises_exception(self) -> None:
         """DAG should handle exceptions from node execution gracefully."""
-        import asyncio
 
         interpreter = EffectInterpreter()
 
@@ -3704,12 +3692,10 @@ class TestDAGExceptionHandling:
         dag = EffectDAG(nodes=frozenset([node]), roots=frozenset(["test_node"]))
 
         # Mock _execute_node to raise an unhandled exception
-        async def mock_execute_node_raises(*args: object, **kwargs: object) -> None:
+        async def mock_execute_node_raises(*_args: object, **_kwargs: object) -> None:
             raise RuntimeError("Unhandled exception in _execute_node")
 
-        with patch.object(
-            interpreter, "_execute_node", side_effect=mock_execute_node_raises
-        ):
+        with patch.object(interpreter, "_execute_node", side_effect=mock_execute_node_raises):
             summary = await interpreter.interpret_dag(dag)
 
         # DAG should handle the exception gracefully
@@ -3720,7 +3706,6 @@ class TestDAGExceptionHandling:
     @pytest.mark.asyncio
     async def test_dag_multiple_nodes_one_exception(self) -> None:
         """DAG should handle exception in one node while others succeed."""
-        import asyncio
 
         interpreter = EffectInterpreter()
 
@@ -3816,8 +3801,9 @@ class TestKubectlOptions:
     @pytest.mark.asyncio
     async def test_capture_kubectl_with_kubeconfig(self) -> None:
         """CaptureKubectlOutput should include kubeconfig flag."""
-        from prodbox.cli.effects import CaptureKubectlOutput
         from pathlib import Path
+
+        from prodbox.cli.effects import CaptureKubectlOutput
 
         interpreter = EffectInterpreter()
         effect = CaptureKubectlOutput(
@@ -3843,8 +3829,9 @@ class TestKubectlOptions:
     @pytest.mark.asyncio
     async def test_run_kubectl_with_kubeconfig(self) -> None:
         """RunKubectlCommand should include kubeconfig flag."""
-        from prodbox.cli.effects import RunKubectlCommand
         from pathlib import Path
+
+        from prodbox.cli.effects import RunKubectlCommand
 
         interpreter = EffectInterpreter()
         effect = RunKubectlCommand(

@@ -1,6 +1,7 @@
 # Repository Guidelines for Agents
 
 **Status**: Authoritative source
+**Supersedes**: N/A
 **Referenced by**: README.md, CLAUDE.md
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
@@ -65,7 +66,7 @@ poetry run ruff format src/ tests/
 
 ### Data Structures
 
-> **SSoT**: [Pure FP Standards](documents/pure_fp_standards.md)
+> **SSoT**: [Pure FP Standards](documents/engineering/pure_fp_standards.md)
 
 #### Immutability Requirements
 

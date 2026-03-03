@@ -1,6 +1,7 @@
 # Claude Code Patterns for Prodbox
 
 **Status**: Reference only
+**Supersedes**: N/A
 **Referenced by**: README.md, documents/engineering/README.md
 
 > **Purpose**: Guide for Claude Code development on prodbox - home Kubernetes infrastructure management with Pulumi.
@@ -34,7 +35,7 @@ Prodbox is a Python-native infrastructure-as-code project for managing a home Ku
 
 ## Pure FP Doctrine
 
-> **SSoT**: [Pure FP Standards](documents/pure_fp_standards.md)
+> **SSoT**: [Pure FP Standards](documents/engineering/pure_fp_standards.md)
 
 ### Purity Boundary
 
@@ -74,7 +75,7 @@ def update_dns(settings: Settings) -> None:
         sys.exit(1)           # Scattered exit!
 ```
 
-See [Refactoring Patterns](documents/refactoring_patterns.md) for migration guides.
+See [Refactoring Patterns](documents/engineering/refactoring_patterns.md) for migration guides.
 
 ---
 
@@ -101,7 +102,8 @@ prodbox/
 │   │   ├── rke2.py           # RKE2 management commands
 │   │   ├── pulumi_cmd.py     # Pulumi commands
 │   │   ├── dns.py            # Route 53 DNS commands
-│   │   └── k8s.py            # Kubernetes health commands
+│   │   ├── k8s.py            # Kubernetes health commands
+│   │   └── gateway.py        # Gateway daemon management commands
 │   ├── infra/                # Pulumi infrastructure definitions
 │   │   ├── __main__.py       # Pulumi program orchestrator
 │   │   ├── providers.py      # K8s and AWS providers
@@ -114,7 +116,10 @@ prodbox/
 │   │   ├── subprocess.py     # Async subprocess runner
 │   │   ├── async_runner.py   # Click-asyncio bridge
 │   │   ├── logging.py        # Rich logging setup
+│   │   ├── concurrency.py    # Semaphore-based concurrency utilities
 │   │   └── exceptions.py     # Custom exceptions
+│   ├── gateway_daemon.py     # Distributed gateway daemon (1387 lines)
+│   ├── tla_check.py          # TLA+ model checker (Docker-based)
 │   └── settings.py           # Pydantic configuration
 ├── tests/                    # Unit and integration tests
 ├── typings/                  # Custom type stubs
@@ -163,6 +168,9 @@ poetry run prodbox pulumi up --yes   # Deploy infrastructure
 poetry run prodbox dns check         # Check DNS status
 poetry run prodbox dns update        # Update DDNS
 poetry run prodbox k8s health        # Check cluster health
+poetry run prodbox gateway start <config>  # Start gateway daemon
+poetry run prodbox gateway status <config> # Query gateway daemon status
+poetry run prodbox gateway config-gen <path> --node-id <id>  # Generate config template
 ```
 
 ---
@@ -251,7 +259,38 @@ poetry run pytest --cov=src/prodbox  # With coverage
 poetry run mypy src/                 # Type checking (ultra-strict)
 poetry run ruff check src/ tests/    # Linting
 poetry run ruff format src/ tests/   # Formatting
+poetry run prodbox-tla-check         # TLA+ model verification (requires Docker)
 ```
+
+---
+
+## CI/CD
+
+### GitHub Actions
+
+CI runs on every push and PR to main (`.github/workflows/ci.yml`):
+- Ruff lint + format check
+- Mypy type checking
+- Unit tests (excludes `@pytest.mark.integration`)
+- TLA+ proof check (requires Docker on runner)
+
+### Pre-commit Hooks
+
+```bash
+poetry install                       # Includes pre-commit dev dependency
+poetry run pre-commit install        # Install git hooks
+poetry run pre-commit run --all-files  # Run all hooks manually
+```
+
+Hooks: trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff (check + format), mypy.
+
+### Container Build
+
+```bash
+docker build -f Containerfile.gateway -t prodbox-gateway .
+```
+
+Multi-stage build: Python 3.12 slim, Poetry install, runtime-only image. Entrypoint: `prodbox-gateway-loop`.
 
 ---
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -316,8 +316,8 @@ class TestRunShell:
     @pytest.mark.asyncio
     async def test_run_shell_with_check_raises(self) -> None:
         """run_shell with check=True should raise on failure."""
-        from prodbox.lib.subprocess import run_shell
         from prodbox.lib.exceptions import CommandError
+        from prodbox.lib.subprocess import run_shell
 
         with pytest.raises(CommandError):
             await run_shell("exit 1", check=True)
@@ -371,6 +371,7 @@ class TestConcurrencyEdgeCases:
     async def test_first_success_cancelled_task_handling(self) -> None:
         """first_success should skip cancelled tasks in done set."""
         import asyncio
+
         from prodbox.lib.concurrency import first_success
 
         async def quick_success() -> str:

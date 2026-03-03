@@ -104,11 +104,12 @@ async def _run_subprocess(
         stderr=stderr_bytes or b"",
     )
 
-from rich.console import Console
-from rich.table import Table
 
-from prodbox.cli.effect_dag import EffectDAG, EffectNode
-from prodbox.cli.effects import (
+from rich.console import Console  # noqa: E402
+from rich.table import Table  # noqa: E402
+
+from prodbox.cli.effect_dag import EffectDAG, EffectNode  # noqa: E402
+from prodbox.cli.effects import (  # noqa: E402
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
     CheckFileExists,
@@ -117,6 +118,7 @@ from prodbox.cli.effects import (
     Custom,
     Effect,
     FetchPublicIP,
+    GenerateGatewayConfig,
     GetJournalLogs,
     KubectlWait,
     LoadSettings,
@@ -135,6 +137,7 @@ from prodbox.cli.effects import (
     PulumiStackSelect,
     PulumiUp,
     Pure,
+    QueryGatewayState,
     QueryRoute53Record,
     ReadFile,
     RequireLinux,
@@ -144,6 +147,7 @@ from prodbox.cli.effects import (
     RunSubprocess,
     RunSystemdCommand,
     Sequence,
+    StartGatewayDaemon,
     Try,
     UpdateRoute53Record,
     ValidateAWSCredentials,
@@ -154,7 +158,7 @@ from prodbox.cli.effects import (
     WriteStderr,
     WriteStdout,
 )
-from prodbox.cli.types import (
+from prodbox.cli.types import (  # noqa: E402
     Failure,
     PrereqResults,
     Result,
@@ -453,9 +457,7 @@ class EffectInterpreter:
         effect = node.build_effect(None, prereq_results)
         return await self._dispatch_effect(effect)
 
-    async def _dispatch_effect(
-        self, effect: Effect[T]
-    ) -> tuple[ExecutionSummary, object | None]:
+    async def _dispatch_effect(self, effect: Effect[T]) -> tuple[ExecutionSummary, object | None]:
         """
         Dispatch effect to appropriate handler.
 
@@ -576,6 +578,14 @@ class EffectInterpreter:
             case Try():
                 return await self._interpret_try(effect)
 
+            # Gateway daemon
+            case StartGatewayDaemon():
+                return await self._interpret_start_gateway_daemon(effect), None
+            case QueryGatewayState():
+                return await self._interpret_query_gateway_state(effect)
+            case GenerateGatewayConfig():
+                return await self._interpret_generate_gateway_config(effect), None
+
             case _:
                 # Type-safe unreachable check
                 _assert_never(effect)
@@ -584,7 +594,7 @@ class EffectInterpreter:
     # Platform Detection Effects
     # =========================================================================
 
-    async def _interpret_require_linux(self, effect: RequireLinux) -> ExecutionSummary:
+    async def _interpret_require_linux(self, _effect: RequireLinux) -> ExecutionSummary:
         """Require Linux platform."""
         current_platform = platform_module.system().lower()
         if current_platform == "linux":
@@ -592,11 +602,9 @@ class EffectInterpreter:
             return self._create_success_summary("Platform is Linux")
         else:
             self.failed_effects += 1
-            return self._create_error_summary(
-                f"Linux required but running on {current_platform}"
-            )
+            return self._create_error_summary(f"Linux required but running on {current_platform}")
 
-    async def _interpret_require_systemd(self, effect: RequireSystemd) -> ExecutionSummary:
+    async def _interpret_require_systemd(self, _effect: RequireSystemd) -> ExecutionSummary:
         """Require systemd availability."""
         # Check if systemctl is available
         systemctl_path = shutil.which("systemctl")
@@ -677,9 +685,7 @@ class EffectInterpreter:
                 False,
             )
 
-    async def _interpret_read_file(
-        self, effect: ReadFile
-    ) -> tuple[ExecutionSummary, str | None]:
+    async def _interpret_read_file(self, effect: ReadFile) -> tuple[ExecutionSummary, str | None]:
         """Read file contents."""
         try:
             content = effect.file_path.read_text()
@@ -908,9 +914,7 @@ class EffectInterpreter:
             else:
                 self.failed_effects += 1
                 error = (
-                    output.stderr.decode()
-                    if output.stderr
-                    else f"Exit code {output.returncode}"
+                    output.stderr.decode() if output.stderr else f"Exit code {output.returncode}"
                 )
                 return self._create_error_summary(f"kubectl failed: {error}"), output.returncode
 
@@ -963,16 +967,14 @@ class EffectInterpreter:
     # =========================================================================
 
     async def _interpret_fetch_public_ip(
-        self, effect: FetchPublicIP
+        self, _effect: FetchPublicIP
     ) -> tuple[ExecutionSummary, str | None]:
         """Fetch current public IP address."""
         try:
             import httpx
 
             async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    "https://api.ipify.org", timeout=10.0
-                )
+                response = await client.get("https://api.ipify.org", timeout=10.0)
                 response.raise_for_status()
                 ip = response.text.strip()
 
@@ -1011,10 +1013,7 @@ class EffectInterpreter:
                         record_type = record.get("Type")
                         name_str = str(name) if name is not None else ""
                         type_str = str(record_type) if record_type is not None else ""
-                        if (
-                            name_str.rstrip(".") == effect.fqdn.rstrip(".")
-                            and type_str == "A"
-                        ):
+                        if name_str.rstrip(".") == effect.fqdn.rstrip(".") and type_str == "A":
                             resource_records = record.get("ResourceRecords")
                             if isinstance(resource_records, list) and resource_records:
                                 first_record = resource_records[0]
@@ -1131,9 +1130,7 @@ class EffectInterpreter:
             else:
                 self.failed_effects += 1
                 error = (
-                    output.stderr.decode()
-                    if output.stderr
-                    else f"Exit code {output.returncode}"
+                    output.stderr.decode() if output.stderr else f"Exit code {output.returncode}"
                 )
                 return self._create_error_summary(f"Pulumi failed: {error}"), output.returncode
 
@@ -1164,9 +1161,7 @@ class EffectInterpreter:
             else:
                 self.failed_effects += 1
                 return (
-                    self._create_error_summary(
-                        f"Failed to select stack: {output.stderr.decode()}"
-                    ),
+                    self._create_error_summary(f"Failed to select stack: {output.stderr.decode()}"),
                     False,
                 )
 
@@ -1195,9 +1190,7 @@ class EffectInterpreter:
             else:
                 self.failed_effects += 1
                 return (
-                    self._create_error_summary(
-                        f"Pulumi preview failed: {output.stderr.decode()}"
-                    ),
+                    self._create_error_summary(f"Pulumi preview failed: {output.stderr.decode()}"),
                     output.returncode,
                 )
 
@@ -1205,9 +1198,7 @@ class EffectInterpreter:
             self.failed_effects += 1
             return self._create_error_summary(f"Failed to run pulumi preview: {e}"), None
 
-    async def _interpret_pulumi_up(
-        self, effect: PulumiUp
-    ) -> tuple[ExecutionSummary, int | None]:
+    async def _interpret_pulumi_up(self, effect: PulumiUp) -> tuple[ExecutionSummary, int | None]:
         """Run Pulumi up."""
         command: list[str] = ["pulumi", "up"]
         if effect.yes:
@@ -1259,9 +1250,7 @@ class EffectInterpreter:
             else:
                 self.failed_effects += 1
                 return (
-                    self._create_error_summary(
-                        f"Pulumi destroy failed: {output.stderr.decode()}"
-                    ),
+                    self._create_error_summary(f"Pulumi destroy failed: {output.stderr.decode()}"),
                     output.returncode,
                 )
 
@@ -1292,9 +1281,7 @@ class EffectInterpreter:
             else:
                 self.failed_effects += 1
                 return (
-                    self._create_error_summary(
-                        f"Pulumi refresh failed: {output.stderr.decode()}"
-                    ),
+                    self._create_error_summary(f"Pulumi refresh failed: {output.stderr.decode()}"),
                     output.returncode,
                 )
 
@@ -1307,7 +1294,7 @@ class EffectInterpreter:
     # =========================================================================
 
     async def _interpret_load_settings(
-        self, effect: LoadSettings
+        self, _effect: LoadSettings
     ) -> tuple[ExecutionSummary, object | None]:
         """Load prodbox settings."""
         try:
@@ -1321,7 +1308,7 @@ class EffectInterpreter:
             return self._create_error_summary(f"Failed to load settings: {e}"), None
 
     async def _interpret_validate_settings(
-        self, effect: ValidateSettings
+        self, _effect: ValidateSettings
     ) -> tuple[ExecutionSummary, bool | None]:
         """Validate prodbox settings."""
         try:
@@ -1404,7 +1391,7 @@ class EffectInterpreter:
         self.successful_effects += 1
         return self._create_success_summary("Printed indented text")
 
-    async def _interpret_print_blank_line(self, effect: PrintBlankLine) -> ExecutionSummary:
+    async def _interpret_print_blank_line(self, _effect: PrintBlankLine) -> ExecutionSummary:
         """Print a blank line."""
         self._console.print()
         self.successful_effects += 1
@@ -1442,11 +1429,13 @@ class EffectInterpreter:
         if effect.selector:
             cmd.extend(["--selector", effect.selector])
 
-        cmd.extend([
-            f"--for=condition={effect.condition}",
-            effect.resource,
-            f"--timeout={effect.timeout}s",
-        ])
+        cmd.extend(
+            [
+                f"--for=condition={effect.condition}",
+                effect.resource,
+                f"--timeout={effect.timeout}s",
+            ]
+        )
         env = self._kubectl_env(effect.kubeconfig)
 
         output = await _run_subprocess(
@@ -1493,31 +1482,134 @@ class EffectInterpreter:
                 async with semaphore:
                     return await self.interpret(eff)
 
-            results = await asyncio.gather(
-                *(limited_interpret(e) for e in effect.effects)
-            )
+            results = await asyncio.gather(*(limited_interpret(e) for e in effect.effects))
         else:
-            results = await asyncio.gather(
-                *(self.interpret(e) for e in effect.effects)
-            )
+            results = await asyncio.gather(*(self.interpret(e) for e in effect.effects))
 
         # Check if any failed
         failed = tuple(r for r in results if not r.success)
         if failed:
-            return self._create_error_summary(
-                f"Parallel execution: {len(failed)} effects failed"
-            )
+            return self._create_error_summary(f"Parallel execution: {len(failed)} effects failed")
         return self._create_success_summary("Parallel execution complete")
 
-    async def _interpret_try(
-        self, effect: Try
-    ) -> tuple[ExecutionSummary, object | None]:
+    async def _interpret_try(self, effect: Try) -> tuple[ExecutionSummary, object | None]:
         """Execute effect with fallback on failure."""
         summary, value = await self._dispatch_effect(effect.primary)
         if summary.success:
             return summary, value
         else:
             return await self._dispatch_effect(effect.fallback)
+
+    # =========================================================================
+    # Gateway Daemon Effects
+    # =========================================================================
+
+    async def _interpret_start_gateway_daemon(
+        self,
+        effect: StartGatewayDaemon,
+    ) -> ExecutionSummary:
+        """Start gateway daemon from config file."""
+        try:
+            from prodbox.gateway_daemon import DaemonConfig, GatewayDaemon
+
+            config = DaemonConfig.from_json_file(effect.config_path)
+            daemon = GatewayDaemon(config)
+            await daemon.start()
+            stop_event = asyncio.Event()
+            try:
+                await stop_event.wait()
+            except asyncio.CancelledError:
+                pass
+            finally:
+                await daemon.stop()
+            self.successful_effects += 1
+            return self._create_success_summary("Gateway daemon stopped")
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Gateway daemon failed: {e}")
+
+    async def _interpret_query_gateway_state(
+        self,
+        effect: QueryGatewayState,
+    ) -> tuple[ExecutionSummary, object | None]:
+        """Query running gateway daemon state via REST API."""
+        try:
+            import json as json_mod
+
+            import httpx
+
+            from prodbox.gateway_daemon import DaemonConfig
+
+            config = DaemonConfig.from_json_file(effect.config_path)
+            local = config.node_id
+            # Load orders to find our own endpoint
+            from prodbox.gateway_daemon import Orders
+            from prodbox.gateway_daemon import _parse_json_object as _parse_json
+
+            raw = _parse_json(
+                effect.config_path.parent.joinpath(
+                    str(config.orders_file),
+                ).read_text(encoding="utf-8")
+            )
+            if raw is None:
+                self.failed_effects += 1
+                return self._create_error_summary("Could not parse orders"), None
+
+            orders = Orders.from_dict(raw)
+            endpoint = orders.peer_by_id(local)
+            if endpoint is None:
+                self.failed_effects += 1
+                return self._create_error_summary(f"Node {local} not in orders"), None
+
+            url = f"https://{endpoint.rest_host}:{endpoint.rest_port}/v1/state"
+            cert_tuple = (str(config.cert_file), str(config.key_file))
+            async with httpx.AsyncClient(
+                verify=str(config.ca_file),
+                cert=cert_tuple,
+                timeout=5.0,
+            ) as client:
+                response = await client.get(url)
+                state_text = response.text
+
+            self.successful_effects += 1
+            state_obj: object = json_mod.loads(state_text)
+            return self._create_success_summary("Gateway state retrieved"), state_obj
+
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Gateway state query failed: {e}"), None
+
+    async def _interpret_generate_gateway_config(
+        self,
+        effect: GenerateGatewayConfig,
+    ) -> ExecutionSummary:
+        """Generate a template gateway config file."""
+        try:
+            import json as json_mod
+
+            template: dict[str, object] = {
+                "node_id": effect.node_id,
+                "cert_file": f"/path/to/{effect.node_id}.crt",
+                "key_file": f"/path/to/{effect.node_id}.key",
+                "ca_file": "/path/to/ca.crt",
+                "orders_file": "/path/to/orders.json",
+                "event_keys": {
+                    effect.node_id: "REPLACE_WITH_SECRET_KEY",
+                },
+                "heartbeat_interval_seconds": 1.0,
+                "reconnect_interval_seconds": 1.0,
+                "sync_interval_seconds": 5.0,
+            }
+            content = json_mod.dumps(template, indent=2, sort_keys=True) + "\n"
+            effect.output_path.write_text(content, encoding="utf-8")
+
+            self.successful_effects += 1
+            return self._create_success_summary(
+                f"Gateway config template written to {effect.output_path}",
+            )
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Config generation failed: {e}")
 
     # =========================================================================
     # Pure and Custom Effects
@@ -1528,9 +1620,7 @@ class EffectInterpreter:
         self.successful_effects += 1
         return self._create_success_summary(f"Pure effect: {effect.description}")
 
-    async def _interpret_custom(
-        self, effect: Custom[T]
-    ) -> tuple[ExecutionSummary, object | None]:
+    async def _interpret_custom(self, effect: Custom[T]) -> tuple[ExecutionSummary, object | None]:
         """Execute Custom effect with user-defined function."""
         try:
             result = effect.fn()

@@ -14,6 +14,7 @@ Following the Interpreter-Only Mocking Doctrine:
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -35,13 +36,15 @@ def runner() -> CliRunner:
 @pytest.fixture
 def mock_execute() -> Generator[patch, None, None]:
     """Mock execute_command to return success (0)."""
-    with patch("prodbox.cli.dns.execute_command", return_value=0) as m:
-        with patch("prodbox.cli.env.execute_command", return_value=0):
-            with patch("prodbox.cli.host.execute_command", return_value=0):
-                with patch("prodbox.cli.k8s.execute_command", return_value=0):
-                    with patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0):
-                        with patch("prodbox.cli.rke2.execute_command", return_value=0):
-                            yield m
+    with (
+        patch("prodbox.cli.dns.execute_command", return_value=0) as m,
+        patch("prodbox.cli.env.execute_command", return_value=0),
+        patch("prodbox.cli.host.execute_command", return_value=0),
+        patch("prodbox.cli.k8s.execute_command", return_value=0),
+        patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0),
+        patch("prodbox.cli.rke2.execute_command", return_value=0),
+    ):
+        yield m
 
 
 # =============================================================================
@@ -125,18 +128,22 @@ class TestDNSCommands:
 
     def test_dns_ensure_timer_success(self, runner: CliRunner) -> None:
         """dns ensure-timer should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.dns.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["dns", "ensure-timer"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.dns.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["dns", "ensure-timer"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
     def test_dns_ensure_timer_with_interval(self, runner: CliRunner) -> None:
         """dns ensure-timer --interval should pass interval."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.dns.execute_command", return_value=0):
-                result = runner.invoke(cli, ["dns", "ensure-timer", "--interval", "10"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.dns.execute_command", return_value=0),
+        ):
+            result = runner.invoke(cli, ["dns", "ensure-timer", "--interval", "10"])
 
         assert result.exit_code == 0
 
@@ -235,9 +242,11 @@ class TestHostCommands:
 
     def test_host_firewall_success(self, runner: CliRunner) -> None:
         """host firewall should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.host.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["host", "firewall"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.host.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["host", "firewall"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
@@ -310,9 +319,7 @@ class TestK8sCommands:
     def test_k8s_wait_with_multiple_namespaces(self, runner: CliRunner) -> None:
         """k8s wait with multiple --namespace should pass all."""
         with patch("prodbox.cli.k8s.execute_command", return_value=0):
-            result = runner.invoke(
-                cli, ["k8s", "wait", "-n", "ns1", "-n", "ns2", "-n", "ns3"]
-            )
+            result = runner.invoke(cli, ["k8s", "wait", "-n", "ns1", "-n", "ns2", "-n", "ns3"])
 
         assert result.exit_code == 0
 
@@ -437,9 +444,11 @@ class TestRKE2Commands:
 
     def test_rke2_status_success(self, runner: CliRunner) -> None:
         """rke2 status should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["rke2", "status"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "status"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
@@ -453,62 +462,76 @@ class TestRKE2Commands:
 
     def test_rke2_start_success(self, runner: CliRunner) -> None:
         """rke2 start should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["rke2", "start"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "start"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
     def test_rke2_stop_success(self, runner: CliRunner) -> None:
         """rke2 stop should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["rke2", "stop"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "stop"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
     def test_rke2_restart_success(self, runner: CliRunner) -> None:
         """rke2 restart should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["rke2", "restart"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "restart"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
     def test_rke2_ensure_success(self, runner: CliRunner) -> None:
         """rke2 ensure should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["rke2", "ensure"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "ensure"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
     def test_rke2_logs_success(self, runner: CliRunner) -> None:
         """rke2 logs should invoke execute_command on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec:
-                result = runner.invoke(cli, ["rke2", "logs"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "logs"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
     def test_rke2_logs_with_lines(self, runner: CliRunner) -> None:
         """rke2 logs --lines should pass lines count."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0):
-                result = runner.invoke(cli, ["rke2", "logs", "--lines", "100"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0),
+        ):
+            result = runner.invoke(cli, ["rke2", "logs", "--lines", "100"])
 
         assert result.exit_code == 0
 
     def test_rke2_logs_with_n_flag(self, runner: CliRunner) -> None:
         """rke2 logs -n should pass lines count."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            with patch("prodbox.cli.rke2.execute_command", return_value=0):
-                result = runner.invoke(cli, ["rke2", "logs", "-n", "25"])
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0),
+        ):
+            result = runner.invoke(cli, ["rke2", "logs", "-n", "25"])
 
         assert result.exit_code == 0
 
@@ -814,16 +837,14 @@ class TestCommandConstructorFailures:
 class TestMainEntryPoint:
     """Tests for main.py main() function."""
 
-    def test_main_function_calls_cli(self, runner: CliRunner) -> None:
+    def test_main_function_calls_cli(self, runner: CliRunner) -> None:  # noqa: ARG002
         """main() should call cli()."""
         from prodbox.cli.main import main
 
         with patch("prodbox.cli.main.cli") as mock_cli:
             # main() calls cli() which is a Click command
             # We just verify it's called
-            try:
+            with contextlib.suppress(SystemExit):
                 main()
-            except SystemExit:
-                pass  # Click exits after running
 
             mock_cli.assert_called_once()

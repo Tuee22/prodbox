@@ -5,8 +5,6 @@ from __future__ import annotations
 import os
 from unittest.mock import patch
 
-import pytest
-
 from prodbox.cli.context import SettingsContext, pass_settings
 from prodbox.settings import Settings
 
@@ -22,9 +20,7 @@ class TestSettingsContext:
 
             assert ctx.settings is settings
 
-    def test_settings_context_exposes_settings_attrs(
-        self, mock_env: dict[str, str]
-    ) -> None:
+    def test_settings_context_exposes_settings_attrs(self, mock_env: dict[str, str]) -> None:
         """SettingsContext.settings should have expected attributes."""
         with patch.dict(os.environ, mock_env, clear=True):
             settings = Settings()

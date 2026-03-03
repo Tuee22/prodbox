@@ -225,6 +225,6 @@ The `infra/` module is excluded from unit test coverage because it requires a re
 
 ## Cross-References
 
-- [Pure FP Standards](../pure_fp_standards.md) - Purity boundary definitions
+- [Pure FP Standards](./pure_fp_standards.md) - Purity boundary definitions
 - [Effectful DAG Architecture](./effectful_dag_architecture.md) - Effect system design
 - [CLAUDE.md](../../CLAUDE.md) - Project overview

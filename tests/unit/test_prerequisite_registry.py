@@ -15,8 +15,6 @@ Following the Interpreter-Only Mocking Doctrine:
 
 from __future__ import annotations
 
-import pytest
-
 from prodbox.cli.effect_dag import EffectNode
 from prodbox.cli.effects import (
     CheckFileExists,
@@ -127,9 +125,9 @@ class TestRegistryConsistency:
     def test_all_effect_ids_match_keys(self) -> None:
         """Every effect_id should match its registry key."""
         for key, node in PREREQUISITE_REGISTRY.items():
-            assert node.effect.effect_id == key, (
-                f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
-            )
+            assert (
+                node.effect.effect_id == key
+            ), f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
 
     def test_registry_has_expected_size(self) -> None:
         """Registry should have exactly 20 prerequisites."""
@@ -145,9 +143,9 @@ class TestTransitivePrerequisiteValidity:
         """Every prerequisite reference should exist in the registry."""
         for key, node in PREREQUISITE_REGISTRY.items():
             for prereq_id in node.prerequisites:
-                assert prereq_id in PREREQUISITE_REGISTRY, (
-                    f"Prerequisite '{prereq_id}' referenced by '{key}' not in registry"
-                )
+                assert (
+                    prereq_id in PREREQUISITE_REGISTRY
+                ), f"Prerequisite '{prereq_id}' referenced by '{key}' not in registry"
 
     def test_platform_linux_has_no_prerequisites(self) -> None:
         """Platform Linux should have no prerequisites (root node)."""
@@ -242,12 +240,11 @@ class TestNoCyclicDependencies:
     def test_no_direct_self_reference(self) -> None:
         """No prerequisite should directly reference itself."""
         for key, node in PREREQUISITE_REGISTRY.items():
-            assert key not in node.prerequisites, (
-                f"Prerequisite '{key}' directly references itself"
-            )
+            assert key not in node.prerequisites, f"Prerequisite '{key}' directly references itself"
 
     def test_no_cyclic_dependencies(self) -> None:
         """No prerequisite should have cyclic dependencies."""
+
         def has_cycle(start: str, visited: frozenset[str]) -> bool:
             """Check for cycles using DFS."""
             if start in visited:
@@ -320,21 +317,17 @@ class TestPrerequisiteNodeStructure:
     def test_all_nodes_have_frozen_prerequisites(self) -> None:
         """All EffectNodes should have frozenset prerequisites."""
         for key, node in PREREQUISITE_REGISTRY.items():
-            assert isinstance(node.prerequisites, frozenset), (
-                f"'{key}' prerequisites is not a frozenset"
-            )
+            assert isinstance(
+                node.prerequisites, frozenset
+            ), f"'{key}' prerequisites is not a frozenset"
 
     def test_all_nodes_have_effect_with_effect_id(self) -> None:
         """All EffectNodes should have effects with effect_id attribute."""
         for key, node in PREREQUISITE_REGISTRY.items():
-            assert hasattr(node.effect, "effect_id"), (
-                f"'{key}' effect missing effect_id"
-            )
+            assert hasattr(node.effect, "effect_id"), f"'{key}' effect missing effect_id"
 
     def test_all_nodes_have_effect_with_description(self) -> None:
         """All EffectNodes should have effects with description attribute."""
         for key, node in PREREQUISITE_REGISTRY.items():
-            assert hasattr(node.effect, "description"), (
-                f"'{key}' effect missing description"
-            )
+            assert hasattr(node.effect, "description"), f"'{key}' effect missing description"
             assert node.effect.description, f"'{key}' has empty description"

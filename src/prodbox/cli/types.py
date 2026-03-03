@@ -115,7 +115,7 @@ class Failure(Generic[E]):
 
 
 # Result type alias - union of Success and Failure
-Result = Union[Success[T], Failure[E]]
+Result = Union[Success[T], Failure[E]]  # noqa: UP007
 
 
 # =============================================================================

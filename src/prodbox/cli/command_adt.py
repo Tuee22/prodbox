@@ -283,6 +283,46 @@ class PulumiStackInitCommand:
 
 
 # =============================================================================
+# Gateway Commands
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class GatewayStartCommand:
+    """Start gateway daemon from config file.
+
+    Attributes:
+        config_path: Path to gateway daemon JSON config file
+    """
+
+    config_path: Path
+
+
+@dataclass(frozen=True)
+class GatewayStatusCommand:
+    """Query running gateway daemon status.
+
+    Attributes:
+        config_path: Path to gateway daemon JSON config file (for endpoint info)
+    """
+
+    config_path: Path
+
+
+@dataclass(frozen=True)
+class GatewayConfigGenCommand:
+    """Generate template gateway config file.
+
+    Attributes:
+        output_path: Path to write template config
+        node_id: Node ID for the generated config
+    """
+
+    output_path: Path
+    node_id: str
+
+
+# =============================================================================
 # Command Union Type
 # =============================================================================
 
@@ -317,6 +357,10 @@ Command = (
     | PulumiDestroyCommand
     | PulumiRefreshCommand
     | PulumiStackInitCommand
+    # Gateway
+    | GatewayStartCommand
+    | GatewayStatusCommand
+    | GatewayConfigGenCommand
 )
 
 
@@ -698,6 +742,7 @@ def pulumi_stack_init_command(
 
     # Validate stack name format (alphanumeric, hyphens, underscores)
     import re
+
     if not re.match(r"^[a-zA-Z0-9_-]+$", stack):
         return Failure(
             f"Invalid stack name: {stack}. Must contain only alphanumeric characters, "
@@ -710,6 +755,62 @@ def pulumi_stack_init_command(
 # =============================================================================
 # Utility Functions
 # =============================================================================
+
+
+def gateway_start_command(
+    *,
+    config_path: Path,
+) -> Result[GatewayStartCommand, str]:
+    """Create a GatewayStartCommand.
+
+    Args:
+        config_path: Path to gateway daemon config file
+
+    Returns:
+        Success with GatewayStartCommand, Failure if config file missing
+    """
+    if not config_path.exists():
+        return Failure(f"Gateway config file not found: {config_path}")
+
+    return Success(GatewayStartCommand(config_path=config_path))
+
+
+def gateway_status_command(
+    *,
+    config_path: Path,
+) -> Result[GatewayStatusCommand, str]:
+    """Create a GatewayStatusCommand.
+
+    Args:
+        config_path: Path to gateway daemon config file
+
+    Returns:
+        Success with GatewayStatusCommand, Failure if config file missing
+    """
+    if not config_path.exists():
+        return Failure(f"Gateway config file not found: {config_path}")
+
+    return Success(GatewayStatusCommand(config_path=config_path))
+
+
+def gateway_config_gen_command(
+    *,
+    output_path: Path,
+    node_id: str,
+) -> Result[GatewayConfigGenCommand, str]:
+    """Create a GatewayConfigGenCommand.
+
+    Args:
+        output_path: Path to write template config
+        node_id: Node ID for the generated config
+
+    Returns:
+        Success with GatewayConfigGenCommand, Failure if invalid args
+    """
+    if not node_id or not node_id.strip():
+        return Failure("Node ID is required")
+
+    return Success(GatewayConfigGenCommand(output_path=output_path, node_id=node_id))
 
 
 def is_linux() -> bool:
@@ -743,7 +844,12 @@ def requires_linux(command: Command) -> bool:
         case EnvShowCommand() | EnvValidateCommand() | EnvTemplateCommand():
             return False
         # Host commands - cross-platform (will fail gracefully on non-Linux)
-        case HostInfoCommand() | HostCheckPortsCommand() | HostEnsureToolsCommand() | HostFirewallCommand():
+        case (
+            HostInfoCommand()
+            | HostCheckPortsCommand()
+            | HostEnsureToolsCommand()
+            | HostFirewallCommand()
+        ):
             return False
         # DNS check/update - cross-platform (AWS API)
         case DNSCheckCommand() | DNSUpdateCommand():
@@ -755,6 +861,9 @@ def requires_linux(command: Command) -> bool:
         case PulumiPreviewCommand() | PulumiUpCommand() | PulumiDestroyCommand():
             return False
         case PulumiRefreshCommand() | PulumiStackInitCommand():
+            return False
+        # Gateway commands - cross-platform
+        case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
 
 
@@ -785,12 +894,20 @@ def requires_settings(command: Command) -> bool:
         case EnvTemplateCommand():
             return False
         # Host commands don't require settings
-        case HostInfoCommand() | HostCheckPortsCommand() | HostEnsureToolsCommand() | HostFirewallCommand():
+        case (
+            HostInfoCommand()
+            | HostCheckPortsCommand()
+            | HostEnsureToolsCommand()
+            | HostFirewallCommand()
+        ):
             return False
         # RKE2 commands don't require prodbox settings (use system paths)
         case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand():
             return False
         case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2LogsCommand():
+            return False
+        # Gateway commands don't require prodbox settings (use own config file)
+        case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
 
 
@@ -831,6 +948,10 @@ __all__ = [
     "PulumiDestroyCommand",
     "PulumiRefreshCommand",
     "PulumiStackInitCommand",
+    # Gateway
+    "GatewayStartCommand",
+    "GatewayStatusCommand",
+    "GatewayConfigGenCommand",
     # Smart constructors
     "env_show_command",
     "env_validate_command",
@@ -856,6 +977,9 @@ __all__ = [
     "pulumi_destroy_command",
     "pulumi_refresh_command",
     "pulumi_stack_init_command",
+    "gateway_start_command",
+    "gateway_status_command",
+    "gateway_config_gen_command",
     # Utility functions
     "is_linux",
     "requires_linux",

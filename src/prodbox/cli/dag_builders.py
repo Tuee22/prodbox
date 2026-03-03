@@ -33,6 +33,9 @@ from prodbox.cli.command_adt import (
     EnvShowCommand,
     EnvTemplateCommand,
     EnvValidateCommand,
+    GatewayConfigGenCommand,
+    GatewayStartCommand,
+    GatewayStatusCommand,
     HostCheckPortsCommand,
     HostEnsureToolsCommand,
     HostFirewallCommand,
@@ -59,6 +62,7 @@ from prodbox.cli.effects import (
     CheckFileExists,
     CheckServiceStatus,
     FetchPublicIP,
+    GenerateGatewayConfig,
     GetJournalLogs,
     KubectlWait,
     PulumiDestroy,
@@ -66,9 +70,11 @@ from prodbox.cli.effects import (
     PulumiRefresh,
     PulumiUp,
     Pure,
+    QueryGatewayState,
     RunKubectlCommand,
     RunPulumiCommand,
     RunSystemdCommand,
+    StartGatewayDaemon,
     ValidateSettings,
     ValidateTool,
 )
@@ -80,7 +86,7 @@ from prodbox.cli.types import Result, Success
 # =============================================================================
 
 
-def _build_env_show_dag(cmd: EnvShowCommand) -> EffectDAG:
+def _build_env_show_dag(_cmd: EnvShowCommand) -> EffectDAG:
     """Build DAG for showing environment configuration."""
     root = EffectNode(
         effect=ValidateSettings(
@@ -92,7 +98,7 @@ def _build_env_show_dag(cmd: EnvShowCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_env_validate_dag(cmd: EnvValidateCommand) -> EffectDAG:
+def _build_env_validate_dag(_cmd: EnvValidateCommand) -> EffectDAG:
     """Build DAG for validating environment configuration."""
     root = EffectNode(
         effect=ValidateSettings(
@@ -122,7 +128,7 @@ def _build_env_template_dag(cmd: EnvTemplateCommand) -> EffectDAG:
 # =============================================================================
 
 
-def _build_host_info_dag(cmd: HostInfoCommand) -> EffectDAG:
+def _build_host_info_dag(_cmd: HostInfoCommand) -> EffectDAG:
     """Build DAG for showing host information."""
     root = EffectNode(
         effect=CaptureSubprocessOutput(
@@ -148,7 +154,7 @@ def _build_host_check_ports_dag(cmd: HostCheckPortsCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_host_ensure_tools_dag(cmd: HostEnsureToolsCommand) -> EffectDAG:
+def _build_host_ensure_tools_dag(_cmd: HostEnsureToolsCommand) -> EffectDAG:
     """Build DAG for checking required CLI tools."""
     root = EffectNode(
         effect=ValidateTool(
@@ -161,7 +167,7 @@ def _build_host_ensure_tools_dag(cmd: HostEnsureToolsCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_host_firewall_dag(cmd: HostFirewallCommand) -> EffectDAG:
+def _build_host_firewall_dag(_cmd: HostFirewallCommand) -> EffectDAG:
     """Build DAG for checking firewall status."""
     root = EffectNode(
         effect=CaptureSubprocessOutput(
@@ -179,7 +185,7 @@ def _build_host_firewall_dag(cmd: HostFirewallCommand) -> EffectDAG:
 # =============================================================================
 
 
-def _build_rke2_status_dag(cmd: RKE2StatusCommand) -> EffectDAG:
+def _build_rke2_status_dag(_cmd: RKE2StatusCommand) -> EffectDAG:
     """Build DAG for RKE2 status check."""
     root = EffectNode(
         effect=CheckServiceStatus(
@@ -192,7 +198,7 @@ def _build_rke2_status_dag(cmd: RKE2StatusCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_rke2_start_dag(cmd: RKE2StartCommand) -> EffectDAG:
+def _build_rke2_start_dag(_cmd: RKE2StartCommand) -> EffectDAG:
     """Build DAG for starting RKE2."""
     root = EffectNode(
         effect=RunSystemdCommand(
@@ -207,7 +213,7 @@ def _build_rke2_start_dag(cmd: RKE2StartCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_rke2_stop_dag(cmd: RKE2StopCommand) -> EffectDAG:
+def _build_rke2_stop_dag(_cmd: RKE2StopCommand) -> EffectDAG:
     """Build DAG for stopping RKE2."""
     root = EffectNode(
         effect=RunSystemdCommand(
@@ -222,7 +228,7 @@ def _build_rke2_stop_dag(cmd: RKE2StopCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_rke2_restart_dag(cmd: RKE2RestartCommand) -> EffectDAG:
+def _build_rke2_restart_dag(_cmd: RKE2RestartCommand) -> EffectDAG:
     """Build DAG for restarting RKE2."""
     root = EffectNode(
         effect=RunSystemdCommand(
@@ -237,7 +243,7 @@ def _build_rke2_restart_dag(cmd: RKE2RestartCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_rke2_ensure_dag(cmd: RKE2EnsureCommand) -> EffectDAG:
+def _build_rke2_ensure_dag(_cmd: RKE2EnsureCommand) -> EffectDAG:
     """Build DAG for ensuring RKE2 is installed."""
     root = EffectNode(
         effect=CheckFileExists(
@@ -269,7 +275,7 @@ def _build_rke2_logs_dag(cmd: RKE2LogsCommand) -> EffectDAG:
 # =============================================================================
 
 
-def _build_dns_check_dag(cmd: DNSCheckCommand) -> EffectDAG:
+def _build_dns_check_dag(_cmd: DNSCheckCommand) -> EffectDAG:
     """Build DAG for DNS status check."""
     # This will need to be expanded to get settings and query Route53
     root = EffectNode(
@@ -282,7 +288,7 @@ def _build_dns_check_dag(cmd: DNSCheckCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_dns_update_dag(cmd: DNSUpdateCommand) -> EffectDAG:
+def _build_dns_update_dag(_cmd: DNSUpdateCommand) -> EffectDAG:
     """Build DAG for DNS update."""
     root = EffectNode(
         effect=FetchPublicIP(
@@ -314,7 +320,7 @@ def _build_dns_ensure_timer_dag(cmd: DNSEnsureTimerCommand) -> EffectDAG:
 # =============================================================================
 
 
-def _build_k8s_health_dag(cmd: K8sHealthCommand) -> EffectDAG:
+def _build_k8s_health_dag(_cmd: K8sHealthCommand) -> EffectDAG:
     """Build DAG for Kubernetes health check."""
     root = EffectNode(
         effect=CaptureKubectlOutput(
@@ -510,8 +516,61 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
         case PulumiStackInitCommand():
             return Success(_build_pulumi_stack_init_dag(command))
 
+        # Gateway commands
+        case GatewayStartCommand():
+            return Success(_build_gateway_start_dag(command))
+        case GatewayStatusCommand():
+            return Success(_build_gateway_status_dag(command))
+        case GatewayConfigGenCommand():
+            return Success(_build_gateway_config_gen_dag(command))
+
     # This should never be reached if all cases are handled
     # mypy will catch missing cases at type-check time
+
+
+# =============================================================================
+# Gateway Command Builders
+# =============================================================================
+
+
+def _build_gateway_start_dag(cmd: GatewayStartCommand) -> EffectDAG:
+    """Build DAG for starting gateway daemon."""
+    root = EffectNode(
+        effect=StartGatewayDaemon(
+            effect_id="start_gateway_daemon",
+            description="Start gateway daemon",
+            config_path=cmd.config_path,
+        ),
+        prerequisites=frozenset(),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_gateway_status_dag(cmd: GatewayStatusCommand) -> EffectDAG:
+    """Build DAG for querying gateway daemon state."""
+    root = EffectNode(
+        effect=QueryGatewayState(
+            effect_id="query_gateway_state",
+            description="Query gateway daemon state",
+            config_path=cmd.config_path,
+        ),
+        prerequisites=frozenset(),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_gateway_config_gen_dag(cmd: GatewayConfigGenCommand) -> EffectDAG:
+    """Build DAG for generating gateway config template."""
+    root = EffectNode(
+        effect=GenerateGatewayConfig(
+            effect_id="generate_gateway_config",
+            description="Generate gateway config template",
+            output_path=cmd.output_path,
+            node_id=cmd.node_id,
+        ),
+        prerequisites=frozenset(),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
 # =============================================================================

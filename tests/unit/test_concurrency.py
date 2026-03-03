@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import AsyncMock
 
 import pytest
 
 from prodbox.lib.concurrency import (
     ConcurrencyLimiter,
-    gather_with_limit,
     first_success,
+    gather_with_limit,
     wait_all,
 )
 from prodbox.lib.exceptions import TimeoutError
@@ -143,10 +142,12 @@ class TestFirstSuccess:
                 cancelled.append(name)
                 raise
 
-        await first_success([
-            task("slow", 1.0),
-            task("fast", 0.01),
-        ])
+        await first_success(
+            [
+                task("slow", 1.0),
+                task("fast", 0.01),
+            ]
+        )
 
         # Give a moment for cancellation to propagate
         await asyncio.sleep(0.05)

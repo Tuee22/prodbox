@@ -25,7 +25,7 @@ class CertManagerResources:
 
 
 def deploy_cert_manager(
-    settings: Settings,
+    _settings: Settings,
     k8s_provider: k8s.Provider,
 ) -> CertManagerResources:
     """Deploy cert-manager for TLS certificate management.
@@ -57,7 +57,7 @@ def deploy_cert_manager(
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(
             repo=CERT_MANAGER_REPO,
         ),
-        namespace=namespace.metadata.name,
+        namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
         values={
             # Install CRDs via Helm (cert-manager >= v1.15)
             "crds": {

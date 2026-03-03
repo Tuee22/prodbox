@@ -7,61 +7,61 @@ from pathlib import Path
 import pytest
 
 from prodbox.cli.effects import (
+    CaptureKubectlOutput,
+    CaptureSubprocessOutput,
+    # File system
+    CheckFileExists,
+    CheckServiceStatus,
+    ConfirmAction,
+    Custom,
+    # DNS / Route 53
+    FetchPublicIP,
+    GetJournalLogs,
+    KubectlWait,
+    # Settings
+    LoadSettings,
+    Parallel,
+    PrintBlankLine,
+    PrintError,
+    PrintIndented,
+    PrintInfo,
+    PrintSection,
+    PrintSuccess,
+    PrintTable,
+    PrintWarning,
+    PulumiDestroy,
+    PulumiPreview,
+    PulumiRefresh,
+    PulumiStackSelect,
+    PulumiUp,
+    # Pure / Custom
+    Pure,
+    QueryRoute53Record,
+    ReadFile,
     # Platform effects
     RequireLinux,
     RequireSystemd,
-    # Tool validation
-    ValidateTool,
-    ValidateEnvironment,
-    # File system
-    CheckFileExists,
-    ReadFile,
-    WriteFile,
-    # Subprocess
-    RunSubprocess,
-    CaptureSubprocessOutput,
-    # Systemd
-    RunSystemdCommand,
-    CheckServiceStatus,
-    GetJournalLogs,
     # Kubernetes
     RunKubectlCommand,
-    CaptureKubectlOutput,
-    KubectlWait,
-    # DNS / Route 53
-    FetchPublicIP,
-    QueryRoute53Record,
-    UpdateRoute53Record,
-    ValidateAWSCredentials,
     # Pulumi
     RunPulumiCommand,
-    PulumiStackSelect,
-    PulumiPreview,
-    PulumiUp,
-    PulumiDestroy,
-    PulumiRefresh,
-    # Settings
-    LoadSettings,
-    ValidateSettings,
-    # Output
-    WriteStdout,
-    WriteStderr,
-    PrintInfo,
-    PrintSuccess,
-    PrintWarning,
-    PrintError,
-    PrintTable,
-    PrintSection,
-    PrintIndented,
-    PrintBlankLine,
-    ConfirmAction,
+    # Subprocess
+    RunSubprocess,
+    # Systemd
+    RunSystemdCommand,
     # Composite
     Sequence,
-    Parallel,
     Try,
-    # Pure / Custom
-    Pure,
-    Custom,
+    UpdateRoute53Record,
+    ValidateAWSCredentials,
+    ValidateEnvironment,
+    ValidateSettings,
+    # Tool validation
+    ValidateTool,
+    WriteFile,
+    WriteStderr,
+    # Output
+    WriteStdout,
 )
 
 
@@ -548,12 +548,8 @@ class TestCompositeEffects:
 
     def test_sequence(self) -> None:
         """Sequence should hold list of effects."""
-        effect1 = PrintInfo(
-            effect_id="info1", description="Info 1", message="First"
-        )
-        effect2 = PrintInfo(
-            effect_id="info2", description="Info 2", message="Second"
-        )
+        effect1 = PrintInfo(effect_id="info1", description="Info 1", message="First")
+        effect2 = PrintInfo(effect_id="info2", description="Info 2", message="Second")
 
         seq = Sequence(
             effect_id="sequence",
@@ -741,16 +737,31 @@ class TestEffectBaseClass:
             KubectlWait(effect_id="e15", description="d15", resource="deploy/x", condition="avail"),
             FetchPublicIP(effect_id="e16", description="d16"),
             QueryRoute53Record(
-                effect_id="e17", description="d17", zone_id="z", fqdn="f",
-                aws_access_key_id="a", aws_secret_access_key="s", aws_region="r"
+                effect_id="e17",
+                description="d17",
+                zone_id="z",
+                fqdn="f",
+                aws_access_key_id="a",
+                aws_secret_access_key="s",
+                aws_region="r",
             ),
             UpdateRoute53Record(
-                effect_id="e18", description="d18", zone_id="z", fqdn="f", ip="1.2.3.4", ttl=60,
-                aws_access_key_id="a", aws_secret_access_key="s", aws_region="r"
+                effect_id="e18",
+                description="d18",
+                zone_id="z",
+                fqdn="f",
+                ip="1.2.3.4",
+                ttl=60,
+                aws_access_key_id="a",
+                aws_secret_access_key="s",
+                aws_region="r",
             ),
             ValidateAWSCredentials(
-                effect_id="e19", description="d19",
-                aws_access_key_id="a", aws_secret_access_key="s", aws_region="r"
+                effect_id="e19",
+                description="d19",
+                aws_access_key_id="a",
+                aws_secret_access_key="s",
+                aws_region="r",
             ),
             RunPulumiCommand(effect_id="e20", description="d20", args=["up"]),
             PulumiStackSelect(effect_id="e21", description="d21", stack="dev"),
@@ -774,7 +785,8 @@ class TestEffectBaseClass:
             Sequence(effect_id="e39", description="d39", effects=[]),
             Parallel(effect_id="e40", description="d40", effects=[]),
             Try(
-                effect_id="e41", description="d41",
+                effect_id="e41",
+                description="d41",
                 primary=Pure(effect_id="p", description="P", value=1),
                 fallback=Pure(effect_id="f", description="F", value=2),
             ),
@@ -1089,7 +1101,7 @@ class TestSequenceHelper:
 
     def test_sequence_creates_sequence_effect(self) -> None:
         """sequence() should create a Sequence effect."""
-        from prodbox.cli.effects import sequence, Sequence
+        from prodbox.cli.effects import Sequence, sequence
 
         effect = sequence(
             Pure(effect_id="p1", description="d1", value=1),
@@ -1117,7 +1129,7 @@ class TestParallelHelper:
 
     def test_parallel_creates_parallel_effect(self) -> None:
         """parallel() should create a Parallel effect."""
-        from prodbox.cli.effects import parallel, Parallel
+        from prodbox.cli.effects import Parallel, parallel
 
         effect = parallel(
             Pure(effect_id="p1", description="d1", value=1),

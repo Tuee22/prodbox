@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Poetry
+        run: pipx install poetry
+
+      - name: Cache Poetry virtualenv
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pypoetry
+          key: poetry-${{ hashFiles('pyproject.toml') }}
+          restore-keys: poetry-
+
+      - name: Install dependencies
+        run: poetry install
+
+      - name: Ruff check
+        run: poetry run ruff check src/ tests/
+
+      - name: Ruff format check
+        run: poetry run ruff format --check src/ tests/
+
+      - name: Mypy
+        run: poetry run mypy src/
+
+      - name: Unit tests
+        run: poetry run pytest -m "not integration" --tb=short
+
+      - name: TLA+ proof check
+        run: poetry run prodbox-tla-check

@@ -1,7 +1,8 @@
 # Engineering Documentation
 
 **Status**: Reference only
-**Referenced by**: documents/README.md
+**Supersedes**: N/A
+**Referenced by**: README.md
 
 > **Purpose**: Index of engineering and architecture documentation.
 
@@ -16,7 +17,10 @@
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
+| [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
 | [unit_testing_policy.md](./unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
+| [pure_fp_standards.md](./pure_fp_standards.md) | Pure FP coding standards |
+| [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
 
 ---
 
@@ -30,6 +34,7 @@
 ### Distributed Gateway
 - [Architecture](./distributed_gateway_architecture.md)
 - [TLA+ Models](./tla/README.md)
+- [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md)
 
 ### Prerequisites
 - [Fail-Fast Philosophy](./prerequisite_doctrine.md#philosophy)

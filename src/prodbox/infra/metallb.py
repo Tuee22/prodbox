@@ -59,7 +59,7 @@ def deploy_metallb(
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(
             repo=METALLB_REPO,
         ),
-        namespace=namespace.metadata.name,
+        namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
         # Wait for the release to be deployed before continuing
         # This ensures CRDs are available for the next resources
         skip_await=False,

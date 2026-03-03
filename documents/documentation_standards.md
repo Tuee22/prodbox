@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/README.md
+**Referenced by**: CLAUDE.md, README.md
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
 
@@ -42,8 +42,7 @@ All documentation files use `snake_case.md`:
 - `README.md`
 - `CLAUDE.md`
 - `AGENTS.md`
-- `CONTRIBUTING.md`
-- `CHANGELOG.md`
+- `PRODBOX_PLAN.md`
 
 ---
 

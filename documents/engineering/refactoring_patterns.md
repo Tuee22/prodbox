@@ -1,7 +1,8 @@
 # Refactoring to Pure FP
 
-**Status**: Reference
-**Referenced by**: pure_fp_standards.md, CLAUDE.md
+**Status**: Reference only
+**Supersedes**: N/A
+**Referenced by**: CLAUDE.md
 
 > **Purpose**: Before/after patterns for migrating imperative code to pure functional programming.
 
@@ -443,4 +444,4 @@ class LoadConfig(Effect[Config]):
 ## Cross-References
 
 - [Pure FP Standards (SSoT)](./pure_fp_standards.md)
-- [Effectful DAG Architecture](./engineering/effectful_dag_architecture.md)
+- [Effectful DAG Architecture](./effectful_dag_architecture.md)

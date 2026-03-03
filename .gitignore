@@ -10,8 +10,8 @@ dist/
 downloads/
 eggs/
 .eggs/
-lib/
-lib64/
+/lib/
+/lib64/
 parts/
 sdist/
 var/
@@ -80,3 +80,4 @@ poetry.lock
 
 # TLA+ proof artifacts
 documents/engineering/tla/tlc_last_run.txt
+documents/engineering/tla/states/

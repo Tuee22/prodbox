@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-DEFAULT_IMAGE = "tlaplatform/tlaplus"
+DEFAULT_IMAGE = "maxdiefenbach/tlaplus"
 DEFAULT_MODEL_FILE = "gateway_orders_rule.tla"
 DEFAULT_CONFIG_FILE = "gateway_orders_rule.cfg"
 DEFAULT_RESULT_FILE = "tlc_last_run.txt"
@@ -64,12 +64,20 @@ def build_docker_command(config: TLAProofCheckConfig) -> tuple[str, ...]:
         "docker",
         "run",
         "--rm",
+        "--entrypoint",
+        "",
         "--volume",
         f"{mount_dir}:/workspace",
         "--workdir",
         "/workspace",
         config.image,
-        "tlc",
+        "java",
+        "-XX:+UseParallelGC",
+        "-cp",
+        "/opt/TLA+Toolbox/tla2tools.jar",
+        "tlc2.TLC",
+        "-workers",
+        "8",
         "-config",
         config.config_file,
         config.model_file,

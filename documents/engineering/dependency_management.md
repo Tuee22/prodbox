@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/README.md
+**Referenced by**: CLAUDE.md, README.md
 
 > **Purpose**: Define standards for Python dependency management in prodbox using Poetry.
 
@@ -183,5 +183,5 @@ Major version upgrades require:
 ## Cross-References
 
 - [CLAUDE.md](../../CLAUDE.md) - Project overview and type safety requirements
-- [Pure FP Standards](../pure_fp_standards.md) - Code patterns that affect dependency choices
+- [Pure FP Standards](./pure_fp_standards.md) - Code patterns that affect dependency choices
 - [pyproject.toml](../../pyproject.toml) - Canonical dependency definitions

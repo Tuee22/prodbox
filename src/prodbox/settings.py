@@ -10,7 +10,7 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class Settings(BaseSettings):
+class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSettings uses Any internally
     """Central configuration for all prodbox operations.
 
     All configuration comes from environment variables.
@@ -128,7 +128,7 @@ class Settings(BaseSettings):
 
     def display_dict(self) -> dict[str, str | int | Path]:
         """Return settings as dict with sensitive values masked."""
-        data = self.model_dump()
+        data: dict[str, str | int | Path] = self.model_dump()
         # Mask sensitive fields
         sensitive_fields = {"aws_secret_access_key"}
         for field in sensitive_fields:
@@ -138,7 +138,7 @@ class Settings(BaseSettings):
         return data
 
 
-@lru_cache(maxsize=1)
+@lru_cache(maxsize=1)  # type: ignore[misc]  # lru_cache signature contains Callable[..., T]
 def get_settings() -> Settings:
     """Get cached settings instance.
 

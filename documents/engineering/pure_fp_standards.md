@@ -1,8 +1,8 @@
 # Pure Functional Programming Standards
 
-**Status**: Authoritative SSoT
+**Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md
+**Referenced by**: CLAUDE.md, AGENTS.md, documents/engineering/refactoring_patterns.md
 
 > **Purpose**: Definitive standards for pure functional programming in prodbox. All code must be pure EXCEPT the interpreter, which is the designated impurity boundary.
 

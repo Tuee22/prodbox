@@ -313,9 +313,7 @@ class SignedEvent:
         except ValueError:
             return False
 
-        expected_hash = hashlib.sha256(
-            self.canonical_unsigned_json().encode("utf-8")
-        ).hexdigest()
+        expected_hash = hashlib.sha256(self.canonical_unsigned_json().encode("utf-8")).hexdigest()
         if expected_hash != self.event_hash:
             return False
 
@@ -348,6 +346,7 @@ class CommitLog:
 
     def sorted_events(self) -> tuple[SignedEvent, ...]:
         """Get events in deterministic order."""
+
         def _sort_key(event: SignedEvent) -> tuple[str, str]:
             return event.timestamp_utc, event.event_hash
 
@@ -484,6 +483,7 @@ class DaemonConfig:
     heartbeat_interval_seconds: float = 1.0
     reconnect_interval_seconds: float = 1.0
     sync_interval_seconds: float = 5.0
+    dns_write_gate: DnsWriteGate | None = None
 
     @staticmethod
     def from_json_file(path: Path) -> DaemonConfig:
@@ -518,6 +518,21 @@ class DaemonConfig:
             5.0,
         )
 
+        dns_gate_raw = raw.get("dns_write_gate")
+        dns_write_gate: DnsWriteGate | None = None
+        match dns_gate_raw:
+            case dict() as gate_dict:
+                dns_write_gate = DnsWriteGate(
+                    zone_id=str(gate_dict.get("zone_id")),
+                    fqdn=str(gate_dict.get("fqdn")),
+                    ttl=int(str(gate_dict.get("ttl", 300))),
+                    aws_region=str(gate_dict.get("aws_region")),
+                    aws_access_key_id=str(gate_dict.get("aws_access_key_id")),
+                    aws_secret_access_key=str(gate_dict.get("aws_secret_access_key")),
+                )
+            case None:
+                pass
+
         if not node_id:
             raise ValueError("node_id is required")
         return DaemonConfig(
@@ -530,13 +545,121 @@ class DaemonConfig:
             heartbeat_interval_seconds=heartbeat_interval_seconds,
             reconnect_interval_seconds=reconnect_interval_seconds,
             sync_interval_seconds=sync_interval_seconds,
+            dns_write_gate=dns_write_gate,
         )
+
+
+class DnsWriteClient(Protocol):
+    """Protocol for DNS write operations (injectable for testing)."""
+
+    async def fetch_public_ip(self) -> str:
+        """Fetch the current public IP address."""
+
+    async def update_route53_record(
+        self,
+        *,
+        zone_id: str,
+        fqdn: str,
+        ip_address: str,
+        ttl: int,
+        aws_region: str,
+        aws_access_key_id: str,
+        aws_secret_access_key: str,
+    ) -> bool:
+        """Update a Route 53 A record. Returns True on success."""
+
+
+@dataclass(frozen=True)
+class DnsWriteGate:
+    """Configuration for DNS write gating behind gateway ownership."""
+
+    zone_id: str
+    fqdn: str
+    ttl: int
+    aws_region: str
+    aws_access_key_id: str
+    aws_secret_access_key: str
+
+
+@dataclass(frozen=True)
+class Route53DnsWriteClient:
+    """Real Route 53 DNS write client backed by boto3."""
+
+    _aws_access_key_id: str
+    _aws_secret_access_key: str
+    _aws_region: str
+
+    @staticmethod
+    def from_gate(gate: DnsWriteGate) -> Route53DnsWriteClient:
+        """Create client from DnsWriteGate configuration."""
+        return Route53DnsWriteClient(
+            _aws_access_key_id=gate.aws_access_key_id,
+            _aws_secret_access_key=gate.aws_secret_access_key,
+            _aws_region=gate.aws_region,
+        )
+
+    async def fetch_public_ip(self) -> str:
+        """Fetch public IP from checkip.amazonaws.com."""
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get("https://checkip.amazonaws.com")
+            response.raise_for_status()
+            return response.text.strip()
+
+    async def update_route53_record(
+        self,
+        *,
+        zone_id: str,
+        fqdn: str,
+        ip_address: str,
+        ttl: int,
+        aws_region: str,
+        aws_access_key_id: str,
+        aws_secret_access_key: str,
+    ) -> bool:
+        """UPSERT A record via Route 53 change_resource_record_sets."""
+        import asyncio
+
+        import boto3
+
+        def _do_upsert() -> bool:
+            session = boto3.Session(
+                aws_access_key_id=aws_access_key_id,
+                aws_secret_access_key=aws_secret_access_key,
+                region_name=aws_region,
+            )
+            r53 = session.client("route53")
+            change_batch: dict[str, object] = {
+                "Comment": f"Gateway DDNS update: {fqdn} -> {ip_address}",
+                "Changes": [
+                    {
+                        "Action": "UPSERT",
+                        "ResourceRecordSet": {
+                            "Name": fqdn,
+                            "Type": "A",
+                            "TTL": ttl,
+                            "ResourceRecords": [{"Value": ip_address}],
+                        },
+                    },
+                ],
+            }
+            r53.change_resource_record_sets(
+                HostedZoneId=zone_id,
+                ChangeBatch=change_batch,
+            )
+            return True
+
+        return await asyncio.to_thread(_do_upsert)
 
 
 class GatewayDaemon:
     """Long-running distributed gateway daemon."""
 
-    def __init__(self, config: DaemonConfig) -> None:
+    def __init__(
+        self,
+        config: DaemonConfig,
+        *,
+        dns_client: DnsWriteClient | None = None,
+    ) -> None:
         self._config = config
         self._orders = self._load_orders(config.orders_file)
         self._orders_lock = asyncio.Lock()
@@ -555,6 +678,13 @@ class GatewayDaemon:
         self._running = False
         self._gateway_owner: str = config.node_id
         self._gateway_lock = asyncio.Lock()
+
+        # DNS client: injected mock takes precedence, otherwise auto-create from gate
+        resolved_client: DnsWriteClient | None = dns_client
+        if resolved_client is None and config.dns_write_gate is not None:
+            resolved_client = Route53DnsWriteClient.from_gate(config.dns_write_gate)
+        self._dns_client = resolved_client
+        self._last_dns_write_ip: str | None = None
 
     @staticmethod
     def _load_orders(path: Path) -> Orders:
@@ -611,6 +741,7 @@ class GatewayDaemon:
         self._tasks.append(asyncio.create_task(self._connection_reconcile_loop()))
         self._tasks.append(asyncio.create_task(self._sync_loop()))
         self._tasks.append(asyncio.create_task(self._gateway_loop()))
+        self._tasks.append(asyncio.create_task(self._dns_write_loop()))
 
     async def stop(self) -> None:
         """Stop daemon and close resources."""
@@ -670,6 +801,45 @@ class GatewayDaemon:
         async with self._gateway_lock:
             return self._gateway_owner
 
+    async def has_claim_from(self, node_id: str) -> bool:
+        """Check if a GatewayClaim event from a node exists in the commit log."""
+        async with self._commit_log_lock:
+            return any(
+                event.event_type == "gateway_claim" and event.emitter_node_id == node_id
+                for event in self._commit_log.events
+            )
+
+    async def has_active_claim_from(self, node_id: str) -> bool:
+        """Check if node has an active GatewayClaim with no subsequent GatewayYield.
+
+        Mirrors TLA+ CanWriteDns guard: HasClaim(n) /\\ ~HasYieldAfterLastClaim(n).
+        """
+        async with self._commit_log_lock:
+            sorted_events = self._commit_log.sorted_events()
+
+        last_claim_index: int | None = None
+        for i, event in enumerate(sorted_events):
+            if event.event_type == "gateway_claim" and event.emitter_node_id == node_id:
+                last_claim_index = i
+
+        if last_claim_index is None:
+            return False
+
+        for event in sorted_events[last_claim_index + 1 :]:
+            if event.event_type == "gateway_yield" and event.emitter_node_id == node_id:
+                return False
+
+        return True
+
+    async def events_by_type(self, event_type: str) -> tuple[SignedEvent, ...]:
+        """Get all events of a given type from the commit log."""
+        async with self._commit_log_lock:
+            return tuple(
+                event
+                for event in self._commit_log.sorted_events()
+                if event.event_type == event_type
+            )
+
     async def promote_orders_if_newer(self, orders: Orders) -> bool:
         """Promote active orders if timestamp increases."""
         async with self._orders_lock:
@@ -698,7 +868,9 @@ class GatewayDaemon:
                 with suppress(ValueError):
                     promoted = await self.promote_orders_if_newer(Orders.from_dict(payload_raw))
                     if promoted:
-                        await self._emit_gateway_recomputed_event()
+                        await self._recompute_gateway_owner()
+        elif event.event_type in ("gateway_claim", "gateway_yield", "dns_write"):
+            pass
         return True
 
     async def _record_heartbeat(self, node_id: str, seen_at: datetime) -> None:
@@ -736,6 +908,50 @@ class GatewayDaemon:
                     {"node_id": self._config.node_id},
                 )
             await asyncio.sleep(self._config.heartbeat_interval_seconds)
+
+    async def _dns_write_loop(self) -> None:
+        gate = self._config.dns_write_gate
+        if gate is None:
+            return
+        if self._dns_client is None:
+            return
+        while self._running:
+            with suppress(Exception):
+                await self._attempt_dns_write(gate)
+            await asyncio.sleep(float(gate.ttl))
+
+    async def _attempt_dns_write(self, gate: DnsWriteGate) -> None:
+        async with self._gateway_lock:
+            is_owner = self._gateway_owner == self._config.node_id
+        if not is_owner:
+            return
+
+        has_claim = await self.has_active_claim_from(self._config.node_id)
+        if not has_claim:
+            return
+
+        if self._dns_client is None:
+            return
+        ip_address = await self._dns_client.fetch_public_ip()
+        success = await self._dns_client.update_route53_record(
+            zone_id=gate.zone_id,
+            fqdn=gate.fqdn,
+            ip_address=ip_address,
+            ttl=gate.ttl,
+            aws_region=gate.aws_region,
+            aws_access_key_id=gate.aws_access_key_id,
+            aws_secret_access_key=gate.aws_secret_access_key,
+        )
+        if success:
+            self._last_dns_write_ip = ip_address
+            await self.emit_event(
+                "dns_write",
+                {
+                    "ip_address": ip_address,
+                    "zone_id": gate.zone_id,
+                    "fqdn": gate.fqdn,
+                },
+            )
 
     async def _reconcile_connections_once(self) -> None:
         async with self._orders_lock:
@@ -934,17 +1150,37 @@ class GatewayDaemon:
             owner = self._config.node_id
 
         async with self._gateway_lock:
-            changed = owner != self._gateway_owner
+            previous_owner = self._gateway_owner
+            changed = owner != previous_owner
             self._gateway_owner = owner
         if changed:
-            await self._emit_gateway_recomputed_event()
+            await self._emit_ownership_transition_events(
+                previous_owner=previous_owner,
+                new_owner=owner,
+            )
 
-    async def _emit_gateway_recomputed_event(self) -> None:
-        owner = await self.gateway_owner()
-        await self.emit_event(
-            "gateway_owner_changed",
-            {"owner_node_id": owner},
-        )
+    async def _emit_ownership_transition_events(
+        self,
+        *,
+        previous_owner: str,
+        new_owner: str,
+    ) -> None:
+        if previous_owner == self._config.node_id:
+            await self.emit_event(
+                "gateway_yield",
+                {
+                    "yielding_node_id": self._config.node_id,
+                    "new_owner": new_owner,
+                },
+            )
+        if new_owner == self._config.node_id:
+            await self.emit_event(
+                "gateway_claim",
+                {
+                    "claiming_node_id": self._config.node_id,
+                    "previous_owner": previous_owner,
+                },
+            )
 
     async def _handle_rest_connection(
         self,
@@ -968,9 +1204,15 @@ class GatewayDaemon:
                 elif method == "GET" and path == "/v1/state":
                     status = 200
                     owner = await self.gateway_owner()
+                    hashes = await self.log_event_hashes()
+                    active_keys = await self.active_connection_keys()
+                    mesh_peers = sorted(k.peer_node_id for k in active_keys if k.channel == "mesh")
                     body = {
                         "node_id": self._config.node_id,
                         "gateway_owner": owner,
+                        "event_count": len(hashes),
+                        "event_hashes": sorted(hashes),
+                        "mesh_peers": mesh_peers,
                     }
             await self._write_http_response(writer, status=status, payload=body)
         finally:

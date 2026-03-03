@@ -14,13 +14,13 @@ from __future__ import annotations
 
 import pulumi
 
-from prodbox.settings import Settings
-from prodbox.infra.providers import create_k8s_provider, create_aws_provider
-from prodbox.infra.metallb import deploy_metallb
-from prodbox.infra.ingress import deploy_ingress
 from prodbox.infra.cert_manager import deploy_cert_manager
 from prodbox.infra.cluster_issuer import deploy_cluster_issuer
 from prodbox.infra.dns import deploy_dns
+from prodbox.infra.ingress import deploy_ingress
+from prodbox.infra.metallb import deploy_metallb
+from prodbox.infra.providers import create_aws_provider, create_k8s_provider
+from prodbox.settings import Settings
 
 
 def main() -> None:
@@ -34,7 +34,7 @@ def main() -> None:
 
     # Phase 1: DNS Record (independent)
     # Pulumi owns existence, DDNS timer updates the IP value
-    dns_resources = deploy_dns(settings, aws_provider)
+    _dns_resources = deploy_dns(settings, aws_provider)
 
     # Phase 2: MetalLB (networking layer)
     # Provides LoadBalancer IPs for services
@@ -42,7 +42,7 @@ def main() -> None:
 
     # Phase 3: Ingress Controller (requires MetalLB)
     # Traefik handles HTTP/HTTPS traffic routing
-    ingress_resources = deploy_ingress(
+    _ingress_resources = deploy_ingress(
         settings,
         k8s_provider,
         metallb_resources,
@@ -54,19 +54,22 @@ def main() -> None:
 
     # Phase 5: ClusterIssuer (requires cert-manager)
     # Let's Encrypt issuer with DNS-01 validation
-    cluster_issuer_resources = deploy_cluster_issuer(
+    _cluster_issuer_resources = deploy_cluster_issuer(
         settings,
         k8s_provider,
         cert_manager_resources,
     )
 
     # Summary exports
-    pulumi.export("summary", {
-        "fqdn": settings.demo_fqdn,
-        "ingress_ip": settings.ingress_lb_ip,
-        "metallb_pool": settings.metallb_pool,
-        "cluster_issuer": "letsencrypt-dns01",
-    })
+    pulumi.export(
+        "summary",
+        {
+            "fqdn": settings.demo_fqdn,
+            "ingress_ip": settings.ingress_lb_ip,
+            "metallb_pool": settings.metallb_pool,
+            "cluster_issuer": "letsencrypt-dns01",
+        },
+    )
 
 
 # Run the main function

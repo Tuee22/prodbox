@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pulumi
 import pulumi_aws as aws
 import pulumi_kubernetes as k8s
 

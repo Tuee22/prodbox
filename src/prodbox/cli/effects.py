@@ -292,7 +292,17 @@ class RunSystemdCommand(Effect[int]):
         ... )
     """
 
-    action: Literal["start", "stop", "restart", "enable", "disable", "status", "is-active", "is-enabled", "daemon-reload"]
+    action: Literal[
+        "start",
+        "stop",
+        "restart",
+        "enable",
+        "disable",
+        "status",
+        "is-active",
+        "is-enabled",
+        "daemon-reload",
+    ]
     service: str | None = None
     sudo: bool = False
     timeout: float | None = None
@@ -975,6 +985,67 @@ class Try(Effect[object]):
 
 
 # =============================================================================
+# Gateway Daemon Effects
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class StartGatewayDaemon(Effect[None]):
+    """
+    Load gateway config and run daemon event loop.
+
+    Returns: None (runs until interrupted)
+
+    Example:
+        >>> StartGatewayDaemon(
+        ...     effect_id="start_gateway",
+        ...     description="Start gateway daemon",
+        ...     config_path=Path("/etc/gateway/config.json")
+        ... )
+    """
+
+    config_path: Path
+
+
+@dataclass(frozen=True)
+class QueryGatewayState(Effect[str]):
+    """
+    Query running gateway daemon REST API for current state.
+
+    Returns: JSON state string
+
+    Example:
+        >>> QueryGatewayState(
+        ...     effect_id="query_gateway",
+        ...     description="Query gateway daemon state",
+        ...     config_path=Path("/etc/gateway/config.json")
+        ... )
+    """
+
+    config_path: Path
+
+
+@dataclass(frozen=True)
+class GenerateGatewayConfig(Effect[None]):
+    """
+    Generate a template gateway daemon config file.
+
+    Returns: None
+
+    Example:
+        >>> GenerateGatewayConfig(
+        ...     effect_id="gen_config",
+        ...     description="Generate gateway config template",
+        ...     output_path=Path("gateway-config.json"),
+        ...     node_id="node-a"
+        ... )
+    """
+
+    output_path: Path
+    node_id: str
+
+
+# =============================================================================
 # Pure Effect (No-Op for Testing)
 # =============================================================================
 
@@ -1109,6 +1180,10 @@ __all__ = [
     "PulumiUp",
     "PulumiDestroy",
     "PulumiRefresh",
+    # Gateway
+    "StartGatewayDaemon",
+    "QueryGatewayState",
+    "GenerateGatewayConfig",
     # Settings
     "LoadSettings",
     "ValidateSettings",

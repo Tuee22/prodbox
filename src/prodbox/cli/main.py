@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from prodbox.cli import dns, env, gateway, host, k8s, pulumi_cmd, rke2
+from prodbox.cli import check_code, dns, env, gateway, host, k8s, pulumi_cmd, rke2
 from prodbox.lib.logging import setup_logging
 
 
@@ -38,6 +38,7 @@ cli.add_command(pulumi_cmd.pulumi)
 cli.add_command(dns.dns)
 cli.add_command(k8s.k8s)
 cli.add_command(gateway.gateway)
+cli.add_command(check_code.check_code)
 
 
 def main() -> None:

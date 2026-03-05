@@ -32,14 +32,8 @@ jobs:
       - name: Install dependencies
         run: poetry install
 
-      - name: Ruff check
-        run: poetry run ruff check src/ tests/
-
-      - name: Ruff format check
-        run: poetry run ruff format --check src/ tests/
-
-      - name: Mypy
-        run: poetry run mypy src/
+      - name: Check code
+        run: poetry run prodbox check-code
 
       - name: Unit tests
         run: poetry run pytest -m "not integration" --tb=short

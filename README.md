@@ -214,11 +214,8 @@ pytest
 # Run tests with coverage
 pytest --cov=prodbox
 
-# Type checking
-mypy src/
-
-# Linting
-ruff check src/ tests/
+# Code quality checks (canonical)
+poetry run prodbox check-code
 ```
 
 ### Project Structure

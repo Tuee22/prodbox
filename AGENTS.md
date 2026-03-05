@@ -44,8 +44,8 @@ poetry run pytest                    # All tests
 poetry run pytest -m "not integration"  # Unit only
 poetry run pytest --cov=src/prodbox  # With coverage
 
-# Type checking (ultra-strict)
-poetry run mypy src/
+# Code quality checks (canonical entrypoint)
+poetry run prodbox check-code        # Policy guard + ruff + mypy
 
 # Linting
 poetry run ruff check src/ tests/
@@ -204,6 +204,7 @@ This policy ensures human oversight of all code changes.
 ## Type Safety
 
 Ultra-strict mypy configuration:
+Use `poetry run prodbox check-code` as the only supported entrypoint for type checks.
 
 ```toml
 [tool.mypy]

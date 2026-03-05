@@ -381,8 +381,7 @@ Add validation in `_append_event_if_valid()` for `gateway_claim` and `gateway_yi
 
 ```bash
 poetry run pytest -m "not integration"   # All unit tests pass
-poetry run mypy src/                      # Zero errors
-poetry run ruff check src/ tests/         # Zero errors
+poetry run prodbox check-code             # Policy/lint/type checks pass
 ```
 
 ---

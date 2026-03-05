@@ -256,9 +256,7 @@ poetry run pytest --cov=src/prodbox  # With coverage
 ## Quality Checks
 
 ```bash
-poetry run mypy src/                 # Type checking (ultra-strict)
-poetry run ruff check src/ tests/    # Linting
-poetry run ruff format src/ tests/   # Formatting
+poetry run prodbox check-code        # Policy guard + lint + format check + type check
 poetry run prodbox-tla-check         # TLA+ model verification (requires Docker)
 ```
 
@@ -269,8 +267,7 @@ poetry run prodbox-tla-check         # TLA+ model verification (requires Docker)
 ### GitHub Actions
 
 CI runs on every push and PR to main (`.github/workflows/ci.yml`):
-- Ruff lint + format check
-- Mypy type checking
+- check-code policy/lint/type gate
 - Unit tests (excludes `@pytest.mark.integration`)
 - TLA+ proof check (requires Docker on runner)
 
@@ -282,7 +279,7 @@ poetry run pre-commit install        # Install git hooks
 poetry run pre-commit run --all-files  # Run all hooks manually
 ```
 
-Hooks: trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff (check + format), mypy.
+Hooks: trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff, check-code.
 
 ### Container Build
 
@@ -304,7 +301,7 @@ Multi-stage build: Python 3.12 slim, Poetry install, runtime-only image. Entrypo
 4. Create thin wrapper in appropriate CLI module (e.g., `dns.py`)
 5. Register command group in `main.py` (if new group)
 6. Add tests in `tests/unit/` and/or `tests/integration/`
-7. Run `poetry run mypy src/` to verify types
+7. Run `poetry run prodbox check-code` to verify policy/lint/types
 8. Leave changes uncommitted for review
 
 ### Modifying Infrastructure
@@ -352,6 +349,6 @@ See `documents/engineering/` for detailed architecture docs:
 
 - [ ] Code changes implemented
 - [ ] Tests written and passing (`poetry run pytest`)
-- [ ] Type checking passes (`poetry run mypy src/`)
+- [ ] Type checking passes (`poetry run prodbox check-code`)
 - [ ] Linting passes (`poetry run ruff check .`)
 - [ ] **Changes left uncommitted** (user commits manually)

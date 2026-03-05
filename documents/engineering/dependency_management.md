@@ -134,7 +134,7 @@ ruff = "^0.2.0"
 2. **Use caret bounds**: `poetry add "package^X.Y.0"`
 3. **Verify type stubs**: Add to `typings/` if needed (see [Type Safety](../CLAUDE.md#type-safety))
 4. **Run tests**: `poetry run pytest`
-5. **Run type checker**: `poetry run mypy src/`
+5. **Run code quality checks**: `poetry run prodbox check-code`
 
 ### Example
 
@@ -161,7 +161,7 @@ poetry update
 
 # 3. Run full test suite
 poetry run pytest
-poetry run mypy src/
+poetry run prodbox check-code
 
 # 4. For major version upgrades, update pyproject.toml explicitly
 # Then regenerate lock

@@ -25,4 +25,4 @@ COPY --from=builder /app/src /app/src
 
 ENV PATH="/app/.venv/bin:$PATH"
 
-ENTRYPOINT ["prodbox-gateway-loop"]
+ENTRYPOINT ["daemon"]

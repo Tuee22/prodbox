@@ -32,7 +32,7 @@ The distributed gateway system is fully implemented (Phases 1-8 complete):
 - **Unit tests**: 54 gateway daemon tests in `tests/unit/test_gateway_daemon.py`
 - **Integration tests**: `tests/integration/test_gateway_k8s_pods.py` (K8s pod deployment)
 
-The daemon runs as a local Python process via `poetry run prodbox-gateway-loop`. DDNS timer fallback (`scripts/`) remains for single-node operation.
+The daemon runs as a local Python process via `poetry run daemon`. DDNS timer fallback (`scripts/`) remains for single-node operation.
 
 ---
 
@@ -184,7 +184,7 @@ Model files:
 Execution requirement:
 
 - TLA+ checks must run via Docker using `tlaplatform/tlaplus`.
-- Use the Poetry entrypoint `poetry run prodbox-tla-check`.
+- Use the CLI command `poetry run prodbox tla-check`.
 - The command runs a self-deleting container (`docker run --rm ...`) and writes the latest result to `documents/engineering/tla/tlc_last_run.txt`.
 
 For modelling assumptions, variable correspondence, known divergences, and verification status, see [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
@@ -263,7 +263,7 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 ## 12. Deployment Model
 
-The gateway daemon runs as a **local Python process** via `poetry run prodbox-gateway-loop --config <path>`. It is NOT containerized — Poetry handles all dependency management.
+The gateway daemon runs as a **local Python process** via `poetry run daemon --config <path>`. It is NOT containerized — Poetry handles all dependency management.
 
 - Docker is only used for the TLA+ model checker (`tla_check.py`)
 - RKE2 handles all Kubernetes containerization for pod integration tests
@@ -286,7 +286,7 @@ All phases complete:
 | Phase | Deliverable |
 |-------|-------------|
 | **1** | Orders + CommitLog schemas, node identity, stable DNS settings |
-| **2** | mTLS peer gossip, gateway rule evaluator, `prodbox-gateway-loop` daemon |
+| **2** | mTLS peer gossip, gateway rule evaluator, `daemon` daemon |
 | **3** | GatewayClaim/GatewayYield typed events |
 | **4** | DNS write gating with claim requirement |
 | **5** | K8s pod infrastructure (manifests, fixtures, helpers) |

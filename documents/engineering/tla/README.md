@@ -26,5 +26,5 @@
 ## Running Checks
 
 - TLA+ must be executed in Docker via `tlaplatform/tlaplus`.
-- Repository entrypoint: `poetry run prodbox-tla-check`.
-- The entrypoint invokes `docker run --rm ...` and stores the latest result at `documents/engineering/tla/tlc_last_run.txt`.
+- CLI command: `poetry run prodbox tla-check`.
+- The command invokes `docker run --rm ...` and stores the latest result at `documents/engineering/tla/tlc_last_run.txt`.

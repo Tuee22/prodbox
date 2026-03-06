@@ -246,9 +246,9 @@ Custom type stubs in `typings/` provide full typing for external libraries:
 | Overall (excluding `infra/`) | 95%+ |
 
 ```bash
-poetry run pytest                    # Run all tests
-poetry run pytest -m "not integration"  # Unit tests only
-poetry run pytest --cov=src/prodbox  # With coverage
+poetry run prodbox test                    # Run all tests
+poetry run prodbox test -m "not integration"  # Unit tests only
+poetry run prodbox test --cov=src/prodbox  # With coverage
 ```
 
 ---
@@ -257,7 +257,7 @@ poetry run pytest --cov=src/prodbox  # With coverage
 
 ```bash
 poetry run prodbox check-code        # Policy guard + lint + format check + type check
-poetry run prodbox-tla-check         # TLA+ model verification (requires Docker)
+poetry run prodbox tla-check         # TLA+ model verification (requires Docker)
 ```
 
 ---
@@ -273,13 +273,14 @@ CI runs on every push and PR to main (`.github/workflows/ci.yml`):
 
 ### Pre-commit Hooks
 
+Pre-commit hooks are optional; prefer the CLI entrypoints instead:
+
 ```bash
-poetry install                       # Includes pre-commit dev dependency
-poetry run pre-commit install        # Install git hooks
-poetry run pre-commit run --all-files  # Run all hooks manually
+poetry run prodbox check-code
+poetry run prodbox test
 ```
 
-Hooks: trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff, check-code.
+Hooks (if installed): trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff, check-code.
 
 ### Container Build
 
@@ -287,7 +288,7 @@ Hooks: trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff, che
 docker build -f Containerfile.gateway -t prodbox-gateway .
 ```
 
-Multi-stage build: Python 3.12 slim, Poetry install, runtime-only image. Entrypoint: `prodbox-gateway-loop`.
+Multi-stage build: Python 3.12 slim, Poetry install, runtime-only image. Entrypoint: `daemon`.
 
 ---
 
@@ -348,7 +349,7 @@ See `documents/engineering/` for detailed architecture docs:
 ## Contributing Checklist
 
 - [ ] Code changes implemented
-- [ ] Tests written and passing (`poetry run pytest`)
+- [ ] Tests written and passing (`poetry run prodbox test`)
 - [ ] Type checking passes (`poetry run prodbox check-code`)
-- [ ] Linting passes (`poetry run ruff check .`)
+- [ ] Linting passes (`poetry run prodbox check-code`)
 - [ ] **Changes left uncommitted** (user commits manually)

@@ -36,7 +36,7 @@ jobs:
         run: poetry run prodbox check-code
 
       - name: Unit tests
-        run: poetry run pytest -m "not integration" --tb=short
+        run: poetry run prodbox test -m "not integration" --tb=short
 
       - name: TLA+ proof check
-        run: poetry run prodbox-tla-check
+        run: poetry run prodbox tla-check

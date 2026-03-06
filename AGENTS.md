@@ -40,16 +40,12 @@ poetry install
 poetry run prodbox <command>
 
 # Run tests
-poetry run pytest                    # All tests
-poetry run pytest -m "not integration"  # Unit only
-poetry run pytest --cov=src/prodbox  # With coverage
+poetry run prodbox test                    # All tests
+poetry run prodbox test -m "not integration"  # Unit only
+poetry run prodbox test --cov=src/prodbox  # With coverage
 
 # Code quality checks (canonical entrypoint)
 poetry run prodbox check-code        # Policy guard + ruff + mypy
-
-# Linting
-poetry run ruff check src/ tests/
-poetry run ruff format src/ tests/
 ```
 
 ---

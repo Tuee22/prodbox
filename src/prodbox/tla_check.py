@@ -183,7 +183,7 @@ def _write_result(*, result_file: Path, content: str) -> None:
 
 
 def main() -> None:
-    """Poetry entrypoint for Dockerized TLA+ proof checks."""
+    """CLI helper for Dockerized TLA+ proof checks."""
     config = default_config()
     raise SystemExit(run_tla_proof_check(config))
 

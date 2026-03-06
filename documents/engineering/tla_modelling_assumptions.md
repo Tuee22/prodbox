@@ -172,7 +172,7 @@ The design contract:
 ### Running the Model Checker
 
 ```bash
-poetry run prodbox-tla-check
+poetry run prodbox tla-check
 ```
 
 This runs TLC 2.18 in a Docker container (`maxdiefenbach/tlaplus`) with 8 workers and writes results to `documents/engineering/tla/tlc_last_run.txt`.

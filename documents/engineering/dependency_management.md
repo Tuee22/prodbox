@@ -128,12 +128,32 @@ ruff = "^0.2.0"
 
 ## 4. Adding New Dependencies
 
+### Entrypoint-Only Command Policy
+
+All automation must run through Poetry entrypoints defined in `pyproject.toml`.
+Direct tool invocation via `poetry run <tool>` is forbidden.
+
+Use the CLI entrypoints instead:
+
+```bash
+poetry run prodbox test       # Run pytest (all args forwarded)
+poetry run prodbox check-code  # Policy guard + ruff + mypy
+poetry run prodbox tla-check  # TLA+ model checks
+poetry run daemon --config <path>  # Gateway daemon
+```
+
+`PRODBOX_ALLOW_NON_ENTRYPOINT=1` is reserved for internal CLI subprocesses
+and should not be set manually in development workflows.
+
+`poetry run prodbox check-code` installs the enforcement shim in the Poetry
+virtualenv (`prodbox_entrypoint_guard.pth`) to block non-entrypoint tools.
+
 ### Checklist
 
 1. **Check existing dependencies**: Avoid duplicates or conflicts
 2. **Use caret bounds**: `poetry add "package^X.Y.0"`
 3. **Verify type stubs**: Add to `typings/` if needed (see [Type Safety](../CLAUDE.md#type-safety))
-4. **Run tests**: `poetry run pytest`
+4. **Run tests**: `poetry run prodbox test`
 5. **Run code quality checks**: `poetry run prodbox check-code`
 
 ### Example
@@ -160,7 +180,7 @@ poetry show --outdated
 poetry update
 
 # 3. Run full test suite
-poetry run pytest
+poetry run prodbox test
 poetry run prodbox check-code
 
 # 4. For major version upgrades, update pyproject.toml explicitly

@@ -1365,7 +1365,7 @@ class GatewayDaemon:
 
 def _parse_config_path(argv: tuple[str, ...]) -> Path:
     parser = argparse.ArgumentParser(
-        prog="prodbox-gateway-loop",
+        prog="daemon",
         description="Run distributed gateway daemon loop.",
     )
     parser.add_argument(

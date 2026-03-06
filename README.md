@@ -209,13 +209,28 @@ prodbox
 pip install -e ".[dev]"
 
 # Run tests
-pytest
+poetry run prodbox test
 
 # Run tests with coverage
-pytest --cov=prodbox
+poetry run prodbox test --cov=prodbox
 
 # Code quality checks (canonical)
 poetry run prodbox check-code
+```
+
+### Entrypoint Policy
+
+All tooling runs through CLI entrypoints defined in `pyproject.toml`. Direct
+`poetry run <tool>` commands are blocked once `prodbox check-code` installs the
+entrypoint guard.
+
+Common commands:
+
+```bash
+poetry run prodbox test -m "not integration"
+poetry run prodbox check-code
+poetry run prodbox tla-check
+poetry run daemon --config <path>
 ```
 
 ### Project Structure

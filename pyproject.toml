@@ -17,8 +17,7 @@ classifiers = [
 
 [tool.poetry.scripts]
 prodbox = "prodbox.cli.main:main"
-prodbox-tla-check = "prodbox.tla_check:main"
-prodbox-gateway-loop = "prodbox.gateway_daemon:main"
+daemon = "prodbox.gateway_daemon:main"
 
 [tool.poetry.urls]
 Repository = "https://github.com/Tuee22/prodbox"

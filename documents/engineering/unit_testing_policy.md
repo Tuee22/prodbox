@@ -207,7 +207,7 @@ async def test_systemd_status(fp: FakeProcess) -> None:
 All code must have 100% test coverage. This is enforced by:
 
 ```bash
-poetry run pytest --cov=src/prodbox --cov-fail-under=100
+poetry run prodbox test --cov=src/prodbox --cov-fail-under=100
 ```
 
 If a line of code cannot be covered by tests, the code must be refactored to make it testable. Common solutions:

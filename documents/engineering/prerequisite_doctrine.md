@@ -80,6 +80,7 @@ Validate configuration files exist:
 | `settings_loaded` | Environment variables configured |
 | `kubeconfig_exists` | Kubeconfig file present |
 | `rke2_config_exists` | RKE2 config.yaml present |
+| `rke2_killall_exists` | RKE2 killall cleanup script present |
 
 ### 2.4 Service Prerequisites
 
@@ -204,6 +205,25 @@ Chain prerequisites for complex validation:
 # rke2_service_exists depends on rke2_installed and systemd_available
 # systemd_available depends on platform_linux
 ```
+
+### 4.5 RKE2 Lifecycle Nodes
+
+RKE2 lifecycle is managed by eDAG nodes:
+- `rke2_ensure`: idempotent runtime provisioning/startup
+- `rke2_cleanup`: non-destructive runtime teardown
+
+Both nodes fail fast on missing RKE2 installation prerequisites:
+
+```python
+# File: src/prodbox/cli/dag_builders.py
+_build_rke2_ensure_dag(...):
+    prerequisites=frozenset(["rke2_installed", "rke2_config_exists", "systemd_available"])
+
+_build_rke2_cleanup_dag(...):
+    prerequisites=frozenset(["rke2_installed", "rke2_killall_exists", "systemd_available"])
+```
+
+`rke2_cleanup` intentionally avoids uninstall scripts and host-path deletion.
 
 ---
 

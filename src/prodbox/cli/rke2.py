@@ -7,6 +7,7 @@ import sys
 import click
 
 from prodbox.cli.command_adt import (
+    rke2_cleanup_command,
     rke2_ensure_command,
     rke2_logs_command,
     rke2_restart_command,
@@ -78,16 +79,35 @@ def restart() -> None:
 
 @rke2.command()
 def ensure() -> None:
-    """Ensure RKE2 is installed and configured.
+    """Idempotently provision local RKE2 cluster runtime.
 
-    Checks if RKE2 is installed. If not, provides instructions
-    for installation. Does not automatically install RKE2.
+    Ensures RKE2 service is enabled and started, assuming RKE2
+    binary/config are already present on host.
     """
     match rke2_ensure_command():
         case Success(cmd):
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_ensure"))
+
+
+@rke2.command()
+@click.option(
+    "--yes",
+    is_flag=True,
+    help="Confirm teardown of running RKE2 cluster runtime",
+)
+def cleanup(yes: bool) -> None:
+    """Tear down RKE2 runtime without deleting host storage paths.
+
+    Stops/disables the RKE2 service and runs rke2-killall cleanup.
+    Does not run uninstall scripts and does not remove storage directories.
+    """
+    match rke2_cleanup_command(yes=yes):
+        case Success(cmd):
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_cleanup"))
 
 
 @rke2.command()

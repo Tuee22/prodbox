@@ -149,6 +149,15 @@ RKE2_CONFIG_EXISTS: EffectNode[bool] = EffectNode(
     prerequisites=frozenset(["platform_linux"]),
 )
 
+RKE2_KILLALL_EXISTS: EffectNode[bool] = EffectNode(
+    effect=CheckFileExists(
+        effect_id="rke2_killall_exists",
+        description="Check rke2-killall cleanup script exists",
+        file_path=Path("/usr/local/bin/rke2-killall.sh"),
+    ),
+    prerequisites=frozenset(["rke2_installed"]),
+)
+
 
 # =============================================================================
 # AWS / Route 53 Prerequisites
@@ -278,6 +287,7 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     "kubeconfig_exists": KUBECONFIG_EXISTS,
     "kubeconfig_home_exists": KUBECONFIG_HOME_EXISTS,
     "rke2_config_exists": RKE2_CONFIG_EXISTS,
+    "rke2_killall_exists": RKE2_KILLALL_EXISTS,
     # AWS / Route 53
     "aws_credentials_valid": AWS_CREDENTIALS_VALID,
     "route53_accessible": ROUTE53_ACCESSIBLE,

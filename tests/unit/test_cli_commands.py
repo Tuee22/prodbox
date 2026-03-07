@@ -504,6 +504,25 @@ class TestRKE2Commands:
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
+    def test_rke2_cleanup_success_with_yes(self, runner: CliRunner) -> None:
+        """rke2 cleanup --yes should invoke execute_command on Linux."""
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["rke2", "cleanup", "--yes"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_rke2_cleanup_requires_yes(self, runner: CliRunner) -> None:
+        """rke2 cleanup without --yes should fail fast."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            result = runner.invoke(cli, ["rke2", "cleanup"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+
     def test_rke2_logs_success(self, runner: CliRunner) -> None:
         """rke2 logs should invoke execute_command on Linux."""
         with (
@@ -825,6 +844,13 @@ class TestCommandConstructorFailures:
         """rke2 logs should fail on non-Linux."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
             result = runner.invoke(cli, ["rke2", "logs"])
+
+        assert result.exit_code == 1
+
+    def test_rke2_cleanup_command_failure_non_linux(self, runner: CliRunner) -> None:
+        """rke2 cleanup should fail on non-Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
+            result = runner.invoke(cli, ["rke2", "cleanup", "--yes"])
 
         assert result.exit_code == 1
 

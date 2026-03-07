@@ -235,6 +235,7 @@ Custom type stubs in `typings/` provide full typing for external libraries:
 2. **Pure code produces data** - Never import or reference mocks in pure modules
 3. **Test data vs mocks** - Frozen dataclass instances are test data, not mocks
 4. **Integration tests** - Marked with `@pytest.mark.integration`
+5. **Skip/xfail prohibited** - Missing prerequisites must fail fast (no pytest skip/xfail)
 
 ### Coverage Targets
 

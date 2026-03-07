@@ -41,8 +41,6 @@ from contextlib import suppress
 from pathlib import Path
 from typing import NamedTuple, cast
 
-import pytest
-
 from prodbox.cli.command_adt import rke2_ensure_command
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
@@ -70,7 +68,7 @@ def resolve_kubeconfig() -> Path:
 async def _ensure_rke2_via_dag() -> None:
     match rke2_ensure_command():
         case Failure(error):
-            pytest.skip(f"rke2 ensure command unavailable: {error}")
+            raise AssertionError(f"rke2 ensure command unavailable: {error}")
         case Success(command):
             match command_to_dag(command):
                 case Failure(error):
@@ -79,26 +77,26 @@ async def _ensure_rke2_via_dag() -> None:
                     interpreter = create_interpreter()
                     summary = await interpreter.interpret_dag(dag)
                     if summary.exit_code != 0:
-                        pytest.skip("rke2 ensure DAG failed")
+                        raise AssertionError("rke2 ensure DAG failed")
 
 
 async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
-    """Validate cluster reachable + cert-manager CRDs present, skip otherwise."""
+    """Validate cluster reachable + cert-manager CRDs, failing fast on missing prerequisites."""
     if shutil.which("kubectl") is None:
-        pytest.skip("kubectl not installed")
+        raise AssertionError("kubectl not installed")
     if not kubeconfig.exists():
-        pytest.skip(f"kubeconfig not found: {kubeconfig}")
+        raise AssertionError(f"kubeconfig not found: {kubeconfig}")
     await _ensure_rke2_via_dag()
 
-    cluster_rc, _, _ = await run_kubectl_capture_via_dag(
+    cluster_rc, _, cluster_stderr = await run_kubectl_capture_via_dag(
         "cluster-info",
         kubeconfig=kubeconfig,
         timeout=30.0,
     )
     if cluster_rc != 0:
-        pytest.skip("kubectl cluster-info failed")
+        raise AssertionError(f"kubectl cluster-info failed: {cluster_stderr}")
 
-    cert_manager_rc, _, _ = await run_kubectl_capture_via_dag(
+    cert_manager_rc, _, cert_manager_stderr = await run_kubectl_capture_via_dag(
         "get",
         "crd",
         "certificates.cert-manager.io",
@@ -106,7 +104,7 @@ async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
         timeout=30.0,
     )
     if cert_manager_rc != 0:
-        pytest.skip("cert-manager CRD not available")
+        raise AssertionError(f"cert-manager CRD not available: {cert_manager_stderr}")
 
 
 async def apply_cert_manifest(

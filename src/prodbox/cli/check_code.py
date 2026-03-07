@@ -41,7 +41,7 @@ def _run_check_code() -> int:
             WriteStdout(
                 effect_id="check_code_header",
                 description="Check-code header",
-                text="Running prodbox check-code (policy guard + ruff + mypy)",
+                text="Running prodbox check-code (policy guards + ruff + mypy)",
             ),
             WriteFile(
                 effect_id="check_code_guard_install",
@@ -56,6 +56,18 @@ def _run_check_code() -> int:
                     sys.executable,
                     "-m",
                     "prodbox.lib.lint.no_direct_poetry_run_guard",
+                ],
+                stream_stdout=True,
+                timeout=CHECK_CODE_TIMEOUT_SECONDS,
+                env=allow_env,
+            ),
+            RunSubprocess(
+                effect_id="check_code_skip_guard",
+                description="Enforce no-skip/xfail test policy",
+                command=[
+                    sys.executable,
+                    "-m",
+                    "prodbox.lib.lint.no_test_skip_guard",
                 ],
                 stream_stdout=True,
                 timeout=CHECK_CODE_TIMEOUT_SECONDS,

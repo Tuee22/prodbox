@@ -34,6 +34,7 @@ from prodbox.cli.command_adt import (
     PulumiRefreshCommand,
     PulumiStackInitCommand,
     PulumiUpCommand,
+    RKE2CleanupCommand,
     RKE2EnsureCommand,
     RKE2LogsCommand,
     RKE2RestartCommand,
@@ -45,7 +46,6 @@ from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.effects import (
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
-    CheckFileExists,
     CheckServiceStatus,
     FetchPublicIP,
     GetJournalLogs,
@@ -57,7 +57,9 @@ from prodbox.cli.effects import (
     Pure,
     RunKubectlCommand,
     RunPulumiCommand,
+    RunSubprocess,
     RunSystemdCommand,
+    Sequence,
     ValidateSettings,
     ValidateTool,
 )
@@ -204,6 +206,16 @@ class TestRKE2CommandDAGBuilders:
         match command_to_dag(cmd):
             case Success(dag):
                 assert "rke2_logs" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_rke2_cleanup_dag(self) -> None:
+        """command_to_dag should build DAG for RKE2CleanupCommand."""
+        cmd = RKE2CleanupCommand()
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "rke2_cleanup" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -474,15 +486,37 @@ class TestRKE2CommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_ensure_requires_linux(self) -> None:
-        """RKE2EnsureCommand should require platform_linux."""
+    def test_rke2_ensure_requires_install_and_config(self) -> None:
+        """RKE2EnsureCommand should fail fast on missing RKE2 binary/config."""
         cmd = RKE2EnsureCommand()
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("rke2_ensure")
                 assert root is not None
-                assert "platform_linux" in root.prerequisites
-                assert isinstance(root.effect, CheckFileExists)
+                assert "rke2_installed" in root.prerequisites
+                assert "rke2_config_exists" in root.prerequisites
+                assert "systemd_available" in root.prerequisites
+                assert isinstance(root.effect, Sequence)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_rke2_cleanup_requires_install_and_killall(self) -> None:
+        """RKE2CleanupCommand should require RKE2 binary and killall script."""
+        cmd = RKE2CleanupCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("rke2_cleanup")
+                assert root is not None
+                assert "rke2_installed" in root.prerequisites
+                assert "rke2_killall_exists" in root.prerequisites
+                assert "systemd_available" in root.prerequisites
+                assert isinstance(root.effect, Sequence)
+
+                sub_effects = root.effect.effects
+                assert len(sub_effects) == 3
+                assert isinstance(sub_effects[0], RunSystemdCommand)
+                assert isinstance(sub_effects[1], RunSystemdCommand)
+                assert isinstance(sub_effects[2], RunSubprocess)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -702,6 +736,7 @@ class TestAllPrerequisitesExistInRegistry:
             RKE2StopCommand(),
             RKE2RestartCommand(),
             RKE2EnsureCommand(),
+            RKE2CleanupCommand(),
             RKE2LogsCommand(),
         ]
         for cmd in commands:

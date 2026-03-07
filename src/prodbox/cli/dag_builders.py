@@ -23,8 +23,6 @@ Usage:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from prodbox.cli.command_adt import (
     Command,
     DNSCheckCommand,
@@ -48,6 +46,7 @@ from prodbox.cli.command_adt import (
     PulumiRefreshCommand,
     PulumiStackInitCommand,
     PulumiUpCommand,
+    RKE2CleanupCommand,
     RKE2EnsureCommand,
     RKE2LogsCommand,
     RKE2RestartCommand,
@@ -59,7 +58,6 @@ from prodbox.cli.effect_dag import EffectDAG, EffectNode
 from prodbox.cli.effects import (
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
-    CheckFileExists,
     CheckServiceStatus,
     FetchPublicIP,
     GenerateGatewayConfig,
@@ -73,7 +71,9 @@ from prodbox.cli.effects import (
     QueryGatewayState,
     RunKubectlCommand,
     RunPulumiCommand,
+    RunSubprocess,
     RunSystemdCommand,
+    Sequence,
     StartGatewayDaemon,
     ValidateSettings,
     ValidateTool,
@@ -244,14 +244,63 @@ def _build_rke2_restart_dag(_cmd: RKE2RestartCommand) -> EffectDAG:
 
 
 def _build_rke2_ensure_dag(_cmd: RKE2EnsureCommand) -> EffectDAG:
-    """Build DAG for ensuring RKE2 is installed."""
+    """Build DAG for idempotent RKE2 runtime provisioning."""
     root = EffectNode(
-        effect=CheckFileExists(
+        effect=Sequence(
             effect_id="rke2_ensure",
-            description="Ensure RKE2 is installed",
-            file_path=Path("/usr/local/bin/rke2"),
+            description="Idempotently provision RKE2 cluster runtime",
+            effects=[
+                RunSystemdCommand(
+                    effect_id="rke2_ensure_enable",
+                    description="Enable RKE2 service",
+                    action="enable",
+                    service="rke2-server.service",
+                    sudo=True,
+                ),
+                RunSystemdCommand(
+                    effect_id="rke2_ensure_start",
+                    description="Start RKE2 service",
+                    action="start",
+                    service="rke2-server.service",
+                    sudo=True,
+                ),
+            ],
         ),
-        prerequisites=frozenset(["platform_linux"]),
+        prerequisites=frozenset(["rke2_installed", "rke2_config_exists", "systemd_available"]),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_rke2_cleanup_dag(_cmd: RKE2CleanupCommand) -> EffectDAG:
+    """Build DAG for non-destructive RKE2 runtime teardown."""
+    root = EffectNode(
+        effect=Sequence(
+            effect_id="rke2_cleanup",
+            description="Tear down RKE2 runtime without deleting host storage paths",
+            effects=[
+                RunSystemdCommand(
+                    effect_id="rke2_cleanup_stop",
+                    description="Stop RKE2 service",
+                    action="stop",
+                    service="rke2-server.service",
+                    sudo=True,
+                ),
+                RunSystemdCommand(
+                    effect_id="rke2_cleanup_disable",
+                    description="Disable RKE2 service",
+                    action="disable",
+                    service="rke2-server.service",
+                    sudo=True,
+                ),
+                RunSubprocess(
+                    effect_id="rke2_cleanup_killall",
+                    description="Run rke2 killall cleanup script",
+                    command=["sudo", "/usr/local/bin/rke2-killall.sh"],
+                    stream_stdout=True,
+                ),
+            ],
+        ),
+        prerequisites=frozenset(["rke2_installed", "rke2_killall_exists", "systemd_available"]),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -485,6 +534,8 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_rke2_restart_dag(command))
         case RKE2EnsureCommand():
             return Success(_build_rke2_ensure_dag(command))
+        case RKE2CleanupCommand():
+            return Success(_build_rke2_cleanup_dag(command))
         case RKE2LogsCommand():
             return Success(_build_rke2_logs_dag(command))
 

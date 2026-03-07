@@ -35,6 +35,7 @@ def test_run_check_code_builds_expected_sequence() -> None:
     subprocess_effects = [item for item in effect.effects if isinstance(item, RunSubprocess)]
     assert [item.effect_id for item in subprocess_effects] == [
         "check_code_policy_guard",
+        "check_code_skip_guard",
         "check_code_ruff_check",
         "check_code_ruff_format_check",
         "check_code_mypy",
@@ -43,15 +44,19 @@ def test_run_check_code_builds_expected_sequence() -> None:
     assert policy_command[0] == sys.executable
     assert policy_command[1:] == ["-m", "prodbox.lib.lint.no_direct_poetry_run_guard"]
 
-    ruff_check_command = subprocess_effects[1].command
+    skip_policy_command = subprocess_effects[1].command
+    assert skip_policy_command[0] == sys.executable
+    assert skip_policy_command[1:] == ["-m", "prodbox.lib.lint.no_test_skip_guard"]
+
+    ruff_check_command = subprocess_effects[2].command
     assert Path(ruff_check_command[0]).name == "ruff"
     assert ruff_check_command[1:] == ["check", "src/", "tests/"]
 
-    ruff_format_command = subprocess_effects[2].command
+    ruff_format_command = subprocess_effects[3].command
     assert Path(ruff_format_command[0]).name == "ruff"
     assert ruff_format_command[1:] == ["format", "--check", "src/", "tests/"]
 
-    mypy_command = subprocess_effects[3].command
+    mypy_command = subprocess_effects[4].command
     assert Path(mypy_command[0]).name == "mypy"
     assert mypy_command[1:] == ["src/"]
 

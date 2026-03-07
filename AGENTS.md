@@ -166,7 +166,8 @@ def test_parse_success(fp: FakeProcess) -> None:
 
 - Mark with `@pytest.mark.integration`
 - Require real infrastructure (kubectl, RKE2, etc.)
-- Skipped in CI without proper environment
+- Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
+- CI executes unit suites (`-m "not integration"`) unless integration environment is explicitly provisioned
 
 ### Coverage
 

@@ -176,6 +176,16 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
         # ... all cases handled
 ```
 
+### 4.4 RKE2 Lifecycle via eDAG
+
+RKE2 cluster lifecycle is modeled as idempotent DAG nodes:
+- `rke2_ensure`: provision/start runtime from existing RKE2 install
+- `rke2_cleanup`: teardown runtime without deleting host storage paths
+
+Provisioning/cleanup use fail-fast prerequisites from the registry (for example,
+`rke2_installed`, `rke2_config_exists`, `rke2_killall_exists`) before any
+destructive or expensive effect runs.
+
 ---
 
 ## 5. Interpreter Pattern

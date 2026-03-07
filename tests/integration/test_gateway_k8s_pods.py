@@ -73,8 +73,9 @@ def _resolve_gateway_image() -> str:
     """
     image = os.environ.get("PRODBOX_GATEWAY_IMAGE", "")
     if not image:
-        pytest.skip("PRODBOX_GATEWAY_IMAGE not set; gateway pod tests require a pre-built image")
-        return ""  # unreachable, but satisfies mypy
+        raise AssertionError(
+            "PRODBOX_GATEWAY_IMAGE not set; gateway pod tests require a pre-built image"
+        )
     return image
 
 

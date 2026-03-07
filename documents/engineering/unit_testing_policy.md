@@ -43,6 +43,12 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 | Interpreter unit tests | **Mocked externals** | Interpreter methods with pytest-subprocess, mocked boto3 |
 | Integration tests | **None (real systems)** | Full pipeline with real kubectl, AWS, Pulumi |
 
+### Integration Execution Policy (Fail-Fast)
+
+- Integration tests must fail fast when prerequisites are missing.
+- Platform/environment gating belongs in prerequisite validation, not inside pytest skips.
+- For unit-only environments (for example CI runners without infrastructure), run `poetry run prodbox test -m "not integration"`.
+
 ---
 
 ## 3. Forbidden Patterns
@@ -74,6 +80,31 @@ from unittest.mock import Mock
 # ... in a DAG builder or effect module
 ```
 
+### Skip/XFail Constructs
+
+```python
+# ❌ FORBIDDEN: Runtime test skips
+pytest.skip("cluster not available")
+
+# ❌ FORBIDDEN: Skip decorators
+@pytest.mark.skip(reason="missing dependency")
+def test_example() -> None:
+    ...
+
+# ❌ FORBIDDEN: Conditional skip decorators
+@pytest.mark.skipif(True, reason="not on linux")
+def test_linux_only() -> None:
+    ...
+
+# ❌ FORBIDDEN: Expected-failure markers
+@pytest.mark.xfail(reason="known failure")
+def test_known_bug() -> None:
+    ...
+```
+
+Tests must either pass or fail with actionable prerequisite errors. Silent skips and expected-failure
+markers hide infrastructure regressions and reduce test signal quality.
+
 ### Specific Anti-Patterns
 
 - `# pragma: no cover` - Coverage exclusions are never permitted
@@ -81,6 +112,8 @@ from unittest.mock import Mock
 - `@patch("prodbox.cli.effects.*")` - Mocking effect construction
 - Pure functions with `Mock` or `MagicMock` parameters
 - Mocks imported in any module except `interpreter.py` tests
+- `pytest.skip(...)` and `pytest.xfail(...)` in tests
+- `@pytest.mark.skip`, `@pytest.mark.skipif`, `@pytest.mark.xfail`
 
 ---
 

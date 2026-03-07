@@ -126,7 +126,12 @@ class RKE2RestartCommand:
 
 @dataclass(frozen=True)
 class RKE2EnsureCommand:
-    """Ensure RKE2 is installed and configured."""
+    """Idempotently provision RKE2 cluster runtime from existing installation."""
+
+
+@dataclass(frozen=True)
+class RKE2CleanupCommand:
+    """Tear down RKE2 cluster runtime without removing host storage paths."""
 
 
 @dataclass(frozen=True)
@@ -342,6 +347,7 @@ Command = (
     | RKE2StopCommand
     | RKE2RestartCommand
     | RKE2EnsureCommand
+    | RKE2CleanupCommand
     | RKE2LogsCommand
     # DNS
     | DNSCheckCommand
@@ -526,6 +532,27 @@ def rke2_ensure_command() -> Result[RKE2EnsureCommand, str]:
         return Failure("RKE2 commands require Linux")
 
     return Success(RKE2EnsureCommand())
+
+
+def rke2_cleanup_command(*, yes: bool = False) -> Result[RKE2CleanupCommand, str]:
+    """Create an RKE2CleanupCommand.
+
+    PLATFORM-AWARE: Returns Failure on non-Linux platforms.
+    SAFETY: Requires explicit --yes acknowledgement because cleanup is destructive.
+
+    Args:
+        yes: Confirmation flag from CLI --yes option
+
+    Returns:
+        Success with RKE2CleanupCommand on Linux when yes=True, Failure otherwise
+    """
+    if platform.system() != "Linux":
+        return Failure("RKE2 commands require Linux")
+
+    if not yes:
+        return Failure("rke2 cleanup requires --yes confirmation")
+
+    return Success(RKE2CleanupCommand())
 
 
 def rke2_logs_command(
@@ -835,7 +862,7 @@ def requires_linux(command: Command) -> bool:
         # RKE2 commands require Linux (systemd)
         case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand():
             return True
-        case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2LogsCommand():
+        case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2CleanupCommand() | RKE2LogsCommand():
             return True
         # DNS timer requires Linux (systemd)
         case DNSEnsureTimerCommand():
@@ -904,7 +931,7 @@ def requires_settings(command: Command) -> bool:
         # RKE2 commands don't require prodbox settings (use system paths)
         case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand():
             return False
-        case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2LogsCommand():
+        case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2CleanupCommand() | RKE2LogsCommand():
             return False
         # Gateway commands don't require prodbox settings (use own config file)
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
@@ -933,6 +960,7 @@ __all__ = [
     "RKE2StopCommand",
     "RKE2RestartCommand",
     "RKE2EnsureCommand",
+    "RKE2CleanupCommand",
     "RKE2LogsCommand",
     # DNS
     "DNSCheckCommand",
@@ -965,6 +993,7 @@ __all__ = [
     "rke2_stop_command",
     "rke2_restart_command",
     "rke2_ensure_command",
+    "rke2_cleanup_command",
     "rke2_logs_command",
     "dns_check_command",
     "dns_update_command",

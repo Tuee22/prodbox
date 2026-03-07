@@ -15,7 +15,7 @@ Home Kubernetes cluster management with Pulumi.
 
 Prodbox is a Python-native infrastructure-as-code project for managing a home Kubernetes cluster. It deploys and manages:
 
-- **RKE2** - Kubernetes distribution (installation managed via CLI)
+- **RKE2** - Kubernetes distribution lifecycle managed via eDAG (`ensure`/`cleanup`)
 - **MetalLB** - LoadBalancer IP assignment using Layer 2 (ARP)
 - **Traefik** - Ingress controller for HTTP/HTTPS traffic
 - **cert-manager** - Automatic TLS certificates via Let's Encrypt
@@ -46,7 +46,8 @@ Router port forwarding:
 ### Prerequisites
 
 - Python 3.12+
-- RKE2 Kubernetes cluster (already running)
+- Linux host with systemd
+- RKE2 binary and config already installed (`/usr/local/bin/rke2`, `/etc/rancher/rke2/config.yaml`)
 - kubectl, helm, pulumi CLI tools
 - AWS account with Route 53 hosted zone
 
@@ -114,7 +115,10 @@ prodbox env validate
 # Verify required CLI tools
 prodbox host ensure-tools
 
-# Check RKE2 status
+# Idempotently provision/start local RKE2 cluster runtime
+prodbox rke2 ensure
+
+# Check resulting RKE2 status
 prodbox rke2 status
 ```
 
@@ -162,6 +166,9 @@ prodbox pulumi preview
 
 # Destroy all resources
 prodbox pulumi destroy
+
+# Tear down RKE2 runtime without deleting host storage paths
+prodbox rke2 cleanup --yes
 ```
 
 ## CLI Commands
@@ -179,10 +186,11 @@ prodbox
 │   └── firewall      # Check firewall status
 ├── rke2
 │   ├── status    # Check RKE2 installation status
-│   ├── ensure    # Verify RKE2 is installed
+│   ├── ensure    # Idempotently provision/start local RKE2 runtime
 │   ├── start     # Start RKE2 service
 │   ├── stop      # Stop RKE2 service
 │   ├── restart   # Restart RKE2 service
+│   ├── cleanup   # Non-destructive teardown (preserves host storage paths)
 │   └── logs      # Show RKE2 logs
 ├── pulumi
 │   ├── up          # Apply infrastructure changes
@@ -232,6 +240,10 @@ poetry run prodbox check-code
 poetry run prodbox tla-check
 poetry run daemon --config <path>
 ```
+
+Testing note:
+- `poetry run prodbox test` runs unit + integration tests and fails fast when integration prerequisites are missing.
+- Use `poetry run prodbox test -m "not integration"` for unit-only environments.
 
 ### Project Structure
 

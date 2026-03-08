@@ -40,7 +40,7 @@ cli.add_command(k8s.k8s)
 cli.add_command(gateway.gateway)
 cli.add_command(check_code.check_code)
 cli.add_command(tla.tla_check_cmd)
-cli.add_command(test_cmd.test_cmd)
+cli.add_command(test_cmd.run_tests_cmd)
 
 
 def main() -> None:

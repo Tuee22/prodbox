@@ -152,7 +152,7 @@ virtualenv (`prodbox_entrypoint_guard.pth`) to block non-entrypoint tools.
 
 1. **Check existing dependencies**: Avoid duplicates or conflicts
 2. **Use caret bounds**: `poetry add "package^X.Y.0"`
-3. **Verify type stubs**: Add to `typings/` if needed (see [Type Safety](../CLAUDE.md#type-safety))
+3. **Verify type stubs**: Add to `typings/` if needed (see [Type Safety](../../CLAUDE.md#type-safety))
 4. **Run tests**: `poetry run prodbox test`
 5. **Run code quality checks**: `poetry run prodbox check-code`
 

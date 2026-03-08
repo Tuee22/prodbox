@@ -36,6 +36,14 @@ def test_run_check_code_builds_expected_sequence() -> None:
     assert [item.effect_id for item in subprocess_effects] == [
         "check_code_policy_guard",
         "check_code_skip_guard",
+        "check_code_purity_guard",
+        "check_code_no_statements_guard",
+        "check_code_shell_guard",
+        "check_code_threading_guard",
+        "check_code_type_escape_guard",
+        "check_code_command_collision_guard",
+        "check_code_timeout_guard",
+        "check_code_doc_lint_guard",
         "check_code_ruff_check",
         "check_code_ruff_format_check",
         "check_code_mypy",
@@ -48,15 +56,47 @@ def test_run_check_code_builds_expected_sequence() -> None:
     assert skip_policy_command[0] == sys.executable
     assert skip_policy_command[1:] == ["-m", "prodbox.lib.lint.no_test_skip_guard"]
 
-    ruff_check_command = subprocess_effects[2].command
+    purity_guard_command = subprocess_effects[2].command
+    assert purity_guard_command[0] == sys.executable
+    assert purity_guard_command[1:] == ["-m", "prodbox.lib.lint.purity_guard"]
+
+    no_statements_guard_command = subprocess_effects[3].command
+    assert no_statements_guard_command[0] == sys.executable
+    assert no_statements_guard_command[1:] == ["-m", "prodbox.lib.lint.no_statements_guard"]
+
+    shell_guard_command = subprocess_effects[4].command
+    assert shell_guard_command[0] == sys.executable
+    assert shell_guard_command[1:] == ["-m", "prodbox.lib.lint.no_shell_guard"]
+
+    threading_guard_command = subprocess_effects[5].command
+    assert threading_guard_command[0] == sys.executable
+    assert threading_guard_command[1:] == ["-m", "prodbox.lib.lint.no_threading_guard"]
+
+    type_escape_guard_command = subprocess_effects[6].command
+    assert type_escape_guard_command[0] == sys.executable
+    assert type_escape_guard_command[1:] == ["-m", "prodbox.lib.lint.type_escape_guard"]
+
+    collision_guard_command = subprocess_effects[7].command
+    assert collision_guard_command[0] == sys.executable
+    assert collision_guard_command[1:] == ["-m", "prodbox.lib.lint.command_name_collision_guard"]
+
+    timeout_guard_command = subprocess_effects[8].command
+    assert timeout_guard_command[0] == sys.executable
+    assert timeout_guard_command[1:] == ["-m", "prodbox.lib.lint.timeout_guard"]
+
+    doc_lint_guard_command = subprocess_effects[9].command
+    assert doc_lint_guard_command[0] == sys.executable
+    assert doc_lint_guard_command[1:] == ["-m", "prodbox.lib.lint.doc_lint_guard"]
+
+    ruff_check_command = subprocess_effects[10].command
     assert Path(ruff_check_command[0]).name == "ruff"
     assert ruff_check_command[1:] == ["check", "src/", "tests/"]
 
-    ruff_format_command = subprocess_effects[3].command
+    ruff_format_command = subprocess_effects[11].command
     assert Path(ruff_format_command[0]).name == "ruff"
     assert ruff_format_command[1:] == ["format", "--check", "src/", "tests/"]
 
-    mypy_command = subprocess_effects[4].command
+    mypy_command = subprocess_effects[12].command
     assert Path(mypy_command[0]).name == "mypy"
     assert mypy_command[1:] == ["src/"]
 

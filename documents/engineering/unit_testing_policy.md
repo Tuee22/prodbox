@@ -2,9 +2,15 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, AGENTS.md
 
 > **Purpose**: Define the Interpreter-Only Mocking Doctrine for unit tests in prodbox.
+
+---
+
+## 0. Canonical Skip Policy Statement
+
+Skip/xfail is prohibited by default; any allowed exception requires explicit doctrinal criteria and automated enforcement.
 
 ---
 
@@ -47,7 +53,16 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 
 - Integration tests must fail fast when prerequisites are missing.
 - Platform/environment gating belongs in prerequisite validation, not inside pytest skips.
-- For unit-only environments (for example CI runners without infrastructure), run `poetry run prodbox test -m "not integration"`.
+- For unit-only environments without integration infrastructure, run `poetry run prodbox test -m "not integration"`.
+
+### Two-Phase Test Command Doctrine
+
+`prodbox test` executes in two phases:
+
+1. **Phase 1 - prerequisite gate**: when integration scope is selected, the eDAG validates integration prerequisites before pytest starts.
+2. **Phase 2 - test execution**: pytest runs only after Phase 1 succeeds.
+
+If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a skip.
 
 ---
 
@@ -256,8 +271,18 @@ The `infra/` module is excluded from unit test coverage because it requires a re
 
 ---
 
+## 8. Intent Ownership
+
+This SSoT owns test skip doctrine intention.
+
+- Owned statement: Skip/xfail is prohibited by default; any allowed exception requires explicit doctrinal criteria and automated enforcement.
+- Linked dependents: `src/prodbox/lib/lint/no_test_skip_guard.py`, `src/prodbox/cli/test_cmd.py`.
+
+---
+
 ## Cross-References
 
 - [Pure FP Standards](./pure_fp_standards.md) - Purity boundary definitions
+- [Code Quality Doctrine](./code_quality.md) - Guardrail enforcement
 - [Effectful DAG Architecture](./effectful_dag_architecture.md) - Effect system design
 - [CLAUDE.md](../../CLAUDE.md) - Project overview

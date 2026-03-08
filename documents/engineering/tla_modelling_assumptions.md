@@ -166,7 +166,7 @@ The design contract:
 |---|---|
 | TLA+ spec written | Complete (~340 lines) |
 | TLC model checker execution | **Complete** — all 6 invariants verified over 4,394,744 distinct states (HeartbeatTimeout=2, MaxTimestamp=2) |
-| CI integration | **Not yet implemented** |
+| CI integration | **Intentionally not used during active development** |
 | Model-implementation correspondence audit | **This document** |
 
 ### Running the Model Checker

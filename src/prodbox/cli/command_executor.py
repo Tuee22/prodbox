@@ -21,11 +21,32 @@ from rich.console import Console
 from prodbox.cli.command_adt import Command
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
+from prodbox.cli.summary import display_dag_failure_report, display_dag_summary, display_summary
 from prodbox.cli.types import Failure, Success
 
 if TYPE_CHECKING:
     from prodbox.cli.effect_dag import EffectDAG
     from prodbox.cli.effects import Effect
+    from prodbox.cli.interpreter import DAGExecutionSummary, EffectInterpreter, ExecutionSummary
+
+
+async def _render_dag_outputs(
+    interpreter: EffectInterpreter,
+    dag_summary: DAGExecutionSummary,
+) -> None:
+    """Render DAG summary and conditional failure report via output effects."""
+    await interpreter.interpret(display_dag_summary(dag_summary))
+    failure_report = display_dag_failure_report(dag_summary)
+    if failure_report is not None:
+        await interpreter.interpret(failure_report)
+
+
+async def _render_effect_output(
+    interpreter: EffectInterpreter,
+    summary: ExecutionSummary,
+) -> None:
+    """Render single-effect execution summary via output effect."""
+    await interpreter.interpret(display_summary(summary))
 
 
 def render_error_and_return_exit_code(message: str, *, effect_id: str) -> int:
@@ -75,6 +96,7 @@ def execute_command(cmd: Command) -> int:
             case Success(dag):
                 interpreter = create_interpreter()
                 dag_summary = await interpreter.interpret_dag(dag)
+                await _render_dag_outputs(interpreter, dag_summary)
                 return dag_summary.exit_code
             case Failure(error):
                 return render_error_and_return_exit_code(
@@ -100,8 +122,9 @@ def execute_effect(effect: Effect[object]) -> int:
 
     async def _run() -> int:
         interpreter = create_interpreter()
-        result = await interpreter.interpret(effect)
-        return result.exit_code
+        summary = await interpreter.interpret(effect)
+        await _render_effect_output(interpreter, summary)
+        return summary.exit_code
 
     return asyncio.run(_run())
 
@@ -122,6 +145,7 @@ def execute_dag(dag: EffectDAG) -> int:
     async def _run() -> int:
         interpreter = create_interpreter()
         dag_summary = await interpreter.interpret_dag(dag)
+        await _render_dag_outputs(interpreter, dag_summary)
         return dag_summary.exit_code
 
     return asyncio.run(_run())

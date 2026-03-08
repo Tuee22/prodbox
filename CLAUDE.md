@@ -261,27 +261,23 @@ poetry run prodbox check-code        # Policy guard + lint + format check + type
 poetry run prodbox tla-check         # TLA+ model verification (requires Docker)
 ```
 
+poetry run prodbox check-code is the required single entrypoint for doctrine enforcement in local development.
+
 ---
 
-## CI/CD
+## Development Tooling Policy
 
-### GitHub Actions
+This repository is in active development and does not use CI automation.
 
-CI runs on every push and PR to main (`.github/workflows/ci.yml`):
-- check-code policy/lint/type gate
-- Unit tests (excludes `@pytest.mark.integration`)
-- TLA+ proof check (requires Docker on runner)
-
-### Pre-commit Hooks
-
-Pre-commit hooks are optional; prefer the CLI entrypoints instead:
+- Do not use `.github/` workflows for validation.
+- Do not use git hooks (including pre-commit).
+- Run validation locally through CLI entrypoints only:
+- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy).
 
 ```bash
 poetry run prodbox check-code
 poetry run prodbox test
 ```
-
-Hooks (if installed): trailing-whitespace, end-of-file-fixer, check-yaml, check-json, ruff, check-code.
 
 ### Container Build
 

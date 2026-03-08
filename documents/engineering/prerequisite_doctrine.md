@@ -2,9 +2,19 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md
 
 > **Purpose**: Philosophy and patterns for prerequisite-based validation in prodbox CLI.
+
+---
+
+## 0. Canonical Doctrine Statements
+
+RKE2 cluster provisioning is idempotently performed via eDAG lifecycle effects, not assumed pre-existing.
+
+Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
+
+Cleanup must tear down RKE2-managed runtime state without deleting host storage paths used for persistent data.
 
 ---
 
@@ -323,8 +333,21 @@ Or see: https://kubernetes.io/docs/tasks/tools/install-kubectl/
 
 ---
 
+## 7. Intent Ownership
+
+This SSoT owns RKE2 lifecycle prerequisite doctrine statements:
+
+- RKE2 cluster provisioning is idempotently performed via eDAG lifecycle effects, not assumed pre-existing.
+- Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
+- Cleanup must tear down RKE2-managed runtime state without deleting host storage paths used for persistent data.
+
+Linked dependents: `documents/engineering/effectful_dag_architecture.md`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/prerequisite_registry.py`.
+
+---
+
 ## Cross-References
 
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [Code Quality Doctrine](./code_quality.md)
 - [Prerequisite Registry](../../src/prodbox/cli/prerequisite_registry.py)
 - [Effect Types](../../src/prodbox/cli/effects.py)

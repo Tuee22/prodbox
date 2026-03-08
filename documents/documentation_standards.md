@@ -14,6 +14,8 @@
 
 Every concept has exactly one canonical document. Other documents may reference but never duplicate.
 
+SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
+
 ### DRY + Link Liberally
 
 - Never copy-paste content between documents
@@ -201,6 +203,15 @@ flowchart TB
 
 - BAD: `def foo() -> Any:`
 - GOOD: `def foo() -> Result[str, str]:`
+
+---
+
+## 10. Intent Ownership
+
+This SSoT co-owns documentation-topology doctrine intention.
+
+- Owned statement: SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
+- Linked dependents: `documents/engineering/README.md`, `src/prodbox/lib/lint/doc_lint_guard.py`.
 
 ---
 

@@ -232,6 +232,13 @@ All tooling runs through CLI entrypoints defined in `pyproject.toml`. Direct
 `poetry run <tool>` commands are blocked once `prodbox check-code` installs the
 entrypoint guard.
 
+poetry run prodbox check-code is the required single entrypoint for doctrine enforcement in local development.
+
+Development tooling policy:
+- Do not use `.github/` workflows or CI automation for this project at this stage.
+- Do not use git hooks (including pre-commit); run CLI entrypoints directly.
+- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy).
+
 Common commands:
 
 ```bash
@@ -284,7 +291,6 @@ DNS management with:
 
 ## Documentation
 
-- [PRODBOX_PLAN.md](PRODBOX_PLAN.md) - Comprehensive project plan, architecture, and roadmap
 
 ### Engineering Documentation
 
@@ -294,10 +300,13 @@ Architecture and design documentation lives in `documents/engineering/`:
 |----------|---------|
 | [documentation_standards.md](documents/documentation_standards.md) | Documentation writing standards |
 | [effectful_dag_architecture.md](documents/engineering/effectful_dag_architecture.md) | Effect DAG system design |
+| [effect_interpreter.md](documents/engineering/effect_interpreter.md) | Interpreter runtime contract |
 | [prerequisite_doctrine.md](documents/engineering/prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
+| [streaming_doctrine.md](documents/engineering/streaming_doctrine.md) | Streaming serialization doctrine |
 | [unit_testing_policy.md](documents/engineering/unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
 | [dependency_management.md](documents/engineering/dependency_management.md) | Poetry dependency standards |
 | [pure_fp_standards.md](documents/engineering/pure_fp_standards.md) | Pure FP coding standards |
+| [code_quality.md](documents/engineering/code_quality.md) | Guardrail and check-code doctrine |
 | [refactoring_patterns.md](documents/engineering/refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [distributed_gateway_architecture.md](documents/engineering/distributed_gateway_architecture.md) | P2P gateway design |
 

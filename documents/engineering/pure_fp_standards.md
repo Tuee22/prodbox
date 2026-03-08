@@ -463,7 +463,8 @@ class LoadSettings(Effect[Settings]):
 
 ## Cross-References
 
-- [Effectful DAG Architecture](./engineering/effectful_dag_architecture.md)
-- [Prerequisite Doctrine](./engineering/prerequisite_doctrine.md)
-- [CLAUDE.md](../CLAUDE.md) - Project overview
-- [AGENTS.md](../AGENTS.md) - Agent guidelines
+- [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [Prerequisite Doctrine](./prerequisite_doctrine.md)
+- [Code Quality Doctrine](./code_quality.md)
+- [CLAUDE.md](../../CLAUDE.md) - Project overview
+- [AGENTS.md](../../AGENTS.md) - Agent guidelines

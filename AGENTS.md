@@ -48,6 +48,8 @@ poetry run prodbox test --cov=src/prodbox  # With coverage
 poetry run prodbox check-code        # Policy guard + ruff + mypy
 ```
 
+poetry run prodbox check-code is the required single entrypoint for doctrine enforcement in local development.
+
 ---
 
 ## Coding Style
@@ -167,7 +169,13 @@ def test_parse_success(fp: FakeProcess) -> None:
 - Mark with `@pytest.mark.integration`
 - Require real infrastructure (kubectl, RKE2, etc.)
 - Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
-- CI executes unit suites (`-m "not integration"`) unless integration environment is explicitly provisioned
+- Use `poetry run prodbox test -m "not integration"` when integration prerequisites are unavailable
+
+### Development Tooling Policy
+
+- Do not use `.github/` workflows or CI automation for this repository during active development
+- Do not use git hooks (including pre-commit); run CLI entrypoints directly
+- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy)
 
 ### Coverage
 

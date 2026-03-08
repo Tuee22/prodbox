@@ -108,7 +108,7 @@ async def _run_subprocess(
 from rich.console import Console  # noqa: E402
 from rich.table import Table  # noqa: E402
 
-from prodbox.cli.effect_dag import EffectDAG, EffectNode  # noqa: E402
+from prodbox.cli.effect_dag import EffectDAG, EffectNode, ReductionError  # noqa: E402
 from prodbox.cli.effects import (  # noqa: E402
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
@@ -158,6 +158,7 @@ from prodbox.cli.effects import (  # noqa: E402
     WriteStderr,
     WriteStdout,
 )
+from prodbox.cli.stream_control import StreamControl, create_stream_handle  # noqa: E402
 from prodbox.cli.types import (  # noqa: E402
     Failure,
     PrereqResults,
@@ -167,6 +168,7 @@ from prodbox.cli.types import (  # noqa: E402
 
 # Type variable for effect return types
 T = TypeVar("T")
+_NO_CALLER_VALUE: object = object()
 
 
 def _assert_never(value: object) -> Never:
@@ -220,6 +222,65 @@ class ExecutionSummary:
 
 
 @dataclass(frozen=True)
+class EffectSuccess:
+    """Effect completed successfully with a propagated value."""
+
+    value: object | None
+
+
+@dataclass(frozen=True)
+class EffectRootCauseFailure:
+    """Effect failed because of its own execution logic."""
+
+    error_message: str
+    fix_hint: str | None = None
+
+
+@dataclass(frozen=True)
+class EffectPrerequisiteSkipped:
+    """Effect skipped because an upstream prerequisite failed."""
+
+    upstream_effect_id: str
+
+
+@dataclass(frozen=True)
+class EffectResult:
+    """Outcome of a single effect execution in the DAG."""
+
+    effect_id: str
+    outcome: EffectSuccess | EffectRootCauseFailure | EffectPrerequisiteSkipped
+    elapsed_seconds: float
+
+    @property
+    def success(self) -> bool:
+        """Return True when outcome is a success."""
+        return isinstance(self.outcome, EffectSuccess)
+
+    @property
+    def value(self) -> object | None:
+        """Backward-compatible value extraction."""
+        match self.outcome:
+            case EffectSuccess(value=v):
+                return v
+            case _:
+                return None
+
+    @property
+    def error(self) -> str | None:
+        """Backward-compatible error extraction."""
+        match self.outcome:
+            case EffectRootCauseFailure(error_message=msg):
+                return msg
+            case _:
+                return None
+
+    @property
+    def is_skipped(self) -> bool:
+        """Return True when outcome is prerequisite-skipped."""
+        return isinstance(self.outcome, EffectPrerequisiteSkipped)
+
+
+@dataclass(frozen=True)
 class DAGExecutionSummary:
     """Summary of DAG execution with per-node results."""
 
@@ -229,7 +290,32 @@ class DAGExecutionSummary:
     total_nodes: int
     successful_nodes: int
     failed_nodes: int
+    skipped_nodes: int = 0
+    unexecuted_nodes: int = 0
     elapsed_seconds: float = 0.0
+    execution_report: str = ""
+    effect_results: tuple[tuple[str, EffectResult], ...] = ()
+    unexecuted_ids: frozenset[str] = frozenset()
+
+    def to_execution_summary(self) -> ExecutionSummary:
+        """Convert DAG summary to command-level execution summary."""
+        return ExecutionSummary(
+            exit_code=self.exit_code,
+            message=self.message,
+            total_effects=self.total_nodes,
+            successful_effects=self.successful_nodes,
+            failed_effects=self.failed_nodes + self.unexecuted_nodes,
+            skipped_effects=self.skipped_nodes,
+            elapsed_seconds=self.elapsed_seconds,
+        )
+
+
+@dataclass(frozen=True)
+class _CallerInput:
+    """Caller-supplied prerequisite input bundled with caller effect id."""
+
+    caller_id: str
+    value: object
 
 
 # =============================================================================
@@ -264,6 +350,7 @@ class EffectInterpreter:
         self.environment_errors: list[EnvironmentError] = []
         self.artifacts: list[Path] = []
         self.start_time: float = time.time()
+        self.stream_control: StreamControl = StreamControl()
         # Rich consoles for formatted output
         self._console: Console = Console()
         self._error_console: Console = Console(stderr=True)
@@ -369,65 +456,155 @@ class EffectInterpreter:
             Tuple of DAG summary and per-node Result values keyed by effect_id
         """
         start = time.time()
-        node_results: list[tuple[str, ExecutionSummary]] = []
-        prereq_results: dict[str, Result[object, object]] = {}
+        # Reset interpreter aggregate metrics for fresh DAG execution.
+        self.start_time = start
+        self.total_effects = 0
+        self.successful_effects = 0
+        self.failed_effects = 0
+        self.skipped_effects = 0
+        self.environment_errors = []
+        self.artifacts = []
 
-        # Get execution order (levels of parallelizable nodes)
-        levels = dag.get_execution_order()
+        node_map: dict[str, EffectNode[object]] = {node.effect_id: node for node in dag.nodes}
+        pending: set[str] = set(node_map.keys())
+        completed: dict[str, EffectResult] = {}
+        unexecuted: set[str] = set()
+        caller_inputs = self._collect_prerequisite_inputs(dag)
 
-        for level in levels:
-            # Execute all nodes in this level concurrently
-            tasks: list[tuple[str, EffectNode[object]]] = []
-            for effect_id in level:
-                node = dag.get_node(effect_id)
-                if node is not None:
-                    tasks.append((effect_id, node))
+        while pending - unexecuted:
+            ready_ids = sorted(
+                [
+                    effect_id
+                    for effect_id in (pending - unexecuted)
+                    if node_map[effect_id].prerequisites <= completed.keys()
+                ]
+            )
+            if not ready_ids:
+                unexecuted.update(pending - completed.keys())
+                break
 
-            # Run all nodes in level concurrently
+            reduction_failures: list[tuple[str, str]] = []
+            ready_nodes: list[tuple[str, EffectNode[object], object, PrereqResults]] = []
+            for effect_id in ready_ids:
+                node = node_map[effect_id]
+                reduced_value, reduction_error = self._reduce_prerequisite_inputs(
+                    node,
+                    caller_inputs.get(effect_id, ()),
+                )
+                if reduction_error is not None:
+                    reduction_failures.append((effect_id, reduction_error.message))
+                    continue
+                prereq_results = self._build_prereq_results(node, completed)
+                effect, effect_error = self._build_effect_for_node(
+                    node,
+                    reduced_value,
+                    prereq_results,
+                )
+                if effect_error is not None:
+                    reduction_failures.append((effect_id, effect_error.message))
+                    continue
+                ready_nodes.append((effect_id, node, reduced_value, prereq_results))
+
+            for effect_id, message in reduction_failures:
+                failure_message = f"Prerequisite reduction failed for '{effect_id}': {message}"
+                self.failed_effects += 1
+                self.environment_errors.append(
+                    EnvironmentError(
+                        tool="prerequisite_reduction",
+                        message=failure_message,
+                        fix_hint="Fix prerequisite reduction/effect builder for this node",
+                        source_effect_id=effect_id,
+                    )
+                )
+                completed[effect_id] = EffectResult(
+                    effect_id=effect_id,
+                    outcome=EffectRootCauseFailure(error_message=failure_message),
+                    elapsed_seconds=0.0,
+                )
+                pending.discard(effect_id)
+
+            if not ready_nodes:
+                continue
+
+            start_times: dict[str, float] = {
+                ready_node[0]: time.time() for ready_node in ready_nodes
+            }
             results = await asyncio.gather(
-                *(self._execute_node(node, prereq_results) for _, node in tasks),
+                *[
+                    self._execute_node(
+                        node,
+                        prereq_results,
+                        reduced_value=reduced_value,
+                    )
+                    for _, node, reduced_value, prereq_results in ready_nodes
+                ],
                 return_exceptions=True,
             )
 
-            # Process results
-            for (effect_id, _), result in zip(tasks, results, strict=True):
-                if isinstance(result, BaseException):
-                    summary = self._create_error_summary(f"Exception: {result}")
-                    prereq_results[effect_id] = Failure(str(result))
-                    node_results.append((effect_id, summary))
+            for (effect_id, _, _, _), raw_result in zip(ready_nodes, results, strict=True):
+                elapsed = time.time() - start_times[effect_id]
+                if isinstance(raw_result, BaseException):
+                    summary = self._create_error_summary(f"Exception: {raw_result}")
+                    value: object | None = None
                 else:
-                    summary, value = result
-                    if summary.success:
-                        prereq_results[effect_id] = Success(value)
-                    else:
-                        prereq_results[effect_id] = Failure(summary.message)
-                    node_results.append((effect_id, summary))
+                    summary = raw_result[0]
+                    value = raw_result[1]
+                completed[effect_id] = self._summary_to_effect_result(
+                    effect_id=effect_id,
+                    summary=summary,
+                    value=value,
+                    elapsed_seconds=elapsed,
+                )
+                pending.discard(effect_id)
 
-        # Calculate totals
-        successful = sum(1 for _, s in node_results if s.success)
-        failed = len(node_results) - successful
+        # Construct deterministic compatibility node summaries.
+        node_results_list: list[tuple[str, ExecutionSummary]] = [
+            (effect_id, self._effect_result_to_summary(result))
+            for effect_id, result in sorted(completed.items())
+        ]
+        for effect_id in sorted(unexecuted):
+            node_results_list.append(
+                (
+                    effect_id,
+                    ExecutionSummary(
+                        exit_code=1,
+                        message="Unexecuted due to unresolved prerequisites",
+                    ),
+                )
+            )
 
-        # Exit code is 0 only if all root nodes succeeded
-        root_summaries = tuple(s for eid, s in node_results if eid in dag.roots)
-        exit_code = 0 if all(s.success for s in root_summaries) else 1
-
-        return (
-            DAGExecutionSummary(
-                exit_code=exit_code,
-                message="DAG execution complete",
-                node_results=tuple(node_results),
-                total_nodes=len(node_results),
-                successful_nodes=successful,
-                failed_nodes=failed,
-                elapsed_seconds=time.time() - start,
-            ),
-            prereq_results,
+        successful_nodes = sum(1 for result in completed.values() if result.success)
+        failed_nodes = sum(
+            1 for result in completed.values() if isinstance(result.outcome, EffectRootCauseFailure)
         )
+        skipped_nodes = sum(1 for result in completed.values() if result.is_skipped)
+        unexecuted_nodes = len(unexecuted)
+        exit_code = self._root_exit_code(
+            roots=dag.roots, completed=completed, unexecuted=unexecuted
+        )
+        execution_report = self._build_execution_report(completed=completed, unexecuted=unexecuted)
+
+        dag_summary = DAGExecutionSummary(
+            exit_code=exit_code,
+            message="DAG execution complete",
+            node_results=tuple(node_results_list),
+            total_nodes=len(dag.nodes),
+            successful_nodes=successful_nodes,
+            failed_nodes=failed_nodes,
+            skipped_nodes=skipped_nodes,
+            unexecuted_nodes=unexecuted_nodes,
+            elapsed_seconds=time.time() - start,
+            execution_report=execution_report,
+            effect_results=tuple(sorted(completed.items())),
+            unexecuted_ids=frozenset(unexecuted),
+        )
+        return dag_summary, self._effect_results_to_prereq_results(completed)
 
     async def _execute_node(
         self,
         node: EffectNode[object],
         prereq_results: PrereqResults,
+        reduced_value: object | None = None,
     ) -> tuple[ExecutionSummary, object | None]:
         """Execute a single DAG node with prerequisite results."""
         # Check if any prerequisite failed
@@ -454,8 +631,209 @@ class EffectInterpreter:
                     )
 
         # Build effect with reduced values if applicable
-        effect = node.build_effect(None, prereq_results)
+        effect = node.build_effect(reduced_value, prereq_results)
         return await self._dispatch_effect(effect)
+
+    def _collect_prerequisite_inputs(
+        self,
+        dag: EffectDAG,
+    ) -> dict[str, tuple[_CallerInput, ...]]:
+        """Collect caller inputs for each prerequisite effect id."""
+        caller_inputs: dict[str, list[_CallerInput]] = {}
+        for node in dag.nodes:
+            value_map = {item.effect_id: item.value for item in node.prerequisite_values}
+            for prereq_id in node.prerequisites:
+                entry = _CallerInput(
+                    caller_id=node.effect_id,
+                    value=value_map.get(prereq_id, _NO_CALLER_VALUE),
+                )
+                caller_inputs.setdefault(prereq_id, []).append(entry)
+        return {effect_id: tuple(values) for effect_id, values in caller_inputs.items()}
+
+    def _reduce_prerequisite_inputs(
+        self,
+        node: EffectNode[object],
+        caller_inputs: tuple[_CallerInput, ...],
+    ) -> tuple[object, ReductionError | None]:
+        """Apply node reduction monad to caller-supplied prerequisite values."""
+        acc = node.reduction.unit()
+        ordered = sorted(caller_inputs, key=self._caller_sort_key)
+        for caller_input in ordered:
+            value = (
+                node.reduction.unit()
+                if caller_input.value is _NO_CALLER_VALUE
+                else caller_input.value
+            )
+            try:
+                reduced = node.reduction.bind(acc, value)
+            except Exception as exc:
+                return acc, ReductionError(message=f"Reduction bind failed: {exc}")
+            if isinstance(reduced, ReductionError):
+                return acc, reduced
+            acc = reduced
+        return acc, None
+
+    @staticmethod
+    def _caller_sort_key(item: _CallerInput) -> str:
+        """Deterministic caller order for reduction."""
+        return item.caller_id
+
+    def _build_effect_for_node(
+        self,
+        node: EffectNode[object],
+        reduced_value: object,
+        prereq_results: PrereqResults,
+    ) -> tuple[Effect[object] | None, ReductionError | None]:
+        """Build effect for node and validate effect_id consistency."""
+        try:
+            effect = node.build_effect(reduced_value, prereq_results)
+        except Exception as exc:
+            return None, ReductionError(message=f"Effect factory failed: {exc}")
+        if effect.effect_id != node.effect_id:
+            return (
+                None,
+                ReductionError(
+                    message=(
+                        "Effect factory returned mismatched effect_id "
+                        f"'{effect.effect_id}' (expected '{node.effect_id}')"
+                    )
+                ),
+            )
+        return effect, None
+
+    def _build_prereq_results(
+        self,
+        node: EffectNode[object],
+        completed: dict[str, EffectResult],
+    ) -> PrereqResults:
+        """Build prerequisite result map for a node from completed outcomes."""
+        results: dict[str, Result[object, object]] = {}
+        for prereq_id in node.prerequisites:
+            effect_result = completed[prereq_id]
+            if effect_result.success:
+                results[prereq_id] = Success(effect_result.value)
+            else:
+                results[prereq_id] = Failure(effect_result.error or "Effect failed")
+        return results
+
+    def _summary_to_effect_result(
+        self,
+        *,
+        effect_id: str,
+        summary: ExecutionSummary,
+        value: object | None,
+        elapsed_seconds: float,
+    ) -> EffectResult:
+        """Convert ExecutionSummary to structured effect outcome."""
+        if summary.message.startswith("Skipped due to"):
+            return EffectResult(
+                effect_id=effect_id,
+                outcome=EffectPrerequisiteSkipped(
+                    upstream_effect_id=self._extract_upstream_effect_id(summary.message),
+                ),
+                elapsed_seconds=elapsed_seconds,
+            )
+        if summary.success:
+            return EffectResult(
+                effect_id=effect_id,
+                outcome=EffectSuccess(value=value),
+                elapsed_seconds=elapsed_seconds,
+            )
+        return EffectResult(
+            effect_id=effect_id,
+            outcome=EffectRootCauseFailure(error_message=summary.message),
+            elapsed_seconds=elapsed_seconds,
+        )
+
+    @staticmethod
+    def _extract_upstream_effect_id(message: str) -> str:
+        """Extract upstream effect id from skip message."""
+        failed_prefix = "Skipped due to failed prerequisite: "
+        missing_prefix = "Skipped due to missing prerequisite: "
+        if message.startswith(failed_prefix):
+            return message.removeprefix(failed_prefix)
+        if message.startswith(missing_prefix):
+            return message.removeprefix(missing_prefix)
+        return "unknown"
+
+    @staticmethod
+    def _effect_result_to_summary(effect_result: EffectResult) -> ExecutionSummary:
+        """Convert structured effect result to compatibility ExecutionSummary."""
+        match effect_result.outcome:
+            case EffectSuccess():
+                return ExecutionSummary(exit_code=0, message="Success")
+            case EffectPrerequisiteSkipped(upstream_effect_id=upstream):
+                return ExecutionSummary(
+                    exit_code=1,
+                    message=f"Skipped due to failed prerequisite: {upstream}",
+                )
+            case EffectRootCauseFailure(error_message=message):
+                return ExecutionSummary(exit_code=1, message=message)
+
+    @staticmethod
+    def _effect_results_to_prereq_results(
+        completed: dict[str, EffectResult],
+    ) -> dict[str, Result[object, object]]:
+        """Convert structured effect results to Result map for callers/tests."""
+        results: dict[str, Result[object, object]] = {}
+        for effect_id, result in completed.items():
+            if result.success:
+                results[effect_id] = Success(result.value)
+            else:
+                results[effect_id] = Failure(result.error or "Effect failed")
+        return results
+
+    @staticmethod
+    def _build_execution_report(
+        *,
+        completed: dict[str, EffectResult],
+        unexecuted: set[str],
+    ) -> str:
+        """Build deterministic execution report text for DAG summary."""
+        root_failures = [
+            (effect_id, result.error or "Effect failed")
+            for effect_id, result in completed.items()
+            if isinstance(result.outcome, EffectRootCauseFailure)
+        ]
+        skipped = [
+            (effect_id, result.outcome.upstream_effect_id)
+            for effect_id, result in completed.items()
+            if isinstance(result.outcome, EffectPrerequisiteSkipped)
+        ]
+        lines: list[str] = ["DAG execution complete"]
+        if root_failures:
+            lines.append("Root-cause failures:")
+            lines.extend(
+                [f"  - {effect_id}: {message}" for effect_id, message in sorted(root_failures)]
+            )
+        if skipped:
+            lines.append("Skipped effects:")
+            lines.extend(
+                [
+                    f"  - {effect_id}: skipped due to {upstream}"
+                    for effect_id, upstream in sorted(skipped)
+                ]
+            )
+        if unexecuted:
+            lines.append("Unexecuted effects:")
+            lines.extend([f"  - {effect_id}" for effect_id in sorted(unexecuted)])
+        return "\n".join(lines)
+
+    @staticmethod
+    def _root_exit_code(
+        *,
+        roots: frozenset[str],
+        completed: dict[str, EffectResult],
+        unexecuted: set[str],
+    ) -> int:
+        """Compute command exit code from root outcomes."""
+        for root_id in roots:
+            if root_id in unexecuted:
+                return 1
+            result = completed.get(root_id)
+            if result is None or not result.success:
+                return 1
+        return 0
 
     async def _dispatch_effect(self, effect: Effect[T]) -> tuple[ExecutionSummary, object | None]:
         """
@@ -729,14 +1107,22 @@ class EffectInterpreter:
         self, effect: RunSubprocess
     ) -> tuple[ExecutionSummary, int | None]:
         """Execute subprocess command."""
+        capture_output = effect.capture_output and not effect.stream_stdout
+        stream_handle = (
+            create_stream_handle(effect.effect_id, " ".join(effect.command))
+            if effect.stream_stdout
+            else None
+        )
         try:
+            if stream_handle is not None:
+                await self.stream_control.acquire_stream(stream_handle)
             output = await _run_subprocess(
                 tuple(effect.command),
                 cwd=effect.cwd,
                 env=effect.env,
                 timeout=effect.timeout,
                 input_data=effect.input_data,
-                capture_output=effect.capture_output,
+                capture_output=capture_output,
             )
 
             if output.returncode == -1 and output.stderr == b"Timeout":
@@ -762,6 +1148,9 @@ class EffectInterpreter:
         except OSError as e:
             self.failed_effects += 1
             return self._create_error_summary(f"Failed to run command: {e}"), None
+        finally:
+            if stream_handle is not None:
+                self.stream_control.release_stream(stream_handle)
 
     async def _interpret_capture_subprocess_output(
         self, effect: CaptureSubprocessOutput
@@ -1654,6 +2043,10 @@ __all__ = [
     "EnvironmentError",
     "ExecutionSummary",
     "DAGExecutionSummary",
+    "EffectSuccess",
+    "EffectRootCauseFailure",
+    "EffectPrerequisiteSkipped",
+    "EffectResult",
     # Interpreter
     "EffectInterpreter",
     "create_interpreter",

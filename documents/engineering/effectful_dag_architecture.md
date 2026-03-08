@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effect_interpreter.md
 
 > **Purpose**: Design documentation for the pure effectful DAG system in prodbox CLI.
 
@@ -27,7 +27,7 @@ flowchart TB
     ADT --> DAG[Effect DAG]
     DAG --> Interpreter[Effect Interpreter]
     Interpreter --> Effects[Side Effects]
-    Effects --> Result[Exit Code]
+    Effects --> Result[Execution Summary + Exit Code]
 ```
 
 ### 2.1 Command ADTs
@@ -201,8 +201,12 @@ def execute_command(cmd: Command) -> int:
         match command_to_dag(cmd):
             case Success(dag):
                 interpreter = create_interpreter()
-                summary = await interpreter.interpret_dag(dag)
-                return summary.exit_code
+                dag_summary = await interpreter.interpret_dag(dag)
+                await interpreter.interpret(display_dag_summary(dag_summary))
+                failure_report = display_dag_failure_report(dag_summary)
+                if failure_report is not None:
+                    await interpreter.interpret(failure_report)
+                return dag_summary.exit_code
             case Failure(error):
                 return render_error_and_return_exit_code(error)
     return asyncio.run(_run())
@@ -222,6 +226,22 @@ async def interpret(self, effect: Effect[T]) -> Result[T, str]:
             return await self._interpret_run_subprocess(effect)
         # ... all cases handled
 ```
+
+### 5.3 Output Contract (SSoT)
+
+Output behavior at command boundary is deterministic:
+
+Every CLI command must emit a deterministic execution summary; exit code alone is insufficient user output.
+
+1. Every command emits a summary to stdout (via `WriteStdout` effect).
+2. Exit code alone is never considered sufficient user output.
+3. On failure, additional DAG failure details are routed to stderr (via `WriteStderr` effect).
+
+The summary contract is represented by:
+
+- `ExecutionSummary` for single-effect execution
+- `DAGExecutionSummary` for DAG execution
+- `src/prodbox/cli/summary.py` formatters and output effects
 
 ---
 
@@ -293,9 +313,19 @@ def test_fetch_public_ip_effect(fp: FakeProcess) -> None:
 
 ---
 
+## 8. Intent Ownership
+
+This SSoT owns the command output contract intention.
+
+- Owned statement: Every CLI command must emit a deterministic execution summary; exit code alone is insufficient user output.
+- Linked dependents: `documents/engineering/effect_interpreter.md`, `src/prodbox/cli/summary.py`, `src/prodbox/cli/command_executor.py`.
+
+---
+
 ## Cross-References
 
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
+- [Effect Interpreter Runtime](./effect_interpreter.md)
 - [Types Module](../../src/prodbox/cli/types.py)
 - [Effects Module](../../src/prodbox/cli/effects.py)
 - [DAG Module](../../src/prodbox/cli/effect_dag.py)

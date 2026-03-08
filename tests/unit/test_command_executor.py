@@ -57,11 +57,15 @@ class TestExecuteCommand:
         with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
+            mock_interpreter.interpret = AsyncMock(
+                return_value=ExecutionSummary(exit_code=0, message="summary rendered")
+            )
             mock_create.return_value = mock_interpreter
 
             result = execute_command(cmd)
 
         assert result == 0
+        assert mock_interpreter.interpret.await_count == 1
 
     def test_execute_command_failure(self) -> None:
         """execute_command should return non-zero on failure."""
@@ -79,11 +83,16 @@ class TestExecuteCommand:
         with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
+            mock_interpreter.interpret = AsyncMock(
+                return_value=ExecutionSummary(exit_code=0, message="rendered")
+            )
             mock_create.return_value = mock_interpreter
 
             result = execute_command(cmd)
 
         assert result == 1
+        # Summary + failure details report
+        assert mock_interpreter.interpret.await_count == 2
 
     def test_execute_command_dag_build_failure(self) -> None:
         """execute_command should return 1 when DAG build fails."""
@@ -118,6 +127,7 @@ class TestExecuteEffect:
             result = execute_effect(effect)
 
         assert result == 0
+        assert mock_interpreter.interpret.await_count == 2
 
     def test_execute_effect_failure(self) -> None:
         """execute_effect should return non-zero on failure."""
@@ -133,6 +143,7 @@ class TestExecuteEffect:
             result = execute_effect(effect)
 
         assert result == 1
+        assert mock_interpreter.interpret.await_count == 2
 
 
 class TestExecuteDAG:
@@ -157,11 +168,15 @@ class TestExecuteDAG:
         with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
+            mock_interpreter.interpret = AsyncMock(
+                return_value=ExecutionSummary(exit_code=0, message="rendered")
+            )
             mock_create.return_value = mock_interpreter
 
             result = execute_dag(dag)
 
         assert result == 0
+        assert mock_interpreter.interpret.await_count == 1
 
     def test_execute_dag_failure(self) -> None:
         """execute_dag should return non-zero on failure."""
@@ -182,8 +197,12 @@ class TestExecuteDAG:
         with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
             mock_interpreter = MagicMock()
             mock_interpreter.interpret_dag = AsyncMock(return_value=mock_summary)
+            mock_interpreter.interpret = AsyncMock(
+                return_value=ExecutionSummary(exit_code=0, message="rendered")
+            )
             mock_create.return_value = mock_interpreter
 
             result = execute_dag(dag)
 
         assert result == 1
+        assert mock_interpreter.interpret.await_count == 2

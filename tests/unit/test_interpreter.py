@@ -1943,6 +1943,70 @@ class TestRunSubprocessEdgeCases:
     """Tests for RunSubprocess effect error paths."""
 
     @pytest.mark.asyncio
+    async def test_run_subprocess_streaming_disables_capture(self) -> None:
+        """RunSubprocess should disable capture when stream_stdout=True."""
+        interpreter = EffectInterpreter()
+        effect = RunSubprocess(
+            effect_id="streaming_cmd",
+            description="Streaming command",
+            command=["echo", "hello"],
+            stream_stdout=True,
+        )
+
+        with patch("prodbox.cli.interpreter._run_subprocess") as mock_run:
+            mock_run.return_value = ProcessOutput(returncode=0, stdout=b"", stderr=b"")
+            summary, _value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["capture_output"] is False
+
+    @pytest.mark.asyncio
+    async def test_run_subprocess_streaming_uses_stream_control(self) -> None:
+        """Streaming subprocess should acquire/release stream control."""
+        interpreter = EffectInterpreter()
+        effect = RunSubprocess(
+            effect_id="stream_control_cmd",
+            description="Stream-controlled command",
+            command=["echo", "hello"],
+            stream_stdout=True,
+        )
+
+        with (
+            patch("prodbox.cli.interpreter._run_subprocess") as mock_run,
+            patch.object(
+                interpreter.stream_control,
+                "acquire_stream",
+                new_callable=AsyncMock,
+            ) as mock_acquire,
+            patch.object(interpreter.stream_control, "release_stream") as mock_release,
+        ):
+            mock_run.return_value = ProcessOutput(returncode=0, stdout=b"", stderr=b"")
+            summary, _value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        mock_acquire.assert_awaited_once()
+        mock_release.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_run_subprocess_default_keeps_capture(self) -> None:
+        """RunSubprocess should keep capture when stream_stdout=False."""
+        interpreter = EffectInterpreter()
+        effect = RunSubprocess(
+            effect_id="captured_cmd",
+            description="Captured command",
+            command=["echo", "hello"],
+        )
+
+        with patch("prodbox.cli.interpreter._run_subprocess") as mock_run:
+            mock_run.return_value = ProcessOutput(returncode=0, stdout=b"hello", stderr=b"")
+            summary, _value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["capture_output"] is True
+
+    @pytest.mark.asyncio
     async def test_run_subprocess_timeout_effect(self) -> None:
         """RunSubprocess should handle timeout from subprocess."""
         interpreter = EffectInterpreter()

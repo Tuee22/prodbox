@@ -56,6 +56,24 @@ GOOD: Fail if kubeconfig doesn't exist
 BAD: Proceed with default kubeconfig path that might not work
 ```
 
+### 1.5 Fix Hint Ownership Contract (SSoT)
+
+Fix hints are owned once and must not be duplicated downstream:
+
+1. User-controlled environment prerequisites may emit actionable fix hints.
+2. DAG-managed downstream failures must not add fix hints when upstream prerequisite failure already exists.
+3. Manual environment fixes are surfaced once in summary output under `Manual env changes needed`.
+4. Remediation text must describe user-controlled environment actions, not DAG-managed runtime effects.
+
+### 1.6 Prerequisite Result Propagation
+
+Prerequisite outcomes propagate as `Result` values to dependent nodes.
+
+Default node policy in prodbox is `PROPAGATE`:
+- if prerequisite results include failure, the node returns a propagated prerequisite failure.
+
+Nodes that require custom handling can opt into `IGNORE` and explicitly aggregate or recover using prerequisite results in their effect builder.
+
 ---
 
 ## 2. Prerequisite Categories

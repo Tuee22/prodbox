@@ -8,6 +8,7 @@ from prodbox.cli.effect_dag import (
     DEFAULT_REDUCTION_MONAD,
     EffectDAG,
     EffectNode,
+    PrerequisiteFailurePolicy,
     PrerequisiteRegistry,
     PrerequisiteValue,
     ReductionError,
@@ -117,6 +118,21 @@ class TestEffectNode:
         )
 
         assert node.prerequisites == frozenset(["prereq1", "prereq2"])
+
+    def test_effect_node_default_prerequisite_failure_policy(self) -> None:
+        """EffectNode should default to propagated prerequisite failures."""
+        effect = Pure(effect_id="test", description="Test", value="hello")
+        node: EffectNode[str] = EffectNode(effect=effect)
+        assert node.prerequisite_failure_policy == PrerequisiteFailurePolicy.PROPAGATE
+
+    def test_effect_node_explicit_prerequisite_failure_policy(self) -> None:
+        """EffectNode should accept explicit prerequisite failure policy."""
+        effect = Pure(effect_id="test", description="Test", value="hello")
+        node: EffectNode[str] = EffectNode(
+            effect=effect,
+            prerequisite_failure_policy=PrerequisiteFailurePolicy.IGNORE,
+        )
+        assert node.prerequisite_failure_policy == PrerequisiteFailurePolicy.IGNORE
 
     def test_effect_node_build_effect_no_builder(self) -> None:
         """build_effect returns original effect when no builder set."""

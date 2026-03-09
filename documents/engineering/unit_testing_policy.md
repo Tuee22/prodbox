@@ -64,6 +64,31 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 
 If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a skip.
 
+### Command-Scope Prerequisite Aggregation
+
+`prodbox test` applies prerequisite gates at command scope:
+
+1. Selected pytest scope determines whether integration prerequisites are required.
+2. Integration-selected scopes aggregate prerequisite requirements into one Phase 1 gate.
+3. Unit-only scopes (`-m "not integration"` or explicit `tests/unit/...` paths) bypass integration gates.
+
+### Session Fixtures vs Test DAG (SSoT)
+
+Session fixtures are for pytest infrastructure only. CLI-modeled effectful prerequisites belong in the test DAG.
+
+- Allowed in session fixtures: pure pytest setup, temporary directory scaffolding, plugin configuration.
+- Forbidden in session fixtures: invoking `poetry run prodbox ...`, starting external services, or running CLI-modeled prerequisite operations.
+
+This keeps prerequisite orchestration centralized in the eDAG gate and prevents hidden preconditions.
+
+### Timeout Budget Separation
+
+Two-phase execution separates timeout budgets:
+
+1. Phase 1 prerequisite gate uses command-level timeout budgets (for example, integration prerequisite checks).
+2. Phase 2 pytest execution uses test-level timeout policy (`pytest-timeout`, per-test overrides as needed).
+3. Phase 1 elapsed time does not consume Phase 2 test timeout budget.
+
 ---
 
 ## 3. Forbidden Patterns
@@ -285,4 +310,5 @@ This SSoT owns test skip doctrine intention.
 - [Pure FP Standards](./pure_fp_standards.md) - Purity boundary definitions
 - [Code Quality Doctrine](./code_quality.md) - Guardrail enforcement
 - [Effectful DAG Architecture](./effectful_dag_architecture.md) - Effect system design
+- [Prerequisite DAG System](./prerequisite_dag_system.md) - Test prerequisite gate construction
 - [CLAUDE.md](../../CLAUDE.md) - Project overview

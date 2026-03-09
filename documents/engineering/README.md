@@ -19,6 +19,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
+| [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and runtime reference |
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and at-most-one-stream invariants |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
@@ -46,6 +47,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 ### Prerequisites
 - [Fail-Fast Philosophy](./prerequisite_doctrine.md#1-philosophy)
 - [Prerequisite Registry](./prerequisite_doctrine.md#3-registry)
+- [Prerequisite DAG System](./prerequisite_dag_system.md)
 
 ### Dependency Management
 - [Lock File Policy](./dependency_management.md#1-lock-file-policy)

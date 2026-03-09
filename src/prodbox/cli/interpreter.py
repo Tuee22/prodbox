@@ -108,7 +108,12 @@ async def _run_subprocess(
 from rich.console import Console  # noqa: E402
 from rich.table import Table  # noqa: E402
 
-from prodbox.cli.effect_dag import EffectDAG, EffectNode, ReductionError  # noqa: E402
+from prodbox.cli.effect_dag import (  # noqa: E402
+    EffectDAG,
+    EffectNode,
+    PrerequisiteFailurePolicy,
+    ReductionError,
+)
 from prodbox.cli.effects import (  # noqa: E402
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
@@ -169,6 +174,7 @@ from prodbox.cli.types import (  # noqa: E402
 # Type variable for effect return types
 T = TypeVar("T")
 _NO_CALLER_VALUE: object = object()
+_PREREQ_FAILURE_PREFIX: str = "Prerequisite failure propagated:"
 
 
 def _assert_never(value: object) -> Never:
@@ -192,7 +198,7 @@ class EnvironmentError:
 
     tool: str
     message: str
-    fix_hint: str
+    fix_hint: str | None
     source_effect_id: str
 
 
@@ -512,7 +518,7 @@ class EffectInterpreter:
                     EnvironmentError(
                         tool="prerequisite_reduction",
                         message=failure_message,
-                        fix_hint="Fix prerequisite reduction/effect builder for this node",
+                        fix_hint=None,
                         source_effect_id=effect_id,
                     )
                 )
@@ -607,32 +613,66 @@ class EffectInterpreter:
         reduced_value: object | None = None,
     ) -> tuple[ExecutionSummary, object | None]:
         """Execute a single DAG node with prerequisite results."""
-        # Check if any prerequisite failed
-        for prereq_id in node.prerequisites:
-            prereq_result = prereq_results.get(prereq_id)
-            match prereq_result:
-                case Failure(_):
-                    self.skipped_effects += 1
+        failed_prereqs, missing_prereqs = self._partition_prerequisite_results(
+            node=node,
+            prereq_results=prereq_results,
+        )
+        match node.prerequisite_failure_policy:
+            case PrerequisiteFailurePolicy.PROPAGATE:
+                if failed_prereqs or missing_prereqs:
+                    self.failed_effects += 1
                     return (
                         self._create_error_summary(
-                            f"Skipped due to failed prerequisite: {prereq_id}"
+                            self._format_propagated_prerequisite_failure(
+                                failed_prereqs=failed_prereqs,
+                                missing_prereqs=missing_prereqs,
+                            )
                         ),
                         None,
                     )
-                case Success(_):
-                    pass
-                case None:
-                    self.skipped_effects += 1
-                    return (
-                        self._create_error_summary(
-                            f"Skipped due to missing prerequisite: {prereq_id}"
-                        ),
-                        None,
-                    )
+            case PrerequisiteFailurePolicy.IGNORE:
+                pass
 
         # Build effect with reduced values if applicable
         effect = node.build_effect(reduced_value, prereq_results)
         return await self._dispatch_effect(effect)
+
+    @staticmethod
+    def _partition_prerequisite_results(
+        *,
+        node: EffectNode[object],
+        prereq_results: PrereqResults,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return failing and missing prerequisite IDs for one node."""
+        failed = tuple(
+            sorted(
+                prereq_id
+                for prereq_id in node.prerequisites
+                if isinstance(prereq_results.get(prereq_id), Failure)
+            )
+        )
+        missing = tuple(
+            sorted(
+                prereq_id
+                for prereq_id in node.prerequisites
+                if prereq_results.get(prereq_id) is None
+            )
+        )
+        return failed, missing
+
+    @staticmethod
+    def _format_propagated_prerequisite_failure(
+        *,
+        failed_prereqs: tuple[str, ...],
+        missing_prereqs: tuple[str, ...],
+    ) -> str:
+        """Build deterministic propagated-prerequisite failure message."""
+        details: list[str] = []
+        if failed_prereqs:
+            details.append(f"failed prerequisites: {', '.join(failed_prereqs)}")
+        if missing_prereqs:
+            details.append(f"missing prerequisites: {', '.join(missing_prereqs)}")
+        return f"{_PREREQ_FAILURE_PREFIX} {'; '.join(details)}"
 
     def _collect_prerequisite_inputs(
         self,
@@ -725,14 +765,6 @@ class EffectInterpreter:
         elapsed_seconds: float,
     ) -> EffectResult:
         """Convert ExecutionSummary to structured effect outcome."""
-        if summary.message.startswith("Skipped due to"):
-            return EffectResult(
-                effect_id=effect_id,
-                outcome=EffectPrerequisiteSkipped(
-                    upstream_effect_id=self._extract_upstream_effect_id(summary.message),
-                ),
-                elapsed_seconds=elapsed_seconds,
-            )
         if summary.success:
             return EffectResult(
                 effect_id=effect_id,
@@ -744,17 +776,6 @@ class EffectInterpreter:
             outcome=EffectRootCauseFailure(error_message=summary.message),
             elapsed_seconds=elapsed_seconds,
         )
-
-    @staticmethod
-    def _extract_upstream_effect_id(message: str) -> str:
-        """Extract upstream effect id from skip message."""
-        failed_prefix = "Skipped due to failed prerequisite: "
-        missing_prefix = "Skipped due to missing prerequisite: "
-        if message.startswith(failed_prefix):
-            return message.removeprefix(failed_prefix)
-        if message.startswith(missing_prefix):
-            return message.removeprefix(missing_prefix)
-        return "unknown"
 
     @staticmethod
     def _effect_result_to_summary(effect_result: EffectResult) -> ExecutionSummary:
@@ -790,15 +811,17 @@ class EffectInterpreter:
         unexecuted: set[str],
     ) -> str:
         """Build deterministic execution report text for DAG summary."""
+        propagated_failures = [
+            (effect_id, result.error or "Effect failed")
+            for effect_id, result in completed.items()
+            if isinstance(result.outcome, EffectRootCauseFailure)
+            and (result.error or "Effect failed").startswith(_PREREQ_FAILURE_PREFIX)
+        ]
         root_failures = [
             (effect_id, result.error or "Effect failed")
             for effect_id, result in completed.items()
             if isinstance(result.outcome, EffectRootCauseFailure)
-        ]
-        skipped = [
-            (effect_id, result.outcome.upstream_effect_id)
-            for effect_id, result in completed.items()
-            if isinstance(result.outcome, EffectPrerequisiteSkipped)
+            and not (result.error or "Effect failed").startswith(_PREREQ_FAILURE_PREFIX)
         ]
         lines: list[str] = ["DAG execution complete"]
         if root_failures:
@@ -806,12 +829,12 @@ class EffectInterpreter:
             lines.extend(
                 [f"  - {effect_id}: {message}" for effect_id, message in sorted(root_failures)]
             )
-        if skipped:
-            lines.append("Skipped effects:")
+        if propagated_failures:
+            lines.append("Propagated prerequisite failures:")
             lines.extend(
                 [
-                    f"  - {effect_id}: skipped due to {upstream}"
-                    for effect_id, upstream in sorted(skipped)
+                    f"  - {effect_id}: {message}"
+                    for effect_id, message in sorted(propagated_failures)
                 ]
             )
         if unexecuted:

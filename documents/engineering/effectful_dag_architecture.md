@@ -243,6 +243,26 @@ The summary contract is represented by:
 - `DAGExecutionSummary` for DAG execution
 - `src/prodbox/cli/summary.py` formatters and output effects
 
+### 5.4 Prerequisite Result Propagation (SSoT)
+
+Interpreter DAG semantics follow prerequisite result propagation:
+
+1. Dependents receive prerequisite `Result` values (`Success`/`Failure`) as input data.
+2. A prerequisite failure is not treated as implicit runtime cancellation.
+3. Node policy decides behavior:
+   - `PROPAGATE`: node returns propagated prerequisite failure without executing side effects.
+   - `IGNORE`: node executes and can aggregate or recover from prerequisite failures.
+4. Command failure is determined by root node outcomes, not by prerequisite failure presence alone.
+
+### 5.5 Output No-Repetition Rule (SSoT)
+
+Failure output must be deterministic and non-duplicative:
+
+1. Root-cause failures and propagated prerequisite failures are rendered in distinct sections.
+2. Manual fix hints are deduplicated by hint text.
+3. Manual environment fixes are emitted once under `Manual env changes needed`.
+4. Per-error entries should not repeat the same fix payload inline.
+
 ---
 
 ## 6. Railway-Oriented Programming
@@ -268,6 +288,14 @@ Sequence([
     UpdateRoute53Record(...)
 ])
 ```
+
+### 6.2A Railway Semantics for eDAG Prerequisites
+
+Railway-oriented behavior for prerequisite-driven DAG execution is:
+
+1. Failure propagates as data (`Failure[E]`), not as hidden control flow.
+2. Nodes become ready when prerequisite execution is complete (success or failure).
+3. Node-level policy defines whether failures propagate, aggregate, or recover.
 
 ### 6.3 Pattern Matching
 
@@ -325,6 +353,7 @@ This SSoT owns the command output contract intention.
 ## Cross-References
 
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
+- [Prerequisite DAG System](./prerequisite_dag_system.md)
 - [Effect Interpreter Runtime](./effect_interpreter.md)
 - [Types Module](../../src/prodbox/cli/types.py)
 - [Effects Module](../../src/prodbox/cli/effects.py)

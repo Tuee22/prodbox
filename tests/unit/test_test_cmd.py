@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+from prodbox.cli.effect_dag import PrerequisiteFailurePolicy
+from prodbox.cli.interpreter import EffectInterpreter
 from prodbox.cli.test_cmd import (
     INTEGRATION_TEST_PREREQUISITES,
     _build_test_dag,
@@ -46,6 +48,7 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
     assert phase_two.prerequisites == INTEGRATION_TEST_PREREQUISITES
+    assert phase_two.prerequisite_failure_policy == PrerequisiteFailurePolicy.PROPAGATE
 
 
 def test_build_test_dag_skips_integration_gate_for_unit_scope() -> None:
@@ -64,3 +67,29 @@ def test_run_tests_executes_built_dag_via_execute_dag() -> None:
     mock_execute_dag.assert_called_once()
     dag = mock_execute_dag.call_args.args[0]
     assert dag.get_node("pytest_phase_two") is not None
+
+
+async def test_phase_two_pytest_does_not_run_when_phase_one_gate_fails() -> None:
+    """Phase 2 pytest subprocess must not execute when prerequisite gate fails."""
+    dag = _build_test_dag(())
+    interpreter = EffectInterpreter()
+
+    async def fail_file_checks(*_args: object, **_kwargs: object) -> tuple[object, bool]:
+        return interpreter._create_error_summary("File not found: forced"), False
+
+    with (
+        patch.object(
+            interpreter,
+            "_interpret_check_file_exists",
+            side_effect=fail_file_checks,
+        ),
+        patch.object(
+            interpreter,
+            "_interpret_run_subprocess",
+            new_callable=AsyncMock,
+        ) as mock_run_subprocess,
+    ):
+        summary = await interpreter.interpret_dag(dag)
+
+    assert summary.exit_code == 1
+    mock_run_subprocess.assert_not_awaited()

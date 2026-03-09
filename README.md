@@ -122,6 +122,10 @@ prodbox rke2 ensure
 prodbox rke2 status
 ```
 
+Prerequisite failure contract:
+- Manual environment fixes are emitted once from the root-cause prerequisite under `Manual env changes needed`.
+- Downstream propagated prerequisite failures intentionally do not add duplicate fix hints.
+
 ### Deploy Infrastructure
 
 ```bash
@@ -302,6 +306,7 @@ Architecture and design documentation lives in `documents/engineering/`:
 | [effectful_dag_architecture.md](documents/engineering/effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](documents/engineering/effect_interpreter.md) | Interpreter runtime contract |
 | [prerequisite_doctrine.md](documents/engineering/prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
+| [prerequisite_dag_system.md](documents/engineering/prerequisite_dag_system.md) | Prerequisite DAG expansion and runtime |
 | [streaming_doctrine.md](documents/engineering/streaming_doctrine.md) | Streaming serialization doctrine |
 | [unit_testing_policy.md](documents/engineering/unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
 | [dependency_management.md](documents/engineering/dependency_management.md) | Poetry dependency standards |

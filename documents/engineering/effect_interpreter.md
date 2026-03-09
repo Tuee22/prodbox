@@ -34,7 +34,18 @@ For prerequisites with multiple callers:
 1. Inputs are collected by prerequisite ID.
 2. Inputs are reduced in deterministic caller-ID order.
 3. Reduction and effect-builder failures are recorded as root-cause failures.
-4. Downstream nodes are marked as prerequisite-skipped, not duplicate root failures.
+4. Nodes receive prerequisite `Result` values and apply explicit node policy (`PROPAGATE` or `IGNORE`).
+
+---
+
+## 3A. Prerequisite Result Propagation Contract
+
+Railway semantics for prerequisite results are:
+
+1. A prerequisite `Failure` is data, not an implicit interpreter cancellation signal.
+2. Nodes with `PrerequisiteFailurePolicy.PROPAGATE` return propagated prerequisite failures without executing side effects.
+3. Nodes with `PrerequisiteFailurePolicy.IGNORE` execute with full prerequisite `Result` inputs and may aggregate/recover explicitly.
+4. Propagated prerequisite failures are reported as deterministic node failures (`Prerequisite failure propagated: ...`), not as runtime skips.
 
 ---
 

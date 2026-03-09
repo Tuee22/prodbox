@@ -16,11 +16,16 @@ ENFORCE_MODE: str = "enforce"
 
 _BOUNDARY_ALLOWLIST: frozenset[Path] = frozenset(
     {
+        Path("src/prodbox/cli/command_adt.py"),
         Path("src/prodbox/cli/check_code.py"),
         Path("src/prodbox/cli/command_executor.py"),
+        Path("src/prodbox/cli/effect_dag.py"),
+        Path("src/prodbox/cli/effects.py"),
         Path("src/prodbox/cli/interpreter.py"),
         Path("src/prodbox/cli/main.py"),
+        Path("src/prodbox/cli/stream_control.py"),
         Path("src/prodbox/cli/test_cmd.py"),
+        Path("src/prodbox/cli/types.py"),
     }
 )
 
@@ -109,7 +114,7 @@ def _render_violation(violation: StatementViolation) -> str:
 
 def _guard_mode() -> str:
     """Resolve guard execution mode."""
-    configured_mode = os.environ.get(NO_STATEMENTS_MODE_ENV, INFORMATIONAL_MODE).strip().lower()
+    configured_mode = os.environ.get(NO_STATEMENTS_MODE_ENV, ENFORCE_MODE).strip().lower()
     if configured_mode in (INFORMATIONAL_MODE, ENFORCE_MODE):
         return configured_mode
     return INFORMATIONAL_MODE

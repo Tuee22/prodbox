@@ -54,7 +54,7 @@ poetry run prodbox test
 Current guard set:
 
 - `purity_guard`
-- `no_statements_guard` (default `informational` mode; set `PRODBOX_NO_STATEMENTS_MODE=enforce` to make violations blocking)
+- `no_statements_guard` (default `enforce` mode; set `PRODBOX_NO_STATEMENTS_MODE=informational` for non-blocking migration diagnostics)
 - `no_shell_guard`
 - `no_threading_guard`
 - `type_escape_guard`
@@ -63,8 +63,7 @@ Current guard set:
 - `no_test_skip_guard`
 - `doc_lint_guard`
 
-Unless explicitly configured as informational (current `no_statements_guard` rollout phase),
-doctrine violations must fail with non-zero exit.
+Doctrine violations must fail with non-zero exit unless an individual guard is explicitly configured for informational output.
 
 ---
 

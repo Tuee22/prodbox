@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from prodbox.cli.effect_dag import EffectDAG, EffectNode
+from prodbox.cli.effect_dag import EffectDAG, EffectNode, PrerequisiteFailurePolicy
 from prodbox.cli.effects import (
     CaptureSubprocessOutput,
     CheckFileExists,
@@ -49,7 +49,8 @@ from prodbox.cli.interpreter import (
     _run_subprocess,
     create_interpreter,
 )
-from prodbox.cli.types import Success
+from prodbox.cli.summary import dag_to_execution_summary
+from prodbox.cli.types import Failure, PrereqResults, Success
 
 
 class TestExecutionSummary:
@@ -1727,7 +1728,7 @@ class TestEffectInterpreterDAGExecution:
 
     @pytest.mark.asyncio
     async def test_dag_with_failed_prerequisite_skips_dependent(self) -> None:
-        """DAG execution should skip nodes when prerequisites fail."""
+        """DAG execution should propagate prerequisite failures to dependents."""
         interpreter = EffectInterpreter()
 
         # Prerequisite that will fail
@@ -1848,7 +1849,7 @@ class TestDAGExecutionEdgeCases:
 
     @pytest.mark.asyncio
     async def test_dag_with_prerequisite_failure_cascades(self) -> None:
-        """DAG should cascade failures from prerequisites."""
+        """DAG should propagate failures from prerequisites."""
         interpreter = EffectInterpreter()
 
         # Root prerequisite that will fail
@@ -1870,7 +1871,7 @@ class TestDAGExecutionEdgeCases:
         with patch("prodbox.cli.interpreter.platform_module.system", return_value="Darwin"):
             summary = await interpreter.interpret_dag(dag)
 
-        # Root prerequisite fails, dependent should be skipped
+        # Root prerequisite fails, dependent reports propagated prerequisite failure
         assert summary.exit_code != 0
 
 
@@ -3595,9 +3596,7 @@ class TestDAGExecutionAdditionalEdgeCases:
 
     @pytest.mark.asyncio
     async def test_dag_node_with_unexecuted_prerequisite(self) -> None:
-        """Test _execute_node when prerequisite hasn't been executed yet (None case)."""
-        from prodbox.cli.types import Failure
-
+        """Test _execute_node propagation when prerequisite Result is missing."""
         interpreter = EffectInterpreter()
 
         # Test the _execute_node method directly with empty prereq_results
@@ -3615,20 +3614,22 @@ class TestDAGExecutionAdditionalEdgeCases:
         prereq_results: dict[str, Success[object] | Failure[str]] = {}
         summary, value = await interpreter._execute_node(node, prereq_results)
 
-        # Node should be skipped due to missing prerequisite
+        # Node should fail via propagated prerequisite error
         assert not summary.success
-        assert "missing prerequisite" in summary.message.lower()
-        assert interpreter.skipped_effects == 1
+        assert "Prerequisite failure propagated" in summary.message
+        assert "missing prerequisites: missing_prereq" in summary.message
+        assert interpreter.failed_effects == 1
 
     @pytest.mark.asyncio
     async def test_dag_execution_with_failed_prerequisite(self) -> None:
-        """DAG node should be skipped when prerequisite failed."""
+        """DAG node should return propagated prerequisite failure when prerequisite failed."""
         interpreter = EffectInterpreter()
 
         # Create failing prerequisite node
-        prereq_effect = RequireLinux(
-            effect_id="prereq_linux",
-            description="Require Linux prereq",
+        prereq_effect = ValidateTool(
+            effect_id="prereq_tool",
+            description="Validate jq availability",
+            tool_name="jq",
         )
         prereq_node = EffectNode(effect=prereq_effect)
 
@@ -3640,7 +3641,7 @@ class TestDAGExecutionAdditionalEdgeCases:
         )
         dependent_node = EffectNode(
             effect=dependent_effect,
-            prerequisites=frozenset(["prereq_linux"]),
+            prerequisites=frozenset(["prereq_tool"]),
         )
 
         dag = EffectDAG(
@@ -3648,11 +3649,109 @@ class TestDAGExecutionAdditionalEdgeCases:
             roots=frozenset(["dependent"]),
         )
 
-        with patch("prodbox.cli.interpreter.platform_module.system", return_value="Darwin"):
-            _summary = await interpreter.interpret_dag(dag)
+        with patch("prodbox.cli.interpreter.shutil.which", return_value=None):
+            summary = await interpreter.interpret_dag(dag)
 
-        # Dependent node should be skipped due to failed prerequisite
-        assert interpreter.skipped_effects >= 1
+        dependent = dict(summary.node_results)["dependent"]
+        assert dependent.exit_code == 1
+        assert "Prerequisite failure propagated" in dependent.message
+        assert "failed prerequisites: prereq_tool" in dependent.message
+        command_summary = dag_to_execution_summary(summary)
+        assert len(command_summary.environment_errors) == 1
+        env_error = command_summary.environment_errors[0]
+        assert env_error.source_effect_id == "prereq_tool"
+        assert env_error.fix_hint == "Install jq"
+
+    @pytest.mark.asyncio
+    async def test_dag_node_ignore_policy_can_recover_from_prereq_failure(self) -> None:
+        """Nodes with IGNORE policy can recover using prerequisite Result inputs."""
+        interpreter = EffectInterpreter()
+
+        prereq_node = EffectNode(
+            effect=RequireLinux(effect_id="prereq_linux", description="Require Linux prereq"),
+        )
+
+        def recover_builder(
+            _reduced_value: object,
+            prereq_results: PrereqResults,
+        ) -> Pure[str]:
+            has_failure = any(isinstance(result, Failure) for result in prereq_results.values())
+            return Pure(
+                effect_id="recovering_node",
+                description="Recovering node",
+                value="recovered" if has_failure else "healthy",
+            )
+
+        recovering_node = EffectNode(
+            effect=Pure(effect_id="recovering_node", description="Recovering", value="placeholder"),
+            prerequisites=frozenset({"prereq_linux"}),
+            prerequisite_failure_policy=PrerequisiteFailurePolicy.IGNORE,
+            effect_builder=recover_builder,
+        )
+
+        dag = EffectDAG(
+            nodes=frozenset({prereq_node, recovering_node}),
+            roots=frozenset({"recovering_node"}),
+        )
+
+        with patch("prodbox.cli.interpreter.platform_module.system", return_value="Darwin"):
+            summary = await interpreter.interpret_dag(dag)
+
+        assert summary.exit_code == 0
+        result_map = dict(summary.effect_results)
+        recovering_result = result_map["recovering_node"]
+        assert recovering_result.success
+        assert recovering_result.value == "recovered"
+
+    @pytest.mark.asyncio
+    async def test_dag_node_ignore_policy_can_aggregate_prereq_failures(self) -> None:
+        """Nodes with IGNORE policy can aggregate prerequisite failures explicitly."""
+        interpreter = EffectInterpreter()
+
+        prereq_a = EffectNode(
+            effect=RequireLinux(effect_id="prereq_a", description="Require Linux A"),
+        )
+        prereq_b = EffectNode(
+            effect=RequireLinux(effect_id="prereq_b", description="Require Linux B"),
+        )
+
+        def aggregate_builder(
+            _reduced_value: object,
+            prereq_results: PrereqResults,
+        ) -> Custom[None]:
+            failed_ids = sorted(
+                effect_id
+                for effect_id, result in prereq_results.items()
+                if isinstance(result, Failure)
+            )
+
+            def aggregate_failure() -> None:
+                raise RuntimeError(f"Aggregated prerequisite failures: {', '.join(failed_ids)}")
+
+            return Custom(
+                effect_id="aggregate_node",
+                description="Aggregate prerequisite failures",
+                fn=aggregate_failure,
+            )
+
+        aggregate_node = EffectNode(
+            effect=Pure(effect_id="aggregate_node", description="Aggregate node", value="unused"),
+            prerequisites=frozenset({"prereq_a", "prereq_b"}),
+            prerequisite_failure_policy=PrerequisiteFailurePolicy.IGNORE,
+            effect_builder=aggregate_builder,
+        )
+
+        dag = EffectDAG(
+            nodes=frozenset({prereq_a, prereq_b, aggregate_node}),
+            roots=frozenset({"aggregate_node"}),
+        )
+
+        with patch("prodbox.cli.interpreter.platform_module.system", return_value="Darwin"):
+            summary = await interpreter.interpret_dag(dag)
+
+        assert summary.exit_code == 1
+        node_summary = dict(summary.node_results)["aggregate_node"]
+        assert "Aggregated prerequisite failures: prereq_a, prereq_b" in node_summary.message
 
     @pytest.mark.asyncio
     async def test_dag_execution_root_failure(self) -> None:

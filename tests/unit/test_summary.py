@@ -45,6 +45,9 @@ def test_format_summary_contains_header_and_metrics() -> None:
     assert "Total effects: 3" in text
     assert "/tmp/artifact.txt" in text
     assert "Tool: kubectl" in text
+    assert "Manual env changes needed" in text
+    assert "tool_kubectl: Install kubectl" in text
+    assert "Fix:" not in text
 
 
 def test_format_summary_json_contains_expected_fields() -> None:
@@ -54,6 +57,35 @@ def test_format_summary_json_contains_expected_fields() -> None:
     assert '"exit_code": 1' in text
     assert '"message": "Failed"' in text
     assert '"total_effects": 2' in text
+
+
+def test_format_summary_deduplicates_manual_fix_hints() -> None:
+    """Repeated fix hints should appear once in manual env section."""
+    repeated_errors = (
+        EnvironmentError(
+            tool="kubectl",
+            message="kubectl missing",
+            fix_hint="Install kubectl",
+            source_effect_id="tool_kubectl",
+        ),
+        EnvironmentError(
+            tool="k8s",
+            message="cluster check blocked",
+            fix_hint="Install kubectl",
+            source_effect_id="k8s_cluster_reachable",
+        ),
+    )
+    summary = ExecutionSummary(
+        exit_code=1,
+        message="Failed",
+        total_effects=2,
+        failed_effects=2,
+        environment_errors=repeated_errors,
+    )
+
+    text = format_summary(summary)
+    assert text.count("Install kubectl") == 1
+    assert "Manual env changes needed:" in text
 
 
 def test_dag_to_execution_summary_rolls_up_node_results() -> None:
@@ -83,6 +115,7 @@ def test_dag_to_execution_summary_rolls_up_node_results() -> None:
         total_nodes=3,
         successful_nodes=1,
         failed_nodes=2,
+        skipped_nodes=1,
         elapsed_seconds=2.0,
     )
 
@@ -96,17 +129,49 @@ def test_dag_to_execution_summary_rolls_up_node_results() -> None:
     assert len(summary.environment_errors) == 1
 
 
-def test_format_dag_failure_report_includes_root_and_skipped() -> None:
-    """Failure report should separate root-cause failures from skipped nodes."""
-    root_failure = ExecutionSummary(exit_code=1, message="kubectl failed")
-    skipped = ExecutionSummary(
+def test_dag_to_execution_summary_parses_environment_errors_from_failures() -> None:
+    """Conversion should infer root-cause environment errors from failure messages."""
+    root_tool_failure = ExecutionSummary(
         exit_code=1,
-        message="Skipped due to failed prerequisite: tool_kubectl",
+        message="Tool not found: kubectl",
+    )
+    propagated = ExecutionSummary(
+        exit_code=1,
+        message="Prerequisite failure propagated: failed prerequisites: tool_kubectl",
     )
     dag_summary = DAGExecutionSummary(
         exit_code=1,
         message="DAG execution complete",
-        node_results=(("run_kubectl", root_failure), ("wait_nodes", skipped)),
+        node_results=(
+            ("tool_kubectl", root_tool_failure),
+            ("k8s_cluster_reachable", propagated),
+        ),
+        total_nodes=2,
+        successful_nodes=0,
+        failed_nodes=2,
+        skipped_nodes=0,
+    )
+
+    summary = dag_to_execution_summary(dag_summary)
+
+    assert len(summary.environment_errors) == 1
+    env_error = summary.environment_errors[0]
+    assert env_error.source_effect_id == "tool_kubectl"
+    assert env_error.tool == "kubectl"
+    assert env_error.fix_hint == "Install kubectl"
+
+
+def test_format_dag_failure_report_includes_root_and_skipped() -> None:
+    """Failure report should separate root-cause from propagated prerequisite failures."""
+    root_failure = ExecutionSummary(exit_code=1, message="kubectl failed")
+    propagated = ExecutionSummary(
+        exit_code=1,
+        message=("Prerequisite failure propagated: " "failed prerequisites: tool_kubectl"),
+    )
+    dag_summary = DAGExecutionSummary(
+        exit_code=1,
+        message="DAG execution complete",
+        node_results=(("run_kubectl", root_failure), ("wait_nodes", propagated)),
         total_nodes=2,
         successful_nodes=0,
         failed_nodes=2,
@@ -116,8 +181,10 @@ def test_format_dag_failure_report_includes_root_and_skipped() -> None:
 
     assert "Root-cause failures" in report
     assert "run_kubectl: kubectl failed" in report
-    assert "Skipped due to failed prerequisites" in report
-    assert "wait_nodes: Skipped due to failed prerequisite: tool_kubectl" in report
+    assert "Propagated prerequisite failures" in report
+    assert (
+        "wait_nodes: Prerequisite failure propagated: failed prerequisites: tool_kubectl" in report
+    )
 
 
 def test_display_dag_summary_and_failure_report_effects() -> None:

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import TYPE_CHECKING, Generic, Self, TypeVar
 
 from prodbox.cli.types import PrereqResults
@@ -83,6 +84,13 @@ class PrerequisiteValue(Generic[T_reduce]):
     value: T_reduce
 
 
+class PrerequisiteFailurePolicy(Enum):
+    """Policy for handling failed prerequisite Results at node execution time."""
+
+    PROPAGATE = "propagate"
+    IGNORE = "ignore"
+
+
 def _trivial_unit() -> object:
     """Trivial unit returns None."""
     return None
@@ -120,6 +128,7 @@ class EffectNode(Generic[T_node]):
         prerequisites: Set of effect_ids that must complete first
         prerequisite_values: Values to pass to prerequisites
         reduction: How to combine values from multiple callers
+        prerequisite_failure_policy: How this node handles prerequisite failures
         effect_builder: Optional function to build effect from reduced value
 
     Example:
@@ -138,6 +147,7 @@ class EffectNode(Generic[T_node]):
     prerequisites: frozenset[str] = frozenset()
     prerequisite_values: tuple[PrerequisiteValue[object], ...] = ()
     reduction: ReductionMonad[object] = DEFAULT_REDUCTION_MONAD
+    prerequisite_failure_policy: PrerequisiteFailurePolicy = PrerequisiteFailurePolicy.PROPAGATE
     effect_builder: Callable[[object, PrereqResults], Effect[T_node]] | None = None
 
     def __post_init__(self: Self) -> None:
@@ -392,6 +402,7 @@ __all__ = [
     "ReductionError",
     "ReductionMonad",
     "PrerequisiteValue",
+    "PrerequisiteFailurePolicy",
     "DEFAULT_REDUCTION_MONAD",
     # Node types
     "EffectNode",

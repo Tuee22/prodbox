@@ -74,7 +74,12 @@ def gateway_daemon_pod(
                     "volumeMounts": [
                         {"name": "tls", "mountPath": "/tls", "readOnly": True},
                         {"name": "ca", "mountPath": "/ca", "readOnly": True},
-                        {"name": "orders", "mountPath": "/etc/gateway", "readOnly": True},
+                        {
+                            "name": "orders",
+                            "mountPath": "/etc/gateway/orders.json",
+                            "subPath": "orders.json",
+                            "readOnly": True,
+                        },
                         {
                             "name": "config",
                             "mountPath": "/etc/gateway/config.json",

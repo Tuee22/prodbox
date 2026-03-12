@@ -193,6 +193,24 @@ class TestOrders:
         with pytest.raises(ValueError):
             Orders.from_dict(raw)
 
+    def test_dial_host_falls_back_to_stable_dns_for_wildcard_bind(self) -> None:
+        raw = _orders_dict()
+        nodes = cast(list[dict[str, object]], raw["nodes"])
+        nodes[1]["rest_host"] = "0.0.0.0"
+        nodes[1]["socket_host"] = "::"
+        orders = Orders.from_dict(raw)
+        peer = orders.peer_by_id("node-b")
+        assert peer is not None
+        assert peer.rest_dial_host == "node-b.example.test"
+        assert peer.socket_dial_host == "node-b.example.test"
+
+    def test_dial_host_preserves_explicit_routable_host(self) -> None:
+        orders = Orders.from_dict(_orders_dict())
+        peer = orders.peer_by_id("node-b")
+        assert peer is not None
+        assert peer.rest_dial_host == "127.0.0.1"
+        assert peer.socket_dial_host == "127.0.0.1"
+
 
 class TestGatewayRuleValidation:
     """Tests for all validation branches in GatewayRule.from_dict()."""

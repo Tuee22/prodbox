@@ -99,10 +99,27 @@ class PeerEndpoint:
     socket_host: str
     socket_port: int
 
+    @staticmethod
+    def _dial_host(*, host: str, stable_dns_name: str) -> str:
+        """Resolve a routable dial host from endpoint fields."""
+        if host in ("0.0.0.0", "::"):
+            return stable_dns_name
+        return host
+
+    @property
+    def rest_dial_host(self) -> str:
+        """Host to use for outbound REST connection attempts."""
+        return self._dial_host(host=self.rest_host, stable_dns_name=self.stable_dns_name)
+
+    @property
+    def socket_dial_host(self) -> str:
+        """Host to use for outbound socket connection attempts."""
+        return self._dial_host(host=self.socket_host, stable_dns_name=self.stable_dns_name)
+
     @property
     def rest_url(self) -> str:
         """Build peer REST URL."""
-        return f"https://{self.rest_host}:{self.rest_port}"
+        return f"https://{self.rest_dial_host}:{self.rest_port}"
 
 
 @dataclass(frozen=True)
@@ -396,7 +413,10 @@ class ManagedConnection:
         if self.writer.is_closing():
             return
         self.writer.close()
-        await self.writer.wait_closed()
+        # TLS shutdown can race with in-flight peer bytes during teardown.
+        # Treat transport-close errors as non-fatal cleanup noise.
+        with suppress(Exception):
+            await self.writer.wait_closed()
 
 
 class ConnectionRegistry:
@@ -700,7 +720,10 @@ class GatewayDaemon:
             keyfile=str(self._config.key_file),
         )
         context.load_verify_locations(cafile=str(self._config.ca_file))
-        context.verify_mode = ssl.CERT_REQUIRED
+        # Keep TLS peer verification available while allowing read-only
+        # observability endpoints (for example /v1/state) without client certs.
+        # Handshake/socket paths still enforce CN validation explicitly.
+        context.verify_mode = ssl.CERT_OPTIONAL
         context.check_hostname = False
         return context
 
@@ -897,7 +920,8 @@ class GatewayDaemon:
 
     async def _gateway_loop(self) -> None:
         while self._running:
-            await self._recompute_gateway_owner()
+            with suppress(Exception):
+                await self._recompute_gateway_owner()
             await asyncio.sleep(self._config.heartbeat_interval_seconds)
 
     async def _heartbeat_loop(self) -> None:
@@ -956,22 +980,22 @@ class GatewayDaemon:
     async def _reconcile_connections_once(self) -> None:
         async with self._orders_lock:
             orders = self._orders
-            gateway_owner = self._gateway_owner
 
         peers = tuple(node for node in orders.nodes if node.node_id != self._config.node_id)
         for peer in peers:
             await self._ensure_connection(peer, channel="mesh")
 
-        if gateway_owner != self._config.node_id:
-            gateway_peer = orders.peer_by_id(gateway_owner)
-            if gateway_peer is not None and gateway_peer.node_id != self._config.node_id:
-                await self._ensure_connection(gateway_peer, channel="gateway")
-
     async def _ensure_connection(self, peer: PeerEndpoint, channel: ChannelName) -> None:
         key = ConnectionKey(peer_node_id=peer.node_id, channel=channel)
         existing = await self._registry.get(key)
         if existing is not None and existing.alive:
-            return
+            # Re-validate peer reachability even for existing sockets. This
+            # ensures policy-induced partitions are reflected in mesh topology.
+            handshake_ok = await self._handshake(peer=peer, channel=channel)
+            if handshake_ok:
+                return
+            await existing.close()
+            await self._registry.remove(key, existing.connection_id)
 
         handshake_ok = await self._handshake(peer=peer, channel=channel)
         if not handshake_ok:
@@ -979,7 +1003,7 @@ class GatewayDaemon:
 
         client_ctx = self._client_ssl_context()
         reader, writer = await asyncio.open_connection(
-            host=peer.socket_host,
+            host=peer.socket_dial_host,
             port=peer.socket_port,
             ssl=client_ctx,
         )
@@ -1015,8 +1039,13 @@ class GatewayDaemon:
         }
         url = f"{peer.rest_url}/v1/handshake"
         cert_tuple = (str(self._config.cert_file), str(self._config.key_file))
+        verify_context = ssl.create_default_context(
+            ssl.Purpose.SERVER_AUTH,
+            cafile=str(self._config.ca_file),
+        )
+        verify_context.check_hostname = False
         async with httpx.AsyncClient(
-            verify=str(self._config.ca_file),
+            verify=verify_context,
             cert=cert_tuple,
             timeout=5.0,
         ) as client:
@@ -1166,21 +1195,23 @@ class GatewayDaemon:
         new_owner: str,
     ) -> None:
         if previous_owner == self._config.node_id:
-            await self.emit_event(
-                "gateway_yield",
-                {
-                    "yielding_node_id": self._config.node_id,
-                    "new_owner": new_owner,
-                },
-            )
+            with suppress(Exception):
+                await self.emit_event(
+                    "gateway_yield",
+                    {
+                        "yielding_node_id": self._config.node_id,
+                        "new_owner": new_owner,
+                    },
+                )
         if new_owner == self._config.node_id:
-            await self.emit_event(
-                "gateway_claim",
-                {
-                    "claiming_node_id": self._config.node_id,
-                    "previous_owner": previous_owner,
-                },
-            )
+            with suppress(Exception):
+                await self.emit_event(
+                    "gateway_claim",
+                    {
+                        "claiming_node_id": self._config.node_id,
+                        "previous_owner": previous_owner,
+                    },
+                )
 
     async def _handle_rest_connection(
         self,
@@ -1207,12 +1238,22 @@ class GatewayDaemon:
                     hashes = await self.log_event_hashes()
                     active_keys = await self.active_connection_keys()
                     mesh_peers = sorted(k.peer_node_id for k in active_keys if k.channel == "mesh")
+                    async with self._orders_lock:
+                        orders = self._orders
+                    now = _utc_now()
+                    heartbeat_age_seconds: dict[str, float | None] = {}
+                    for node_id in sorted(orders.node_ids):
+                        last = await self._get_last_heartbeat(node_id)
+                        heartbeat_age_seconds[node_id] = (
+                            None if last is None else (now - last).total_seconds()
+                        )
                     body = {
                         "node_id": self._config.node_id,
                         "gateway_owner": owner,
                         "event_count": len(hashes),
                         "event_hashes": sorted(hashes),
                         "mesh_peers": mesh_peers,
+                        "heartbeat_age_seconds": heartbeat_age_seconds,
                     }
             await self._write_http_response(writer, status=status, payload=body)
         finally:

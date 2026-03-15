@@ -17,11 +17,13 @@ from __future__ import annotations
 
 from prodbox.cli.effect_dag import EffectNode
 from prodbox.cli.effects import (
+    CaptureKubectlOutput,
     CheckFileExists,
     CheckServiceStatus,
     Pure,
     RequireLinux,
     RequireSystemd,
+    ResolveMachineIdentity,
     ValidateAWSCredentials,
     ValidateSettings,
     ValidateTool,
@@ -33,6 +35,7 @@ from prodbox.cli.prerequisite_registry import (
     K8S_READY,
     KUBECONFIG_EXISTS,
     KUBECONFIG_HOME_EXISTS,
+    MACHINE_IDENTITY,
     PLATFORM_LINUX,
     PREREQUISITE_REGISTRY,
     PULUMI_LOGGED_IN,
@@ -45,10 +48,13 @@ from prodbox.cli.prerequisite_registry import (
     ROUTE53_ACCESSIBLE,
     SETTINGS_LOADED,
     SYSTEMD_AVAILABLE,
+    TOOL_CTR,
+    TOOL_DOCKER,
     TOOL_HELM,
     TOOL_KUBECTL,
     TOOL_PULUMI,
     TOOL_RKE2,
+    TOOL_SUDO,
     TOOL_SYSTEMCTL,
 )
 
@@ -60,18 +66,26 @@ class TestRegistryCompleteness:
         """All platform prerequisite nodes should be in the registry."""
         assert "platform_linux" in PREREQUISITE_REGISTRY
         assert "systemd_available" in PREREQUISITE_REGISTRY
+        assert "machine_identity" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["platform_linux"] is PLATFORM_LINUX
         assert PREREQUISITE_REGISTRY["systemd_available"] is SYSTEMD_AVAILABLE
+        assert PREREQUISITE_REGISTRY["machine_identity"] is MACHINE_IDENTITY
 
     def test_all_tool_prerequisites_in_registry(self) -> None:
         """All tool prerequisite nodes should be in the registry."""
         assert "tool_kubectl" in PREREQUISITE_REGISTRY
+        assert "tool_docker" in PREREQUISITE_REGISTRY
+        assert "tool_ctr" in PREREQUISITE_REGISTRY
         assert "tool_helm" in PREREQUISITE_REGISTRY
+        assert "tool_sudo" in PREREQUISITE_REGISTRY
         assert "tool_pulumi" in PREREQUISITE_REGISTRY
         assert "tool_rke2" in PREREQUISITE_REGISTRY
         assert "tool_systemctl" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["tool_kubectl"] is TOOL_KUBECTL
+        assert PREREQUISITE_REGISTRY["tool_docker"] is TOOL_DOCKER
+        assert PREREQUISITE_REGISTRY["tool_ctr"] is TOOL_CTR
         assert PREREQUISITE_REGISTRY["tool_helm"] is TOOL_HELM
+        assert PREREQUISITE_REGISTRY["tool_sudo"] is TOOL_SUDO
         assert PREREQUISITE_REGISTRY["tool_pulumi"] is TOOL_PULUMI
         assert PREREQUISITE_REGISTRY["tool_rke2"] is TOOL_RKE2
         assert PREREQUISITE_REGISTRY["tool_systemctl"] is TOOL_SYSTEMCTL
@@ -133,9 +147,9 @@ class TestRegistryConsistency:
             ), f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
 
     def test_registry_has_expected_size(self) -> None:
-        """Registry should have exactly 21 prerequisites."""
-        # Platform: 2, Tools: 5, Config: 5, AWS: 2, K8s: 4, Pulumi: 2, Composite: 2
-        expected_count = 2 + 5 + 5 + 2 + 4 + 2 + 2
+        """Registry should have exactly 25 prerequisites."""
+        # Platform: 3, Tools: 8, Config: 5, AWS: 2, K8s: 4, Pulumi: 2, Composite: 2
+        expected_count = 3 + 8 + 5 + 2 + 4 + 2 + 2
         assert len(PREREQUISITE_REGISTRY) == expected_count
 
 
@@ -158,6 +172,10 @@ class TestTransitivePrerequisiteValidity:
         """Systemd availability should depend on Linux platform."""
         assert "platform_linux" in SYSTEMD_AVAILABLE.prerequisites
 
+    def test_machine_identity_depends_on_linux(self) -> None:
+        """Machine identity should depend on Linux platform."""
+        assert "platform_linux" in MACHINE_IDENTITY.prerequisites
+
     def test_aws_credentials_depends_on_settings(self) -> None:
         """AWS credentials should depend on settings loaded."""
         assert "settings_loaded" in AWS_CREDENTIALS_VALID.prerequisites
@@ -176,9 +194,10 @@ class TestTransitivePrerequisiteValidity:
         assert "rke2_service_exists" in RKE2_SERVICE_ACTIVE.prerequisites
 
     def test_k8s_cluster_reachable_dependencies(self) -> None:
-        """K8s cluster reachable should depend on kubectl and kubeconfig."""
+        """K8s cluster reachable should depend on kubectl, kubeconfig, and active RKE2."""
         assert "tool_kubectl" in K8S_CLUSTER_REACHABLE.prerequisites
         assert "kubeconfig_exists" in K8S_CLUSTER_REACHABLE.prerequisites
+        assert "rke2_service_active" in K8S_CLUSTER_REACHABLE.prerequisites
 
     def test_composite_k8s_ready_dependencies(self) -> None:
         """K8s ready composite should aggregate K8s prerequisites."""
@@ -198,11 +217,15 @@ class TestEffectTypeCorrectness:
         """Platform prerequisites should use Require* effects."""
         assert isinstance(PLATFORM_LINUX.effect, RequireLinux)
         assert isinstance(SYSTEMD_AVAILABLE.effect, RequireSystemd)
+        assert isinstance(MACHINE_IDENTITY.effect, ResolveMachineIdentity)
 
     def test_tool_prerequisites_use_validate_tool(self) -> None:
         """Tool prerequisites should use ValidateTool effect."""
         assert isinstance(TOOL_KUBECTL.effect, ValidateTool)
+        assert isinstance(TOOL_DOCKER.effect, ValidateTool)
+        assert isinstance(TOOL_CTR.effect, ValidateTool)
         assert isinstance(TOOL_HELM.effect, ValidateTool)
+        assert isinstance(TOOL_SUDO.effect, ValidateTool)
         assert isinstance(TOOL_PULUMI.effect, ValidateTool)
         assert isinstance(TOOL_RKE2.effect, ValidateTool)
         assert isinstance(TOOL_SYSTEMCTL.effect, ValidateTool)
@@ -231,11 +254,14 @@ class TestEffectTypeCorrectness:
     def test_composite_prerequisites_use_pure(self) -> None:
         """Composite prerequisites should use Pure effect (aggregation only)."""
         assert isinstance(ROUTE53_ACCESSIBLE.effect, Pure)
-        assert isinstance(K8S_CLUSTER_REACHABLE.effect, Pure)
         assert isinstance(PULUMI_LOGGED_IN.effect, Pure)
         assert isinstance(PULUMI_STACK_EXISTS.effect, Pure)
         assert isinstance(K8S_READY.effect, Pure)
         assert isinstance(INFRA_READY.effect, Pure)
+
+    def test_k8s_cluster_reachable_uses_kubectl_capture(self) -> None:
+        """k8s_cluster_reachable should execute kubectl cluster-info."""
+        assert isinstance(K8S_CLUSTER_REACHABLE.effect, CaptureKubectlOutput)
 
 
 class TestNoCyclicDependencies:

@@ -79,10 +79,11 @@ def restart() -> None:
 
 @rke2.command()
 def ensure() -> None:
-    """Idempotently provision local RKE2 cluster runtime.
+    """Idempotently provision RKE2 runtime + Harbor + retained-storage MinIO.
 
-    Ensures RKE2 service is enabled and started, assuming RKE2
-    binary/config are already present on host.
+    Ensures RKE2 is enabled/started, Harbor is installed in-cluster,
+    local registry mirrors are configured, retained local storage is reconciled,
+    and MinIO is installed from the official Helm chart.
     """
     match rke2_ensure_command():
         case Success(cmd):
@@ -95,13 +96,14 @@ def ensure() -> None:
 @click.option(
     "--yes",
     is_flag=True,
-    help="Confirm teardown of running RKE2 cluster runtime",
+    help="Confirm cleanup of prodbox-annotated Kubernetes resources",
 )
 def cleanup(yes: bool) -> None:
-    """Tear down RKE2 runtime without deleting host storage paths.
+    """Cleanup prodbox resources from Kubernetes without touching host storage.
 
-    Stops/disables the RKE2 service and runs rke2-killall cleanup.
-    Does not run uninstall scripts and does not remove storage directories.
+    Idempotently deletes all Kubernetes objects annotated with the current
+    prodbox-id except retained storage kinds (StorageClass/PV/PVC).
+    Prints manual instructions for optional host-path deletion.
     """
     match rke2_cleanup_command(yes=yes):
         case Success(cmd):

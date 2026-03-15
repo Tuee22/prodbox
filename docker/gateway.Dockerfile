@@ -1,6 +1,4 @@
-# Compatibility build file for gateway daemon.
-# Canonical file used by runtime effects: docker/gateway.Dockerfile
-# Usage: docker build -f Containerfile.gateway -t prodbox-gateway .
+# File: docker/gateway.Dockerfile
 FROM python:3.12-slim
 
 WORKDIR /app

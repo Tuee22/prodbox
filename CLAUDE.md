@@ -282,10 +282,12 @@ poetry run prodbox test
 ### Container Build
 
 ```bash
-docker build -f Containerfile.gateway -t prodbox-gateway .
+docker build -f docker/gateway.Dockerfile -t prodbox-gateway .
 ```
 
-Multi-stage build: Python 3.12 slim, Poetry install, runtime-only image. Entrypoint: `daemon`.
+Gateway image doctrine: explicit Poetry bootstrap (`python -m pip install --upgrade pip setuptools
+wheel poetry`), full-repo `COPY . /app`, and container-local `poetry.toml` override with
+`virtualenvs.create = false`. Entrypoint: `tini -- daemon`.
 
 ---
 

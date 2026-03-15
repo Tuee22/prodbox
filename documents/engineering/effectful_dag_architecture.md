@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effect_interpreter.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Design documentation for the pure effectful DAG system in prodbox CLI.
 
@@ -179,12 +179,28 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
 ### 4.4 RKE2 Lifecycle via eDAG
 
 RKE2 cluster lifecycle is modeled as idempotent DAG nodes:
-- `rke2_ensure`: provision/start runtime from existing RKE2 install
-- `rke2_cleanup`: teardown runtime without deleting host storage paths
+- `rke2_ensure`: provision/start runtime from existing RKE2 install, then reconcile Harbor registry pipeline
+- `rke2_cleanup`: cleanup prodbox-annotated Kubernetes resources without host-path deletion
 
 Provisioning/cleanup use fail-fast prerequisites from the registry (for example,
-`rke2_installed`, `rke2_config_exists`, `rke2_killall_exists`) before any
-destructive or expensive effect runs.
+`rke2_installed`, `rke2_config_exists`, `tool_helm`, `tool_docker`, `machine_identity`,
+`k8s_cluster_reachable`)
+before any destructive or expensive effect runs.
+
+During `rke2_ensure`, Harbor and retained-storage/MinIO reconciliation execute in parallel:
+
+1. `EnsureHarborRegistry`
+2. `Sequence(EnsureRetainedLocalStorage -> EnsureMinio)`
+
+Machine identity (`/etc/machine-id`) is propagated as prerequisite `Result` data
+and is the only source-of-truth for derived `prodbox-<machine-id>` metadata used
+by downstream lifecycle effects.
+
+Harbor-specific sequence details are defined in
+[Local Registry Pipeline](./local_registry_pipeline.md).
+
+Retained storage and deterministic rebinding details are defined in
+[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
 
 ---
 
@@ -354,6 +370,7 @@ This SSoT owns the command output contract intention.
 
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
+- [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Effect Interpreter Runtime](./effect_interpreter.md)
 - [Types Module](../../src/prodbox/cli/types.py)
 - [Effects Module](../../src/prodbox/cli/effects.py)

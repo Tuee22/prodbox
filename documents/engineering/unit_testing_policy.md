@@ -12,6 +12,12 @@
 
 Skip/xfail is prohibited by default; any allowed exception requires explicit doctrinal criteria and automated enforcement.
 
+The test suite cannot enumerate every partition/failure schedule; robust integration tests remain mandatory to validate TLA+ modelling choices against the implementation.
+
+When integration scope is selected, `prodbox test` must enforce the runbook by executing `prodbox rke2 ensure` before pytest.
+
+`prodbox test` phase-two pytest timeout budget is capped at 240 minutes (14,400 seconds).
+
 ---
 
 ## 1. The Interpreter-Only Mocking Doctrine
@@ -60,7 +66,8 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 `prodbox test` executes in two phases:
 
 1. **Phase 1 - prerequisite gate**: when integration scope is selected, the eDAG validates integration prerequisites before pytest starts.
-2. **Phase 2 - test execution**: pytest runs only after Phase 1 succeeds.
+2. **Phase 1.5 - integration runbook gate**: integration scope enforces `prodbox rke2 ensure`.
+3. **Phase 2 - test execution**: pytest runs only after Phase 1 and Phase 1.5 succeed.
 
 If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a skip.
 

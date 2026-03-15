@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from prodbox.settings import Settings
 
 
-@dataclass
+@dataclass(frozen=True)
 class DNSResources:
     """Container for DNS resources."""
 

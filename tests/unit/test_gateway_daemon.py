@@ -11,6 +11,8 @@ from typing import cast
 import pytest
 
 from prodbox.gateway_daemon import (
+    MAX_HEARTBEAT_TIMEOUT_SECONDS,
+    MIN_HEARTBEAT_TIMEOUT_SECONDS,
     ChannelName,
     CommitLog,
     ConnectionKey,
@@ -224,12 +226,30 @@ class TestGatewayRuleValidation:
             GatewayRule.from_dict({"ranked_nodes": ["a"], "heartbeat_timeout_seconds": "three"})
 
     def test_negative_heartbeat_timeout_raises(self) -> None:
-        with pytest.raises(ValueError, match="must be >= 1"):
+        with pytest.raises(ValueError, match=f"must be >= {MIN_HEARTBEAT_TIMEOUT_SECONDS}"):
             GatewayRule.from_dict({"ranked_nodes": ["a"], "heartbeat_timeout_seconds": -1})
 
     def test_zero_heartbeat_timeout_raises(self) -> None:
-        with pytest.raises(ValueError, match="must be >= 1"):
+        with pytest.raises(ValueError, match=f"must be >= {MIN_HEARTBEAT_TIMEOUT_SECONDS}"):
             GatewayRule.from_dict({"ranked_nodes": ["a"], "heartbeat_timeout_seconds": 0})
+
+    def test_below_minimum_heartbeat_timeout_raises(self) -> None:
+        with pytest.raises(ValueError, match=f"must be >= {MIN_HEARTBEAT_TIMEOUT_SECONDS}"):
+            GatewayRule.from_dict(
+                {
+                    "ranked_nodes": ["a"],
+                    "heartbeat_timeout_seconds": MIN_HEARTBEAT_TIMEOUT_SECONDS - 1,
+                }
+            )
+
+    def test_above_maximum_heartbeat_timeout_raises(self) -> None:
+        with pytest.raises(ValueError, match=f"must be <= {MAX_HEARTBEAT_TIMEOUT_SECONDS}"):
+            GatewayRule.from_dict(
+                {
+                    "ranked_nodes": ["a"],
+                    "heartbeat_timeout_seconds": MAX_HEARTBEAT_TIMEOUT_SECONDS + 1,
+                }
+            )
 
     def test_duplicate_node_ids_raises(self) -> None:
         with pytest.raises(ValueError, match="must be unique"):
@@ -248,6 +268,7 @@ class TestGatewayRuleValidation:
         )
         assert rule.ranked_nodes == ("n1", "n2", "n3")
         assert rule.heartbeat_timeout_seconds == 5
+        assert rule.isolation_timeout_seconds == 5
 
 
 class TestOrdersValidation:
@@ -563,6 +584,24 @@ class TestDaemonConfig:
         )
 
         with pytest.raises(ValueError):
+            DaemonConfig.from_json_file(config_path)
+
+    def test_from_json_file_rejects_busy_loop_interval(self, tmp_path: Path) -> None:
+        orders_path = tmp_path / "orders.json"
+        orders_path.write_text(json.dumps(_orders_dict()), encoding="utf-8")
+        config_path = tmp_path / "config.json"
+        bad_config: dict[str, object] = {
+            "node_id": "node-a",
+            "cert_file": str(tmp_path / "node-a.crt"),
+            "key_file": str(tmp_path / "node-a.key"),
+            "ca_file": str(tmp_path / "ca.crt"),
+            "orders_file": str(orders_path),
+            "event_keys": {"node-a": "k1"},
+            "heartbeat_interval_seconds": 0.01,
+        }
+        config_path.write_text(json.dumps(bad_config), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="busy-loop behavior"):
             DaemonConfig.from_json_file(config_path)
 
 
@@ -1316,6 +1355,76 @@ class TestLifecycle:
             event_keys={"node-z": "kz"},
         )
         with pytest.raises(ValueError, match="not found in orders"):
+            GatewayDaemon(config)
+
+
+class TestTimingContract:
+    """Tests for explicit heartbeat/isolation timing rules."""
+
+    @staticmethod
+    def _orders_path_with_timeout(tmp_path: Path, timeout_seconds: int) -> Path:
+        orders = _orders_dict()
+        gateway_rule = cast(dict[str, object], orders["gateway_rule"])
+        gateway_rule["heartbeat_timeout_seconds"] = timeout_seconds
+        orders_path = tmp_path / "orders.json"
+        orders_path.write_text(json.dumps(orders), encoding="utf-8")
+        return orders_path
+
+    def test_rejects_heartbeat_interval_above_half_timeout(self, tmp_path: Path) -> None:
+        orders_path = self._orders_path_with_timeout(tmp_path, timeout_seconds=4)
+        config = DaemonConfig(
+            node_id="node-a",
+            cert_file=tmp_path / "node-a.crt",
+            key_file=tmp_path / "node-a.key",
+            ca_file=tmp_path / "ca.crt",
+            orders_file=orders_path,
+            event_keys={"node-a": "k1", "node-b": "k2", "node-c": "k3"},
+            heartbeat_interval_seconds=2.1,
+            reconnect_interval_seconds=1.0,
+            sync_interval_seconds=2.0,
+        )
+        with pytest.raises(
+            ValueError,
+            match="heartbeat_interval_seconds must be <=",
+        ):
+            GatewayDaemon(config)
+
+    def test_rejects_reconnect_interval_above_timeout(self, tmp_path: Path) -> None:
+        orders_path = self._orders_path_with_timeout(tmp_path, timeout_seconds=4)
+        config = DaemonConfig(
+            node_id="node-a",
+            cert_file=tmp_path / "node-a.crt",
+            key_file=tmp_path / "node-a.key",
+            ca_file=tmp_path / "ca.crt",
+            orders_file=orders_path,
+            event_keys={"node-a": "k1", "node-b": "k2", "node-c": "k3"},
+            heartbeat_interval_seconds=1.0,
+            reconnect_interval_seconds=4.1,
+            sync_interval_seconds=2.0,
+        )
+        with pytest.raises(
+            ValueError,
+            match="reconnect_interval_seconds must be <=",
+        ):
+            GatewayDaemon(config)
+
+    def test_rejects_sync_interval_above_double_timeout(self, tmp_path: Path) -> None:
+        orders_path = self._orders_path_with_timeout(tmp_path, timeout_seconds=4)
+        config = DaemonConfig(
+            node_id="node-a",
+            cert_file=tmp_path / "node-a.crt",
+            key_file=tmp_path / "node-a.key",
+            ca_file=tmp_path / "ca.crt",
+            orders_file=orders_path,
+            event_keys={"node-a": "k1", "node-b": "k2", "node-c": "k3"},
+            heartbeat_interval_seconds=1.0,
+            reconnect_interval_seconds=1.0,
+            sync_interval_seconds=8.1,
+        )
+        with pytest.raises(
+            ValueError,
+            match="sync_interval_seconds must be <=",
+        ):
             GatewayDaemon(config)
 
 

@@ -20,6 +20,9 @@ from .conftest import (
 )
 from .helpers import free_port, run_kubectl_capture_via_dag, wait_for_async
 
+pytestmark = pytest.mark.timeout(300)
+HEARTBEAT_TIMEOUT_SECONDS = 3
+
 
 def _orders_with_ports(ports: dict[str, tuple[int, int]]) -> dict[str, object]:
     return {
@@ -52,7 +55,7 @@ def _orders_with_ports(ports: dict[str, tuple[int, int]]) -> dict[str, object]:
         ],
         "gateway_rule": {
             "ranked_nodes": ["node-a", "node-b", "node-c"],
-            "heartbeat_timeout_seconds": 3,
+            "heartbeat_timeout_seconds": HEARTBEAT_TIMEOUT_SECONDS,
         },
     }
 

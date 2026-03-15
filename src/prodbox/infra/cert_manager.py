@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import pulumi
 import pulumi_kubernetes as k8s
 
+from prodbox.infra.metadata import chart_values_with_prodbox, object_meta
+
 if TYPE_CHECKING:
     from prodbox.settings import Settings
 
@@ -16,7 +18,7 @@ CERT_MANAGER_CHART_VERSION = "v1.16.2"
 CERT_MANAGER_REPO = "https://charts.jetstack.io"
 
 
-@dataclass
+@dataclass(frozen=True)
 class CertManagerResources:
     """Container for cert-manager resources."""
 
@@ -27,6 +29,8 @@ class CertManagerResources:
 def deploy_cert_manager(
     _settings: Settings,
     k8s_provider: k8s.Provider,
+    *,
+    prodbox_id: str,
 ) -> CertManagerResources:
     """Deploy cert-manager for TLS certificate management.
 
@@ -36,6 +40,7 @@ def deploy_cert_manager(
     Args:
         settings: Application settings
         k8s_provider: Kubernetes provider
+        prodbox_id: Canonical prodbox-id annotation value
 
     Returns:
         CertManagerResources containing all created resources
@@ -43,9 +48,7 @@ def deploy_cert_manager(
     # Create namespace
     namespace = k8s.core.v1.Namespace(
         "cert-manager-namespace",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
-            name="cert-manager",
-        ),
+        metadata=object_meta(name="cert-manager", prodbox_id=prodbox_id),
         opts=pulumi.ResourceOptions(provider=k8s_provider),
     )
 
@@ -58,25 +61,28 @@ def deploy_cert_manager(
             repo=CERT_MANAGER_REPO,
         ),
         namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
-        values={
-            # Install CRDs via Helm (cert-manager >= v1.15)
-            "crds": {
-                "enabled": True,
-            },
-            # Leader election namespace
-            "global": {
-                "leaderElection": {
-                    "namespace": "cert-manager",
+        values=chart_values_with_prodbox(
+            values={
+                # Install CRDs via Helm (cert-manager >= v1.15)
+                "crds": {
+                    "enabled": True,
+                },
+                # Leader election namespace
+                "global": {
+                    "leaderElection": {
+                        "namespace": "cert-manager",
+                    },
+                },
+                # Resource requests for stability
+                "resources": {
+                    "requests": {
+                        "cpu": "50m",
+                        "memory": "64Mi",
+                    },
                 },
             },
-            # Resource requests for stability
-            "resources": {
-                "requests": {
-                    "cpu": "50m",
-                    "memory": "64Mi",
-                },
-            },
-        },
+            prodbox_id=prodbox_id,
+        ),
         skip_await=False,
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,

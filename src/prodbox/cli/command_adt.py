@@ -126,12 +126,12 @@ class RKE2RestartCommand:
 
 @dataclass(frozen=True)
 class RKE2EnsureCommand:
-    """Idempotently provision RKE2 cluster runtime from existing installation."""
+    """Idempotently provision RKE2 runtime, Harbor registry, and retained-storage MinIO."""
 
 
 @dataclass(frozen=True)
 class RKE2CleanupCommand:
-    """Tear down RKE2 cluster runtime without removing host storage paths."""
+    """Cleanup prodbox runtime resources while preserving retained storage resources."""
 
 
 @dataclass(frozen=True)

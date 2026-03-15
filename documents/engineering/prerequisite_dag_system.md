@@ -27,6 +27,16 @@ Prerequisite outcomes propagate as `Result` values to dependent nodes.
 - `PROPAGATE` returns a deterministic propagated prerequisite failure.
 - `IGNORE` executes the node and allows explicit aggregate/recover behavior in effect builders.
 
+Machine identity is propagated as typed prerequisite data:
+- prerequisite `machine_identity` returns `MachineIdentity(machine_id, prodbox_id)`.
+- downstream lifecycle nodes must derive prodbox annotation selectors from this value only.
+
+Registry runtime also returns typed effect outputs for downstream consumers:
+- `EnsureHarborRegistry` returns `HarborRuntime(registry_endpoint, gateway_image)`.
+- `EnsureRetainedLocalStorage` returns `StorageRuntime(storage_class_name, pv, pvc, host_path)`.
+- `EnsureMinio` returns `MinioRuntime(namespace, release_name, persistent_volume_claim_name)`.
+- gateway integration tests can consume the canonical Harbor image path when explicit overrides are absent.
+
 This preserves Railway semantics while keeping node behavior explicit.
 
 ---
@@ -55,6 +65,8 @@ Phase 2 does not execute if Phase 1 fails.
 ## Cross-References
 
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [Local Registry Pipeline](./local_registry_pipeline.md)
+- [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Effect Interpreter Runtime](./effect_interpreter.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)

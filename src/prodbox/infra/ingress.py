@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import pulumi
 import pulumi_kubernetes as k8s
 
+from prodbox.infra.metadata import chart_values_with_prodbox, object_meta
+
 if TYPE_CHECKING:
     from prodbox.infra.metallb import MetalLBResources
     from prodbox.settings import Settings
@@ -17,7 +19,7 @@ TRAEFIK_CHART_VERSION = "32.0.0"
 TRAEFIK_REPO = "https://traefik.github.io/charts"
 
 
-@dataclass
+@dataclass(frozen=True)
 class IngressResources:
     """Container for Ingress resources."""
 
@@ -29,6 +31,8 @@ def deploy_ingress(
     settings: Settings,
     k8s_provider: k8s.Provider,
     metallb_resources: MetalLBResources,
+    *,
+    prodbox_id: str,
 ) -> IngressResources:
     """Deploy Traefik ingress controller.
 
@@ -39,6 +43,7 @@ def deploy_ingress(
         settings: Application settings with ingress configuration
         k8s_provider: Kubernetes provider
         metallb_resources: MetalLB resources (for dependency ordering)
+        prodbox_id: Canonical prodbox-id annotation value
 
     Returns:
         IngressResources containing all created resources
@@ -46,9 +51,7 @@ def deploy_ingress(
     # Create namespace
     namespace = k8s.core.v1.Namespace(
         "traefik-namespace",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
-            name="traefik-system",
-        ),
+        metadata=object_meta(name="traefik-system", prodbox_id=prodbox_id),
         opts=pulumi.ResourceOptions(provider=k8s_provider),
     )
 
@@ -61,41 +64,44 @@ def deploy_ingress(
             repo=TRAEFIK_REPO,
         ),
         namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
-        values={
-            # Service configuration
-            "service": {
-                "type": "LoadBalancer",
-                "spec": {
-                    # Request specific IP from MetalLB
-                    "loadBalancerIP": settings.ingress_lb_ip,
-                },
-            },
-            # Expose HTTP and HTTPS
-            "ports": {
-                "web": {
-                    "expose": {
-                        "default": True,
+        values=chart_values_with_prodbox(
+            values={
+                # Service configuration
+                "service": {
+                    "type": "LoadBalancer",
+                    "spec": {
+                        # Request specific IP from MetalLB
+                        "loadBalancerIP": settings.ingress_lb_ip,
                     },
                 },
-                "websecure": {
-                    "expose": {
-                        "default": True,
+                # Expose HTTP and HTTPS
+                "ports": {
+                    "web": {
+                        "expose": {
+                            "default": True,
+                        },
+                    },
+                    "websecure": {
+                        "expose": {
+                            "default": True,
+                        },
+                    },
+                },
+                # Enable access logs for debugging
+                "logs": {
+                    "access": {
+                        "enabled": True,
+                    },
+                },
+                # Prometheus metrics (optional)
+                "metrics": {
+                    "prometheus": {
+                        "entryPoint": "metrics",
                     },
                 },
             },
-            # Enable access logs for debugging
-            "logs": {
-                "access": {
-                    "enabled": True,
-                },
-            },
-            # Prometheus metrics (optional)
-            "metrics": {
-                "prometheus": {
-                    "entryPoint": "metrics",
-                },
-            },
-        },
+            prodbox_id=prodbox_id,
+        ),
         skip_await=False,
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Philosophy and patterns for prerequisite-based validation in prodbox CLI.
 
@@ -14,7 +14,13 @@ RKE2 cluster provisioning is idempotently performed via eDAG lifecycle effects, 
 
 Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
 
-Cleanup must tear down RKE2-managed runtime state without deleting host storage paths used for persistent data.
+Cleanup must idempotently remove prodbox-annotated Kubernetes objects without deleting host storage paths used for persistent data.
+
+Exactly one prodbox instance exists per Linux machine, anchored by machine identity (`/etc/machine-id`) and its derived `prodbox-<machine-id>` identifier.
+
+Any pod/service/deployment that runs a custom prodbox image must be created in the `prodbox` namespace.
+
+Retained storage resources are preserved during cleanup by default to keep deterministic PVC->PV rebinding intact.
 
 ---
 
@@ -86,6 +92,7 @@ Validate operating system and capabilities:
 |--------------|-----------|
 | `platform_linux` | Running on Linux |
 | `systemd_available` | systemd is present |
+| `machine_identity` | Valid `/etc/machine-id`, plus derived `prodbox-<machine-id>` |
 
 ### 2.2 Tool Prerequisites
 
@@ -94,7 +101,9 @@ Validate external tools are installed:
 | Prerequisite | Validates |
 |--------------|-----------|
 | `tool_kubectl` | kubectl CLI available |
+| `tool_ctr` | ctr CLI available for RKE2 containerd import |
 | `tool_helm` | helm CLI available |
+| `tool_sudo` | sudo CLI available for root-owned host operations |
 | `tool_pulumi` | pulumi CLI available |
 | `tool_rke2` | RKE2 binary installed |
 | `tool_systemctl` | systemctl available |
@@ -108,7 +117,7 @@ Validate configuration files exist:
 | `settings_loaded` | Environment variables configured |
 | `kubeconfig_exists` | Kubeconfig file present |
 | `rke2_config_exists` | RKE2 config.yaml present |
-| `rke2_killall_exists` | RKE2 killall cleanup script present |
+| `rke2_killall_exists` | Legacy RKE2 killall script present (compatibility only) |
 
 ### 2.4 Service Prerequisites
 
@@ -118,7 +127,7 @@ Validate services are running:
 |--------------|-----------|
 | `rke2_service_exists` | RKE2 systemd unit exists |
 | `rke2_service_active` | RKE2 service is running |
-| `k8s_cluster_reachable` | Can connect to Kubernetes API |
+| `k8s_cluster_reachable` | `kubectl cluster-info` succeeds against the active cluster |
 
 ### 2.5 AWS Prerequisites
 
@@ -159,8 +168,8 @@ SYSTEMD_AVAILABLE = EffectNode(
 )
 
 K8S_CLUSTER_REACHABLE = EffectNode(
-    effect=Pure(...),
-    prerequisites=frozenset(["tool_kubectl", "kubeconfig_exists"]),
+    effect=CaptureKubectlOutput(...),
+    prerequisites=frozenset(["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]),
 )
 ```
 
@@ -169,6 +178,10 @@ K8S_CLUSTER_REACHABLE = EffectNode(
 When you depend on `k8s_cluster_reachable`, you automatically get:
 - `tool_kubectl`
 - `kubeconfig_exists`
+- `rke2_service_active`
+
+When you depend on lifecycle roots (`rke2_ensure`, `rke2_cleanup`, `pulumi_up`), you also get:
+- `machine_identity` result propagation (machine-id + derived prodbox-id).
 
 ---
 
@@ -238,20 +251,62 @@ Chain prerequisites for complex validation:
 
 RKE2 lifecycle is managed by eDAG nodes:
 - `rke2_ensure`: idempotent runtime provisioning/startup
-- `rke2_cleanup`: non-destructive runtime teardown
+- `rke2_cleanup`: idempotent cleanup of prodbox-annotated Kubernetes objects
 
-Both nodes fail fast on missing RKE2 installation prerequisites:
+Both nodes fail fast on prerequisites and consume machine identity as source-of-truth:
 
 ```python
 # File: src/prodbox/cli/dag_builders.py
 _build_rke2_ensure_dag(...):
-    prerequisites=frozenset(["rke2_installed", "rke2_config_exists", "systemd_available"])
+    prerequisites=frozenset([
+        "rke2_installed",
+        "rke2_config_exists",
+        "systemd_available",
+        "tool_kubectl",
+        "tool_helm",
+        "tool_docker",
+        "tool_ctr",
+        "tool_sudo",
+        "tool_systemctl",
+        "kubeconfig_exists",
+        "machine_identity",
+    ])
 
 _build_rke2_cleanup_dag(...):
-    prerequisites=frozenset(["rke2_installed", "rke2_killall_exists", "systemd_available"])
+    prerequisites=frozenset(["k8s_cluster_reachable", "machine_identity"])
 ```
 
-`rke2_cleanup` intentionally avoids uninstall scripts and host-path deletion.
+`rke2_ensure` confirms cluster access (`kubectl cluster-info`), ensures
+`prodbox/prodbox-identity` ConfigMap, then reconciles in parallel:
+
+1. Harbor registry runtime (`EnsureHarborRegistry`)
+2. Retained local storage + MinIO (`EnsureRetainedLocalStorage` -> `EnsureMinio`)
+
+Finally, it reconciles prodbox annotations.
+
+`rke2_cleanup` deletes only prodbox-annotated Kubernetes objects and prints
+manual host-path deletion instructions with explicit data-loss warnings.
+
+Harbor install/mirror/build details are defined in
+[Local Registry Pipeline](./local_registry_pipeline.md).
+
+Retained storage and rebinding guarantees are defined in
+[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
+
+### 4.6 Machine Identity Result Contract
+
+`machine_identity` prerequisite returns `Result[MachineIdentity, E]` where:
+- `MachineIdentity.machine_id` is the canonical Linux machine-id.
+- `MachineIdentity.prodbox_id` is `prodbox-<machine_id>`.
+
+Downstream DAG nodes must derive annotation values, namespace ownership markers,
+and cleanup selectors from this propagated result only.
+
+### 4.7 Kubernetes Ownership Markers
+
+All Kubernetes resources created by prodbox, including installed CRDs, must carry:
+- annotation: `prodbox.io/id=<prodbox-id>`
+- label: `prodbox.io/id=<label-safe-prodbox-id>`
 
 ---
 
@@ -357,7 +412,7 @@ This SSoT owns RKE2 lifecycle prerequisite doctrine statements:
 
 - RKE2 cluster provisioning is idempotently performed via eDAG lifecycle effects, not assumed pre-existing.
 - Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
-- Cleanup must tear down RKE2-managed runtime state without deleting host storage paths used for persistent data.
+- Cleanup must idempotently remove prodbox-annotated Kubernetes objects without deleting host storage paths used for persistent data.
 
 Linked dependents: `documents/engineering/effectful_dag_architecture.md`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/prerequisite_registry.py`.
 
@@ -366,6 +421,8 @@ Linked dependents: `documents/engineering/effectful_dag_architecture.md`, `src/p
 ## Cross-References
 
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [Local Registry Pipeline](./local_registry_pipeline.md)
+- [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Code Quality Doctrine](./code_quality.md)
 - [Prerequisite Registry](../../src/prodbox/cli/prerequisite_registry.py)
 - [Effect Types](../../src/prodbox/cli/effects.py)

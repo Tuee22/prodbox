@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 import pulumi
 import pulumi_kubernetes as k8s
 
+from prodbox.infra.metadata import chart_values_with_prodbox, object_meta
+
 if TYPE_CHECKING:
     from prodbox.settings import Settings
 
@@ -16,7 +18,7 @@ METALLB_CHART_VERSION = "0.14.9"
 METALLB_REPO = "https://metallb.github.io/metallb"
 
 
-@dataclass
+@dataclass(frozen=True)
 class MetalLBResources:
     """Container for MetalLB resources."""
 
@@ -29,6 +31,8 @@ class MetalLBResources:
 def deploy_metallb(
     settings: Settings,
     k8s_provider: k8s.Provider,
+    *,
+    prodbox_id: str,
 ) -> MetalLBResources:
     """Deploy MetalLB for LoadBalancer IP assignment.
 
@@ -38,6 +42,7 @@ def deploy_metallb(
     Args:
         settings: Application settings with MetalLB pool configuration
         k8s_provider: Kubernetes provider
+        prodbox_id: Canonical prodbox-id annotation value
 
     Returns:
         MetalLBResources containing all created resources
@@ -45,9 +50,7 @@ def deploy_metallb(
     # Create namespace
     namespace = k8s.core.v1.Namespace(
         "metallb-namespace",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
-            name="metallb-system",
-        ),
+        metadata=object_meta(name="metallb-system", prodbox_id=prodbox_id),
         opts=pulumi.ResourceOptions(provider=k8s_provider),
     )
 
@@ -60,6 +63,7 @@ def deploy_metallb(
             repo=METALLB_REPO,
         ),
         namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
+        values=chart_values_with_prodbox(values={}, prodbox_id=prodbox_id),
         # Wait for the release to be deployed before continuing
         # This ensures CRDs are available for the next resources
         skip_await=False,
@@ -75,9 +79,10 @@ def deploy_metallb(
         "metallb-ip-pool",
         api_version="metallb.io/v1beta1",
         kind="IPAddressPool",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
+        metadata=object_meta(
             name="default-pool",
             namespace="metallb-system",
+            prodbox_id=prodbox_id,
         ),
         spec={
             "addresses": [settings.metallb_pool],
@@ -94,9 +99,10 @@ def deploy_metallb(
         "metallb-l2-advertisement",
         api_version="metallb.io/v1beta1",
         kind="L2Advertisement",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
+        metadata=object_meta(
             name="default-advertisement",
             namespace="metallb-system",
+            prodbox_id=prodbox_id,
         ),
         spec={
             "ipAddressPools": ["default-pool"],

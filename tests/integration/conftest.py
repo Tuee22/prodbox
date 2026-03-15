@@ -32,6 +32,7 @@ The pattern used throughout:
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import os
@@ -44,6 +45,7 @@ from typing import NamedTuple, cast
 from prodbox.cli.command_adt import rke2_ensure_command
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
+from prodbox.cli.summary import format_dag_failure_report
 from prodbox.cli.types import Failure, Success
 
 from .helpers import run_kubectl_capture_via_dag
@@ -57,6 +59,90 @@ class TlsMaterial(NamedTuple):
     ca_file: Path
 
 
+_RKE2_ENSURE_COMPLETE: bool = False
+_RKE2_ENSURE_FAILURE: str | None = None
+
+
+async def _run_command_capture(
+    command: tuple[str, ...],
+    *,
+    timeout_seconds: float,
+) -> tuple[int, str, str]:
+    """Run subprocess command with timeout and decoded stdout/stderr."""
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return (1, "", f"timeout after {timeout_seconds}s")
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    return (process.returncode or 0, stdout, stderr)
+
+
+async def _ensure_cert_manager_installed(kubeconfig: Path) -> None:
+    """Install cert-manager via Helm if CRD prerequisite is missing."""
+    add_rc, _, add_stderr = await _run_command_capture(
+        ("helm", "repo", "add", "jetstack", "https://charts.jetstack.io"),
+        timeout_seconds=30.0,
+    )
+    if add_rc != 0 and "already exists" not in add_stderr.lower():
+        raise AssertionError(f"failed to add jetstack helm repo: {add_stderr}")
+
+    update_rc, _, update_stderr = await _run_command_capture(
+        ("helm", "repo", "update"),
+        timeout_seconds=120.0,
+    )
+    if update_rc != 0:
+        raise AssertionError(f"failed to update helm repos: {update_stderr}")
+
+    install_rc, _, install_stderr = await _run_command_capture(
+        (
+            "helm",
+            "upgrade",
+            "--install",
+            "--take-ownership",
+            "cert-manager",
+            "jetstack/cert-manager",
+            "--namespace",
+            "cert-manager",
+            "--create-namespace",
+            "--set",
+            "crds.enabled=true",
+        ),
+        timeout_seconds=300.0,
+    )
+    if install_rc != 0:
+        raise AssertionError(f"failed to install cert-manager chart: {install_stderr}")
+
+    for deployment in (
+        "cert-manager",
+        "cert-manager-webhook",
+        "cert-manager-cainjector",
+    ):
+        wait_rc, _, wait_stderr = await run_kubectl_capture_via_dag(
+            "wait",
+            "--for=condition=Available",
+            f"deployment/{deployment}",
+            "--timeout=180s",
+            kubeconfig=kubeconfig,
+            namespace="cert-manager",
+            timeout=190.0,
+        )
+        if wait_rc != 0:
+            raise AssertionError(
+                f"cert-manager deployment {deployment} not ready after install: {wait_stderr}"
+            )
+
+
 def resolve_kubeconfig() -> Path:
     """Resolve kubeconfig path from env or default."""
     raw_kubeconfig = os.environ.get("KUBECONFIG")
@@ -66,24 +152,46 @@ def resolve_kubeconfig() -> Path:
 
 
 async def _ensure_rke2_via_dag() -> None:
+    global _RKE2_ENSURE_COMPLETE
+    global _RKE2_ENSURE_FAILURE
+    if _RKE2_ENSURE_COMPLETE:
+        return
+    if _RKE2_ENSURE_FAILURE is not None:
+        raise AssertionError(_RKE2_ENSURE_FAILURE)
     match rke2_ensure_command():
         case Failure(error):
-            raise AssertionError(f"rke2 ensure command unavailable: {error}")
+            failure_message = f"rke2 ensure command unavailable: {error}"
+            _RKE2_ENSURE_FAILURE = failure_message
+            raise AssertionError(failure_message)
         case Success(command):
             match command_to_dag(command):
                 case Failure(error):
-                    raise AssertionError(f"failed to build rke2 ensure DAG: {error}")
+                    failure_message = f"failed to build rke2 ensure DAG: {error}"
+                    _RKE2_ENSURE_FAILURE = failure_message
+                    raise AssertionError(failure_message)
                 case Success(dag):
                     interpreter = create_interpreter()
                     summary = await interpreter.interpret_dag(dag)
                     if summary.exit_code != 0:
-                        raise AssertionError("rke2 ensure DAG failed")
+                        failure_report = format_dag_failure_report(summary).strip()
+                        failure_message = f"rke2 ensure DAG failed\n{failure_report}"
+                        _RKE2_ENSURE_FAILURE = failure_message
+                        raise AssertionError(failure_message)
+                    _RKE2_ENSURE_COMPLETE = True
 
 
 async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
     """Validate cluster reachable + cert-manager CRDs, failing fast on missing prerequisites."""
     if shutil.which("kubectl") is None:
         raise AssertionError("kubectl not installed")
+    if shutil.which("helm") is None:
+        raise AssertionError("helm not installed (required for Harbor bootstrap in rke2 ensure)")
+    if shutil.which("docker") is None:
+        raise AssertionError("docker not installed (required for Harbor image pipeline)")
+    if shutil.which("ctr") is None:
+        raise AssertionError("ctr not installed (required for RKE2 containerd image import)")
+    if shutil.which("sudo") is None:
+        raise AssertionError("sudo not installed (required for root-owned host operations)")
     if not kubeconfig.exists():
         raise AssertionError(f"kubeconfig not found: {kubeconfig}")
     await _ensure_rke2_via_dag()
@@ -104,7 +212,16 @@ async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
         timeout=30.0,
     )
     if cert_manager_rc != 0:
-        raise AssertionError(f"cert-manager CRD not available: {cert_manager_stderr}")
+        await _ensure_cert_manager_installed(kubeconfig)
+        cert_manager_retry_rc, _, cert_manager_retry_stderr = await run_kubectl_capture_via_dag(
+            "get",
+            "crd",
+            "certificates.cert-manager.io",
+            kubeconfig=kubeconfig,
+            timeout=30.0,
+        )
+        if cert_manager_retry_rc != 0:
+            raise AssertionError(f"cert-manager CRD not available: {cert_manager_retry_stderr}")
 
 
 async def apply_cert_manifest(
@@ -314,6 +431,60 @@ async def kubectl_delete_manifest(
         )
 
 
+async def cleanup_gateway_test_resources(*, namespace: str, kubeconfig: Path) -> None:
+    """Delete gateway test resources while preserving the namespace itself."""
+    cleanup_commands: tuple[tuple[str, ...], ...] = (
+        (
+            "delete",
+            "pod,service,configmap,networkpolicy",
+            "-l",
+            "app=prodbox-gateway",
+            "--ignore-not-found=true",
+        ),
+        (
+            "delete",
+            "configmap",
+            "gateway-orders",
+            "gateway-config-node-a",
+            "gateway-config-node-b",
+            "gateway-config-node-c",
+            "--ignore-not-found=true",
+        ),
+        (
+            "delete",
+            "certificates.cert-manager.io",
+            "root-ca",
+            "node-a-cert",
+            "node-b-cert",
+            "node-c-cert",
+            "--ignore-not-found=true",
+        ),
+        (
+            "delete",
+            "issuers.cert-manager.io",
+            "selfsigned-root",
+            "root-ca-issuer",
+            "--ignore-not-found=true",
+        ),
+        (
+            "delete",
+            "secret",
+            "root-ca-secret",
+            "node-a-tls",
+            "node-b-tls",
+            "node-c-tls",
+            "--ignore-not-found=true",
+        ),
+    )
+    for args in cleanup_commands:
+        await run_kubectl_capture_via_dag(
+            *args,
+            kubeconfig=kubeconfig,
+            namespace=namespace,
+            timeout=60.0,
+        )
+
+
 async def kubectl_exec_curl(
     *,
     pod_name: str,
@@ -322,15 +493,22 @@ async def kubectl_exec_curl(
     kubeconfig: Path,
     timeout: float = 15.0,
 ) -> tuple[int, str]:
-    """Execute curl inside a pod and return (returncode, body)."""
+    """Execute HTTPS GET inside a pod and return (returncode, body)."""
+    python_probe = (
+        "import ssl,sys,urllib.request;"
+        "ctx=ssl._create_unverified_context();"
+        "resp=urllib.request.urlopen(sys.argv[1],context=ctx,timeout=10);"
+        "sys.stdout.write(resp.read().decode('utf-8'))"
+    )
     rc, stdout, stderr = await run_kubectl_capture_via_dag(
         "exec",
         pod_name,
         "-n",
         namespace,
         "--",
-        "curl",
-        "-sk",
+        "python",
+        "-c",
+        python_probe,
         url,
         kubeconfig=kubeconfig,
         timeout=timeout,

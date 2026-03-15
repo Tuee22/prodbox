@@ -21,6 +21,10 @@ import httpx
 
 ChannelName = Literal["mesh", "gateway"]
 
+MIN_HEARTBEAT_TIMEOUT_SECONDS: int = 3
+MAX_HEARTBEAT_TIMEOUT_SECONDS: int = 60
+MIN_LOOP_INTERVAL_SECONDS: float = 0.1
+
 
 def _utc_now() -> datetime:
     """Get current UTC timestamp."""
@@ -81,6 +85,15 @@ def _read_optional_float(value: object, default: float) -> float:
     raise ValueError("Expected float-like value")
 
 
+def _require_positive_interval(name: str, value: float) -> None:
+    """Validate loop interval floor constraints."""
+    if value < MIN_LOOP_INTERVAL_SECONDS:
+        raise ValueError(
+            f"{name} must be >= {MIN_LOOP_INTERVAL_SECONDS:.1f} seconds "
+            f"to avoid busy-loop behavior"
+        )
+
+
 class _PeerCertProvider(Protocol):
     """Minimal protocol for TLS peer certificate retrieval."""
 
@@ -129,6 +142,11 @@ class GatewayRule:
     ranked_nodes: tuple[str, ...]
     heartbeat_timeout_seconds: int
 
+    @property
+    def isolation_timeout_seconds(self) -> int:
+        """Isolation timeout is explicitly tied to heartbeat timeout."""
+        return self.heartbeat_timeout_seconds
+
     @staticmethod
     def from_dict(raw: Mapping[str, object]) -> GatewayRule:
         """Build validated GatewayRule from mapping."""
@@ -141,8 +159,16 @@ class GatewayRule:
             raise ValueError("gateway_rule.ranked_nodes must be non-empty")
         if not isinstance(timeout_obj, int):
             raise ValueError("gateway_rule.heartbeat_timeout_seconds must be an int")
-        if timeout_obj < 1:
-            raise ValueError("gateway_rule.heartbeat_timeout_seconds must be >= 1")
+        if timeout_obj < MIN_HEARTBEAT_TIMEOUT_SECONDS:
+            raise ValueError(
+                "gateway_rule.heartbeat_timeout_seconds must be >= "
+                f"{MIN_HEARTBEAT_TIMEOUT_SECONDS}"
+            )
+        if timeout_obj > MAX_HEARTBEAT_TIMEOUT_SECONDS:
+            raise ValueError(
+                "gateway_rule.heartbeat_timeout_seconds must be <= "
+                f"{MAX_HEARTBEAT_TIMEOUT_SECONDS}"
+            )
         if len(set(ranked_nodes)) != len(ranked_nodes):
             raise ValueError("gateway_rule.ranked_nodes must be unique")
         return GatewayRule(
@@ -537,6 +563,9 @@ class DaemonConfig:
             raw.get("sync_interval_seconds"),
             5.0,
         )
+        _require_positive_interval("heartbeat_interval_seconds", heartbeat_interval_seconds)
+        _require_positive_interval("reconnect_interval_seconds", reconnect_interval_seconds)
+        _require_positive_interval("sync_interval_seconds", sync_interval_seconds)
 
         dns_gate_raw = raw.get("dns_write_gate")
         dns_write_gate: DnsWriteGate | None = None
@@ -685,6 +714,7 @@ class GatewayDaemon:
         self._orders_lock = asyncio.Lock()
         if self._orders.peer_by_id(config.node_id) is None:
             raise ValueError(f"Local node_id '{config.node_id}' not found in orders")
+        self._validate_timing_contract()
 
         self._registry = ConnectionRegistry(local_node_id=config.node_id)
         self._commit_log = CommitLog()
@@ -705,6 +735,27 @@ class GatewayDaemon:
             resolved_client = Route53DnsWriteClient.from_gate(config.dns_write_gate)
         self._dns_client = resolved_client
         self._last_dns_write_ip: str | None = None
+
+    def _validate_timing_contract(self) -> None:
+        """Enforce timing relationships between daemon loops and gateway rule timeout."""
+        timeout_seconds = self._orders.gateway_rule.heartbeat_timeout_seconds
+        heartbeat_interval_seconds = self._config.heartbeat_interval_seconds
+        reconnect_interval_seconds = self._config.reconnect_interval_seconds
+        sync_interval_seconds = self._config.sync_interval_seconds
+
+        if heartbeat_interval_seconds > (timeout_seconds / 2.0):
+            raise ValueError(
+                "heartbeat_interval_seconds must be <= "
+                "(gateway_rule.heartbeat_timeout_seconds / 2)"
+            )
+        if reconnect_interval_seconds > timeout_seconds:
+            raise ValueError(
+                "reconnect_interval_seconds must be <= gateway_rule.heartbeat_timeout_seconds"
+            )
+        if sync_interval_seconds > (timeout_seconds * 2.0):
+            raise ValueError(
+                "sync_interval_seconds must be <= " "(gateway_rule.heartbeat_timeout_seconds * 2)"
+            )
 
     @staticmethod
     def _load_orders(path: Path) -> Orders:
@@ -1171,7 +1222,7 @@ class GatewayDaemon:
             if last is None:
                 continue
             delta = now - last
-            if delta.total_seconds() <= orders.gateway_rule.heartbeat_timeout_seconds:
+            if delta.total_seconds() <= orders.gateway_rule.isolation_timeout_seconds:
                 owner = ranked
                 break
 

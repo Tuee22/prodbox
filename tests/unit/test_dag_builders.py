@@ -44,20 +44,26 @@ from prodbox.cli.command_adt import (
 )
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.effects import (
+    AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
     CheckServiceStatus,
+    CleanupProdboxAnnotatedResources,
+    EnsureHarborRegistry,
+    EnsureMinio,
+    EnsureProdboxIdentityConfigMap,
+    EnsureRetainedLocalStorage,
     FetchPublicIP,
     GetJournalLogs,
     KubectlWait,
+    MachineIdentity,
+    Parallel,
     PulumiDestroy,
     PulumiPreview,
     PulumiRefresh,
-    PulumiUp,
     Pure,
     RunKubectlCommand,
     RunPulumiCommand,
-    RunSubprocess,
     RunSystemdCommand,
     Sequence,
     ValidateSettings,
@@ -414,6 +420,11 @@ class TestHostCommandPrerequisites:
                 assert "tool_kubectl" in root.prerequisites
                 assert "tool_helm" in root.prerequisites
                 assert "tool_pulumi" in root.prerequisites
+                assert "tool_docker" in root.prerequisites
+                assert "tool_ctr" in root.prerequisites
+                assert "tool_sudo" in root.prerequisites
+                assert "tool_systemctl" in root.prerequisites
+                assert "tool_rke2" in root.prerequisites
                 assert isinstance(root.effect, ValidateTool)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
@@ -496,27 +507,28 @@ class TestRKE2CommandPrerequisites:
                 assert "rke2_installed" in root.prerequisites
                 assert "rke2_config_exists" in root.prerequisites
                 assert "systemd_available" in root.prerequisites
+                assert "tool_kubectl" in root.prerequisites
+                assert "tool_helm" in root.prerequisites
+                assert "tool_docker" in root.prerequisites
+                assert "tool_ctr" in root.prerequisites
+                assert "tool_sudo" in root.prerequisites
+                assert "tool_systemctl" in root.prerequisites
+                assert "kubeconfig_exists" in root.prerequisites
+                assert "machine_identity" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_cleanup_requires_install_and_killall(self) -> None:
-        """RKE2CleanupCommand should require RKE2 binary and killall script."""
+    def test_rke2_cleanup_requires_cluster_access_and_machine_identity(self) -> None:
+        """RKE2CleanupCommand should require cluster access and machine identity."""
         cmd = RKE2CleanupCommand()
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("rke2_cleanup")
                 assert root is not None
-                assert "rke2_installed" in root.prerequisites
-                assert "rke2_killall_exists" in root.prerequisites
-                assert "systemd_available" in root.prerequisites
+                assert "k8s_cluster_reachable" in root.prerequisites
+                assert "machine_identity" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
-
-                sub_effects = root.effect.effects
-                assert len(sub_effects) == 3
-                assert isinstance(sub_effects[0], RunSystemdCommand)
-                assert isinstance(sub_effects[1], RunSystemdCommand)
-                assert isinstance(sub_effects[2], RunSubprocess)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -530,6 +542,62 @@ class TestRKE2CommandPrerequisites:
                 assert "rke2_service_exists" in root.prerequisites
                 assert isinstance(root.effect, GetJournalLogs)
                 assert root.effect.lines == 100
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_rke2_ensure_effect_builder_uses_machine_identity(self) -> None:
+        """rke2 ensure should build Harbor + storage/MinIO reconciliation effects."""
+        cmd = RKE2EnsureCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("rke2_ensure")
+                assert root is not None
+                prereq_results = {
+                    "machine_identity": Success(
+                        MachineIdentity(
+                            machine_id="0123456789abcdef0123456789abcdef",
+                            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+                        )
+                    )
+                }
+                built_effect = root.build_effect(None, prereq_results)
+                assert isinstance(built_effect, Sequence)
+                assert len(built_effect.effects) == 6
+                assert isinstance(built_effect.effects[3], EnsureProdboxIdentityConfigMap)
+                assert isinstance(built_effect.effects[4], Parallel)
+                assert isinstance(built_effect.effects[5], AnnotateProdboxManagedResources)
+                parallel_effect = built_effect.effects[4]
+                assert len(parallel_effect.effects) == 2
+                assert isinstance(parallel_effect.effects[0], EnsureHarborRegistry)
+                assert isinstance(parallel_effect.effects[1], Sequence)
+                storage_minio_effect = parallel_effect.effects[1]
+                assert len(storage_minio_effect.effects) == 2
+                assert isinstance(storage_minio_effect.effects[0], EnsureRetainedLocalStorage)
+                assert isinstance(storage_minio_effect.effects[1], EnsureMinio)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_rke2_cleanup_effect_builder_uses_machine_identity(self) -> None:
+        """rke2 cleanup should build annotation-based cleanup effect."""
+        cmd = RKE2CleanupCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("rke2_cleanup")
+                assert root is not None
+                prereq_results = {
+                    "machine_identity": Success(
+                        MachineIdentity(
+                            machine_id="0123456789abcdef0123456789abcdef",
+                            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+                        )
+                    )
+                }
+                built_effect = root.build_effect(None, prereq_results)
+                assert isinstance(built_effect, Sequence)
+                assert len(built_effect.effects) == 2
+                assert isinstance(built_effect.effects[0], CleanupProdboxAnnotatedResources)
+                assert built_effect.effects[0].retained_resource_kinds != ()
+                assert built_effect.effects[0].retained_namespaces == ("prodbox",)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -629,6 +697,7 @@ class TestPulumiCommandPrerequisites:
                 assert root is not None
                 assert "tool_pulumi" in root.prerequisites
                 assert "pulumi_logged_in" in root.prerequisites
+                assert "machine_identity" in root.prerequisites
                 assert isinstance(root.effect, PulumiPreview)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
@@ -642,7 +711,9 @@ class TestPulumiCommandPrerequisites:
                 assert root is not None
                 assert "tool_pulumi" in root.prerequisites
                 assert "pulumi_stack_exists" in root.prerequisites
-                assert isinstance(root.effect, PulumiUp)
+                assert "machine_identity" in root.prerequisites
+                assert "k8s_cluster_reachable" in root.prerequisites
+                assert isinstance(root.effect, Sequence)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -655,6 +726,7 @@ class TestPulumiCommandPrerequisites:
                 assert root is not None
                 assert "tool_pulumi" in root.prerequisites
                 assert "pulumi_stack_exists" in root.prerequisites
+                assert "machine_identity" in root.prerequisites
                 assert isinstance(root.effect, PulumiDestroy)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
@@ -668,7 +740,31 @@ class TestPulumiCommandPrerequisites:
                 assert root is not None
                 assert "tool_pulumi" in root.prerequisites
                 assert "pulumi_stack_exists" in root.prerequisites
+                assert "machine_identity" in root.prerequisites
                 assert isinstance(root.effect, PulumiRefresh)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_pulumi_up_effect_builder_adds_annotation_reconciliation(self) -> None:
+        """pulumi up should apply identity configmap and annotation reconciliation after apply."""
+        cmd = PulumiUpCommand(stack="dev", yes=True)
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("pulumi_up")
+                assert root is not None
+                prereq_results = {
+                    "machine_identity": Success(
+                        MachineIdentity(
+                            machine_id="0123456789abcdef0123456789abcdef",
+                            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+                        )
+                    )
+                }
+                built_effect = root.build_effect(None, prereq_results)
+                assert isinstance(built_effect, Sequence)
+                assert len(built_effect.effects) == 3
+                assert isinstance(built_effect.effects[1], EnsureProdboxIdentityConfigMap)
+                assert isinstance(built_effect.effects[2], AnnotateProdboxManagedResources)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 

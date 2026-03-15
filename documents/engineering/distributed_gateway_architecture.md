@@ -8,6 +8,16 @@
 
 ---
 
+## 0. Canonical Doctrine Statements
+
+Partition semantics for gateway leadership and DNS write gating must be formally verified by TLA+ before implementation changes are accepted.
+
+For this Byzantine-generals-class failure mode, TLA+ model checking is the primary completeness tool; runtime tests validate model-to-code fidelity but are not exhaustive proofs.
+
+Gateway timing contract is explicit: heartbeat_timeout_seconds in [3, 60], isolation_timeout_seconds = heartbeat_timeout_seconds, heartbeat_interval_seconds <= timeout/2, reconnect_interval_seconds <= timeout, and sync_interval_seconds <= timeout*2.
+
+---
+
 ## 1. Non-Negotiable Requirements
 
 This design assumes:
@@ -103,7 +113,8 @@ Tie-break is fixed: `(rank, node_id)` lexicographic.
 
 Rule schema must enforce:
 
-- If a node has no fresh heartbeat from peers for `isolation_timeout`, it must become self-candidate.
+- `isolation_timeout_seconds` is defined as `heartbeat_timeout_seconds`.
+- If a node has no fresh heartbeat from peers for `isolation_timeout_seconds`, it must become self-candidate.
 
 This satisfies the “all others down” takeover requirement.
 
@@ -263,11 +274,18 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 ## 12. Deployment Model
 
-The gateway daemon runs as a **local Python process** via `poetry run daemon --config <path>`. It is NOT containerized — Poetry handles all dependency management.
+The default operator path runs the gateway daemon as a **local Python process** via
+`poetry run daemon --config <path>`.
 
-- Docker is only used for the TLA+ model checker (`tla_check.py`)
-- RKE2 handles all Kubernetes containerization for pod integration tests
-- Pod images for integration tests are resolved via `PRODBOX_GATEWAY_IMAGE` environment variable
+Containerization is also first-class for integration/runtime image publishing:
+
+- `prodbox rke2 ensure` builds the gateway image from `docker/gateway.Dockerfile`
+- the image is pushed to local Harbor and imported into local RKE2 containerd cache
+- Kubernetes pod integration tests run against that image by default
+- `PRODBOX_GATEWAY_IMAGE` remains an override for explicit image pinning/testing
+
+See [Local Registry Pipeline](./local_registry_pipeline.md) for Harbor install,
+Docker build/push flow, and RKE2 mirror behavior.
 
 ### CLI Management
 

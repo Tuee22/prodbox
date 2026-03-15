@@ -24,11 +24,14 @@ from pathlib import Path
 
 from prodbox.cli.effect_dag import EffectNode, PrerequisiteRegistry
 from prodbox.cli.effects import (
+    CaptureKubectlOutput,
     CheckFileExists,
     CheckServiceStatus,
+    MachineIdentity,
     Pure,
     RequireLinux,
     RequireSystemd,
+    ResolveMachineIdentity,
     ValidateAWSCredentials,
     ValidateSettings,
     ValidateTool,
@@ -54,6 +57,14 @@ SYSTEMD_AVAILABLE: EffectNode[None] = EffectNode(
     prerequisites=frozenset(["platform_linux"]),
 )
 
+MACHINE_IDENTITY: EffectNode[MachineIdentity] = EffectNode(
+    effect=ResolveMachineIdentity(
+        effect_id="machine_identity",
+        description="Resolve machine-id and derived prodbox-id",
+    ),
+    prerequisites=frozenset(["platform_linux"]),
+)
+
 
 # =============================================================================
 # Tool Prerequisites
@@ -69,12 +80,42 @@ TOOL_KUBECTL: EffectNode[bool] = EffectNode(
     prerequisites=frozenset(),
 )
 
+TOOL_DOCKER: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_docker",
+        description="Validate docker is installed",
+        tool_name="docker",
+        version_flag="--version",
+    ),
+    prerequisites=frozenset(),
+)
+
+TOOL_CTR: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_ctr",
+        description="Validate ctr is installed",
+        tool_name="ctr",
+        version_flag="version",
+    ),
+    prerequisites=frozenset(),
+)
+
 TOOL_HELM: EffectNode[bool] = EffectNode(
     effect=ValidateTool(
         effect_id="tool_helm",
         description="Validate helm is installed",
         tool_name="helm",
         version_flag="version --short",
+    ),
+    prerequisites=frozenset(),
+)
+
+TOOL_SUDO: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_sudo",
+        description="Validate sudo is installed",
+        tool_name="sudo",
+        version_flag="--version",
     ),
     prerequisites=frozenset(),
 )
@@ -212,13 +253,14 @@ RKE2_SERVICE_ACTIVE: EffectNode[str] = EffectNode(
     prerequisites=frozenset(["rke2_service_exists"]),
 )
 
-K8S_CLUSTER_REACHABLE: EffectNode[bool] = EffectNode(
-    effect=Pure(
+K8S_CLUSTER_REACHABLE: EffectNode[tuple[int, str, str]] = EffectNode(
+    effect=CaptureKubectlOutput(
         effect_id="k8s_cluster_reachable",
-        description="Validate Kubernetes cluster is reachable",
-        value=True,  # Validated transitively
+        description="Confirm Kubernetes API access via kubectl cluster-info",
+        args=["cluster-info"],
+        timeout=30.0,
     ),
-    prerequisites=frozenset(["tool_kubectl", "kubeconfig_exists"]),
+    prerequisites=frozenset(["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]),
 )
 
 
@@ -276,9 +318,13 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     # Platform
     "platform_linux": PLATFORM_LINUX,
     "systemd_available": SYSTEMD_AVAILABLE,
+    "machine_identity": MACHINE_IDENTITY,
     # Tools
     "tool_kubectl": TOOL_KUBECTL,
+    "tool_docker": TOOL_DOCKER,
+    "tool_ctr": TOOL_CTR,
     "tool_helm": TOOL_HELM,
+    "tool_sudo": TOOL_SUDO,
     "tool_pulumi": TOOL_PULUMI,
     "tool_rke2": TOOL_RKE2,
     "tool_systemctl": TOOL_SYSTEMCTL,
@@ -315,9 +361,13 @@ __all__ = [
     # Platform
     "PLATFORM_LINUX",
     "SYSTEMD_AVAILABLE",
+    "MACHINE_IDENTITY",
     # Tools
     "TOOL_KUBECTL",
+    "TOOL_DOCKER",
+    "TOOL_CTR",
     "TOOL_HELM",
+    "TOOL_SUDO",
     "TOOL_PULUMI",
     "TOOL_RKE2",
     "TOOL_SYSTEMCTL",

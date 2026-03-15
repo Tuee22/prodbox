@@ -44,6 +44,41 @@ T = TypeVar("T", covariant=True)
 
 
 @dataclass(frozen=True)
+class MachineIdentity:
+    """Machine identity derived from /etc/machine-id."""
+
+    machine_id: str
+    prodbox_id: str
+
+
+@dataclass(frozen=True)
+class HarborRuntime:
+    """Resolved Harbor runtime outputs for downstream eDAG nodes."""
+
+    registry_endpoint: str
+    gateway_image: str
+
+
+@dataclass(frozen=True)
+class StorageRuntime:
+    """Resolved retained local storage runtime for downstream eDAG nodes."""
+
+    storage_class_name: str
+    persistent_volume_name: str
+    persistent_volume_claim_name: str
+    host_path: Path
+
+
+@dataclass(frozen=True)
+class MinioRuntime:
+    """Resolved MinIO runtime outputs for downstream eDAG nodes."""
+
+    namespace: str
+    release_name: str
+    persistent_volume_claim_name: str
+
+
+@dataclass(frozen=True)
 class Effect(Generic[T]):
     """
     Base effect type - declarative specification of a side effect.
@@ -96,6 +131,17 @@ class RequireSystemd(Effect[None]):
         ...     description="Require systemd for service management"
         ... )
     """
+
+
+@dataclass(frozen=True)
+class ResolveMachineIdentity(Effect[MachineIdentity]):
+    """
+    Resolve Linux machine identity and derived prodbox-id.
+
+    Returns: MachineIdentity with machine_id and prodbox_id
+    """
+
+    file_path: Path = Path("/etc/machine-id")
 
 
 # =============================================================================
@@ -423,6 +469,123 @@ class KubectlWait(Effect[bool]):
     timeout: int = 300
 
 
+@dataclass(frozen=True)
+class EnsureHarborRegistry(Effect[HarborRuntime]):
+    """
+    Install and reconcile local Harbor registry + prodbox gateway image pipeline.
+
+    Returns: HarborRuntime with resolved registry endpoint and gateway image ref
+    """
+
+    machine_identity: MachineIdentity
+    namespace: str
+    release_name: str
+    repository_name: str
+    repository_url: str
+    registry_endpoint: str
+    mirror_project: str
+    gateway_image_repository: str
+    gateway_dockerfile: Path
+    gateway_build_context: Path
+    registries_file_path: Path
+    admin_user: str = "admin"
+    admin_password: str = "Harbor12345"
+    wait_timeout_seconds: int = 300
+    install_timeout_seconds: float = 600.0
+    mirror_cluster_images: bool = True
+
+
+@dataclass(frozen=True)
+class EnsureRetainedLocalStorage(Effect[StorageRuntime]):
+    """
+    Reconcile static retained local storage resources for deterministic rebinding.
+
+    Returns: StorageRuntime with resolved StorageClass/PV/PVC values
+    """
+
+    machine_identity: MachineIdentity
+    namespace: str
+    storage_class_name: str
+    persistent_volume_name: str
+    persistent_volume_claim_name: str
+    storage_size: str
+    host_storage_base_path: Path
+    annotation_key: str
+    label_key: str
+    label_value: str
+
+
+@dataclass(frozen=True)
+class EnsureMinio(Effect[MinioRuntime]):
+    """
+    Install and reconcile MinIO via official Helm chart.
+
+    Returns: MinioRuntime with resolved namespace/release/PVC values
+    """
+
+    machine_identity: MachineIdentity
+    namespace: str
+    release_name: str
+    repository_name: str
+    repository_url: str
+    chart_ref: str
+    chart_version: str
+    existing_claim: str
+    annotation_key: str
+    label_key: str
+    label_value: str
+    storage_size: str
+    install_timeout_seconds: float = 600.0
+    wait_timeout_seconds: int = 300
+
+
+@dataclass(frozen=True)
+class EnsureProdboxIdentityConfigMap(Effect[None]):
+    """
+    Ensure prodbox namespace and identity ConfigMap exist.
+
+    Returns: None
+    """
+
+    machine_identity: MachineIdentity
+    namespace: str
+    configmap_name: str
+    annotation_key: str
+    label_key: str
+    label_value: str
+
+
+@dataclass(frozen=True)
+class AnnotateProdboxManagedResources(Effect[None]):
+    """
+    Reconcile prodbox annotation/label onto managed Kubernetes resources.
+
+    Returns: None
+    """
+
+    prodbox_id: str
+    annotation_key: str
+    label_key: str
+    label_value: str
+    managed_namespaces: tuple[str, ...]
+    helm_instances: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class CleanupProdboxAnnotatedResources(Effect[int]):
+    """
+    Delete Kubernetes resources annotated with the current prodbox-id.
+
+    Returns: Number of deleted objects
+    """
+
+    prodbox_id: str
+    annotation_key: str
+    cleanup_passes: int = 2
+    retained_resource_kinds: tuple[str, ...] = ()
+    retained_namespaces: tuple[str, ...] = ()
+
+
 # =============================================================================
 # DNS / Route 53 Effects
 # =============================================================================
@@ -581,6 +744,7 @@ class PulumiPreview(Effect[int]):
 
     cwd: Path | None = None
     stack: str | None = None
+    env: dict[str, str] | None = None
     stream_stdout: bool = True
 
 
@@ -602,6 +766,7 @@ class PulumiUp(Effect[int]):
 
     cwd: Path | None = None
     stack: str | None = None
+    env: dict[str, str] | None = None
     yes: bool = True
     stream_stdout: bool = True
 
@@ -624,6 +789,7 @@ class PulumiDestroy(Effect[int]):
 
     cwd: Path | None = None
     stack: str | None = None
+    env: dict[str, str] | None = None
     yes: bool = True
     stream_stdout: bool = True
 
@@ -645,6 +811,7 @@ class PulumiRefresh(Effect[int]):
 
     cwd: Path | None = None
     stack: str | None = None
+    env: dict[str, str] | None = None
     yes: bool = True
     stream_stdout: bool = True
 
@@ -1147,9 +1314,14 @@ def parallel(*effects: Effect[object]) -> Parallel:
 __all__ = [
     # Base type
     "Effect",
+    "MachineIdentity",
+    "HarborRuntime",
+    "StorageRuntime",
+    "MinioRuntime",
     # Platform
     "RequireLinux",
     "RequireSystemd",
+    "ResolveMachineIdentity",
     # Tool validation
     "ValidateTool",
     "ValidateEnvironment",
@@ -1168,6 +1340,12 @@ __all__ = [
     "RunKubectlCommand",
     "CaptureKubectlOutput",
     "KubectlWait",
+    "EnsureHarborRegistry",
+    "EnsureRetainedLocalStorage",
+    "EnsureMinio",
+    "EnsureProdboxIdentityConfigMap",
+    "AnnotateProdboxManagedResources",
+    "CleanupProdboxAnnotatedResources",
     # DNS / Route 53
     "FetchPublicIP",
     "QueryRoute53Record",

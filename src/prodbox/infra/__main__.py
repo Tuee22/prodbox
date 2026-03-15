@@ -18,6 +18,7 @@ from prodbox.infra.cert_manager import deploy_cert_manager
 from prodbox.infra.cluster_issuer import deploy_cluster_issuer
 from prodbox.infra.dns import deploy_dns
 from prodbox.infra.ingress import deploy_ingress
+from prodbox.infra.metadata import resolve_prodbox_id
 from prodbox.infra.metallb import deploy_metallb
 from prodbox.infra.providers import create_aws_provider, create_k8s_provider
 from prodbox.settings import Settings
@@ -27,6 +28,7 @@ def main() -> None:
     """Main Pulumi program."""
     # Load settings from environment
     settings = Settings()
+    prodbox_id = resolve_prodbox_id()
 
     # Create providers
     k8s_provider = create_k8s_provider(settings)
@@ -38,7 +40,7 @@ def main() -> None:
 
     # Phase 2: MetalLB (networking layer)
     # Provides LoadBalancer IPs for services
-    metallb_resources = deploy_metallb(settings, k8s_provider)
+    metallb_resources = deploy_metallb(settings, k8s_provider, prodbox_id=prodbox_id)
 
     # Phase 3: Ingress Controller (requires MetalLB)
     # Traefik handles HTTP/HTTPS traffic routing
@@ -46,11 +48,12 @@ def main() -> None:
         settings,
         k8s_provider,
         metallb_resources,
+        prodbox_id=prodbox_id,
     )
 
     # Phase 4: cert-manager (TLS layer - independent of ingress)
     # Manages TLS certificates
-    cert_manager_resources = deploy_cert_manager(settings, k8s_provider)
+    cert_manager_resources = deploy_cert_manager(settings, k8s_provider, prodbox_id=prodbox_id)
 
     # Phase 5: ClusterIssuer (requires cert-manager)
     # Let's Encrypt issuer with DNS-01 validation
@@ -58,6 +61,7 @@ def main() -> None:
         settings,
         k8s_provider,
         cert_manager_resources,
+        prodbox_id=prodbox_id,
     )
 
     # Summary exports
@@ -68,6 +72,7 @@ def main() -> None:
             "ingress_ip": settings.ingress_lb_ip,
             "metallb_pool": settings.metallb_pool,
             "cluster_issuer": "letsencrypt-dns01",
+            "prodbox_id": prodbox_id,
         },
     )
 

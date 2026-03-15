@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,6 +52,9 @@ from prodbox.cli.interpreter import (
 )
 from prodbox.cli.summary import dag_to_execution_summary
 from prodbox.cli.types import Failure, PrereqResults, Success
+
+if TYPE_CHECKING:
+    from prodbox.cli.effects import EnsureRetainedLocalStorage
 
 
 class TestExecutionSummary:
@@ -2747,6 +2751,113 @@ class TestKubectlEffects:
         env = mock_subprocess.call_args[1].get("env")
         assert isinstance(env, dict)
         assert env.get("KUBECONFIG") == "/path/to/kubeconfig"
+
+
+class TestRetainedStorageEffects:
+    """Tests for retained local storage reconciliation behavior."""
+
+    @staticmethod
+    def _storage_effect() -> EnsureRetainedLocalStorage:
+        """Build one EnsureRetainedLocalStorage effect for tests."""
+        from prodbox.cli.effects import EnsureRetainedLocalStorage, MachineIdentity
+
+        return EnsureRetainedLocalStorage(
+            effect_id="ensure_storage",
+            description="Ensure retained storage",
+            machine_identity=MachineIdentity(
+                machine_id="9952fe5f838f4c80b337f1ea5186fbf3",
+                prodbox_id="prodbox-9952fe5f838f4c80b337f1ea5186fbf3",
+            ),
+            namespace="prodbox",
+            storage_class_name="prodbox-local-retain",
+            persistent_volume_name="prodbox-minio-pv-0",
+            persistent_volume_claim_name="minio",
+            storage_size="200Gi",
+            host_storage_base_path=Path("/var/lib/prodbox/storage"),
+            annotation_key="prodbox.io/id",
+            label_key="prodbox.io/id",
+            label_value="prodbox-9952fe5f838f4c80b337f1ea5186fbf3",
+        )
+
+    @pytest.mark.asyncio
+    async def test_released_pv_is_recreated_before_apply(self) -> None:
+        """Released retained PV should be deleted so apply can rebind deterministically."""
+        from prodbox.cli.effects import StorageRuntime
+
+        interpreter = EffectInterpreter()
+        effect = self._storage_effect()
+        with (
+            patch.object(
+                interpreter,
+                "_resolve_single_node_hostname",
+                new=AsyncMock(return_value=("single-node", None)),
+            ),
+            patch.object(
+                interpreter,
+                "_ensure_host_storage_path",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                interpreter,
+                "_persistent_volume_phase_by_name",
+                new=AsyncMock(return_value=("Released", None)),
+            ),
+            patch.object(
+                interpreter,
+                "_run_kubectl",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
+                ),
+            ) as mock_run_kubectl,
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert isinstance(value, StorageRuntime)
+        assert len(mock_run_kubectl.await_args_list) == 2
+        delete_call = mock_run_kubectl.await_args_list[0]
+        apply_call = mock_run_kubectl.await_args_list[1]
+        assert delete_call.args[:3] == ("delete", "pv", "prodbox-minio-pv-0")
+        assert apply_call.args[:3] == ("apply", "-f", "-")
+
+    @pytest.mark.asyncio
+    async def test_bound_pv_is_applied_without_delete(self) -> None:
+        """Bound retained PV should not be deleted during reconciliation."""
+        interpreter = EffectInterpreter()
+        effect = self._storage_effect()
+        with (
+            patch.object(
+                interpreter,
+                "_resolve_single_node_hostname",
+                new=AsyncMock(return_value=("single-node", None)),
+            ),
+            patch.object(
+                interpreter,
+                "_ensure_host_storage_path",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                interpreter,
+                "_persistent_volume_phase_by_name",
+                new=AsyncMock(return_value=("Bound", None)),
+            ),
+            patch.object(
+                interpreter,
+                "_run_kubectl",
+                new=AsyncMock(
+                    return_value=ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                ),
+            ) as mock_run_kubectl,
+        ):
+            summary, _value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert len(mock_run_kubectl.await_args_list) == 1
+        apply_call = mock_run_kubectl.await_args_list[0]
+        assert apply_call.args[:3] == ("apply", "-f", "-")
 
 
 class TestRoute53Effects:

@@ -68,10 +68,78 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
     IntentRule(
         name="rke2_teardown_safety",
         statement=(
-            "Cleanup must tear down RKE2-managed runtime state without deleting host "
-            "storage paths used for persistent data."
+            "Cleanup must idempotently remove prodbox-annotated Kubernetes objects "
+            "without deleting host storage paths used for persistent data."
         ),
         canonical_docs=frozenset({Path("documents/engineering/prerequisite_doctrine.md")}),
+    ),
+    IntentRule(
+        name="retained_storage_rebinding",
+        statement=(
+            "Retained storage in prodbox is reconciled via static no-provisioner "
+            "StorageClass and prebound PV/PVC resources to guarantee deterministic "
+            "PVC->PV rebinding across cleanup/redeploy."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/storage_lifecycle_doctrine.md")}),
+    ),
+    IntentRule(
+        name="partition_semantics_formal_proof",
+        statement=(
+            "Partition semantics for gateway leadership and DNS write gating must be "
+            "formally verified by TLA+ before implementation changes are accepted."
+        ),
+        canonical_docs=frozenset(
+            {Path("documents/engineering/distributed_gateway_architecture.md")}
+        ),
+    ),
+    IntentRule(
+        name="byzantine_formal_methods_primary",
+        statement=(
+            "For this Byzantine-generals-class failure mode, TLA+ model checking is "
+            "the primary completeness tool; runtime tests validate model-to-code "
+            "fidelity but are not exhaustive proofs."
+        ),
+        canonical_docs=frozenset(
+            {Path("documents/engineering/distributed_gateway_architecture.md")}
+        ),
+    ),
+    IntentRule(
+        name="gateway_timing_contract",
+        statement=(
+            "Gateway timing contract is explicit: heartbeat_timeout_seconds in [3, 60], "
+            "isolation_timeout_seconds = heartbeat_timeout_seconds, "
+            "heartbeat_interval_seconds <= timeout/2, "
+            "reconnect_interval_seconds <= timeout, and "
+            "sync_interval_seconds <= timeout*2."
+        ),
+        canonical_docs=frozenset(
+            {Path("documents/engineering/distributed_gateway_architecture.md")}
+        ),
+    ),
+    IntentRule(
+        name="tla_model_test_boundary",
+        statement=(
+            "The test suite cannot enumerate every partition/failure schedule; robust "
+            "integration tests remain mandatory to validate TLA+ modelling choices "
+            "against the implementation."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/unit_testing_policy.md")}),
+    ),
+    IntentRule(
+        name="integration_runbook_enforcement",
+        statement=(
+            "When integration scope is selected, `prodbox test` must enforce the "
+            "runbook by executing `prodbox rke2 ensure` before pytest."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/unit_testing_policy.md")}),
+    ),
+    IntentRule(
+        name="prodtest_timeout_cap",
+        statement=(
+            "`prodbox test` phase-two pytest timeout budget is capped at 240 minutes "
+            "(14,400 seconds)."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/unit_testing_policy.md")}),
     ),
     IntentRule(
         name="streaming_contract",

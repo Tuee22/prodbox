@@ -8,12 +8,14 @@ from typing import TYPE_CHECKING
 import pulumi
 import pulumi_kubernetes as k8s
 
+from prodbox.infra.metadata import object_meta
+
 if TYPE_CHECKING:
     from prodbox.infra.cert_manager import CertManagerResources
     from prodbox.settings import Settings
 
 
-@dataclass
+@dataclass(frozen=True)
 class ClusterIssuerResources:
     """Container for ClusterIssuer resources."""
 
@@ -25,6 +27,8 @@ def deploy_cluster_issuer(
     settings: Settings,
     k8s_provider: k8s.Provider,
     cert_manager_resources: CertManagerResources,
+    *,
+    prodbox_id: str,
 ) -> ClusterIssuerResources:
     """Deploy ClusterIssuer for Let's Encrypt DNS-01 validation.
 
@@ -36,6 +40,7 @@ def deploy_cluster_issuer(
         settings: Application settings with AWS and ACME configuration
         k8s_provider: Kubernetes provider
         cert_manager_resources: cert-manager resources (for dependency)
+        prodbox_id: Canonical prodbox-id annotation value
 
     Returns:
         ClusterIssuerResources containing all created resources
@@ -44,9 +49,10 @@ def deploy_cluster_issuer(
     # The secret must be in the cert-manager namespace
     aws_secret = k8s.core.v1.Secret(
         "route53-credentials",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
+        metadata=object_meta(
             name="route53-credentials",
             namespace="cert-manager",
+            prodbox_id=prodbox_id,
         ),
         string_data={
             "secret-access-key": settings.aws_secret_access_key,
@@ -62,9 +68,7 @@ def deploy_cluster_issuer(
         "letsencrypt-dns01",
         api_version="cert-manager.io/v1",
         kind="ClusterIssuer",
-        metadata=k8s.meta.v1.ObjectMetaArgs(
-            name="letsencrypt-dns01",
-        ),
+        metadata=object_meta(name="letsencrypt-dns01", prodbox_id=prodbox_id),
         spec={
             "acme": {
                 # ACME server URL (production or staging)

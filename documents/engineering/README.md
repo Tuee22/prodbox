@@ -18,6 +18,8 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
+| [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor installation + local image mirror pipeline |
+| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage + deterministic PVC/PV rebinding doctrine |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and runtime reference |
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and at-most-one-stream invariants |
@@ -41,6 +43,9 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 ### Distributed Gateway
 - [Architecture](./distributed_gateway_architecture.md)
+- [Local Registry Pipeline](./local_registry_pipeline.md)
+- [Gateway Container Build Doctrine](./local_registry_pipeline.md#6-gateway-container-build-doctrine)
+- [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [TLA+ Models](./tla/README.md)
 - [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md)
 

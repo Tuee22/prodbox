@@ -179,6 +179,19 @@ This runs TLC 2.18 in a Docker container (`maxdiefenbach/tlaplus`) with 8 worker
 
 ---
 
+## 8. Model-vs-Test Coverage Boundary
+
+The gateway failure space includes crash timing races, delayed heartbeats, asymmetric partitions, and rejoin ordering permutations. The combinatorics make exhaustive runtime testing infeasible.
+
+This is the same class of limitation that led AWS to increase reliance on formal methods for systems such as S3 and DynamoDB: conventional test suites found many defects, but could not enumerate all distributed interleavings.
+
+In prodbox:
+
+1. TLA+ is used to prove bounded-state safety properties for partition semantics.
+2. Runtime unit/integration tests are still mandatory to validate that implementation behavior matches the modelling assumptions and invariants.
+
+---
+
 ## Cross-References
 
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md) — system design and protocol spec

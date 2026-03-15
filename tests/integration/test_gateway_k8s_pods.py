@@ -6,17 +6,21 @@ failover, network partition simulation, and DNS write gating.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import uuid
+import re
 from contextlib import suppress
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+from prodbox.lib.prodbox_k8s import PRODBOX_NAMESPACE, prodbox_gateway_image_ref
+
 from .conftest import (
     apply_cert_manifest,
+    cleanup_gateway_test_resources,
     delete_pod_force,
     kubectl_apply_manifest,
     kubectl_delete_manifest,
@@ -26,7 +30,7 @@ from .conftest import (
     wait_for_certificate,
     wait_for_pod_running,
 )
-from .helpers import run_kubectl_capture_via_dag, wait_for_async
+from .helpers import wait_for_async
 from .k8s_manifests import (
     gateway_config_configmap,
     gateway_daemon_pod,
@@ -40,6 +44,17 @@ NODE_IDS = ("node-a", "node-b", "node-c")
 EVENT_KEYS = {"node-a": "key-a", "node-b": "key-b", "node-c": "key-c"}
 REST_PORT = 8443
 SOCKET_PORT = 8444
+HEARTBEAT_TIMEOUT_SECONDS = 5
+HEARTBEAT_INTERVAL_SECONDS = 0.5
+CONVERGENCE_TIMEOUT_SECONDS = 120.0
+ISOLATION_CONVERGENCE_TIMEOUT_SECONDS = 90.0
+ISOLATION_SETTLE_SECONDS = HEARTBEAT_TIMEOUT_SECONDS + HEARTBEAT_INTERVAL_SECONDS + 0.5
+PARTITION_POLICY_SETTLE_SECONDS = ISOLATION_SETTLE_SECONDS + 2.0
+EVENT_PROPAGATION_SETTLE_SECONDS = float(HEARTBEAT_TIMEOUT_SECONDS)
+LESS_THAN_ISOLATION_TIMEOUT_SECONDS = float(HEARTBEAT_TIMEOUT_SECONDS - 3)
+HEARTBEAT_COLLECTION_SPACING_SECONDS = HEARTBEAT_INTERVAL_SECONDS * 2.0
+LONG_PARTITION_SETTLE_SECONDS = float(HEARTBEAT_TIMEOUT_SECONDS * 5)
+LONG_HEAL_SETTLE_SECONDS = float(HEARTBEAT_TIMEOUT_SECONDS * 2)
 pytestmark = pytest.mark.timeout(300)
 
 
@@ -60,7 +75,7 @@ def _pod_orders(namespace: str) -> dict[str, object]:
         ],
         "gateway_rule": {
             "ranked_nodes": list(NODE_IDS),
-            "heartbeat_timeout_seconds": 5,
+            "heartbeat_timeout_seconds": HEARTBEAT_TIMEOUT_SECONDS,
         },
     }
 
@@ -69,15 +84,23 @@ def _resolve_gateway_image() -> str:
     """Resolve gateway container image from PRODBOX_GATEWAY_IMAGE env var.
 
     The gateway daemon runs as a local Python process via poetry in production.
-    For K8s pod integration tests, a pre-built image must be provided via the
-    PRODBOX_GATEWAY_IMAGE environment variable.
+    For K8s pod integration tests, image selection order is:
+    1) explicit PRODBOX_GATEWAY_IMAGE env var
+    2) canonical Harbor image derived from local machine-id
     """
     image = os.environ.get("PRODBOX_GATEWAY_IMAGE", "")
-    if not image:
+    if image:
+        return image
+    machine_id_path = Path("/etc/machine-id")
+    if not machine_id_path.exists():
         raise AssertionError(
-            "PRODBOX_GATEWAY_IMAGE not set; gateway pod tests require a pre-built image"
+            "PRODBOX_GATEWAY_IMAGE not set and /etc/machine-id missing; "
+            "cannot derive Harbor image reference"
         )
-    return image
+    machine_id = machine_id_path.read_text(encoding="utf-8").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{32}", machine_id) is None:
+        raise AssertionError(f"Unexpected /etc/machine-id format: {machine_id}")
+    return prodbox_gateway_image_ref(f"prodbox-{machine_id}")
 
 
 async def _deploy_gateway_mesh(
@@ -247,17 +270,19 @@ async def _collect_pod_event_hash_sets(
     node_ids: tuple[str, ...] = NODE_IDS,
 ) -> list[frozenset[str]] | None:
     """Collect event hash sets from all pods; return None if any pod is unavailable."""
-    hash_sets: list[frozenset[str]] = []
-    for node_id in node_ids:
-        hashes = await _get_pod_event_hashes(
-            pod_name=f"gateway-{node_id}",
-            namespace=namespace,
-            kubeconfig=kubeconfig,
+    hash_set_results = await asyncio.gather(
+        *(
+            _get_pod_event_hashes(
+                pod_name=f"gateway-{node_id}",
+                namespace=namespace,
+                kubeconfig=kubeconfig,
+            )
+            for node_id in node_ids
         )
-        if hashes is None:
-            return None
-        hash_sets.append(hashes)
-    return hash_sets
+    )
+    if any(hash_set is None for hash_set in hash_set_results):
+        return None
+    return [hash_set for hash_set in hash_set_results if hash_set is not None]
 
 
 def _all_hash_sets_equal(hash_sets: list[frozenset[str]]) -> bool:
@@ -276,7 +301,7 @@ async def test_pods_form_mesh_and_converge_on_owner(tmp_path: Path) -> None:
     """Deploy 3 pods and verify they converge on node-a as gateway owner."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         # Provision certs
@@ -317,7 +342,7 @@ async def test_pods_form_mesh_and_converge_on_owner(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Verify each pod reports correct state
         for node_id in NODE_IDS:
@@ -332,13 +357,9 @@ async def test_pods_form_mesh_and_converge_on_owner(tmp_path: Path) -> None:
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -350,7 +371,7 @@ async def test_pod_crash_triggers_failover(tmp_path: Path) -> None:
     """Delete node-a pod, verify remaining pods failover to node-b."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -387,7 +408,7 @@ async def test_pod_crash_triggers_failover(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Crash node-a
         await delete_pod_force(
@@ -397,7 +418,7 @@ async def test_pod_crash_triggers_failover(tmp_path: Path) -> None:
         )
 
         # Wait for remaining pods to failover to node-b
-        # heartbeat_timeout_seconds is 5, so wait a bit longer
+        # Wait longer than isolation timeout before checking failover.
         async def failover_to_node_b() -> bool:
             return await _all_pods_agree_owner(
                 namespace=namespace,
@@ -406,17 +427,15 @@ async def test_pod_crash_triggers_failover(tmp_path: Path) -> None:
                 node_ids=("node-b", "node-c"),
             )
 
-        await wait_for_async(failover_to_node_b, timeout_seconds=30.0)
+        await wait_for_async(
+            failover_to_node_b, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -428,7 +447,7 @@ async def test_pod_restart_reclaims_ownership(tmp_path: Path) -> None:
     """After node-a restarts, it reclaims gateway ownership."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -465,7 +484,7 @@ async def test_pod_restart_reclaims_ownership(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Crash node-a
         await delete_pod_force(
@@ -483,7 +502,9 @@ async def test_pod_restart_reclaims_ownership(tmp_path: Path) -> None:
                 node_ids=("node-b", "node-c"),
             )
 
-        await wait_for_async(failover_to_node_b, timeout_seconds=30.0)
+        await wait_for_async(
+            failover_to_node_b, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         await _recreate_gateway_pod(
             node_id="node-a",
@@ -501,17 +522,13 @@ async def test_pod_restart_reclaims_ownership(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(reconverge_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(reconverge_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -523,7 +540,7 @@ async def test_network_partition_causes_split_brain_then_heals(tmp_path: Path) -
     """Isolate node-c via NetworkPolicy, verify split-brain, then heal."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -560,7 +577,7 @@ async def test_network_partition_causes_split_brain_then_heals(tmp_path: Path) -
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Isolate node-c via NetworkPolicy
         isolation_policy = gateway_network_policy_isolate(
@@ -596,7 +613,9 @@ async def test_network_partition_causes_split_brain_then_heals(tmp_path: Path) -
                 return True
             return c_state.get("gateway_owner") == "node-c"
 
-        await wait_for_async(partition_behavior_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            partition_behavior_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         # Heal partition by deleting NetworkPolicy
         await kubectl_delete_manifest(
@@ -613,17 +632,13 @@ async def test_network_partition_causes_split_brain_then_heals(tmp_path: Path) -
                 expected_owner="node-a",
             )
 
-        await wait_for_async(all_reconverge, timeout_seconds=60.0)
+        await wait_for_async(all_reconverge, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -635,7 +650,7 @@ async def test_primary_isolation_triggers_failover_for_majority(tmp_path: Path) 
     """Isolate node-a, verify node-b+c failover, then heal and reconverge."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -672,7 +687,7 @@ async def test_primary_isolation_triggers_failover_for_majority(tmp_path: Path) 
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Isolate node-a
         isolation_policy = gateway_network_policy_isolate(
@@ -694,7 +709,9 @@ async def test_primary_isolation_triggers_failover_for_majority(tmp_path: Path) 
                 node_ids=("node-b", "node-c"),
             )
 
-        await wait_for_async(majority_failover_to_node_b, timeout_seconds=30.0)
+        await wait_for_async(
+            majority_failover_to_node_b, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         # node-a (isolated) still thinks it's owner (stale, can't hear peers)
         a_state = await _get_pod_state(
@@ -720,17 +737,13 @@ async def test_primary_isolation_triggers_failover_for_majority(tmp_path: Path) 
                 expected_owner="node-a",
             )
 
-        await wait_for_async(reconverge_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(reconverge_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -742,7 +755,7 @@ async def test_only_gateway_owner_writes_dns(tmp_path: Path) -> None:
     """Verify only the gateway owner attempts DNS writes (via commit log events)."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -779,7 +792,7 @@ async def test_only_gateway_owner_writes_dns(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # The DNS write gate is not configured in the pod manifests (no real Route53)
         # This test verifies that ownership is correctly computed by checking
@@ -809,7 +822,9 @@ async def test_only_gateway_owner_writes_dns(tmp_path: Path) -> None:
                 node_ids=("node-b", "node-c"),
             )
 
-        await wait_for_async(failover_to_node_b, timeout_seconds=30.0)
+        await wait_for_async(
+            failover_to_node_b, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         # node-b is now owner, node-c is not
         b_state = await _get_pod_state(
@@ -829,13 +844,9 @@ async def test_only_gateway_owner_writes_dns(tmp_path: Path) -> None:
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -847,7 +858,7 @@ async def test_event_log_converges_after_partition_heal(tmp_path: Path) -> None:
     """Verify all pods have consistent gateway owner view after partition heals."""
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -884,7 +895,7 @@ async def test_event_log_converges_after_partition_heal(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Partition node-c
         isolation_policy = gateway_network_policy_isolate(
@@ -899,7 +910,7 @@ async def test_event_log_converges_after_partition_heal(tmp_path: Path) -> None:
 
         import asyncio
 
-        await asyncio.sleep(8.0)  # Let partition take effect
+        await asyncio.sleep(PARTITION_POLICY_SETTLE_SECONDS)  # Let partition take effect
 
         # Heal partition
         await kubectl_delete_manifest(
@@ -909,7 +920,7 @@ async def test_event_log_converges_after_partition_heal(tmp_path: Path) -> None:
         )
 
         # Wait for anti-entropy sync to reconcile
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(EVENT_PROPAGATION_SETTLE_SECONDS)
 
         # All pods should have converged view
         async def all_converged() -> bool:
@@ -919,7 +930,7 @@ async def test_event_log_converges_after_partition_heal(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(all_converged, timeout_seconds=60.0)
+        await wait_for_async(all_converged, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Verify consistent state across all pods
         states: list[dict[str, object]] = []
@@ -939,13 +950,9 @@ async def test_event_log_converges_after_partition_heal(tmp_path: Path) -> None:
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -966,7 +973,7 @@ async def test_simultaneous_multi_node_crash_leaves_singleton(tmp_path: Path) ->
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1003,7 +1010,7 @@ async def test_simultaneous_multi_node_crash_leaves_singleton(tmp_path: Path) ->
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Crash both node-a and node-b simultaneously
         import asyncio
@@ -1030,7 +1037,9 @@ async def test_simultaneous_multi_node_crash_leaves_singleton(tmp_path: Path) ->
                 node_ids=("node-c",),
             )
 
-        await wait_for_async(node_c_self_elects, timeout_seconds=30.0)
+        await wait_for_async(
+            node_c_self_elects, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         await _recreate_gateway_pod(
             node_id="node-a",
@@ -1055,17 +1064,13 @@ async def test_simultaneous_multi_node_crash_leaves_singleton(tmp_path: Path) ->
                 expected_owner="node-a",
             )
 
-        await wait_for_async(reconverge_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(reconverge_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1081,7 +1086,7 @@ async def test_cascading_failure_to_last_node(tmp_path: Path) -> None:
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1118,7 +1123,7 @@ async def test_cascading_failure_to_last_node(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Crash node-a
         await delete_pod_force(
@@ -1130,7 +1135,9 @@ async def test_cascading_failure_to_last_node(tmp_path: Path) -> None:
         # Wait briefly for failover to start, then crash node-b before it completes
         import asyncio
 
-        await asyncio.sleep(2.0)  # Less than heartbeat_timeout_seconds (5s)
+        await asyncio.sleep(
+            LESS_THAN_ISOLATION_TIMEOUT_SECONDS
+        )  # Intentionally below isolation timeout.
 
         await delete_pod_force(
             pod_name="gateway-node-b",
@@ -1147,7 +1154,9 @@ async def test_cascading_failure_to_last_node(tmp_path: Path) -> None:
                 node_ids=("node-c",),
             )
 
-        await wait_for_async(node_c_self_elects, timeout_seconds=30.0)
+        await wait_for_async(
+            node_c_self_elects, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         await _recreate_gateway_pod(
             node_id="node-a",
@@ -1172,17 +1181,13 @@ async def test_cascading_failure_to_last_node(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(reconverge_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(reconverge_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1199,7 +1204,7 @@ async def test_flapping_node_convergence(tmp_path: Path) -> None:
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1236,7 +1241,7 @@ async def test_flapping_node_convergence(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         import asyncio
 
@@ -1255,13 +1260,13 @@ async def test_flapping_node_convergence(tmp_path: Path) -> None:
                 tmp_dir=tmp_path,
             )
             # Brief pause for the pod to start its event loop
-            await asyncio.sleep(1.0)
+            await asyncio.sleep(HEARTBEAT_COLLECTION_SPACING_SECONDS)
 
         # After flapping stops, all nodes should converge on node-a
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Allow anti-entropy sync to complete
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(EVENT_PROPAGATION_SETTLE_SECONDS)
 
         async def event_hashes_converged() -> bool:
             hash_sets = await _collect_pod_event_hash_sets(
@@ -1274,17 +1279,15 @@ async def test_flapping_node_convergence(tmp_path: Path) -> None:
 
         # Convergence condition above is the assertion target.
         # A second sequential fetch can race with new heartbeat events.
-        await wait_for_async(event_hashes_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            event_hashes_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1301,7 +1304,7 @@ async def test_full_cluster_outage_and_recovery(tmp_path: Path) -> None:
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1338,7 +1341,7 @@ async def test_full_cluster_outage_and_recovery(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         import asyncio
 
@@ -1371,10 +1374,10 @@ async def test_full_cluster_outage_and_recovery(tmp_path: Path) -> None:
             )
 
         # All pods reconverge on node-a
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Allow anti-entropy to complete
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(EVENT_PROPAGATION_SETTLE_SECONDS)
 
         async def event_hashes_converged() -> bool:
             hash_sets = await _collect_pod_event_hash_sets(
@@ -1387,17 +1390,15 @@ async def test_full_cluster_outage_and_recovery(tmp_path: Path) -> None:
 
         # Convergence condition above is the assertion target.
         # A second sequential fetch can race with new heartbeat events.
-        await wait_for_async(event_hashes_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            event_hashes_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1419,7 +1420,7 @@ async def test_asymmetric_partition(tmp_path: Path) -> None:
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1456,7 +1457,7 @@ async def test_asymmetric_partition(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Apply asymmetric partition: block node-a ↔ node-c
         egress_policy, ingress_policy = gateway_network_policy_asymmetric(
@@ -1483,7 +1484,9 @@ async def test_asymmetric_partition(tmp_path: Path) -> None:
                 node_ids=("node-a", "node-b"),
             )
 
-        await wait_for_async(asymmetric_partition_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            asymmetric_partition_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         # Heal partition
         await kubectl_delete_manifest(
@@ -1505,17 +1508,13 @@ async def test_asymmetric_partition(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(all_reconverge, timeout_seconds=60.0)
+        await wait_for_async(all_reconverge, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1532,7 +1531,7 @@ async def test_partition_flap_convergence_stability(tmp_path: Path) -> None:
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1569,7 +1568,7 @@ async def test_partition_flap_convergence_stability(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         import asyncio
 
@@ -1587,7 +1586,7 @@ async def test_partition_flap_convergence_stability(tmp_path: Path) -> None:
             )
 
             # Wait for partition to take effect
-            await asyncio.sleep(8.0)
+            await asyncio.sleep(PARTITION_POLICY_SETTLE_SECONDS)
 
             # Heal partition
             await kubectl_delete_manifest(
@@ -1597,13 +1596,13 @@ async def test_partition_flap_convergence_stability(tmp_path: Path) -> None:
             )
 
             # Wait for reconvergence before next cycle
-            await asyncio.sleep(5.0)
+            await asyncio.sleep(EVENT_PROPAGATION_SETTLE_SECONDS)
 
         # After all flap cycles, verify final convergence on node-a
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Allow anti-entropy sync
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(EVENT_PROPAGATION_SETTLE_SECONDS)
 
         async def event_hashes_converged() -> bool:
             hash_sets = await _collect_pod_event_hash_sets(
@@ -1616,17 +1615,15 @@ async def test_partition_flap_convergence_stability(tmp_path: Path) -> None:
 
         # Convergence condition above is the assertion target.
         # A second sequential fetch can race with new heartbeat events.
-        await wait_for_async(event_hashes_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            event_hashes_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1643,7 +1640,7 @@ async def test_long_partition_event_log_merge(tmp_path: Path) -> None:
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1680,7 +1677,7 @@ async def test_long_partition_event_log_merge(tmp_path: Path) -> None:
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Capture pre-partition event count
         pre_state_a = await _get_pod_state(
@@ -1706,7 +1703,7 @@ async def test_long_partition_event_log_merge(tmp_path: Path) -> None:
 
         # Let both sides accumulate events independently
         # (heartbeat loop runs naturally, producing events on both sides)
-        await asyncio.sleep(25.0)
+        await asyncio.sleep(LONG_PARTITION_SETTLE_SECONDS)
 
         # Heal partition
         await kubectl_delete_manifest(
@@ -1716,26 +1713,24 @@ async def test_long_partition_event_log_merge(tmp_path: Path) -> None:
         )
 
         # Wait for anti-entropy sync to merge event logs
-        await asyncio.sleep(10.0)
+        await asyncio.sleep(LONG_HEAL_SETTLE_SECONDS)
 
         # Wait for convergence
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Verify all event hash sets converge to identical sets
         async def event_hashes_converged() -> bool:
-            hash_sets: list[frozenset[str]] = []
-            for node_id in NODE_IDS:
-                hashes = await _get_pod_event_hashes(
-                    pod_name=f"gateway-{node_id}",
-                    namespace=namespace,
-                    kubeconfig=kubeconfig,
-                )
-                if hashes is None:
-                    return False
-                hash_sets.append(hashes)
-            return hash_sets[0] == hash_sets[1] == hash_sets[2]
+            hash_sets = await _collect_pod_event_hash_sets(
+                namespace=namespace,
+                kubeconfig=kubeconfig,
+            )
+            if hash_sets is None:
+                return False
+            return _all_hash_sets_equal(hash_sets)
 
-        await wait_for_async(event_hashes_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            event_hashes_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         # Verify events were actually accumulated (not lost)
         post_state_a = await _get_pod_state(
@@ -1751,13 +1746,9 @@ async def test_long_partition_event_log_merge(tmp_path: Path) -> None:
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )
 
 
@@ -1779,7 +1770,7 @@ async def test_ownership_transition_cycle_verified_behaviorally(tmp_path: Path) 
     """
     kubeconfig = resolve_kubeconfig()
     await require_rke2_and_cert_manager(kubeconfig)
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
+    namespace = PRODBOX_NAMESPACE
 
     try:
         await apply_cert_manifest(
@@ -1816,7 +1807,7 @@ async def test_ownership_transition_cycle_verified_behaviorally(tmp_path: Path) 
                 expected_owner="node-a",
             )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         # Record initial event count
         initial_state = await _get_pod_state(
@@ -1842,7 +1833,9 @@ async def test_ownership_transition_cycle_verified_behaviorally(tmp_path: Path) 
                 node_ids=("node-b", "node-c"),
             )
 
-        await wait_for_async(failover_to_node_b, timeout_seconds=30.0)
+        await wait_for_async(
+            failover_to_node_b, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         await _recreate_gateway_pod(
             node_id="node-a",
@@ -1852,28 +1845,26 @@ async def test_ownership_transition_cycle_verified_behaviorally(tmp_path: Path) 
             tmp_dir=tmp_path,
         )
 
-        await wait_for_async(converged_on_node_a, timeout_seconds=60.0)
+        await wait_for_async(converged_on_node_a, timeout_seconds=CONVERGENCE_TIMEOUT_SECONDS)
 
         import asyncio
 
         # Allow anti-entropy sync to complete
-        await asyncio.sleep(5.0)
+        await asyncio.sleep(EVENT_PROPAGATION_SETTLE_SECONDS)
 
         # Verify all pods have identical event hash sets
         async def event_hashes_converged() -> bool:
-            hash_sets: list[frozenset[str]] = []
-            for node_id in NODE_IDS:
-                hashes = await _get_pod_event_hashes(
-                    pod_name=f"gateway-{node_id}",
-                    namespace=namespace,
-                    kubeconfig=kubeconfig,
-                )
-                if hashes is None:
-                    return False
-                hash_sets.append(hashes)
-            return hash_sets[0] == hash_sets[1] == hash_sets[2]
+            hash_sets = await _collect_pod_event_hash_sets(
+                namespace=namespace,
+                kubeconfig=kubeconfig,
+            )
+            if hash_sets is None:
+                return False
+            return _all_hash_sets_equal(hash_sets)
 
-        await wait_for_async(event_hashes_converged, timeout_seconds=30.0)
+        await wait_for_async(
+            event_hashes_converged, timeout_seconds=ISOLATION_CONVERGENCE_TIMEOUT_SECONDS
+        )
 
         # Verify event count increased across the full transition cycle
         # (claim/yield events were appended, not lost)
@@ -1891,11 +1882,7 @@ async def test_ownership_transition_cycle_verified_behaviorally(tmp_path: Path) 
 
     finally:
         with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
+            await cleanup_gateway_test_resources(
+                namespace=namespace,
                 kubeconfig=kubeconfig,
-                timeout=60.0,
             )

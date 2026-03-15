@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import sys
+from typing import cast
 from unittest.mock import AsyncMock, patch
 
 from prodbox.cli.effect_dag import PrerequisiteFailurePolicy
+from prodbox.cli.effects import RunSubprocess, Sequence
 from prodbox.cli.interpreter import EffectInterpreter
 from prodbox.cli.test_cmd import (
+    INTEGRATION_RUNBOOK_EFFECT_ID,
     INTEGRATION_TEST_PREREQUISITES,
+    TEST_TIMEOUT_SECONDS,
     _build_test_dag,
     _extract_marker_expressions,
     _requires_integration_prerequisites,
@@ -45,9 +50,30 @@ def test_requires_integration_prerequisites_false_for_unit_paths() -> None:
 def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
     """Default DAG should gate pytest execution with integration prerequisites."""
     dag = _build_test_dag(())
+
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
     assert phase_two.prerequisites == INTEGRATION_TEST_PREREQUISITES
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    phase_two_effect_ids = [effect.effect_id for effect in phase_two_effect.effects]
+    assert INTEGRATION_RUNBOOK_EFFECT_ID in phase_two_effect_ids
+    runbook_effect = next(
+        effect
+        for effect in phase_two_effect.effects
+        if effect.effect_id == INTEGRATION_RUNBOOK_EFFECT_ID
+    )
+    runbook_subprocess = cast(RunSubprocess, runbook_effect)
+    assert runbook_subprocess.command == [
+        sys.executable,
+        "-m",
+        "prodbox.cli.main",
+        "rke2",
+        "ensure",
+    ]
+    assert "tool_helm" in phase_two.prerequisites
+    assert "tool_docker" in phase_two.prerequisites
+    assert "tool_ctr" in phase_two.prerequisites
+    assert "tool_sudo" in phase_two.prerequisites
     assert phase_two.prerequisite_failure_policy == PrerequisiteFailurePolicy.PROPAGATE
 
 
@@ -57,6 +83,20 @@ def test_build_test_dag_skips_integration_gate_for_unit_scope() -> None:
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
     assert phase_two.prerequisites == frozenset()
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    phase_two_effect_ids = [effect.effect_id for effect in phase_two_effect.effects]
+    assert INTEGRATION_RUNBOOK_EFFECT_ID not in phase_two_effect_ids
+
+
+def test_build_test_dag_sets_phase_two_timeout_to_240_minutes() -> None:
+    """Pytest execution timeout is 240 minutes as required by doctrine."""
+    dag = _build_test_dag(("-m", "not integration"))
+    phase_two = dag.get_node("pytest_phase_two")
+    assert phase_two is not None
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    run_pytest = cast(RunSubprocess, phase_two_effect.effects[1])
+    assert run_pytest.timeout == TEST_TIMEOUT_SECONDS
+    assert run_pytest.timeout == 14400.0
 
 
 def test_run_tests_executes_built_dag_via_execute_dag() -> None:

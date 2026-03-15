@@ -7,19 +7,28 @@ from pathlib import Path
 import pytest
 
 from prodbox.cli.effects import (
+    AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
     # File system
     CheckFileExists,
     CheckServiceStatus,
+    CleanupProdboxAnnotatedResources,
     ConfirmAction,
     Custom,
     # DNS / Route 53
+    EnsureHarborRegistry,
+    EnsureMinio,
+    EnsureProdboxIdentityConfigMap,
+    EnsureRetainedLocalStorage,
     FetchPublicIP,
     GetJournalLogs,
+    HarborRuntime,
     KubectlWait,
     # Settings
     LoadSettings,
+    MachineIdentity,
+    MinioRuntime,
     Parallel,
     PrintBlankLine,
     PrintError,
@@ -41,6 +50,7 @@ from prodbox.cli.effects import (
     # Platform effects
     RequireLinux,
     RequireSystemd,
+    ResolveMachineIdentity,
     # Kubernetes
     RunKubectlCommand,
     # Pulumi
@@ -51,6 +61,7 @@ from prodbox.cli.effects import (
     RunSystemdCommand,
     # Composite
     Sequence,
+    StorageRuntime,
     Try,
     UpdateRoute53Record,
     ValidateAWSCredentials,
@@ -84,6 +95,14 @@ class TestPlatformEffects:
             description="Require systemd",
         )
         assert effect.effect_id == "systemd_available"
+
+    def test_resolve_machine_identity(self) -> None:
+        """ResolveMachineIdentity should default to /etc/machine-id."""
+        effect = ResolveMachineIdentity(
+            effect_id="machine_identity",
+            description="Resolve machine identity",
+        )
+        assert str(effect.file_path) == "/etc/machine-id"
 
 
 class TestToolValidationEffects:
@@ -285,6 +304,159 @@ class TestKubernetesEffects:
         assert effect.resource == "deployment/nginx"
         assert effect.condition == "available"
         assert effect.timeout == 300
+
+    def test_ensure_prodbox_identity_configmap(self) -> None:
+        """EnsureProdboxIdentityConfigMap should hold identity and metadata settings."""
+        identity = MachineIdentity(
+            machine_id="0123456789abcdef0123456789abcdef",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+        )
+        effect = EnsureProdboxIdentityConfigMap(
+            effect_id="ensure_prodbox_identity",
+            description="Ensure prodbox identity configmap",
+            machine_identity=identity,
+            namespace="prodbox",
+            configmap_name="prodbox-identity",
+            annotation_key="prodbox.io/id",
+            label_key="prodbox.io/id",
+            label_value="prodbox-0123456789abcdef0123456789abcdef",
+        )
+        assert effect.machine_identity.prodbox_id.startswith("prodbox-")
+        assert effect.namespace == "prodbox"
+
+    def test_ensure_harbor_registry(self) -> None:
+        """EnsureHarborRegistry should hold registry/mirror/build settings."""
+        identity = MachineIdentity(
+            machine_id="0123456789abcdef0123456789abcdef",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+        )
+        effect = EnsureHarborRegistry(
+            effect_id="ensure_harbor_registry",
+            description="Ensure Harbor runtime",
+            machine_identity=identity,
+            namespace="harbor",
+            release_name="harbor",
+            repository_name="harbor",
+            repository_url="https://helm.goharbor.io",
+            registry_endpoint="127.0.0.1:30080",
+            mirror_project="prodbox",
+            gateway_image_repository="prodbox/prodbox-gateway",
+            gateway_dockerfile=Path("docker/gateway.Dockerfile"),
+            gateway_build_context=Path("."),
+            registries_file_path=Path("/etc/rancher/rke2/registries.yaml"),
+        )
+        assert effect.registry_endpoint == "127.0.0.1:30080"
+        assert effect.gateway_image_repository == "prodbox/prodbox-gateway"
+        assert effect.mirror_cluster_images is True
+
+    def test_harbor_runtime(self) -> None:
+        """HarborRuntime should expose endpoint and gateway image references."""
+        runtime = HarborRuntime(
+            registry_endpoint="127.0.0.1:30080",
+            gateway_image="127.0.0.1:30080/prodbox/prodbox-gateway:abc",
+        )
+        assert runtime.registry_endpoint == "127.0.0.1:30080"
+        assert runtime.gateway_image.endswith(":abc")
+
+    def test_ensure_retained_local_storage(self) -> None:
+        """EnsureRetainedLocalStorage should hold deterministic storage binding settings."""
+        identity = MachineIdentity(
+            machine_id="0123456789abcdef0123456789abcdef",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+        )
+        effect = EnsureRetainedLocalStorage(
+            effect_id="ensure_retained_storage",
+            description="Ensure retained storage",
+            machine_identity=identity,
+            namespace="prodbox",
+            storage_class_name="prodbox-local-retain",
+            persistent_volume_name="prodbox-minio-pv-0",
+            persistent_volume_claim_name="minio",
+            storage_size="200Gi",
+            host_storage_base_path=Path("/var/lib/prodbox/storage"),
+            annotation_key="prodbox.io/id",
+            label_key="prodbox.io/id",
+            label_value="prodbox-0123456789abcdef0123456789abcdef",
+        )
+        assert effect.storage_class_name == "prodbox-local-retain"
+        assert effect.persistent_volume_name == "prodbox-minio-pv-0"
+        assert effect.persistent_volume_claim_name == "minio"
+
+    def test_ensure_minio(self) -> None:
+        """EnsureMinio should hold chart and PVC settings."""
+        identity = MachineIdentity(
+            machine_id="0123456789abcdef0123456789abcdef",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+        )
+        effect = EnsureMinio(
+            effect_id="ensure_minio",
+            description="Ensure MinIO runtime",
+            machine_identity=identity,
+            namespace="prodbox",
+            release_name="minio",
+            repository_name="minio",
+            repository_url="https://charts.min.io/",
+            chart_ref="minio/minio",
+            chart_version="5.4.0",
+            existing_claim="minio",
+            annotation_key="prodbox.io/id",
+            label_key="prodbox.io/id",
+            label_value="prodbox-0123456789abcdef0123456789abcdef",
+            storage_size="200Gi",
+        )
+        assert effect.chart_ref == "minio/minio"
+        assert effect.existing_claim == "minio"
+
+    def test_storage_runtime(self) -> None:
+        """StorageRuntime should expose reconciled storage coordinates."""
+        runtime = StorageRuntime(
+            storage_class_name="prodbox-local-retain",
+            persistent_volume_name="prodbox-minio-pv-0",
+            persistent_volume_claim_name="minio",
+            host_path=Path("/var/lib/prodbox/storage/prodbox-id/prodbox-minio-pv-0"),
+        )
+        assert runtime.storage_class_name == "prodbox-local-retain"
+        assert runtime.persistent_volume_claim_name == "minio"
+
+    def test_minio_runtime(self) -> None:
+        """MinioRuntime should expose release namespace and PVC."""
+        runtime = MinioRuntime(
+            namespace="prodbox",
+            release_name="minio",
+            persistent_volume_claim_name="minio",
+        )
+        assert runtime.namespace == "prodbox"
+        assert runtime.release_name == "minio"
+
+    def test_annotate_prodbox_managed_resources(self) -> None:
+        """AnnotateProdboxManagedResources should hold selector and target info."""
+        effect = AnnotateProdboxManagedResources(
+            effect_id="annotate_prodbox",
+            description="Annotate managed resources",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+            annotation_key="prodbox.io/id",
+            label_key="prodbox.io/id",
+            label_value="prodbox-0123456789abcdef0123456789abcdef",
+            managed_namespaces=("prodbox", "metallb-system"),
+            helm_instances=("metallb",),
+        )
+        assert effect.managed_namespaces == ("prodbox", "metallb-system")
+        assert effect.helm_instances == ("metallb",)
+
+    def test_cleanup_prodbox_annotated_resources(self) -> None:
+        """CleanupProdboxAnnotatedResources should hold cleanup selectors."""
+        effect = CleanupProdboxAnnotatedResources(
+            effect_id="cleanup_prodbox",
+            description="Cleanup annotated resources",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+            annotation_key="prodbox.io/id",
+            cleanup_passes=3,
+            retained_resource_kinds=("persistentvolumeclaims", "persistentvolumes"),
+            retained_namespaces=("prodbox",),
+        )
+        assert effect.cleanup_passes == 3
+        assert "persistentvolumes" in effect.retained_resource_kinds
+        assert effect.retained_namespaces == ("prodbox",)
 
 
 class TestDNSEffects:
@@ -735,6 +907,60 @@ class TestEffectBaseClass:
             RunKubectlCommand(effect_id="e13", description="d13", args=["get", "pods"]),
             CaptureKubectlOutput(effect_id="e14", description="d14", args=["get", "nodes"]),
             KubectlWait(effect_id="e15", description="d15", resource="deploy/x", condition="avail"),
+            EnsureHarborRegistry(
+                effect_id="e15b",
+                description="d15b",
+                machine_identity=MachineIdentity(
+                    machine_id="0123456789abcdef0123456789abcdef",
+                    prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+                ),
+                namespace="harbor",
+                release_name="harbor",
+                repository_name="harbor",
+                repository_url="https://helm.goharbor.io",
+                registry_endpoint="127.0.0.1:30080",
+                mirror_project="prodbox",
+                gateway_image_repository="prodbox/prodbox-gateway",
+                gateway_dockerfile=Path("docker/gateway.Dockerfile"),
+                gateway_build_context=Path("."),
+                registries_file_path=Path("/etc/rancher/rke2/registries.yaml"),
+            ),
+            EnsureRetainedLocalStorage(
+                effect_id="e15c",
+                description="d15c",
+                machine_identity=MachineIdentity(
+                    machine_id="0123456789abcdef0123456789abcdef",
+                    prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+                ),
+                namespace="prodbox",
+                storage_class_name="prodbox-local-retain",
+                persistent_volume_name="prodbox-minio-pv-0",
+                persistent_volume_claim_name="minio",
+                storage_size="200Gi",
+                host_storage_base_path=Path("/var/lib/prodbox/storage"),
+                annotation_key="prodbox.io/id",
+                label_key="prodbox.io/id",
+                label_value="prodbox-0123456789abcdef0123456789abcdef",
+            ),
+            EnsureMinio(
+                effect_id="e15d",
+                description="d15d",
+                machine_identity=MachineIdentity(
+                    machine_id="0123456789abcdef0123456789abcdef",
+                    prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+                ),
+                namespace="prodbox",
+                release_name="minio",
+                repository_name="minio",
+                repository_url="https://charts.min.io/",
+                chart_ref="minio/minio",
+                chart_version="5.4.0",
+                existing_claim="minio",
+                annotation_key="prodbox.io/id",
+                label_key="prodbox.io/id",
+                label_value="prodbox-0123456789abcdef0123456789abcdef",
+                storage_size="200Gi",
+            ),
             FetchPublicIP(effect_id="e16", description="d16"),
             QueryRoute53Record(
                 effect_id="e17",

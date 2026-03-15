@@ -23,6 +23,8 @@ Usage:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from prodbox.cli.command_adt import (
     Command,
     DNSCheckCommand,
@@ -56,13 +58,21 @@ from prodbox.cli.command_adt import (
 )
 from prodbox.cli.effect_dag import EffectDAG, EffectNode
 from prodbox.cli.effects import (
+    AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
     CheckServiceStatus,
+    CleanupProdboxAnnotatedResources,
+    EnsureHarborRegistry,
+    EnsureMinio,
+    EnsureProdboxIdentityConfigMap,
+    EnsureRetainedLocalStorage,
     FetchPublicIP,
     GenerateGatewayConfig,
     GetJournalLogs,
     KubectlWait,
+    MachineIdentity,
+    Parallel,
     PulumiDestroy,
     PulumiPreview,
     PulumiRefresh,
@@ -71,15 +81,249 @@ from prodbox.cli.effects import (
     QueryGatewayState,
     RunKubectlCommand,
     RunPulumiCommand,
-    RunSubprocess,
     RunSystemdCommand,
     Sequence,
     StartGatewayDaemon,
     ValidateSettings,
     ValidateTool,
+    WriteStdout,
 )
 from prodbox.cli.prerequisite_registry import PREREQUISITE_REGISTRY
-from prodbox.cli.types import Result, Success
+from prodbox.cli.types import Failure, PrereqResults, Result, Success
+from prodbox.lib.prodbox_k8s import (
+    HARBOR_GATEWAY_REPOSITORY,
+    HARBOR_HELM_RELEASE,
+    HARBOR_HELM_REPOSITORY_NAME,
+    HARBOR_HELM_REPOSITORY_URL,
+    HARBOR_MIRROR_PROJECT,
+    HARBOR_NAMESPACE,
+    HARBOR_REGISTRY_ENDPOINT,
+    MINIO_HELM_CHART_REF,
+    MINIO_HELM_CHART_VERSION,
+    MINIO_HELM_RELEASE,
+    MINIO_HELM_REPOSITORY_NAME,
+    MINIO_HELM_REPOSITORY_URL,
+    MINIO_NAMESPACE,
+    MINIO_PERSISTENT_CLAIM,
+    MINIO_PERSISTENT_VOLUME,
+    MINIO_STORAGE_SIZE,
+    PRODBOX_ANNOTATION_KEY,
+    PRODBOX_HELM_INSTANCES,
+    PRODBOX_IDENTITY_CONFIGMAP,
+    PRODBOX_LABEL_KEY,
+    PRODBOX_MANAGED_NAMESPACES,
+    PRODBOX_NAMESPACE,
+    PRODBOX_STORAGE_BASE_PATH,
+    PRODBOX_STORAGE_CLASS,
+    PRODBOX_STORAGE_RETAINED_RESOURCES,
+    RKE2_DATA_PATHS,
+    RKE2_REGISTRIES_PATH,
+    prodbox_id_to_label_value,
+)
+
+# =============================================================================
+# Shared Helpers
+# =============================================================================
+
+
+def _require_machine_identity(prereq_results: PrereqResults) -> MachineIdentity:
+    """Extract machine identity prerequisite result or raise ValueError."""
+    result = prereq_results.get("machine_identity")
+    match result:
+        case Success(value=value):
+            match value:
+                case MachineIdentity() as machine_identity:
+                    return machine_identity
+                case _:
+                    raise ValueError("machine_identity prerequisite returned unexpected value type")
+        case Failure(error=error):
+            raise ValueError(f"machine_identity prerequisite failed: {error}")
+        case _:
+            raise ValueError("machine_identity prerequisite missing")
+
+
+def _pulumi_env(machine_identity: MachineIdentity) -> dict[str, str]:
+    """Build Pulumi subprocess env overrides from machine identity."""
+    return {"PRODBOX_ID": machine_identity.prodbox_id}
+
+
+def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
+    """Build dynamic rke2 ensure effect from prerequisite machine identity."""
+    machine_identity = _require_machine_identity(prereq_results)
+    label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
+    storage_and_minio = Sequence(
+        effect_id="rke2_ensure_storage_and_minio",
+        description="Ensure retained local storage and MinIO runtime",
+        effects=[
+            EnsureRetainedLocalStorage(
+                effect_id="rke2_ensure_retained_storage",
+                description="Ensure retained local StorageClass/PV/PVC for MinIO",
+                machine_identity=machine_identity,
+                namespace=MINIO_NAMESPACE,
+                storage_class_name=PRODBOX_STORAGE_CLASS,
+                persistent_volume_name=MINIO_PERSISTENT_VOLUME,
+                persistent_volume_claim_name=MINIO_PERSISTENT_CLAIM,
+                storage_size=MINIO_STORAGE_SIZE,
+                host_storage_base_path=Path(PRODBOX_STORAGE_BASE_PATH),
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+            ),
+            EnsureMinio(
+                effect_id="rke2_ensure_minio_runtime",
+                description="Ensure MinIO runtime via official Helm chart",
+                machine_identity=machine_identity,
+                namespace=MINIO_NAMESPACE,
+                release_name=MINIO_HELM_RELEASE,
+                repository_name=MINIO_HELM_REPOSITORY_NAME,
+                repository_url=MINIO_HELM_REPOSITORY_URL,
+                chart_ref=MINIO_HELM_CHART_REF,
+                chart_version=MINIO_HELM_CHART_VERSION,
+                existing_claim=MINIO_PERSISTENT_CLAIM,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+                storage_size=MINIO_STORAGE_SIZE,
+            ),
+        ],
+    )
+    return Sequence(
+        effect_id="rke2_ensure",
+        description="Idempotently provision RKE2 cluster runtime",
+        effects=[
+            RunSystemdCommand(
+                effect_id="rke2_ensure_enable",
+                description="Enable RKE2 service",
+                action="enable",
+                service="rke2-server.service",
+                sudo=True,
+            ),
+            RunSystemdCommand(
+                effect_id="rke2_ensure_start",
+                description="Start RKE2 service",
+                action="start",
+                service="rke2-server.service",
+                sudo=True,
+            ),
+            RunKubectlCommand(
+                effect_id="rke2_ensure_verify_kubectl",
+                description="Confirm kubectl access to cluster",
+                args=["cluster-info"],
+                timeout=30.0,
+            ),
+            EnsureProdboxIdentityConfigMap(
+                effect_id="rke2_ensure_prodbox_identity_configmap",
+                description="Ensure prodbox identity ConfigMap exists",
+                machine_identity=machine_identity,
+                namespace=PRODBOX_NAMESPACE,
+                configmap_name=PRODBOX_IDENTITY_CONFIGMAP,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+            ),
+            Parallel(
+                effect_id="rke2_ensure_registry_and_storage",
+                description="Ensure Harbor and MinIO/storage runtime in parallel",
+                effects=[
+                    EnsureHarborRegistry(
+                        effect_id="rke2_ensure_harbor_registry",
+                        description=(
+                            "Ensure local Harbor registry and prodbox gateway image pipeline"
+                        ),
+                        machine_identity=machine_identity,
+                        namespace=HARBOR_NAMESPACE,
+                        release_name=HARBOR_HELM_RELEASE,
+                        repository_name=HARBOR_HELM_REPOSITORY_NAME,
+                        repository_url=HARBOR_HELM_REPOSITORY_URL,
+                        registry_endpoint=HARBOR_REGISTRY_ENDPOINT,
+                        mirror_project=HARBOR_MIRROR_PROJECT,
+                        gateway_image_repository=HARBOR_GATEWAY_REPOSITORY,
+                        gateway_dockerfile=Path("docker/gateway.Dockerfile"),
+                        gateway_build_context=Path("."),
+                        registries_file_path=Path(RKE2_REGISTRIES_PATH),
+                    ),
+                    storage_and_minio,
+                ],
+            ),
+            AnnotateProdboxManagedResources(
+                effect_id="rke2_ensure_reconcile_prodbox_annotations",
+                description="Apply prodbox annotation doctrine to managed resources",
+                prodbox_id=machine_identity.prodbox_id,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+                managed_namespaces=PRODBOX_MANAGED_NAMESPACES,
+                helm_instances=PRODBOX_HELM_INSTANCES,
+            ),
+        ],
+    )
+
+
+def _build_rke2_cleanup_effect(
+    prereq_results: PrereqResults, storage_instructions: str
+) -> Sequence:
+    """Build dynamic rke2 cleanup effect from prerequisite machine identity."""
+    machine_identity = _require_machine_identity(prereq_results)
+    return Sequence(
+        effect_id="rke2_cleanup",
+        description="Cleanup prodbox-annotated Kubernetes resources without touching host paths",
+        effects=[
+            CleanupProdboxAnnotatedResources(
+                effect_id="rke2_cleanup_delete_annotated_resources",
+                description="Delete prodbox annotated resources except retained storage kinds",
+                prodbox_id=machine_identity.prodbox_id,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                retained_resource_kinds=PRODBOX_STORAGE_RETAINED_RESOURCES,
+                retained_namespaces=(PRODBOX_NAMESPACE,),
+            ),
+            WriteStdout(
+                effect_id="rke2_cleanup_storage_warning",
+                description="Print manual host storage cleanup warning",
+                text=storage_instructions + "\n",
+            ),
+        ],
+    )
+
+
+def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults) -> Sequence:
+    """Build pulumi up effect with post-apply prodbox identity/annotation reconciliation."""
+    machine_identity = _require_machine_identity(prereq_results)
+    label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
+    return Sequence(
+        effect_id="pulumi_up",
+        description="Apply infrastructure changes",
+        effects=[
+            PulumiUp(
+                effect_id="pulumi_up_apply",
+                description="Apply infrastructure changes via Pulumi",
+                cwd=cmd.cwd,
+                stack=cmd.stack,
+                env=_pulumi_env(machine_identity),
+                yes=cmd.yes,
+            ),
+            EnsureProdboxIdentityConfigMap(
+                effect_id="pulumi_up_prodbox_identity_configmap",
+                description="Ensure prodbox identity ConfigMap exists",
+                machine_identity=machine_identity,
+                namespace=PRODBOX_NAMESPACE,
+                configmap_name=PRODBOX_IDENTITY_CONFIGMAP,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+            ),
+            AnnotateProdboxManagedResources(
+                effect_id="pulumi_up_reconcile_prodbox_annotations",
+                description="Apply prodbox annotation doctrine to managed resources",
+                prodbox_id=machine_identity.prodbox_id,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+                managed_namespaces=PRODBOX_MANAGED_NAMESPACES,
+                helm_instances=PRODBOX_HELM_INSTANCES,
+            ),
+        ],
+    )
+
 
 # =============================================================================
 # Environment Command Builders
@@ -162,7 +406,18 @@ def _build_host_ensure_tools_dag(_cmd: HostEnsureToolsCommand) -> EffectDAG:
             description="Check required CLI tools",
             tool_name="kubectl",
         ),
-        prerequisites=frozenset(["tool_kubectl", "tool_helm", "tool_pulumi"]),
+        prerequisites=frozenset(
+            [
+                "tool_kubectl",
+                "tool_helm",
+                "tool_pulumi",
+                "tool_docker",
+                "tool_ctr",
+                "tool_sudo",
+                "tool_systemctl",
+                "tool_rke2",
+            ]
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -249,58 +504,53 @@ def _build_rke2_ensure_dag(_cmd: RKE2EnsureCommand) -> EffectDAG:
         effect=Sequence(
             effect_id="rke2_ensure",
             description="Idempotently provision RKE2 cluster runtime",
-            effects=[
-                RunSystemdCommand(
-                    effect_id="rke2_ensure_enable",
-                    description="Enable RKE2 service",
-                    action="enable",
-                    service="rke2-server.service",
-                    sudo=True,
-                ),
-                RunSystemdCommand(
-                    effect_id="rke2_ensure_start",
-                    description="Start RKE2 service",
-                    action="start",
-                    service="rke2-server.service",
-                    sudo=True,
-                ),
-            ],
+            effects=[],
         ),
-        prerequisites=frozenset(["rke2_installed", "rke2_config_exists", "systemd_available"]),
+        prerequisites=frozenset(
+            [
+                "rke2_installed",
+                "rke2_config_exists",
+                "systemd_available",
+                "tool_kubectl",
+                "tool_helm",
+                "tool_docker",
+                "tool_ctr",
+                "tool_sudo",
+                "tool_systemctl",
+                "kubeconfig_exists",
+                "machine_identity",
+            ]
+        ),
+        effect_builder=lambda _reduced, prereq_results: _build_rke2_ensure_effect(prereq_results),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
 def _build_rke2_cleanup_dag(_cmd: RKE2CleanupCommand) -> EffectDAG:
-    """Build DAG for non-destructive RKE2 runtime teardown."""
+    """Build DAG for idempotent cleanup of prodbox-annotated Kubernetes resources."""
+    storage_instructions = "\n".join(
+        [
+            "Cleanup intentionally preserved local RKE2 storage paths:",
+            *(f"  - {path}" for path in RKE2_DATA_PATHS),
+            "Cleanup also preserved retained storage resource kinds:",
+            *(f"  - {kind}" for kind in PRODBOX_STORAGE_RETAINED_RESOURCES),
+            "Cleanup also preserved storage namespace:",
+            f"  - {PRODBOX_NAMESPACE}",
+            "To remove these manually, stop RKE2 first and then delete paths yourself.",
+            "WARNING: deleting these paths can permanently destroy cluster state and data.",
+        ]
+    )
     root = EffectNode(
         effect=Sequence(
             effect_id="rke2_cleanup",
-            description="Tear down RKE2 runtime without deleting host storage paths",
-            effects=[
-                RunSystemdCommand(
-                    effect_id="rke2_cleanup_stop",
-                    description="Stop RKE2 service",
-                    action="stop",
-                    service="rke2-server.service",
-                    sudo=True,
-                ),
-                RunSystemdCommand(
-                    effect_id="rke2_cleanup_disable",
-                    description="Disable RKE2 service",
-                    action="disable",
-                    service="rke2-server.service",
-                    sudo=True,
-                ),
-                RunSubprocess(
-                    effect_id="rke2_cleanup_killall",
-                    description="Run rke2 killall cleanup script",
-                    command=["sudo", "/usr/local/bin/rke2-killall.sh"],
-                    stream_stdout=True,
-                ),
-            ],
+            description="Cleanup prodbox-annotated Kubernetes resources without touching host paths",
+            effects=[],
         ),
-        prerequisites=frozenset(["rke2_installed", "rke2_killall_exists", "systemd_available"]),
+        prerequisites=frozenset(["k8s_cluster_reachable", "machine_identity"]),
+        effect_builder=lambda _reduced, prereq_results: _build_rke2_cleanup_effect(
+            prereq_results,
+            storage_instructions,
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -424,8 +674,16 @@ def _build_pulumi_preview_dag(cmd: PulumiPreviewCommand) -> EffectDAG:
             description="Preview infrastructure changes",
             cwd=cmd.cwd,
             stack=cmd.stack,
+            env={},
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_logged_in"]),
+        prerequisites=frozenset(["tool_pulumi", "pulumi_logged_in", "machine_identity"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiPreview(
+            effect_id="pulumi_preview",
+            description="Preview infrastructure changes",
+            cwd=cmd.cwd,
+            stack=cmd.stack,
+            env=_pulumi_env(_require_machine_identity(prereq_results)),
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -433,14 +691,18 @@ def _build_pulumi_preview_dag(cmd: PulumiPreviewCommand) -> EffectDAG:
 def _build_pulumi_up_dag(cmd: PulumiUpCommand) -> EffectDAG:
     """Build DAG for Pulumi up."""
     root = EffectNode(
-        effect=PulumiUp(
+        effect=Sequence(
             effect_id="pulumi_up",
             description="Apply infrastructure changes",
-            cwd=cmd.cwd,
-            stack=cmd.stack,
-            yes=cmd.yes,
+            effects=[],
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists"]),
+        prerequisites=frozenset(
+            ["tool_pulumi", "pulumi_stack_exists", "machine_identity", "k8s_cluster_reachable"]
+        ),
+        effect_builder=lambda _reduced, prereq_results: _build_pulumi_up_effect(
+            cmd,
+            prereq_results,
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -453,9 +715,18 @@ def _build_pulumi_destroy_dag(cmd: PulumiDestroyCommand) -> EffectDAG:
             description="Destroy infrastructure",
             cwd=cmd.cwd,
             stack=cmd.stack,
+            env={},
             yes=cmd.yes,
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists"]),
+        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists", "machine_identity"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiDestroy(
+            effect_id="pulumi_destroy",
+            description="Destroy infrastructure",
+            cwd=cmd.cwd,
+            stack=cmd.stack,
+            env=_pulumi_env(_require_machine_identity(prereq_results)),
+            yes=cmd.yes,
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -468,8 +739,16 @@ def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
             description="Refresh infrastructure state",
             cwd=cmd.cwd,
             stack=cmd.stack,
+            env={},
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists"]),
+        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists", "machine_identity"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiRefresh(
+            effect_id="pulumi_refresh",
+            description="Refresh infrastructure state",
+            cwd=cmd.cwd,
+            stack=cmd.stack,
+            env=_pulumi_env(_require_machine_identity(prereq_results)),
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 

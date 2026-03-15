@@ -16,10 +16,17 @@ Home Kubernetes cluster management with Pulumi.
 Prodbox is a Python-native infrastructure-as-code project for managing a home Kubernetes cluster. It deploys and manages:
 
 - **RKE2** - Kubernetes distribution lifecycle managed via eDAG (`ensure`/`cleanup`)
+- **Harbor** - In-cluster local registry + Docker Hub mirror pipeline
+- **MinIO** - In-cluster object storage on retained local PV/PVC storage
 - **MetalLB** - LoadBalancer IP assignment using Layer 2 (ARP)
 - **Traefik** - Ingress controller for HTTP/HTTPS traffic
 - **cert-manager** - Automatic TLS certificates via Let's Encrypt
 - **Route 53** - DNS management with dynamic DNS updates
+
+Doctrine highlights:
+- Exactly one prodbox instance per Linux machine (derived from `/etc/machine-id`).
+- prodbox-created Kubernetes objects are tagged with `prodbox.io/id=<prodbox-id>`.
+- Storage lifecycle preserves retained `StorageClass`/`PV`/`PVC` across cleanup for deterministic rebind.
 
 ## Architecture
 
@@ -48,7 +55,7 @@ Router port forwarding:
 - Python 3.12+
 - Linux host with systemd
 - RKE2 binary and config already installed (`/usr/local/bin/rke2`, `/etc/rancher/rke2/config.yaml`)
-- kubectl, helm, pulumi CLI tools
+- kubectl, helm, docker, ctr, sudo, pulumi CLI tools
 - AWS account with Route 53 hosted zone
 
 ### Install
@@ -171,7 +178,7 @@ prodbox pulumi preview
 # Destroy all resources
 prodbox pulumi destroy
 
-# Tear down RKE2 runtime without deleting host storage paths
+# Idempotently remove all prodbox-annotated Kubernetes objects
 prodbox rke2 cleanup --yes
 ```
 
@@ -190,11 +197,11 @@ prodbox
 │   └── firewall      # Check firewall status
 ├── rke2
 │   ├── status    # Check RKE2 installation status
-│   ├── ensure    # Idempotently provision/start local RKE2 runtime
+│   ├── ensure    # Provision RKE2 + Harbor + retained-storage MinIO runtime
 │   ├── start     # Start RKE2 service
 │   ├── stop      # Stop RKE2 service
 │   ├── restart   # Restart RKE2 service
-│   ├── cleanup   # Non-destructive teardown (preserves host storage paths)
+│   ├── cleanup   # Remove runtime objects; retained storage resources/host paths are preserved
 │   └── logs      # Show RKE2 logs
 ├── pulumi
 │   ├── up          # Apply infrastructure changes
@@ -250,11 +257,18 @@ poetry run prodbox test -m "not integration"
 poetry run prodbox check-code
 poetry run prodbox tla-check
 poetry run daemon --config <path>
+docker build -f docker/gateway.Dockerfile -t prodbox-gateway .
 ```
+
+Gateway container build doctrine (explicit Poetry bootstrap, mirrored `.dockerignore`,
+and container-local `poetry.toml` override) is defined in
+[Local Registry Pipeline](documents/engineering/local_registry_pipeline.md#6-gateway-container-build-doctrine).
 
 Testing note:
 - `poetry run prodbox test` runs unit + integration tests and fails fast when integration prerequisites are missing.
 - Use `poetry run prodbox test -m "not integration"` for unit-only environments.
+- Integration-selected runs enforce `rke2 ensure` as a runbook gate before pytest starts.
+- The phase-two pytest timeout budget is 240 minutes.
 
 ### Project Structure
 
@@ -314,6 +328,8 @@ Architecture and design documentation lives in `documents/engineering/`:
 | [code_quality.md](documents/engineering/code_quality.md) | Guardrail and check-code doctrine |
 | [refactoring_patterns.md](documents/engineering/refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [distributed_gateway_architecture.md](documents/engineering/distributed_gateway_architecture.md) | P2P gateway design |
+| [local_registry_pipeline.md](documents/engineering/local_registry_pipeline.md) | Harbor install + Docker build/push + mirror behavior |
+| [storage_lifecycle_doctrine.md](documents/engineering/storage_lifecycle_doctrine.md) | Retained storage + deterministic PVC/PV rebinding doctrine |
 
 ## License
 

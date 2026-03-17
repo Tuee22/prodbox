@@ -7,10 +7,12 @@ import json
 import os
 import re
 import uuid
-from contextlib import suppress
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import NamedTuple
 
 import pytest
+import pytest_asyncio
 
 from prodbox.cli.command_adt import Command, rke2_cleanup_command, rke2_ensure_command
 from prodbox.cli.dag_builders import command_to_dag
@@ -23,14 +25,34 @@ from prodbox.lib.prodbox_k8s import (
     PRODBOX_ANNOTATION_KEY,
     PRODBOX_LABEL_KEY,
     PRODBOX_NAMESPACE,
+    PRODBOX_STORAGE_BASE_PATH,
     PRODBOX_STORAGE_CLASS,
     prodbox_id_to_label_value,
 )
 
-from .conftest import kubectl_apply_manifest, resolve_kubeconfig
+from .conftest import (
+    abort_test_session_on_teardown_failure,
+    kubectl_apply_manifest,
+    remove_fixture_storage_artifact,
+    resolve_kubeconfig,
+)
 from .helpers import run_kubectl_capture_via_dag
 
 pytestmark = pytest.mark.timeout(600)
+
+
+class LifecycleRebindContext(NamedTuple):
+    """Temporary retained-storage rebinding scenario for one integration test."""
+
+    kubeconfig: Path
+    namespace: str
+    storage_class: str
+    statefulset_name: str
+    pvc_prefix: str
+    pv_names: tuple[str, ...]
+    host_paths: tuple[Path, ...]
+    manifests: tuple[dict[str, object], ...]
+    tmp_dir: Path
 
 
 async def _execute_command_via_dag(command_result: Result[Command, str]) -> None:
@@ -74,6 +96,12 @@ def _current_prodbox_id() -> str:
     if re.fullmatch(r"[0-9a-f]{32}", machine_id) is None:
         raise AssertionError(f"unexpected /etc/machine-id format: {machine_id}")
     return f"prodbox-{machine_id}"
+
+
+def _rebind_host_paths(*, prodbox_id: str, pv_names: tuple[str, ...]) -> tuple[Path, ...]:
+    """Build deterministic host-path artifacts owned by one rebind test."""
+    rebind_root = Path(PRODBOX_STORAGE_BASE_PATH) / prodbox_id / "rebind"
+    return tuple(rebind_root / pv_name for pv_name in pv_names)
 
 
 async def _kubectl_expect_success(
@@ -128,6 +156,48 @@ async def _wait_deployment_available(
         namespace=namespace,
         timeout=float(timeout_seconds) + 15.0,
     )
+
+
+async def _ensure_post_deploy_baseline(kubeconfig: Path) -> None:
+    """Reconcile and verify the canonical post-deploy prodbox runtime baseline."""
+    await _ensure_rke2_runtime(attempts=4, delay_seconds=15.0)
+    await _kubectl_expect_success(
+        "get",
+        "configmap",
+        "prodbox-identity",
+        kubeconfig=kubeconfig,
+        namespace=PRODBOX_NAMESPACE,
+        timeout=30.0,
+    )
+    await _wait_deployment_available(
+        kubeconfig=kubeconfig,
+        namespace=MINIO_NAMESPACE,
+        name="minio",
+        timeout_seconds=300,
+    )
+    await _kubectl_expect_success(
+        "get",
+        "storageclass",
+        PRODBOX_STORAGE_CLASS,
+        kubeconfig=kubeconfig,
+        timeout=20.0,
+    )
+    await _kubectl_expect_success(
+        "get",
+        "pv",
+        MINIO_PERSISTENT_VOLUME,
+        kubeconfig=kubeconfig,
+        timeout=20.0,
+    )
+    pvc_name, pv_name = await _resolve_pvc_binding(
+        kubeconfig=kubeconfig,
+        namespace=MINIO_NAMESPACE,
+        pvc_name=MINIO_PERSISTENT_CLAIM,
+    )
+    if pvc_name != MINIO_PERSISTENT_CLAIM or pv_name != MINIO_PERSISTENT_VOLUME:
+        raise AssertionError(
+            "post-deploy baseline binding mismatch: " f"pvc={pvc_name} pv={pv_name}"
+        )
 
 
 async def _resolve_pvc_binding(
@@ -227,133 +297,75 @@ async def _apply_manifest_with_details(
         )
 
 
-@pytest.mark.integration  # type: ignore[misc]
-@pytest.mark.asyncio
-async def test_prodbox_cleanup_lifecycle_preserves_storage_and_rebinds(tmp_path: Path) -> None:
-    """Cleanup removes runtime objects but preserves retained storage for deterministic rebinding."""
-    kubeconfig = resolve_kubeconfig()
-    prodbox_id = _current_prodbox_id()
-
-    await _ensure_rke2_runtime()
-
-    await _kubectl_expect_success("cluster-info", kubeconfig=kubeconfig, timeout=30.0)
-
-    configmap_stdout, _ = await _kubectl_expect_success(
-        "get",
-        "configmap",
-        "prodbox-identity",
-        "-o",
-        "json",
-        kubeconfig=kubeconfig,
-        namespace=PRODBOX_NAMESPACE,
-        timeout=30.0,
+async def _cleanup_lifecycle_rebind_resources(context: LifecycleRebindContext) -> None:
+    """Delete all temporary retained-storage rebinding resources created by the fixture."""
+    await _kubectl_expect_success(
+        "delete",
+        "namespace",
+        context.namespace,
+        "--ignore-not-found=true",
+        "--wait=true",
+        kubeconfig=context.kubeconfig,
+        timeout=120.0,
     )
-    configmap = json.loads(configmap_stdout)
-    metadata = configmap.get("metadata", {})
-    annotations = metadata.get("annotations", {})
-    data = configmap.get("data", {})
-    assert isinstance(annotations, dict)
-    assert isinstance(data, dict)
-    assert annotations.get(PRODBOX_ANNOTATION_KEY) == prodbox_id
-    assert data.get("prodbox_id") == prodbox_id
 
-    await _wait_deployment_available(
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        name="minio",
-        timeout_seconds=300,
-    )
-    pre_cleanup_binding = await _resolve_pvc_binding(
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        pvc_name=MINIO_PERSISTENT_CLAIM,
-    )
-    assert pre_cleanup_binding[1] == MINIO_PERSISTENT_VOLUME
-
-    cleanup_marker: dict[str, object] = {
-        "apiVersion": "v1",
-        "kind": "ConfigMap",
-        "metadata": {
-            "name": "prodbox-cleanup-marker",
-            "namespace": PRODBOX_NAMESPACE,
-            "annotations": {PRODBOX_ANNOTATION_KEY: prodbox_id},
-            "labels": {PRODBOX_LABEL_KEY: prodbox_id_to_label_value(prodbox_id)},
-        },
-        "data": {"marker": "true"},
-    }
-    await kubectl_apply_manifest(cleanup_marker, kubeconfig=kubeconfig, tmp_dir=tmp_path)
-
-    await _execute_command_via_dag(rke2_cleanup_command(yes=True))
-
-    marker_rc, _, _ = await run_kubectl_capture_via_dag(
-        "get",
-        "configmap",
-        "prodbox-cleanup-marker",
-        kubeconfig=kubeconfig,
-        namespace=PRODBOX_NAMESPACE,
-        timeout=20.0,
-    )
-    assert marker_rc != 0
-
-    minio_deploy_rc, _, _ = await run_kubectl_capture_via_dag(
-        "get",
-        "deployment",
-        "minio",
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        timeout=20.0,
-    )
-    assert minio_deploy_rc != 0
+    for pv_name in context.pv_names:
+        await _kubectl_expect_success(
+            "delete",
+            "pv",
+            pv_name,
+            "--ignore-not-found=true",
+            "--wait=true",
+            kubeconfig=context.kubeconfig,
+            timeout=60.0,
+        )
 
     await _kubectl_expect_success(
-        "get",
+        "delete",
         "storageclass",
-        PRODBOX_STORAGE_CLASS,
-        kubeconfig=kubeconfig,
-        timeout=20.0,
+        context.storage_class,
+        "--ignore-not-found=true",
+        kubeconfig=context.kubeconfig,
+        timeout=60.0,
     )
-    await _kubectl_expect_success(
-        "get",
-        "pv",
-        MINIO_PERSISTENT_VOLUME,
-        kubeconfig=kubeconfig,
-        timeout=20.0,
-    )
-
-    post_cleanup_binding = await _resolve_pvc_binding(
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        pvc_name=MINIO_PERSISTENT_CLAIM,
-    )
-    assert post_cleanup_binding == pre_cleanup_binding
-
-    await _ensure_rke2_runtime()
-    await _wait_deployment_available(
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        name="minio",
-        timeout_seconds=300,
-    )
-
-    post_reensure_binding = await _resolve_pvc_binding(
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        pvc_name=MINIO_PERSISTENT_CLAIM,
-    )
-    assert post_reensure_binding == pre_cleanup_binding
-
-    await _execute_command_via_dag(rke2_cleanup_command(yes=True))
+    for host_path in context.host_paths:
+        await remove_fixture_storage_artifact(host_path)
 
 
-@pytest.mark.integration  # type: ignore[misc]
-@pytest.mark.asyncio
-async def test_three_replica_minio_statefulset_rebinds_deterministically(tmp_path: Path) -> None:
-    """A temporary 3-replica MinIO StatefulSet should rebind to identical PVs after redeploy."""
+async def _apply_rebind_manifests(context: LifecycleRebindContext) -> None:
+    """Apply all temporary retained-storage rebinding manifests."""
+    for manifest in context.manifests:
+        await _apply_manifest_with_details(
+            manifest,
+            kubeconfig=context.kubeconfig,
+            tmp_dir=context.tmp_dir,
+        )
+
+
+@pytest_asyncio.fixture
+async def lifecycle_runtime_baseline() -> AsyncIterator[Path]:
+    """Ensure the canonical post-deploy runtime exists before and after the test."""
     kubeconfig = resolve_kubeconfig()
+    await _ensure_post_deploy_baseline(kubeconfig)
+
+    yield kubeconfig
+
+    try:
+        await _execute_command_via_dag(rke2_cleanup_command(yes=True))
+        await _ensure_post_deploy_baseline(kubeconfig)
+    except AssertionError as error:
+        abort_test_session_on_teardown_failure(target="shared runtime baseline", error=error)
+
+
+@pytest_asyncio.fixture
+async def lifecycle_rebind_context(
+    lifecycle_runtime_baseline: Path,
+    tmp_path: Path,
+) -> AsyncIterator[LifecycleRebindContext]:
+    """Create a temporary three-replica retained-storage rebinding scenario."""
     prodbox_id = _current_prodbox_id()
     label_value = prodbox_id_to_label_value(prodbox_id)
-    node_name = await _single_node_name(kubeconfig)
-
+    node_name = await _single_node_name(lifecycle_runtime_baseline)
     unique = uuid.uuid4().hex[:8]
     namespace = f"prodbox-minio-rebind-{unique}"
     storage_class = f"prodbox-minio-rebind-retain-{unique}"
@@ -361,8 +373,7 @@ async def test_three_replica_minio_statefulset_rebinds_deterministically(tmp_pat
     service_name = f"minio-rebind-{unique}"
     pvc_prefix = f"data-{statefulset_name}-"
     pv_names = tuple(f"prodbox-minio-rebind-{unique}-pv-{index}" for index in range(3))
-
-    await _ensure_rke2_runtime()
+    host_paths = _rebind_host_paths(prodbox_id=prodbox_id, pv_names=pv_names)
 
     namespace_manifest: dict[str, object] = {
         "apiVersion": "v1",
@@ -405,10 +416,7 @@ async def test_three_replica_minio_statefulset_rebinds_deterministically(tmp_pat
                     "namespace": namespace,
                     "name": f"{pvc_prefix}{index}",
                 },
-                "hostPath": {
-                    "path": f"/var/lib/prodbox/storage/{prodbox_id}/rebind/{pv_name}",
-                    "type": "DirectoryOrCreate",
-                },
+                "hostPath": {"path": str(host_paths[index]), "type": "DirectoryOrCreate"},
                 "nodeAffinity": {
                     "required": {
                         "nodeSelectorTerms": [
@@ -501,120 +509,226 @@ async def test_three_replica_minio_statefulset_rebinds_deterministically(tmp_pat
         },
     }
 
-    manifests: tuple[dict[str, object], ...] = (
-        namespace_manifest,
-        storage_class_manifest,
-        *persistent_volumes,
-        service_manifest,
-        statefulset_manifest,
+    context = LifecycleRebindContext(
+        kubeconfig=lifecycle_runtime_baseline,
+        namespace=namespace,
+        storage_class=storage_class,
+        statefulset_name=statefulset_name,
+        pvc_prefix=pvc_prefix,
+        pv_names=pv_names,
+        host_paths=host_paths,
+        manifests=(
+            namespace_manifest,
+            storage_class_manifest,
+            *persistent_volumes,
+            service_manifest,
+            statefulset_manifest,
+        ),
+        tmp_dir=tmp_path,
     )
 
-    async def _apply_all() -> None:
-        for manifest in manifests:
-            await _apply_manifest_with_details(manifest, kubeconfig=kubeconfig, tmp_dir=tmp_path)
+    try:
+        await _apply_rebind_manifests(context)
+        await _kubectl_expect_success(
+            "rollout",
+            "status",
+            f"statefulset/{context.statefulset_name}",
+            "--timeout=240s",
+            kubeconfig=context.kubeconfig,
+            namespace=context.namespace,
+            timeout=250.0,
+        )
+    except AssertionError:
+        try:
+            await _cleanup_lifecycle_rebind_resources(context)
+        except AssertionError as cleanup_error:
+            abort_test_session_on_teardown_failure(
+                target=f"lifecycle rebind setup {context.namespace}",
+                error=cleanup_error,
+            )
+        raise
 
-    expected_mapping = {f"{pvc_prefix}{index}": pv_name for index, pv_name in enumerate(pv_names)}
+    yield context
 
     try:
-        await _apply_all()
-        await _kubectl_expect_success(
-            "rollout",
-            "status",
-            f"statefulset/{statefulset_name}",
-            f"--timeout={240}s",
-            kubeconfig=kubeconfig,
-            namespace=namespace,
-            timeout=250.0,
+        await _cleanup_lifecycle_rebind_resources(context)
+    except AssertionError as error:
+        abort_test_session_on_teardown_failure(
+            target=f"lifecycle rebind {context.namespace}",
+            error=error,
         )
-        initial_mapping = await _collect_statefulset_bindings(
-            kubeconfig=kubeconfig,
-            namespace=namespace,
-            prefix=pvc_prefix,
-        )
-        assert initial_mapping == expected_mapping
 
-        await _kubectl_expect_success(
-            "delete",
-            "namespace",
-            namespace,
-            "--ignore-not-found=true",
-            "--wait=true",
-            kubeconfig=kubeconfig,
-            timeout=120.0,
-        )
-        for pv_name in pv_names:
-            with suppress(AssertionError):
-                await _kubectl_expect_success(
-                    "delete",
-                    "pv",
-                    pv_name,
-                    "--ignore-not-found=true",
-                    "--wait=true",
-                    kubeconfig=kubeconfig,
-                    timeout=60.0,
-                )
-        with suppress(AssertionError):
-            await _kubectl_expect_success(
-                "delete",
-                "storageclass",
-                storage_class,
-                "--ignore-not-found=true",
-                kubeconfig=kubeconfig,
-                timeout=60.0,
-            )
 
-        await _apply_all()
-        await _kubectl_expect_success(
-            "rollout",
-            "status",
-            f"statefulset/{statefulset_name}",
-            f"--timeout={240}s",
-            kubeconfig=kubeconfig,
-            namespace=namespace,
-            timeout=250.0,
-        )
-        rebound_mapping = await _collect_statefulset_bindings(
-            kubeconfig=kubeconfig,
-            namespace=namespace,
-            prefix=pvc_prefix,
-        )
-        assert rebound_mapping == expected_mapping
-    finally:
-        with suppress(AssertionError):
-            await _kubectl_expect_success(
-                "delete",
-                "namespace",
-                namespace,
-                "--ignore-not-found=true",
-                "--wait=true",
-                kubeconfig=kubeconfig,
-                timeout=120.0,
-            )
-        for pv_name in pv_names:
-            with suppress(AssertionError):
-                await _kubectl_expect_success(
-                    "delete",
-                    "pv",
-                    pv_name,
-                    "--ignore-not-found=true",
-                    "--wait=true",
-                    kubeconfig=kubeconfig,
-                    timeout=60.0,
-                )
-        with suppress(AssertionError):
-            await _kubectl_expect_success(
-                "delete",
-                "storageclass",
-                storage_class,
-                "--ignore-not-found=true",
-                kubeconfig=kubeconfig,
-                timeout=60.0,
-            )
+@pytest.mark.integration  # type: ignore[misc]
+@pytest.mark.asyncio
+async def test_prodbox_cleanup_lifecycle_preserves_storage_and_rebinds(
+    lifecycle_runtime_baseline: Path,
+    tmp_path: Path,
+) -> None:
+    """Cleanup removes runtime objects but preserves retained storage for deterministic rebinding."""
+    kubeconfig = lifecycle_runtime_baseline
+    prodbox_id = _current_prodbox_id()
 
-    await _ensure_rke2_runtime()
+    await _kubectl_expect_success("cluster-info", kubeconfig=kubeconfig, timeout=30.0)
+
+    configmap_stdout, _ = await _kubectl_expect_success(
+        "get",
+        "configmap",
+        "prodbox-identity",
+        "-o",
+        "json",
+        kubeconfig=kubeconfig,
+        namespace=PRODBOX_NAMESPACE,
+        timeout=30.0,
+    )
+    configmap = json.loads(configmap_stdout)
+    metadata = configmap.get("metadata", {})
+    annotations = metadata.get("annotations", {})
+    data = configmap.get("data", {})
+    assert isinstance(annotations, dict)
+    assert isinstance(data, dict)
+    assert annotations.get(PRODBOX_ANNOTATION_KEY) == prodbox_id
+    assert data.get("prodbox_id") == prodbox_id
+
     await _wait_deployment_available(
         kubeconfig=kubeconfig,
         namespace=MINIO_NAMESPACE,
         name="minio",
         timeout_seconds=300,
     )
+    pre_cleanup_binding = await _resolve_pvc_binding(
+        kubeconfig=kubeconfig,
+        namespace=MINIO_NAMESPACE,
+        pvc_name=MINIO_PERSISTENT_CLAIM,
+    )
+    assert pre_cleanup_binding[1] == MINIO_PERSISTENT_VOLUME
+
+    cleanup_marker: dict[str, object] = {
+        "apiVersion": "v1",
+        "kind": "ConfigMap",
+        "metadata": {
+            "name": "prodbox-cleanup-marker",
+            "namespace": PRODBOX_NAMESPACE,
+            "annotations": {PRODBOX_ANNOTATION_KEY: prodbox_id},
+            "labels": {PRODBOX_LABEL_KEY: prodbox_id_to_label_value(prodbox_id)},
+        },
+        "data": {"marker": "true"},
+    }
+    await kubectl_apply_manifest(cleanup_marker, kubeconfig=kubeconfig, tmp_dir=tmp_path)
+
+    await _execute_command_via_dag(rke2_cleanup_command(yes=True))
+
+    marker_rc, _, _ = await run_kubectl_capture_via_dag(
+        "get",
+        "configmap",
+        "prodbox-cleanup-marker",
+        kubeconfig=kubeconfig,
+        namespace=PRODBOX_NAMESPACE,
+        timeout=20.0,
+    )
+    assert marker_rc != 0
+
+    minio_deploy_rc, _, _ = await run_kubectl_capture_via_dag(
+        "get",
+        "deployment",
+        "minio",
+        kubeconfig=kubeconfig,
+        namespace=MINIO_NAMESPACE,
+        timeout=20.0,
+    )
+    assert minio_deploy_rc != 0
+
+    await _kubectl_expect_success(
+        "get",
+        "storageclass",
+        PRODBOX_STORAGE_CLASS,
+        kubeconfig=kubeconfig,
+        timeout=20.0,
+    )
+    await _kubectl_expect_success(
+        "get",
+        "pv",
+        MINIO_PERSISTENT_VOLUME,
+        kubeconfig=kubeconfig,
+        timeout=20.0,
+    )
+
+    post_cleanup_binding = await _resolve_pvc_binding(
+        kubeconfig=kubeconfig,
+        namespace=MINIO_NAMESPACE,
+        pvc_name=MINIO_PERSISTENT_CLAIM,
+    )
+    assert post_cleanup_binding == pre_cleanup_binding
+
+    await _ensure_post_deploy_baseline(kubeconfig)
+
+    post_reensure_binding = await _resolve_pvc_binding(
+        kubeconfig=kubeconfig,
+        namespace=MINIO_NAMESPACE,
+        pvc_name=MINIO_PERSISTENT_CLAIM,
+    )
+    assert post_reensure_binding == pre_cleanup_binding
+
+
+@pytest.mark.integration  # type: ignore[misc]
+@pytest.mark.asyncio
+async def test_three_replica_minio_statefulset_rebinds_deterministically(
+    lifecycle_rebind_context: LifecycleRebindContext,
+) -> None:
+    """A temporary 3-replica MinIO StatefulSet should rebind to identical PVs after redeploy."""
+    expected_mapping = {
+        f"{lifecycle_rebind_context.pvc_prefix}{index}": pv_name
+        for index, pv_name in enumerate(lifecycle_rebind_context.pv_names)
+    }
+
+    initial_mapping = await _collect_statefulset_bindings(
+        kubeconfig=lifecycle_rebind_context.kubeconfig,
+        namespace=lifecycle_rebind_context.namespace,
+        prefix=lifecycle_rebind_context.pvc_prefix,
+    )
+    assert initial_mapping == expected_mapping
+
+    await _kubectl_expect_success(
+        "delete",
+        "namespace",
+        lifecycle_rebind_context.namespace,
+        "--ignore-not-found=true",
+        "--wait=true",
+        kubeconfig=lifecycle_rebind_context.kubeconfig,
+        timeout=120.0,
+    )
+    for pv_name in lifecycle_rebind_context.pv_names:
+        await _kubectl_expect_success(
+            "delete",
+            "pv",
+            pv_name,
+            "--ignore-not-found=true",
+            "--wait=true",
+            kubeconfig=lifecycle_rebind_context.kubeconfig,
+            timeout=60.0,
+        )
+    await _kubectl_expect_success(
+        "delete",
+        "storageclass",
+        lifecycle_rebind_context.storage_class,
+        "--ignore-not-found=true",
+        kubeconfig=lifecycle_rebind_context.kubeconfig,
+        timeout=60.0,
+    )
+
+    await _apply_rebind_manifests(lifecycle_rebind_context)
+    await _kubectl_expect_success(
+        "rollout",
+        "status",
+        f"statefulset/{lifecycle_rebind_context.statefulset_name}",
+        "--timeout=240s",
+        kubeconfig=lifecycle_rebind_context.kubeconfig,
+        namespace=lifecycle_rebind_context.namespace,
+        timeout=250.0,
+    )
+    rebound_mapping = await _collect_statefulset_bindings(
+        kubeconfig=lifecycle_rebind_context.kubeconfig,
+        namespace=lifecycle_rebind_context.namespace,
+        prefix=lifecycle_rebind_context.pvc_prefix,
+    )
+    assert rebound_mapping == expected_mapping

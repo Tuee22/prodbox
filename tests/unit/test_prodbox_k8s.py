@@ -13,6 +13,7 @@ from prodbox.lib.prodbox_k8s import (
     MINIO_PERSISTENT_CLAIM,
     MINIO_PERSISTENT_VOLUME,
     PRODBOX_ANNOTATION_KEY,
+    PRODBOX_EPHEMERAL_RESOURCE_KINDS,
     PRODBOX_IDENTITY_CONFIGMAP,
     PRODBOX_LABEL_KEY,
     PRODBOX_NAMESPACE,
@@ -35,6 +36,8 @@ def test_prodbox_k8s_constants_are_stable() -> None:
     assert HARBOR_GATEWAY_REPOSITORY == "prodbox/prodbox-gateway"
     assert PRODBOX_STORAGE_CLASS == "prodbox-local-retain"
     assert "persistentvolumes" in PRODBOX_STORAGE_RETAINED_RESOURCES
+    assert "events" in PRODBOX_EPHEMERAL_RESOURCE_KINDS
+    assert "events.events.k8s.io" in PRODBOX_EPHEMERAL_RESOURCE_KINDS
     assert MINIO_NAMESPACE == "prodbox"
     assert MINIO_HELM_RELEASE == "minio"
     assert MINIO_HELM_CHART_REF == "minio/minio"

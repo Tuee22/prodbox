@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, CLAUDE.md, AGENTS.md
+**Referenced by**: documents/engineering/README.md, CLAUDE.md, AGENTS.md, documents/engineering/cli_command_surface.md
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox check-code`.
 
@@ -24,7 +24,7 @@ poetry run prodbox check-code
 
 The command runs a fail-fast sequence:
 
-1. Policy guards (`no_direct_poetry_run_guard`, `no_test_skip_guard`, purity/no-statements/shell/threading/type/timeout/collision, docs lint)
+1. Policy guards (`no_direct_poetry_run_guard`, `no_test_skip_guard`, purity/no-statements/shell/threading/type/collision/click-passthrough/timeout, docs lint)
 2. `ruff check`
 3. `ruff format --check`
 4. `mypy`
@@ -44,7 +44,7 @@ Use local CLI entrypoints only:
 
 ```bash
 poetry run prodbox check-code
-poetry run prodbox test
+poetry run prodbox test all
 ```
 
 ---
@@ -59,6 +59,7 @@ Current guard set:
 - `no_threading_guard`
 - `type_escape_guard`
 - `command_name_collision_guard`
+- `click_passthrough_guard`
 - `timeout_guard`
 - `no_test_skip_guard`
 - `doc_lint_guard`

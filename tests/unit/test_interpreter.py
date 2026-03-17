@@ -11,9 +11,11 @@ import pytest
 
 from prodbox.cli.effect_dag import EffectDAG, EffectNode, PrerequisiteFailurePolicy
 from prodbox.cli.effects import (
+    AnnotateProdboxManagedResources,
     CaptureSubprocessOutput,
     CheckFileExists,
     CheckServiceStatus,
+    CleanupProdboxAnnotatedResources,
     Custom,
     FetchPublicIP,
     LoadSettings,
@@ -54,7 +56,7 @@ from prodbox.cli.summary import dag_to_execution_summary
 from prodbox.cli.types import Failure, PrereqResults, Success
 
 if TYPE_CHECKING:
-    from prodbox.cli.effects import EnsureRetainedLocalStorage
+    from prodbox.cli.effects import EnsureHarborRegistry, EnsureRetainedLocalStorage
 
 
 class TestExecutionSummary:
@@ -393,12 +395,12 @@ class TestEffectInterpreterOutput:
 
     @pytest.mark.asyncio
     async def test_write_stdout(self) -> None:
-        """WriteStdout should write to stdout."""
+        """WriteStdout should append a newline for standalone terminal records."""
         interpreter = EffectInterpreter()
         effect = WriteStdout(
             effect_id="write_stdout",
             description="Write stdout",
-            text="Hello\n",
+            text="Hello",
         )
 
         with patch("sys.stdout") as mock_stdout:
@@ -409,12 +411,12 @@ class TestEffectInterpreterOutput:
 
     @pytest.mark.asyncio
     async def test_write_stderr(self) -> None:
-        """WriteStderr should write to stderr."""
+        """WriteStderr should append a newline for standalone terminal records."""
         interpreter = EffectInterpreter()
         effect = WriteStderr(
             effect_id="write_stderr",
             description="Write stderr",
-            text="Error\n",
+            text="Error",
         )
 
         with patch("sys.stderr") as mock_stderr:
@@ -422,6 +424,22 @@ class TestEffectInterpreterOutput:
 
         assert summary.success
         mock_stderr.write.assert_called_once_with("Error\n")
+
+    @pytest.mark.asyncio
+    async def test_write_stdout_preserves_existing_trailing_newline(self) -> None:
+        """WriteStdout should not duplicate an existing trailing newline."""
+        interpreter = EffectInterpreter()
+        effect = WriteStdout(
+            effect_id="write_stdout_existing_newline",
+            description="Write stdout with existing newline",
+            text="Hello\n",
+        )
+
+        with patch("sys.stdout") as mock_stdout:
+            summary = await interpreter.interpret(effect)
+
+        assert summary.success
+        mock_stdout.write.assert_called_once_with("Hello\n")
 
     @pytest.mark.asyncio
     async def test_print_info(self) -> None:
@@ -2753,6 +2771,79 @@ class TestKubectlEffects:
         assert env.get("KUBECONFIG") == "/path/to/kubeconfig"
 
 
+class TestProdboxManagedResourceFiltering:
+    """Tests for filtering observational Kubernetes resources out of doctrine flows."""
+
+    @pytest.mark.asyncio
+    async def test_annotate_managed_resources_skips_ephemeral_kinds(self) -> None:
+        """Annotation reconciliation should exclude Event resources."""
+        interpreter = EffectInterpreter()
+        effect = AnnotateProdboxManagedResources(
+            effect_id="annotate_prodbox",
+            description="Annotate managed resources",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+            annotation_key="prodbox.io/id",
+            label_key="prodbox.io/id",
+            label_value="prodbox-0123456789abcdef0123456789abcdef",
+            managed_namespaces=("prodbox",),
+            helm_instances=(),
+        )
+
+        with (
+            patch.object(
+                interpreter,
+                "_list_api_resources",
+                new=AsyncMock(side_effect=(("events", "deployments"), ())),
+            ),
+            patch.object(interpreter, "_annotate_ref", new=AsyncMock(return_value=None)),
+            patch.object(
+                interpreter,
+                "_annotate_namespaced_objects",
+                new=AsyncMock(return_value=(1, ())),
+            ) as mock_annotate_namespaced,
+            patch.object(
+                interpreter,
+                "_annotate_prodbox_crds",
+                new=AsyncMock(return_value=(0, ())),
+            ),
+        ):
+            summary = await interpreter.interpret(effect)
+
+        assert summary.success
+        assert mock_annotate_namespaced.await_args.kwargs["resources"] == ("deployments",)
+
+    @pytest.mark.asyncio
+    async def test_cleanup_annotated_resources_skips_ephemeral_kinds(self) -> None:
+        """Cleanup should not try to delete Event resources as lifecycle-managed state."""
+        interpreter = EffectInterpreter()
+        effect = CleanupProdboxAnnotatedResources(
+            effect_id="cleanup_prodbox",
+            description="Cleanup annotated resources",
+            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
+            annotation_key="prodbox.io/id",
+            retained_resource_kinds=("persistentvolumeclaims",),
+            retained_namespaces=("prodbox",),
+        )
+
+        with (
+            patch.object(
+                interpreter,
+                "_list_api_resources",
+                new=AsyncMock(side_effect=(("events", "deployments"), ())),
+            ),
+            patch.object(
+                interpreter,
+                "_collect_annotated_refs",
+                new=AsyncMock(return_value=((), ())),
+            ) as mock_collect_refs,
+        ):
+            summary, deleted_count = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert deleted_count == 0
+        assert mock_collect_refs.await_args.kwargs["namespaced_resources"] == ("deployments",)
+
+
 class TestRetainedStorageEffects:
     """Tests for retained local storage reconciliation behavior."""
 
@@ -2858,6 +2949,135 @@ class TestRetainedStorageEffects:
         assert len(mock_run_kubectl.await_args_list) == 1
         apply_call = mock_run_kubectl.await_args_list[0]
         assert apply_call.args[:3] == ("apply", "-f", "-")
+
+
+class TestHarborRegistryEffects:
+    """Tests for Harbor registry reconciliation behavior."""
+
+    @staticmethod
+    def _harbor_effect() -> EnsureHarborRegistry:
+        """Build one EnsureHarborRegistry effect for tests."""
+        from prodbox.cli.effects import EnsureHarborRegistry, MachineIdentity
+
+        return EnsureHarborRegistry(
+            effect_id="ensure_harbor",
+            description="Ensure Harbor registry",
+            machine_identity=MachineIdentity(
+                machine_id="9952fe5f838f4c80b337f1ea5186fbf3",
+                prodbox_id="prodbox-9952fe5f838f4c80b337f1ea5186fbf3",
+            ),
+            namespace="harbor",
+            release_name="harbor",
+            repository_name="harbor",
+            repository_url="https://helm.goharbor.io",
+            registry_endpoint="127.0.0.1:30080",
+            mirror_project="dockerhub",
+            gateway_image_repository="prodbox/gateway",
+            gateway_dockerfile=Path("docker/gateway.Dockerfile"),
+            gateway_build_context=Path("."),
+            registries_file_path=Path("/etc/rancher/rke2/registries.yaml"),
+            mirror_cluster_images=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_waits_for_harbor_nginx_before_registry_login(self) -> None:
+        """Harbor ensure should wait for nginx because login flows through the NodePort."""
+        interpreter = EffectInterpreter()
+        effect = self._harbor_effect()
+        with (
+            patch(
+                "prodbox.cli.interpreter._run_subprocess",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
+                ),
+            ) as mock_subprocess,
+            patch.object(
+                interpreter,
+                "_run_kubectl",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
+                ),
+            ) as mock_run_kubectl,
+            patch.object(
+                interpreter,
+                "_ensure_harbor_project",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                interpreter,
+                "_ensure_gateway_image",
+                new=AsyncMock(return_value=("127.0.0.1:30080/prodbox/gateway:test", None)),
+            ),
+            patch.object(
+                interpreter,
+                "_import_image_into_rke2_containerd",
+                new=AsyncMock(return_value=None),
+            ),
+            patch.object(
+                interpreter,
+                "_write_root_file_if_changed",
+                new=AsyncMock(return_value=(False, None)),
+            ),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value is not None
+        waited_deployments = tuple(call.args[2] for call in mock_run_kubectl.await_args_list)
+        assert waited_deployments == (
+            "deployment/harbor-core",
+            "deployment/harbor-registry",
+            "deployment/harbor-nginx",
+        )
+        login_call = mock_subprocess.await_args_list[3]
+        assert login_call.args[0][:3] == ("docker", "login", "127.0.0.1:30080")
+
+    @pytest.mark.asyncio
+    async def test_harbor_nginx_unavailable_fails_effect(self) -> None:
+        """Harbor ensure should fail if the serving nginx deployment never becomes Available."""
+        interpreter = EffectInterpreter()
+        effect = self._harbor_effect()
+        with (
+            patch(
+                "prodbox.cli.interpreter._run_subprocess",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
+                ),
+            ),
+            patch.object(
+                interpreter,
+                "_run_kubectl",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(
+                            returncode=1,
+                            stdout=b"",
+                            stderr=b"deployment unavailable",
+                        ),
+                    )
+                ),
+            ),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert "Harbor deployment harbor-nginx not ready" in summary.message
 
 
 class TestRoute53Effects:

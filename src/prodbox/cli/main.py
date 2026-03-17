@@ -8,7 +8,7 @@ from prodbox.cli import check_code, dns, env, gateway, host, k8s, pulumi_cmd, rk
 from prodbox.lib.logging import setup_logging
 
 
-@click.group()
+@click.group(no_args_is_help=True)
 @click.option(
     "--verbose",
     "-v",
@@ -40,7 +40,7 @@ cli.add_command(k8s.k8s)
 cli.add_command(gateway.gateway)
 cli.add_command(check_code.check_code)
 cli.add_command(tla.tla_check_cmd)
-cli.add_command(test_cmd.run_tests_cmd)
+cli.add_command(test_cmd.test)
 
 
 def main() -> None:

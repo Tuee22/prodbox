@@ -17,6 +17,10 @@ PRODBOX_STORAGE_RETAINED_RESOURCES: tuple[str, ...] = (
     "storageclasses",
     "storageclasses.storage.k8s.io",
 )
+PRODBOX_EPHEMERAL_RESOURCE_KINDS: tuple[str, ...] = (
+    "events",
+    "events.events.k8s.io",
+)
 
 HARBOR_NAMESPACE: str = "harbor"
 HARBOR_HELM_RELEASE: str = "harbor"
@@ -83,6 +87,7 @@ __all__ = [
     "PRODBOX_STORAGE_RECLAIM_POLICY",
     "PRODBOX_STORAGE_BINDING_MODE",
     "PRODBOX_STORAGE_RETAINED_RESOURCES",
+    "PRODBOX_EPHEMERAL_RESOURCE_KINDS",
     "HARBOR_NAMESPACE",
     "HARBOR_HELM_RELEASE",
     "HARBOR_HELM_REPOSITORY_NAME",

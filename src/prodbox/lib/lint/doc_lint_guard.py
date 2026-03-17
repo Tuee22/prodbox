@@ -142,10 +142,67 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
         canonical_docs=frozenset({Path("documents/engineering/unit_testing_policy.md")}),
     ),
     IntentRule(
+        name="cluster_fixture_setup_ownership",
+        statement=(
+            "Cluster-backed integration tests must establish the conditions required "
+            "to pass through pytest fixtures; tests must not rely on residual cluster "
+            "state from prior tests."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/integration_fixture_doctrine.md")}),
+    ),
+    IntentRule(
+        name="cluster_fixture_teardown_enforcement",
+        statement=(
+            "Fixture teardown must always attempt cleanup after the test, including "
+            "failing tests, using pytest yield-fixture or finalizer semantics."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/integration_fixture_doctrine.md")}),
+    ),
+    IntentRule(
+        name="cluster_tests_pass_fail_only",
+        statement=(
+            "Test outcomes are pass/fail only; pytest warnings are prohibited in the suite."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/integration_fixture_doctrine.md")}),
+    ),
+    IntentRule(
+        name="cluster_teardown_failure_aborts_suite",
+        statement=(
+            "Any teardown cleanup failure must abort the entire pytest session immediately."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/integration_fixture_doctrine.md")}),
+    ),
+    IntentRule(
+        name="lifecycle_baseline_post_deploy",
+        statement=(
+            "For lifecycle integration tests, prodbox baseline state is the canonical "
+            "post-deploy runtime produced by the runtime deploy action, "
+            "`prodbox rke2 ensure`."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/storage_lifecycle_doctrine.md")}),
+    ),
+    IntentRule(
+        name="storage_fixture_explicit_cleanup",
+        statement=(
+            "Because `prodbox rke2 ensure` and `prodbox rke2 cleanup` preserve storage, "
+            "test fixtures must explicitly delete any temporary MinIO or other storage "
+            "artifacts they create."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/storage_lifecycle_doctrine.md")}),
+    ),
+    IntentRule(
         name="streaming_contract",
         statement=(
             "Streaming is observational only and must follow at-most-one-stream output "
             "serialization invariants."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/streaming_doctrine.md")}),
+    ),
+    IntentRule(
+        name="terminal_record_contract",
+        statement=(
+            "CLI terminal records are newline-terminated standalone writes and must "
+            "flush before streamed subprocess output begins."
         ),
         canonical_docs=frozenset({Path("documents/engineering/streaming_doctrine.md")}),
     ),
@@ -177,6 +234,14 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
             "enforcement in local development."
         ),
         canonical_docs=frozenset({Path("README.md"), Path("AGENTS.md"), Path("CLAUDE.md")}),
+    ),
+    IntentRule(
+        name="explicit_cli_surface",
+        statement=(
+            "prodbox CLI commands accept only explicitly declared Click arguments and "
+            "options; passthrough to downstream tools is prohibited."
+        ),
+        canonical_docs=frozenset({Path("documents/engineering/cli_command_surface.md")}),
     ),
     IntentRule(
         name="documentation_topology",

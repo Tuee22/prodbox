@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/effectful_dag_architecture.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md
 
 > **Purpose**: Define deterministic retained-storage behavior for prodbox cleanup/redeploy lifecycles.
 
@@ -15,6 +15,10 @@ Retained storage in prodbox is reconciled via static no-provisioner StorageClass
 Cleanup must preserve retained storage resources (`StorageClass`, `PersistentVolume`, `PersistentVolumeClaim`) by default.
 
 MinIO is installed in the `prodbox` namespace via the official `minio/minio` Helm chart and must consume prebound retained PVC storage.
+
+For lifecycle integration tests, prodbox baseline state is the canonical post-deploy runtime produced by the runtime deploy action, `prodbox rke2 ensure`.
+
+Because `prodbox rke2 ensure` and `prodbox rke2 cleanup` preserve storage, test fixtures must explicitly delete any temporary MinIO or other storage artifacts they create.
 
 ---
 
@@ -95,7 +99,10 @@ Integration lifecycle tests must verify:
 
 1. Real MinIO PVC remains bound to the same PV across cleanup/redeploy.
 2. A temporary 3-replica StatefulSet scenario can rebind to identical prebound PV names after redeploy.
-3. Temporary test resources are fully removed at test end, leaving only baseline prodbox runtime.
+3. Temporary test resources are fully removed at test end, including temporary storage artifacts and host-path data created by the fixture harness.
+4. Baseline prodbox runtime after test completion matches the post-deploy state defined by the runtime deploy action, `prodbox rke2 ensure`.
+
+Shared-runtime lifecycle fixture ownership and teardown behavior are defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md#32-shared-runtime-baseline-fixtures).
 
 ---
 

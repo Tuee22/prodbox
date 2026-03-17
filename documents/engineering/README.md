@@ -15,14 +15,16 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 | Document | Purpose |
 |----------|---------|
 | [dependency_management.md](./dependency_management.md) | Poetry dependency standards |
+| [cli_command_surface.md](./cli_command_surface.md) | Explicit Click command matrix and no-passthrough policy |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
+| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed pytest setup/teardown doctrine |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor installation + local image mirror pipeline |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage + deterministic PVC/PV rebinding doctrine |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and runtime reference |
-| [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and at-most-one-stream invariants |
+| [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
 | [unit_testing_policy.md](./unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
@@ -40,6 +42,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 - [Interpreter Pattern](./effectful_dag_architecture.md#5-interpreter-pattern)
 - [Interpreter Runtime Contract](./effect_interpreter.md#1-runtime-parity-statement)
 - [Streaming Contract](./streaming_doctrine.md#1-streaming-contract-statement)
+- [Terminal Record Contract](./streaming_doctrine.md#5-terminal-record-contract)
 
 ### Distributed Gateway
 - [Architecture](./distributed_gateway_architecture.md)
@@ -60,13 +63,19 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 ### Unit Testing
 - [Interpreter-Only Mocking Doctrine](./unit_testing_policy.md#1-the-interpreter-only-mocking-doctrine)
+- [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [Forbidden Patterns](./unit_testing_policy.md#3-forbidden-patterns)
 - [Allowed Patterns](./unit_testing_policy.md#4-allowed-patterns)
 - [Two-Phase Test Command Doctrine](./unit_testing_policy.md#two-phase-test-command-doctrine)
+- [Phase Banner Rendering Contract](./unit_testing_policy.md#phase-banner-rendering-contract)
 
 ### Code Quality
 - [Code Quality Doctrine](./code_quality.md)
 - [Pure FP Standards](./pure_fp_standards.md)
+
+### CLI Surface
+- [CLI Command Surface](./cli_command_surface.md)
+- [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine)
 
 ---
 

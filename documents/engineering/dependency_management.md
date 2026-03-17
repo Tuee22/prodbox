@@ -136,11 +136,13 @@ Direct tool invocation via `poetry run <tool>` is forbidden.
 Use the CLI entrypoints instead:
 
 ```bash
-poetry run prodbox test       # Run pytest (all args forwarded)
+poetry run prodbox test all   # Run full test suite
 poetry run prodbox check-code  # Policy guard + ruff + mypy
 poetry run prodbox tla-check  # TLA+ model checks
 poetry run daemon --config <path>  # Gateway daemon
 ```
+
+For the full supported `prodbox` command matrix, see [CLI Command Surface](./cli_command_surface.md).
 
 `PRODBOX_ALLOW_NON_ENTRYPOINT=1` is reserved for internal CLI subprocesses
 and should not be set manually in development workflows.
@@ -153,7 +155,7 @@ virtualenv (`prodbox_entrypoint_guard.pth`) to block non-entrypoint tools.
 1. **Check existing dependencies**: Avoid duplicates or conflicts
 2. **Use caret bounds**: `poetry add "package^X.Y.0"`
 3. **Verify type stubs**: Add to `typings/` if needed (see [Type Safety](../../CLAUDE.md#type-safety))
-4. **Run tests**: `poetry run prodbox test`
+4. **Run tests**: `poetry run prodbox test all`
 5. **Run code quality checks**: `poetry run prodbox check-code`
 
 ### Example
@@ -180,7 +182,7 @@ poetry show --outdated
 poetry update
 
 # 3. Run full test suite
-poetry run prodbox test
+poetry run prodbox test all
 poetry run prodbox check-code
 
 # 4. For major version upgrades, update pyproject.toml explicitly

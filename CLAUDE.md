@@ -247,10 +247,12 @@ Custom type stubs in `typings/` provide full typing for external libraries:
 | Overall (excluding `infra/`) | 95%+ |
 
 ```bash
-poetry run prodbox test                    # Run all tests
-poetry run prodbox test -m "not integration"  # Unit tests only
-poetry run prodbox test --cov=src/prodbox  # With coverage
+poetry run prodbox test all                        # Run all tests
+poetry run prodbox test unit                       # Unit tests only
+poetry run prodbox test all --coverage --cov-fail-under 100  # With coverage
 ```
+
+See [CLI Command Surface](documents/engineering/cli_command_surface.md) for the full supported command matrix.
 
 ---
 
@@ -276,7 +278,7 @@ This repository is in active development and does not use CI automation.
 
 ```bash
 poetry run prodbox check-code
-poetry run prodbox test
+poetry run prodbox test all
 ```
 
 ### Container Build
@@ -338,6 +340,7 @@ poetry add --group dev "package^X.Y.0"
 ## Engineering Documentation
 
 See `documents/engineering/` for detailed architecture docs:
+- `cli_command_surface.md` - Explicit Click command matrix
 - `dependency_management.md` - Poetry dependency standards
 - `effectful_dag_architecture.md` - DAG system design
 - `prerequisite_doctrine.md` - Fail-fast vs auto-rebuild philosophy
@@ -348,7 +351,7 @@ See `documents/engineering/` for detailed architecture docs:
 ## Contributing Checklist
 
 - [ ] Code changes implemented
-- [ ] Tests written and passing (`poetry run prodbox test`)
+- [ ] Tests written and passing (`poetry run prodbox test all`)
 - [ ] Type checking passes (`poetry run prodbox check-code`)
 - [ ] Linting passes (`poetry run prodbox check-code`)
 - [ ] **Changes left uncommitted** (user commits manually)

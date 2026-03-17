@@ -40,15 +40,16 @@ poetry install
 poetry run prodbox <command>
 
 # Run tests
-poetry run prodbox test                    # All tests
-poetry run prodbox test -m "not integration"  # Unit only
-poetry run prodbox test --cov=src/prodbox  # With coverage
+poetry run prodbox test all                        # All tests
+poetry run prodbox test unit                       # Unit only
+poetry run prodbox test all --coverage --cov-fail-under 100  # With coverage
 
 # Code quality checks (canonical entrypoint)
 poetry run prodbox check-code        # Policy guard + ruff + mypy
 ```
 
 poetry run prodbox check-code is the required single entrypoint for doctrine enforcement in local development.
+The authoritative CLI command matrix lives in [documents/engineering/cli_command_surface.md](documents/engineering/cli_command_surface.md).
 
 ---
 
@@ -169,7 +170,7 @@ def test_parse_success(fp: FakeProcess) -> None:
 - Mark with `@pytest.mark.integration`
 - Require real infrastructure (kubectl, RKE2, etc.)
 - Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
-- Use `poetry run prodbox test -m "not integration"` when integration prerequisites are unavailable
+- Use `poetry run prodbox test unit` when integration prerequisites are unavailable
 
 ### Development Tooling Policy
 

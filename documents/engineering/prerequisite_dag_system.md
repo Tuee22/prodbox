@@ -51,14 +51,11 @@ For multi-caller prerequisites:
 
 ---
 
-## 4. Two-Phase Test Commands
+## 4. Test Command Integration
 
-`prodbox test` composes a two-phase DAG:
+`prodbox test` uses prerequisite expansion to realize the phase sequence defined in [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine).
 
-1. Phase 1: prerequisite gate (integration scopes only).
-2. Phase 2: pytest execution.
-
-Phase 2 does not execute if Phase 1 fails.
+This reference intentionally does not restate phase labels or banner rendering rules. For the operator-facing contract, use [Phase Banner Rendering Contract](./unit_testing_policy.md#phase-banner-rendering-contract).
 
 ---
 

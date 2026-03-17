@@ -134,13 +134,13 @@ Recommended flow before gateway pod integration tests:
 
 ```bash
 poetry run prodbox rke2 ensure
-poetry run prodbox test tests/integration/test_gateway_k8s_pods.py
+poetry run prodbox test integration gateway-pods
 ```
 
 Image override remains available for explicit testing:
 
 ```bash
-PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> poetry run prodbox test tests/integration/test_gateway_k8s_pods.py
+PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> poetry run prodbox test integration gateway-pods
 ```
 
 ---

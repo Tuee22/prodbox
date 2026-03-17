@@ -16,7 +16,7 @@ from prodbox.cli.command_executor import execute_command, render_error_and_retur
 from prodbox.cli.types import Failure, Success
 
 
-@click.group()
+@click.group(no_args_is_help=True)
 def gateway() -> None:
     """Gateway daemon management."""
 

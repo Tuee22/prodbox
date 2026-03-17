@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/integration_fixture_doctrine.md
 
 > **Purpose**: Philosophy and patterns for prerequisite-based validation in prodbox CLI.
 
@@ -18,7 +18,7 @@ Cleanup must idempotently remove prodbox-annotated Kubernetes objects without de
 
 Exactly one prodbox instance exists per Linux machine, anchored by machine identity (`/etc/machine-id`) and its derived `prodbox-<machine-id>` identifier.
 
-Any pod/service/deployment that runs a custom prodbox image must be created in the `prodbox` namespace.
+Runtime-managed pod/service/deployment objects reconciled by prodbox lifecycle effects use the `prodbox` namespace; ephemeral integration-test fixtures may use isolated namespaces as defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 
 Retained storage resources are preserved during cleanup by default to keep deterministic PVC->PV rebinding intact.
 

@@ -8,7 +8,6 @@ from pathlib import Path
 from prodbox.lib.prodbox_k8s import (
     PRODBOX_ANNOTATION_KEY,
     PRODBOX_LABEL_KEY,
-    PRODBOX_NAMESPACE,
     prodbox_id_to_label_value,
 )
 
@@ -38,18 +37,8 @@ def _prodbox_labels() -> dict[str, str]:
     return {PRODBOX_LABEL_KEY: value}
 
 
-def _require_prodbox_namespace(namespace: str) -> None:
-    """Enforce doctrine that custom prodbox-image resources use the prodbox namespace."""
-    if namespace != PRODBOX_NAMESPACE:
-        raise ValueError(
-            f"Custom prodbox image resources must use namespace '{PRODBOX_NAMESPACE}', "
-            f"got '{namespace}'"
-        )
-
-
 def gateway_namespace(name: str) -> dict[str, object]:
     """Generate a Namespace manifest."""
-    _require_prodbox_namespace(name)
     labels = _prodbox_labels()
     return {
         "apiVersion": "v1",
@@ -67,7 +56,6 @@ def gateway_orders_configmap(
     orders: dict[str, object],
 ) -> dict[str, object]:
     """Generate a ConfigMap with serialized orders JSON."""
-    _require_prodbox_namespace(namespace)
     import json
 
     return {
@@ -97,7 +85,6 @@ def gateway_daemon_pod(
     orders_configmap: str,
 ) -> dict[str, object]:
     """Generate a Pod manifest for a gateway daemon instance."""
-    _require_prodbox_namespace(namespace)
     env_vars: list[dict[str, str]] = [
         {"name": "GATEWAY_NODE_ID", "value": node_id},
     ]
@@ -186,7 +173,6 @@ def gateway_config_configmap(
     event_keys: dict[str, str],
 ) -> dict[str, object]:
     """Generate a ConfigMap with the daemon JSON config for a specific node."""
-    _require_prodbox_namespace(namespace)
     import json
 
     config = {
@@ -223,7 +209,6 @@ def gateway_service(
     socket_port: int,
 ) -> dict[str, object]:
     """Generate a Service manifest for a gateway daemon pod."""
-    _require_prodbox_namespace(namespace)
     return {
         "apiVersion": "v1",
         "kind": "Service",
@@ -258,7 +243,6 @@ def gateway_network_policy_isolate(
     namespace: str,
 ) -> dict[str, object]:
     """Generate a NetworkPolicy that blocks all ingress/egress for a labeled pod."""
-    _require_prodbox_namespace(namespace)
     return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -296,7 +280,6 @@ def gateway_network_policy_asymmetric(
     This creates an asymmetric partition where a third node can still communicate
     with both blocked nodes, but the two blocked nodes cannot reach each other.
     """
-    _require_prodbox_namespace(namespace)
     egress_policy: dict[str, object] = {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",
@@ -372,7 +355,6 @@ def gateway_network_policy_asymmetric(
 
 def gateway_network_policy_allow_all(namespace: str) -> dict[str, object]:
     """Generate a NetworkPolicy that allows all traffic in the namespace."""
-    _require_prodbox_namespace(namespace)
     return {
         "apiVersion": "networking.k8s.io/v1",
         "kind": "NetworkPolicy",

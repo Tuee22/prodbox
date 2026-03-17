@@ -113,6 +113,7 @@ timeout_method = "signal"
 timeout_func_only = true
 asyncio_mode = "auto"
 xfail_strict = true
+filterwarnings = ["error"]
 addopts = [
     "-v",
     "--strict-markers",

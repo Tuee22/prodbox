@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, AGENTS.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, AGENTS.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md
 
 > **Purpose**: Define the Interpreter-Only Mocking Doctrine for unit tests in prodbox.
 
@@ -59,11 +59,11 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 
 - Integration tests must fail fast when prerequisites are missing.
 - Platform/environment gating belongs in prerequisite validation, not inside pytest skips.
-- For unit-only environments without integration infrastructure, run `poetry run prodbox test -m "not integration"`.
+- For unit-only environments without integration infrastructure, run `poetry run prodbox test unit`.
 
 ### Two-Phase Test Command Doctrine
 
-`prodbox test` executes in two phases:
+Integration-selected `prodbox test` suite commands execute in two phases:
 
 1. **Phase 1 - prerequisite gate**: when integration scope is selected, the eDAG validates integration prerequisites before pytest starts.
 2. **Phase 1.5 - integration runbook gate**: integration scope enforces `prodbox rke2 ensure`.
@@ -71,13 +71,23 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 
 If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a skip.
 
+### Phase Banner Rendering Contract
+
+`prodbox test` phase banners are operator-facing progress records. Their visible order and line framing are part of the command contract.
+
+1. Visible banner order is exact: `Phase 1/2`, optional `Phase 1.5/2`, then `Phase 2/2`.
+2. Each phase banner is emitted as its own stdout line.
+3. The `Phase 1.5/2` banner is emitted if and only if integration scope is selected.
+4. The `Phase 2/2` banner is emitted only after the prerequisite gate succeeds and, when integration scope is selected, after `prodbox rke2 ensure` succeeds.
+5. Generic terminal record framing rules are owned by [Streaming Doctrine](./streaming_doctrine.md#5-terminal-record-contract).
+
 ### Command-Scope Prerequisite Aggregation
 
 `prodbox test` applies prerequisite gates at command scope:
 
-1. Selected pytest scope determines whether integration prerequisites are required.
+1. Selected named Click suite determines whether integration prerequisites are required.
 2. Integration-selected scopes aggregate prerequisite requirements into one Phase 1 gate.
-3. Unit-only scopes (`-m "not integration"` or explicit `tests/unit/...` paths) bypass integration gates.
+3. Unit-only scope (`poetry run prodbox test unit`) bypasses integration gates.
 
 ### Session Fixtures vs Test DAG (SSoT)
 
@@ -87,6 +97,8 @@ Session fixtures are for pytest infrastructure only. CLI-modeled effectful prere
 - Forbidden in session fixtures: invoking `poetry run prodbox ...`, starting external services, or running CLI-modeled prerequisite operations.
 
 This keeps prerequisite orchestration centralized in the eDAG gate and prevents hidden preconditions.
+
+Cluster-backed pytest setup/teardown ownership, cleanup guarantees, and cleanup-failure handling are defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 
 ### Timeout Budget Separation
 
@@ -287,7 +299,7 @@ async def test_systemd_status(fp: FakeProcess) -> None:
 All code must have 100% test coverage. This is enforced by:
 
 ```bash
-poetry run prodbox test --cov=src/prodbox --cov-fail-under=100
+poetry run prodbox test all --coverage --cov-fail-under 100
 ```
 
 If a line of code cannot be covered by tests, the code must be refactored to make it testable. Common solutions:
@@ -318,4 +330,5 @@ This SSoT owns test skip doctrine intention.
 - [Code Quality Doctrine](./code_quality.md) - Guardrail enforcement
 - [Effectful DAG Architecture](./effectful_dag_architecture.md) - Effect system design
 - [Prerequisite DAG System](./prerequisite_dag_system.md) - Test prerequisite gate construction
+- [CLI Command Surface](./cli_command_surface.md) - Explicit command matrix
 - [CLAUDE.md](../../CLAUDE.md) - Project overview

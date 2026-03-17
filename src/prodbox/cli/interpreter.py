@@ -192,6 +192,7 @@ from prodbox.cli.types import (  # noqa: E402
     Result,
     Success,
 )
+from prodbox.lib.prodbox_k8s import PRODBOX_EPHEMERAL_RESOURCE_KINDS  # noqa: E402
 
 # Type variable for effect return types
 T = TypeVar("T")
@@ -207,6 +208,17 @@ def _assert_never(value: object) -> Never:
     mypy will error until the new case is handled.
     """
     raise AssertionError(f"Unhandled effect type: {type(value).__name__}")
+
+
+def _terminal_record_text(text: str) -> str:
+    """Return terminal output with a trailing newline when needed."""
+    match text:
+        case "":
+            return text
+        case _ if text.endswith("\n"):
+            return text
+        case _:
+            return f"{text}\n"
 
 
 # =============================================================================
@@ -1820,14 +1832,14 @@ class EffectInterpreter:
 
     async def _interpret_write_stdout(self, effect: WriteStdout) -> ExecutionSummary:
         """Write to stdout."""
-        sys.stdout.write(effect.text)
+        sys.stdout.write(_terminal_record_text(effect.text))
         sys.stdout.flush()
         self.successful_effects += 1
         return self._create_success_summary("Wrote to stdout")
 
     async def _interpret_write_stderr(self, effect: WriteStderr) -> ExecutionSummary:
         """Write to stderr."""
-        sys.stderr.write(effect.text)
+        sys.stderr.write(_terminal_record_text(effect.text))
         sys.stderr.flush()
         self.successful_effects += 1
         return self._create_success_summary("Wrote to stderr")
@@ -2007,6 +2019,12 @@ class EffectInterpreter:
             if line.strip()
         ]
         return tuple(lines)
+
+    @staticmethod
+    def _filter_doctrine_managed_resources(resources: tuple[str, ...]) -> tuple[str, ...]:
+        """Drop observational resource kinds that must not drive lifecycle cleanup."""
+        excluded_resources = frozenset(PRODBOX_EPHEMERAL_RESOURCE_KINDS)
+        return tuple(resource for resource in resources if resource not in excluded_resources)
 
     @staticmethod
     def _parse_object_names(stdout: str) -> tuple[K8sObjectRef, ...]:
@@ -2406,7 +2424,9 @@ class EffectInterpreter:
                 None,
             )
 
-        for deployment in ("harbor-core", "harbor-registry"):
+        # Harbor API and registry login flow traverse the nginx NodePort service,
+        # so deploy-time readiness must include the external-serving ingress layer.
+        for deployment in ("harbor-core", "harbor-registry", "harbor-nginx"):
             wait_output = await self._run_kubectl(
                 "wait",
                 "--for=condition=Available",
@@ -3186,6 +3206,8 @@ class EffectInterpreter:
         if namespaced_resources is None or cluster_resources is None:
             self.failed_effects += 1
             return self._create_error_summary("Failed to list Kubernetes API resources")
+        namespaced_resources = self._filter_doctrine_managed_resources(namespaced_resources)
+        cluster_resources = self._filter_doctrine_managed_resources(cluster_resources)
 
         total_annotated = 0
         errors: list[str] = []
@@ -3435,6 +3457,8 @@ class EffectInterpreter:
         if namespaced_resources is None or cluster_resources is None:
             self.failed_effects += 1
             return self._create_error_summary("Failed to list Kubernetes API resources"), None
+        namespaced_resources = self._filter_doctrine_managed_resources(namespaced_resources)
+        cluster_resources = self._filter_doctrine_managed_resources(cluster_resources)
 
         deleted_count = 0
         errors: list[str] = []

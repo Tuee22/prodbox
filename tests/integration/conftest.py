@@ -5,29 +5,30 @@ Fixture Contract
 Each integration test must:
 
 1. **Declaratively establish initial conditions** for the test in the K8s cluster
-   using a unique testing namespace (generated via ``uuid.uuid4().hex[:8]``).
-2. **Clean up** all resources in the ``finally`` block, including namespace deletion
-   via ``kubectl delete namespace <ns> --ignore-not-found=true``.
+   through pytest fixtures.
+2. **Always attempt cleanup** in fixture teardown after the test body completes,
+   including failing tests.
+3. **Fail hard on teardown cleanup failure** by aborting the pytest session.
+4. **Explicitly remove temporary storage artifacts** created by the fixture
+   because `prodbox rke2 ensure` and `prodbox rke2 cleanup` intentionally
+   preserve storage.
 
-This ensures test isolation: each test gets a fresh namespace with its own certs,
-pods, services, and network policies. Namespace deletion cascades to all contained
-resources, providing reliable cleanup even when tests fail.
+This keeps cluster setup/teardown idempotent: tests get the state they need from
+fixtures rather than from prior test side effects, and teardown still runs when a
+test assertion fails.
 
 The pattern used throughout:
 
 .. code-block:: python
 
-    namespace = f"prodbox-gw-e2e-{uuid.uuid4().hex[:8]}"
-    try:
-        # Provision certs, deploy pods, run assertions
-        ...
-    finally:
-        with suppress(Exception):
-            await run_kubectl_capture_via_dag(
-                "delete", "namespace", namespace,
-                "--ignore-not-found=true",
-                kubeconfig=kubeconfig, timeout=60.0,
-            )
+    @pytest_asyncio.fixture
+    async def cluster_fixture() -> AsyncIterator[ClusterContext]:
+        context = await build_cluster_context()
+        yield context
+        try:
+            await cleanup_cluster_context(context)
+        except Exception as error:
+            abort_test_session_on_teardown_failure(target=context.namespace, error=error)
 """
 
 from __future__ import annotations
@@ -38,15 +39,19 @@ import json
 import os
 import shutil
 import uuid
-from contextlib import suppress
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import NamedTuple, cast
+from typing import NamedTuple, Never, cast
+
+import pytest
+import pytest_asyncio
 
 from prodbox.cli.command_adt import rke2_ensure_command
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
 from prodbox.cli.summary import format_dag_failure_report
 from prodbox.cli.types import Failure, Success
+from prodbox.lib.prodbox_k8s import PRODBOX_STORAGE_BASE_PATH
 
 from .helpers import run_kubectl_capture_via_dag
 
@@ -61,6 +66,14 @@ class TlsMaterial(NamedTuple):
 
 _RKE2_ENSURE_COMPLETE: bool = False
 _RKE2_ENSURE_FAILURE: str | None = None
+
+
+def abort_test_session_on_teardown_failure(*, target: str, error: BaseException) -> Never:
+    """Abort the pytest session immediately for teardown cleanup failure."""
+    pytest.exit(
+        f"teardown cleanup failed for {target}: {type(error).__name__}: {error}",
+        returncode=1,
+    )
 
 
 async def _run_command_capture(
@@ -86,6 +99,30 @@ async def _run_command_capture(
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     return (process.returncode or 0, stdout, stderr)
+
+
+def _assert_storage_path_is_fixture_owned(host_path: Path) -> Path:
+    """Restrict destructive test storage cleanup to the canonical prodbox storage root."""
+    storage_root = Path(PRODBOX_STORAGE_BASE_PATH).resolve()
+    resolved_path = host_path.resolve()
+    try:
+        resolved_path.relative_to(storage_root)
+    except ValueError as error:
+        raise AssertionError(
+            f"refusing to delete non-prodbox storage path {resolved_path}"
+        ) from error
+    return resolved_path
+
+
+async def remove_fixture_storage_artifact(host_path: Path) -> None:
+    """Delete one fixture-owned retained-storage host path."""
+    resolved_path = _assert_storage_path_is_fixture_owned(host_path)
+    rc, _, stderr = await _run_command_capture(
+        ("sudo", "rm", "-rf", str(resolved_path)),
+        timeout_seconds=30.0,
+    )
+    if rc != 0:
+        raise AssertionError(f"failed to remove fixture storage artifact {resolved_path}: {stderr}")
 
 
 async def _ensure_cert_manager_installed(kubeconfig: Path) -> None:
@@ -222,6 +259,14 @@ async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
         )
         if cert_manager_retry_rc != 0:
             raise AssertionError(f"cert-manager CRD not available: {cert_manager_retry_stderr}")
+
+
+@pytest_asyncio.fixture
+async def cluster_kubeconfig() -> AsyncIterator[Path]:
+    """Return a kubeconfig after validating cluster prerequisites."""
+    kubeconfig = resolve_kubeconfig()
+    await require_rke2_and_cert_manager(kubeconfig)
+    yield kubeconfig
 
 
 async def apply_cert_manifest(
@@ -420,19 +465,20 @@ async def kubectl_delete_manifest(
     """Delete a single K8s manifest dict via kubectl."""
     manifest_path = tmp_dir / f"manifest-del-{uuid.uuid4().hex[:8]}.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-    with suppress(AssertionError):
-        await run_kubectl_capture_via_dag(
-            "delete",
-            "-f",
-            str(manifest_path),
-            "--ignore-not-found=true",
-            kubeconfig=kubeconfig,
-            timeout=30.0,
-        )
+    rc, _, stderr = await run_kubectl_capture_via_dag(
+        "delete",
+        "-f",
+        str(manifest_path),
+        "--ignore-not-found=true",
+        kubeconfig=kubeconfig,
+        timeout=30.0,
+    )
+    if rc != 0:
+        raise AssertionError(f"kubectl delete failed for {manifest_path}: {stderr}")
 
 
 async def cleanup_gateway_test_resources(*, namespace: str, kubeconfig: Path) -> None:
-    """Delete gateway test resources while preserving the namespace itself."""
+    """Delete gateway test resources and remove the test namespace."""
     cleanup_commands: tuple[tuple[str, ...], ...] = (
         (
             "delete",
@@ -477,12 +523,26 @@ async def cleanup_gateway_test_resources(*, namespace: str, kubeconfig: Path) ->
         ),
     )
     for args in cleanup_commands:
-        await run_kubectl_capture_via_dag(
+        rc, _, stderr = await run_kubectl_capture_via_dag(
             *args,
             kubeconfig=kubeconfig,
             namespace=namespace,
             timeout=60.0,
         )
+        if rc != 0:
+            joined = " ".join(args)
+            raise AssertionError(f"kubectl {joined} failed during cleanup: {stderr}")
+    rc, _, stderr = await run_kubectl_capture_via_dag(
+        "delete",
+        "namespace",
+        namespace,
+        "--ignore-not-found=true",
+        "--wait=true",
+        kubeconfig=kubeconfig,
+        timeout=120.0,
+    )
+    if rc != 0:
+        raise AssertionError(f"kubectl delete namespace {namespace} failed: {stderr}")
 
 
 async def kubectl_exec_curl(

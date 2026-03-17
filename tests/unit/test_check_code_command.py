@@ -42,6 +42,7 @@ def test_run_check_code_builds_expected_sequence() -> None:
         "check_code_threading_guard",
         "check_code_type_escape_guard",
         "check_code_command_collision_guard",
+        "check_code_click_passthrough_guard",
         "check_code_timeout_guard",
         "check_code_doc_lint_guard",
         "check_code_ruff_check",
@@ -80,23 +81,30 @@ def test_run_check_code_builds_expected_sequence() -> None:
     assert collision_guard_command[0] == sys.executable
     assert collision_guard_command[1:] == ["-m", "prodbox.lib.lint.command_name_collision_guard"]
 
-    timeout_guard_command = subprocess_effects[8].command
+    click_passthrough_guard_command = subprocess_effects[8].command
+    assert click_passthrough_guard_command[0] == sys.executable
+    assert click_passthrough_guard_command[1:] == [
+        "-m",
+        "prodbox.lib.lint.click_passthrough_guard",
+    ]
+
+    timeout_guard_command = subprocess_effects[9].command
     assert timeout_guard_command[0] == sys.executable
     assert timeout_guard_command[1:] == ["-m", "prodbox.lib.lint.timeout_guard"]
 
-    doc_lint_guard_command = subprocess_effects[9].command
+    doc_lint_guard_command = subprocess_effects[10].command
     assert doc_lint_guard_command[0] == sys.executable
     assert doc_lint_guard_command[1:] == ["-m", "prodbox.lib.lint.doc_lint_guard"]
 
-    ruff_check_command = subprocess_effects[10].command
+    ruff_check_command = subprocess_effects[11].command
     assert Path(ruff_check_command[0]).name == "ruff"
     assert ruff_check_command[1:] == ["check", "src/", "tests/"]
 
-    ruff_format_command = subprocess_effects[11].command
+    ruff_format_command = subprocess_effects[12].command
     assert Path(ruff_format_command[0]).name == "ruff"
     assert ruff_format_command[1:] == ["format", "--check", "src/", "tests/"]
 
-    mypy_command = subprocess_effects[12].command
+    mypy_command = subprocess_effects[13].command
     assert Path(mypy_command[0]).name == "mypy"
     assert mypy_command[1:] == ["src/"]
 

@@ -22,6 +22,11 @@ import pytest
 from click.testing import CliRunner
 
 from prodbox.cli.main import cli
+from prodbox.cli.test_cmd import (
+    ALL_TEST_SUITE,
+    INTEGRATION_GATEWAY_PODS_TEST_SUITE,
+    CoverageSettings,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -874,3 +879,103 @@ class TestMainEntryPoint:
                 main()
 
             mock_cli.assert_called_once()
+
+
+class TestClickDocumentation:
+    """Tests for Click help coverage of the explicit command surface."""
+
+    @pytest.mark.parametrize(
+        ("argv", "tokens", "expected_exit_code"),
+        [
+            (["--help"], ("check-code", "gateway", "test", "tla-check"), 0),
+            (["env"], ("show", "template", "validate"), 2),
+            (["env", "show", "--help"], ("--show-secrets",), 0),
+            (["host"], ("check-ports", "ensure-tools", "firewall", "info"), 2),
+            (
+                ["rke2"],
+                ("cleanup", "ensure", "logs", "restart", "start", "status", "stop"),
+                2,
+            ),
+            (["rke2", "cleanup", "--help"], ("--yes",), 0),
+            (["rke2", "logs", "--help"], ("--lines",), 0),
+            (["pulumi"], ("destroy", "preview", "refresh", "stack-init", "up"), 2),
+            (["pulumi", "up", "--help"], ("--yes",), 0),
+            (["pulumi", "stack-init", "--help"], ("STACK",), 0),
+            (["dns"], ("check", "ensure-timer", "update"), 2),
+            (["dns", "update", "--help"], ("--force",), 0),
+            (["dns", "ensure-timer", "--help"], ("--interval",), 0),
+            (["k8s"], ("health", "logs", "wait"), 2),
+            (["k8s", "wait", "--help"], ("--timeout", "--namespace"), 0),
+            (["k8s", "logs", "--help"], ("--namespace", "--tail"), 0),
+            (["gateway"], ("config-gen", "start", "status"), 2),
+            (["gateway", "start", "--help"], ("CONFIG_PATH",), 0),
+            (["gateway", "config-gen", "--help"], ("OUTPUT_PATH", "--node-id"), 0),
+            (["test"], ("all", "integration", "unit"), 2),
+            (["test", "all", "--help"], ("--coverage", "--cov-fail-under"), 0),
+            (
+                ["test", "integration"],
+                ("all", "cli", "env", "gateway-daemon", "gateway-pods", "lifecycle"),
+                2,
+            ),
+            (
+                ["test", "integration", "gateway-pods", "--help"],
+                ("--coverage", "--cov-fail-under"),
+                0,
+            ),
+            (["check-code", "--help"], ("Run policy",), 0),
+            (["tla-check", "--help"], ("Run the TLA+ model checker via Docker.",), 0),
+        ],
+    )
+    def test_click_help_lists_supported_commands_and_parameters(
+        self,
+        runner: CliRunner,
+        argv: list[str],
+        tokens: tuple[str, ...],
+        expected_exit_code: int,
+    ) -> None:
+        """Help output should enumerate the legal commands and parameters."""
+        result = runner.invoke(cli, argv)
+        assert result.exit_code == expected_exit_code
+        for token in tokens:
+            assert token in result.output
+
+
+class TestTestCommandSurface:
+    """Tests for the explicit `prodbox test` Click surface."""
+
+    def test_test_all_invokes_named_suite_with_coverage(self, runner: CliRunner) -> None:
+        """`prodbox test all` should dispatch the full suite with explicit coverage settings."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(
+                cli,
+                ["test", "all", "--coverage", "--cov-fail-under", "95"],
+            )
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=ALL_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=True, fail_under=95),
+        )
+
+    def test_test_integration_gateway_pods_invokes_named_suite(self, runner: CliRunner) -> None:
+        """Named integration suite commands should dispatch their explicit suite mapping."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(cli, ["test", "integration", "gateway-pods"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_GATEWAY_PODS_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_command_rejects_unexpected_extra_arguments(self, runner: CliRunner) -> None:
+        """Extra args should fail at the Click boundary instead of reaching pytest."""
+        result = runner.invoke(cli, ["test", "all", "extra"])
+        assert result.exit_code == 2
+        assert "Got unexpected extra argument" in result.output
+
+    def test_test_command_rejects_threshold_without_coverage(self, runner: CliRunner) -> None:
+        """Coverage thresholds require the explicit coverage flag."""
+        result = runner.invoke(cli, ["test", "unit", "--cov-fail-under", "100"])
+        assert result.exit_code == 2
+        assert "--cov-fail-under requires --coverage" in result.output

@@ -859,7 +859,10 @@ class ValidateSettings(Effect[bool]):
 @dataclass(frozen=True)
 class WriteStdout(Effect[None]):
     """
-    Write text to stdout.
+    Write a standalone terminal record to stdout.
+
+    The interpreter appends a trailing newline when one is omitted so
+    phase banners, headers, and summaries do not share a terminal line.
 
     Returns: None
 
@@ -877,7 +880,10 @@ class WriteStdout(Effect[None]):
 @dataclass(frozen=True)
 class WriteStderr(Effect[None]):
     """
-    Write text to stderr.
+    Write a standalone terminal record to stderr.
+
+    The interpreter appends a trailing newline when one is omitted so
+    failure reports remain line-delimited in the terminal.
 
     Returns: None
 

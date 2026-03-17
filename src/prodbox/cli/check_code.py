@@ -146,6 +146,18 @@ def _run_check_code() -> int:
                 env=allow_env,
             ),
             RunSubprocess(
+                effect_id="check_code_click_passthrough_guard",
+                description="Enforce explicit Click command surface policy",
+                command=[
+                    sys.executable,
+                    "-m",
+                    "prodbox.lib.lint.click_passthrough_guard",
+                ],
+                stream_stdout=True,
+                timeout=CHECK_CODE_TIMEOUT_SECONDS,
+                env=allow_env,
+            ),
+            RunSubprocess(
                 effect_id="check_code_timeout_guard",
                 description="Enforce timeout policy",
                 command=[

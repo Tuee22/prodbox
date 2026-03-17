@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import gc
 import os
 from collections.abc import Generator
 from unittest.mock import patch
@@ -18,6 +20,26 @@ def clear_settings() -> Generator[None, None, None]:
     clear_settings_cache()
     yield
     clear_settings_cache()
+
+
+@pytest.fixture(autouse=True)
+def close_sync_test_event_loop(request: pytest.FixtureRequest) -> Generator[None, None, None]:
+    """Close any current event loop left behind by a synchronous test."""
+    yield
+    if request.node.get_closest_marker("asyncio") is not None:
+        return
+
+    policy = asyncio.get_event_loop_policy()
+    local = getattr(policy, "_local", None)
+    loop = getattr(local, "_loop", None) if local is not None else None
+    if loop is None:
+        return
+    if loop.is_running():
+        raise AssertionError(f"sync test leaked a running event loop: {request.node.nodeid}")
+    if not loop.is_closed():
+        loop.close()
+    asyncio.set_event_loop(None)
+    gc.collect()
 
 
 @pytest.fixture

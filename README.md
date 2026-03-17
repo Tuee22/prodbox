@@ -184,40 +184,7 @@ prodbox rke2 cleanup --yes
 
 ## CLI Commands
 
-```
-prodbox
-├── env
-│   ├── show        # Display current configuration
-│   ├── validate    # Validate configuration
-│   └── template    # Print .env template
-├── host
-│   ├── ensure-tools  # Check required CLI tools
-│   ├── check-ports   # Check if ports 80/443 are in use
-│   ├── info          # Display host system information
-│   └── firewall      # Check firewall status
-├── rke2
-│   ├── status    # Check RKE2 installation status
-│   ├── ensure    # Provision RKE2 + Harbor + retained-storage MinIO runtime
-│   ├── start     # Start RKE2 service
-│   ├── stop      # Stop RKE2 service
-│   ├── restart   # Restart RKE2 service
-│   ├── cleanup   # Remove runtime objects; retained storage resources/host paths are preserved
-│   └── logs      # Show RKE2 logs
-├── pulumi
-│   ├── up          # Apply infrastructure changes
-│   ├── destroy     # Destroy infrastructure
-│   ├── preview     # Preview changes
-│   ├── refresh     # Refresh state
-│   └── stack-init  # Initialize Pulumi stack
-├── dns
-│   ├── check         # Check current DNS record
-│   ├── update        # Update DNS with public IP
-│   └── ensure-timer  # Install DDNS systemd timer
-└── k8s
-    ├── health  # Check cluster health
-    ├── wait    # Wait for deployments
-    └── logs    # Show infrastructure logs
-```
+The authoritative `prodbox` command matrix lives in [CLI Command Surface](documents/engineering/cli_command_surface.md). The CLI intentionally exposes named Click commands only; extra passthrough arguments are rejected at the CLI boundary.
 
 ## Development
 
@@ -228,10 +195,10 @@ prodbox
 pip install -e ".[dev]"
 
 # Run tests
-poetry run prodbox test
+poetry run prodbox test all
 
 # Run tests with coverage
-poetry run prodbox test --cov=prodbox
+poetry run prodbox test all --coverage --cov-fail-under 100
 
 # Code quality checks (canonical)
 poetry run prodbox check-code
@@ -253,7 +220,7 @@ Development tooling policy:
 Common commands:
 
 ```bash
-poetry run prodbox test -m "not integration"
+poetry run prodbox test unit
 poetry run prodbox check-code
 poetry run prodbox tla-check
 poetry run daemon --config <path>
@@ -265,8 +232,8 @@ and container-local `poetry.toml` override) is defined in
 [Local Registry Pipeline](documents/engineering/local_registry_pipeline.md#6-gateway-container-build-doctrine).
 
 Testing note:
-- `poetry run prodbox test` runs unit + integration tests and fails fast when integration prerequisites are missing.
-- Use `poetry run prodbox test -m "not integration"` for unit-only environments.
+- `poetry run prodbox test all` runs unit + integration tests and fails fast when integration prerequisites are missing.
+- Use `poetry run prodbox test unit` for unit-only environments.
 - Integration-selected runs enforce `rke2 ensure` as a runbook gate before pytest starts.
 - The phase-two pytest timeout budget is 240 minutes.
 

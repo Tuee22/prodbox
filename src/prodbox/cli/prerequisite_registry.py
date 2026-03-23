@@ -27,12 +27,15 @@ from prodbox.cli.effects import (
     CaptureKubectlOutput,
     CheckFileExists,
     CheckServiceStatus,
+    LoadSettings,
     MachineIdentity,
     Pure,
     RequireLinux,
     RequireSystemd,
     ResolveMachineIdentity,
     ValidateAWSCredentials,
+    ValidatePulumiLogin,
+    ValidateRoute53Access,
     ValidateSettings,
     ValidateTool,
 )
@@ -130,6 +133,16 @@ TOOL_PULUMI: EffectNode[bool] = EffectNode(
     prerequisites=frozenset(),
 )
 
+TOOL_AWS: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_aws",
+        description="Validate aws CLI is installed",
+        tool_name="aws",
+        version_flag="--version",
+    ),
+    prerequisites=frozenset(),
+)
+
 TOOL_RKE2: EffectNode[bool] = EffectNode(
     effect=ValidateTool(
         effect_id="tool_rke2",
@@ -159,6 +172,14 @@ SETTINGS_LOADED: EffectNode[bool] = EffectNode(
     effect=ValidateSettings(
         effect_id="settings_loaded",
         description="Validate prodbox settings are loaded",
+    ),
+    prerequisites=frozenset(),
+)
+
+SETTINGS_OBJECT: EffectNode[object] = EffectNode(
+    effect=LoadSettings(
+        effect_id="settings_object",
+        description="Load validated prodbox settings",
     ),
     prerequisites=frozenset(),
 )
@@ -213,10 +234,9 @@ AWS_CREDENTIALS_VALID: EffectNode[bool] = EffectNode(
 )
 
 ROUTE53_ACCESSIBLE: EffectNode[bool] = EffectNode(
-    effect=Pure(
+    effect=ValidateRoute53Access(
         effect_id="route53_accessible",
         description="Validate Route 53 is accessible",
-        value=True,  # Validated by AWS credentials check + settings
     ),
     prerequisites=frozenset(["aws_credentials_valid"]),
 )
@@ -269,21 +289,12 @@ K8S_CLUSTER_REACHABLE: EffectNode[tuple[int, str, str]] = EffectNode(
 # =============================================================================
 
 PULUMI_LOGGED_IN: EffectNode[bool] = EffectNode(
-    effect=Pure(
+    effect=ValidatePulumiLogin(
         effect_id="pulumi_logged_in",
         description="Validate Pulumi is logged in",
-        value=True,  # Will be verified by pulumi whoami
+        cwd=Path("."),
     ),
     prerequisites=frozenset(["tool_pulumi"]),
-)
-
-PULUMI_STACK_EXISTS: EffectNode[bool] = EffectNode(
-    effect=Pure(
-        effect_id="pulumi_stack_exists",
-        description="Validate Pulumi stack exists",
-        value=True,  # Will be verified by stack select
-    ),
-    prerequisites=frozenset(["pulumi_logged_in"]),
 )
 
 
@@ -326,10 +337,12 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     "tool_helm": TOOL_HELM,
     "tool_sudo": TOOL_SUDO,
     "tool_pulumi": TOOL_PULUMI,
+    "tool_aws": TOOL_AWS,
     "tool_rke2": TOOL_RKE2,
     "tool_systemctl": TOOL_SYSTEMCTL,
     # Configuration
     "settings_loaded": SETTINGS_LOADED,
+    "settings_object": SETTINGS_OBJECT,
     "kubeconfig_exists": KUBECONFIG_EXISTS,
     "kubeconfig_home_exists": KUBECONFIG_HOME_EXISTS,
     "rke2_config_exists": RKE2_CONFIG_EXISTS,
@@ -344,7 +357,6 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     "k8s_cluster_reachable": K8S_CLUSTER_REACHABLE,
     # Pulumi
     "pulumi_logged_in": PULUMI_LOGGED_IN,
-    "pulumi_stack_exists": PULUMI_STACK_EXISTS,
     # Composite
     "k8s_ready": K8S_READY,
     "infra_ready": INFRA_READY,
@@ -369,10 +381,12 @@ __all__ = [
     "TOOL_HELM",
     "TOOL_SUDO",
     "TOOL_PULUMI",
+    "TOOL_AWS",
     "TOOL_RKE2",
     "TOOL_SYSTEMCTL",
     # Configuration
     "SETTINGS_LOADED",
+    "SETTINGS_OBJECT",
     "KUBECONFIG_EXISTS",
     "KUBECONFIG_HOME_EXISTS",
     "RKE2_CONFIG_EXISTS",
@@ -386,7 +400,6 @@ __all__ = [
     "K8S_CLUSTER_REACHABLE",
     # Pulumi
     "PULUMI_LOGGED_IN",
-    "PULUMI_STACK_EXISTS",
     # Composite
     "K8S_READY",
     "INFRA_READY",

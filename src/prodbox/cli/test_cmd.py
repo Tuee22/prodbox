@@ -25,7 +25,7 @@ PHASE_ONE_POINT_FIVE_HEADER_TEXT: Final[
     str
 ] = "Phase 1.5/2: enforcing integration runbook (poetry run prodbox rke2 ensure)"
 PHASE_TWO_HEADER_TEXT: Final[str] = "Phase 2/2: running pytest suites"
-INTEGRATION_TEST_PREREQUISITES: frozenset[str] = frozenset(
+CLUSTER_INTEGRATION_TEST_PREREQUISITES: frozenset[str] = frozenset(
     {
         "tool_docker",
         "tool_ctr",
@@ -35,6 +35,19 @@ INTEGRATION_TEST_PREREQUISITES: frozenset[str] = frozenset(
         "kubeconfig_home_exists",
         "rke2_service_active",
     }
+)
+DNS_AWS_TEST_PREREQUISITES: frozenset[str] = frozenset(
+    {
+        "tool_aws",
+    }
+)
+PULUMI_TEST_PREREQUISITES: frozenset[str] = CLUSTER_INTEGRATION_TEST_PREREQUISITES | frozenset(
+    {
+        "tool_pulumi",
+    }
+)
+ALL_INTEGRATION_TEST_PREREQUISITES: frozenset[str] = (
+    CLUSTER_INTEGRATION_TEST_PREREQUISITES | DNS_AWS_TEST_PREREQUISITES | PULUMI_TEST_PREREQUISITES
 )
 
 
@@ -52,48 +65,69 @@ class TestSuiteSelection:
 
     suite_id: str
     pytest_args: tuple[str, ...]
-    requires_integration_gate: bool
+    integration_gate_prerequisites: frozenset[str]
+    requires_integration_runbook: bool
 
 
 ALL_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="all",
     pytest_args=("tests/unit", "tests/integration"),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=ALL_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 UNIT_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="unit",
     pytest_args=("tests/unit",),
-    requires_integration_gate=False,
+    integration_gate_prerequisites=frozenset(),
+    requires_integration_runbook=False,
 )
 INTEGRATION_ALL_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-all",
     pytest_args=("tests/integration",),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=ALL_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 INTEGRATION_CLI_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-cli",
     pytest_args=("tests/integration/test_cli_commands.py",),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=frozenset(),
+    requires_integration_runbook=False,
 )
 INTEGRATION_ENV_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-env",
     pytest_args=("tests/integration/test_cli_env.py",),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=frozenset(),
+    requires_integration_runbook=False,
+)
+INTEGRATION_DNS_AWS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-dns-aws",
+    pytest_args=("tests/integration/test_dns_route53_aws.py",),
+    integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
+    requires_integration_runbook=False,
+)
+INTEGRATION_PULUMI_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-pulumi",
+    pytest_args=("tests/integration/test_pulumi_real.py",),
+    integration_gate_prerequisites=PULUMI_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 INTEGRATION_GATEWAY_DAEMON_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-gateway-daemon",
     pytest_args=("tests/integration/test_gateway_daemon_k8s.py",),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 INTEGRATION_GATEWAY_PODS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-gateway-pods",
     pytest_args=("tests/integration/test_gateway_k8s_pods.py",),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 INTEGRATION_LIFECYCLE_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-lifecycle",
     pytest_args=("tests/integration/test_prodbox_lifecycle.py",),
-    requires_integration_gate=True,
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 
 
@@ -107,7 +141,9 @@ def test() -> None:
       prodbox test unit
       prodbox test integration all
       prodbox test integration cli
+      prodbox test integration dns-aws
       prodbox test integration env
+      prodbox test integration pulumi
       prodbox test integration gateway-daemon
       prodbox test integration gateway-pods
       prodbox test integration lifecycle
@@ -219,6 +255,46 @@ def integration_env(coverage: bool, cov_fail_under: int | None) -> None:
     )
 
 
+@integration.command("dns-aws")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_dns_aws(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run real Route 53 integration tests against ephemeral AWS resources."""
+    _exit_for_suite(
+        suite=INTEGRATION_DNS_AWS_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("pulumi")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_pulumi(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run real Pulumi CLI integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_PULUMI_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
 @integration.command("gateway-daemon")
 @click.option(
     "--coverage",
@@ -316,11 +392,9 @@ def _build_test_dag(
     """Build two-phase test DAG for one explicit suite."""
     env = dict(os.environ)
     env[ALLOW_NON_ENTRYPOINT_ENV] = "1"
-    requires_integration_gate = suite.requires_integration_gate
-    runbook_required = requires_integration_gate
-    integration_gate_prereqs = (
-        INTEGRATION_TEST_PREREQUISITES if requires_integration_gate else frozenset()
-    )
+    integration_gate_prereqs = suite.integration_gate_prerequisites
+    requires_integration_gate = bool(integration_gate_prereqs)
+    runbook_required = suite.requires_integration_runbook
     gate_message = (
         PHASE_ONE_GATE_MESSAGE if requires_integration_gate else PHASE_ONE_NO_PREREQ_MESSAGE
     )

@@ -3084,6 +3084,53 @@ class TestRoute53Effects:
     """Tests for Route53/DNS-related effects."""
 
     @pytest.mark.asyncio
+    async def test_check_port_availability_success(self) -> None:
+        """CheckPortAvailability should succeed when all ports are free."""
+        from prodbox.cli.effects import CheckPortAvailability
+
+        interpreter = EffectInterpreter()
+        effect = CheckPortAvailability(
+            effect_id="check_ports_ok",
+            description="Check free ports",
+            ports=(8080, 8443),
+        )
+
+        with patch.object(
+            interpreter,
+            "_listening_ports_from_proc",
+            return_value=frozenset({22}),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value is not None
+        assert all(result.available for result in value)
+
+    @pytest.mark.asyncio
+    async def test_check_port_availability_returns_busy_port_results(self) -> None:
+        """CheckPortAvailability should still return structured results for busy ports."""
+        from prodbox.cli.effects import CheckPortAvailability
+
+        interpreter = EffectInterpreter()
+        effect = CheckPortAvailability(
+            effect_id="check_ports_busy",
+            description="Check busy ports",
+            ports=(80, 443),
+        )
+
+        with patch.object(
+            interpreter,
+            "_listening_ports_from_proc",
+            return_value=frozenset({443}),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert summary.message == "Port availability probe complete"
+        assert value is not None
+        assert any(not result.available for result in value)
+
+    @pytest.mark.asyncio
     async def test_fetch_public_ip_success(self) -> None:
         """FetchPublicIP should return IP address."""
 
@@ -3337,6 +3384,59 @@ class TestRoute53Effects:
         # Should add environment error
         assert len(interpreter.environment_errors) == 1
 
+    @pytest.mark.asyncio
+    async def test_validate_route53_access_success(self) -> None:
+        """ValidateRoute53Access should succeed when the API is reachable."""
+        from prodbox.cli.effects import ValidateRoute53Access
+
+        interpreter = EffectInterpreter()
+        effect = ValidateRoute53Access(
+            effect_id="validate_route53",
+            description="Validate Route 53 access",
+            zone_id="Z123456789",
+            aws_access_key_id="AKIATEST",
+            aws_secret_access_key="secret",
+            aws_region="us-east-1",
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_hosted_zone.return_value = {"HostedZone": {"Id": "/hostedzone/Z123456789"}}
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_client
+
+        with patch("boto3.Session", return_value=mock_session):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value is True
+
+    @pytest.mark.asyncio
+    async def test_validate_route53_access_failure(self) -> None:
+        """ValidateRoute53Access should fail when the API is not reachable."""
+        from prodbox.cli.effects import ValidateRoute53Access
+
+        interpreter = EffectInterpreter()
+        effect = ValidateRoute53Access(
+            effect_id="validate_route53_fail",
+            description="Validate Route 53 access failure",
+            zone_id="Z123456789",
+            aws_access_key_id="AKIATEST",
+            aws_secret_access_key="secret",
+            aws_region="us-east-1",
+        )
+
+        mock_client = MagicMock()
+        mock_client.get_hosted_zone.side_effect = Exception("access denied")
+        mock_session = MagicMock()
+        mock_session.client.return_value = mock_client
+
+        with patch("boto3.Session", return_value=mock_session):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is False
+        assert len(interpreter.environment_errors) == 1
+
 
 class TestPulumiEffects:
     """Tests for Pulumi-related effects."""
@@ -3540,6 +3640,49 @@ class TestPulumiEffects:
 
         assert not summary.success
         assert value is False
+
+    @pytest.mark.asyncio
+    async def test_validate_pulumi_login_success(self) -> None:
+        """ValidatePulumiLogin should succeed when `pulumi whoami` succeeds."""
+        from prodbox.cli.effects import ValidatePulumiLogin
+
+        interpreter = EffectInterpreter()
+        effect = ValidatePulumiLogin(
+            effect_id="pulumi_login",
+            description="Validate Pulumi login",
+        )
+
+        with patch(
+            "prodbox.cli.interpreter._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=ProcessOutput(returncode=0, stdout=b"matt\n", stderr=b""),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value is True
+
+    @pytest.mark.asyncio
+    async def test_validate_pulumi_login_failure(self) -> None:
+        """ValidatePulumiLogin should fail when `pulumi whoami` fails."""
+        from prodbox.cli.effects import ValidatePulumiLogin
+
+        interpreter = EffectInterpreter()
+        effect = ValidatePulumiLogin(
+            effect_id="pulumi_login_fail",
+            description="Validate Pulumi login failure",
+        )
+
+        with patch(
+            "prodbox.cli.interpreter._run_subprocess",
+            new_callable=AsyncMock,
+            return_value=ProcessOutput(returncode=1, stdout=b"", stderr=b"not logged in"),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is False
+        assert len(interpreter.environment_errors) == 1
 
     @pytest.mark.asyncio
     async def test_pulumi_preview_success(self) -> None:

@@ -78,22 +78,16 @@ prodbox --version
 
 ## Configuration
 
-All configuration is via environment variables. Create a `.env` file:
+All configuration is via environment variables, but AWS authentication must not be stored anywhere under the repository tree, including unversioned `.env` files.
 
-```bash
-# Copy the example
-cp .env.example .env
-
-# Edit with your values
-vim .env
-```
+Authenticate the system-level AWS CLI on the host first, then expose AWS auth to the current shell only if the command you are running requires it. The canonical storage and test-harness rules live in [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md#2-authentication-source-and-storage-rules).
 
 Required environment variables:
 
 | Variable | Description |
 |----------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS access key for Route 53 |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key |
+| `AWS_ACCESS_KEY_ID` | AWS access key for Route 53; current shell only, never a repo-local file |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret key; current shell only, never a repo-local file |
 | `ROUTE53_ZONE_ID` | Route 53 hosted zone ID |
 | `ACME_EMAIL` | Email for Let's Encrypt registration |
 
@@ -236,6 +230,8 @@ Testing note:
 - Use `poetry run prodbox test unit` for unit-only environments.
 - Integration-selected runs enforce `rke2 ensure` as a runbook gate before pytest starts.
 - The phase-two pytest timeout budget is 240 minutes.
+- Real AWS DNS integration uses `poetry run prodbox test integration dns-aws` and requires a host-authenticated system `aws` CLI plus fixture-owned ephemeral Route 53 hosted zones via AWS CLI.
+- Real Pulumi validation uses `poetry run prodbox test integration pulumi`.
 
 ### Project Structure
 

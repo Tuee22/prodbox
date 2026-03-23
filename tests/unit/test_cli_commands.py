@@ -24,7 +24,9 @@ from click.testing import CliRunner
 from prodbox.cli.main import cli
 from prodbox.cli.test_cmd import (
     ALL_TEST_SUITE,
+    INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_GATEWAY_PODS_TEST_SUITE,
+    INTEGRATION_PULUMI_TEST_SUITE,
     CoverageSettings,
 )
 
@@ -914,7 +916,16 @@ class TestClickDocumentation:
             (["test", "all", "--help"], ("--coverage", "--cov-fail-under"), 0),
             (
                 ["test", "integration"],
-                ("all", "cli", "env", "gateway-daemon", "gateway-pods", "lifecycle"),
+                (
+                    "all",
+                    "cli",
+                    "dns-aws",
+                    "env",
+                    "gateway-daemon",
+                    "gateway-pods",
+                    "lifecycle",
+                    "pulumi",
+                ),
                 2,
             ),
             (
@@ -965,6 +976,28 @@ class TestTestCommandSurface:
         assert result.exit_code == 0
         mock_run_suite.assert_called_once_with(
             suite=INTEGRATION_GATEWAY_PODS_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_integration_dns_aws_invokes_named_suite(self, runner: CliRunner) -> None:
+        """dns-aws should dispatch the explicit Route 53 integration suite."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(cli, ["test", "integration", "dns-aws"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_DNS_AWS_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_integration_pulumi_invokes_named_suite(self, runner: CliRunner) -> None:
+        """pulumi should dispatch the explicit real Pulumi integration suite."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(cli, ["test", "integration", "pulumi"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_PULUMI_TEST_SUITE,
             coverage_settings=CoverageSettings(enabled=False, fail_under=None),
         )
 

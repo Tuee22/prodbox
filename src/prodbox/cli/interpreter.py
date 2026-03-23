@@ -34,6 +34,7 @@ import os
 import platform as platform_module
 import re
 import shutil
+import socket
 import sys
 import time
 from dataclasses import dataclass
@@ -130,6 +131,7 @@ from prodbox.cli.effects import (  # noqa: E402
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
     CheckFileExists,
+    CheckPortAvailability,
     CheckServiceStatus,
     CleanupProdboxAnnotatedResources,
     ConfirmAction,
@@ -148,6 +150,7 @@ from prodbox.cli.effects import (  # noqa: E402
     MachineIdentity,
     MinioRuntime,
     Parallel,
+    PortAvailability,
     PrintBlankLine,
     PrintError,
     PrintIndented,
@@ -179,6 +182,8 @@ from prodbox.cli.effects import (  # noqa: E402
     UpdateRoute53Record,
     ValidateAWSCredentials,
     ValidateEnvironment,
+    ValidatePulumiLogin,
+    ValidateRoute53Access,
     ValidateSettings,
     ValidateTool,
     WriteFile,
@@ -944,6 +949,8 @@ class EffectInterpreter:
                 return await self._interpret_check_service_status(effect)
             case GetJournalLogs():
                 return await self._interpret_get_journal_logs(effect)
+            case CheckPortAvailability():
+                return await self._interpret_check_port_availability(effect)
 
             # Kubernetes
             case RunKubectlCommand():
@@ -972,12 +979,16 @@ class EffectInterpreter:
                 return await self._interpret_update_route53_record(effect), None
             case ValidateAWSCredentials():
                 return await self._interpret_validate_aws_credentials(effect)
+            case ValidateRoute53Access():
+                return await self._interpret_validate_route53_access(effect)
 
             # Pulumi
             case RunPulumiCommand():
                 return await self._interpret_run_pulumi_command(effect)
             case PulumiStackSelect():
                 return await self._interpret_pulumi_stack_select(effect)
+            case ValidatePulumiLogin():
+                return await self._interpret_validate_pulumi_login(effect)
             case PulumiPreview():
                 return await self._interpret_pulumi_preview(effect)
             case PulumiUp():
@@ -1366,6 +1377,75 @@ class EffectInterpreter:
             self.failed_effects += 1
             return self._create_error_summary(f"Failed to get logs: {e}"), None
 
+    @staticmethod
+    def _listening_ports_from_proc() -> frozenset[int] | None:
+        """Return listening TCP ports from Linux procfs when available."""
+        proc_paths = (Path("/proc/net/tcp"), Path("/proc/net/tcp6"))
+        if not all(path.exists() for path in proc_paths):
+            return None
+
+        ports: set[int] = set()
+        for proc_path in proc_paths:
+            content = proc_path.read_text(encoding="utf-8")
+            for line in content.splitlines()[1:]:
+                columns = line.split()
+                if len(columns) < 4:
+                    continue
+                local_address = columns[1]
+                state = columns[3]
+                if state != "0A":
+                    continue
+                _, separator, port_hex = local_address.partition(":")
+                if separator != ":":
+                    continue
+                ports.add(int(port_hex, 16))
+        return frozenset(ports)
+
+    @staticmethod
+    def _localhost_port_open(port: int) -> bool:
+        """Fallback localhost probe for platforms without procfs."""
+        for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
+            with socket.socket(family, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.2)
+                try:
+                    if sock.connect_ex((host, port)) == 0:
+                        return True
+                except OSError:
+                    continue
+        return False
+
+    async def _interpret_check_port_availability(
+        self, effect: CheckPortAvailability
+    ) -> tuple[ExecutionSummary, tuple[PortAvailability, ...] | None]:
+        """Check whether the requested TCP ports are currently available."""
+        try:
+            listening_ports = self._listening_ports_from_proc()
+
+            def _is_available(port: int) -> bool:
+                if listening_ports is not None:
+                    return port not in listening_ports
+                return not self._localhost_port_open(port)
+
+            results_data = tuple((port, _is_available(port)) for port in effect.ports)
+            results = tuple(
+                PortAvailability(
+                    port=port,
+                    available=available,
+                    detail=(
+                        "no listening socket detected" if available else "listening socket detected"
+                    ),
+                )
+                for port, available in results_data
+            )
+            self.successful_effects += 1
+            return (
+                self._create_success_summary("Port availability probe complete"),
+                results,
+            )
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Failed to check ports: {e}"), None
+
     # =========================================================================
     # Kubernetes Effects
     # =========================================================================
@@ -1587,6 +1667,40 @@ class EffectInterpreter:
             )
             return self._create_error_summary(f"Invalid AWS credentials: {e}"), False
 
+    async def _interpret_validate_route53_access(
+        self, effect: ValidateRoute53Access
+    ) -> tuple[ExecutionSummary, bool | None]:
+        """Validate Route 53 API access."""
+        try:
+            import boto3
+
+            session = boto3.Session(
+                aws_access_key_id=effect.aws_access_key_id,
+                aws_secret_access_key=effect.aws_secret_access_key,
+                region_name=effect.aws_region,
+            )
+            route53 = session.client("route53")
+            zone_id = effect.zone_id or os.environ.get("ROUTE53_ZONE_ID")
+            match zone_id:
+                case str() as resolved_zone_id:
+                    route53.get_hosted_zone(Id=resolved_zone_id)
+                case _:
+                    raise ValueError("ROUTE53_ZONE_ID is required for Route 53 access validation")
+
+            self.successful_effects += 1
+            return self._create_success_summary("Route 53 API reachable"), True
+        except Exception as e:
+            self.failed_effects += 1
+            self.environment_errors.append(
+                EnvironmentError(
+                    tool="route53",
+                    message=f"Route 53 access failed: {e}",
+                    fix_hint="Ensure AWS credentials have Route 53 permissions",
+                    source_effect_id=effect.effect_id,
+                )
+            )
+            return self._create_error_summary(f"Route 53 access failed: {e}"), False
+
     # =========================================================================
     # Pulumi Effects
     # =========================================================================
@@ -1657,6 +1771,34 @@ class EffectInterpreter:
         except OSError as e:
             self.failed_effects += 1
             return self._create_error_summary(f"Failed to run pulumi stack select: {e}"), False
+
+    async def _interpret_validate_pulumi_login(
+        self, effect: ValidatePulumiLogin
+    ) -> tuple[ExecutionSummary, bool | None]:
+        """Validate Pulumi CLI login state."""
+        try:
+            output = await _run_subprocess(
+                ("pulumi", "whoami"),
+                cwd=effect.cwd,
+            )
+            if output.returncode == 0:
+                self.successful_effects += 1
+                return self._create_success_summary("Pulumi login valid"), True
+
+            self.failed_effects += 1
+            message = output.stderr.decode() or output.stdout.decode() or "pulumi whoami failed"
+            self.environment_errors.append(
+                EnvironmentError(
+                    tool="pulumi",
+                    message=f"Pulumi login failed: {message}",
+                    fix_hint="Run `pulumi login`",
+                    source_effect_id=effect.effect_id,
+                )
+            )
+            return self._create_error_summary(f"Pulumi login failed: {message}"), False
+        except OSError as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Failed to run pulumi whoami: {e}"), False
 
     async def _interpret_pulumi_preview(
         self, effect: PulumiPreview
@@ -1803,9 +1945,9 @@ class EffectInterpreter:
     ) -> tuple[ExecutionSummary, object | None]:
         """Load prodbox settings."""
         try:
-            from prodbox.settings import Settings
+            from prodbox.settings import load_settings_mapping
 
-            settings = Settings()
+            settings = load_settings_mapping()
             self.successful_effects += 1
             return self._create_success_summary("Settings loaded"), settings
         except Exception as e:

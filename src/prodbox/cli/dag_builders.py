@@ -61,8 +61,10 @@ from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
+    CheckPortAvailability,
     CheckServiceStatus,
     CleanupProdboxAnnotatedResources,
+    Custom,
     EnsureHarborRegistry,
     EnsureMinio,
     EnsureProdboxIdentityConfigMap,
@@ -73,17 +75,20 @@ from prodbox.cli.effects import (
     KubectlWait,
     MachineIdentity,
     Parallel,
+    PortAvailability,
     PulumiDestroy,
     PulumiPreview,
     PulumiRefresh,
+    PulumiStackSelect,
     PulumiUp,
-    Pure,
     QueryGatewayState,
+    QueryRoute53Record,
     RunKubectlCommand,
     RunPulumiCommand,
     RunSystemdCommand,
     Sequence,
     StartGatewayDaemon,
+    UpdateRoute53Record,
     ValidateSettings,
     ValidateTool,
     WriteStdout,
@@ -120,6 +125,7 @@ from prodbox.lib.prodbox_k8s import (
     RKE2_REGISTRIES_PATH,
     prodbox_id_to_label_value,
 )
+from prodbox.settings import RenderedSettingValue, render_settings_display
 
 # =============================================================================
 # Shared Helpers
@@ -140,6 +146,366 @@ def _require_machine_identity(prereq_results: PrereqResults) -> MachineIdentity:
             raise ValueError(f"machine_identity prerequisite failed: {error}")
         case _:
             raise ValueError("machine_identity prerequisite missing")
+
+
+def _require_settings(prereq_results: PrereqResults) -> dict[str, RenderedSettingValue]:
+    """Extract loaded settings prerequisite result or raise ValueError."""
+    result = prereq_results.get("settings_object")
+    match result:
+        case Success(value=dict() as settings):
+            return settings
+        case Success(value=_):
+            raise ValueError("settings_object prerequisite returned unexpected value type")
+        case Failure(error=error):
+            raise ValueError(f"settings_object prerequisite failed: {error}")
+        case _:
+            raise ValueError("settings_object prerequisite missing")
+
+
+def _require_setting_string(settings: dict[str, RenderedSettingValue], field_name: str) -> str:
+    """Extract one required string field from loaded settings."""
+    match settings.get(field_name):
+        case str() as value:
+            return value
+        case _:
+            raise ValueError(f"settings field {field_name} missing or not a string")
+
+
+def _require_setting_int(settings: dict[str, RenderedSettingValue], field_name: str) -> int:
+    """Extract one required integer field from loaded settings."""
+    match settings.get(field_name):
+        case int() as value:
+            return value
+        case _:
+            raise ValueError(f"settings field {field_name} missing or not an integer")
+
+
+def _require_string_result(prereq_results: PrereqResults, effect_id: str) -> str:
+    """Extract one string-valued prerequisite result or raise ValueError."""
+    result = prereq_results.get(effect_id)
+    match result:
+        case Success(value=str() as value):
+            return value
+        case Success(value=_):
+            raise ValueError(f"{effect_id} prerequisite returned unexpected value type")
+        case Failure(error=error):
+            raise ValueError(f"{effect_id} prerequisite failed: {error}")
+        case _:
+            raise ValueError(f"{effect_id} prerequisite missing")
+
+
+def _require_port_results(
+    prereq_results: PrereqResults, effect_id: str
+) -> tuple[PortAvailability, ...]:
+    """Extract one port-availability result tuple or raise ValueError."""
+    result = prereq_results.get(effect_id)
+    match result:
+        case Success(value=tuple() as values):
+            match all(isinstance(value, PortAvailability) for value in values):
+                case True:
+                    return values
+                case False:
+                    raise ValueError(f"{effect_id} prerequisite returned unexpected value type")
+        case Success(value=_):
+            raise ValueError(f"{effect_id} prerequisite returned unexpected value type")
+        case Failure(error=error):
+            raise ValueError(f"{effect_id} prerequisite failed: {error}")
+        case _:
+            raise ValueError(f"{effect_id} prerequisite missing")
+
+
+def _optional_string_result(prereq_results: PrereqResults, effect_id: str) -> str | None:
+    """Extract one optional string-valued prerequisite result or raise ValueError."""
+    result = prereq_results.get(effect_id)
+    match result:
+        case Success(value=value):
+            match value:
+                case None:
+                    return None
+                case str() as string_value:
+                    return string_value
+                case _:
+                    raise ValueError(f"{effect_id} prerequisite returned unexpected value type")
+        case Failure(error=error):
+            raise ValueError(f"{effect_id} prerequisite failed: {error}")
+        case _:
+            raise ValueError(f"{effect_id} prerequisite missing")
+
+
+def _merge_registry(*nodes: EffectNode[object]) -> dict[str, EffectNode[object]]:
+    """Merge local command-specific nodes into the canonical prerequisite registry."""
+    return dict(PREREQUISITE_REGISTRY) | {node.effect_id: node for node in nodes}
+
+
+def _render_dns_check_report(
+    *,
+    settings: dict[str, RenderedSettingValue],
+    public_ip: str,
+    current_record_ip: str | None,
+) -> str:
+    """Render deterministic DNS status output."""
+    fqdn = _require_setting_string(settings, "demo_fqdn")
+    status = (
+        "in-sync"
+        if current_record_ip == public_ip
+        else "record-missing"
+        if current_record_ip is None
+        else "mismatch"
+    )
+    current_value = current_record_ip if current_record_ip is not None else "<missing>"
+    return "\n".join(
+        [
+            "DNS status",
+            f"FQDN={fqdn}",
+            f"PUBLIC_IP={public_ip}",
+            f"ROUTE53_A_RECORD={current_value}",
+            f"STATUS={status}",
+        ]
+    )
+
+
+def _render_host_check_ports_report(results: tuple[PortAvailability, ...]) -> str:
+    """Render deterministic host port availability output."""
+    unavailable = tuple(str(result.port) for result in results if not result.available)
+    summary_line = (
+        f"Ports unavailable: {', '.join(unavailable)}"
+        if unavailable
+        else "Ports available: " + ", ".join(str(result.port) for result in results)
+    )
+    lines = ["Host port check"]
+    lines.extend(
+        [
+            (
+                f"PORT={result.port} "
+                f"AVAILABLE={'true' if result.available else 'false'} "
+                f"DETAIL={result.detail}"
+            )
+            for result in results
+        ]
+    )
+    lines.append(summary_line)
+    lines.append(f"STATUS={'busy' if unavailable else 'available'}")
+    return "\n".join(lines)
+
+
+def _render_dns_update_report(
+    *,
+    settings: dict[str, RenderedSettingValue],
+    public_ip: str,
+    current_record_ip: str | None,
+    action: str,
+) -> str:
+    """Render deterministic DNS update output."""
+    fqdn = _require_setting_string(settings, "demo_fqdn")
+    previous = current_record_ip if current_record_ip is not None else "<missing>"
+    return "\n".join(
+        [
+            "DNS update",
+            f"FQDN={fqdn}",
+            f"PREVIOUS_RECORD={previous}",
+            f"TARGET_PUBLIC_IP={public_ip}",
+            f"ACTION={action}",
+        ]
+    )
+
+
+def _raise_effect_error(message: str) -> object:
+    """Raise a deterministic failure from an effect-builder helper."""
+    raise ValueError(message)
+
+
+def _resolve_pulumi_stack(cmd_stack: str | None, prereq_results: PrereqResults) -> str:
+    """Resolve Pulumi stack from explicit command input or settings default."""
+    match cmd_stack:
+        case str() as explicit_stack:
+            return explicit_stack
+        case None:
+            return _require_setting_string(_require_settings(prereq_results), "pulumi_stack")
+
+
+def _build_dns_query_effect(effect_id: str, prereq_results: PrereqResults) -> QueryRoute53Record:
+    """Build a Route 53 query effect from validated settings."""
+    settings = _require_settings(prereq_results)
+    return QueryRoute53Record(
+        effect_id=effect_id,
+        description=f"Query Route 53 A record for {_require_setting_string(settings, 'demo_fqdn')}",
+        zone_id=_require_setting_string(settings, "route53_zone_id"),
+        fqdn=_require_setting_string(settings, "demo_fqdn"),
+        aws_region=_require_setting_string(settings, "aws_region"),
+        aws_access_key_id=_require_setting_string(settings, "aws_access_key_id"),
+        aws_secret_access_key=_require_setting_string(settings, "aws_secret_access_key"),
+    )
+
+
+def _build_dns_update_effect(
+    cmd: DNSUpdateCommand, prereq_results: PrereqResults
+) -> Sequence | WriteStdout:
+    """Build the DNS update root effect from prerequisite values."""
+    settings = _require_settings(prereq_results)
+    public_ip = _require_string_result(prereq_results, "dns_public_ip")
+    current_record_ip = _optional_string_result(prereq_results, "dns_current_record")
+
+    match (current_record_ip == public_ip, cmd.force):
+        case (True, False):
+            return WriteStdout(
+                effect_id="dns_update",
+                description="Render DNS update no-op report",
+                text=_render_dns_update_report(
+                    settings=settings,
+                    public_ip=public_ip,
+                    current_record_ip=current_record_ip,
+                    action="no-op",
+                ),
+            )
+        case _:
+            action = "forced-update" if current_record_ip == public_ip and cmd.force else "updated"
+            return Sequence(
+                effect_id="dns_update",
+                description="Update Route 53 DNS record",
+                effects=[
+                    UpdateRoute53Record(
+                        effect_id="dns_update_apply",
+                        description=(
+                            "Update Route 53 A record for "
+                            f"{_require_setting_string(settings, 'demo_fqdn')}"
+                        ),
+                        zone_id=_require_setting_string(settings, "route53_zone_id"),
+                        fqdn=_require_setting_string(settings, "demo_fqdn"),
+                        ip=public_ip,
+                        ttl=_require_setting_int(settings, "demo_ttl"),
+                        aws_region=_require_setting_string(settings, "aws_region"),
+                        aws_access_key_id=_require_setting_string(settings, "aws_access_key_id"),
+                        aws_secret_access_key=_require_setting_string(
+                            settings,
+                            "aws_secret_access_key",
+                        ),
+                    ),
+                    WriteStdout(
+                        effect_id="dns_update_report",
+                        description="Render DNS update report",
+                        text=_render_dns_update_report(
+                            settings=settings,
+                            public_ip=public_ip,
+                            current_record_ip=current_record_ip,
+                            action=action,
+                        ),
+                    ),
+                ],
+            )
+
+
+def _build_host_check_ports_effect(prereq_results: PrereqResults) -> Sequence | WriteStdout:
+    """Build the host port check root effect from probe results."""
+    results = _require_port_results(prereq_results, "host_check_ports_probe")
+    report = _render_host_check_ports_report(results)
+    unavailable = tuple(str(result.port) for result in results if not result.available)
+    match unavailable:
+        case ():
+            return WriteStdout(
+                effect_id="host_check_ports",
+                description="Render host port availability report",
+                text=report,
+            )
+        case _:
+            return Sequence(
+                effect_id="host_check_ports",
+                description="Render busy port report and fail command",
+                effects=[
+                    WriteStdout(
+                        effect_id="host_check_ports_report",
+                        description="Render host port availability report",
+                        text=report,
+                    ),
+                    Custom(
+                        effect_id="host_check_ports_fail",
+                        description="Fail host port availability command",
+                        fn=lambda: _raise_effect_error(
+                            f"Ports unavailable: {', '.join(unavailable)}"
+                        ),
+                    ),
+                ],
+            )
+
+
+def _parse_kubectl_pod_names(stdout: str) -> tuple[str, ...]:
+    """Parse `kubectl get pods -o name` output into a deterministic tuple."""
+    return tuple(filter(None, (line.strip() for line in stdout.splitlines())))
+
+
+def _require_kubectl_capture_result(
+    prereq_results: PrereqResults, effect_id: str
+) -> tuple[int, str, str]:
+    """Extract one kubectl capture result or raise ValueError."""
+    result = prereq_results.get(effect_id)
+    match result:
+        case Success(value=(int() as returncode, str() as stdout, str() as stderr)):
+            return (returncode, stdout, stderr)
+        case Success(value=_):
+            raise ValueError(f"{effect_id} prerequisite returned unexpected value type")
+        case Failure(error=error):
+            raise ValueError(f"{effect_id} prerequisite failed: {error}")
+        case _:
+            raise ValueError(f"{effect_id} prerequisite missing")
+
+
+def _require_successful_kubectl_stdout(prereq_results: PrereqResults, effect_id: str) -> str:
+    """Extract stdout from a successful kubectl capture result or raise ValueError."""
+    returncode, stdout, stderr = _require_kubectl_capture_result(prereq_results, effect_id)
+    match returncode:
+        case 0:
+            return stdout
+        case _:
+            raise ValueError(f"{effect_id} prerequisite failed: {stderr}")
+
+
+def _k8s_logs_effect_id(namespace: str, pod_name: str) -> str:
+    """Build deterministic effect id for streaming one pod's logs."""
+    return (
+        f"k8s_logs_{namespace.replace('-', '_')}_" f"{pod_name.replace('/', '_').replace('-', '_')}"
+    )
+
+
+def _build_k8s_logs_effect(
+    cmd: K8sLogsCommand, prereq_results: PrereqResults
+) -> Sequence | WriteStdout:
+    """Build namespace-aware kubectl logs effect from listed pods."""
+    pod_refs = tuple(
+        (namespace, pod_name)
+        for namespace in cmd.namespaces
+        for pod_name in _parse_kubectl_pod_names(
+            _require_successful_kubectl_stdout(
+                prereq_results,
+                f"k8s_logs_pod_list_{namespace.replace('-', '_')}",
+            )
+        )
+    )
+    match pod_refs:
+        case ():
+            return WriteStdout(
+                effect_id="k8s_logs",
+                description="Render empty log result",
+                text="No pods found in requested namespaces.",
+            )
+        case _:
+            return Sequence(
+                effect_id="k8s_logs",
+                description="Stream infrastructure pod logs",
+                effects=[
+                    RunKubectlCommand(
+                        effect_id=_k8s_logs_effect_id(namespace, pod_name),
+                        description=f"Stream logs for {pod_name} in namespace {namespace}",
+                        args=[
+                            "logs",
+                            pod_name,
+                            "--all-containers=true",
+                            f"--tail={cmd.tail}",
+                        ],
+                        namespace=namespace,
+                        stream_stdout=True,
+                    )
+                    for namespace, pod_name in pod_refs
+                ],
+            )
 
 
 def _pulumi_env(machine_identity: MachineIdentity) -> dict[str, str]:
@@ -288,6 +654,7 @@ def _build_rke2_cleanup_effect(
 def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults) -> Sequence:
     """Build pulumi up effect with post-apply prodbox identity/annotation reconciliation."""
     machine_identity = _require_machine_identity(prereq_results)
+    stack = _resolve_pulumi_stack(cmd.stack, prereq_results)
     label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
     return Sequence(
         effect_id="pulumi_up",
@@ -297,7 +664,7 @@ def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults)
                 effect_id="pulumi_up_apply",
                 description="Apply infrastructure changes via Pulumi",
                 cwd=cmd.cwd,
-                stack=cmd.stack,
+                stack=stack,
                 env=_pulumi_env(machine_identity),
                 yes=cmd.yes,
             ),
@@ -332,12 +699,22 @@ def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults)
 
 def _build_env_show_dag(_cmd: EnvShowCommand) -> EffectDAG:
     """Build DAG for showing environment configuration."""
+    cmd = _cmd
     root = EffectNode(
-        effect=ValidateSettings(
+        effect=WriteStdout(
             effect_id="env_show",
             description="Show environment configuration",
+            text="",
         ),
-        prerequisites=frozenset(["settings_loaded"]),
+        prerequisites=frozenset(["settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="env_show",
+            description="Show environment configuration",
+            text=render_settings_display(
+                _require_settings(prereq_results),
+                show_secrets=cmd.show_secrets,
+            ),
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -357,10 +734,10 @@ def _build_env_validate_dag(_cmd: EnvValidateCommand) -> EffectDAG:
 def _build_env_template_dag(cmd: EnvTemplateCommand) -> EffectDAG:
     """Build DAG for generating environment template."""
     root = EffectNode(
-        effect=Pure(
+        effect=WriteStdout(
             effect_id="env_template",
-            description="Generate environment template",
-            value=str(cmd.output_path),
+            description="Print environment template",
+            text=cmd.template_text,
         ),
         prerequisites=frozenset(),
     )
@@ -387,15 +764,26 @@ def _build_host_info_dag(_cmd: HostInfoCommand) -> EffectDAG:
 
 def _build_host_check_ports_dag(cmd: HostCheckPortsCommand) -> EffectDAG:
     """Build DAG for checking port availability."""
-    root = EffectNode(
-        effect=Pure(
-            effect_id="host_check_ports",
+    port_probe_node = EffectNode(
+        effect=CheckPortAvailability(
+            effect_id="host_check_ports_probe",
             description=f"Check ports: {cmd.ports}",
-            value=cmd.ports,
+            ports=cmd.ports,
         ),
         prerequisites=frozenset(),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    root = EffectNode(
+        effect=WriteStdout(
+            effect_id="host_check_ports",
+            description="Render host port availability report",
+            text="",
+        ),
+        prerequisites=frozenset(["host_check_ports_probe"]),
+        effect_builder=lambda _reduced, prereq_results: _build_host_check_ports_effect(
+            prereq_results
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=_merge_registry(port_probe_node))
 
 
 def _build_host_ensure_tools_dag(_cmd: HostEnsureToolsCommand) -> EffectDAG:
@@ -576,27 +964,88 @@ def _build_rke2_logs_dag(cmd: RKE2LogsCommand) -> EffectDAG:
 
 def _build_dns_check_dag(_cmd: DNSCheckCommand) -> EffectDAG:
     """Build DAG for DNS status check."""
-    # This will need to be expanded to get settings and query Route53
-    root = EffectNode(
+    public_ip_node = EffectNode(
         effect=FetchPublicIP(
-            effect_id="dns_check",
-            description="Check DNS status and public IP",
+            effect_id="dns_public_ip",
+            description="Fetch current public IP",
         ),
-        prerequisites=frozenset(["settings_loaded", "aws_credentials_valid"]),
+        prerequisites=frozenset(),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    current_record_node = EffectNode(
+        effect=QueryRoute53Record(
+            effect_id="dns_current_record",
+            description="Query current Route 53 A record",
+            zone_id="",
+            fqdn="",
+        ),
+        prerequisites=frozenset(["settings_object", "route53_accessible"]),
+        effect_builder=lambda _reduced, prereq_results: _build_dns_query_effect(
+            "dns_current_record",
+            prereq_results,
+        ),
+    )
+    root = EffectNode(
+        effect=WriteStdout(
+            effect_id="dns_check",
+            description="Render DNS status report",
+            text="",
+        ),
+        prerequisites=frozenset(["settings_object", "dns_public_ip", "dns_current_record"]),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="dns_check",
+            description="Render DNS status report",
+            text=_render_dns_check_report(
+                settings=_require_settings(prereq_results),
+                public_ip=_require_string_result(prereq_results, "dns_public_ip"),
+                current_record_ip=_optional_string_result(prereq_results, "dns_current_record"),
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(
+        root,
+        registry=_merge_registry(public_ip_node, current_record_node),
+    )
 
 
 def _build_dns_update_dag(_cmd: DNSUpdateCommand) -> EffectDAG:
     """Build DAG for DNS update."""
-    root = EffectNode(
+    cmd = _cmd
+    public_ip_node = EffectNode(
         effect=FetchPublicIP(
+            effect_id="dns_public_ip",
+            description="Fetch current public IP",
+        ),
+        prerequisites=frozenset(),
+    )
+    current_record_node = EffectNode(
+        effect=QueryRoute53Record(
+            effect_id="dns_current_record",
+            description="Query current Route 53 A record",
+            zone_id="",
+            fqdn="",
+        ),
+        prerequisites=frozenset(["settings_object", "route53_accessible"]),
+        effect_builder=lambda _reduced, prereq_results: _build_dns_query_effect(
+            "dns_current_record",
+            prereq_results,
+        ),
+    )
+    root = EffectNode(
+        effect=WriteStdout(
             effect_id="dns_update",
             description="Update DNS record with public IP",
+            text="",
         ),
-        prerequisites=frozenset(["settings_loaded", "route53_accessible"]),
+        prerequisites=frozenset(["settings_object", "dns_public_ip", "dns_current_record"]),
+        effect_builder=lambda _reduced, prereq_results: _build_dns_update_effect(
+            cmd,
+            prereq_results,
+        ),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    return EffectDAG.from_roots(
+        root,
+        registry=_merge_registry(public_ip_node, current_record_node),
+    )
 
 
 def _build_dns_ensure_timer_dag(cmd: DNSEnsureTimerCommand) -> EffectDAG:
@@ -635,13 +1084,21 @@ def _build_k8s_health_dag(_cmd: K8sHealthCommand) -> EffectDAG:
 def _build_k8s_wait_dag(cmd: K8sWaitCommand) -> EffectDAG:
     """Build DAG for waiting on Kubernetes deployments."""
     root = EffectNode(
-        effect=KubectlWait(
+        effect=Sequence(
             effect_id="k8s_wait",
             description=f"Wait for deployments (timeout: {cmd.timeout}s)",
-            resource="deployment",
-            condition="available",
-            all_resources=True,
-            timeout=cmd.timeout,
+            effects=[
+                KubectlWait(
+                    effect_id=f"k8s_wait_{namespace.replace('-', '_')}",
+                    description=f"Wait for deployments in namespace {namespace}",
+                    resource="deployment",
+                    condition="available",
+                    all_resources=True,
+                    namespace=namespace,
+                    timeout=cmd.timeout,
+                )
+                for namespace in cmd.namespaces
+            ],
         ),
         prerequisites=frozenset(["k8s_cluster_reachable"]),
     )
@@ -650,15 +1107,31 @@ def _build_k8s_wait_dag(cmd: K8sWaitCommand) -> EffectDAG:
 
 def _build_k8s_logs_dag(cmd: K8sLogsCommand) -> EffectDAG:
     """Build DAG for getting Kubernetes logs."""
+    pod_list_nodes = tuple(
+        EffectNode(
+            effect=CaptureKubectlOutput(
+                effect_id=f"k8s_logs_pod_list_{namespace.replace('-', '_')}",
+                description=f"List pods in namespace {namespace}",
+                args=["get", "pods", "-o", "name"],
+                namespace=namespace,
+            ),
+            prerequisites=frozenset(["k8s_cluster_reachable"]),
+        )
+        for namespace in cmd.namespaces
+    )
     root = EffectNode(
-        effect=RunKubectlCommand(
+        effect=WriteStdout(
             effect_id="k8s_logs",
             description="Get infrastructure pod logs",
-            args=["logs", "--all-containers=true", f"--tail={cmd.tail}"],
+            text="",
         ),
-        prerequisites=frozenset(["k8s_cluster_reachable"]),
+        prerequisites=frozenset(node.effect_id for node in pod_list_nodes),
+        effect_builder=lambda _reduced, prereq_results: _build_k8s_logs_effect(
+            cmd,
+            prereq_results,
+        ),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    return EffectDAG.from_roots(root, registry=_merge_registry(*pod_list_nodes))
 
 
 # =============================================================================
@@ -668,6 +1141,23 @@ def _build_k8s_logs_dag(cmd: K8sLogsCommand) -> EffectDAG:
 
 def _build_pulumi_preview_dag(cmd: PulumiPreviewCommand) -> EffectDAG:
     """Build DAG for Pulumi preview."""
+    stack_select_node = EffectNode(
+        effect=PulumiStackSelect(
+            effect_id="pulumi_preview_stack_select",
+            description="Select Pulumi stack for preview",
+            stack="",
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+            effect_id="pulumi_preview_stack_select",
+            description="Select Pulumi stack for preview",
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+    )
     root = EffectNode(
         effect=PulumiPreview(
             effect_id="pulumi_preview",
@@ -676,20 +1166,39 @@ def _build_pulumi_preview_dag(cmd: PulumiPreviewCommand) -> EffectDAG:
             stack=cmd.stack,
             env={},
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_logged_in", "machine_identity"]),
+        prerequisites=frozenset(
+            ["pulumi_preview_stack_select", "machine_identity", "settings_object"]
+        ),
         effect_builder=lambda _reduced, prereq_results: PulumiPreview(
             effect_id="pulumi_preview",
             description="Preview infrastructure changes",
             cwd=cmd.cwd,
-            stack=cmd.stack,
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
             env=_pulumi_env(_require_machine_identity(prereq_results)),
         ),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    return EffectDAG.from_roots(root, registry=_merge_registry(stack_select_node))
 
 
 def _build_pulumi_up_dag(cmd: PulumiUpCommand) -> EffectDAG:
     """Build DAG for Pulumi up."""
+    stack_select_node = EffectNode(
+        effect=PulumiStackSelect(
+            effect_id="pulumi_up_stack_select",
+            description="Select Pulumi stack for apply",
+            stack="",
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+            effect_id="pulumi_up_stack_select",
+            description="Select Pulumi stack for apply",
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+    )
     root = EffectNode(
         effect=Sequence(
             effect_id="pulumi_up",
@@ -697,18 +1206,40 @@ def _build_pulumi_up_dag(cmd: PulumiUpCommand) -> EffectDAG:
             effects=[],
         ),
         prerequisites=frozenset(
-            ["tool_pulumi", "pulumi_stack_exists", "machine_identity", "k8s_cluster_reachable"]
+            [
+                "pulumi_up_stack_select",
+                "machine_identity",
+                "k8s_cluster_reachable",
+                "settings_object",
+            ]
         ),
         effect_builder=lambda _reduced, prereq_results: _build_pulumi_up_effect(
             cmd,
             prereq_results,
         ),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    return EffectDAG.from_roots(root, registry=_merge_registry(stack_select_node))
 
 
 def _build_pulumi_destroy_dag(cmd: PulumiDestroyCommand) -> EffectDAG:
     """Build DAG for Pulumi destroy."""
+    stack_select_node = EffectNode(
+        effect=PulumiStackSelect(
+            effect_id="pulumi_destroy_stack_select",
+            description="Select Pulumi stack for destroy",
+            stack="",
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+            effect_id="pulumi_destroy_stack_select",
+            description="Select Pulumi stack for destroy",
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+    )
     root = EffectNode(
         effect=PulumiDestroy(
             effect_id="pulumi_destroy",
@@ -718,21 +1249,40 @@ def _build_pulumi_destroy_dag(cmd: PulumiDestroyCommand) -> EffectDAG:
             env={},
             yes=cmd.yes,
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists", "machine_identity"]),
+        prerequisites=frozenset(
+            ["pulumi_destroy_stack_select", "machine_identity", "settings_object"]
+        ),
         effect_builder=lambda _reduced, prereq_results: PulumiDestroy(
             effect_id="pulumi_destroy",
             description="Destroy infrastructure",
             cwd=cmd.cwd,
-            stack=cmd.stack,
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
             env=_pulumi_env(_require_machine_identity(prereq_results)),
             yes=cmd.yes,
         ),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    return EffectDAG.from_roots(root, registry=_merge_registry(stack_select_node))
 
 
 def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
     """Build DAG for Pulumi refresh."""
+    stack_select_node = EffectNode(
+        effect=PulumiStackSelect(
+            effect_id="pulumi_refresh_stack_select",
+            description="Select Pulumi stack for refresh",
+            stack="",
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+            effect_id="pulumi_refresh_stack_select",
+            description="Select Pulumi stack for refresh",
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            cwd=cmd.cwd,
+            create_if_missing=False,
+        ),
+    )
     root = EffectNode(
         effect=PulumiRefresh(
             effect_id="pulumi_refresh",
@@ -741,16 +1291,18 @@ def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
             stack=cmd.stack,
             env={},
         ),
-        prerequisites=frozenset(["tool_pulumi", "pulumi_stack_exists", "machine_identity"]),
+        prerequisites=frozenset(
+            ["pulumi_refresh_stack_select", "machine_identity", "settings_object"]
+        ),
         effect_builder=lambda _reduced, prereq_results: PulumiRefresh(
             effect_id="pulumi_refresh",
             description="Refresh infrastructure state",
             cwd=cmd.cwd,
-            stack=cmd.stack,
+            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
             env=_pulumi_env(_require_machine_identity(prereq_results)),
         ),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    return EffectDAG.from_roots(root, registry=_merge_registry(stack_select_node))
 
 
 def _build_pulumi_stack_init_dag(cmd: PulumiStackInitCommand) -> EffectDAG:

@@ -393,6 +393,31 @@ class GetJournalLogs(Effect[str]):
 
 
 # =============================================================================
+# Host Effects
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class PortAvailability:
+    """Availability result for one TCP port."""
+
+    port: int
+    available: bool
+    detail: str
+
+
+@dataclass(frozen=True)
+class CheckPortAvailability(Effect[tuple[PortAvailability, ...]]):
+    """
+    Check whether a set of TCP ports is currently available.
+
+    Returns: Tuple of per-port availability results
+    """
+
+    ports: tuple[int, ...]
+
+
+# =============================================================================
 # Kubernetes Effects
 # =============================================================================
 
@@ -676,6 +701,20 @@ class ValidateAWSCredentials(Effect[bool]):
     aws_secret_access_key: str | None = None
 
 
+@dataclass(frozen=True)
+class ValidateRoute53Access(Effect[bool]):
+    """
+    Validate Route 53 API access.
+
+    Returns: True if Route 53 is reachable with the configured credentials
+    """
+
+    aws_region: str = "us-east-1"
+    zone_id: str | None = None
+    aws_access_key_id: str | None = None
+    aws_secret_access_key: str | None = None
+
+
 # =============================================================================
 # Pulumi Effects
 # =============================================================================
@@ -724,6 +763,17 @@ class PulumiStackSelect(Effect[bool]):
     stack: str
     cwd: Path | None = None
     create_if_missing: bool = False
+
+
+@dataclass(frozen=True)
+class ValidatePulumiLogin(Effect[bool]):
+    """
+    Validate that the Pulumi CLI is logged in.
+
+    Returns: True if `pulumi whoami` succeeds
+    """
+
+    cwd: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -1342,6 +1392,9 @@ __all__ = [
     "RunSystemdCommand",
     "CheckServiceStatus",
     "GetJournalLogs",
+    # Host
+    "PortAvailability",
+    "CheckPortAvailability",
     # Kubernetes
     "RunKubectlCommand",
     "CaptureKubectlOutput",
@@ -1357,9 +1410,11 @@ __all__ = [
     "QueryRoute53Record",
     "UpdateRoute53Record",
     "ValidateAWSCredentials",
+    "ValidateRoute53Access",
     # Pulumi
     "RunPulumiCommand",
     "PulumiStackSelect",
+    "ValidatePulumiLogin",
     "PulumiPreview",
     "PulumiUp",
     "PulumiDestroy",

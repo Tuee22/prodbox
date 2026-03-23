@@ -20,11 +20,14 @@ from prodbox.cli.effects import (
     CaptureKubectlOutput,
     CheckFileExists,
     CheckServiceStatus,
+    LoadSettings,
     Pure,
     RequireLinux,
     RequireSystemd,
     ResolveMachineIdentity,
     ValidateAWSCredentials,
+    ValidatePulumiLogin,
+    ValidateRoute53Access,
     ValidateSettings,
     ValidateTool,
 )
@@ -39,7 +42,6 @@ from prodbox.cli.prerequisite_registry import (
     PLATFORM_LINUX,
     PREREQUISITE_REGISTRY,
     PULUMI_LOGGED_IN,
-    PULUMI_STACK_EXISTS,
     RKE2_CONFIG_EXISTS,
     RKE2_INSTALLED,
     RKE2_KILLALL_EXISTS,
@@ -47,7 +49,9 @@ from prodbox.cli.prerequisite_registry import (
     RKE2_SERVICE_EXISTS,
     ROUTE53_ACCESSIBLE,
     SETTINGS_LOADED,
+    SETTINGS_OBJECT,
     SYSTEMD_AVAILABLE,
+    TOOL_AWS,
     TOOL_CTR,
     TOOL_DOCKER,
     TOOL_HELM,
@@ -79,6 +83,7 @@ class TestRegistryCompleteness:
         assert "tool_helm" in PREREQUISITE_REGISTRY
         assert "tool_sudo" in PREREQUISITE_REGISTRY
         assert "tool_pulumi" in PREREQUISITE_REGISTRY
+        assert "tool_aws" in PREREQUISITE_REGISTRY
         assert "tool_rke2" in PREREQUISITE_REGISTRY
         assert "tool_systemctl" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["tool_kubectl"] is TOOL_KUBECTL
@@ -87,17 +92,20 @@ class TestRegistryCompleteness:
         assert PREREQUISITE_REGISTRY["tool_helm"] is TOOL_HELM
         assert PREREQUISITE_REGISTRY["tool_sudo"] is TOOL_SUDO
         assert PREREQUISITE_REGISTRY["tool_pulumi"] is TOOL_PULUMI
+        assert PREREQUISITE_REGISTRY["tool_aws"] is TOOL_AWS
         assert PREREQUISITE_REGISTRY["tool_rke2"] is TOOL_RKE2
         assert PREREQUISITE_REGISTRY["tool_systemctl"] is TOOL_SYSTEMCTL
 
     def test_all_config_prerequisites_in_registry(self) -> None:
         """All configuration prerequisite nodes should be in the registry."""
         assert "settings_loaded" in PREREQUISITE_REGISTRY
+        assert "settings_object" in PREREQUISITE_REGISTRY
         assert "kubeconfig_exists" in PREREQUISITE_REGISTRY
         assert "kubeconfig_home_exists" in PREREQUISITE_REGISTRY
         assert "rke2_config_exists" in PREREQUISITE_REGISTRY
         assert "rke2_killall_exists" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["settings_loaded"] is SETTINGS_LOADED
+        assert PREREQUISITE_REGISTRY["settings_object"] is SETTINGS_OBJECT
         assert PREREQUISITE_REGISTRY["kubeconfig_exists"] is KUBECONFIG_EXISTS
         assert PREREQUISITE_REGISTRY["kubeconfig_home_exists"] is KUBECONFIG_HOME_EXISTS
         assert PREREQUISITE_REGISTRY["rke2_config_exists"] is RKE2_CONFIG_EXISTS
@@ -124,9 +132,7 @@ class TestRegistryCompleteness:
     def test_all_pulumi_prerequisites_in_registry(self) -> None:
         """All Pulumi prerequisite nodes should be in the registry."""
         assert "pulumi_logged_in" in PREREQUISITE_REGISTRY
-        assert "pulumi_stack_exists" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["pulumi_logged_in"] is PULUMI_LOGGED_IN
-        assert PREREQUISITE_REGISTRY["pulumi_stack_exists"] is PULUMI_STACK_EXISTS
 
     def test_all_composite_prerequisites_in_registry(self) -> None:
         """All composite prerequisite nodes should be in the registry."""
@@ -147,9 +153,9 @@ class TestRegistryConsistency:
             ), f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
 
     def test_registry_has_expected_size(self) -> None:
-        """Registry should have exactly 25 prerequisites."""
-        # Platform: 3, Tools: 8, Config: 5, AWS: 2, K8s: 4, Pulumi: 2, Composite: 2
-        expected_count = 3 + 8 + 5 + 2 + 4 + 2 + 2
+        """Registry should have exactly 27 prerequisites."""
+        # Platform: 3, Tools: 9, Config: 6, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
+        expected_count = 3 + 9 + 6 + 2 + 4 + 1 + 2
         assert len(PREREQUISITE_REGISTRY) == expected_count
 
 
@@ -241,10 +247,16 @@ class TestEffectTypeCorrectness:
     def test_settings_prerequisite_uses_validate_settings(self) -> None:
         """Settings prerequisite should use ValidateSettings effect."""
         assert isinstance(SETTINGS_LOADED.effect, ValidateSettings)
+        assert isinstance(SETTINGS_OBJECT.effect, LoadSettings)
 
     def test_aws_prerequisite_uses_validate_aws_credentials(self) -> None:
         """AWS credentials prerequisite should use ValidateAWSCredentials."""
         assert isinstance(AWS_CREDENTIALS_VALID.effect, ValidateAWSCredentials)
+        assert isinstance(ROUTE53_ACCESSIBLE.effect, ValidateRoute53Access)
+
+    def test_pulumi_logged_in_uses_validate_pulumi_login(self) -> None:
+        """Pulumi login prerequisite should run a real login check."""
+        assert isinstance(PULUMI_LOGGED_IN.effect, ValidatePulumiLogin)
 
     def test_service_prerequisites_use_check_service_status(self) -> None:
         """Service prerequisites should use CheckServiceStatus effect."""
@@ -253,9 +265,6 @@ class TestEffectTypeCorrectness:
 
     def test_composite_prerequisites_use_pure(self) -> None:
         """Composite prerequisites should use Pure effect (aggregation only)."""
-        assert isinstance(ROUTE53_ACCESSIBLE.effect, Pure)
-        assert isinstance(PULUMI_LOGGED_IN.effect, Pure)
-        assert isinstance(PULUMI_STACK_EXISTS.effect, Pure)
         assert isinstance(K8S_READY.effect, Pure)
         assert isinstance(INFRA_READY.effect, Pure)
 

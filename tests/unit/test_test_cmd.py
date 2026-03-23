@@ -13,9 +13,13 @@ from prodbox.cli.effect_dag import PrerequisiteFailurePolicy
 from prodbox.cli.effects import RunSubprocess, Sequence
 from prodbox.cli.interpreter import EffectInterpreter
 from prodbox.cli.test_cmd import (
+    ALL_INTEGRATION_TEST_PREREQUISITES,
     ALL_TEST_SUITE,
+    CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    INTEGRATION_DNS_AWS_TEST_SUITE,
+    INTEGRATION_ENV_TEST_SUITE,
+    INTEGRATION_PULUMI_TEST_SUITE,
     INTEGRATION_RUNBOOK_EFFECT_ID,
-    INTEGRATION_TEST_PREREQUISITES,
     PHASE_ONE_HEADER_EFFECT_ID,
     TEST_TIMEOUT_SECONDS,
     UNIT_TEST_SUITE,
@@ -57,7 +61,7 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
 
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
-    assert phase_two.prerequisites == INTEGRATION_TEST_PREREQUISITES
+    assert phase_two.prerequisites == ALL_INTEGRATION_TEST_PREREQUISITES
     phase_two_effect = cast(Sequence, phase_two.effect)
     phase_two_effect_ids = [effect.effect_id for effect in phase_two_effect.effects]
     assert phase_two_effect_ids == [
@@ -94,10 +98,55 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
     assert phase_two.prerequisite_failure_policy == PrerequisiteFailurePolicy.PROPAGATE
     phase_one_header = dag.get_node(PHASE_ONE_HEADER_EFFECT_ID)
     assert phase_one_header is not None
-    for prereq_id in INTEGRATION_TEST_PREREQUISITES:
+    for prereq_id in ALL_INTEGRATION_TEST_PREREQUISITES:
         prereq_node = dag.get_node(prereq_id)
         assert prereq_node is not None
         assert PHASE_ONE_HEADER_EFFECT_ID in prereq_node.prerequisites
+
+
+def test_build_test_dag_omits_phase_one_gate_for_mock_only_env_suite() -> None:
+    """Mock-only integration suites should bypass cluster/AWS runbook gates."""
+    dag = _build_test_dag(
+        suite=INTEGRATION_ENV_TEST_SUITE,
+        coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+    )
+    phase_two = dag.get_node("pytest_phase_two")
+    assert phase_two is not None
+    assert phase_two.prerequisites == frozenset({PHASE_ONE_HEADER_EFFECT_ID})
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    assert [effect.effect_id for effect in phase_two_effect.effects] == [
+        "pytest_phase_two_header",
+        "pytest_run",
+    ]
+
+
+def test_build_test_dag_uses_aws_specific_gate_without_runbook() -> None:
+    """AWS DNS suite should gate on AWS prerequisites but not run rke2 ensure."""
+    dag = _build_test_dag(
+        suite=INTEGRATION_DNS_AWS_TEST_SUITE,
+        coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+    )
+    phase_two = dag.get_node("pytest_phase_two")
+    assert phase_two is not None
+    assert phase_two.prerequisites == frozenset({"tool_aws"})
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    assert [effect.effect_id for effect in phase_two_effect.effects] == [
+        "pytest_phase_two_header",
+        "pytest_run",
+    ]
+
+
+def test_build_test_dag_uses_cluster_and_pulumi_gate_for_pulumi_suite() -> None:
+    """Pulumi suite should require cluster + AWS + Pulumi prerequisites and runbook."""
+    dag = _build_test_dag(
+        suite=INTEGRATION_PULUMI_TEST_SUITE,
+        coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+    )
+    phase_two = dag.get_node("pytest_phase_two")
+    assert phase_two is not None
+    assert phase_two.prerequisites == CLUSTER_INTEGRATION_TEST_PREREQUISITES | frozenset(
+        {"tool_pulumi"}
+    )
 
 
 def test_build_test_dag_skips_integration_gate_for_unit_suite() -> None:

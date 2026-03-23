@@ -147,6 +147,39 @@ class TestDisplayDict:
         # Should end with last 4 chars of secret
         assert display["aws_secret_access_key"].endswith("-key")
 
+    def test_show_secrets_option_returns_unmasked_values(self, settings: Settings) -> None:
+        """display_dict(show_secrets=True) should return unmasked secret values."""
+        display = settings.display_dict(show_secrets=True)
+
+        assert display["aws_secret_access_key"] == "test-secret-access-key"
+
+
+class TestRenderedSettings:
+    """Tests for deterministic rendered settings output."""
+
+    def test_render_display_masks_secrets_by_default(self, settings: Settings) -> None:
+        """render_display should mask secret values by default."""
+        rendered = settings.render_display()
+
+        assert "AWS_SECRET_ACCESS_KEY=****-key" in rendered
+        assert "AWS_SECRET_ACCESS_KEY=test-secret-access-key" not in rendered
+        assert "AWS_ACCESS_KEY_ID=test-access-key-id" in rendered
+
+    def test_render_display_show_secrets_exposes_secret(self, settings: Settings) -> None:
+        """render_display(show_secrets=True) should expose full secret values."""
+        rendered = settings.render_display(show_secrets=True)
+
+        assert "AWS_SECRET_ACCESS_KEY=test-secret-access-key" in rendered
+
+    def test_render_template_contains_required_and_optional_settings(self) -> None:
+        """render_template should list required and optional variables deterministically."""
+        template = Settings.render_template()
+
+        assert "# prodbox environment template" in template
+        assert "AWS_ACCESS_KEY_ID=" in template
+        assert "AWS_REGION=us-east-1" in template
+        assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in template
+
 
 class TestGetSettings:
     """Tests for get_settings() function."""

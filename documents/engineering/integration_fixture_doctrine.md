@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/prerequisite_doctrine.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_integration_environment_doctrine.md
 
 > **Purpose**: Define pytest fixture doctrine for cluster-backed integration test setup, teardown, and cleanup failure handling.
 
@@ -29,6 +29,8 @@ This doctrine applies to integration tests that mutate real cluster state:
 3. Any future cluster-backed pytest integration that creates or mutates Kubernetes resources.
 
 It does not restate `prodbox test` prerequisite/runbook gating. That operator-facing contract remains owned by [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine).
+
+It does not own AWS environment creation/tagging/cleanup doctrine for stateful AWS tests. That is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---
 
@@ -107,12 +109,14 @@ Rationale: a teardown cleanup failure can invalidate the baseline needed for eve
 1. Test command prerequisite/runbook gating is defined in [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine).
 2. Shared runtime retention/rebinding expectations and the definition of post-deploy baseline are defined in [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md#6-test-expectations).
 3. Runtime-managed prodbox namespace ownership is defined in [Prerequisite Doctrine](./prerequisite_doctrine.md#0-canonical-doctrine-statements).
+4. Stateful AWS integration environment ownership is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---
 
 ## Cross-References
 
 - [Unit Testing Policy](./unit_testing_policy.md)
+- [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Documentation Standards](../documentation_standards.md)

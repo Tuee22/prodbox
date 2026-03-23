@@ -13,18 +13,35 @@ from prodbox.cli.main import cli
 class TestEnvShow:
     """Tests for 'prodbox env show' command."""
 
-    def test_returns_zero_on_valid_config(
+    def test_prints_masked_configuration_on_valid_config(
         self,
         cli_runner: CliRunner,
         mock_env: dict[str, str],
     ) -> None:
-        """env show should return exit code 0 with valid configuration."""
+        """env show should print effective configuration with masked secrets."""
         with patch.dict(os.environ, mock_env, clear=True):
             result = cli_runner.invoke(cli, ["env", "show"], catch_exceptions=False)
 
-        # The command should succeed (exit code 0) or have rich output
-        # With the effect system, success is indicated by exit code
         assert result.exit_code == 0
+        assert "AWS_ACCESS_KEY_ID=test-access-key-id" in result.output
+        assert "AWS_SECRET_ACCESS_KEY=****-key" in result.output
+        assert "AWS_SECRET_ACCESS_KEY=test-secret-access-key" not in result.output
+
+    def test_show_secrets_exposes_full_secret_value(
+        self,
+        cli_runner: CliRunner,
+        mock_env: dict[str, str],
+    ) -> None:
+        """env show --show-secrets should expose the configured secret."""
+        with patch.dict(os.environ, mock_env, clear=True):
+            result = cli_runner.invoke(
+                cli,
+                ["env", "show", "--show-secrets"],
+                catch_exceptions=False,
+            )
+
+        assert result.exit_code == 0
+        assert "AWS_SECRET_ACCESS_KEY=test-secret-access-key" in result.output
 
     def test_fails_with_missing_config(
         self,
@@ -65,12 +82,15 @@ class TestEnvValidate:
 class TestEnvTemplate:
     """Tests for 'prodbox env template' command."""
 
-    def test_returns_zero_exit_code(
+    def test_prints_template_content(
         self,
         cli_runner: CliRunner,
     ) -> None:
-        """env template should return exit code 0."""
-        # Template doesn't need valid config
+        """env template should print required and optional settings."""
         result = cli_runner.invoke(cli, ["env", "template"], catch_exceptions=False)
 
         assert result.exit_code == 0
+        assert "# prodbox environment template" in result.output
+        assert "AWS_ACCESS_KEY_ID=" in result.output
+        assert "AWS_REGION=us-east-1" in result.output
+        assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in result.output

@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md
+**Referenced by**: README.md, documents/documentation_standards.md
 
 > **Purpose**: Index of engineering and architecture documentation.
 
@@ -16,6 +16,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 |----------|---------|
 | [dependency_management.md](./dependency_management.md) | Poetry dependency standards |
 | [cli_command_surface.md](./cli_command_surface.md) | Explicit Click command matrix and no-passthrough policy |
+| [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Host-level AWS CLI auth plus real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
@@ -63,6 +64,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 ### Unit Testing
 - [Interpreter-Only Mocking Doctrine](./unit_testing_policy.md#1-the-interpreter-only-mocking-doctrine)
+- [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [Forbidden Patterns](./unit_testing_policy.md#3-forbidden-patterns)
 - [Allowed Patterns](./unit_testing_policy.md#4-allowed-patterns)

@@ -10,8 +10,9 @@ from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
-    # File system
     CheckFileExists,
+    # File system
+    CheckPortAvailability,
     CheckServiceStatus,
     CleanupProdboxAnnotatedResources,
     ConfirmAction,
@@ -30,6 +31,8 @@ from prodbox.cli.effects import (
     MachineIdentity,
     MinioRuntime,
     Parallel,
+    # Pure / Custom
+    PortAvailability,
     PrintBlankLine,
     PrintError,
     PrintIndented,
@@ -43,7 +46,6 @@ from prodbox.cli.effects import (
     PulumiRefresh,
     PulumiStackSelect,
     PulumiUp,
-    # Pure / Custom
     Pure,
     QueryRoute53Record,
     ReadFile,
@@ -66,6 +68,8 @@ from prodbox.cli.effects import (
     UpdateRoute53Record,
     ValidateAWSCredentials,
     ValidateEnvironment,
+    ValidatePulumiLogin,
+    ValidateRoute53Access,
     ValidateSettings,
     # Tool validation
     ValidateTool,
@@ -512,6 +516,17 @@ class TestDNSEffects:
         )
         assert effect.aws_access_key_id == "AKIA..."
 
+    def test_validate_route53_access(self) -> None:
+        """ValidateRoute53Access should hold credentials."""
+        effect = ValidateRoute53Access(
+            effect_id="validate_route53",
+            description="Validate Route 53",
+            aws_access_key_id="AKIA...",
+            aws_secret_access_key="secret",
+            aws_region="us-east-1",
+        )
+        assert effect.aws_region == "us-east-1"
+
 
 class TestPulumiEffects:
     """Tests for Pulumi effects."""
@@ -535,6 +550,15 @@ class TestPulumiEffects:
         )
         assert effect.stack == "dev"
         assert effect.create_if_missing is True
+
+    def test_validate_pulumi_login(self) -> None:
+        """ValidatePulumiLogin should hold optional cwd."""
+        effect = ValidatePulumiLogin(
+            effect_id="pulumi_login",
+            description="Validate login",
+            cwd=Path("/infra"),
+        )
+        assert effect.cwd == Path("/infra")
 
     def test_pulumi_preview(self) -> None:
         """PulumiPreview should hold options."""
@@ -989,8 +1013,16 @@ class TestEffectBaseClass:
                 aws_secret_access_key="s",
                 aws_region="r",
             ),
+            ValidateRoute53Access(
+                effect_id="e19b",
+                description="d19b",
+                aws_access_key_id="a",
+                aws_secret_access_key="s",
+                aws_region="r",
+            ),
             RunPulumiCommand(effect_id="e20", description="d20", args=["up"]),
             PulumiStackSelect(effect_id="e21", description="d21", stack="dev"),
+            ValidatePulumiLogin(effect_id="e21b", description="d21b"),
             PulumiPreview(effect_id="e22", description="d22"),
             PulumiUp(effect_id="e23", description="d23"),
             PulumiDestroy(effect_id="e24", description="d24"),
@@ -1107,6 +1139,21 @@ class TestEffectDefaults:
             service="rke2-server",
         )
         assert effect.lines == 50
+
+    def test_check_port_availability_defaults(self) -> None:
+        """CheckPortAvailability should preserve requested ports."""
+        effect = CheckPortAvailability(
+            effect_id="ports",
+            description="Ports",
+            ports=(80, 443),
+        )
+        assert effect.ports == (80, 443)
+
+    def test_port_availability_dataclass(self) -> None:
+        """PortAvailability should preserve detail fields."""
+        result = PortAvailability(port=443, available=False, detail="listening socket detected")
+        assert result.port == 443
+        assert result.available is False
 
     def test_pulumi_stack_select_defaults(self) -> None:
         """PulumiStackSelect should have correct defaults."""

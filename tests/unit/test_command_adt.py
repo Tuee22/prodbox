@@ -103,19 +103,12 @@ class TestEnvCommands:
                 pytest.fail("Expected Success")
 
     def test_env_template_command_default(self) -> None:
-        """env_template_command should use default path."""
+        """env_template_command should embed deterministic template text."""
         match env_template_command():
             case Success(cmd):
                 assert isinstance(cmd, EnvTemplateCommand)
-                assert cmd.output_path == Path(".env.template")
-            case Failure(_):
-                pytest.fail("Expected Success")
-
-    def test_env_template_command_custom_path(self) -> None:
-        """env_template_command should accept custom path."""
-        match env_template_command(output_path=Path("/tmp/custom.env")):
-            case Success(cmd):
-                assert cmd.output_path == Path("/tmp/custom.env")
+                assert "AWS_ACCESS_KEY_ID=" in cmd.template_text
+                assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in cmd.template_text
             case Failure(_):
                 pytest.fail("Expected Success")
 
@@ -136,7 +129,7 @@ class TestHostCommands:
         match host_check_ports_command():
             case Success(cmd):
                 assert isinstance(cmd, HostCheckPortsCommand)
-                assert cmd.ports == (80, 443, 6443, 9345)
+                assert cmd.ports == (80, 443)
             case Failure(_):
                 pytest.fail("Expected Success")
 

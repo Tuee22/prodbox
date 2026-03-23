@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+RenderedSettingValue = str | int | Path | None
 
 
 class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSettings uses Any internally
@@ -117,6 +121,13 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="Pulumi stack name",
         ),
     ]
+    bootstrap_public_ip_override: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Bootstrap-only public IP override for initial DNS record creation",
+        ),
+    ]
 
     @field_validator("kubeconfig", mode="before")
     @classmethod
@@ -126,16 +137,212 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             return Path(v).expanduser()
         return v.expanduser()
 
-    def display_dict(self) -> dict[str, str | int | Path]:
-        """Return settings as dict with sensitive values masked."""
-        data: dict[str, str | int | Path] = self.model_dump()
-        # Mask sensitive fields
-        sensitive_fields = {"aws_secret_access_key"}
-        for field in sensitive_fields:
-            if field in data and data[field]:
-                value = str(data[field])
-                data[field] = "****" + value[-4:] if len(value) > 4 else "****"
-        return data
+    def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
+        """Return settings keyed by attribute name for deterministic display/tests."""
+        data = self.to_mapping()
+        return {
+            spec.attribute: _format_rendered_value(
+                data.get(spec.attribute),
+                sensitive=spec.sensitive,
+                show_secrets=show_secrets,
+            )
+            for spec in SETTING_SPECS
+        }
+
+    def to_mapping(self) -> dict[str, RenderedSettingValue]:
+        """Return unmasked settings keyed by attribute name."""
+        return {spec.attribute: spec.getter(self) for spec in SETTING_SPECS}
+
+    def render_display(self, *, show_secrets: bool = False) -> str:
+        """Render effective configuration as deterministic KEY=value lines."""
+        return render_settings_display(self.to_mapping(), show_secrets=show_secrets)
+
+    @staticmethod
+    def render_template() -> str:
+        """Render a deterministic .env template for all supported settings."""
+        return render_settings_template()
+
+
+def _render_template_from_specs() -> str:
+    """Render the deterministic template body from static setting metadata."""
+    lines = [
+        "# prodbox environment template",
+        "# Required values are blank and must be filled in.",
+        "# Optional values are pre-populated with defaults where available.",
+        "",
+    ]
+    for spec in SETTING_SPECS:
+        requirement = "required" if spec.required else "optional"
+        default_hint = (
+            f", default: {spec.template_default}" if spec.template_default is not None else ""
+        )
+        lines.append(f"# {spec.description} ({requirement}{default_hint})")
+        lines.append(f"{spec.env_var}={spec.template_default or ''}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+SettingsGetter = Callable[[Settings], RenderedSettingValue]
+
+
+@dataclass(frozen=True)
+class SettingSpec:
+    """Declarative metadata for deterministic display/template rendering."""
+
+    attribute: str
+    env_var: str
+    description: str
+    getter: SettingsGetter
+    required: bool
+    sensitive: bool = False
+    template_default: str | None = None
+
+
+def _mask_secret(value: str) -> str:
+    """Return a stable masked secret representation."""
+    return "****" + value[-4:] if len(value) > 4 else "****"
+
+
+def _format_rendered_value(
+    value: RenderedSettingValue,
+    *,
+    sensitive: bool,
+    show_secrets: bool,
+) -> RenderedSettingValue:
+    """Format one setting value for display."""
+    if value is None:
+        return ""
+    if sensitive and not show_secrets:
+        return _mask_secret(str(value))
+    return value
+
+
+def render_settings_display(
+    settings_values: dict[str, RenderedSettingValue],
+    *,
+    show_secrets: bool = False,
+) -> str:
+    """Render plain settings data as deterministic KEY=value lines."""
+    lines = [
+        f"{spec.env_var}="
+        f"{_format_rendered_value(settings_values.get(spec.attribute), sensitive=spec.sensitive, show_secrets=show_secrets)}"
+        for spec in SETTING_SPECS
+    ]
+    return "\n".join(lines) + "\n"
+
+
+SETTING_SPECS: tuple[SettingSpec, ...] = (
+    SettingSpec(
+        attribute="kubeconfig",
+        env_var="KUBECONFIG",
+        description="Path to kubeconfig file",
+        getter=lambda settings: settings.kubeconfig,
+        required=False,
+        template_default="~/.kube/config",
+    ),
+    SettingSpec(
+        attribute="aws_region",
+        env_var="AWS_REGION",
+        description="AWS region for Route 53",
+        getter=lambda settings: settings.aws_region,
+        required=False,
+        template_default="us-east-1",
+    ),
+    SettingSpec(
+        attribute="aws_access_key_id",
+        env_var="AWS_ACCESS_KEY_ID",
+        description="AWS access key ID",
+        getter=lambda settings: settings.aws_access_key_id,
+        required=True,
+    ),
+    SettingSpec(
+        attribute="aws_secret_access_key",
+        env_var="AWS_SECRET_ACCESS_KEY",
+        description="AWS secret access key",
+        getter=lambda settings: settings.aws_secret_access_key,
+        required=True,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="route53_zone_id",
+        env_var="ROUTE53_ZONE_ID",
+        description="Route 53 hosted zone ID",
+        getter=lambda settings: settings.route53_zone_id,
+        required=True,
+    ),
+    SettingSpec(
+        attribute="demo_fqdn",
+        env_var="DEMO_FQDN",
+        description="Fully qualified demo domain name",
+        getter=lambda settings: settings.demo_fqdn,
+        required=False,
+        template_default="demo.example.com",
+    ),
+    SettingSpec(
+        attribute="demo_ttl",
+        env_var="DEMO_TTL",
+        description="DNS record TTL in seconds",
+        getter=lambda settings: settings.demo_ttl,
+        required=False,
+        template_default="60",
+    ),
+    SettingSpec(
+        attribute="metallb_pool",
+        env_var="METALLB_POOL",
+        description="MetalLB IP address pool range",
+        getter=lambda settings: settings.metallb_pool,
+        required=False,
+        template_default="192.168.1.240-192.168.1.250",
+    ),
+    SettingSpec(
+        attribute="ingress_lb_ip",
+        env_var="INGRESS_LB_IP",
+        description="Reserved ingress LoadBalancer IP",
+        getter=lambda settings: settings.ingress_lb_ip,
+        required=False,
+        template_default="192.168.1.240",
+    ),
+    SettingSpec(
+        attribute="acme_email",
+        env_var="ACME_EMAIL",
+        description="Email for Let's Encrypt registration",
+        getter=lambda settings: settings.acme_email,
+        required=True,
+    ),
+    SettingSpec(
+        attribute="acme_server",
+        env_var="ACME_SERVER",
+        description="ACME server URL",
+        getter=lambda settings: settings.acme_server,
+        required=False,
+        template_default="https://acme-v02.api.letsencrypt.org/directory",
+    ),
+    SettingSpec(
+        attribute="pulumi_stack",
+        env_var="PULUMI_STACK",
+        description="Pulumi stack name",
+        getter=lambda settings: settings.pulumi_stack,
+        required=False,
+        template_default="home",
+    ),
+    SettingSpec(
+        attribute="bootstrap_public_ip_override",
+        env_var="BOOTSTRAP_PUBLIC_IP_OVERRIDE",
+        description="Bootstrap-only public IP override for DNS creation",
+        getter=lambda settings: settings.bootstrap_public_ip_override,
+        required=False,
+    ),
+)
+
+
+def render_settings_template() -> str:
+    """Render the deterministic `.env` template without instantiating settings."""
+    return _render_template_from_specs()
+
+
+def load_settings_mapping() -> dict[str, RenderedSettingValue]:
+    """Load validated settings and return a plain typed mapping."""
+    return Settings().to_mapping()
 
 
 @lru_cache(maxsize=1)  # type: ignore[misc]  # lru_cache signature contains Callable[..., T]

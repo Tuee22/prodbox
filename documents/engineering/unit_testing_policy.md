@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, AGENTS.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md
+**Referenced by**: CLAUDE.md, documents/engineering/README.md, AGENTS.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/aws_integration_environment_doctrine.md
 
 > **Purpose**: Define the Interpreter-Only Mocking Doctrine for unit tests in prodbox.
 
@@ -54,6 +54,8 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 | Pure function tests | **None needed** | Effect types, DAG builders, smart constructors, Result ADT |
 | Interpreter unit tests | **Mocked externals** | Interpreter methods with pytest-subprocess, mocked boto3 |
 | Integration tests | **None (real systems)** | Full pipeline with real kubectl, AWS, Pulumi |
+
+Stateful AWS-mutating integration tests must follow [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) instead of reusing existing AWS resources.
 
 ### Integration Execution Policy (Fail-Fast)
 

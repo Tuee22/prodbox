@@ -129,10 +129,12 @@ Named suite commands:
 | `prodbox test unit` | `tests/unit` |
 | `prodbox test integration all` | `tests/integration` |
 | `prodbox test integration cli` | `tests/integration/test_cli_commands.py` |
+| `prodbox test integration dns-aws` | `tests/integration/test_dns_route53_aws.py` |
 | `prodbox test integration env` | `tests/integration/test_cli_env.py` |
 | `prodbox test integration gateway-daemon` | `tests/integration/test_gateway_daemon_k8s.py` |
 | `prodbox test integration gateway-pods` | `tests/integration/test_gateway_k8s_pods.py` |
 | `prodbox test integration lifecycle` | `tests/integration/test_prodbox_lifecycle.py` |
+| `prodbox test integration pulumi` | `tests/integration/test_pulumi_real.py` |
 
 ### `prodbox check-code`
 

@@ -19,24 +19,29 @@ class DNSResources:
     a_record: aws.route53.Record
 
 
-def get_public_ip() -> str:
+def get_public_ip(*, bootstrap_override: str | None = None) -> str:
     """Get current public IP address.
 
     Used to set an initial value for the A record.
     The DDNS updater will keep it current.
 
     Returns:
-        Current public IP address or placeholder
+        Current public IP address or explicit bootstrap override
     """
+    if bootstrap_override is not None and bootstrap_override.strip():
+        return bootstrap_override.strip()
+
     import httpx
 
     try:
         response = httpx.get("https://api.ipify.org", timeout=10)
         response.raise_for_status()
         return response.text.strip()
-    except Exception:
-        # Return a placeholder - DDNS will update it
-        return "0.0.0.0"
+    except Exception as error:
+        raise RuntimeError(
+            "Failed to resolve bootstrap public IP. "
+            "Set BOOTSTRAP_PUBLIC_IP_OVERRIDE for bootstrap-only deployments."
+        ) from error
 
 
 def deploy_dns(
@@ -59,7 +64,7 @@ def deploy_dns(
         DNSResources containing all created resources
     """
     # Get current public IP for initial value
-    current_ip = get_public_ip()
+    current_ip = get_public_ip(bootstrap_override=settings.bootstrap_public_ip_override)
 
     # Create A record
     # ignore_changes on records ensures DDNS updates aren't reverted

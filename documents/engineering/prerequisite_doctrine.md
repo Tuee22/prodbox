@@ -105,6 +105,7 @@ Validate external tools are installed:
 | `tool_helm` | helm CLI available |
 | `tool_sudo` | sudo CLI available for root-owned host operations |
 | `tool_pulumi` | pulumi CLI available |
+| `tool_aws` | system-level aws CLI available for real AWS integration tooling |
 | `tool_rke2` | RKE2 binary installed |
 | `tool_systemctl` | systemctl available |
 
@@ -135,8 +136,10 @@ Validate AWS/Route53 access:
 
 | Prerequisite | Validates |
 |--------------|-----------|
-| `aws_credentials_valid` | AWS credentials configured |
-| `route53_accessible` | Can access Route 53 API |
+| `aws_credentials_valid` | Host AWS authentication already configured for the selected suite |
+| `route53_accessible` | Current host AWS authentication can reach the Route 53 API |
+
+Suite-specific AWS auth source, no-repo-auth-storage rules, and fixture capability proof are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---
 

@@ -11,8 +11,6 @@ Note: These are pure function tests - no mocks needed.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from prodbox.cli.command_adt import (
@@ -47,29 +45,28 @@ from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
+    CheckPortAvailability,
     CheckServiceStatus,
     CleanupProdboxAnnotatedResources,
     EnsureHarborRegistry,
     EnsureMinio,
     EnsureProdboxIdentityConfigMap,
     EnsureRetainedLocalStorage,
-    FetchPublicIP,
     GetJournalLogs,
-    KubectlWait,
     MachineIdentity,
     Parallel,
     PulumiDestroy,
     PulumiPreview,
     PulumiRefresh,
-    Pure,
-    RunKubectlCommand,
+    PulumiStackSelect,
+    QueryRoute53Record,
     RunPulumiCommand,
     RunSystemdCommand,
     Sequence,
     ValidateSettings,
     ValidateTool,
+    WriteStdout,
 )
-from prodbox.cli.prerequisite_registry import PREREQUISITE_REGISTRY
 from prodbox.cli.types import Failure, Success
 
 
@@ -99,7 +96,7 @@ class TestEnvCommandDAGBuilders:
 
     def test_env_template_dag(self) -> None:
         """command_to_dag should build DAG for EnvTemplateCommand."""
-        cmd = EnvTemplateCommand(output_path=Path(".env.template"))
+        cmd = EnvTemplateCommand()
 
         match command_to_dag(cmd):
             case Success(dag):
@@ -353,8 +350,8 @@ class TestEnvCommandPrerequisites:
             case Success(dag):
                 root = dag.get_node("env_show")
                 assert root is not None
-                assert "settings_loaded" in root.prerequisites
-                assert isinstance(root.effect, ValidateSettings)
+                assert "settings_object" in root.prerequisites
+                assert isinstance(root.effect, WriteStdout)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -372,13 +369,13 @@ class TestEnvCommandPrerequisites:
 
     def test_env_template_no_prerequisites(self) -> None:
         """EnvTemplateCommand should have no prerequisites."""
-        cmd = EnvTemplateCommand(output_path=Path(".env.template"))
+        cmd = EnvTemplateCommand()
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("env_template")
                 assert root is not None
                 assert root.prerequisites == frozenset()
-                assert isinstance(root.effect, Pure)
+                assert isinstance(root.effect, WriteStdout)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -399,14 +396,18 @@ class TestHostCommandPrerequisites:
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
     def test_host_check_ports_no_prerequisites(self) -> None:
-        """HostCheckPortsCommand should have no prerequisites."""
+        """HostCheckPortsCommand should depend only on its local probe node."""
         cmd = HostCheckPortsCommand(ports=(80, 443))
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("host_check_ports")
                 assert root is not None
-                assert root.prerequisites == frozenset()
-                assert isinstance(root.effect, Pure)
+                assert root.prerequisites == frozenset({"host_check_ports_probe"})
+                assert isinstance(root.effect, WriteStdout)
+                probe = dag.get_node("host_check_ports_probe")
+                assert probe is not None
+                assert probe.prerequisites == frozenset()
+                assert isinstance(probe.effect, CheckPortAvailability)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -612,9 +613,14 @@ class TestDNSCommandPrerequisites:
             case Success(dag):
                 root = dag.get_node("dns_check")
                 assert root is not None
-                assert "settings_loaded" in root.prerequisites
-                assert "aws_credentials_valid" in root.prerequisites
-                assert isinstance(root.effect, FetchPublicIP)
+                assert "settings_object" in root.prerequisites
+                assert "dns_public_ip" in root.prerequisites
+                assert "dns_current_record" in root.prerequisites
+                assert isinstance(root.effect, WriteStdout)
+                current_record_node = dag.get_node("dns_current_record")
+                assert current_record_node is not None
+                assert "route53_accessible" in current_record_node.prerequisites
+                assert isinstance(current_record_node.effect, QueryRoute53Record)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -625,9 +631,10 @@ class TestDNSCommandPrerequisites:
             case Success(dag):
                 root = dag.get_node("dns_update")
                 assert root is not None
-                assert "settings_loaded" in root.prerequisites
-                assert "route53_accessible" in root.prerequisites
-                assert isinstance(root.effect, FetchPublicIP)
+                assert "settings_object" in root.prerequisites
+                assert "dns_public_ip" in root.prerequisites
+                assert "dns_current_record" in root.prerequisites
+                assert isinstance(root.effect, WriteStdout)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -668,7 +675,7 @@ class TestK8sCommandPrerequisites:
                 root = dag.get_node("k8s_wait")
                 assert root is not None
                 assert "k8s_cluster_reachable" in root.prerequisites
-                assert isinstance(root.effect, KubectlWait)
+                assert isinstance(root.effect, Sequence)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -679,8 +686,11 @@ class TestK8sCommandPrerequisites:
             case Success(dag):
                 root = dag.get_node("k8s_logs")
                 assert root is not None
-                assert "k8s_cluster_reachable" in root.prerequisites
-                assert isinstance(root.effect, RunKubectlCommand)
+                assert isinstance(root.effect, WriteStdout)
+                pod_list = dag.get_node("k8s_logs_pod_list_metallb_system")
+                assert pod_list is not None
+                assert "k8s_cluster_reachable" in pod_list.prerequisites
+                assert isinstance(pod_list.effect, CaptureKubectlOutput)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -695,52 +705,56 @@ class TestPulumiCommandPrerequisites:
             case Success(dag):
                 root = dag.get_node("pulumi_preview")
                 assert root is not None
-                assert "tool_pulumi" in root.prerequisites
-                assert "pulumi_logged_in" in root.prerequisites
+                assert "pulumi_preview_stack_select" in root.prerequisites
                 assert "machine_identity" in root.prerequisites
+                assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, PulumiPreview)
+                stack_select = dag.get_node("pulumi_preview_stack_select")
+                assert stack_select is not None
+                assert "pulumi_logged_in" in stack_select.prerequisites
+                assert isinstance(stack_select.effect, PulumiStackSelect)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
     def test_pulumi_up_requires_stack_exists(self) -> None:
-        """PulumiUpCommand should require pulumi_stack_exists."""
+        """PulumiUpCommand should require explicit stack selection."""
         cmd = PulumiUpCommand(stack="dev", yes=True)
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("pulumi_up")
                 assert root is not None
-                assert "tool_pulumi" in root.prerequisites
-                assert "pulumi_stack_exists" in root.prerequisites
+                assert "pulumi_up_stack_select" in root.prerequisites
                 assert "machine_identity" in root.prerequisites
                 assert "k8s_cluster_reachable" in root.prerequisites
+                assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
     def test_pulumi_destroy_requires_stack_exists(self) -> None:
-        """PulumiDestroyCommand should require pulumi_stack_exists."""
+        """PulumiDestroyCommand should require explicit stack selection."""
         cmd = PulumiDestroyCommand(stack="dev", yes=True)
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("pulumi_destroy")
                 assert root is not None
-                assert "tool_pulumi" in root.prerequisites
-                assert "pulumi_stack_exists" in root.prerequisites
+                assert "pulumi_destroy_stack_select" in root.prerequisites
                 assert "machine_identity" in root.prerequisites
+                assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, PulumiDestroy)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
     def test_pulumi_refresh_requires_stack_exists(self) -> None:
-        """PulumiRefreshCommand should require pulumi_stack_exists."""
+        """PulumiRefreshCommand should require explicit stack selection."""
         cmd = PulumiRefreshCommand(stack="dev")
         match command_to_dag(cmd):
             case Success(dag):
                 root = dag.get_node("pulumi_refresh")
                 assert root is not None
-                assert "tool_pulumi" in root.prerequisites
-                assert "pulumi_stack_exists" in root.prerequisites
+                assert "pulumi_refresh_stack_select" in root.prerequisites
                 assert "machine_identity" in root.prerequisites
+                assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, PulumiRefresh)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
@@ -753,12 +767,13 @@ class TestPulumiCommandPrerequisites:
                 root = dag.get_node("pulumi_up")
                 assert root is not None
                 prereq_results = {
+                    "settings_object": Success(object()),
                     "machine_identity": Success(
                         MachineIdentity(
                             machine_id="0123456789abcdef0123456789abcdef",
                             prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
                         )
-                    )
+                    ),
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
@@ -797,8 +812,8 @@ class TestAllPrerequisitesExistInRegistry:
                 case Success(dag):
                     for node in dag.nodes:
                         for prereq_id in node.prerequisites:
-                            assert prereq_id in PREREQUISITE_REGISTRY, (
-                                f"Prerequisite '{prereq_id}' not in registry "
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
                                 f"(referenced by '{node.effect_id}')"
                             )
                 case Failure(error):
@@ -817,8 +832,8 @@ class TestAllPrerequisitesExistInRegistry:
                 case Success(dag):
                     for node in dag.nodes:
                         for prereq_id in node.prerequisites:
-                            assert prereq_id in PREREQUISITE_REGISTRY, (
-                                f"Prerequisite '{prereq_id}' not in registry "
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
                                 f"(referenced by '{node.effect_id}')"
                             )
                 case Failure(error):
@@ -840,8 +855,8 @@ class TestAllPrerequisitesExistInRegistry:
                 case Success(dag):
                     for node in dag.nodes:
                         for prereq_id in node.prerequisites:
-                            assert prereq_id in PREREQUISITE_REGISTRY, (
-                                f"Prerequisite '{prereq_id}' not in registry "
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
                                 f"(referenced by '{node.effect_id}')"
                             )
                 case Failure(error):
@@ -859,8 +874,8 @@ class TestAllPrerequisitesExistInRegistry:
                 case Success(dag):
                     for node in dag.nodes:
                         for prereq_id in node.prerequisites:
-                            assert prereq_id in PREREQUISITE_REGISTRY, (
-                                f"Prerequisite '{prereq_id}' not in registry "
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
                                 f"(referenced by '{node.effect_id}')"
                             )
                 case Failure(error):
@@ -878,8 +893,8 @@ class TestAllPrerequisitesExistInRegistry:
                 case Success(dag):
                     for node in dag.nodes:
                         for prereq_id in node.prerequisites:
-                            assert prereq_id in PREREQUISITE_REGISTRY, (
-                                f"Prerequisite '{prereq_id}' not in registry "
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
                                 f"(referenced by '{node.effect_id}')"
                             )
                 case Failure(error):
@@ -899,8 +914,8 @@ class TestAllPrerequisitesExistInRegistry:
                 case Success(dag):
                     for node in dag.nodes:
                         for prereq_id in node.prerequisites:
-                            assert prereq_id in PREREQUISITE_REGISTRY, (
-                                f"Prerequisite '{prereq_id}' not in registry "
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
                                 f"(referenced by '{node.effect_id}')"
                             )
                 case Failure(error):

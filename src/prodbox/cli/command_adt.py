@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from prodbox.cli.types import Failure, Result, Success
+from prodbox.settings import render_settings_template
 
 # =============================================================================
 # Environment / Settings Commands
@@ -59,13 +60,9 @@ class EnvValidateCommand:
 
 @dataclass(frozen=True)
 class EnvTemplateCommand:
-    """Generate environment template file.
+    """Generate environment template content for stdout."""
 
-    Attributes:
-        output_path: Path to write template (default: .env.template)
-    """
-
-    output_path: Path = Path(".env.template")
+    template_text: str = render_settings_template()
 
 
 # =============================================================================
@@ -86,7 +83,7 @@ class HostCheckPortsCommand:
         ports: Ports to check
     """
 
-    ports: tuple[int, ...] = (80, 443, 6443, 9345)
+    ports: tuple[int, ...] = (80, 443)
 
 
 @dataclass(frozen=True)
@@ -399,20 +396,13 @@ def env_validate_command() -> Result[EnvValidateCommand, str]:
     return Success(EnvValidateCommand())
 
 
-def env_template_command(
-    *,
-    output_path: Path | None = None,
-) -> Result[EnvTemplateCommand, str]:
+def env_template_command() -> Result[EnvTemplateCommand, str]:
     """Create an EnvTemplateCommand.
-
-    Args:
-        output_path: Path to write template
 
     Returns:
         Success with EnvTemplateCommand
     """
-    path = output_path or Path(".env.template")
-    return Success(EnvTemplateCommand(output_path=path))
+    return Success(EnvTemplateCommand(template_text=render_settings_template()))
 
 
 def host_info_command() -> Result[HostInfoCommand, str]:
@@ -436,7 +426,7 @@ def host_check_ports_command(
     Returns:
         Success with HostCheckPortsCommand, Failure if invalid ports
     """
-    port_list = ports or [80, 443, 6443, 9345]
+    port_list = ports or [80, 443]
 
     # Validate port numbers
     invalid = [p for p in port_list if p < 1 or p > 65535]

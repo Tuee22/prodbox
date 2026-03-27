@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/streaming_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the runtime execution contract for the prodbox effect interpreter.
 

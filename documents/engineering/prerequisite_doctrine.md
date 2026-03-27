@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/integration_fixture_doctrine.md
+**Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/pure_fp_standards.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Philosophy and patterns for prerequisite-based validation in prodbox CLI.
 
@@ -10,7 +10,7 @@
 
 ## 0. Canonical Doctrine Statements
 
-RKE2 cluster provisioning is idempotently performed via eDAG lifecycle effects, not assumed pre-existing.
+RKE2 runtime reconciliation and startup are idempotently performed via eDAG lifecycle effects once required host binaries and configuration already exist; host installation is not performed implicitly.
 
 Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
 
@@ -413,7 +413,7 @@ Or see: https://kubernetes.io/docs/tasks/tools/install-kubectl/
 
 This SSoT owns RKE2 lifecycle prerequisite doctrine statements:
 
-- RKE2 cluster provisioning is idempotently performed via eDAG lifecycle effects, not assumed pre-existing.
+- RKE2 runtime reconciliation and startup are idempotently performed via eDAG lifecycle effects once required host binaries and configuration already exist; host installation is not performed implicitly.
 - Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
 - Cleanup must idempotently remove prodbox-annotated Kubernetes objects without deleting host storage paths used for persistent data.
 

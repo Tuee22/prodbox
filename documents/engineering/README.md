@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/documentation_standards.md
+**Referenced by**: README.md, documents/documentation_standards.md, documents/engineering/aws_test_environment.md
 
 > **Purpose**: Index of engineering and architecture documentation.
 
@@ -14,6 +14,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 | Document | Purpose |
 |----------|---------|
+| [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
 | [dependency_management.md](./dependency_management.md) | Poetry dependency standards |
 | [cli_command_surface.md](./cli_command_surface.md) | Explicit Click command matrix and no-passthrough policy |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Host-level AWS CLI auth plus real AWS integration environment creation, tagging, and cleanup doctrine |
@@ -64,6 +65,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 ### Unit Testing
 - [Interpreter-Only Mocking Doctrine](./unit_testing_policy.md#1-the-interpreter-only-mocking-doctrine)
+- [AWS Test Environment](./aws_test_environment.md)
 - [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [Forbidden Patterns](./unit_testing_policy.md#3-forbidden-patterns)

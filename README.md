@@ -65,29 +65,23 @@ Router port forwarding:
 git clone https://github.com/Tuee22/prodbox.git
 cd prodbox
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate
-
-# Install with dev dependencies
-pip install -e ".[dev]"
+# Install project and dev dependencies
+poetry install
 
 # Verify installation
-prodbox --version
+poetry run prodbox --version
 ```
 
 ## Configuration
 
-All configuration is via environment variables, but AWS authentication must not be stored anywhere under the repository tree, including unversioned `.env` files.
+All repo-managed configuration is via environment variables, but AWS authentication is not. `prodbox` uses the same ambient host auth state as the system-level `aws` CLI and rejects AWS auth env vars outright.
 
-Authenticate the system-level AWS CLI on the host first, then expose AWS auth to the current shell only if the command you are running requires it. The canonical storage and test-harness rules live in [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md#2-authentication-source-and-storage-rules).
+Authenticate the system-level AWS CLI on the host outside the repository, then run `prodbox` without exporting AWS auth env vars. The canonical storage and test-harness rules live in [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md#2-authentication-source-and-storage-rules).
 
 Required environment variables:
 
 | Variable | Description |
 |----------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS access key for Route 53; current shell only, never a repo-local file |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret key; current shell only, never a repo-local file |
 | `ROUTE53_ZONE_ID` | Route 53 hosted zone ID |
 | `ACME_EMAIL` | Email for Let's Encrypt registration |
 
@@ -97,10 +91,21 @@ Optional (with defaults):
 |----------|---------|-------------|
 | `AWS_REGION` | `us-east-1` | AWS region |
 | `DEMO_FQDN` | `demo.example.com` | Domain name |
+| `DEMO_TTL` | `60` | DNS record TTL in seconds |
 | `METALLB_POOL` | `192.168.1.240-192.168.1.250` | MetalLB IP range |
 | `INGRESS_LB_IP` | `192.168.1.240` | Traefik LoadBalancer IP |
 | `KUBECONFIG` | `~/.kube/config` | Path to kubeconfig |
 | `ACME_SERVER` | Let's Encrypt production | ACME server URL |
+| `PULUMI_STACK` | `home` | Default Pulumi stack name |
+| `BOOTSTRAP_PUBLIC_IP_OVERRIDE` | unset | Bootstrap-only DNS A-record IP override when public IP lookup is unavailable |
+
+Forbidden AWS auth environment variables include:
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_SESSION_TOKEN`
+- `AWS_PROFILE`
+- `AWS_SHARED_CREDENTIALS_FILE`
+- `AWS_CONFIG_FILE`
 
 Validate your configuration:
 
@@ -131,7 +136,7 @@ Prerequisite failure contract:
 
 ```bash
 # Initialize Pulumi stack (first time only)
-prodbox pulumi stack-init
+prodbox pulumi stack-init home
 
 # Preview changes
 prodbox pulumi preview
@@ -166,9 +171,6 @@ prodbox k8s wait
 ### Destroy Infrastructure
 
 ```bash
-# Preview destruction
-prodbox pulumi preview
-
 # Destroy all resources
 prodbox pulumi destroy
 
@@ -186,7 +188,7 @@ The authoritative `prodbox` command matrix lives in [CLI Command Surface](docume
 
 ```bash
 # Install dev dependencies
-pip install -e ".[dev]"
+poetry install
 
 # Run tests
 poetry run prodbox test all
@@ -230,8 +232,10 @@ Testing note:
 - Use `poetry run prodbox test unit` for unit-only environments.
 - Integration-selected runs enforce `rke2 ensure` as a runbook gate before pytest starts.
 - The phase-two pytest timeout budget is 240 minutes.
+- Real shared-account AWS foundation validation uses `poetry run prodbox test integration aws-foundation` and exercises tagged delegated Route 53 child zones, S3 buckets, EC2/VPC resources, and janitor-style expired-resource cleanup.
+- Real EKS validation uses `poetry run prodbox test integration aws-eks` and exercises a tagged fixture-owned EKS control plane plus tagged IAM/VPC dependencies.
 - Real AWS DNS integration uses `poetry run prodbox test integration dns-aws` and requires a host-authenticated system `aws` CLI plus fixture-owned ephemeral Route 53 hosted zones via AWS CLI.
-- Real Pulumi validation uses `poetry run prodbox test integration pulumi`.
+- Real Pulumi validation uses `poetry run prodbox test integration pulumi`, a local Pulumi backend, and a fixture-owned Route 53 hosted zone to exercise `stack-init`, `preview`, `up`, and `destroy` against isolated test state.
 
 ### Project Structure
 

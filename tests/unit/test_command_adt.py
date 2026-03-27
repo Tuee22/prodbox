@@ -107,7 +107,8 @@ class TestEnvCommands:
         match env_template_command():
             case Success(cmd):
                 assert isinstance(cmd, EnvTemplateCommand)
-                assert "AWS_ACCESS_KEY_ID=" in cmd.template_text
+                assert "AWS_ACCESS_KEY_ID=" not in cmd.template_text
+                assert "ROUTE53_ZONE_ID=" in cmd.template_text
                 assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in cmd.template_text
             case Failure(_):
                 pytest.fail("Expected Success")

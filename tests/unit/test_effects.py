@@ -475,14 +475,12 @@ class TestDNSEffects:
         assert effect.effect_id == "fetch_ip"
 
     def test_query_route53_record(self) -> None:
-        """QueryRoute53Record should hold AWS credentials."""
+        """QueryRoute53Record should hold Route 53 query fields."""
         effect = QueryRoute53Record(
             effect_id="query_dns",
             description="Query DNS",
             zone_id="Z123456",
             fqdn="test.example.com",
-            aws_access_key_id="AKIA...",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
         assert effect.zone_id == "Z123456"
@@ -498,31 +496,25 @@ class TestDNSEffects:
             fqdn="test.example.com",
             ip="1.2.3.4",
             ttl=60,
-            aws_access_key_id="AKIA...",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
         assert effect.ip == "1.2.3.4"
         assert effect.ttl == 60
 
     def test_validate_aws_credentials(self) -> None:
-        """ValidateAWSCredentials should hold credentials."""
+        """ValidateAWSCredentials should hold ambient-auth validation fields."""
         effect = ValidateAWSCredentials(
             effect_id="validate_aws",
             description="Validate AWS",
-            aws_access_key_id="AKIA...",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
-        assert effect.aws_access_key_id == "AKIA..."
+        assert effect.aws_region == "us-east-1"
 
     def test_validate_route53_access(self) -> None:
-        """ValidateRoute53Access should hold credentials."""
+        """ValidateRoute53Access should hold Route 53 validation fields."""
         effect = ValidateRoute53Access(
             effect_id="validate_route53",
             description="Validate Route 53",
-            aws_access_key_id="AKIA...",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
         assert effect.aws_region == "us-east-1"
@@ -991,8 +983,6 @@ class TestEffectBaseClass:
                 description="d17",
                 zone_id="z",
                 fqdn="f",
-                aws_access_key_id="a",
-                aws_secret_access_key="s",
                 aws_region="r",
             ),
             UpdateRoute53Record(
@@ -1002,22 +992,16 @@ class TestEffectBaseClass:
                 fqdn="f",
                 ip="1.2.3.4",
                 ttl=60,
-                aws_access_key_id="a",
-                aws_secret_access_key="s",
                 aws_region="r",
             ),
             ValidateAWSCredentials(
                 effect_id="e19",
                 description="d19",
-                aws_access_key_id="a",
-                aws_secret_access_key="s",
                 aws_region="r",
             ),
             ValidateRoute53Access(
                 effect_id="e19b",
                 description="d19b",
-                aws_access_key_id="a",
-                aws_secret_access_key="s",
                 aws_region="r",
             ),
             RunPulumiCommand(effect_id="e20", description="d20", args=["up"]),

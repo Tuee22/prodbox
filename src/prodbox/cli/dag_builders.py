@@ -332,8 +332,6 @@ def _build_dns_query_effect(effect_id: str, prereq_results: PrereqResults) -> Qu
         zone_id=_require_setting_string(settings, "route53_zone_id"),
         fqdn=_require_setting_string(settings, "demo_fqdn"),
         aws_region=_require_setting_string(settings, "aws_region"),
-        aws_access_key_id=_require_setting_string(settings, "aws_access_key_id"),
-        aws_secret_access_key=_require_setting_string(settings, "aws_secret_access_key"),
     )
 
 
@@ -374,11 +372,6 @@ def _build_dns_update_effect(
                         ip=public_ip,
                         ttl=_require_setting_int(settings, "demo_ttl"),
                         aws_region=_require_setting_string(settings, "aws_region"),
-                        aws_access_key_id=_require_setting_string(settings, "aws_access_key_id"),
-                        aws_secret_access_key=_require_setting_string(
-                            settings,
-                            "aws_secret_access_key",
-                        ),
                     ),
                     WriteStdout(
                         effect_id="dns_update_report",

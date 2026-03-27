@@ -650,8 +650,6 @@ class QueryRoute53Record(Effect[str | None]):
     zone_id: str
     fqdn: str
     aws_region: str = "us-east-1"
-    aws_access_key_id: str | None = None
-    aws_secret_access_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -677,8 +675,6 @@ class UpdateRoute53Record(Effect[None]):
     ip: str
     ttl: int = 300
     aws_region: str = "us-east-1"
-    aws_access_key_id: str | None = None
-    aws_secret_access_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -697,8 +693,6 @@ class ValidateAWSCredentials(Effect[bool]):
     """
 
     aws_region: str = "us-east-1"
-    aws_access_key_id: str | None = None
-    aws_secret_access_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -711,8 +705,6 @@ class ValidateRoute53Access(Effect[bool]):
 
     aws_region: str = "us-east-1"
     zone_id: str | None = None
-    aws_access_key_id: str | None = None
-    aws_secret_access_key: str | None = None
 
 
 # =============================================================================

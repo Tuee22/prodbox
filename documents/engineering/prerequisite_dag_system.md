@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Implementation reference for prerequisite-driven DAG expansion and scheduling in prodbox CLI.
 > **📖 Authoritative Reference**: [Effectful DAG Architecture](./effectful_dag_architecture.md) for canonical architecture and output contract statements.

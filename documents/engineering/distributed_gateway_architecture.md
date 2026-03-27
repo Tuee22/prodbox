@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, README.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -233,8 +233,6 @@ class DnsWriteGate:
     fqdn: str           # Gateway FQDN to update
     ttl: int            # DNS record TTL (seconds)
     aws_region: str
-    aws_access_key_id: str
-    aws_secret_access_key: str
 ```
 
 When `dns_write_gate` is `None`, DNS write loop is a no-op (backward compatible).
@@ -245,6 +243,9 @@ Implements the `DnsWriteClient` protocol:
 - `fetch_public_ip()` — via `checkip.amazonaws.com`
 - `update_route53_record()` — boto3 UPSERT A record wrapped with `asyncio.to_thread()`
 - Auto-wired in daemon startup when gate config is present and no mock injected
+
+AWS auth for gateway DNS writes is ambient host auth only. `dns_write_gate` must not contain
+AWS access key, secret key, session token, or similar credential fields.
 
 ---
 

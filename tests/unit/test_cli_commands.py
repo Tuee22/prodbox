@@ -24,6 +24,8 @@ from click.testing import CliRunner
 from prodbox.cli.main import cli
 from prodbox.cli.test_cmd import (
     ALL_TEST_SUITE,
+    INTEGRATION_AWS_EKS_TEST_SUITE,
+    INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
     INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_GATEWAY_PODS_TEST_SUITE,
     INTEGRATION_PULUMI_TEST_SUITE,
@@ -987,6 +989,31 @@ class TestTestCommandSurface:
         assert result.exit_code == 0
         mock_run_suite.assert_called_once_with(
             suite=INTEGRATION_DNS_AWS_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_integration_aws_foundation_invokes_named_suite(
+        self,
+        runner: CliRunner,
+    ) -> None:
+        """aws-foundation should dispatch the shared-account AWS foundation suite."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(cli, ["test", "integration", "aws-foundation"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_integration_aws_eks_invokes_named_suite(self, runner: CliRunner) -> None:
+        """aws-eks should dispatch the real EKS control-plane integration suite."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(cli, ["test", "integration", "aws-eks"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_AWS_EKS_TEST_SUITE,
             coverage_settings=CoverageSettings(enabled=False, fail_under=None),
         )
 

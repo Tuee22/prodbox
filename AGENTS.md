@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md
+**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/pure_fp_standards.md
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
@@ -169,7 +169,7 @@ def test_parse_success(fp: FakeProcess) -> None:
 
 - Mark with `@pytest.mark.integration`
 - Require real infrastructure (kubectl, RKE2, etc.)
-- AWS-mutating integration tests must use host-authenticated system `aws` CLI state plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
+- AWS-mutating integration tests must use ambient host-authenticated system `aws` CLI state plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
 - Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
 - Use `poetry run prodbox test unit` when integration prerequisites are unavailable
 
@@ -202,7 +202,7 @@ This policy ensures human oversight of all code changes.
 ## Security
 
 - **Do not store auth credentials anywhere under the repo tree** - this includes unversioned `.env` files
-- **AWS auth must come from the system-level `aws` CLI on the host** - repo-local auth helpers are prohibited
+- **AWS auth must come from the system-level `aws` CLI on the host** - repo-local auth helpers and AWS auth env vars are prohibited
 - **Validate all external input** - especially FQDN, IP addresses
 - **Least privilege IAM** - Route 53 + STS only
 

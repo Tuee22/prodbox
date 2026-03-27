@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_COMPLETION_PLAN.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, AGENTS.md
+**Referenced by**: DEVELOPMENT_COMPLETION_PLAN.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
 
 > **Purpose**: Define how prodbox uses host-level AWS CLI authentication for integration tests and creates, tags, isolates, and cleans up real AWS resources.
 
@@ -14,7 +14,9 @@ AWS authentication material must never be stored anywhere under the repository t
 
 Stateful AWS integration uses the system-level `aws` CLI on the host, not repo-local auth helpers.
 
-The AWS test harness must consume host authentication that already exists before the test run begins; it must not perform interactive login inside the repo or inside pytest.
+The AWS test harness must consume ambient host authentication that already exists before the test run begins; it must not perform interactive login inside the repo or inside pytest.
+
+AWS auth environment variables are forbidden for `prodbox` commands, fixtures, and tests. Host authentication must come from the standard AWS shared config and cache state only.
 
 Stateful AWS-mutating integration tests must create only brand-new ephemeral AWS resources through AWS CLI commands owned by the test fixture.
 
@@ -31,7 +33,12 @@ This doctrine applies to any integration test that creates, updates, or deletes 
 Current expected users:
 
 1. Route 53 integration tests for `prodbox dns check` and `prodbox dns update`.
-2. Any future AWS-backed integration test that provisions temporary IAM-visible resources.
+2. Shared-account foundation integration tests that create delegated Route 53 child zones plus tagged S3 and EC2/VPC resources and then prove selective janitor cleanup.
+3. Real EKS integration tests that create a tagged control plane plus tagged IAM role and VPC dependencies.
+4. Real Pulumi integration tests that require a fixture-owned Route 53 hosted zone ID.
+5. Any future AWS-backed integration test that provisions temporary IAM-visible resources.
+
+It does not own the general multi-project AWS test-account topology, shared parent-domain strategy, or shared-account authentication posture. Those are defined in [AWS Test Environment](./aws_test_environment.md).
 
 This document does not restate general integration skip/fail-fast policy. That remains owned by [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests).
 
@@ -56,7 +63,6 @@ Allowed locations:
 
 1. System-level AWS CLI profile/config state under the operator home directory.
 2. System-level AWS CLI cache state under the operator home directory.
-3. Current-shell environment variables that were derived from host authentication and never written into repo files.
 
 ### 2.2 System-Level AWS CLI Ownership
 
@@ -66,19 +72,32 @@ Allowed host-level authentication patterns include:
 
 1. Existing AWS CLI profiles under `~/.aws`.
 2. Existing AWS CLI login state created outside the repository.
-3. Existing host shell exports derived from the system AWS CLI.
 
 Forbidden test-harness behavior:
 
 1. Running `aws login` interactively as part of pytest.
 2. Running `aws configure` interactively inside the repo as part of test execution.
 3. Generating repo-local credential files for test convenience.
+4. Exporting AWS auth env vars before invoking `prodbox` or pytest.
+5. Injecting AWS auth env vars into subprocesses started by repo code or tests.
 
-### 2.3 Shell Export Compatibility
+### 2.3 No AWS Auth Env Vars
 
-Some `prodbox` commands still expect AWS auth values in the process environment. When that compatibility path is used, the values must come from host-level AWS CLI authentication and may live only in the current shell session.
+The following environment variables are forbidden because they bypass or override ambient host AWS CLI auth:
 
-Those values must not be written into any file under the repository tree.
+1. `AWS_ACCESS_KEY_ID`
+2. `AWS_SECRET_ACCESS_KEY`
+3. `AWS_SESSION_TOKEN`
+4. `AWS_SECURITY_TOKEN`
+5. `AWS_PROFILE`
+6. `AWS_DEFAULT_PROFILE`
+7. `AWS_SHARED_CREDENTIALS_FILE`
+8. `AWS_CONFIG_FILE`
+9. `AWS_WEB_IDENTITY_TOKEN_FILE`
+10. `AWS_ROLE_ARN`
+11. `AWS_ROLE_SESSION_NAME`
+
+`prodbox` code and tests must fail fast when any of these variables are set.
 
 ---
 
@@ -149,6 +168,8 @@ Minimum required tagging intent:
 3. The resource is safe to delete.
 4. The resource has a scope or owner tag that identifies the originating suite.
 
+If AWS creates untaggable child resources under a tagged parent resource, the fixture must delete the tagged parent and verify that the AWS-managed children disappear with it.
+
 ---
 
 ## 5. Fixture Ownership And Cleanup
@@ -194,29 +215,74 @@ If fixture-owned AWS cleanup fails, teardown must abort the pytest session with 
 
 ## 6. Required AWS CLI Commands
 
-The canonical AWS CLI command set for ephemeral Route 53 integration environments is:
+### 6.1 Common Harness Commands
+
+All real AWS suites depend on:
 
 1. `aws sts get-caller-identity`
-2. `aws route53 create-hosted-zone`
-3. `aws route53 change-tags-for-resource`
-4. `aws route53 list-resource-record-sets`
-5. `aws route53 change-resource-record-sets`
-6. `aws route53 delete-hosted-zone`
 
-These commands are sufficient to:
+### 6.2 Route 53 And Delegation Commands
 
-1. validate the caller identity
-2. create an isolated hosted zone
-3. annotate that zone as ephemeral test-only state
-4. inspect fixture-owned records
-5. delete fixture-owned records
-6. delete the hosted zone itself
+The canonical Route 53 command set for hosted-zone and delegated-child-zone tests is:
+
+1. `aws route53 create-hosted-zone`
+2. `aws route53 change-tags-for-resource`
+3. `aws route53 get-hosted-zone`
+4. `aws route53 list-tags-for-resource`
+5. `aws route53 list-resource-record-sets`
+6. `aws route53 change-resource-record-sets`
+7. `aws route53 delete-hosted-zone`
+
+### 6.3 S3 And EC2/VPC Foundation Commands
+
+The canonical shared-account foundation command set also includes:
+
+1. `aws s3api create-bucket`
+2. `aws s3api put-bucket-tagging`
+3. `aws s3api get-bucket-tagging`
+4. `aws s3api put-object`
+5. `aws s3api get-object`
+6. `aws s3api list-objects-v2`
+7. `aws s3api delete-object`
+8. `aws s3api delete-bucket`
+9. `aws ec2 create-vpc`
+10. `aws ec2 modify-vpc-attribute`
+11. `aws ec2 create-subnet`
+12. `aws ec2 create-security-group`
+13. `aws ec2 create-network-interface`
+14. `aws ec2 create-tags`
+15. `aws ec2 describe-vpcs`
+16. `aws ec2 describe-subnets`
+17. `aws ec2 describe-security-groups`
+18. `aws ec2 describe-network-interfaces`
+19. `aws ec2 delete-network-interface`
+20. `aws ec2 delete-security-group`
+21. `aws ec2 delete-subnet`
+22. `aws ec2 delete-vpc`
+
+### 6.4 EKS Fixture Commands
+
+The canonical EKS suite command set also includes:
+
+1. `aws iam create-role`
+2. `aws iam list-role-tags`
+3. `aws iam attach-role-policy`
+4. `aws iam detach-role-policy`
+5. `aws iam delete-role`
+6. `aws iam list-roles`
+7. `aws iam list-attached-role-policies`
+8. `aws eks create-cluster`
+9. `aws eks describe-cluster`
+10. `aws eks wait cluster-active`
+11. `aws eks delete-cluster`
+12. `aws eks wait cluster-deleted`
+13. `aws eks list-clusters`
 
 ---
 
 ## 7. Route 53 Fixture Contract
 
-For Route 53 tests, the fixture contract is:
+For Route 53-backed AWS tests, the fixture contract is:
 
 1. Create a fresh hosted zone with a unique name.
 2. Tag that hosted zone as ephemeral and safe to delete.
@@ -225,14 +291,41 @@ For Route 53 tests, the fixture contract is:
 5. Delete the hosted zone in teardown.
 
 Tests must verify `prodbox` behavior against the fixture-owned hosted zone only.
+This applies both to direct DNS tests and to Pulumi tests that need a Route 53 hosted zone ID.
 
 ---
 
-## 8. Relationship To Other Doctrine
+## 8. Shared-Account Foundation Fixture Contract
+
+For the shared-account foundation suite, the fixture contract is:
+
+1. Create a tagged parent hosted zone.
+2. Create tagged child hosted zones for each project scope and delegate them from the parent zone.
+3. Create tagged S3 buckets and tagged EC2/VPC resources for each project scope.
+4. Prove that an expired-scope janitor sweep deletes only the expired child zone, bucket, and VPC scope.
+5. Prove that unexpired scopes remain intact until their fixture teardown runs.
+
+---
+
+## 9. EKS Fixture Contract
+
+For the EKS suite, the fixture contract is:
+
+1. Create a tagged IAM role for the control plane.
+2. Create a tagged VPC with at least two tagged subnets and a tagged security group.
+3. Create a tagged EKS control plane that depends only on those fixture-owned resources.
+4. Wait for the control plane to become `ACTIVE`.
+5. Delete the control plane, then the IAM role, then the VPC resources in teardown.
+6. Treat AWS-managed service-linked roles as shared-account baseline state, not project-owned test resources.
+
+---
+
+## 10. Relationship To Other Doctrine
 
 1. General unit vs integration policy and fail-fast expectations are defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests).
 2. Cluster-backed fixture ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 3. The explicit `prodbox test integration ...` suite surface is defined in [CLI Command Surface](./cli_command_surface.md#prodbox-test).
+4. General shared-account AWS test environment design is defined in [AWS Test Environment](./aws_test_environment.md).
 
 ---
 
@@ -241,4 +334,5 @@ Tests must verify `prodbox` behavior against the fixture-owned hosted zone only.
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [CLI Command Surface](./cli_command_surface.md)
+- [AWS Test Environment](./aws_test_environment.md)
 - [Documentation Standards](../documentation_standards.md)

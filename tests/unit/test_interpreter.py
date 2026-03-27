@@ -1523,8 +1523,6 @@ class TestEffectInterpreterAWS:
         effect = ValidateAWSCredentials(
             effect_id="validate_aws",
             description="Validate AWS credentials",
-            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-            aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             aws_region="us-east-1",
         )
 
@@ -1552,8 +1550,6 @@ class TestEffectInterpreterAWS:
         effect = ValidateAWSCredentials(
             effect_id="validate_aws",
             description="Validate AWS credentials",
-            aws_access_key_id="invalid",
-            aws_secret_access_key="invalid",
             aws_region="us-east-1",
         )
 
@@ -1573,6 +1569,32 @@ class TestEffectInterpreterAWS:
         assert interpreter.environment_errors[0].tool == "aws"
 
     @pytest.mark.asyncio
+    async def test_validate_aws_credentials_rejects_auth_env_vars(self) -> None:
+        """ValidateAWSCredentials should fail fast on forbidden AWS auth env vars."""
+        import os
+        import sys
+
+        from prodbox.cli.effects import ValidateAWSCredentials
+
+        interpreter = EffectInterpreter()
+        effect = ValidateAWSCredentials(
+            effect_id="validate_aws",
+            description="Validate AWS credentials",
+            aws_region="us-east-1",
+        )
+
+        mock_boto3 = MagicMock()
+
+        with (
+            patch.dict(sys.modules, {"boto3": mock_boto3}),
+            patch.dict(os.environ, {"AWS_ACCESS_KEY_ID": "forbidden"}, clear=True),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is False
+
+    @pytest.mark.asyncio
     async def test_query_route53_record_found(self) -> None:
         """QueryRoute53Record should return IP when found."""
         import sys
@@ -1585,8 +1607,6 @@ class TestEffectInterpreterAWS:
             description="Query DNS",
             zone_id="Z1234567890ABC",
             fqdn="test.example.com",
-            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-            aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             aws_region="us-east-1",
         )
 
@@ -1625,8 +1645,6 @@ class TestEffectInterpreterAWS:
             description="Query DNS",
             zone_id="Z1234567890ABC",
             fqdn="nonexistent.example.com",
-            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-            aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             aws_region="us-east-1",
         )
 
@@ -1658,8 +1676,6 @@ class TestEffectInterpreterAWS:
             fqdn="test.example.com",
             ip="5.6.7.8",
             ttl=300,
-            aws_access_key_id="AKIAIOSFODNN7EXAMPLE",
-            aws_secret_access_key="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             aws_region="us-east-1",
         )
 
@@ -2979,9 +2995,30 @@ class TestHarborRegistryEffects:
             mirror_cluster_images=False,
         )
 
+    def test_render_harbor_nginx_readyz_config_injects_once(self) -> None:
+        """Harbor nginx config should gain one local `/readyz` location."""
+        nginx_conf = "\n".join(
+            [
+                "server {",
+                "        listen 8080;",
+                "        location / {",
+                "          proxy_pass http://portal/;",
+                "        }",
+                "}",
+            ]
+        )
+
+        patched = EffectInterpreter._render_harbor_nginx_readyz_config(nginx_conf)
+
+        assert patched is not None
+        assert "location = /readyz {" in patched
+        assert 'return 200 "ok\\n";' in patched
+        assert patched.count("location = /readyz {") == 1
+        assert EffectInterpreter._render_harbor_nginx_readyz_config(patched) == patched
+
     @pytest.mark.asyncio
     async def test_waits_for_harbor_nginx_before_registry_login(self) -> None:
-        """Harbor ensure should wait for nginx because login flows through the NodePort."""
+        """Harbor ensure should wait for nginx after reconciling the local readyz contract."""
         interpreter = EffectInterpreter()
         effect = self._harbor_effect()
         with (
@@ -3007,6 +3044,11 @@ class TestHarborRegistryEffects:
                     )
                 ),
             ) as mock_run_kubectl,
+            patch.object(
+                interpreter,
+                "_ensure_harbor_nginx_readiness_contract",
+                new=AsyncMock(return_value=None),
+            ),
             patch.object(
                 interpreter,
                 "_ensure_harbor_project",
@@ -3042,8 +3084,8 @@ class TestHarborRegistryEffects:
         assert login_call.args[0][:3] == ("docker", "login", "127.0.0.1:30080")
 
     @pytest.mark.asyncio
-    async def test_harbor_nginx_unavailable_fails_effect(self) -> None:
-        """Harbor ensure should fail if the serving nginx deployment never becomes Available."""
+    async def test_harbor_readyz_contract_failure_fails_effect(self) -> None:
+        """Harbor ensure should fail when prodbox cannot reconcile the nginx readiness contract."""
         interpreter = EffectInterpreter()
         effect = self._harbor_effect()
         with (
@@ -3056,6 +3098,39 @@ class TestHarborRegistryEffects:
                         ProcessOutput(returncode=0, stdout=b"", stderr=b""),
                     )
                 ),
+            ),
+            patch.object(
+                interpreter,
+                "_ensure_harbor_nginx_readiness_contract",
+                new=AsyncMock(return_value="readyz patch failed"),
+            ),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert summary.message == "readyz patch failed"
+
+    @pytest.mark.asyncio
+    async def test_harbor_nginx_unavailable_fails_effect(self) -> None:
+        """Harbor ensure should fail if nginx never becomes Available after the readyz patch."""
+        interpreter = EffectInterpreter()
+        effect = self._harbor_effect()
+        with (
+            patch(
+                "prodbox.cli.interpreter._run_subprocess",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
+                ),
+            ),
+            patch.object(
+                interpreter,
+                "_ensure_harbor_nginx_readiness_contract",
+                new=AsyncMock(return_value=None),
             ),
             patch.object(
                 interpreter,
@@ -3187,8 +3262,6 @@ class TestRoute53Effects:
             description="Query Route53",
             zone_id="Z123456789",
             fqdn="test.example.com",
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3223,8 +3296,6 @@ class TestRoute53Effects:
             description="Query Route53 empty",
             zone_id="Z123456789",
             fqdn="nonexistent.example.com",
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3251,8 +3322,6 @@ class TestRoute53Effects:
             description="Query Route53 fail",
             zone_id="Z123456789",
             fqdn="test.example.com",
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3281,8 +3350,6 @@ class TestRoute53Effects:
             fqdn="test.example.com",
             ip="5.6.7.8",
             ttl=300,
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3310,8 +3377,6 @@ class TestRoute53Effects:
             fqdn="test.example.com",
             ip="5.6.7.8",
             ttl=300,
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3335,8 +3400,6 @@ class TestRoute53Effects:
         effect = ValidateAWSCredentials(
             effect_id="validate_aws",
             description="Validate AWS",
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3365,8 +3428,6 @@ class TestRoute53Effects:
         effect = ValidateAWSCredentials(
             effect_id="validate_aws_fail",
             description="Validate AWS fail",
-            aws_access_key_id="AKIAINVALID",
-            aws_secret_access_key="invalid",
             aws_region="us-east-1",
         )
 
@@ -3394,8 +3455,6 @@ class TestRoute53Effects:
             effect_id="validate_route53",
             description="Validate Route 53 access",
             zone_id="Z123456789",
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 
@@ -3420,8 +3479,6 @@ class TestRoute53Effects:
             effect_id="validate_route53_fail",
             description="Validate Route 53 access failure",
             zone_id="Z123456789",
-            aws_access_key_id="AKIATEST",
-            aws_secret_access_key="secret",
             aws_region="us-east-1",
         )
 

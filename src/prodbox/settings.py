@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Annotated
 
 from pydantic import Field, field_validator
+from pydantic.functional_validators import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from prodbox.lib.aws_auth import assert_ambient_aws_auth_only, assert_no_aws_auth_in_dotenv
 
 RenderedSettingValue = str | int | Path | None
 
@@ -17,7 +20,7 @@ RenderedSettingValue = str | int | Path | None
 class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSettings uses Any internally
     """Central configuration for all prodbox operations.
 
-    All configuration comes from environment variables.
+    All non-auth configuration comes from environment variables.
     Use `prodbox env show` to display effective configuration.
     """
 
@@ -43,18 +46,6 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         Field(
             default="us-east-1",
             description="AWS region for Route 53",
-        ),
-    ]
-    aws_access_key_id: Annotated[
-        str,
-        Field(
-            description="AWS access key ID",
-        ),
-    ]
-    aws_secret_access_key: Annotated[
-        str,
-        Field(
-            description="AWS secret access key (sensitive)",
         ),
     ]
     route53_zone_id: Annotated[
@@ -136,6 +127,14 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         if isinstance(v, str):
             return Path(v).expanduser()
         return v.expanduser()
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_aws_auth_env_vars(cls, data: object) -> object:
+        """Reject AWS auth env vars so all AWS calls use ambient host auth only."""
+        assert_ambient_aws_auth_only()
+        assert_no_aws_auth_in_dotenv(Path(".env"))
+        return data
 
     def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
         """Return settings keyed by attribute name for deterministic display/tests."""
@@ -249,21 +248,6 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         template_default="us-east-1",
     ),
     SettingSpec(
-        attribute="aws_access_key_id",
-        env_var="AWS_ACCESS_KEY_ID",
-        description="AWS access key ID",
-        getter=lambda settings: settings.aws_access_key_id,
-        required=True,
-    ),
-    SettingSpec(
-        attribute="aws_secret_access_key",
-        env_var="AWS_SECRET_ACCESS_KEY",
-        description="AWS secret access key",
-        getter=lambda settings: settings.aws_secret_access_key,
-        required=True,
-        sensitive=True,
-    ),
-    SettingSpec(
         attribute="route53_zone_id",
         env_var="ROUTE53_ZONE_ID",
         description="Route 53 hosted zone ID",
@@ -308,6 +292,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         description="Email for Let's Encrypt registration",
         getter=lambda settings: settings.acme_email,
         required=True,
+        sensitive=True,
     ),
     SettingSpec(
         attribute="acme_server",

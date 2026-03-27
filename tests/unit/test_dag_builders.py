@@ -59,6 +59,7 @@ from prodbox.cli.effects import (
     PulumiPreview,
     PulumiRefresh,
     PulumiStackSelect,
+    Pure,
     QueryRoute53Record,
     RunPulumiCommand,
     RunSystemdCommand,
@@ -793,6 +794,41 @@ class TestPulumiCommandPrerequisites:
                 assert "tool_pulumi" in root.prerequisites
                 assert "pulumi_logged_in" in root.prerequisites
                 assert isinstance(root.effect, RunPulumiCommand)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+
+class TestUserVisibleCommandBuilderRegressionGuards:
+    """Regression guards for repaired user-facing command builders."""
+
+    @pytest.mark.parametrize(
+        ("command", "root_id"),
+        [
+            (EnvShowCommand(show_secrets=False), "env_show"),
+            (EnvTemplateCommand(), "env_template"),
+            (HostCheckPortsCommand(ports=(80, 443)), "host_check_ports"),
+            (DNSCheckCommand(), "dns_check"),
+            (DNSUpdateCommand(force=False), "dns_update"),
+            (PulumiPreviewCommand(stack="dev"), "pulumi_preview"),
+            (PulumiUpCommand(stack="dev", yes=False), "pulumi_up"),
+            (PulumiDestroyCommand(stack="dev", yes=True), "pulumi_destroy"),
+            (PulumiRefreshCommand(stack="dev"), "pulumi_refresh"),
+            (PulumiStackInitCommand(stack="dev"), "pulumi_stack_init"),
+        ],
+    )
+    def test_repaired_commands_do_not_regress_to_lone_pure_root(
+        self,
+        command: object,
+        root_id: str,
+    ) -> None:
+        """Repaired user-facing commands must not collapse back to a lone Pure root."""
+        match command_to_dag(command):
+            case Success(dag):
+                root = dag.get_node(root_id)
+                assert root is not None
+                assert not (
+                    len(dag) == 1 and isinstance(root.effect, Pure)
+                ), f"{root_id} regressed to a lone Pure root"
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 

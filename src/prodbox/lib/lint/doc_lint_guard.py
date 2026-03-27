@@ -12,6 +12,7 @@ from prodbox.lib.lint.poetry_entrypoint_policy import repo_root
 _LINK_PATTERN: re.Pattern[str] = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 _HEADER_PATTERN: re.Pattern[str] = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _CODE_FENCE_PATTERN: re.Pattern[str] = re.compile(r"^\s*```")
+_REFERENCED_BY_PATTERN: re.Pattern[str] = re.compile(r"^\*\*Referenced by\*\*:\s*(.*)$", re.M)
 
 
 @dataclass(frozen=True)
@@ -52,8 +53,9 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
     IntentRule(
         name="rke2_lifecycle_orchestration",
         statement=(
-            "RKE2 cluster provisioning is idempotently performed via eDAG lifecycle "
-            "effects, not assumed pre-existing."
+            "RKE2 runtime reconciliation and startup are idempotently performed via "
+            "eDAG lifecycle effects once required host binaries and configuration "
+            "already exist; host installation is not performed implicitly."
         ),
         canonical_docs=frozenset({Path("documents/engineering/prerequisite_doctrine.md")}),
     ),
@@ -270,9 +272,10 @@ def find_doc_lint_violations(
         target_files if target_files is not None else _default_markdown_files(repo_path)
     )
     link_violations = _link_violations(repo_path, markdown_files)
+    backlink_violations = _backlink_violations(repo_path, markdown_files)
     intent_violations = _intent_violations(repo_path, markdown_files, intent_rules=intent_rules)
     all_violations = sorted(
-        (*link_violations, *intent_violations),
+        (*link_violations, *backlink_violations, *intent_violations),
         key=_violation_sort_key,
     )
     return tuple(all_violations)
@@ -286,6 +289,60 @@ def _default_markdown_files(repo_path: Path) -> tuple[Path, ...]:
         if candidate.exists():
             files.append(candidate)
     return tuple(sorted(files))
+
+
+def _backlink_violations(
+    repo_path: Path,
+    markdown_files: tuple[Path, ...],
+) -> tuple[DocLintViolation, ...]:
+    tracked_rel_paths = frozenset(
+        markdown_file.relative_to(repo_path) for markdown_file in markdown_files
+    )
+    incoming_links: dict[Path, set[Path]] = {
+        relative_path: set() for relative_path in tracked_rel_paths
+    }
+
+    for markdown_file in markdown_files:
+        source = markdown_file.read_text(encoding="utf-8")
+        source_relative = markdown_file.relative_to(repo_path)
+        in_code_fence = False
+        for line in source.splitlines():
+            if _CODE_FENCE_PATTERN.match(line):
+                in_code_fence = not in_code_fence
+                continue
+            if in_code_fence:
+                continue
+            for link_target in _extract_markdown_links(line):
+                if _is_external_link(link_target):
+                    continue
+                file_part, _anchor = _split_link(link_target)
+                target_file = _resolve_target(markdown_file, file_part=file_part)
+                if not target_file.exists():
+                    continue
+                target_relative = target_file.relative_to(repo_path)
+                if target_relative == source_relative:
+                    continue
+                if target_relative not in tracked_rel_paths:
+                    continue
+                incoming_links[target_relative].add(source_relative)
+
+    violations: list[DocLintViolation] = []
+    for markdown_file in markdown_files:
+        relative_path = markdown_file.relative_to(repo_path)
+        referenced_by = _referenced_by_entries(markdown_file.read_text(encoding="utf-8"))
+        for source_relative in sorted(incoming_links[relative_path], key=str):
+            if str(source_relative) in referenced_by:
+                continue
+            violations.append(
+                DocLintViolation(
+                    relative_path=relative_path,
+                    line_number=1,
+                    reason=(
+                        f"Missing back-reference to {source_relative} in " f"'Referenced by' header"
+                    ),
+                )
+            )
+    return tuple(violations)
 
 
 def _link_violations(
@@ -383,6 +440,17 @@ def _extract_markdown_links(line: str) -> tuple[str, ...]:
         if isinstance(group_value, str):
             links.append(group_value.strip())
     return tuple(links)
+
+
+def _referenced_by_entries(content: str) -> frozenset[str]:
+    header_match = _REFERENCED_BY_PATTERN.search(content)
+    if header_match is None:
+        return frozenset()
+    group_value = header_match.group(1)
+    if not isinstance(group_value, str):
+        return frozenset()
+    entries = [entry.strip() for entry in group_value.split(",")]
+    return frozenset(entry for entry in entries if entry != "")
 
 
 def _is_external_link(link_target: str) -> bool:

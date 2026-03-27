@@ -19,6 +19,8 @@ from typing import Literal, Protocol, cast
 
 import httpx
 
+from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
+
 ChannelName = Literal["mesh", "gateway"]
 
 MIN_HEARTBEAT_TIMEOUT_SECONDS: int = 3
@@ -62,6 +64,24 @@ def _as_object_mapping(value: object) -> Mapping[object, object] | None:
     if not isinstance(value, Mapping):
         return None
     return cast(Mapping[object, object], value)
+
+
+def _reject_forbidden_dns_write_gate_keys(gate_dict: Mapping[object, object]) -> None:
+    """Reject legacy explicit AWS credential fields in dns_write_gate config."""
+    present = tuple(
+        key
+        for key in ("aws_access_key_id", "aws_secret_access_key", "aws_session_token")
+        if gate_dict.get(key) not in (None, "")
+    )
+    match present:
+        case ():
+            return
+        case _:
+            raise ValueError(
+                "dns_write_gate must not contain explicit AWS credentials. "
+                "Configure ambient host aws CLI auth outside the repo and remove: "
+                f"{', '.join(present)}"
+            )
 
 
 def _as_object_sequence(value: object) -> tuple[object, ...] | None:
@@ -571,13 +591,12 @@ class DaemonConfig:
         dns_write_gate: DnsWriteGate | None = None
         match dns_gate_raw:
             case dict() as gate_dict:
+                _reject_forbidden_dns_write_gate_keys(gate_dict)
                 dns_write_gate = DnsWriteGate(
                     zone_id=str(gate_dict.get("zone_id")),
                     fqdn=str(gate_dict.get("fqdn")),
                     ttl=int(str(gate_dict.get("ttl", 300))),
                     aws_region=str(gate_dict.get("aws_region")),
-                    aws_access_key_id=str(gate_dict.get("aws_access_key_id")),
-                    aws_secret_access_key=str(gate_dict.get("aws_secret_access_key")),
                 )
             case None:
                 pass
@@ -611,9 +630,6 @@ class DnsWriteClient(Protocol):
         fqdn: str,
         ip_address: str,
         ttl: int,
-        aws_region: str,
-        aws_access_key_id: str,
-        aws_secret_access_key: str,
     ) -> bool:
         """Update a Route 53 A record. Returns True on success."""
 
@@ -626,24 +642,18 @@ class DnsWriteGate:
     fqdn: str
     ttl: int
     aws_region: str
-    aws_access_key_id: str
-    aws_secret_access_key: str
 
 
 @dataclass(frozen=True)
 class Route53DnsWriteClient:
     """Real Route 53 DNS write client backed by boto3."""
 
-    _aws_access_key_id: str
-    _aws_secret_access_key: str
     _aws_region: str
 
     @staticmethod
     def from_gate(gate: DnsWriteGate) -> Route53DnsWriteClient:
         """Create client from DnsWriteGate configuration."""
         return Route53DnsWriteClient(
-            _aws_access_key_id=gate.aws_access_key_id,
-            _aws_secret_access_key=gate.aws_secret_access_key,
             _aws_region=gate.aws_region,
         )
 
@@ -661,9 +671,6 @@ class Route53DnsWriteClient:
         fqdn: str,
         ip_address: str,
         ttl: int,
-        aws_region: str,
-        aws_access_key_id: str,
-        aws_secret_access_key: str,
     ) -> bool:
         """UPSERT A record via Route 53 change_resource_record_sets."""
         import asyncio
@@ -671,11 +678,8 @@ class Route53DnsWriteClient:
         import boto3
 
         def _do_upsert() -> bool:
-            session = boto3.Session(
-                aws_access_key_id=aws_access_key_id,
-                aws_secret_access_key=aws_secret_access_key,
-                region_name=aws_region,
-            )
+            assert_ambient_aws_auth_only()
+            session = boto3.Session(region_name=self._aws_region)
             r53 = session.client("route53")
             change_batch: dict[str, object] = {
                 "Comment": f"Gateway DDNS update: {fqdn} -> {ip_address}",
@@ -1013,9 +1017,6 @@ class GatewayDaemon:
             fqdn=gate.fqdn,
             ip_address=ip_address,
             ttl=gate.ttl,
-            aws_region=gate.aws_region,
-            aws_access_key_id=gate.aws_access_key_id,
-            aws_secret_access_key=gate.aws_secret_access_key,
         )
         if success:
             self._last_dns_write_ip = ip_address

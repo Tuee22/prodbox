@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, README.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
 
@@ -44,7 +44,20 @@ All documentation files use `snake_case.md`:
 - `README.md`
 - `CLAUDE.md`
 - `AGENTS.md`
-- `PRODBOX_PLAN.md`
+- Root `UPPER_CASE_PLAN.md` files such as `DEVELOPMENT_COMPLETION_PLAN.md`
+
+### Ephemeral Root Plans
+
+Root `UPPER_CASE_PLAN.md` files are ephemeral planning artifacts and are not subject to the
+documentation standards in this document.
+
+They are explicitly exempt from:
+
+- the `snake_case.md` naming rule
+- the required header metadata block
+- the status vocabulary defined below
+- bidirectional `Referenced by` metadata requirements
+- the documentation-topology requirements in this file unless a plan explicitly opts in
 
 ---
 

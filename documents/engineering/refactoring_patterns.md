@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md
+**Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md
 
 > **Purpose**: Before/after patterns for migrating imperative code to pure functional programming.
 

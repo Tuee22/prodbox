@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md, documents/engineering/refactoring_patterns.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Definitive standards for pure functional programming in prodbox. All code must be pure EXCEPT the interpreter, which is the designated impurity boundary.
 

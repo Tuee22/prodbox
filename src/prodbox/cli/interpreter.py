@@ -41,6 +41,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, TypeVar
 
+from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
+
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -203,6 +205,9 @@ from prodbox.lib.prodbox_k8s import PRODBOX_EPHEMERAL_RESOURCE_KINDS  # noqa: E4
 T = TypeVar("T")
 _NO_CALLER_VALUE: object = object()
 _PREREQ_FAILURE_PREFIX: str = "Prerequisite failure propagated:"
+_HARBOR_NGINX_READY_PATH: str = "/readyz"
+_HARBOR_NGINX_READY_CONTRACT_ANNOTATION_KEY: str = "prodbox.io/harbor-nginx-readiness-contract"
+_HARBOR_NGINX_READY_CONTRACT_ANNOTATION_VALUE: str = "readyz-v1"
 
 
 def _assert_never(value: object) -> Never:
@@ -1557,11 +1562,8 @@ class EffectInterpreter:
         try:
             import boto3
 
-            session = boto3.Session(
-                aws_access_key_id=effect.aws_access_key_id,
-                aws_secret_access_key=effect.aws_secret_access_key,
-                region_name=effect.aws_region,
-            )
+            assert_ambient_aws_auth_only()
+            session = boto3.Session(region_name=effect.aws_region)
             client = session.client("route53")
 
             response = client.list_resource_record_sets(
@@ -1606,11 +1608,8 @@ class EffectInterpreter:
         try:
             import boto3
 
-            session = boto3.Session(
-                aws_access_key_id=effect.aws_access_key_id,
-                aws_secret_access_key=effect.aws_secret_access_key,
-                region_name=effect.aws_region,
-            )
+            assert_ambient_aws_auth_only()
+            session = boto3.Session(region_name=effect.aws_region)
             client = session.client("route53")
 
             client.change_resource_record_sets(
@@ -1644,11 +1643,8 @@ class EffectInterpreter:
         try:
             import boto3
 
-            session = boto3.Session(
-                aws_access_key_id=effect.aws_access_key_id,
-                aws_secret_access_key=effect.aws_secret_access_key,
-                region_name=effect.aws_region,
-            )
+            assert_ambient_aws_auth_only()
+            session = boto3.Session(region_name=effect.aws_region)
             sts = session.client("sts")
             sts.get_caller_identity()
 
@@ -1661,7 +1657,7 @@ class EffectInterpreter:
                 EnvironmentError(
                     tool="aws",
                     message=f"Invalid AWS credentials: {e}",
-                    fix_hint="Configure AWS credentials via environment variables",
+                    fix_hint="Authenticate the system-level aws CLI outside the repo",
                     source_effect_id=effect.effect_id,
                 )
             )
@@ -1674,11 +1670,8 @@ class EffectInterpreter:
         try:
             import boto3
 
-            session = boto3.Session(
-                aws_access_key_id=effect.aws_access_key_id,
-                aws_secret_access_key=effect.aws_secret_access_key,
-                region_name=effect.aws_region,
-            )
+            assert_ambient_aws_auth_only()
+            session = boto3.Session(region_name=effect.aws_region)
             route53 = session.client("route53")
             zone_id = effect.zone_id or os.environ.get("ROUTE53_ZONE_ID")
             match zone_id:
@@ -1695,7 +1688,7 @@ class EffectInterpreter:
                 EnvironmentError(
                     tool="route53",
                     message=f"Route 53 access failed: {e}",
-                    fix_hint="Ensure AWS credentials have Route 53 permissions",
+                    fix_hint="Authenticate the system-level aws CLI for Route 53 access",
                     source_effect_id=effect.effect_id,
                 )
             )
@@ -2196,6 +2189,131 @@ class EffectInterpreter:
         return output.stdout.decode("utf-8", errors="replace").strip()
 
     @staticmethod
+    def _harbor_component_name(*, release_name: str, component: str) -> str:
+        """Build one Harbor resource name from release and component."""
+        return f"{release_name}-{component}"
+
+    @staticmethod
+    def _render_harbor_nginx_readyz_config(nginx_conf: str) -> str | None:
+        """Inject a local `/readyz` location into the Harbor nginx config once."""
+        if f"location = {_HARBOR_NGINX_READY_PATH} {{" in nginx_conf:
+            return nginx_conf
+        match = re.search(r"(?m)^(?P<indent>\s+)location / \{$", nginx_conf)
+        if match is None:
+            return None
+        indent = match.group("indent")
+        insertion_point = f"{indent}location / {{"
+        ready_block = "\n".join(
+            [
+                f"{indent}location = {_HARBOR_NGINX_READY_PATH} {{",
+                f"{indent}  access_log off;",
+                f'{indent}  return 200 "ok\\n";',
+                f"{indent}}}",
+                "",
+            ]
+        )
+        return nginx_conf.replace(insertion_point, ready_block + insertion_point, 1)
+
+    async def _ensure_harbor_nginx_readiness_contract(
+        self,
+        *,
+        release_name: str,
+        namespace: str,
+    ) -> str | None:
+        """Patch Harbor nginx to publish a local readiness event owned by prodbox."""
+        nginx_name = self._harbor_component_name(release_name=release_name, component="nginx")
+        config_output = await self._run_kubectl(
+            "get",
+            "configmap",
+            nginx_name,
+            "-n",
+            namespace,
+            "-o",
+            r"jsonpath={.data.nginx\.conf}",
+            timeout=20.0,
+        )
+        if config_output.returncode != 0:
+            return (
+                f"Failed to read Harbor nginx ConfigMap {nginx_name}: "
+                f"{config_output.stderr.decode('utf-8', errors='replace')}"
+            )
+        nginx_conf = config_output.stdout.decode("utf-8", errors="replace")
+        patched_nginx_conf = self._render_harbor_nginx_readyz_config(nginx_conf)
+        if patched_nginx_conf is None:
+            return f"Failed to inject Harbor nginx readiness path into ConfigMap {nginx_name}"
+        if patched_nginx_conf != nginx_conf:
+            configmap_manifest: dict[str, object] = {
+                "apiVersion": "v1",
+                "kind": "ConfigMap",
+                "metadata": {
+                    "name": nginx_name,
+                    "namespace": namespace,
+                },
+                "data": {"nginx.conf": patched_nginx_conf},
+            }
+            apply_output = await self._run_kubectl(
+                "apply",
+                "-f",
+                "-",
+                input_data=json.dumps(configmap_manifest).encode("utf-8"),
+                timeout=30.0,
+            )
+            if apply_output.returncode != 0:
+                return (
+                    f"Failed to apply Harbor nginx ConfigMap {nginx_name}: "
+                    f"{apply_output.stderr.decode('utf-8', errors='replace')}"
+                )
+
+        readiness_http_get: dict[str, object] = {
+            "path": _HARBOR_NGINX_READY_PATH,
+            "port": 8080,
+            "scheme": "HTTP",
+        }
+        liveness_http_get: dict[str, object] = {
+            "path": _HARBOR_NGINX_READY_PATH,
+            "port": 8080,
+            "scheme": "HTTP",
+        }
+        container_patch: dict[str, object] = {
+            "name": "nginx",
+            "readinessProbe": {"httpGet": readiness_http_get},
+            "livenessProbe": {"httpGet": liveness_http_get},
+        }
+        deployment_patch_body: dict[str, object] = {
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "annotations": {
+                            _HARBOR_NGINX_READY_CONTRACT_ANNOTATION_KEY: _HARBOR_NGINX_READY_CONTRACT_ANNOTATION_VALUE,
+                        }
+                    },
+                    "spec": {
+                        "containers": [container_patch],
+                    },
+                }
+            }
+        }
+        deployment_patch = json.dumps(deployment_patch_body)
+        deployment_output = await self._run_kubectl(
+            "patch",
+            "deployment",
+            nginx_name,
+            "-n",
+            namespace,
+            "--type",
+            "strategic",
+            "--patch",
+            deployment_patch,
+            timeout=30.0,
+        )
+        if deployment_output.returncode != 0:
+            return (
+                f"Failed to patch Harbor nginx Deployment {nginx_name}: "
+                f"{deployment_output.stderr.decode('utf-8', errors='replace')}"
+            )
+        return None
+
+    @staticmethod
     def _render_rke2_registries_yaml(*, registry_endpoint: str, mirror_project: str) -> str:
         """Render deterministic RKE2 registries mirror configuration."""
         return "\n".join(
@@ -2503,6 +2621,18 @@ class EffectInterpreter:
     ) -> tuple[ExecutionSummary, HarborRuntime | None]:
         """Install/reconcile Harbor and ensure local registry doctrine runtime."""
         registry_endpoint = effect.registry_endpoint
+        harbor_core_name = self._harbor_component_name(
+            release_name=effect.release_name,
+            component="core",
+        )
+        harbor_registry_name = self._harbor_component_name(
+            release_name=effect.release_name,
+            component="registry",
+        )
+        harbor_nginx_name = self._harbor_component_name(
+            release_name=effect.release_name,
+            component="nginx",
+        )
 
         helm_repo_add = await _run_subprocess(
             ("helm", "repo", "add", effect.repository_name, effect.repository_url),
@@ -2566,9 +2696,18 @@ class EffectInterpreter:
                 None,
             )
 
-        # Harbor API and registry login flow traverse the nginx NodePort service,
-        # so deploy-time readiness must include the external-serving ingress layer.
-        for deployment in ("harbor-core", "harbor-registry", "harbor-nginx"):
+        readiness_patch_error = await self._ensure_harbor_nginx_readiness_contract(
+            release_name=effect.release_name,
+            namespace=effect.namespace,
+        )
+        if readiness_patch_error is not None:
+            self.failed_effects += 1
+            return self._create_error_summary(readiness_patch_error), None
+
+        # Harbor bootstrap depends on two distinct signals:
+        # core/registry capability comes from their own Deployments,
+        # while nginx availability must reflect local serve readiness, not proxied `/`.
+        for deployment in (harbor_core_name, harbor_registry_name, harbor_nginx_name):
             wait_output = await self._run_kubectl(
                 "wait",
                 "--for=condition=Available",

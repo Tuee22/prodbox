@@ -22,7 +22,7 @@ def test_doc_lint_guard_accepts_valid_links_and_intent_ownership(tmp_path: Path)
     )
     policy = _write(
         repo_root / "documents" / "policy.md",
-        "# Policy\n\n## Rule One\n\nCanonical doctrine statement.\n",
+        "# Policy\n\n**Referenced by**: README.md\n\n## Rule One\n\nCanonical doctrine statement.\n",
     )
     intent_rule = IntentRule(
         name="sample",
@@ -44,7 +44,10 @@ def test_doc_lint_guard_flags_missing_anchor(tmp_path: Path) -> None:
         repo_root / "README.md",
         "# Root\n\nSee [Details](documents/policy.md#missing-anchor).\n",
     )
-    policy = _write(repo_root / "documents" / "policy.md", "# Policy\n\n## Rule One\n\nText\n")
+    policy = _write(
+        repo_root / "documents" / "policy.md",
+        "# Policy\n\n**Referenced by**: README.md\n\n## Rule One\n\nText\n",
+    )
     intent_rule = IntentRule(
         name="sample",
         statement="Text",
@@ -77,3 +80,28 @@ def test_doc_lint_guard_flags_intent_statement_outside_canonical_owner(tmp_path:
     )
     assert len(violations) == 1
     assert "outside canonical owner" in violations[0].reason
+
+
+def test_doc_lint_guard_flags_missing_referenced_by_backlink(tmp_path: Path) -> None:
+    """Guard should reject missing backlink metadata for internal markdown references."""
+    repo_root = tmp_path / "repo"
+    readme = _write(
+        repo_root / "README.md",
+        "# Root\n\nSee [Details](documents/policy.md#rule-one).\n",
+    )
+    policy = _write(
+        repo_root / "documents" / "policy.md",
+        "# Policy\n\n**Referenced by**: CLAUDE.md\n\n## Rule One\n\nCanonical doctrine statement.\n",
+    )
+    intent_rule = IntentRule(
+        name="sample",
+        statement="Canonical doctrine statement.",
+        canonical_docs=frozenset({Path("documents/policy.md")}),
+    )
+    violations = find_doc_lint_violations(
+        repo_root,
+        target_files=(readme, policy),
+        intent_rules=(intent_rule,),
+    )
+    assert len(violations) == 1
+    assert "Missing back-reference to README.md" in violations[0].reason

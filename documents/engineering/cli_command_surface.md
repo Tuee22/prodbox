@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Define the explicit, no-passthrough Click command surface for `prodbox`.
 
@@ -128,6 +128,8 @@ Named suite commands:
 | `prodbox test all` | `tests/unit` + `tests/integration` |
 | `prodbox test unit` | `tests/unit` |
 | `prodbox test integration all` | `tests/integration` |
+| `prodbox test integration aws-foundation` | `tests/integration/test_aws_foundation_real.py` |
+| `prodbox test integration aws-eks` | `tests/integration/test_aws_eks_real.py` |
 | `prodbox test integration cli` | `tests/integration/test_cli_commands.py` |
 | `prodbox test integration dns-aws` | `tests/integration/test_dns_route53_aws.py` |
 | `prodbox test integration env` | `tests/integration/test_cli_env.py` |

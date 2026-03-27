@@ -16,6 +16,8 @@ from prodbox.cli.test_cmd import (
     ALL_INTEGRATION_TEST_PREREQUISITES,
     ALL_TEST_SUITE,
     CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    INTEGRATION_AWS_EKS_TEST_SUITE,
+    INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
     INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_ENV_TEST_SUITE,
     INTEGRATION_PULUMI_TEST_SUITE,
@@ -124,6 +126,29 @@ def test_build_test_dag_uses_aws_specific_gate_without_runbook() -> None:
     """AWS DNS suite should gate on AWS prerequisites but not run rke2 ensure."""
     dag = _build_test_dag(
         suite=INTEGRATION_DNS_AWS_TEST_SUITE,
+        coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+    )
+    phase_two = dag.get_node("pytest_phase_two")
+    assert phase_two is not None
+    assert phase_two.prerequisites == frozenset({"tool_aws"})
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    assert [effect.effect_id for effect in phase_two_effect.effects] == [
+        "pytest_phase_two_header",
+        "pytest_run",
+    ]
+
+
+@pytest.mark.parametrize(
+    "suite",
+    [
+        INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
+        INTEGRATION_AWS_EKS_TEST_SUITE,
+    ],
+)
+def test_build_test_dag_uses_aws_gate_for_new_real_aws_suites(suite: object) -> None:
+    """New real AWS suites should use the AWS prerequisite gate without the cluster runbook."""
+    dag = _build_test_dag(
+        suite=cast(object, suite),
         coverage_settings=CoverageSettings(enabled=False, fail_under=None),
     )
     phase_two = dag.get_node("pytest_phase_two")

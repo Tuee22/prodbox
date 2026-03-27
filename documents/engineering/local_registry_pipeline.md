@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/storage_lifecycle_doctrine.md, README.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Define how prodbox provisions Harbor, builds/pushes custom images via Docker CLI, and enforces local image pull behavior for RKE2.
 
@@ -38,11 +38,41 @@ The node returns `HarborRuntime` and executes in railway-order sequence:
 
 1. Helm repository reconcile.
 2. Harbor chart `upgrade --install`.
-3. Harbor readiness wait.
-4. Harbor project reconcile for `prodbox` image/mirror namespace.
-5. Docker login + mirror/build/push operations.
-6. Import gateway image into RKE2 containerd cache.
-7. `registries.yaml` reconcile and conditional RKE2 restart.
+3. Prodbox-owned Harbor nginx readiness-contract reconcile.
+4. Harbor readiness wait.
+5. Harbor project reconcile for `prodbox` image/mirror namespace.
+6. Docker login + mirror/build/push operations.
+7. Import gateway image into RKE2 containerd cache.
+8. `registries.yaml` reconcile and conditional RKE2 restart.
+
+### 2.1 Harbor Readiness Contract
+
+`prodbox` owns the bootstrap readiness contract for Harbor's external-serving `nginx`
+Deployment.
+
+Policy:
+
+1. `prodbox` MUST NOT treat the Harbor chart's default `harbor-nginx` `/` probe as the
+   canonical readiness event for `rke2 ensure`.
+2. `prodbox` MUST patch the `harbor-nginx` ConfigMap to publish a local `GET /readyz`
+   response from nginx itself.
+3. `prodbox` MUST patch the `harbor-nginx` Deployment so readiness and liveness use
+   `/readyz`.
+4. Harbor bootstrap MUST remain event-driven: `harbor-core` and `harbor-registry`
+   availability are waited independently, and `harbor-nginx` availability is consumed
+   only after the local `/readyz` contract is applied.
+5. Docker login, Harbor API project reconcile, and image push operations remain the
+   capability checks for the external NodePort path (`127.0.0.1:30080`).
+
+Rationale:
+
+- The chart-default `harbor-nginx` `/` probe traverses the proxied UI path and can report
+  false-not-ready during cold bootstrap even when nginx itself is healthy enough to serve
+  Harbor API and registry traffic once backend components are available.
+- Publishing a local `/readyz` endpoint makes the Kubernetes readiness event represent
+  nginx serve capability instead of upstream UI timing.
+- This doctrine forbids sleep-based retry compensation in `prodbox`; readiness must come
+  from component events and direct capability checks.
 
 ---
 

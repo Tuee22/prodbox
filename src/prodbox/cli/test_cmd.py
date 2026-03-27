@@ -105,6 +105,18 @@ INTEGRATION_DNS_AWS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
     requires_integration_runbook=False,
 )
+INTEGRATION_AWS_FOUNDATION_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-aws-foundation",
+    pytest_args=("tests/integration/test_aws_foundation_real.py",),
+    integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
+    requires_integration_runbook=False,
+)
+INTEGRATION_AWS_EKS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-aws-eks",
+    pytest_args=("tests/integration/test_aws_eks_real.py",),
+    integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
+    requires_integration_runbook=False,
+)
 INTEGRATION_PULUMI_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-pulumi",
     pytest_args=("tests/integration/test_pulumi_real.py",),
@@ -140,6 +152,8 @@ def test() -> None:
       prodbox test all
       prodbox test unit
       prodbox test integration all
+      prodbox test integration aws-foundation
+      prodbox test integration aws-eks
       prodbox test integration cli
       prodbox test integration dns-aws
       prodbox test integration env
@@ -230,6 +244,46 @@ def integration_cli(coverage: bool, cov_fail_under: int | None) -> None:
     """Run integration tests for CLI command execution behavior."""
     _exit_for_suite(
         suite=INTEGRATION_CLI_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("aws-foundation")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_aws_foundation(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run real shared-account AWS foundation integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("aws-eks")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_aws_eks(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run real EKS control-plane integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_AWS_EKS_TEST_SUITE,
         coverage=coverage,
         cov_fail_under=cov_fail_under,
     )

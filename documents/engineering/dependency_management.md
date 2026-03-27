@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, README.md
+**Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md
 
 > **Purpose**: Define standards for Python dependency management in prodbox using Poetry.
 

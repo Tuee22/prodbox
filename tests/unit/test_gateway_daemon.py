@@ -622,9 +622,6 @@ class _MockDnsClient:
         fqdn: str,
         ip_address: str,
         ttl: int,
-        aws_region: str,
-        aws_access_key_id: str,
-        aws_secret_access_key: str,
     ) -> bool:
         self.writes.append(
             {
@@ -632,9 +629,6 @@ class _MockDnsClient:
                 "fqdn": fqdn,
                 "ip_address": ip_address,
                 "ttl": str(ttl),
-                "aws_region": aws_region,
-                "aws_access_key_id": aws_access_key_id,
-                "aws_secret_access_key": aws_secret_access_key,
             }
         )
         return True
@@ -646,8 +640,6 @@ def _dns_write_gate() -> DnsWriteGate:
         fqdn="gw.example.test",
         ttl=60,
         aws_region="us-east-1",
-        aws_access_key_id="AKIA_FAKE",
-        aws_secret_access_key="fake-secret",
     )
 
 
@@ -1008,8 +1000,6 @@ class TestDaemonConfigDnsWriteGate:
                 "fqdn": "gw.example.test",
                 "ttl": 60,
                 "aws_region": "us-east-1",
-                "aws_access_key_id": "AKIA_FAKE",
-                "aws_secret_access_key": "fake-secret",
             },
         }
         config_path = tmp_path / "config.json"
@@ -1022,8 +1012,6 @@ class TestDaemonConfigDnsWriteGate:
         assert config.dns_write_gate.fqdn == "gw.example.test"
         assert config.dns_write_gate.ttl == 60
         assert config.dns_write_gate.aws_region == "us-east-1"
-        assert config.dns_write_gate.aws_access_key_id == "AKIA_FAKE"
-        assert config.dns_write_gate.aws_secret_access_key == "fake-secret"
 
     def test_daemon_config_dns_write_gate_absent(self, tmp_path: Path) -> None:
         """JSON config without dns_write_gate yields None."""
@@ -1044,16 +1032,41 @@ class TestDaemonConfigDnsWriteGate:
 
         assert config.dns_write_gate is None
 
+    def test_daemon_config_rejects_explicit_dns_write_gate_credentials(
+        self, tmp_path: Path
+    ) -> None:
+        """JSON config with explicit AWS credentials should fail fast."""
+        orders_path = tmp_path / "orders.json"
+        orders_path.write_text(json.dumps(_orders_dict()), encoding="utf-8")
+        config_data: dict[str, object] = {
+            "node_id": "node-a",
+            "cert_file": str(tmp_path / "node-a.crt"),
+            "key_file": str(tmp_path / "node-a.key"),
+            "ca_file": str(tmp_path / "ca.crt"),
+            "orders_file": str(orders_path),
+            "event_keys": {"node-a": "k1", "node-b": "k2", "node-c": "k3"},
+            "dns_write_gate": {
+                "zone_id": "Z1234",
+                "fqdn": "gw.example.test",
+                "ttl": 60,
+                "aws_region": "us-east-1",
+                "aws_access_key_id": "AKIA_FAKE",
+            },
+        }
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps(config_data), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="must not contain explicit AWS credentials"):
+            DaemonConfig.from_json_file(config_path)
+
 
 class TestRoute53DnsWriteClient:
     """Tests for Route53DnsWriteClient construction and wiring."""
 
     def test_route53_client_created_from_gate(self) -> None:
-        """from_gate() constructs a valid client with matching credentials."""
+        """from_gate() constructs a valid client with matching region."""
         gate = _dns_write_gate()
         client = Route53DnsWriteClient.from_gate(gate)
-        assert client._aws_access_key_id == gate.aws_access_key_id  # noqa: SLF001
-        assert client._aws_secret_access_key == gate.aws_secret_access_key  # noqa: SLF001
         assert client._aws_region == gate.aws_region  # noqa: SLF001
 
     @pytest.mark.asyncio

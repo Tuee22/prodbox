@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING
 import pulumi_aws as aws
 import pulumi_kubernetes as k8s
 
+from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
+
 if TYPE_CHECKING:
     from prodbox.settings import Settings
 
@@ -30,14 +32,13 @@ def create_aws_provider(settings: Settings) -> aws.Provider:
     """Create an AWS provider from settings.
 
     Args:
-        settings: Application settings with AWS credentials
+        settings: Application settings with AWS region
 
     Returns:
         Configured AWS provider
     """
+    assert_ambient_aws_auth_only()
     return aws.Provider(
         "aws-provider",
         region=settings.aws_region,
-        access_key=settings.aws_access_key_id,
-        secret_key=settings.aws_secret_access_key,
     )

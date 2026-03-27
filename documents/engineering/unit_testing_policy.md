@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, documents/engineering/README.md, AGENTS.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md, documents/engineering/cli_command_surface.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/aws_integration_environment_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the Interpreter-Only Mocking Doctrine for unit tests in prodbox.
 

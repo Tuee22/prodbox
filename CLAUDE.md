@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Guide for Claude Code development on prodbox - home Kubernetes infrastructure management with Pulumi.
 
@@ -210,6 +210,7 @@ Custom type stubs in `typings/` provide full typing for external libraries:
 ### AWS
 
 - Route 53 for DNS management
+- Ambient host AWS CLI auth only; AWS auth env vars are forbidden
 - IAM least-privilege (Route 53 + STS only)
 - DNS-01 ACME validation for Let's Encrypt
 

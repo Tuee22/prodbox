@@ -1,0 +1,24 @@
+global:
+  namespace: default
+  rootChart: keycloak
+
+keycloak:
+  adminUser: admin
+  adminPassword: change-me
+  publicHost: vscode.example.com
+  relativePath: /auth
+  realmName: prodbox
+
+postgres:
+  host: keycloak-postgres
+  database: keycloak
+  username: keycloak
+  password: change-me
+
+oauth2Proxy:
+  clientId: vscode-oauth2-proxy
+  clientSecret: change-me
+
+google:
+  clientId: change-me
+  clientSecret: change-me

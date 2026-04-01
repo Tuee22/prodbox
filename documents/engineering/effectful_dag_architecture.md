@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Design documentation for the pure effectful DAG system in prodbox CLI.
 

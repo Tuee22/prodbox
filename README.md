@@ -168,6 +168,22 @@ prodbox k8s health
 prodbox k8s wait
 ```
 
+### Manage Bespoke Charts
+
+```bash
+# List all supported charts with install status
+prodbox charts list
+
+# Show detailed status for one chart
+prodbox charts status vscode
+
+# Deploy a root chart stack (keycloak-postgres → keycloak → vscode)
+prodbox charts deploy vscode
+
+# Delete a root chart stack (preserves .data/ host storage)
+prodbox charts delete vscode
+```
+
 ### Destroy Infrastructure
 
 ```bash

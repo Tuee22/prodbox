@@ -36,7 +36,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from prodbox.lib.chart_platform import ChartDeploymentPlan
 
 # Generic type variable for Effect return types
 # Covariant because Effect[T] is immutable (frozen=True) and T only appears in return positions
@@ -1261,6 +1261,37 @@ class GenerateGatewayConfig(Effect[None]):
 
 
 # =============================================================================
+# Chart Platform Effects
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ChartListEffect(Effect[str]):
+    """Render the supported-chart matrix plus observed Helm installation state."""
+
+
+@dataclass(frozen=True)
+class ChartStatusEffect(Effect[str]):
+    """Render one supported chart status report."""
+
+    chart_name: str
+
+
+@dataclass(frozen=True)
+class ChartDeployEffect(Effect[str]):
+    """Deploy one namespace-local chart stack with deterministic retained storage."""
+
+    plan: ChartDeploymentPlan | None = None
+
+
+@dataclass(frozen=True)
+class ChartDeleteEffect(Effect[str]):
+    """Delete one namespace-local chart stack while preserving repo-local host storage."""
+
+    plan: ChartDeploymentPlan | None = None
+
+
+# =============================================================================
 # Pure Effect (No-Op for Testing)
 # =============================================================================
 
@@ -1415,6 +1446,11 @@ __all__ = [
     "StartGatewayDaemon",
     "QueryGatewayState",
     "GenerateGatewayConfig",
+    # Chart Platform
+    "ChartListEffect",
+    "ChartStatusEffect",
+    "ChartDeployEffect",
+    "ChartDeleteEffect",
     # Settings
     "LoadSettings",
     "ValidateSettings",

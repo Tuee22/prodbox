@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: keycloak
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "keycloak.labels" . | nindent 8 }}
+    spec:
+      containers:
+        - name: keycloak
+          image: quay.io/keycloak/keycloak:26.0.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - start
+            - --http-enabled=true
+            - --health-enabled=true
+            - --proxy-headers=xforwarded
+            - --hostname={{ .Values.keycloak.publicHost }}
+            - --http-relative-path={{ .Values.keycloak.relativePath }}
+            - --import-realm
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL_HOST
+              value: {{ .Values.postgres.host | quote }}
+            - name: KC_DB_URL_DATABASE
+              value: {{ .Values.postgres.database | quote }}
+            - name: KC_DB_USERNAME
+              value: {{ .Values.postgres.username | quote }}
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-runtime
+                  key: KC_DB_PASSWORD
+            - name: KEYCLOAK_ADMIN
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-runtime
+                  key: KEYCLOAK_ADMIN
+            - name: KEYCLOAK_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: keycloak-runtime
+                  key: KEYCLOAK_ADMIN_PASSWORD
+          volumeMounts:
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: {{ printf "%s/health/ready" .Values.keycloak.relativePath }}
+              port: 9000
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: {{ printf "%s/health/live" .Values.keycloak.relativePath }}
+              port: 9000
+            initialDelaySeconds: 40
+            periodSeconds: 20
+      volumes:
+        - name: realm-import
+          configMap:
+            name: keycloak-realm-import

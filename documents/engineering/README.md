@@ -33,6 +33,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 | [pure_fp_standards.md](./pure_fp_standards.md) | Pure FP coding standards |
 | [code_quality.md](./code_quality.md) | Policy guardrails and check-code gate |
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
+| [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for `prodbox charts` |
 
 ---
 
@@ -80,6 +81,12 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 ### CLI Surface
 - [CLI Command Surface](./cli_command_surface.md)
 - [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine)
+
+### Chart Platform
+- [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
+- [Chart Storage Contract](./helm_chart_platform_doctrine.md#7-datanamespacestatefulsetordinal-host-path-contract)
+- [Delete Semantics](./helm_chart_platform_doctrine.md#8-delete-semantics)
+- [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-data-chart-storage)
 
 ---
 

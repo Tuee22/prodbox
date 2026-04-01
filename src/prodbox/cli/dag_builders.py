@@ -26,6 +26,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from prodbox.cli.command_adt import (
+    ChartDeleteCommand,
+    ChartDeployCommand,
+    ChartListCommand,
+    ChartStatusCommand,
     Command,
     DNSCheckCommand,
     DNSEnsureTimerCommand,
@@ -61,6 +65,10 @@ from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
+    ChartDeleteEffect,
+    ChartDeployEffect,
+    ChartListEffect,
+    ChartStatusEffect,
     CheckPortAvailability,
     CheckServiceStatus,
     CleanupProdboxAnnotatedResources,
@@ -1399,6 +1407,16 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
         case GatewayConfigGenCommand():
             return Success(_build_gateway_config_gen_dag(command))
 
+        # Chart platform commands
+        case ChartListCommand():
+            return Success(_build_chart_list_dag(command))
+        case ChartStatusCommand():
+            return Success(_build_chart_status_dag(command))
+        case ChartDeployCommand():
+            return Success(_build_chart_deploy_dag(command))
+        case ChartDeleteCommand():
+            return Success(_build_chart_delete_dag(command))
+
     # This should never be reached if all cases are handled
     # mypy will catch missing cases at type-check time
 
@@ -1444,6 +1462,109 @@ def _build_gateway_config_gen_dag(cmd: GatewayConfigGenCommand) -> EffectDAG:
             node_id=cmd.node_id,
         ),
         prerequisites=frozenset(),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+# =============================================================================
+# Chart Platform Command Builders
+# =============================================================================
+
+
+def _build_chart_list_dag(_cmd: ChartListCommand) -> EffectDAG:
+    """Build DAG for listing all supported charts."""
+    root = EffectNode(
+        effect=ChartListEffect(
+            effect_id="chart_list",
+            description="List all supported charts with install status",
+        ),
+        prerequisites=frozenset(["settings_object"]),
+        effect_builder=lambda _reduced, _prereq_results: ChartListEffect(
+            effect_id="chart_list",
+            description="List all supported charts with install status",
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_chart_status_dag(cmd: ChartStatusCommand) -> EffectDAG:
+    """Build DAG for querying one chart's detailed status."""
+    root = EffectNode(
+        effect=ChartStatusEffect(
+            effect_id="chart_status",
+            description=f"Show status for chart {cmd.chart_name}",
+            chart_name=cmd.chart_name,
+        ),
+        prerequisites=frozenset(["settings_object"]),
+        effect_builder=lambda _reduced, _prereq_results: ChartStatusEffect(
+            effect_id="chart_status",
+            description=f"Show status for chart {cmd.chart_name}",
+            chart_name=cmd.chart_name,
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_chart_deploy_effect(
+    cmd: ChartDeployCommand, prereq_results: PrereqResults
+) -> ChartDeployEffect:
+    """Build ChartDeployEffect from prerequisite settings (pure plan resolution)."""
+    from prodbox.lib.chart_platform import build_chart_deployment_plan
+
+    settings = _require_settings(prereq_results)
+    match build_chart_deployment_plan(cmd.chart_name, settings):
+        case Failure(error=error):
+            raise ValueError(error)
+        case Success(value=plan):
+            return ChartDeployEffect(
+                effect_id="chart_deploy",
+                description=f"Deploy chart stack {cmd.chart_name}",
+                plan=plan,
+            )
+
+
+def _build_chart_deploy_dag(cmd: ChartDeployCommand) -> EffectDAG:
+    """Build DAG for deploying a root chart stack."""
+    root = EffectNode(
+        effect=ChartDeployEffect(
+            effect_id="chart_deploy",
+            description=f"Deploy chart stack {cmd.chart_name}",
+            plan=None,
+        ),
+        prerequisites=frozenset(["settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: _build_chart_deploy_effect(
+            cmd,
+            prereq_results,
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_chart_delete_effect(cmd: ChartDeleteCommand) -> ChartDeleteEffect:
+    """Build ChartDeleteEffect via pure plan resolution (no settings needed for delete)."""
+    from prodbox.lib.chart_platform import build_chart_delete_plan
+
+    match build_chart_delete_plan(cmd.chart_name):
+        case Failure(error=error):
+            raise ValueError(error)
+        case Success(value=plan):
+            return ChartDeleteEffect(
+                effect_id="chart_delete",
+                description=f"Delete chart stack {cmd.chart_name}",
+                plan=plan,
+            )
+
+
+def _build_chart_delete_dag(cmd: ChartDeleteCommand) -> EffectDAG:
+    """Build DAG for deleting a root chart stack."""
+    root = EffectNode(
+        effect=ChartDeleteEffect(
+            effect_id="chart_delete",
+            description=f"Delete chart stack {cmd.chart_name}",
+            plan=None,
+        ),
+        prerequisites=frozenset(),
+        effect_builder=lambda _reduced, _prereq_results: _build_chart_delete_effect(cmd),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 

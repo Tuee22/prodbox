@@ -1,0 +1,20 @@
+global:
+  namespace: default
+  rootChart: vscode
+
+ingress:
+  host: vscode.example.com
+  clusterIssuer: letsencrypt-dns01
+
+oauth2Proxy:
+  clientId: vscode-oauth2-proxy
+  clientSecret: change-me
+  cookieSecret: change-me
+  oidcIssuerUrl: https://vscode.example.com/auth/realms/prodbox
+  oidcDiscoveryUrl: http://keycloak:8080/auth/realms/prodbox
+  redirectUrl: https://vscode.example.com/oauth2/callback
+  upstream: http://vscode:8080/
+
+vscode:
+  image: codercom/code-server:4.98.2
+  existingClaim: vscode-data-0

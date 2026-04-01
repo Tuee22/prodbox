@@ -72,6 +72,55 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="DNS record TTL in seconds",
         ),
     ]
+    vscode_fqdn: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Public FQDN for the VS Code ingress endpoint",
+        ),
+    ]
+    google_oauth_client_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Google OAuth client ID for the Keycloak broker",
+        ),
+    ]
+    google_oauth_client_secret: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Google OAuth client secret for the Keycloak broker",
+        ),
+    ]
+    keycloak_admin_password: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Admin password for the namespace-local Keycloak instance",
+        ),
+    ]
+    keycloak_postgres_password: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Password for the namespace-local Keycloak Postgres database",
+        ),
+    ]
+    keycloak_oauth2_client_secret: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="OIDC client secret shared between Keycloak and oauth2-proxy",
+        ),
+    ]
+    vscode_oauth2_proxy_cookie_secret: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Cookie secret for the VS Code oauth2-proxy sidecar",
+        ),
+    ]
 
     # === MetalLB / Ingress ===
     metallb_pool: Annotated[
@@ -269,6 +318,61 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         getter=lambda settings: settings.demo_ttl,
         required=False,
         template_default="60",
+    ),
+    SettingSpec(
+        attribute="vscode_fqdn",
+        env_var="VSCODE_FQDN",
+        description="Public VS Code ingress host",
+        getter=lambda settings: settings.vscode_fqdn,
+        required=False,
+        template_default="vscode.resolvefintech.com",
+    ),
+    SettingSpec(
+        attribute="google_oauth_client_id",
+        env_var="GOOGLE_OAUTH_CLIENT_ID",
+        description="Google OAuth client ID for Keycloak broker login",
+        getter=lambda settings: settings.google_oauth_client_id,
+        required=False,
+    ),
+    SettingSpec(
+        attribute="google_oauth_client_secret",
+        env_var="GOOGLE_OAUTH_CLIENT_SECRET",
+        description="Google OAuth client secret for Keycloak broker login",
+        getter=lambda settings: settings.google_oauth_client_secret,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="keycloak_admin_password",
+        env_var="KEYCLOAK_ADMIN_PASSWORD",
+        description="Admin password for namespace-local Keycloak",
+        getter=lambda settings: settings.keycloak_admin_password,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="keycloak_postgres_password",
+        env_var="KEYCLOAK_POSTGRES_PASSWORD",
+        description="Password for namespace-local Keycloak Postgres",
+        getter=lambda settings: settings.keycloak_postgres_password,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="keycloak_oauth2_client_secret",
+        env_var="KEYCLOAK_OAUTH2_CLIENT_SECRET",
+        description="Shared OIDC client secret for oauth2-proxy and Keycloak",
+        getter=lambda settings: settings.keycloak_oauth2_client_secret,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="vscode_oauth2_proxy_cookie_secret",
+        env_var="VSCODE_OAUTH2_PROXY_COOKIE_SECRET",
+        description="Cookie secret for VS Code oauth2-proxy",
+        getter=lambda settings: settings.vscode_oauth2_proxy_cookie_secret,
+        required=False,
+        sensitive=True,
     ),
     SettingSpec(
         attribute="metallb_pool",

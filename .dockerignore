@@ -81,3 +81,6 @@ poetry.lock
 # TLA+ proof artifacts
 documents/engineering/tla/tlc_last_run.txt
 documents/engineering/tla/states/
+
+# Chart platform retained storage (host-path data; never included in image)
+.data/

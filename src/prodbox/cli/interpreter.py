@@ -132,6 +132,10 @@ from prodbox.cli.effects import (  # noqa: E402
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
     CaptureSubprocessOutput,
+    ChartDeleteEffect,
+    ChartDeployEffect,
+    ChartListEffect,
+    ChartStatusEffect,
     CheckFileExists,
     CheckPortAvailability,
     CheckServiceStatus,
@@ -1050,6 +1054,16 @@ class EffectInterpreter:
                 return await self._interpret_query_gateway_state(effect)
             case GenerateGatewayConfig():
                 return await self._interpret_generate_gateway_config(effect), None
+
+            # Chart platform
+            case ChartListEffect():
+                return await self._interpret_chart_list(effect)
+            case ChartStatusEffect():
+                return await self._interpret_chart_status(effect)
+            case ChartDeployEffect():
+                return await self._interpret_chart_deploy(effect)
+            case ChartDeleteEffect():
+                return await self._interpret_chart_delete(effect)
 
             case _:
                 # Type-safe unreachable check
@@ -3937,6 +3951,96 @@ class EffectInterpreter:
         except Exception as e:
             self.failed_effects += 1
             return self._create_error_summary(f"Config generation failed: {e}")
+
+    # =========================================================================
+    # Chart Platform Effects
+    # =========================================================================
+
+    async def _interpret_chart_list(
+        self,
+        _effect: ChartListEffect,
+    ) -> tuple[ExecutionSummary, object | None]:
+        """Render supported-chart matrix plus observed Helm installation state."""
+        try:
+            from prodbox.lib.chart_platform import render_chart_list
+            from prodbox.settings import load_settings_mapping
+
+            settings = load_settings_mapping()
+            result = await render_chart_list(settings)
+            sys.stdout.write(_terminal_record_text(result))
+            sys.stdout.flush()
+            self.successful_effects += 1
+            return self._create_success_summary("Chart list rendered"), result
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Chart list failed: {e}"), None
+
+    async def _interpret_chart_status(
+        self,
+        effect: ChartStatusEffect,
+    ) -> tuple[ExecutionSummary, object | None]:
+        """Render one supported chart status report."""
+        try:
+            from prodbox.lib.chart_platform import render_chart_status
+            from prodbox.settings import load_settings_mapping
+
+            settings = load_settings_mapping()
+            result = await render_chart_status(effect.chart_name, settings)
+            sys.stdout.write(_terminal_record_text(result))
+            sys.stdout.flush()
+            self.successful_effects += 1
+            return self._create_success_summary(
+                f"Chart status for {effect.chart_name} rendered"
+            ), result
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Chart status failed: {e}"), None
+
+    async def _interpret_chart_deploy(
+        self,
+        effect: ChartDeployEffect,
+    ) -> tuple[ExecutionSummary, object | None]:
+        """Deploy one namespace-local chart stack with deterministic retained storage."""
+        try:
+            from prodbox.lib.chart_platform import deploy_chart_plan
+
+            if effect.plan is None:
+                raise RuntimeError(
+                    "ChartDeployEffect.plan must be resolved by effect_builder before interpret"
+                )
+            result = await deploy_chart_plan(effect.plan)
+            sys.stdout.write(_terminal_record_text(result))
+            sys.stdout.flush()
+            self.successful_effects += 1
+            return self._create_success_summary(
+                f"Chart stack {effect.plan.root_chart} deployed"
+            ), result
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Chart deploy failed: {e}"), None
+
+    async def _interpret_chart_delete(
+        self,
+        effect: ChartDeleteEffect,
+    ) -> tuple[ExecutionSummary, object | None]:
+        """Delete one namespace-local chart stack while preserving repo-local host storage."""
+        try:
+            from prodbox.lib.chart_platform import delete_chart_plan
+
+            if effect.plan is None:
+                raise RuntimeError(
+                    "ChartDeleteEffect.plan must be resolved by effect_builder before interpret"
+                )
+            result = await delete_chart_plan(effect.plan)
+            sys.stdout.write(_terminal_record_text(result))
+            sys.stdout.flush()
+            self.successful_effects += 1
+            return self._create_success_summary(
+                f"Chart stack {effect.plan.root_chart} deleted"
+            ), result
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Chart delete failed: {e}"), None
 
     # =========================================================================
     # Pure and Custom Effects

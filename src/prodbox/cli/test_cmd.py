@@ -141,6 +141,24 @@ INTEGRATION_LIFECYCLE_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection
     integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
     requires_integration_runbook=True,
 )
+INTEGRATION_CHARTS_STORAGE_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-charts-storage",
+    pytest_args=("tests/integration/test_charts_storage.py",),
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
+)
+INTEGRATION_CHARTS_PLATFORM_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-charts-platform",
+    pytest_args=("tests/integration/test_charts_platform.py",),
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
+)
+INTEGRATION_CHARTS_VSCODE_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-charts-vscode",
+    pytest_args=("tests/integration/test_charts_vscode.py",),
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
+)
 
 
 @click.group("test", no_args_is_help=True)
@@ -161,6 +179,9 @@ def test() -> None:
       prodbox test integration gateway-daemon
       prodbox test integration gateway-pods
       prodbox test integration lifecycle
+      prodbox test integration charts-storage
+      prodbox test integration charts-platform
+      prodbox test integration charts-vscode
     """
 
 
@@ -404,6 +425,66 @@ def integration_lifecycle(coverage: bool, cov_fail_under: int | None) -> None:
     """Run storage + cleanup lifecycle integration tests."""
     _exit_for_suite(
         suite=INTEGRATION_LIFECYCLE_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("charts-storage")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_charts_storage(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run chart platform deterministic storage integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_CHARTS_STORAGE_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("charts-platform")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_charts_platform(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run chart platform end-to-end stack integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_CHARTS_PLATFORM_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("charts-vscode")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_charts_vscode(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run VS Code public-hostname + TLS + OAuth integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_CHARTS_VSCODE_TEST_SUITE,
         coverage=coverage,
         cov_fail_under=cov_fail_under,
     )

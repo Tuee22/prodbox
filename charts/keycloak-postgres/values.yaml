@@ -1,0 +1,16 @@
+global:
+  namespace: default
+  rootChart: keycloak-postgres
+
+image:
+  repository: postgres
+  tag: "16.4"
+
+postgres:
+  database: keycloak
+  username: keycloak
+  password: change-me
+
+persistence:
+  existingClaim: keycloak-postgres-data-0
+  size: 20Gi

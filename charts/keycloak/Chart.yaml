@@ -1,0 +1,6 @@
+apiVersion: v2
+name: keycloak
+description: Namespace-local Keycloak broker for the prodbox VS Code stack
+type: application
+version: 0.1.0
+appVersion: "26.0.0"

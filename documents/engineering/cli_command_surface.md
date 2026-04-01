@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define the explicit, no-passthrough Click command surface for `prodbox`.
 
@@ -39,6 +39,7 @@ Top-level commands:
 | `dns` | Group | Route 53/DDNS management |
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
+| `charts` | Group | Bespoke Helm chart lifecycle |
 | `test` | Group | Explicit named test suites |
 | `check-code` | Command | Policy guards + `ruff` + `mypy` |
 | `tla-check` | Command | TLA+ model checking via Docker |
@@ -110,6 +111,15 @@ Top-level commands:
 | `prodbox gateway status` | `CONFIG_PATH` | none |
 | `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
 
+### `prodbox charts`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox charts list` | none | none |
+| `prodbox charts status` | `CHART` | none |
+| `prodbox charts deploy` | `CHART` | none |
+| `prodbox charts delete` | `CHART` | `--yes`, `-y` |
+
 ### `prodbox test`
 
 `prodbox test` and `prodbox test integration` are help groups only. They do not run an implicit default suite.
@@ -137,6 +147,9 @@ Named suite commands:
 | `prodbox test integration gateway-pods` | `tests/integration/test_gateway_k8s_pods.py` |
 | `prodbox test integration lifecycle` | `tests/integration/test_prodbox_lifecycle.py` |
 | `prodbox test integration pulumi` | `tests/integration/test_pulumi_real.py` |
+| `prodbox test integration charts-storage` | `tests/integration/test_charts_storage.py` |
+| `prodbox test integration charts-platform` | `tests/integration/test_charts_platform.py` |
+| `prodbox test integration charts-vscode` | `tests/integration/test_charts_vscode.py` |
 
 ### `prodbox check-code`
 

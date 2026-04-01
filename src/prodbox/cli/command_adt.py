@@ -325,6 +325,51 @@ class GatewayConfigGenCommand:
 
 
 # =============================================================================
+# Chart Platform Commands
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class ChartListCommand:
+    """List all supported charts with install status."""
+
+
+@dataclass(frozen=True)
+class ChartStatusCommand:
+    """Show one-chart detailed status.
+
+    Attributes:
+        chart_name: Name of the chart to inspect
+    """
+
+    chart_name: str
+
+
+@dataclass(frozen=True)
+class ChartDeployCommand:
+    """Deploy root chart + all prerequisites into root namespace.
+
+    Attributes:
+        chart_name: Name of the root chart to deploy
+    """
+
+    chart_name: str
+
+
+@dataclass(frozen=True)
+class ChartDeleteCommand:
+    """Delete root chart stack (preserve .data).
+
+    Attributes:
+        chart_name: Name of the root chart stack to delete
+        yes: Skip confirmation prompt
+    """
+
+    chart_name: str
+    yes: bool = False
+
+
+# =============================================================================
 # Command Union Type
 # =============================================================================
 
@@ -364,6 +409,11 @@ Command = (
     | GatewayStartCommand
     | GatewayStatusCommand
     | GatewayConfigGenCommand
+    # Chart platform
+    | ChartListCommand
+    | ChartStatusCommand
+    | ChartDeployCommand
+    | ChartDeleteCommand
 )
 
 
@@ -830,6 +880,67 @@ def gateway_config_gen_command(
     return Success(GatewayConfigGenCommand(output_path=output_path, node_id=node_id))
 
 
+def chart_list_command() -> Result[ChartListCommand, str]:
+    """Create a ChartListCommand.
+
+    Returns:
+        Success with ChartListCommand
+    """
+    return Success(ChartListCommand())
+
+
+def chart_status_command(chart_name: str) -> Result[ChartStatusCommand, str]:
+    """Create a ChartStatusCommand, validating the chart name.
+
+    Args:
+        chart_name: Name of the chart to inspect
+
+    Returns:
+        Success with ChartStatusCommand, Failure if chart_name not supported
+    """
+    from prodbox.lib.chart_platform import supported_chart_names
+
+    if chart_name not in supported_chart_names():
+        supported = ", ".join(supported_chart_names())
+        return Failure(f"Unsupported chart '{chart_name}'. Supported charts: {supported}")
+    return Success(ChartStatusCommand(chart_name=chart_name))
+
+
+def chart_deploy_command(chart_name: str) -> Result[ChartDeployCommand, str]:
+    """Create a ChartDeployCommand, validating the chart name.
+
+    Args:
+        chart_name: Name of the root chart to deploy
+
+    Returns:
+        Success with ChartDeployCommand, Failure if chart_name not supported
+    """
+    from prodbox.lib.chart_platform import supported_chart_names
+
+    if chart_name not in supported_chart_names():
+        supported = ", ".join(supported_chart_names())
+        return Failure(f"Unsupported chart '{chart_name}'. Supported charts: {supported}")
+    return Success(ChartDeployCommand(chart_name=chart_name))
+
+
+def chart_delete_command(chart_name: str, *, yes: bool = False) -> Result[ChartDeleteCommand, str]:
+    """Create a ChartDeleteCommand, validating the chart name.
+
+    Args:
+        chart_name: Name of the root chart stack to delete
+        yes: Skip confirmation prompt
+
+    Returns:
+        Success with ChartDeleteCommand, Failure if chart_name not supported
+    """
+    from prodbox.lib.chart_platform import supported_chart_names
+
+    if chart_name not in supported_chart_names():
+        supported = ", ".join(supported_chart_names())
+        return Failure(f"Unsupported chart '{chart_name}'. Supported charts: {supported}")
+    return Success(ChartDeleteCommand(chart_name=chart_name, yes=yes))
+
+
 def is_linux() -> bool:
     """Check if running on Linux.
 
@@ -882,6 +993,14 @@ def requires_linux(command: Command) -> bool:
         # Gateway commands - cross-platform
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
+        # Chart commands - cross-platform
+        case (
+            ChartListCommand()
+            | ChartStatusCommand()
+            | ChartDeployCommand()
+            | ChartDeleteCommand()
+        ):
+            return False
 
 
 def requires_settings(command: Command) -> bool:
@@ -926,6 +1045,14 @@ def requires_settings(command: Command) -> bool:
         # Gateway commands don't require prodbox settings (use own config file)
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
+        # Chart commands require settings (FQDN, credentials, kubeconfig)
+        case (
+            ChartListCommand()
+            | ChartStatusCommand()
+            | ChartDeployCommand()
+            | ChartDeleteCommand()
+        ):
+            return True
 
 
 # =============================================================================
@@ -970,6 +1097,11 @@ __all__ = [
     "GatewayStartCommand",
     "GatewayStatusCommand",
     "GatewayConfigGenCommand",
+    # Chart platform
+    "ChartListCommand",
+    "ChartStatusCommand",
+    "ChartDeployCommand",
+    "ChartDeleteCommand",
     # Smart constructors
     "env_show_command",
     "env_validate_command",
@@ -999,6 +1131,11 @@ __all__ = [
     "gateway_start_command",
     "gateway_status_command",
     "gateway_config_gen_command",
+    # Chart smart constructors
+    "chart_list_command",
+    "chart_status_command",
+    "chart_deploy_command",
+    "chart_delete_command",
     # Utility functions
     "is_linux",
     "requires_linux",

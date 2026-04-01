@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm-import
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+data:
+  realm.json: |
+    {
+      "realm": {{ .Values.keycloak.realmName | quote }},
+      "enabled": true,
+      "displayName": "prodbox",
+      "clients": [
+        {
+          "clientId": {{ .Values.oauth2Proxy.clientId | quote }},
+          "secret": {{ .Values.oauth2Proxy.clientSecret | quote }},
+          "enabled": true,
+          "publicClient": false,
+          "protocol": "openid-connect",
+          "standardFlowEnabled": true,
+          "redirectUris": [
+            {{ printf "https://%s/oauth2/callback" .Values.keycloak.publicHost | quote }}
+          ],
+          "webOrigins": [
+            {{ printf "https://%s" .Values.keycloak.publicHost | quote }}
+          ]
+        }
+      ],
+      "identityProviders": [
+        {
+          "alias": "google",
+          "displayName": "Google",
+          "providerId": "google",
+          "enabled": true,
+          "authenticateByDefault": true,
+          "trustEmail": true,
+          "firstBrokerLoginFlowAlias": "first broker login",
+          "config": {
+            "clientId": {{ .Values.google.clientId | quote }},
+            "clientSecret": {{ .Values.google.clientSecret | quote }},
+            "defaultScope": "openid profile email"
+          }
+        }
+      ]
+    }

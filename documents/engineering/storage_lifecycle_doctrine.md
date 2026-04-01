@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define deterministic retained-storage behavior for prodbox cleanup/redeploy lifecycles.
 
@@ -106,9 +106,29 @@ Shared-runtime lifecycle fixture ownership and teardown behavior are defined in 
 
 ---
 
+---
+
+## 7. Repo-Local `.data/` Chart Storage
+
+The chart platform stores retained host-path data for bespoke Helm chart workloads in the repo-local `.data/` directory.
+
+Layout: `.data/<namespace>/<statefulset>/<ordinal>/`
+
+Rules:
+
+1. `.data/` is excluded from both `.gitignore` and `.dockerignore`.
+2. The CLI creates host directories (`mkdir -p`) before applying PV/PVC manifests.
+3. `prodbox charts delete <chart>` deletes PV/PVC objects but **never** removes `.data/` directories.
+4. This preserves data across delete/redeploy cycles and guarantees deterministic PV/PVC rebinding.
+
+Full doctrine for the chart platform (singleton enforcement, namespace rules, storage contract, supported charts) is in [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md).
+
+---
+
 ## Cross-References
 
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
+- [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Documentation Standards](../documentation_standards.md)

@@ -160,10 +160,7 @@ _MINIMAL_VSCODE_SETTINGS: dict[str, str] = {
     "vscode_fqdn": "vscode.example.com",
     "keycloak_admin_password": "adminpass",
     "keycloak_postgres_password": "pgpass",
-    "keycloak_oauth2_client_secret": "oauthsecret",
-    "vscode_oauth2_proxy_cookie_secret": "cookiesecret",
-    "google_oauth_client_id": "googleclientid",
-    "google_oauth_client_secret": "googleclientsecret",
+    "keycloak_nginx_client_secret": "nginxsecret",
 }
 
 

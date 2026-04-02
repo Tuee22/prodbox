@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pulumi
 import pulumi_kubernetes as k8s
 
-from prodbox.infra.metadata import chart_values_with_prodbox, object_meta
+from prodbox.infra.metadata import object_meta
 
 if TYPE_CHECKING:
     from prodbox.settings import Settings
@@ -61,28 +61,25 @@ def deploy_cert_manager(
             repo=CERT_MANAGER_REPO,
         ),
         namespace=namespace.metadata.name,  # type: ignore[attr-defined, misc]  # Pulumi resource .name attr
-        values=chart_values_with_prodbox(
-            values={
-                # Install CRDs via Helm (cert-manager >= v1.15)
-                "crds": {
-                    "enabled": True,
-                },
-                # Leader election namespace
-                "global": {
-                    "leaderElection": {
-                        "namespace": "cert-manager",
-                    },
-                },
-                # Resource requests for stability
-                "resources": {
-                    "requests": {
-                        "cpu": "50m",
-                        "memory": "64Mi",
-                    },
+        values={
+            # Install CRDs via Helm (cert-manager >= v1.15)
+            "crds": {
+                "enabled": True,
+            },
+            # Leader election namespace
+            "global": {
+                "leaderElection": {
+                    "namespace": "cert-manager",
                 },
             },
-            prodbox_id=prodbox_id,
-        ),
+            # Resource requests for stability
+            "resources": {
+                "requests": {
+                    "cpu": "50m",
+                    "memory": "64Mi",
+                },
+            },
+        },
         skip_await=False,
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,

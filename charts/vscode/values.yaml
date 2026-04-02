@@ -6,14 +6,15 @@ ingress:
   host: vscode.example.com
   clusterIssuer: letsencrypt-dns01
 
-oauth2Proxy:
-  clientId: vscode-oauth2-proxy
+nginx:
+  image: 127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest
+  clientId: vscode-nginx
   clientSecret: change-me
-  cookieSecret: change-me
-  oidcIssuerUrl: https://vscode.example.com/auth/realms/prodbox
-  oidcDiscoveryUrl: http://keycloak:8080/auth/realms/prodbox
-  redirectUrl: https://vscode.example.com/oauth2/callback
-  upstream: http://vscode:8080/
+  realm: prodbox
+  keycloakInternalUrl: http://keycloak:8080
+  # CoreDNS ClusterIP — used by njs ngx.fetch for hostname resolution.
+  # Default is the RKE2 cluster DNS IP. Override if different on your cluster.
+  dnsResolver: "10.43.0.10"
 
 vscode:
   image: codercom/code-server:4.98.2

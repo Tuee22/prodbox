@@ -17,7 +17,7 @@ CHART_DATA_ROOT: Path = Path(__file__).resolve().parents[3] / ".data"
 CHART_STORAGE_CLASS_NAME: str = "prodbox-chart-null-storage"
 CHART_CLUSTER_ISSUER: str = "letsencrypt-dns01"
 KEYCLOAK_REALM_NAME: str = "prodbox"
-KEYCLOAK_OAUTH2_PROXY_CLIENT_ID: str = "vscode-oauth2-proxy"
+KEYCLOAK_NGINX_CLIENT_ID: str = "vscode-nginx"
 
 
 @dataclass(frozen=True)
@@ -249,9 +249,7 @@ def _values_for_keycloak(
     required_settings = (
         ("keycloak_admin_password", "KEYCLOAK_ADMIN_PASSWORD"),
         ("keycloak_postgres_password", "KEYCLOAK_POSTGRES_PASSWORD"),
-        ("keycloak_oauth2_client_secret", "KEYCLOAK_OAUTH2_CLIENT_SECRET"),
-        ("google_oauth_client_id", "GOOGLE_OAUTH_CLIENT_ID"),
-        ("google_oauth_client_secret", "GOOGLE_OAUTH_CLIENT_SECRET"),
+        ("keycloak_nginx_client_secret", "KEYCLOAK_NGINX_CLIENT_SECRET"),
     )
     resolved: dict[str, str] = {}
     for attribute, description in required_settings:
@@ -279,13 +277,9 @@ def _values_for_keycloak(
                 "username": "keycloak",
                 "password": resolved["keycloak_postgres_password"],
             },
-            "oauth2Proxy": {
-                "clientId": KEYCLOAK_OAUTH2_PROXY_CLIENT_ID,
-                "clientSecret": resolved["keycloak_oauth2_client_secret"],
-            },
-            "google": {
-                "clientId": resolved["google_oauth_client_id"],
-                "clientSecret": resolved["google_oauth_client_secret"],
+            "nginx": {
+                "clientId": KEYCLOAK_NGINX_CLIENT_ID,
+                "clientSecret": resolved["keycloak_nginx_client_secret"],
             },
         }
     )
@@ -300,10 +294,7 @@ def _values_for_vscode(
     public_fqdn: str,
 ) -> Result[dict[str, object], str]:
     """Build local values payload for the bespoke vscode chart."""
-    required_settings = (
-        ("keycloak_oauth2_client_secret", "KEYCLOAK_OAUTH2_CLIENT_SECRET"),
-        ("vscode_oauth2_proxy_cookie_secret", "VSCODE_OAUTH2_PROXY_COOKIE_SECRET"),
-    )
+    required_settings = (("keycloak_nginx_client_secret", "KEYCLOAK_NGINX_CLIENT_SECRET"),)
     resolved: dict[str, str] = {}
     for attribute, description in required_settings:
         match _require_string_setting(settings, attribute, description):
@@ -311,11 +302,6 @@ def _values_for_vscode(
                 return Failure(error)
             case Success(value=value):
                 resolved[attribute] = value
-    issuer_url = f"https://{public_fqdn}/auth/realms/{KEYCLOAK_REALM_NAME}"
-    # Internal K8s service URL for OIDC discovery — always reachable from within
-    # the cluster regardless of whether the public FQDN resolves.
-    discovery_url = f"http://keycloak:8080/auth/realms/{KEYCLOAK_REALM_NAME}"
-    redirect_url = f"https://{public_fqdn}/oauth2/callback"
     return Success(
         {
             "global": {
@@ -326,14 +312,14 @@ def _values_for_vscode(
                 "host": public_fqdn,
                 "clusterIssuer": CHART_CLUSTER_ISSUER,
             },
-            "oauth2Proxy": {
-                "clientId": KEYCLOAK_OAUTH2_PROXY_CLIENT_ID,
-                "clientSecret": resolved["keycloak_oauth2_client_secret"],
-                "cookieSecret": resolved["vscode_oauth2_proxy_cookie_secret"],
-                "oidcIssuerUrl": issuer_url,
-                "oidcDiscoveryUrl": discovery_url,
-                "redirectUrl": redirect_url,
-                "upstream": "http://vscode:8080/",
+            "nginx": {
+                "clientId": KEYCLOAK_NGINX_CLIENT_ID,
+                "clientSecret": resolved["keycloak_nginx_client_secret"],
+                "realm": KEYCLOAK_REALM_NAME,
+                # Internal K8s service URL — reachable from within the cluster
+                # regardless of whether the public FQDN resolves.
+                "keycloakInternalUrl": "http://keycloak:8080",
+                "image": "127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest",
             },
             "vscode": {
                 "existingClaim": binding.persistent_volume_claim_name,
@@ -989,7 +975,7 @@ __all__ = [
     "ChartReleasePlan",
     "ChartStorageBinding",
     "ChartStorageSpec",
-    "KEYCLOAK_OAUTH2_PROXY_CLIENT_ID",
+    "KEYCLOAK_NGINX_CLIENT_ID",
     "KEYCLOAK_REALM_NAME",
     "build_chart_delete_plan",
     "build_chart_deployment_plan",

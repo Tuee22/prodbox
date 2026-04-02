@@ -53,65 +53,65 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: vscode-auth-proxy
+  name: vscode-nginx
   labels:
-    {{- include "vscode.oauth2ProxyLabels" . | nindent 4 }}
+    {{- include "vscode.nginxLabels" . | nindent 4 }}
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: vscode-auth-proxy
+      app.kubernetes.io/name: vscode-nginx
       app.kubernetes.io/instance: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        {{- include "vscode.oauth2ProxyLabels" . | nindent 8 }}
+        {{- include "vscode.nginxLabels" . | nindent 8 }}
     spec:
       containers:
-        - name: oauth2-proxy
-          image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+        - name: nginx
+          image: {{ .Values.nginx.image | quote }}
           imagePullPolicy: IfNotPresent
-          args:
-            - --http-address=0.0.0.0:4180
-            - --provider=oidc
-            - --oidc-issuer-url={{ .Values.oauth2Proxy.oidcDiscoveryUrl }}
-            - --insecure-oidc-skip-issuer-verification=true
-            - --client-id={{ .Values.oauth2Proxy.clientId }}
-            - --client-secret=$(OAUTH2_PROXY_CLIENT_SECRET)
-            - --cookie-secret=$(OAUTH2_PROXY_COOKIE_SECRET)
-            - --redirect-url={{ .Values.oauth2Proxy.redirectUrl }}
-            - --upstream={{ .Values.oauth2Proxy.upstream }}
-            - --email-domain=*
-            - --reverse-proxy=true
-            - --skip-provider-button=true
-            - --pass-access-token=true
-            - --pass-authorization-header=true
-            - --set-xauthrequest=true
-            - --cookie-secure=true
-            - --cookie-samesite=lax
-          env:
-            - name: OAUTH2_PROXY_CLIENT_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: vscode-auth-proxy
-                  key: OAUTH2_PROXY_CLIENT_SECRET
-            - name: OAUTH2_PROXY_COOKIE_SECRET
-              valueFrom:
-                secretKeyRef:
-                  name: vscode-auth-proxy
-                  key: OAUTH2_PROXY_COOKIE_SECRET
           ports:
             - name: http
-              containerPort: 4180
+              containerPort: 80
+          env:
+            - name: KEYCLOAK_INTERNAL_URL
+              value: {{ .Values.nginx.keycloakInternalUrl | quote }}
+            - name: KEYCLOAK_BROWSER_URL
+              value: {{ printf "https://%s" .Values.ingress.host | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ .Values.nginx.realm | quote }}
+            - name: OIDC_CLIENT_ID
+              value: {{ .Values.nginx.clientId | quote }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: vscode-nginx
+                  key: OIDC_CLIENT_SECRET
+            - name: OIDC_REDIRECT_URI
+              value: {{ printf "https://%s/auth/callback" .Values.ingress.host | quote }}
+          volumeMounts:
+            - name: nginx-config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+            - name: nginx-config
+              mountPath: /etc/nginx/njs/oidc.js
+              subPath: oidc.js
+              readOnly: true
           readinessProbe:
             httpGet:
-              path: /ping
+              path: /auth/realms/{{ .Values.nginx.realm }}
               port: http
-            initialDelaySeconds: 10
+            initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /ping
+              path: /auth/realms/{{ .Values.nginx.realm }}
               port: http
-            initialDelaySeconds: 20
+            initialDelaySeconds: 15
             periodSeconds: 20
+      volumes:
+        - name: nginx-config
+          configMap:
+            name: vscode-nginx-config

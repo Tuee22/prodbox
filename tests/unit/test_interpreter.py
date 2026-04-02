@@ -1008,11 +1008,16 @@ class TestEffectInterpreterSettings:
         assert summary.success
 
     @pytest.mark.asyncio
-    async def test_validate_settings_failure(self) -> None:
+    async def test_validate_settings_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """ValidateSettings should fail with invalid settings."""
         import os
         from unittest.mock import patch
 
+        monkeypatch.chdir(tmp_path)
         interpreter = EffectInterpreter()
         effect = ValidateSettings(
             effect_id="validate_settings",
@@ -1244,11 +1249,16 @@ class TestEffectInterpreterLoadSettings:
         assert summary.success
 
     @pytest.mark.asyncio
-    async def test_load_settings_failure(self) -> None:
+    async def test_load_settings_failure(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """LoadSettings should fail with missing env."""
         import os
         from unittest.mock import patch
 
+        monkeypatch.chdir(tmp_path)
         interpreter = EffectInterpreter()
         effect = LoadSettings(
             effect_id="load_settings",

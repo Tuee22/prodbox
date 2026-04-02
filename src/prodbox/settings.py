@@ -79,20 +79,6 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="Public FQDN for the VS Code ingress endpoint",
         ),
     ]
-    google_oauth_client_id: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Google OAuth client ID for the Keycloak broker",
-        ),
-    ]
-    google_oauth_client_secret: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Google OAuth client secret for the Keycloak broker",
-        ),
-    ]
     keycloak_admin_password: Annotated[
         str | None,
         Field(
@@ -107,18 +93,11 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="Password for the namespace-local Keycloak Postgres database",
         ),
     ]
-    keycloak_oauth2_client_secret: Annotated[
+    keycloak_nginx_client_secret: Annotated[
         str | None,
         Field(
             default=None,
-            description="OIDC client secret shared between Keycloak and oauth2-proxy",
-        ),
-    ]
-    vscode_oauth2_proxy_cookie_secret: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Cookie secret for the VS Code oauth2-proxy sidecar",
+            description="OIDC client secret shared between Keycloak and the nginx OIDC proxy",
         ),
     ]
 
@@ -328,21 +307,6 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         template_default="vscode.resolvefintech.com",
     ),
     SettingSpec(
-        attribute="google_oauth_client_id",
-        env_var="GOOGLE_OAUTH_CLIENT_ID",
-        description="Google OAuth client ID for Keycloak broker login",
-        getter=lambda settings: settings.google_oauth_client_id,
-        required=False,
-    ),
-    SettingSpec(
-        attribute="google_oauth_client_secret",
-        env_var="GOOGLE_OAUTH_CLIENT_SECRET",
-        description="Google OAuth client secret for Keycloak broker login",
-        getter=lambda settings: settings.google_oauth_client_secret,
-        required=False,
-        sensitive=True,
-    ),
-    SettingSpec(
         attribute="keycloak_admin_password",
         env_var="KEYCLOAK_ADMIN_PASSWORD",
         description="Admin password for namespace-local Keycloak",
@@ -359,18 +323,10 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         sensitive=True,
     ),
     SettingSpec(
-        attribute="keycloak_oauth2_client_secret",
-        env_var="KEYCLOAK_OAUTH2_CLIENT_SECRET",
-        description="Shared OIDC client secret for oauth2-proxy and Keycloak",
-        getter=lambda settings: settings.keycloak_oauth2_client_secret,
-        required=False,
-        sensitive=True,
-    ),
-    SettingSpec(
-        attribute="vscode_oauth2_proxy_cookie_secret",
-        env_var="VSCODE_OAUTH2_PROXY_COOKIE_SECRET",
-        description="Cookie secret for VS Code oauth2-proxy",
-        getter=lambda settings: settings.vscode_oauth2_proxy_cookie_secret,
+        attribute="keycloak_nginx_client_secret",
+        env_var="KEYCLOAK_NGINX_CLIENT_SECRET",
+        description="Shared OIDC client secret for nginx OIDC proxy and Keycloak",
+        getter=lambda settings: settings.keycloak_nginx_client_secret,
         required=False,
         sensitive=True,
     ),

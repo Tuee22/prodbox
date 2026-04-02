@@ -125,10 +125,7 @@ The following settings from `src/prodbox/settings.py` are required for chart dep
 | `VSCODE_FQDN` | Public FQDN for VS Code and Keycloak |
 | `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin credentials |
 | `KEYCLOAK_POSTGRES_PASSWORD` | PostgreSQL database password |
-| `KEYCLOAK_OAUTH2_CLIENT_SECRET` | oauth2-proxy client secret |
-| `VSCODE_OAUTH2_PROXY_COOKIE_SECRET` | oauth2-proxy cookie signing secret |
-| `GOOGLE_OAUTH_CLIENT_ID` | Google IdP OAuth2 client ID |
-| `GOOGLE_OAUTH_CLIENT_SECRET` | Google IdP OAuth2 client secret |
+| `KEYCLOAK_NGINX_CLIENT_SECRET` | nginx OIDC client secret (registered in Keycloak as `vscode-nginx`) |
 
 ---
 
@@ -159,10 +156,27 @@ Chart platform delivery was completed on 2026-03-28 through Sprints 5–9.
 - `tests/unit/test_chart_platform.py` extended with prerequisite ordering and same-namespace-only tests
 - `tests/integration/test_charts_platform.py`: all three releases deploy into `vscode` namespace, singleton enforcement, delete cleans up cleanly
 
-### Sprint 9 – Public hostname and closure
-- `tests/integration/test_charts_vscode.py`: HTTPS reachability, TLS issuer (Let's Encrypt), auth redirect, Google OAuth upstream
-- `README.md` updated with `prodbox charts` public command summary
-- `DEVELOPMENT_COMPLETION_PLAN.md` sprints 5–9 marked complete
+### Sprint 9 – Auth overhaul: nginx OIDC + Keycloak username/password
+- `oauth2-proxy` removed from the `vscode` chart; Google OAuth removed from Keycloak realm
+- `docker/nginx-oidc.Dockerfile` — Alpine nginx with njs OIDC module
+- `docker/vscode-dev/` — local dev docker-compose (nginx + code-server + keycloak + postgres)
+- `charts/vscode/templates/nginx-configmap.yaml` — nginx.conf and oidc.js embedded as a ConfigMap
+- `charts/vscode/templates/deployment.yaml` — nginx sidecar replaces oauth2-proxy
+- `src/prodbox/settings.py` — `KEYCLOAK_NGINX_CLIENT_SECRET` replaces oauth2-proxy and Google OAuth fields
+- `src/prodbox/lib/chart_platform.py` — nginx image and values updated
+- `tests/integration/test_charts_vscode.py` — updated to assert Keycloak username/password login (no Google OAuth)
+
+### Sprint 10 – Public hostname and closure
+- Route 53 hosted zone `Z007443829N5L4FU2HO15` created via AWS CLI; A record `vscode.resolvefintech.com → 99.217.42.203` created via `prodbox dns update`
+- `src/prodbox/infra/cluster_issuer.py`: ClusterIssuer `letsencrypt-dns01` with DNS-01 Route53 solver; AWS credentials injected via `route53-credentials` K8s Secret in `cert-manager` namespace
+- `src/prodbox/infra/ingress.py`: Traefik IngressClass `traefik` with stable name set; MetalLB IP 192.168.1.240
+- `src/prodbox/infra/cert_manager.py`: removed `commonLabels`/`commonAnnotations` (incompatible with cert-manager v1.16.2 schema); cert-manager deployed as standalone Helm release (not via Pulumi)
+- `src/prodbox/cli/interpreter.py`: `ValidateRoute53Access` now falls back to `get_settings().route53_zone_id` (pydantic Settings, not only `os.environ`)
+- `.env` created with `ROUTE53_ZONE_ID`, `ACME_EMAIL`, `VSCODE_FQDN`, and chart credentials
+- cert-manager DNS-01 challenge presented; TLS cert pending NS delegation (domain registered in separate AWS account)
+- nginx OIDC + Keycloak auth flow verified functional at cluster IP (302 redirect to Keycloak confirmed)
+- `tests/unit/test_settings.py`, `tests/unit/test_interpreter.py`: tests that clear `os.environ` now `monkeypatch.chdir(tmp_path)` to avoid reading the real `.env` file
+- `tests/integration/test_charts_vscode.py`: HTTPS reachability, TLS issuer (Let's Encrypt), auth redirect, Keycloak username/password login
 
 ### Verification command
 ```bash

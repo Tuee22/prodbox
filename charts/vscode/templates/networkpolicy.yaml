@@ -16,7 +16,7 @@ spec:
     - from:
         - podSelector:
             matchLabels:
-              app.kubernetes.io/name: vscode-auth-proxy
+              app.kubernetes.io/name: vscode-nginx
               app.kubernetes.io/instance: {{ .Release.Name }}
       ports:
         - protocol: TCP
@@ -43,13 +43,13 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: vscode-auth-proxy-isolation
+  name: vscode-nginx-isolation
   labels:
-    {{- include "vscode.oauth2ProxyLabels" . | nindent 4 }}
+    {{- include "vscode.nginxLabels" . | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/name: vscode-auth-proxy
+      app.kubernetes.io/name: vscode-nginx
       app.kubernetes.io/instance: {{ .Release.Name }}
   policyTypes:
     - Ingress
@@ -61,7 +61,7 @@ spec:
               kubernetes.io/metadata.name: traefik-system
       ports:
         - protocol: TCP
-          port: 4180
+          port: 80
   egress:
     - to:
         - podSelector:

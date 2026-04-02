@@ -87,6 +87,11 @@ def deploy_ingress(
                         },
                     },
                 },
+                # Set a stable IngressClass name that chart resources can reference
+                "ingressClass": {
+                    "name": "traefik",
+                    "isDefaultClass": False,
+                },
                 # Enable access logs for debugging
                 "logs": {
                     "access": {

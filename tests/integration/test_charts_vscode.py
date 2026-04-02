@@ -4,8 +4,7 @@ charts-vscode suite – end-to-end validation of the vscode chart stack at
 its public hostname, including:
   - HTTPS reachability
   - Valid TLS certificate (issued by Let's Encrypt)
-  - HTTP 302 redirect to Keycloak login page (auth wall enforced)
-  - Google OAuth upstream linked from Keycloak login
+  - HTTP 302 redirect to Keycloak username/password login page (auth wall enforced)
 
 Prerequisites (must be satisfied before running this suite):
   - The vscode chart stack is deployed and all workloads are Running
@@ -21,6 +20,7 @@ from __future__ import annotations
 
 import os
 import ssl
+import urllib.parse
 import urllib.request
 from http.client import HTTPResponse
 from typing import NamedTuple
@@ -59,9 +59,11 @@ def _probe(url: str, *, follow_redirects: bool = False) -> HttpProbeResult:
     """Fetch one URL and return structured probe data."""
     context = ssl.create_default_context()
     opener = urllib.request.OpenerDirector()
+    opener.add_handler(urllib.request.HTTPHandler())
     opener.add_handler(urllib.request.HTTPSHandler(context=context))
-    if not follow_redirects:
-        opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+    opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
+    if follow_redirects:
+        opener.add_handler(urllib.request.HTTPRedirectHandler())
 
     tls_subject: str | None = None
     tls_issuer: str | None = None
@@ -69,7 +71,7 @@ def _probe(url: str, *, follow_redirects: bool = False) -> HttpProbeResult:
     try:
         request = urllib.request.Request(url, method="GET")
         request.add_header("Accept", "text/html,application/xhtml+xml")
-        response = urllib.request.urlopen(request, context=context, timeout=_CONNECT_TIMEOUT)
+        response = opener.open(request, timeout=_CONNECT_TIMEOUT)
         if isinstance(response, HTTPResponse):
             body = response.read(4096).decode("utf-8", errors="replace")
             location = response.headers.get("Location")
@@ -228,12 +230,12 @@ def test_tls_cert_issued_by_lets_encrypt() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Tests: auth redirect to Keycloak
+# Tests: auth redirect to Keycloak username/password login
 # ---------------------------------------------------------------------------
 
 
-def test_root_redirects_to_oauth2_proxy() -> None:
-    """Root path redirect must point to /oauth2/ (oauth2-proxy)."""
+def test_root_redirects_to_keycloak_login() -> None:
+    """Root path must redirect unauthenticated requests into the Keycloak login flow."""
     result = _probe(_BASE_URL)
     assert result.status in (
         301,
@@ -242,36 +244,10 @@ def test_root_redirects_to_oauth2_proxy() -> None:
         307,
         308,
     ), f"Expected redirect from root, got HTTP {result.status}"
-    location = result.location or ""
-    assert (
-        "/oauth2" in location or "oauth2" in location.lower()
-    ), f"Redirect location {location!r} does not point to oauth2-proxy"
-
-
-def test_oauth2_proxy_redirects_to_keycloak() -> None:
-    """The oauth2-proxy /oauth2/sign_in endpoint must redirect into the Keycloak realm."""
-    sign_in_url = f"{_BASE_URL}/oauth2/sign_in"
-    result = _probe(sign_in_url)
-    assert result.status in (
-        200,
-        301,
-        302,
-        303,
-        307,
-        308,
-    ), f"Unexpected status from oauth2 sign-in endpoint: HTTP {result.status}"
-    body_lower = result.body_fragment.lower()
     location = (result.location or "").lower()
     assert (
-        "keycloak" in body_lower
-        or "keycloak" in location
-        or "/auth/realms/" in body_lower
-        or "/auth/realms/" in location
-    ), (
-        f"oauth2-proxy response does not reference Keycloak: "
-        f"status={result.status}, location={result.location!r}, "
-        f"body_fragment={result.body_fragment[:200]!r}"
-    )
+        "/auth/realms/" in location or "keycloak" in location
+    ), f"Redirect location {result.location!r} does not point to Keycloak login"
 
 
 def test_keycloak_auth_endpoint_is_reachable() -> None:
@@ -286,15 +262,11 @@ def test_keycloak_auth_endpoint_is_reachable() -> None:
     ), "Keycloak realm endpoint not found (404): realm 'prodbox' may not be configured"
 
 
-# ---------------------------------------------------------------------------
-# Tests: Google OAuth upstream linked from Keycloak
-# ---------------------------------------------------------------------------
-
-
-def test_keycloak_login_page_references_google_idp() -> None:
-    """The Keycloak login page for the prodbox realm must offer Google as an identity provider."""
+def test_keycloak_login_page_offers_username_password_form() -> None:
+    """The Keycloak login page must offer a username/password form, not an external IdP only."""
     login_url = f"{_BASE_URL}/auth/realms/prodbox/protocol/openid-connect/auth"
-    params = "?client_id=vscode-oauth2-proxy&response_type=code&scope=openid"
+    callback = urllib.parse.quote(f"https://{_FQDN}/auth/callback", safe="")
+    params = f"?client_id=vscode-nginx&response_type=code&scope=openid&redirect_uri={callback}"
     result = _probe(login_url + params)
     # Keycloak may redirect to its login page (302) or return the page directly (200).
     assert result.status in (
@@ -304,7 +276,13 @@ def test_keycloak_login_page_references_google_idp() -> None:
     ), f"Unexpected status from Keycloak login endpoint: HTTP {result.status}"
     body_lower = result.body_fragment.lower()
     location = (result.location or "").lower()
-    assert "google" in body_lower or "google" in location or "accounts.google.com" in location, (
-        f"Keycloak login page does not reference Google IdP: "
+    # The login page must contain a password input field (username/password form)
+    # or redirect to a page that does. It must NOT have Google OAuth exclusively.
+    assert "password" in body_lower or "login" in body_lower or "login" in location, (
+        f"Keycloak login page does not appear to offer username/password form: "
         f"status={result.status}, body_fragment={result.body_fragment[:300]!r}"
     )
+    # Confirm no Google OAuth dependency
+    assert (
+        "accounts.google.com" not in body_lower
+    ), "Keycloak login page references Google OAuth, which was removed in Sprint 9"

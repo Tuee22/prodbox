@@ -17,24 +17,10 @@ spec:
     - host: {{ .Values.ingress.host | quote }}
       http:
         paths:
-          - path: /oauth2
-            pathType: Prefix
-            backend:
-              service:
-                name: vscode-auth-proxy
-                port:
-                  number: 4180
-          - path: /auth
-            pathType: Prefix
-            backend:
-              service:
-                name: keycloak
-                port:
-                  number: 8080
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: vscode-auth-proxy
+                name: vscode-nginx
                 port:
-                  number: 4180
+                  number: 80

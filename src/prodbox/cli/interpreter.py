@@ -1687,7 +1687,13 @@ class EffectInterpreter:
             assert_ambient_aws_auth_only()
             session = boto3.Session(region_name=effect.aws_region)
             route53 = session.client("route53")
-            zone_id = effect.zone_id or os.environ.get("ROUTE53_ZONE_ID")
+            from prodbox.settings import get_settings
+
+            zone_id = (
+                effect.zone_id
+                or os.environ.get("ROUTE53_ZONE_ID")
+                or get_settings().route53_zone_id
+            )
             match zone_id:
                 case str() as resolved_zone_id:
                     route53.get_hosted_zone(Id=resolved_zone_id)

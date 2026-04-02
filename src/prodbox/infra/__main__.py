@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pulumi
 
-from prodbox.infra.cert_manager import deploy_cert_manager
 from prodbox.infra.cluster_issuer import deploy_cluster_issuer
 from prodbox.infra.dns import deploy_dns
 from prodbox.infra.ingress import deploy_ingress
@@ -51,16 +50,14 @@ def main() -> None:
         prodbox_id=prodbox_id,
     )
 
-    # Phase 4: cert-manager (TLS layer - independent of ingress)
-    # Manages TLS certificates
-    cert_manager_resources = deploy_cert_manager(settings, k8s_provider, prodbox_id=prodbox_id)
+    # Phase 4: cert-manager is pre-installed on this cluster (v1.20.1).
+    # Skip Helm install; create only the ClusterIssuer.
 
-    # Phase 5: ClusterIssuer (requires cert-manager)
+    # Phase 5: ClusterIssuer (cert-manager CRDs already present)
     # Let's Encrypt issuer with DNS-01 validation
     _cluster_issuer_resources = deploy_cluster_issuer(
         settings,
         k8s_provider,
-        cert_manager_resources,
         prodbox_id=prodbox_id,
     )
 

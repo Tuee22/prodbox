@@ -10,36 +10,24 @@ data:
       "realm": {{ .Values.keycloak.realmName | quote }},
       "enabled": true,
       "displayName": "prodbox",
+      "sslRequired": "none",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
       "clients": [
         {
-          "clientId": {{ .Values.oauth2Proxy.clientId | quote }},
-          "secret": {{ .Values.oauth2Proxy.clientSecret | quote }},
+          "clientId": {{ .Values.nginx.clientId | quote }},
+          "secret": {{ .Values.nginx.clientSecret | quote }},
           "enabled": true,
           "publicClient": false,
           "protocol": "openid-connect",
           "standardFlowEnabled": true,
+          "directAccessGrantsEnabled": false,
           "redirectUris": [
-            {{ printf "https://%s/oauth2/callback" .Values.keycloak.publicHost | quote }}
+            {{ printf "https://%s/auth/callback" .Values.keycloak.publicHost | quote }}
           ],
           "webOrigins": [
             {{ printf "https://%s" .Values.keycloak.publicHost | quote }}
           ]
-        }
-      ],
-      "identityProviders": [
-        {
-          "alias": "google",
-          "displayName": "Google",
-          "providerId": "google",
-          "enabled": true,
-          "authenticateByDefault": true,
-          "trustEmail": true,
-          "firstBrokerLoginFlowAlias": "first broker login",
-          "config": {
-            "clientId": {{ .Values.google.clientId | quote }},
-            "clientSecret": {{ .Values.google.clientSecret | quote }},
-            "defaultScope": "openid profile email"
-          }
         }
       ]
     }

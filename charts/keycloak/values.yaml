@@ -15,10 +15,6 @@ postgres:
   username: keycloak
   password: change-me
 
-oauth2Proxy:
-  clientId: vscode-oauth2-proxy
-  clientSecret: change-me
-
-google:
-  clientId: change-me
+nginx:
+  clientId: vscode-nginx
   clientSecret: change-me

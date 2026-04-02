@@ -4,9 +4,10 @@
 config:
   # AWS region for Route 53
   aws:region: us-east-1
+encryptionsalt: v1:LEfIPxd/BFc=:v1:GABlTeZECqe7L/a+:8rLutU0awQF9Z46ygyjNGNdMu9dvGg==
 
-  # Stack-specific settings (can be overridden per-stack)
-  # These values should match your network configuration
-  # prodbox:metallb_pool: "192.168.1.240-192.168.1.250"
-  # prodbox:ingress_lb_ip: "192.168.1.240"
-  # prodbox:demo_fqdn: "demo.example.com"
+# Stack-specific settings (can be overridden per-stack)
+# These values should match your network configuration
+# prodbox:metallb_pool: "192.168.1.240-192.168.1.250"
+# prodbox:ingress_lb_ip: "192.168.1.240"
+# prodbox:demo_fqdn: "demo.example.com"

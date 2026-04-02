@@ -16,14 +16,14 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: vscode-auth-proxy
+  name: vscode-nginx
   labels:
-    {{- include "vscode.oauth2ProxyLabels" . | nindent 4 }}
+    {{- include "vscode.nginxLabels" . | nindent 4 }}
 spec:
   selector:
-    app.kubernetes.io/name: vscode-auth-proxy
+    app.kubernetes.io/name: vscode-nginx
     app.kubernetes.io/instance: {{ .Release.Name }}
   ports:
     - name: http
-      port: 4180
+      port: 80
       targetPort: http

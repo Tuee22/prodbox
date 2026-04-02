@@ -12,7 +12,6 @@ from prodbox.infra.metadata import object_meta
 from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
 
 if TYPE_CHECKING:
-    from prodbox.infra.cert_manager import CertManagerResources
     from prodbox.settings import Settings
 
 
@@ -26,7 +25,6 @@ class ClusterIssuerResources:
 def deploy_cluster_issuer(
     settings: Settings,
     k8s_provider: k8s.Provider,
-    cert_manager_resources: CertManagerResources,
     *,
     prodbox_id: str,
 ) -> ClusterIssuerResources:
@@ -38,7 +36,6 @@ def deploy_cluster_issuer(
     Args:
         settings: Application settings with Route 53 and ACME configuration
         k8s_provider: Kubernetes provider
-        cert_manager_resources: cert-manager resources (for dependency)
         prodbox_id: Canonical prodbox-id annotation value
 
     Returns:
@@ -64,12 +61,18 @@ def deploy_cluster_issuer(
                     "name": "letsencrypt-account-key",
                 },
                 # DNS-01 solver configuration
+                # Credentials are provided via a K8s Secret (bare-metal cluster has no IMDS).
                 "solvers": [
                     {
                         "dns01": {
                             "route53": {
                                 "region": settings.aws_region,
                                 "hostedZoneID": settings.route53_zone_id,
+                                "accessKeyID": "AKIAEXAMPLEKEYID0000",
+                                "secretAccessKeySecretRef": {
+                                    "name": "route53-credentials",
+                                    "key": "secret-access-key",
+                                },
                             },
                         },
                     },
@@ -78,9 +81,6 @@ def deploy_cluster_issuer(
         },
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,
-            depends_on=[
-                cert_manager_resources.release,
-            ],
         ),
     )
 

@@ -41,11 +41,8 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(1200)]
 _VSCODE_SETTINGS: dict[str, str] = {
     "keycloak_postgres_password": "integrationtestpass",
     "keycloak_admin_password": "integrationadminpass",
-    "keycloak_oauth2_client_secret": "integrationoauthsecret",
-    "google_oauth_client_id": "integrationgoogleclientid",
-    "google_oauth_client_secret": "integrationgoogleclientsecret",
+    "keycloak_nginx_client_secret": "integrationnginxsecret",
     "vscode_fqdn": "vscode.example.internal",
-    "vscode_oauth2_proxy_cookie_secret": "integrationcookiesecret1",
 }
 
 _ROOT_CHART = "vscode"

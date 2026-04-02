@@ -30,8 +30,13 @@ class TestSettings:
         assert settings.metallb_pool == "10.0.0.100-10.0.0.110"
         assert settings.ingress_lb_ip == "10.0.0.100"
 
-    def test_settings_requires_route53_zone_id(self) -> None:
+    def test_settings_requires_route53_zone_id(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Settings should fail without Route 53 zone ID."""
+        monkeypatch.chdir(tmp_path)
         env = {
             "ACME_EMAIL": "test@example.com",
         }
@@ -43,8 +48,13 @@ class TestSettings:
             error_fields = {e["loc"][0] for e in errors}
             assert "route53_zone_id" in error_fields
 
-    def test_settings_requires_acme_email(self) -> None:
+    def test_settings_requires_acme_email(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Settings should fail without ACME email."""
+        monkeypatch.chdir(tmp_path)
         env = {
             "ROUTE53_ZONE_ID": "Z123",
         }
@@ -96,8 +106,11 @@ class TestSettings:
     def test_settings_default_values(
         self,
         mock_env: dict[str, str],  # noqa: ARG002
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Settings should use default values when not specified."""
+        monkeypatch.chdir(tmp_path)
         env = {
             "ROUTE53_ZONE_ID": "Z123",
             "ACME_EMAIL": "test@example.com",

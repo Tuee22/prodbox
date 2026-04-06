@@ -10,11 +10,23 @@ from typing import Annotated
 
 from pydantic import Field, field_validator
 from pydantic.functional_validators import model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    DotEnvSettingsSource,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
 
-from prodbox.lib.aws_auth import assert_ambient_aws_auth_only, assert_no_aws_auth_in_dotenv
+from prodbox.lib.aws_auth import assert_no_ambient_aws_auth_env_vars, load_dotenv_aws_auth
 
 RenderedSettingValue = str | int | Path | None
+
+REPOSITORY_ROOT: Path = Path(__file__).resolve().parents[2]
+
+
+def _resolve_repo_dotenv_path() -> Path:
+    """Resolve the fixed repository-root `.env` path inside the outer container."""
+    return REPOSITORY_ROOT / ".env"
 
 
 class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSettings uses Any internally
@@ -25,11 +37,29 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=None,
         env_file_encoding="utf-8",
         extra="ignore",
         case_sensitive=False,
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        """Load `.env` from the fixed repository root and nowhere else."""
+        _ = dotenv_settings
+        resolved_dotenv = DotEnvSettingsSource(
+            settings_cls,
+            env_file=_resolve_repo_dotenv_path(),
+            env_file_encoding="utf-8",
+        )
+        return init_settings, env_settings, resolved_dotenv, file_secret_settings
 
     # === Kubernetes ===
     kubeconfig: Annotated[
@@ -46,6 +76,25 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         Field(
             default="us-east-1",
             description="AWS region for Route 53",
+        ),
+    ]
+    aws_access_key_id: Annotated[
+        str,
+        Field(
+            description="AWS access key ID loaded from the repository .env file",
+        ),
+    ]
+    aws_secret_access_key: Annotated[
+        str,
+        Field(
+            description="AWS secret access key loaded from the repository .env file",
+        ),
+    ]
+    aws_session_token: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional AWS session token loaded from the repository .env file",
         ),
     ]
     route53_zone_id: Annotated[
@@ -158,10 +207,10 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
 
     @model_validator(mode="before")
     @classmethod
-    def reject_aws_auth_env_vars(cls, data: object) -> object:
-        """Reject AWS auth env vars so all AWS calls use ambient host auth only."""
-        assert_ambient_aws_auth_only()
-        assert_no_aws_auth_in_dotenv(Path(".env"))
+    def require_dotenv_aws_auth(cls, data: object) -> object:
+        """Require repository `.env` AWS auth and reject ambient AWS auth env vars."""
+        assert_no_ambient_aws_auth_env_vars()
+        load_dotenv_aws_auth(_resolve_repo_dotenv_path())
         return data
 
     def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
@@ -274,6 +323,30 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         getter=lambda settings: settings.aws_region,
         required=False,
         template_default="us-east-1",
+    ),
+    SettingSpec(
+        attribute="aws_access_key_id",
+        env_var="AWS_ACCESS_KEY_ID",
+        description="AWS access key ID loaded from .env",
+        getter=lambda settings: settings.aws_access_key_id,
+        required=True,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="aws_secret_access_key",
+        env_var="AWS_SECRET_ACCESS_KEY",
+        description="AWS secret access key loaded from .env",
+        getter=lambda settings: settings.aws_secret_access_key,
+        required=True,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="aws_session_token",
+        env_var="AWS_SESSION_TOKEN",
+        description="Optional AWS session token loaded from .env",
+        getter=lambda settings: settings.aws_session_token,
+        required=False,
+        sensitive=True,
     ),
     SettingSpec(
         attribute="route53_zone_id",

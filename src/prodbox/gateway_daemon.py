@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import hashlib
 import hmac
 import json
 import ssl
-import sys
 import uuid
 from collections.abc import Mapping
 from contextlib import suppress
@@ -19,7 +17,7 @@ from typing import Literal, Protocol, cast
 
 import httpx
 
-from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
+from prodbox.lib.aws_auth import load_dotenv_aws_auth
 
 ChannelName = Literal["mesh", "gateway"]
 
@@ -79,7 +77,7 @@ def _reject_forbidden_dns_write_gate_keys(gate_dict: Mapping[object, object]) ->
         case _:
             raise ValueError(
                 "dns_write_gate must not contain explicit AWS credentials. "
-                "Configure ambient host aws CLI auth outside the repo and remove: "
+                "Define AWS auth only in .env and remove: "
                 f"{', '.join(present)}"
             )
 
@@ -456,9 +454,8 @@ class ManagedConnection:
 
     async def close(self) -> None:
         """Close writer safely."""
-        if self.writer.is_closing():
-            return
-        self.writer.close()
+        if not self.writer.is_closing():
+            self.writer.close()
         # TLS shutdown can race with in-flight peer bytes during teardown.
         # Treat transport-close errors as non-fatal cleanup noise.
         with suppress(Exception):
@@ -678,8 +675,13 @@ class Route53DnsWriteClient:
         import boto3
 
         def _do_upsert() -> bool:
-            assert_ambient_aws_auth_only()
-            session = boto3.Session(region_name=self._aws_region)
+            auth = load_dotenv_aws_auth(Path(".env"))
+            session = boto3.Session(
+                aws_access_key_id=auth.access_key_id,
+                aws_secret_access_key=auth.secret_access_key,
+                aws_session_token=auth.session_token,
+                region_name=self._aws_region,
+            )
             r53 = session.client("route53")
             change_batch: dict[str, object] = {
                 "Comment": f"Gateway DDNS update: {fqdn} -> {ip_address}",
@@ -1454,46 +1456,3 @@ class GatewayDaemon:
         ).encode() + body
         writer.write(response)
         await writer.drain()
-
-
-def _parse_config_path(argv: tuple[str, ...]) -> Path:
-    parser = argparse.ArgumentParser(
-        prog="daemon",
-        description="Run distributed gateway daemon loop.",
-    )
-    parser.add_argument(
-        "--config",
-        required=True,
-        help="Path to gateway daemon JSON config file.",
-    )
-    parsed = parser.parse_args(argv)
-    raw_config_value = cast(object, getattr(parsed, "config", None))
-    if not isinstance(raw_config_value, str):
-        raise ValueError("Invalid --config argument")
-    return Path(raw_config_value)
-
-
-async def _run_daemon(config_path: Path) -> int:
-    config = DaemonConfig.from_json_file(config_path)
-    daemon = GatewayDaemon(config)
-    await daemon.start()
-    stop_event = asyncio.Event()
-    try:
-        await stop_event.wait()
-    except asyncio.CancelledError:
-        pass
-    except KeyboardInterrupt:
-        pass
-    finally:
-        await daemon.stop()
-    return 0
-
-
-def main() -> None:
-    """CLI entrypoint for gateway daemon."""
-    config_path = _parse_config_path(tuple(sys.argv[1:]))
-    raise SystemExit(asyncio.run(_run_daemon(config_path)))
-
-
-if __name__ == "__main__":
-    main()

@@ -15,8 +15,6 @@ import pytest
 
 from prodbox.cli.command_adt import (
     DNSCheckCommand,
-    DNSEnsureTimerCommand,
-    DNSUpdateCommand,
     EnvShowCommand,
     EnvTemplateCommand,
     EnvValidateCommand,
@@ -234,16 +232,6 @@ class TestDNSCommandDAGBuilders:
         match command_to_dag(cmd):
             case Success(dag):
                 assert "dns_check" in dag
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_dns_update_dag(self) -> None:
-        """command_to_dag should build DAG for DNSUpdateCommand."""
-        cmd = DNSUpdateCommand(force=True)
-
-        match command_to_dag(cmd):
-            case Success(dag):
-                assert "dns_update" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -625,33 +613,6 @@ class TestDNSCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_dns_update_requires_settings_and_route53(self) -> None:
-        """DNSUpdateCommand should require settings and route53 access."""
-        cmd = DNSUpdateCommand(force=True)
-        match command_to_dag(cmd):
-            case Success(dag):
-                root = dag.get_node("dns_update")
-                assert root is not None
-                assert "settings_object" in root.prerequisites
-                assert "dns_public_ip" in root.prerequisites
-                assert "dns_current_record" in root.prerequisites
-                assert isinstance(root.effect, WriteStdout)
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_dns_ensure_timer_requires_settings_and_systemd(self) -> None:
-        """DNSEnsureTimerCommand should require settings and systemd."""
-        cmd = DNSEnsureTimerCommand(interval=10)
-        match command_to_dag(cmd):
-            case Success(dag):
-                root = dag.get_node("dns_ensure_timer")
-                assert root is not None
-                assert "settings_loaded" in root.prerequisites
-                assert "systemd_available" in root.prerequisites
-                assert isinstance(root.effect, RunSystemdCommand)
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
 
 class TestK8sCommandPrerequisites:
     """Verify prerequisites for Kubernetes commands."""
@@ -808,7 +769,6 @@ class TestUserVisibleCommandBuilderRegressionGuards:
             (EnvTemplateCommand(), "env_template"),
             (HostCheckPortsCommand(ports=(80, 443)), "host_check_ports"),
             (DNSCheckCommand(), "dns_check"),
-            (DNSUpdateCommand(force=False), "dns_update"),
             (PulumiPreviewCommand(stack="dev"), "pulumi_preview"),
             (PulumiUpCommand(stack="dev", yes=False), "pulumi_up"),
             (PulumiDestroyCommand(stack="dev", yes=True), "pulumi_destroy"),
@@ -902,8 +862,6 @@ class TestAllPrerequisitesExistInRegistry:
         """All prerequisites referenced by DNS commands should exist."""
         commands = [
             DNSCheckCommand(),
-            DNSUpdateCommand(),
-            DNSEnsureTimerCommand(),
         ]
         for cmd in commands:
             match command_to_dag(cmd):

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md
+**Referenced by**: DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md
 
 > **Purpose**: Define the canonical shared AWS account, DNS, isolation, lifecycle, and authentication model for ephemeral multi-project testing.
 
@@ -41,7 +41,7 @@ Other AWS services may be used in the same shared test account only when they ca
 
 This document owns the general AWS test-account model, DNS namespace strategy, cross-project isolation rules, and authentication posture.
 
-Project-specific harness rules remain owned by project documents. For `prodbox`, the host-authenticated CLI/test-harness doctrine is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
+Project-specific harness rules remain owned by project documents. For `prodbox`, the repository-`.env` CLI/test-harness doctrine is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---
 

@@ -18,6 +18,10 @@ When integration scope is selected, `prodbox test` must enforce the runbook by e
 
 `prodbox test` phase-two pytest timeout budget is capped at 240 minutes (14,400 seconds).
 
+This document defines testing doctrine only. Clean-room sequencing, completion
+status, remaining work, and legacy-path removal are owned by
+[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+
 ---
 
 ## 1. The Interpreter-Only Mocking Doctrine
@@ -68,8 +72,10 @@ Stateful AWS-mutating integration tests must follow [AWS Integration Environment
 Integration-selected `prodbox test` suite commands execute in two phases:
 
 1. **Phase 1 - prerequisite gate**: when integration scope is selected, the eDAG validates integration prerequisites before pytest starts.
-2. **Phase 1.5 - integration runbook gate**: integration scope enforces `prodbox rke2 ensure`.
-3. **Phase 2 - test execution**: pytest runs only after Phase 1 and Phase 1.5 succeed.
+2. **Phase 1.5 - integration runbook gate**: cluster-backed integration suites enforce `prodbox rke2 ensure`.
+3. **Phase 2 - test execution**: pytest runs only after Phase 1 and any required Phase 1.5 gate succeed.
+
+When a selected integration suite requires cluster-backed runtime preparation, `prodbox test` must enforce the runbook by executing `prodbox rke2 ensure` before pytest.
 
 If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a skip.
 
@@ -79,8 +85,8 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
 
 1. Visible banner order is exact: `Phase 1/2`, optional `Phase 1.5/2`, then `Phase 2/2`.
 2. Each phase banner is emitted as its own stdout line.
-3. The `Phase 1.5/2` banner is emitted if and only if integration scope is selected.
-4. The `Phase 2/2` banner is emitted only after the prerequisite gate succeeds and, when integration scope is selected, after `prodbox rke2 ensure` succeeds.
+3. The `Phase 1.5/2` banner is emitted if and only if the selected suite requires the cluster runbook.
+4. The `Phase 2/2` banner is emitted only after the prerequisite gate succeeds and, when required by the selected suite, after `prodbox rke2 ensure` succeeds.
 5. Generic terminal record framing rules are owned by [Streaming Doctrine](./streaming_doctrine.md#5-terminal-record-contract).
 
 ### Command-Scope Prerequisite Aggregation
@@ -90,6 +96,7 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
 1. Selected named Click suite determines whether integration prerequisites are required.
 2. Integration-selected scopes aggregate prerequisite requirements into one Phase 1 gate.
 3. Unit-only scope (`poetry run prodbox test unit`) bypasses integration gates.
+4. External public-host suites such as `charts-vscode` and `public-dns` may run with an empty prerequisite gate and no cluster runbook.
 
 ### Session Fixtures vs Test DAG (SSoT)
 
@@ -210,12 +217,12 @@ async def test_kubectl_get_nodes(fp: FakeProcess) -> None:
 
 ```python
 # ✅ CORRECT: Test full pipeline with mocked interpreter
-async def test_dns_update_command(fp: FakeProcess) -> None:
+async def test_dns_check_command(fp: FakeProcess) -> None:
     # Mock externals at interpreter level
     fp.register(["curl", fp.any()], stdout="1.2.3.4")
 
     # Pure code produces the DAG
-    cmd = dns_update_command(force=True)
+    cmd = dns_check_command()
     match cmd:
         case Success(command):
             dag = command_to_dag(command)
@@ -328,6 +335,7 @@ This SSoT owns test skip doctrine intention.
 
 ## Cross-References
 
+- [Development Plan](../../DEVELOPMENT_PLAN.md)
 - [Pure FP Standards](./pure_fp_standards.md) - Purity boundary definitions
 - [Code Quality Doctrine](./code_quality.md) - Guardrail enforcement
 - [Effectful DAG Architecture](./effectful_dag_architecture.md) - Effect system design

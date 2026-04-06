@@ -4,7 +4,7 @@ global:
 
 ingress:
   host: vscode.example.com
-  clusterIssuer: letsencrypt-dns01
+  clusterIssuer: letsencrypt-http01
 
 nginx:
   image: 127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest

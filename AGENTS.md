@@ -22,7 +22,6 @@ prodbox/
 │   └── integration/      # Real infrastructure tests
 ├── typings/              # Custom type stubs for external libs
 ├── documents/            # Engineering documentation
-├── scripts/              # Systemd units for DDNS
 └── pyproject.toml        # Poetry configuration
 ```
 
@@ -119,8 +118,8 @@ def _assert_never(value: object) -> Never:
     raise AssertionError(f"Unhandled case: {type(value).__name__}")
 
 match command:
-    case DNSUpdateCommand():
-        return handle_dns_update(command)
+    case DNSCheckCommand():
+        return handle_dns_check(command)
     case K8sHealthCommand():
         return handle_k8s_health(command)
     case _ as unreachable:
@@ -169,7 +168,7 @@ def test_parse_success(fp: FakeProcess) -> None:
 
 - Mark with `@pytest.mark.integration`
 - Require real infrastructure (kubectl, RKE2, etc.)
-- AWS-mutating integration tests must use ambient host-authenticated system `aws` CLI state plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
+- AWS-mutating integration tests must use credentials loaded from the repository `.env` file plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
 - Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
 - Use `poetry run prodbox test unit` when integration prerequisites are unavailable
 
@@ -201,8 +200,8 @@ This policy ensures human oversight of all code changes.
 
 ## Security
 
-- **Do not store auth credentials anywhere under the repo tree** - this includes unversioned `.env` files
-- **AWS auth must come from the system-level `aws` CLI on the host** - repo-local auth helpers and AWS auth env vars are prohibited
+- **Store AWS auth only in the repository `.env` file** - do not create alternate credential files under the repo tree
+- **AWS auth must come only from `.env`** - ambient AWS auth env vars outside `.env`, shared-profile discovery, and system `aws` CLI host auth state are not valid auth sources for `prodbox`
 - **Validate all external input** - especially FQDN, IP addresses
 - **Least privilege IAM** - Route 53 + STS only
 

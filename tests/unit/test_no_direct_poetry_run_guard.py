@@ -21,7 +21,6 @@ def test_guard_allows_entrypoint_poetry_run(tmp_path: Path) -> None:
             [
                 "[tool.poetry.scripts]",
                 'prodbox = "prodbox.cli.main:main"',
-                'daemon = "prodbox.gateway_daemon:main"',
                 "",
             ]
         ),

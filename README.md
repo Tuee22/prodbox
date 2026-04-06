@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md
+**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN.md
 
 > **Purpose**: Project overview, installation guide, and documentation index for prodbox.
 
@@ -21,12 +21,18 @@ Prodbox is a Python-native infrastructure-as-code project for managing a home Ku
 - **MetalLB** - LoadBalancer IP assignment using Layer 2 (ARP)
 - **Traefik** - Ingress controller for HTTP/HTTPS traffic
 - **cert-manager** - Automatic TLS certificates via Let's Encrypt
-- **Route 53** - DNS management with dynamic DNS updates
+- **Route 53** - DNS record ownership via Pulumi bootstrap plus gateway writes
+- **Bespoke Charts** - Namespace-local `keycloak-postgres`, `keycloak`, and `vscode` stacks with retained `.data/` storage
 
 Doctrine highlights:
 - Exactly one prodbox instance per Linux machine (derived from `/etc/machine-id`).
 - prodbox-created Kubernetes objects are tagged with `prodbox.io/id=<prodbox-id>`.
 - Storage lifecycle preserves retained `StorageClass`/`PV`/`PVC` across cleanup for deterministic rebind.
+- The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
+
+Implementation status, remaining work, and legacy-path removal are tracked in
+[DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md). Engineering docs under `documents/engineering/`
+define stable doctrine and command contracts.
 
 ## Architecture
 
@@ -74,22 +80,34 @@ poetry run prodbox --version
 
 ## Configuration
 
-All repo-managed configuration is via environment variables, but AWS authentication is not. `prodbox` uses the same ambient host auth state as the system-level `aws` CLI and rejects AWS auth env vars outright.
+All configuration, including AWS authentication, is loaded from the fixed repository-root `.env` file inside the outer container.
 
-Authenticate the system-level AWS CLI on the host outside the repository, then run `prodbox` without exporting AWS auth env vars. The canonical storage and test-harness rules live in [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md#2-authentication-source-and-storage-rules).
+`prodbox` requires explicit AWS credentials in `.env` using `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, with optional `AWS_SESSION_TOKEN`. `pydantic` reads only `<repository-root>/.env`; it does not search upward from the current working directory or fall back to nested `.env` files. Ambient AWS auth env vars outside `.env`, AWS profile-based auth, and shared credential/config discovery are not valid auth sources for `prodbox`. The canonical storage and test-harness rules live in [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md#2-authentication-source-and-storage-rules).
 
 Required environment variables:
 
 | Variable | Description |
 |----------|-------------|
+| `AWS_ACCESS_KEY_ID` | AWS access key ID for Route 53 and AWS integration operations |
+| `AWS_SECRET_ACCESS_KEY` | AWS secret access key for Route 53 and AWS integration operations |
 | `ROUTE53_ZONE_ID` | Route 53 hosted zone ID |
 | `ACME_EMAIL` | Email for Let's Encrypt registration |
+
+Required when using the chart platform and public `vscode` flow:
+
+| Variable | Description |
+|----------|-------------|
+| `VSCODE_FQDN` | Public FQDN for the namespace-local `vscode` and Keycloak ingress path |
+| `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password |
+| `KEYCLOAK_POSTGRES_PASSWORD` | Password for namespace-local Keycloak Postgres |
+| `KEYCLOAK_NGINX_CLIENT_SECRET` | Shared OIDC client secret used by nginx and Keycloak |
 
 Optional (with defaults):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `AWS_REGION` | `us-east-1` | AWS region |
+| `AWS_SESSION_TOKEN` | unset | Optional AWS session token paired with `.env` credentials |
 | `DEMO_FQDN` | `demo.example.com` | Domain name |
 | `DEMO_TTL` | `60` | DNS record TTL in seconds |
 | `METALLB_POOL` | `192.168.1.240-192.168.1.250` | MetalLB IP range |
@@ -99,13 +117,8 @@ Optional (with defaults):
 | `PULUMI_STACK` | `home` | Default Pulumi stack name |
 | `BOOTSTRAP_PUBLIC_IP_OVERRIDE` | unset | Bootstrap-only DNS A-record IP override when public IP lookup is unavailable |
 
-Forbidden AWS auth environment variables include:
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `AWS_SESSION_TOKEN`
-- `AWS_PROFILE`
-- `AWS_SHARED_CREDENTIALS_FILE`
-- `AWS_CONFIG_FILE`
+Unsupported AWS auth configuration for `prodbox` includes `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`,
+`AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_ROLE_ARN`, and `AWS_ROLE_SESSION_NAME`.
 
 Validate your configuration:
 
@@ -150,12 +163,6 @@ prodbox pulumi up
 ```bash
 # Check current DNS record
 prodbox dns check
-
-# Update DNS with current public IP
-prodbox dns update
-
-# Install systemd timer for automatic DDNS
-prodbox dns ensure-timer
 ```
 
 ### Check Health
@@ -184,13 +191,16 @@ prodbox charts deploy vscode
 prodbox charts delete vscode
 ```
 
+`vscode` is supported only through the cluster-backed chart stack; there is no separate
+`docker/vscode-dev` delivery path.
+
 ### Destroy Infrastructure
 
 ```bash
 # Destroy all resources
 prodbox pulumi destroy
 
-# Idempotently remove all prodbox-annotated Kubernetes objects
+# Idempotently remove all prodbox-annotated Kubernetes objects via namespace-first cascade
 prodbox rke2 cleanup --yes
 ```
 
@@ -235,7 +245,7 @@ Common commands:
 poetry run prodbox test unit
 poetry run prodbox check-code
 poetry run prodbox tla-check
-poetry run daemon --config <path>
+poetry run prodbox gateway start <path>
 docker build -f docker/gateway.Dockerfile -t prodbox-gateway .
 ```
 
@@ -246,11 +256,14 @@ and container-local `poetry.toml` override) is defined in
 Testing note:
 - `poetry run prodbox test all` runs unit + integration tests and fails fast when integration prerequisites are missing.
 - Use `poetry run prodbox test unit` for unit-only environments.
-- Integration-selected runs enforce `rke2 ensure` as a runbook gate before pytest starts.
+- Cluster-backed integration suites enforce `rke2 ensure` as a runbook gate before pytest starts.
+- `poetry run prodbox test integration charts-vscode` is an external public-host suite and does not require cluster gates or `rke2 ensure`.
+- `poetry run prodbox test integration public-dns` is the external authoritative delegation proof for the hosted zone that owns `VSCODE_FQDN`; it does not require cluster gates or `rke2 ensure`.
 - The phase-two pytest timeout budget is 240 minutes.
 - Real shared-account AWS foundation validation uses `poetry run prodbox test integration aws-foundation` and exercises tagged delegated Route 53 child zones, S3 buckets, EC2/VPC resources, and janitor-style expired-resource cleanup.
 - Real EKS validation uses `poetry run prodbox test integration aws-eks` and exercises a tagged fixture-owned EKS control plane plus tagged IAM/VPC dependencies.
-- Real AWS DNS integration uses `poetry run prodbox test integration dns-aws` and requires a host-authenticated system `aws` CLI plus fixture-owned ephemeral Route 53 hosted zones via AWS CLI.
+- Real AWS DNS integration uses `poetry run prodbox test integration dns-aws` to validate the canonical gateway Route 53 write client against fixture-owned ephemeral hosted zones.
+- Real public DNS delegation validation uses `poetry run prodbox test integration public-dns` to compare the public NS view with the canonical Route 53 hosted zone named by `ROUTE53_ZONE_ID`.
 - Real Pulumi validation uses `poetry run prodbox test integration pulumi`, a local Pulumi backend, and a fixture-owned Route 53 hosted zone to exercise `stack-init`, `preview`, `up`, and `destroy` against isolated test state.
 
 ### Project Structure
@@ -262,7 +275,6 @@ prodbox/
 │   ├── lib/         # Shared utilities
 │   ├── infra/       # Pulumi infrastructure
 │   └── settings.py  # Pydantic configuration
-├── scripts/         # Systemd units
 └── tests/           # Test suite
 ```
 
@@ -281,17 +293,22 @@ Ingress controller handling HTTP/HTTPS traffic routing. Configured with:
 
 ### cert-manager (v1.16.2)
 
-Automatic TLS certificate management using Let's Encrypt with DNS-01 validation via Route 53.
+Automatic TLS certificate management using Let's Encrypt with HTTP-01 validation via ingress.
 
 ### Route 53
 
 DNS management with:
 - Pulumi-managed record existence
-- DDNS updater for dynamic IP changes
+- Gateway-owner Route 53 writes for dynamic IP changes
 - 60-second TTL for fast failover
 
 ## Documentation
 
+Current development sequencing and delivery status:
+
+- [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) - single roadmap, completion tracker, and legacy-removal inventory
+
+Canonical engineering documentation:
 
 ### Engineering Documentation
 
@@ -299,6 +316,7 @@ Architecture and design documentation lives in `documents/engineering/`:
 
 | Document | Purpose |
 |----------|---------|
+| [README.md](documents/engineering/README.md) | Engineering documentation index |
 | [documentation_standards.md](documents/documentation_standards.md) | Documentation writing standards |
 | [effectful_dag_architecture.md](documents/engineering/effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](documents/engineering/effect_interpreter.md) | Interpreter runtime contract |
@@ -313,6 +331,7 @@ Architecture and design documentation lives in `documents/engineering/`:
 | [distributed_gateway_architecture.md](documents/engineering/distributed_gateway_architecture.md) | P2P gateway design |
 | [local_registry_pipeline.md](documents/engineering/local_registry_pipeline.md) | Harbor install + Docker build/push + mirror behavior |
 | [storage_lifecycle_doctrine.md](documents/engineering/storage_lifecycle_doctrine.md) | Retained storage + deterministic PVC/PV rebinding doctrine |
+| [helm_chart_platform_doctrine.md](documents/engineering/helm_chart_platform_doctrine.md) | Canonical chart-platform doctrine for `prodbox charts` |
 
 ## License
 

@@ -151,11 +151,11 @@ create = false
 ```
 
 5. Do not set `PYTHONDONTWRITEBYTECODE` or `PYTHONUNBUFFERED` in this image.
-6. Use `tini` as PID 1 and invoke daemon through it:
+6. Use `tini` as PID 1 and invoke the canonical CLI startup path through it:
 
 ```dockerfile
 # File: docker/gateway.Dockerfile
-ENTRYPOINT ["/usr/bin/tini", "--", "daemon"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "prodbox.cli.main", "gateway", "start"]
 ```
 
 ## 7. Operator Runbook

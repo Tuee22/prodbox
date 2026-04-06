@@ -9,7 +9,28 @@ from unittest.mock import patch
 import pytest
 from pydantic import ValidationError
 
+import prodbox.settings as settings_module
 from prodbox.settings import Settings, clear_settings_cache, get_settings
+
+
+def _write_aws_auth_dotenv(path: Path) -> None:
+    """Write minimal `.env` AWS auth required by settings validation."""
+    (path / ".env").write_text(
+        "\n".join(
+            [
+                "AWS_ACCESS_KEY_ID=test-access-key",
+                "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                "AWS_SESSION_TOKEN=test-session-token",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def _patch_repository_root(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Point settings resolution at an isolated repository root for one test."""
+    monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", path)
 
 
 class TestSettings:
@@ -36,6 +57,8 @@ class TestSettings:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Settings should fail without Route 53 zone ID."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        _write_aws_auth_dotenv(tmp_path)
         monkeypatch.chdir(tmp_path)
         env = {
             "ACME_EMAIL": "test@example.com",
@@ -54,6 +77,8 @@ class TestSettings:
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Settings should fail without ACME email."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        _write_aws_auth_dotenv(tmp_path)
         monkeypatch.chdir(tmp_path)
         env = {
             "ROUTE53_ZONE_ID": "Z123",
@@ -66,8 +91,15 @@ class TestSettings:
             error_fields = {e["loc"][0] for e in errors}
             assert "acme_email" in error_fields
 
-    def test_settings_rejects_aws_auth_env_vars(self) -> None:
-        """Settings should reject env-var-based AWS auth."""
+    def test_settings_rejects_aws_auth_env_vars(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Settings should reject ambient AWS auth env vars outside `.env`."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        _write_aws_auth_dotenv(tmp_path)
+        monkeypatch.chdir(tmp_path)
         env = {
             "ROUTE53_ZONE_ID": "Z123",
             "ACME_EMAIL": "test@example.com",
@@ -75,22 +107,22 @@ class TestSettings:
         }
         with (
             patch.dict(os.environ, env, clear=True),
-            pytest.raises(ValidationError, match="AWS auth env vars are forbidden"),
+            pytest.raises(ValidationError, match="Ambient AWS auth env vars are forbidden"),
         ):
             Settings()
 
-    def test_settings_rejects_repo_local_dotenv_auth_vars(
+    def test_settings_requires_repo_local_dotenv_auth_vars(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Settings should reject repo-local dotenv files that define AWS auth vars."""
+        """Settings should fail when repo-local `.env` omits AWS auth vars."""
+        _patch_repository_root(monkeypatch, tmp_path)
         (tmp_path / ".env").write_text(
             "\n".join(
                 [
                     "ROUTE53_ZONE_ID=Z123",
                     "ACME_EMAIL=test@example.com",
-                    "AWS_ACCESS_KEY_ID=forbidden",
                     "",
                 ]
             ),
@@ -99,18 +131,15 @@ class TestSettings:
         monkeypatch.chdir(tmp_path)
         with (
             patch.dict(os.environ, {}, clear=True),
-            pytest.raises(ValidationError, match="must not define AWS auth env vars"),
+            pytest.raises(ValidationError, match="must define AWS auth for prodbox"),
         ):
             Settings()
 
     def test_settings_default_values(
         self,
         mock_env: dict[str, str],  # noqa: ARG002
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Settings should use default values when not specified."""
-        monkeypatch.chdir(tmp_path)
         env = {
             "ROUTE53_ZONE_ID": "Z123",
             "ACME_EMAIL": "test@example.com",
@@ -152,6 +181,68 @@ class TestSettings:
             errors = exc_info.value.errors()
             assert any("demo_ttl" in str(e["loc"]) for e in errors)
 
+    def test_settings_load_repo_dotenv_from_nested_subdirectory(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Settings should load only the fixed repository-root `.env` from nested cwd."""
+        repo_root = tmp_path / "repo"
+        nested_dir = repo_root / "src" / "prodbox" / "infra"
+        nested_dir.mkdir(parents=True)
+        _patch_repository_root(monkeypatch, repo_root)
+        (repo_root / ".env").write_text(
+            "\n".join(
+                [
+                    "AWS_ACCESS_KEY_ID=test-access-key",
+                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                    "AWS_SESSION_TOKEN=test-session-token",
+                    "ROUTE53_ZONE_ID=Z1234567890ABC",
+                    "ACME_EMAIL=test@example.com",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(nested_dir)
+
+        with patch.dict(os.environ, {}, clear=True):
+            settings = Settings()
+
+        assert settings.route53_zone_id == "Z1234567890ABC"
+        assert settings.acme_email == "test@example.com"
+
+    def test_settings_ignores_nested_dotenv_when_repo_root_dotenv_is_missing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Settings should not fall back to nested `.env` files outside the fixed root path."""
+        repo_root = tmp_path / "repo"
+        nested_dir = repo_root / "src" / "prodbox" / "infra"
+        nested_dir.mkdir(parents=True)
+        _patch_repository_root(monkeypatch, repo_root)
+        (nested_dir / ".env").write_text(
+            "\n".join(
+                [
+                    "AWS_ACCESS_KEY_ID=test-access-key",
+                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                    "AWS_SESSION_TOKEN=test-session-token",
+                    "ROUTE53_ZONE_ID=Z1234567890ABC",
+                    "ACME_EMAIL=test@example.com",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(nested_dir)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(ValidationError, match="must define AWS auth for prodbox"),
+        ):
+            Settings()
+
 
 class TestDisplayDict:
     """Tests for Settings.display_dict() method."""
@@ -161,12 +252,20 @@ class TestDisplayDict:
         display = settings.display_dict()
 
         assert display["aws_region"] == "us-east-1"
+        assert display["aws_access_key_id"] == "****-key"
+        assert display["aws_secret_access_key"] == "****-key"
+        assert display["aws_session_token"] == "****oken"
         assert display["route53_zone_id"] == "Z1234567890ABC"
         assert display["demo_fqdn"] == "test.example.com"
         assert display["acme_email"] == "****.com"
 
     def test_show_secrets_reveals_sensitive_values(self, settings: Settings) -> None:
         """display_dict(show_secrets=True) should unmask sensitive settings."""
+        assert settings.display_dict(show_secrets=True)["aws_access_key_id"] == "test-access-key"
+        assert (
+            settings.display_dict(show_secrets=True)["aws_secret_access_key"] == "test-secret-key"
+        )
+        assert settings.display_dict(show_secrets=True)["aws_session_token"] == "test-session-token"
         assert settings.display_dict(show_secrets=True)["acme_email"] == "test@example.com"
 
 
@@ -174,14 +273,15 @@ class TestRenderedSettings:
     """Tests for deterministic rendered settings output."""
 
     def test_render_display_lists_supported_settings(self, settings: Settings) -> None:
-        """render_display should omit forbidden AWS auth env vars."""
+        """render_display should include masked `.env` AWS auth vars."""
         rendered = settings.render_display()
 
+        assert "AWS_ACCESS_KEY_ID=****-key" in rendered
+        assert "AWS_SECRET_ACCESS_KEY=****-key" in rendered
+        assert "AWS_SESSION_TOKEN=****oken" in rendered
         assert "AWS_REGION=us-east-1" in rendered
         assert "ROUTE53_ZONE_ID=Z1234567890ABC" in rendered
         assert "ACME_EMAIL=****.com" in rendered
-        assert "AWS_ACCESS_KEY_ID=" not in rendered
-        assert "AWS_SECRET_ACCESS_KEY=" not in rendered
 
     def test_render_display_show_secrets_reveals_sensitive_values(
         self,
@@ -190,6 +290,9 @@ class TestRenderedSettings:
         """render_display(show_secrets=True) should unmask sensitive settings."""
         rendered = settings.render_display(show_secrets=True)
 
+        assert "AWS_ACCESS_KEY_ID=test-access-key" in rendered
+        assert "AWS_SECRET_ACCESS_KEY=test-secret-key" in rendered
+        assert "AWS_SESSION_TOKEN=test-session-token" in rendered
         assert "ACME_EMAIL=test@example.com" in rendered
         assert "ACME_EMAIL=****.com" not in rendered
 
@@ -198,10 +301,12 @@ class TestRenderedSettings:
         template = Settings.render_template()
 
         assert "# prodbox environment template" in template
+        assert "AWS_ACCESS_KEY_ID=" in template
+        assert "AWS_SECRET_ACCESS_KEY=" in template
+        assert "AWS_SESSION_TOKEN=" in template
         assert "ROUTE53_ZONE_ID=" in template
         assert "AWS_REGION=us-east-1" in template
         assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in template
-        assert "AWS_ACCESS_KEY_ID=" not in template
 
 
 class TestGetSettings:

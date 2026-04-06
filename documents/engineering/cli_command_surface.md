@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define the explicit, no-passthrough Click command surface for `prodbox`.
 
@@ -17,6 +17,10 @@ The CLI surface is intentionally closed:
 1. Unknown extra arguments fail at the Click boundary.
 2. Invoking a command group without a subcommand displays help instead of running an implicit default.
 3. Every supported test subset is exposed as a named Click command, not as raw pytest selectors.
+
+This document defines the supported command contract only. Clean-room
+sequencing, completion status, remaining work, and legacy-path removal are
+owned by [DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
 
 ---
 
@@ -36,7 +40,7 @@ Top-level commands:
 | `host` | Group | Host prerequisite checks |
 | `rke2` | Group | Local cluster lifecycle |
 | `pulumi` | Group | Infrastructure deployment |
-| `dns` | Group | Route 53/DDNS management |
+| `dns` | Group | Route 53 inspection |
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
 | `charts` | Group | Bespoke Helm chart lifecycle |
@@ -91,9 +95,7 @@ Top-level commands:
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox dns update` | none | `--force`, `-f` |
 | `prodbox dns check` | none | none |
-| `prodbox dns ensure-timer` | none | `--interval` |
 
 ### `prodbox k8s`
 
@@ -150,6 +152,14 @@ Named suite commands:
 | `prodbox test integration charts-storage` | `tests/integration/test_charts_storage.py` |
 | `prodbox test integration charts-platform` | `tests/integration/test_charts_platform.py` |
 | `prodbox test integration charts-vscode` | `tests/integration/test_charts_vscode.py` |
+| `prodbox test integration public-dns` | `tests/integration/test_public_dns_delegation.py` |
+
+`prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
+It does not run cluster prerequisite gates or the `rke2 ensure` runbook.
+
+`prodbox test integration public-dns` validates authoritative public NS delegation for the
+hosted zone that owns `VSCODE_FQDN`. It does not run cluster prerequisite gates or the
+`rke2 ensure` runbook.
 
 ### `prodbox check-code`
 
@@ -188,6 +198,7 @@ This SSoT owns the explicit CLI surface doctrine.
 
 ## Cross-References
 
+- [Development Plan](../../DEVELOPMENT_PLAN.md)
 - [Documentation Standards](../documentation_standards.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Code Quality Doctrine](./code_quality.md)

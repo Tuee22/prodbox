@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, TypeVar
 
-from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
+from prodbox.lib.aws_auth import load_dotenv_aws_auth
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -185,7 +185,6 @@ from prodbox.cli.effects import (  # noqa: E402
     StartGatewayDaemon,
     StorageRuntime,
     Try,
-    UpdateRoute53Record,
     ValidateAWSCredentials,
     ValidateEnvironment,
     ValidatePulumiLogin,
@@ -203,6 +202,7 @@ from prodbox.cli.types import (  # noqa: E402
     Result,
     Success,
 )
+from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV  # noqa: E402
 from prodbox.lib.prodbox_k8s import PRODBOX_EPHEMERAL_RESOURCE_KINDS  # noqa: E402
 
 # Type variable for effect return types
@@ -233,6 +233,12 @@ def _terminal_record_text(text: str) -> str:
             return text
         case _:
             return f"{text}\n"
+
+
+def _load_repo_aws_auth() -> tuple[str, str, str | None]:
+    """Load explicit AWS credentials from the repository `.env` file."""
+    auth = load_dotenv_aws_auth(Path(".env"))
+    return auth.access_key_id, auth.secret_access_key, auth.session_token
 
 
 # =============================================================================
@@ -336,11 +342,10 @@ class EffectResult:
 
 @dataclass(frozen=True)
 class DAGExecutionSummary:
-    """Summary of DAG execution with per-node results."""
+    """Summary of DAG execution with structured effect outcomes."""
 
     exit_code: int
     message: str
-    node_results: tuple[tuple[str, ExecutionSummary], ...]
     total_nodes: int
     successful_nodes: int
     failed_nodes: int
@@ -350,6 +355,8 @@ class DAGExecutionSummary:
     execution_report: str = ""
     effect_results: tuple[tuple[str, EffectResult], ...] = ()
     unexecuted_ids: frozenset[str] = frozenset()
+    artifacts: tuple[Path, ...] = ()
+    environment_errors: tuple[EnvironmentError, ...] = ()
 
     def to_execution_summary(self) -> ExecutionSummary:
         """Convert DAG summary to command-level execution summary."""
@@ -361,6 +368,8 @@ class DAGExecutionSummary:
             failed_effects=self.failed_nodes + self.unexecuted_nodes,
             skipped_effects=self.skipped_nodes,
             elapsed_seconds=self.elapsed_seconds,
+            artifacts=self.artifacts,
+            environment_errors=self.environment_errors,
         )
 
 
@@ -611,22 +620,6 @@ class EffectInterpreter:
                 )
                 pending.discard(effect_id)
 
-        # Construct deterministic compatibility node summaries.
-        node_results_list: list[tuple[str, ExecutionSummary]] = [
-            (effect_id, self._effect_result_to_summary(result))
-            for effect_id, result in sorted(completed.items())
-        ]
-        for effect_id in sorted(unexecuted):
-            node_results_list.append(
-                (
-                    effect_id,
-                    ExecutionSummary(
-                        exit_code=1,
-                        message="Unexecuted due to unresolved prerequisites",
-                    ),
-                )
-            )
-
         successful_nodes = sum(1 for result in completed.values() if result.success)
         failed_nodes = sum(
             1 for result in completed.values() if isinstance(result.outcome, EffectRootCauseFailure)
@@ -641,7 +634,6 @@ class EffectInterpreter:
         dag_summary = DAGExecutionSummary(
             exit_code=exit_code,
             message="DAG execution complete",
-            node_results=tuple(node_results_list),
             total_nodes=len(dag.nodes),
             successful_nodes=successful_nodes,
             failed_nodes=failed_nodes,
@@ -651,6 +643,8 @@ class EffectInterpreter:
             execution_report=execution_report,
             effect_results=tuple(sorted(completed.items())),
             unexecuted_ids=frozenset(unexecuted),
+            artifacts=tuple(self.artifacts),
+            environment_errors=tuple(self.environment_errors),
         )
         return dag_summary, self._effect_results_to_prereq_results(completed)
 
@@ -826,20 +820,6 @@ class EffectInterpreter:
         )
 
     @staticmethod
-    def _effect_result_to_summary(effect_result: EffectResult) -> ExecutionSummary:
-        """Convert structured effect result to compatibility ExecutionSummary."""
-        match effect_result.outcome:
-            case EffectSuccess():
-                return ExecutionSummary(exit_code=0, message="Success")
-            case EffectPrerequisiteSkipped(upstream_effect_id=upstream):
-                return ExecutionSummary(
-                    exit_code=1,
-                    message=f"Skipped due to failed prerequisite: {upstream}",
-                )
-            case EffectRootCauseFailure(error_message=message):
-                return ExecutionSummary(exit_code=1, message=message)
-
-    @staticmethod
     def _effect_results_to_prereq_results(
         completed: dict[str, EffectResult],
     ) -> dict[str, Result[object, object]]:
@@ -984,8 +964,6 @@ class EffectInterpreter:
                 return await self._interpret_fetch_public_ip(effect)
             case QueryRoute53Record():
                 return await self._interpret_query_route53_record(effect)
-            case UpdateRoute53Record():
-                return await self._interpret_update_route53_record(effect), None
             case ValidateAWSCredentials():
                 return await self._interpret_validate_aws_credentials(effect)
             case ValidateRoute53Access():
@@ -1576,8 +1554,13 @@ class EffectInterpreter:
         try:
             import boto3
 
-            assert_ambient_aws_auth_only()
-            session = boto3.Session(region_name=effect.aws_region)
+            access_key_id, secret_access_key, session_token = _load_repo_aws_auth()
+            session = boto3.Session(
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                aws_session_token=session_token,
+                region_name=effect.aws_region,
+            )
             client = session.client("route53")
 
             response = client.list_resource_record_sets(
@@ -1615,41 +1598,6 @@ class EffectInterpreter:
             self.failed_effects += 1
             return self._create_error_summary(f"Failed to query Route 53: {e}"), None
 
-    async def _interpret_update_route53_record(
-        self, effect: UpdateRoute53Record
-    ) -> ExecutionSummary:
-        """Update Route 53 A record."""
-        try:
-            import boto3
-
-            assert_ambient_aws_auth_only()
-            session = boto3.Session(region_name=effect.aws_region)
-            client = session.client("route53")
-
-            client.change_resource_record_sets(
-                HostedZoneId=effect.zone_id,
-                ChangeBatch={
-                    "Changes": [
-                        {
-                            "Action": "UPSERT",
-                            "ResourceRecordSet": {
-                                "Name": effect.fqdn,
-                                "Type": "A",
-                                "TTL": effect.ttl,
-                                "ResourceRecords": [{"Value": effect.ip}],
-                            },
-                        }
-                    ]
-                },
-            )
-
-            self.successful_effects += 1
-            return self._create_success_summary(f"Updated DNS: {effect.fqdn} -> {effect.ip}")
-
-        except Exception as e:
-            self.failed_effects += 1
-            return self._create_error_summary(f"Failed to update Route 53: {e}")
-
     async def _interpret_validate_aws_credentials(
         self, effect: ValidateAWSCredentials
     ) -> tuple[ExecutionSummary, bool | None]:
@@ -1657,8 +1605,13 @@ class EffectInterpreter:
         try:
             import boto3
 
-            assert_ambient_aws_auth_only()
-            session = boto3.Session(region_name=effect.aws_region)
+            access_key_id, secret_access_key, session_token = _load_repo_aws_auth()
+            session = boto3.Session(
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                aws_session_token=session_token,
+                region_name=effect.aws_region,
+            )
             sts = session.client("sts")
             sts.get_caller_identity()
 
@@ -1671,7 +1624,7 @@ class EffectInterpreter:
                 EnvironmentError(
                     tool="aws",
                     message=f"Invalid AWS credentials: {e}",
-                    fix_hint="Authenticate the system-level aws CLI outside the repo",
+                    fix_hint="Define AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in .env",
                     source_effect_id=effect.effect_id,
                 )
             )
@@ -1684,8 +1637,13 @@ class EffectInterpreter:
         try:
             import boto3
 
-            assert_ambient_aws_auth_only()
-            session = boto3.Session(region_name=effect.aws_region)
+            access_key_id, secret_access_key, session_token = _load_repo_aws_auth()
+            session = boto3.Session(
+                aws_access_key_id=access_key_id,
+                aws_secret_access_key=secret_access_key,
+                aws_session_token=session_token,
+                region_name=effect.aws_region,
+            )
             route53 = session.client("route53")
             from prodbox.settings import get_settings
 
@@ -1708,7 +1666,7 @@ class EffectInterpreter:
                 EnvironmentError(
                     tool="route53",
                     message=f"Route 53 access failed: {e}",
-                    fix_hint="Authenticate the system-level aws CLI for Route 53 access",
+                    fix_hint="Define Route 53-capable AWS credentials in .env",
                     source_effect_id=effect.effect_id,
                 )
             )
@@ -1723,9 +1681,7 @@ class EffectInterpreter:
     ) -> tuple[ExecutionSummary, int | None]:
         """Execute Pulumi CLI command."""
         command = ("pulumi", *effect.args)
-        env = dict(os.environ)
-        if effect.env:
-            env.update(effect.env)
+        env = self._pulumi_env(effect.env)
 
         try:
             output = await _run_subprocess(
@@ -1761,11 +1717,13 @@ class EffectInterpreter:
         command: list[str] = ["pulumi", "stack", "select", effect.stack]
         if effect.create_if_missing:
             command.append("--create")
+        env = self._pulumi_env()
 
         try:
             output = await _run_subprocess(
                 tuple(command),
                 cwd=effect.cwd,
+                env=env,
             )
 
             if output.returncode == 0:
@@ -1793,6 +1751,7 @@ class EffectInterpreter:
             output = await _run_subprocess(
                 ("pulumi", "whoami"),
                 cwd=effect.cwd,
+                env=self._pulumi_env(),
             )
             if output.returncode == 0:
                 self.successful_effects += 1
@@ -1820,9 +1779,7 @@ class EffectInterpreter:
         command: list[str] = ["pulumi", "preview"]
         if effect.stack:
             command.extend(["--stack", effect.stack])
-        env = dict(os.environ)
-        if effect.env:
-            env.update(effect.env)
+        env = self._pulumi_env(effect.env)
 
         try:
             output = await _run_subprocess(
@@ -1853,9 +1810,7 @@ class EffectInterpreter:
             command.append("--yes")
         if effect.stack:
             command.extend(["--stack", effect.stack])
-        env = dict(os.environ)
-        if effect.env:
-            env.update(effect.env)
+        env = self._pulumi_env(effect.env)
 
         try:
             output = await _run_subprocess(
@@ -1888,9 +1843,7 @@ class EffectInterpreter:
             command.append("--yes")
         if effect.stack:
             command.extend(["--stack", effect.stack])
-        env = dict(os.environ)
-        if effect.env:
-            env.update(effect.env)
+        env = self._pulumi_env(effect.env)
 
         try:
             output = await _run_subprocess(
@@ -1923,9 +1876,7 @@ class EffectInterpreter:
             command.append("--yes")
         if effect.stack:
             command.extend(["--stack", effect.stack])
-        env = dict(os.environ)
-        if effect.env:
-            env.update(effect.env)
+        env = self._pulumi_env(effect.env)
 
         try:
             output = await _run_subprocess(
@@ -2122,6 +2073,15 @@ class EffectInterpreter:
         return env
 
     @staticmethod
+    def _pulumi_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
+        """Build Pulumi subprocess environment and allow nested Pulumi exec."""
+        env = dict(os.environ)
+        env[ALLOW_NON_ENTRYPOINT_ENV] = "1"
+        if extra_env:
+            env.update(extra_env)
+        return env
+
+    @staticmethod
     def _is_not_found_message(stderr: str) -> bool:
         """Return True when kubectl stderr indicates resource/object does not exist."""
         lowered = stderr.lower()
@@ -2195,10 +2155,19 @@ class EffectInterpreter:
 
     @staticmethod
     def _sort_refs(ref: K8sObjectRef) -> tuple[int, str, str, str]:
-        """Deterministic delete/annotate order; delete namespaces last."""
+        """Build a stable sort key for Kubernetes object refs within one cleanup phase."""
         namespace_rank = 1 if ref.resource == "namespaces" else 0
         namespace_value = ref.namespace or ""
         return (namespace_rank, namespace_value, ref.resource, ref.name)
+
+    @staticmethod
+    def _cleanup_delete_timeout(ref: K8sObjectRef) -> float:
+        """Return deletion timeout tuned for namespace and CRD lifecycle cleanup."""
+        match ref.resource:
+            case "namespace" | "namespaces" | "customresourcedefinitions.apiextensions.k8s.io":
+                return 180.0
+            case _:
+                return 45.0
 
     @staticmethod
     def _stderr_or_stdout_text(output: ProcessOutput) -> str:
@@ -3645,94 +3614,76 @@ class EffectInterpreter:
                     "{{end}}"
                 )
 
-    async def _collect_annotated_refs(
+    async def _collect_annotated_resource_refs(
         self,
         *,
-        namespaced_resources: tuple[str, ...],
-        cluster_resources: tuple[str, ...],
+        resources: tuple[str, ...],
         annotation_key: str,
         prodbox_id: str,
-        retained_resource_kinds: tuple[str, ...],
-        retained_namespaces: tuple[str, ...],
+        namespaced: bool,
+        namespace: str | None = None,
+        excluded_resources: frozenset[str] | None = None,
     ) -> tuple[tuple[K8sObjectRef, ...], tuple[str, ...]]:
-        """Collect all annotated resource refs across namespaced+cluster scopes."""
+        """Collect annotated Kubernetes refs for one resource scope."""
         refs: list[K8sObjectRef] = []
         errors: list[str] = []
-        retained_kinds = frozenset(retained_resource_kinds)
-        retained_namespace_set = frozenset(retained_namespaces)
+        ignored_resources = excluded_resources if excluded_resources is not None else frozenset()
 
-        for resource in namespaced_resources:
-            if resource in retained_kinds:
+        for resource in resources:
+            if resource in ignored_resources:
                 continue
             template = self._annotated_ref_template(
                 annotation_key=annotation_key,
-                namespaced=True,
+                namespaced=namespaced,
             )
-            output = await self._run_kubectl(
-                "get",
-                resource,
-                "-A",
-                "-o",
-                "go-template",
-                "--template",
-                template,
-                "--ignore-not-found=true",
-                timeout=25.0,
+            args: list[str] = ["get", resource]
+            match namespaced:
+                case True:
+                    match namespace:
+                        case None:
+                            args.append("-A")
+                        case value:
+                            args.extend(["-n", value])
+                case False:
+                    pass
+            args.extend(
+                [
+                    "-o",
+                    "go-template",
+                    "--template",
+                    template,
+                    "--ignore-not-found=true",
+                ]
             )
+            output = await self._run_kubectl(*args, timeout=25.0)
             if output.returncode != 0:
                 stderr = output.stderr.decode("utf-8", errors="replace")
                 if not self._is_ignorable_listing_error(stderr):
-                    errors.append(f"list namespaced {resource} failed: {stderr}")
+                    scope = (
+                        f"list namespaced {resource} in {namespace}"
+                        if namespaced and namespace is not None
+                        else f"list namespaced {resource}"
+                        if namespaced
+                        else f"list cluster {resource}"
+                    )
+                    errors.append(f"{scope} failed: {stderr}")
                 continue
             refs.extend(
                 self._extract_annotated_refs_from_tsv(
                     resource=resource,
                     stdout=output.stdout,
                     prodbox_id=prodbox_id,
-                    namespaced=True,
-                )
-            )
-
-        for resource in cluster_resources:
-            if resource in retained_kinds:
-                continue
-            template = self._annotated_ref_template(
-                annotation_key=annotation_key,
-                namespaced=False,
-            )
-            output = await self._run_kubectl(
-                "get",
-                resource,
-                "-o",
-                "go-template",
-                "--template",
-                template,
-                "--ignore-not-found=true",
-                timeout=25.0,
-            )
-            if output.returncode != 0:
-                stderr = output.stderr.decode("utf-8", errors="replace")
-                if not self._is_ignorable_listing_error(stderr):
-                    errors.append(f"list cluster {resource} failed: {stderr}")
-                continue
-            refs.extend(
-                self._extract_annotated_refs_from_tsv(
-                    resource=resource,
-                    stdout=output.stdout,
-                    prodbox_id=prodbox_id,
-                    namespaced=False,
+                    namespaced=namespaced,
                 )
             )
 
         deduped: dict[tuple[str, str, str], K8sObjectRef] = {}
         for ref in refs:
-            if ref.resource in ("namespace", "namespaces") and ref.name in retained_namespace_set:
-                continue
             deduped[self._annotated_ref_key(ref)] = ref
         ordered_refs = tuple(sorted(deduped.values(), key=self._sort_refs))
         return ordered_refs, tuple(errors)
 
-    async def _delete_ref(self, ref: K8sObjectRef) -> str | None:
+    async def _delete_k8s_ref(self, ref: K8sObjectRef, *, timeout: float) -> str | None:
         """Delete one Kubernetes object ref, returning error text when delete fails."""
         args: list[str] = [
             "delete",
@@ -3742,12 +3693,34 @@ class EffectInterpreter:
         ]
         if ref.namespace is not None:
             args.extend(["-n", ref.namespace])
-        output = await self._run_kubectl(*args, timeout=45.0)
+        output = await self._run_kubectl(*args, timeout=timeout)
         if output.returncode != 0:
             stderr = output.stderr.decode("utf-8", errors="replace")
             if not self._is_not_found_message(stderr):
                 return f"delete {ref.resource}/{ref.name} failed: {stderr}"
         return None
+
+    async def _delete_all_namespaced_resource_instances(
+        self,
+        *,
+        resource: str,
+        timeout: float,
+    ) -> tuple[str, ...]:
+        """Delete all instances of one namespaced resource across every namespace."""
+        output = await self._run_kubectl(
+            "delete",
+            resource,
+            "--all",
+            "--all-namespaces",
+            "--ignore-not-found=true",
+            "--wait=true",
+            timeout=timeout,
+        )
+        if output.returncode != 0:
+            stderr = output.stderr.decode("utf-8", errors="replace")
+            if not self._is_not_found_message(stderr):
+                return (f"delete all {resource} instances failed: {stderr}",)
+        return ()
 
     async def _interpret_cleanup_prodbox_annotated_resources(
         self, effect: CleanupProdboxAnnotatedResources
@@ -3760,28 +3733,90 @@ class EffectInterpreter:
             return self._create_error_summary("Failed to list Kubernetes API resources"), None
         namespaced_resources = self._filter_doctrine_managed_resources(namespaced_resources)
         cluster_resources = self._filter_doctrine_managed_resources(cluster_resources)
+        namespaced_resource_set = frozenset(namespaced_resources)
 
         deleted_count = 0
         errors: list[str] = []
+        retained_kind_set = frozenset(effect.retained_resource_kinds)
+        retained_namespace_set = frozenset(effect.retained_namespaces)
 
-        for _ in range(effect.cleanup_passes):
-            refs, listing_errors = await self._collect_annotated_refs(
-                namespaced_resources=namespaced_resources,
-                cluster_resources=cluster_resources,
-                annotation_key=effect.annotation_key,
-                prodbox_id=effect.prodbox_id,
-                retained_resource_kinds=effect.retained_resource_kinds,
-                retained_namespaces=effect.retained_namespaces,
+        namespace_resources = tuple(
+            resource for resource in cluster_resources if resource in ("namespace", "namespaces")
+        )
+        namespace_refs, namespace_listing_errors = await self._collect_annotated_resource_refs(
+            resources=namespace_resources,
+            annotation_key=effect.annotation_key,
+            prodbox_id=effect.prodbox_id,
+            namespaced=False,
+        )
+        errors.extend(namespace_listing_errors)
+
+        cluster_cleanup_resources = tuple(
+            resource
+            for resource in cluster_resources
+            if resource not in retained_kind_set and resource not in ("namespace", "namespaces")
+        )
+        cluster_refs, cluster_listing_errors = await self._collect_annotated_resource_refs(
+            resources=cluster_cleanup_resources,
+            annotation_key=effect.annotation_key,
+            prodbox_id=effect.prodbox_id,
+            namespaced=False,
+        )
+        errors.extend(cluster_listing_errors)
+        for ref in cluster_refs:
+            if (
+                ref.resource == "customresourcedefinitions.apiextensions.k8s.io"
+                and ref.name in namespaced_resource_set
+            ):
+                errors.extend(
+                    await self._delete_all_namespaced_resource_instances(
+                        resource=ref.name,
+                        timeout=180.0,
+                    )
+                )
+
+        deleted_namespace_names: set[str] = set()
+        for ref in namespace_refs:
+            if ref.name in retained_namespace_set:
+                continue
+            delete_error = await self._delete_k8s_ref(
+                ref,
+                timeout=self._cleanup_delete_timeout(ref),
             )
-            errors.extend(listing_errors)
-            if not refs:
-                break
-            for ref in refs:
-                delete_error = await self._delete_ref(ref)
-                if delete_error is None:
-                    deleted_count += 1
-                else:
-                    errors.append(delete_error)
+            if delete_error is None:
+                deleted_count += 1
+                deleted_namespace_names.add(ref.name)
+            else:
+                errors.append(delete_error)
+
+        namespaced_refs, namespaced_listing_errors = await self._collect_annotated_resource_refs(
+            resources=namespaced_resources,
+            annotation_key=effect.annotation_key,
+            prodbox_id=effect.prodbox_id,
+            namespaced=True,
+            excluded_resources=retained_kind_set,
+        )
+        errors.extend(namespaced_listing_errors)
+        for ref in namespaced_refs:
+            if ref.namespace is not None and ref.namespace in deleted_namespace_names:
+                continue
+            delete_error = await self._delete_k8s_ref(
+                ref,
+                timeout=self._cleanup_delete_timeout(ref),
+            )
+            if delete_error is None:
+                deleted_count += 1
+            else:
+                errors.append(delete_error)
+        for ref in cluster_refs:
+            delete_error = await self._delete_k8s_ref(
+                ref,
+                timeout=self._cleanup_delete_timeout(ref),
+            )
+            if delete_error is None:
+                deleted_count += 1
+            else:
+                errors.append(delete_error)
 
         if errors:
             self.failed_effects += 1

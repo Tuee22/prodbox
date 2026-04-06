@@ -28,6 +28,7 @@ from prodbox.cli.test_cmd import (
     INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
     INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_GATEWAY_PODS_TEST_SUITE,
+    INTEGRATION_PUBLIC_DNS_TEST_SUITE,
     INTEGRATION_PULUMI_TEST_SUITE,
     CoverageSettings,
 )
@@ -101,31 +102,7 @@ class TestDNSCommands:
         """dns group should display help."""
         result = runner.invoke(cli, ["dns", "--help"])
         assert result.exit_code == 0
-        assert "DNS and DDNS management" in result.output
-
-    def test_dns_update_success(self, runner: CliRunner) -> None:
-        """dns update should invoke execute_command."""
-        with patch("prodbox.cli.dns.execute_command", return_value=0) as mock_exec:
-            result = runner.invoke(cli, ["dns", "update"])
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
-
-    def test_dns_update_with_force(self, runner: CliRunner) -> None:
-        """dns update --force should pass force=True."""
-        with patch("prodbox.cli.dns.execute_command", return_value=0) as mock_exec:
-            result = runner.invoke(cli, ["dns", "update", "--force"])
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
-        # The command should have force=True (verified by command ADT tests)
-
-    def test_dns_update_with_f_flag(self, runner: CliRunner) -> None:
-        """dns update -f should pass force=True."""
-        with patch("prodbox.cli.dns.execute_command", return_value=0):
-            result = runner.invoke(cli, ["dns", "update", "-f"])
-
-        assert result.exit_code == 0
+        assert "DNS inspection commands" in result.output
 
     def test_dns_check_success(self, runner: CliRunner) -> None:
         """dns check should invoke execute_command."""
@@ -134,35 +111,6 @@ class TestDNSCommands:
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
-
-    def test_dns_ensure_timer_success(self, runner: CliRunner) -> None:
-        """dns ensure-timer should invoke execute_command on Linux."""
-        with (
-            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
-            patch("prodbox.cli.dns.execute_command", return_value=0) as mock_exec,
-        ):
-            result = runner.invoke(cli, ["dns", "ensure-timer"])
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
-
-    def test_dns_ensure_timer_with_interval(self, runner: CliRunner) -> None:
-        """dns ensure-timer --interval should pass interval."""
-        with (
-            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
-            patch("prodbox.cli.dns.execute_command", return_value=0),
-        ):
-            result = runner.invoke(cli, ["dns", "ensure-timer", "--interval", "10"])
-
-        assert result.exit_code == 0
-
-    def test_dns_ensure_timer_failure_non_linux(self, runner: CliRunner) -> None:
-        """dns ensure-timer should fail on non-Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
-            result = runner.invoke(cli, ["dns", "ensure-timer"])
-
-        # Should fail because the command constructor returns Failure on non-Linux
-        assert result.exit_code == 1
 
 
 # =============================================================================
@@ -572,13 +520,6 @@ class TestRKE2Commands:
 class TestExecuteCommandFailures:
     """Tests for execute_command returning non-zero exit codes."""
 
-    def test_dns_update_execute_failure(self, runner: CliRunner) -> None:
-        """dns update should propagate execute_command failure."""
-        with patch("prodbox.cli.dns.execute_command", return_value=1):
-            result = runner.invoke(cli, ["dns", "update"])
-
-        assert result.exit_code == 1
-
     def test_env_validate_execute_failure(self, runner: CliRunner) -> None:
         """env validate should propagate execute_command failure."""
         with patch("prodbox.cli.env.execute_command", return_value=1):
@@ -612,19 +553,6 @@ class TestCommandConstructorFailures:
     These test the Failure branches in CLI entry points that handle
     validation errors from command constructors.
     """
-
-    def test_dns_update_command_failure(self, runner: CliRunner) -> None:
-        """dns update should handle command constructor Failure."""
-        from prodbox.cli.types import Failure
-
-        with patch(
-            "prodbox.cli.dns.dns_update_command",
-            return_value=Failure("Validation failed"),
-        ):
-            result = runner.invoke(cli, ["dns", "update"])
-
-        assert result.exit_code == 1
-        assert "Validation failed" in result.output
 
     def test_dns_check_command_failure(self, runner: CliRunner) -> None:
         """dns check should handle command constructor Failure."""
@@ -905,9 +833,8 @@ class TestClickDocumentation:
             (["pulumi"], ("destroy", "preview", "refresh", "stack-init", "up"), 2),
             (["pulumi", "up", "--help"], ("--yes",), 0),
             (["pulumi", "stack-init", "--help"], ("STACK",), 0),
-            (["dns"], ("check", "ensure-timer", "update"), 2),
-            (["dns", "update", "--help"], ("--force",), 0),
-            (["dns", "ensure-timer", "--help"], ("--interval",), 0),
+            (["dns"], ("check",), 2),
+            (["dns", "check", "--help"], (), 0),
             (["k8s"], ("health", "logs", "wait"), 2),
             (["k8s", "wait", "--help"], ("--timeout", "--namespace"), 0),
             (["k8s", "logs", "--help"], ("--namespace", "--tail"), 0),
@@ -927,6 +854,7 @@ class TestClickDocumentation:
                     "gateway-pods",
                     "lifecycle",
                     "pulumi",
+                    "public-dns",
                 ),
                 2,
             ),
@@ -1025,6 +953,17 @@ class TestTestCommandSurface:
         assert result.exit_code == 0
         mock_run_suite.assert_called_once_with(
             suite=INTEGRATION_PULUMI_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_integration_public_dns_invokes_named_suite(self, runner: CliRunner) -> None:
+        """public-dns should dispatch the explicit public delegation suite."""
+        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+            result = runner.invoke(cli, ["test", "integration", "public-dns"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_PUBLIC_DNS_TEST_SUITE,
             coverage_settings=CoverageSettings(enabled=False, fail_under=None),
         )
 

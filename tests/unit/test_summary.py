@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from prodbox.cli.interpreter import DAGExecutionSummary, EnvironmentError, ExecutionSummary
+from prodbox.cli.interpreter import (
+    DAGExecutionSummary,
+    EffectResult,
+    EffectRootCauseFailure,
+    EffectSuccess,
+    EnvironmentError,
+    ExecutionSummary,
+)
 from prodbox.cli.summary import (
     dag_to_execution_summary,
     display_dag_failure_report,
@@ -21,6 +28,22 @@ def _env_error() -> EnvironmentError:
         message="Tool not found",
         fix_hint="Install kubectl",
         source_effect_id="tool_kubectl",
+    )
+
+
+def _success_result(effect_id: str, value: object | None = None) -> EffectResult:
+    return EffectResult(
+        effect_id=effect_id,
+        outcome=EffectSuccess(value=value),
+        elapsed_seconds=0.0,
+    )
+
+
+def _failure_result(effect_id: str, message: str) -> EffectResult:
+    return EffectResult(
+        effect_id=effect_id,
+        outcome=EffectRootCauseFailure(error_message=message),
+        elapsed_seconds=0.0,
     )
 
 
@@ -88,35 +111,26 @@ def test_format_summary_deduplicates_manual_fix_hints() -> None:
     assert "Manual env changes needed:" in text
 
 
-def test_dag_to_execution_summary_rolls_up_node_results() -> None:
-    """DAG summary conversion should aggregate node-level data."""
-    success_node = ExecutionSummary(
-        exit_code=0,
-        message="ok",
-        artifacts=(Path("/tmp/ok.txt"),),
-    )
-    skipped_node = ExecutionSummary(
-        exit_code=1,
-        message="Skipped due to failed prerequisite: check_a",
-    )
-    failed_node = ExecutionSummary(
-        exit_code=1,
-        message="Root cause failure",
-        environment_errors=(_env_error(),),
-    )
+def test_dag_to_execution_summary_rolls_up_aggregate_results() -> None:
+    """DAG summary conversion should aggregate structured DAG outcomes."""
     dag_summary = DAGExecutionSummary(
         exit_code=1,
         message="DAG execution complete",
-        node_results=(
-            ("node_ok", success_node),
-            ("node_skip", skipped_node),
-            ("node_fail", failed_node),
-        ),
         total_nodes=3,
         successful_nodes=1,
         failed_nodes=2,
         skipped_nodes=1,
         elapsed_seconds=2.0,
+        effect_results=(
+            ("node_ok", _success_result("node_ok")),
+            (
+                "node_skip",
+                _failure_result("node_skip", "Skipped due to failed prerequisite: check_a"),
+            ),
+            ("node_fail", _failure_result("node_fail", "Root cause failure")),
+        ),
+        artifacts=(Path("/tmp/ok.txt"),),
+        environment_errors=(_env_error(),),
     )
 
     summary = dag_to_execution_summary(dag_summary)
@@ -131,25 +145,23 @@ def test_dag_to_execution_summary_rolls_up_node_results() -> None:
 
 def test_dag_to_execution_summary_parses_environment_errors_from_failures() -> None:
     """Conversion should infer root-cause environment errors from failure messages."""
-    root_tool_failure = ExecutionSummary(
-        exit_code=1,
-        message="Tool not found: kubectl",
-    )
-    propagated = ExecutionSummary(
-        exit_code=1,
-        message="Prerequisite failure propagated: failed prerequisites: tool_kubectl",
-    )
     dag_summary = DAGExecutionSummary(
         exit_code=1,
         message="DAG execution complete",
-        node_results=(
-            ("tool_kubectl", root_tool_failure),
-            ("k8s_cluster_reachable", propagated),
-        ),
         total_nodes=2,
         successful_nodes=0,
         failed_nodes=2,
         skipped_nodes=0,
+        effect_results=(
+            ("tool_kubectl", _failure_result("tool_kubectl", "Tool not found: kubectl")),
+            (
+                "k8s_cluster_reachable",
+                _failure_result(
+                    "k8s_cluster_reachable",
+                    "Prerequisite failure propagated: failed prerequisites: tool_kubectl",
+                ),
+            ),
+        ),
     )
 
     summary = dag_to_execution_summary(dag_summary)
@@ -163,18 +175,22 @@ def test_dag_to_execution_summary_parses_environment_errors_from_failures() -> N
 
 def test_format_dag_failure_report_includes_root_and_skipped() -> None:
     """Failure report should separate root-cause from propagated prerequisite failures."""
-    root_failure = ExecutionSummary(exit_code=1, message="kubectl failed")
-    propagated = ExecutionSummary(
-        exit_code=1,
-        message=("Prerequisite failure propagated: " "failed prerequisites: tool_kubectl"),
-    )
     dag_summary = DAGExecutionSummary(
         exit_code=1,
         message="DAG execution complete",
-        node_results=(("run_kubectl", root_failure), ("wait_nodes", propagated)),
         total_nodes=2,
         successful_nodes=0,
         failed_nodes=2,
+        effect_results=(
+            ("run_kubectl", _failure_result("run_kubectl", "kubectl failed")),
+            (
+                "wait_nodes",
+                _failure_result(
+                    "wait_nodes",
+                    "Prerequisite failure propagated: failed prerequisites: tool_kubectl",
+                ),
+            ),
+        ),
     )
 
     report = format_dag_failure_report(dag_summary)
@@ -192,7 +208,6 @@ def test_display_dag_summary_and_failure_report_effects() -> None:
     dag_summary = DAGExecutionSummary(
         exit_code=1,
         message="DAG execution complete",
-        node_results=(),
         total_nodes=0,
         successful_nodes=0,
         failed_nodes=0,
@@ -211,7 +226,6 @@ def test_display_dag_failure_report_none_when_success() -> None:
     dag_summary = DAGExecutionSummary(
         exit_code=0,
         message="DAG execution complete",
-        node_results=(),
         total_nodes=0,
         successful_nodes=0,
         failed_nodes=0,

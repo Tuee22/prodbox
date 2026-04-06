@@ -65,7 +65,6 @@ from prodbox.cli.effects import (
     Sequence,
     StorageRuntime,
     Try,
-    UpdateRoute53Record,
     ValidateAWSCredentials,
     ValidateEnvironment,
     ValidatePulumiLogin,
@@ -454,11 +453,10 @@ class TestKubernetesEffects:
             description="Cleanup annotated resources",
             prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
             annotation_key="prodbox.io/id",
-            cleanup_passes=3,
             retained_resource_kinds=("persistentvolumeclaims", "persistentvolumes"),
             retained_namespaces=("prodbox",),
         )
-        assert effect.cleanup_passes == 3
+        assert not hasattr(effect, "cleanup_passes")
         assert "persistentvolumes" in effect.retained_resource_kinds
         assert effect.retained_namespaces == ("prodbox",)
 
@@ -486,20 +484,6 @@ class TestDNSEffects:
         assert effect.zone_id == "Z123456"
         assert effect.fqdn == "test.example.com"
         assert effect.aws_region == "us-east-1"
-
-    def test_update_route53_record(self) -> None:
-        """UpdateRoute53Record should hold all fields."""
-        effect = UpdateRoute53Record(
-            effect_id="update_dns",
-            description="Update DNS",
-            zone_id="Z123456",
-            fqdn="test.example.com",
-            ip="1.2.3.4",
-            ttl=60,
-            aws_region="us-east-1",
-        )
-        assert effect.ip == "1.2.3.4"
-        assert effect.ttl == 60
 
     def test_validate_aws_credentials(self) -> None:
         """ValidateAWSCredentials should hold ambient-auth validation fields."""
@@ -985,35 +969,26 @@ class TestEffectBaseClass:
                 fqdn="f",
                 aws_region="r",
             ),
-            UpdateRoute53Record(
+            ValidateAWSCredentials(
                 effect_id="e18",
                 description="d18",
-                zone_id="z",
-                fqdn="f",
-                ip="1.2.3.4",
-                ttl=60,
-                aws_region="r",
-            ),
-            ValidateAWSCredentials(
-                effect_id="e19",
-                description="d19",
                 aws_region="r",
             ),
             ValidateRoute53Access(
-                effect_id="e19b",
-                description="d19b",
+                effect_id="e18b",
+                description="d18b",
                 aws_region="r",
             ),
-            RunPulumiCommand(effect_id="e20", description="d20", args=["up"]),
-            PulumiStackSelect(effect_id="e21", description="d21", stack="dev"),
-            ValidatePulumiLogin(effect_id="e21b", description="d21b"),
-            PulumiPreview(effect_id="e22", description="d22"),
-            PulumiUp(effect_id="e23", description="d23"),
-            PulumiDestroy(effect_id="e24", description="d24"),
-            PulumiRefresh(effect_id="e25", description="d25"),
-            LoadSettings(effect_id="e26", description="d26"),
-            ValidateSettings(effect_id="e27", description="d27"),
-            WriteStdout(effect_id="e28", description="d28", text="x"),
+            RunPulumiCommand(effect_id="e19", description="d19", args=["up"]),
+            PulumiStackSelect(effect_id="e20", description="d20", stack="dev"),
+            ValidatePulumiLogin(effect_id="e20b", description="d20b"),
+            PulumiPreview(effect_id="e21", description="d21"),
+            PulumiUp(effect_id="e22", description="d22"),
+            PulumiDestroy(effect_id="e23", description="d23"),
+            PulumiRefresh(effect_id="e24", description="d24"),
+            LoadSettings(effect_id="e25", description="d25"),
+            ValidateSettings(effect_id="e26", description="d26"),
+            WriteStdout(effect_id="e27", description="d27", text="x"),
             WriteStderr(effect_id="e29", description="d29", text="x"),
             PrintInfo(effect_id="e30", description="d30", message="m"),
             PrintSuccess(effect_id="e31", description="d31", message="m"),

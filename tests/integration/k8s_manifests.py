@@ -108,7 +108,7 @@ def gateway_daemon_pod(
                 {
                     "name": "gateway",
                     "image": image,
-                    "args": ["--config", "/etc/gateway/config.json"],
+                    "args": ["/etc/gateway/config.json"],
                     "ports": [
                         {"containerPort": rest_port, "name": "rest", "protocol": "TCP"},
                         {"containerPort": socket_port, "name": "events", "protocol": "TCP"},

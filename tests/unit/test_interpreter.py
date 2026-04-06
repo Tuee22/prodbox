@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+import prodbox.settings as settings_module
 from prodbox.cli.effect_dag import EffectDAG, EffectNode, PrerequisiteFailurePolicy
 from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
@@ -47,6 +48,7 @@ from prodbox.cli.interpreter import (
     EffectInterpreter,
     EnvironmentError,
     ExecutionSummary,
+    K8sObjectRef,
     ProcessOutput,
     _assert_never,
     _run_subprocess,
@@ -1017,6 +1019,7 @@ class TestEffectInterpreterSettings:
         import os
         from unittest.mock import patch
 
+        monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
         monkeypatch.chdir(tmp_path)
         interpreter = EffectInterpreter()
         effect = ValidateSettings(
@@ -1258,6 +1261,7 @@ class TestEffectInterpreterLoadSettings:
         import os
         from unittest.mock import patch
 
+        monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
         monkeypatch.chdir(tmp_path)
         interpreter = EffectInterpreter()
         effect = LoadSettings(
@@ -1416,6 +1420,7 @@ class TestEffectInterpreterPulumi:
         from pathlib import Path
 
         from prodbox.cli.effects import PulumiPreview
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiPreview(
@@ -1442,11 +1447,14 @@ class TestEffectInterpreterPulumi:
         assert "preview" in args
         assert "--stack" in args
         assert "dev" in args
+        env: dict[str, str] = call.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_up_with_yes(self) -> None:
         """PulumiUp should pass --yes flag."""
         from prodbox.cli.effects import PulumiUp
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiUp(
@@ -1467,11 +1475,14 @@ class TestEffectInterpreterPulumi:
         assert call is not None
         args: tuple[str, ...] = call[0][0]
         assert "--yes" in args
+        env: dict[str, str] = call.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_stack_select_create(self) -> None:
         """PulumiStackSelect should pass --create flag."""
         from prodbox.cli.effects import PulumiStackSelect
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiStackSelect(
@@ -1491,6 +1502,8 @@ class TestEffectInterpreterPulumi:
         assert call is not None
         args: tuple[str, ...] = call[0][0]
         assert "--create" in args
+        env: dict[str, str] = call.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_destroy(self) -> None:
@@ -1543,7 +1556,13 @@ class TestEffectInterpreterAWS:
         mock_session.client.return_value = mock_sts
         mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
 
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with (
+            patch.dict(sys.modules, {"boto3": mock_boto3}),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -1570,7 +1589,13 @@ class TestEffectInterpreterAWS:
         mock_session.client.return_value = mock_sts
         mock_sts.get_caller_identity.side_effect = Exception("Invalid credentials")
 
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with (
+            patch.dict(sys.modules, {"boto3": mock_boto3}),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert not summary.success
@@ -1579,8 +1604,8 @@ class TestEffectInterpreterAWS:
         assert interpreter.environment_errors[0].tool == "aws"
 
     @pytest.mark.asyncio
-    async def test_validate_aws_credentials_rejects_auth_env_vars(self) -> None:
-        """ValidateAWSCredentials should fail fast on forbidden AWS auth env vars."""
+    async def test_validate_aws_credentials_uses_dotenv_auth_over_ambient_env(self) -> None:
+        """ValidateAWSCredentials should use explicit `.env` auth, not ambient env."""
         import os
         import sys
 
@@ -1594,15 +1619,30 @@ class TestEffectInterpreterAWS:
         )
 
         mock_boto3 = MagicMock()
+        mock_session = MagicMock()
+        mock_sts = MagicMock()
+        mock_boto3.Session.return_value = mock_session
+        mock_session.client.return_value = mock_sts
+        mock_sts.get_caller_identity.return_value = {"Account": "123456789012"}
 
         with (
             patch.dict(sys.modules, {"boto3": mock_boto3}),
             patch.dict(os.environ, {"AWS_ACCESS_KEY_ID": "forbidden"}, clear=True),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
         ):
             summary, value = await interpreter.interpret_with_value(effect)
 
-        assert not summary.success
-        assert value is False
+        assert summary.success
+        assert value is True
+        mock_boto3.Session.assert_called_once_with(
+            aws_access_key_id="test-access-key",
+            aws_secret_access_key="test-secret-key",
+            aws_session_token="test-session-token",
+            region_name="us-east-1",
+        )
 
     @pytest.mark.asyncio
     async def test_query_route53_record_found(self) -> None:
@@ -1636,7 +1676,13 @@ class TestEffectInterpreterAWS:
             ]
         }
 
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with (
+            patch.dict(sys.modules, {"boto3": mock_boto3}),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -1665,44 +1711,17 @@ class TestEffectInterpreterAWS:
         mock_session.client.return_value = mock_route53
         mock_route53.list_resource_record_sets.return_value = {"ResourceRecordSets": []}
 
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
+        with (
+            patch.dict(sys.modules, {"boto3": mock_boto3}),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
         assert value is None
-
-    @pytest.mark.asyncio
-    async def test_update_route53_record_success(self) -> None:
-        """UpdateRoute53Record should update DNS record."""
-        import sys
-
-        from prodbox.cli.effects import UpdateRoute53Record
-
-        interpreter = EffectInterpreter()
-        effect = UpdateRoute53Record(
-            effect_id="update_dns",
-            description="Update DNS",
-            zone_id="Z1234567890ABC",
-            fqdn="test.example.com",
-            ip="5.6.7.8",
-            ttl=300,
-            aws_region="us-east-1",
-        )
-
-        mock_boto3 = MagicMock()
-        mock_session = MagicMock()
-        mock_route53 = MagicMock()
-        mock_boto3.Session.return_value = mock_session
-        mock_session.client.return_value = mock_route53
-        mock_route53.change_resource_record_sets.return_value = {
-            "ChangeInfo": {"Status": "PENDING"}
-        }
-
-        with patch.dict(sys.modules, {"boto3": mock_boto3}):
-            summary = await interpreter.interpret(effect)
-
-        assert summary.success
-        mock_route53.change_resource_record_sets.assert_called_once()
 
 
 class TestEffectInterpreterFetchPublicIP:
@@ -2839,8 +2858,8 @@ class TestProdboxManagedResourceFiltering:
         assert mock_annotate_namespaced.await_args.kwargs["resources"] == ("deployments",)
 
     @pytest.mark.asyncio
-    async def test_cleanup_annotated_resources_skips_ephemeral_kinds(self) -> None:
-        """Cleanup should not try to delete Event resources as lifecycle-managed state."""
+    async def test_cleanup_annotated_resources_deletes_namespaces_first(self) -> None:
+        """Cleanup should cascade non-retained namespaces before other annotated refs."""
         interpreter = EffectInterpreter()
         effect = CleanupProdboxAnnotatedResources(
             effect_id="cleanup_prodbox",
@@ -2855,19 +2874,91 @@ class TestProdboxManagedResourceFiltering:
             patch.object(
                 interpreter,
                 "_list_api_resources",
-                new=AsyncMock(side_effect=(("events", "deployments"), ())),
+                new=AsyncMock(
+                    side_effect=(
+                        ("events", "deployments", "configmaps", "widgets.example.com"),
+                        ("namespaces", "customresourcedefinitions.apiextensions.k8s.io"),
+                    )
+                ),
             ),
             patch.object(
                 interpreter,
-                "_collect_annotated_refs",
-                new=AsyncMock(return_value=((), ())),
+                "_collect_annotated_resource_refs",
+                new=AsyncMock(
+                    side_effect=(
+                        (
+                            (
+                                K8sObjectRef(resource="namespaces", name="harbor"),
+                                K8sObjectRef(resource="namespaces", name="prodbox"),
+                            ),
+                            (),
+                        ),
+                        (
+                            (
+                                K8sObjectRef(
+                                    resource="customresourcedefinitions.apiextensions.k8s.io",
+                                    name="widgets.example.com",
+                                ),
+                            ),
+                            (),
+                        ),
+                        (
+                            (
+                                K8sObjectRef(
+                                    resource="deployments",
+                                    name="harbor-core",
+                                    namespace="harbor",
+                                ),
+                                K8sObjectRef(
+                                    resource="configmaps",
+                                    name="prodbox-identity",
+                                    namespace="prodbox",
+                                ),
+                            ),
+                            (),
+                        ),
+                    )
+                ),
             ) as mock_collect_refs,
+            patch.object(
+                interpreter,
+                "_delete_all_namespaced_resource_instances",
+                new=AsyncMock(return_value=()),
+            ) as mock_delete_crd_instances,
+            patch.object(
+                interpreter,
+                "_delete_k8s_ref",
+                new=AsyncMock(side_effect=(None, None, None)),
+            ) as mock_delete_ref,
         ):
             summary, deleted_count = await interpreter.interpret_with_value(effect)
 
         assert summary.success
-        assert deleted_count == 0
-        assert mock_collect_refs.await_args.kwargs["namespaced_resources"] == ("deployments",)
+        assert deleted_count == 3
+        assert mock_collect_refs.await_args_list[0].kwargs["resources"] == ("namespaces",)
+        assert mock_collect_refs.await_args_list[1].kwargs["resources"] == (
+            "customresourcedefinitions.apiextensions.k8s.io",
+        )
+        assert mock_collect_refs.await_args_list[2].kwargs["resources"] == (
+            "deployments",
+            "configmaps",
+            "widgets.example.com",
+        )
+        mock_delete_crd_instances.assert_awaited_once_with(
+            resource="widgets.example.com",
+            timeout=180.0,
+        )
+        deleted_refs = tuple(call.args[0] for call in mock_delete_ref.await_args_list)
+        delete_timeouts = tuple(call.kwargs["timeout"] for call in mock_delete_ref.await_args_list)
+        assert deleted_refs == (
+            K8sObjectRef(resource="namespaces", name="harbor"),
+            K8sObjectRef(resource="configmaps", name="prodbox-identity", namespace="prodbox"),
+            K8sObjectRef(
+                resource="customresourcedefinitions.apiextensions.k8s.io",
+                name="widgets.example.com",
+            ),
+        )
+        assert delete_timeouts == (180.0, 45.0, 180.0)
 
 
 class TestRetainedStorageEffects:
@@ -3289,7 +3380,13 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_client
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -3315,7 +3412,13 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_client
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -3341,65 +3444,17 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_client
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert not summary.success
         assert value is None
-
-    @pytest.mark.asyncio
-    async def test_update_route53_record_success(self) -> None:
-        """UpdateRoute53Record should succeed on successful update."""
-        from prodbox.cli.effects import UpdateRoute53Record
-
-        interpreter = EffectInterpreter()
-        effect = UpdateRoute53Record(
-            effect_id="update_r53",
-            description="Update Route53",
-            zone_id="Z123456789",
-            fqdn="test.example.com",
-            ip="5.6.7.8",
-            ttl=300,
-            aws_region="us-east-1",
-        )
-
-        mock_client = MagicMock()
-        mock_client.change_resource_record_sets.return_value = {"ChangeInfo": {"Status": "PENDING"}}
-
-        mock_session = MagicMock()
-        mock_session.client.return_value = mock_client
-
-        with patch("boto3.Session", return_value=mock_session):
-            summary = await interpreter.interpret(effect)
-
-        assert summary.success
-
-    @pytest.mark.asyncio
-    async def test_update_route53_record_failure(self) -> None:
-        """UpdateRoute53Record should fail on API error."""
-        from prodbox.cli.effects import UpdateRoute53Record
-
-        interpreter = EffectInterpreter()
-        effect = UpdateRoute53Record(
-            effect_id="update_r53_fail",
-            description="Update Route53 fail",
-            zone_id="Z123456789",
-            fqdn="test.example.com",
-            ip="5.6.7.8",
-            ttl=300,
-            aws_region="us-east-1",
-        )
-
-        mock_client = MagicMock()
-        mock_client.change_resource_record_sets.side_effect = Exception("AWS error")
-
-        mock_session = MagicMock()
-        mock_session.client.return_value = mock_client
-
-        with patch("boto3.Session", return_value=mock_session):
-            summary = await interpreter.interpret(effect)
-
-        assert not summary.success
 
     @pytest.mark.asyncio
     async def test_validate_aws_credentials_success(self) -> None:
@@ -3423,7 +3478,13 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_sts
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -3447,7 +3508,13 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_sts
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert not summary.success
@@ -3473,7 +3540,13 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_client
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
@@ -3497,7 +3570,13 @@ class TestRoute53Effects:
         mock_session = MagicMock()
         mock_session.client.return_value = mock_client
 
-        with patch("boto3.Session", return_value=mock_session):
+        with (
+            patch("boto3.Session", return_value=mock_session),
+            patch(
+                "prodbox.cli.interpreter._load_repo_aws_auth",
+                return_value=("test-access-key", "test-secret-key", "test-session-token"),
+            ),
+        ):
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert not summary.success
@@ -3712,6 +3791,7 @@ class TestPulumiEffects:
     async def test_validate_pulumi_login_success(self) -> None:
         """ValidatePulumiLogin should succeed when `pulumi whoami` succeeds."""
         from prodbox.cli.effects import ValidatePulumiLogin
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = ValidatePulumiLogin(
@@ -3723,11 +3803,13 @@ class TestPulumiEffects:
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
             return_value=ProcessOutput(returncode=0, stdout=b"matt\n", stderr=b""),
-        ):
+        ) as mock_subprocess:
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
         assert value is True
+        env: dict[str, str] = mock_subprocess.call_args.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_validate_pulumi_login_failure(self) -> None:
@@ -3755,6 +3837,7 @@ class TestPulumiEffects:
     async def test_pulumi_preview_success(self) -> None:
         """PulumiPreview should succeed."""
         from prodbox.cli.effects import PulumiPreview
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiPreview(
@@ -3766,11 +3849,13 @@ class TestPulumiEffects:
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
             return_value=ProcessOutput(returncode=0, stdout=b"preview output", stderr=b""),
-        ):
+        ) as mock_subprocess:
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
         assert value == 0
+        env: dict[str, str] = mock_subprocess.call_args.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_preview_failure(self) -> None:
@@ -3841,6 +3926,7 @@ class TestPulumiEffects:
     async def test_pulumi_up_success(self) -> None:
         """PulumiUp should succeed."""
         from prodbox.cli.effects import PulumiUp
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiUp(
@@ -3853,11 +3939,13 @@ class TestPulumiEffects:
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
             return_value=ProcessOutput(returncode=0, stdout=b"deployed", stderr=b""),
-        ):
+        ) as mock_subprocess:
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
         assert value == 0
+        env: dict[str, str] = mock_subprocess.call_args.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_up_failure(self) -> None:
@@ -3931,6 +4019,7 @@ class TestPulumiEffects:
     async def test_pulumi_destroy_success(self) -> None:
         """PulumiDestroy should succeed."""
         from prodbox.cli.effects import PulumiDestroy
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiDestroy(
@@ -3943,11 +4032,13 @@ class TestPulumiEffects:
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
             return_value=ProcessOutput(returncode=0, stdout=b"destroyed", stderr=b""),
-        ):
+        ) as mock_subprocess:
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
         assert value == 0
+        env: dict[str, str] = mock_subprocess.call_args.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_destroy_failure(self) -> None:
@@ -4021,6 +4112,7 @@ class TestPulumiEffects:
     async def test_pulumi_refresh_success(self) -> None:
         """PulumiRefresh should succeed."""
         from prodbox.cli.effects import PulumiRefresh
+        from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
         interpreter = EffectInterpreter()
         effect = PulumiRefresh(
@@ -4033,11 +4125,13 @@ class TestPulumiEffects:
             "prodbox.cli.interpreter._run_subprocess",
             new_callable=AsyncMock,
             return_value=ProcessOutput(returncode=0, stdout=b"refreshed", stderr=b""),
-        ):
+        ) as mock_subprocess:
             summary, value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
         assert value == 0
+        env: dict[str, str] = mock_subprocess.call_args.kwargs["env"]
+        assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
     async def test_pulumi_refresh_failure(self) -> None:
@@ -4193,10 +4287,11 @@ class TestDAGExecutionAdditionalEdgeCases:
         with patch("prodbox.cli.interpreter.shutil.which", return_value=None):
             summary = await interpreter.interpret_dag(dag)
 
-        dependent = dict(summary.node_results)["dependent"]
-        assert dependent.exit_code == 1
-        assert "Prerequisite failure propagated" in dependent.message
-        assert "failed prerequisites: prereq_tool" in dependent.message
+        dependent_result = dict(summary.effect_results)["dependent"]
+        dependent_message = dependent_result.error or ""
+        assert dependent_result.success is False
+        assert "Prerequisite failure propagated" in dependent_message
+        assert "failed prerequisites: prereq_tool" in dependent_message
         command_summary = dag_to_execution_summary(summary)
         assert len(command_summary.environment_errors) == 1
         env_error = command_summary.environment_errors[0]
@@ -4291,8 +4386,9 @@ class TestDAGExecutionAdditionalEdgeCases:
             summary = await interpreter.interpret_dag(dag)
 
         assert summary.exit_code == 1
-        node_summary = dict(summary.node_results)["aggregate_node"]
-        assert "Aggregated prerequisite failures: prereq_a, prereq_b" in node_summary.message
+        aggregate_result = dict(summary.effect_results)["aggregate_node"]
+        aggregate_message = aggregate_result.error or ""
+        assert "Aggregated prerequisite failures: prereq_a, prereq_b" in aggregate_message
 
     @pytest.mark.asyncio
     async def test_dag_execution_root_failure(self) -> None:

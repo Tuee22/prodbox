@@ -7,7 +7,7 @@ with proper dependency ordering:
 2. MetalLB - LoadBalancer IP assignment
 3. Ingress (Traefik) - requires MetalLB
 4. cert-manager - can be created independently
-5. ClusterIssuer - requires cert-manager
+5. ClusterIssuer - requires cert-manager and ingress
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def main() -> None:
     aws_provider = create_aws_provider(settings)
 
     # Phase 1: DNS Record (independent)
-    # Pulumi owns existence, DDNS timer updates the IP value
+    # Pulumi owns existence, gateway DNS writes update the IP value
     _dns_resources = deploy_dns(settings, aws_provider)
 
     # Phase 2: MetalLB (networking layer)
@@ -54,7 +54,7 @@ def main() -> None:
     # Skip Helm install; create only the ClusterIssuer.
 
     # Phase 5: ClusterIssuer (cert-manager CRDs already present)
-    # Let's Encrypt issuer with DNS-01 validation
+    # Let's Encrypt issuer with HTTP-01 validation through Traefik
     _cluster_issuer_resources = deploy_cluster_issuer(
         settings,
         k8s_provider,
@@ -68,7 +68,7 @@ def main() -> None:
             "fqdn": settings.demo_fqdn,
             "ingress_ip": settings.ingress_lb_ip,
             "metallb_pool": settings.metallb_pool,
-            "cluster_issuer": "letsencrypt-dns01",
+            "cluster_issuer": "letsencrypt-http01",
             "prodbox_id": prodbox_id,
         },
     )

@@ -105,16 +105,6 @@ class TestDNSCommands:
 
         assert result.exit_code == 1
 
-    def test_dns_update_fails_without_config(
-        self,
-        cli_runner: CliRunner,
-    ) -> None:
-        """dns update should fail without AWS config."""
-        with patch.dict(os.environ, {}, clear=True):
-            result = cli_runner.invoke(cli, ["dns", "update"])
-
-        assert result.exit_code == 1
-
     def test_dns_check_renders_public_and_route53_state(
         self,
         cli_runner: CliRunner,
@@ -133,44 +123,6 @@ class TestDNSCommands:
         assert "PUBLIC_IP=203.0.113.10" in result.output
         assert "ROUTE53_A_RECORD=203.0.113.10" in result.output
         assert "STATUS=in-sync" in result.output
-
-    def test_dns_update_skips_route53_mutation_when_ip_is_unchanged(
-        self,
-        cli_runner: CliRunner,
-        mock_env: dict[str, str],
-    ) -> None:
-        """dns update should no-op when the Route 53 record already matches the public IP."""
-        mock_session = _mock_boto3_session(current_record_ip="203.0.113.10")
-        route53_client = mock_session.client("route53")
-        with (
-            patch.dict(os.environ, mock_env, clear=True),
-            patch("httpx.AsyncClient", return_value=_mock_async_http_client("203.0.113.10")),
-            patch("boto3.Session", return_value=mock_session),
-        ):
-            result = cli_runner.invoke(cli, ["dns", "update"], catch_exceptions=False)
-
-        assert result.exit_code == 0
-        assert "ACTION=no-op" in result.output
-        route53_client.change_resource_record_sets.assert_not_called()
-
-    def test_dns_update_mutates_route53_when_ip_changes(
-        self,
-        cli_runner: CliRunner,
-        mock_env: dict[str, str],
-    ) -> None:
-        """dns update should call Route 53 when the public IP has changed."""
-        mock_session = _mock_boto3_session(current_record_ip="198.51.100.3")
-        route53_client = mock_session.client("route53")
-        with (
-            patch.dict(os.environ, mock_env, clear=True),
-            patch("httpx.AsyncClient", return_value=_mock_async_http_client("203.0.113.10")),
-            patch("boto3.Session", return_value=mock_session),
-        ):
-            result = cli_runner.invoke(cli, ["dns", "update"], catch_exceptions=False)
-
-        assert result.exit_code == 0
-        assert "ACTION=updated" in result.output
-        route53_client.change_resource_record_sets.assert_called_once()
 
 
 class TestK8sCommands:

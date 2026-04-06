@@ -32,8 +32,6 @@ from prodbox.cli.command_adt import (
     ChartStatusCommand,
     Command,
     DNSCheckCommand,
-    DNSEnsureTimerCommand,
-    DNSUpdateCommand,
     EnvShowCommand,
     EnvTemplateCommand,
     EnvValidateCommand,
@@ -96,7 +94,6 @@ from prodbox.cli.effects import (
     RunSystemdCommand,
     Sequence,
     StartGatewayDaemon,
-    UpdateRoute53Record,
     ValidateSettings,
     ValidateTool,
     WriteStdout,
@@ -177,15 +174,6 @@ def _require_setting_string(settings: dict[str, RenderedSettingValue], field_nam
             return value
         case _:
             raise ValueError(f"settings field {field_name} missing or not a string")
-
-
-def _require_setting_int(settings: dict[str, RenderedSettingValue], field_name: str) -> int:
-    """Extract one required integer field from loaded settings."""
-    match settings.get(field_name):
-        case int() as value:
-            return value
-        case _:
-            raise ValueError(f"settings field {field_name} missing or not an integer")
 
 
 def _require_string_result(prereq_results: PrereqResults, effect_id: str) -> str:
@@ -296,27 +284,6 @@ def _render_host_check_ports_report(results: tuple[PortAvailability, ...]) -> st
     return "\n".join(lines)
 
 
-def _render_dns_update_report(
-    *,
-    settings: dict[str, RenderedSettingValue],
-    public_ip: str,
-    current_record_ip: str | None,
-    action: str,
-) -> str:
-    """Render deterministic DNS update output."""
-    fqdn = _require_setting_string(settings, "demo_fqdn")
-    previous = current_record_ip if current_record_ip is not None else "<missing>"
-    return "\n".join(
-        [
-            "DNS update",
-            f"FQDN={fqdn}",
-            f"PREVIOUS_RECORD={previous}",
-            f"TARGET_PUBLIC_IP={public_ip}",
-            f"ACTION={action}",
-        ]
-    )
-
-
 def _raise_effect_error(message: str) -> object:
     """Raise a deterministic failure from an effect-builder helper."""
     raise ValueError(message)
@@ -341,58 +308,6 @@ def _build_dns_query_effect(effect_id: str, prereq_results: PrereqResults) -> Qu
         fqdn=_require_setting_string(settings, "demo_fqdn"),
         aws_region=_require_setting_string(settings, "aws_region"),
     )
-
-
-def _build_dns_update_effect(
-    cmd: DNSUpdateCommand, prereq_results: PrereqResults
-) -> Sequence | WriteStdout:
-    """Build the DNS update root effect from prerequisite values."""
-    settings = _require_settings(prereq_results)
-    public_ip = _require_string_result(prereq_results, "dns_public_ip")
-    current_record_ip = _optional_string_result(prereq_results, "dns_current_record")
-
-    match (current_record_ip == public_ip, cmd.force):
-        case (True, False):
-            return WriteStdout(
-                effect_id="dns_update",
-                description="Render DNS update no-op report",
-                text=_render_dns_update_report(
-                    settings=settings,
-                    public_ip=public_ip,
-                    current_record_ip=current_record_ip,
-                    action="no-op",
-                ),
-            )
-        case _:
-            action = "forced-update" if current_record_ip == public_ip and cmd.force else "updated"
-            return Sequence(
-                effect_id="dns_update",
-                description="Update Route 53 DNS record",
-                effects=[
-                    UpdateRoute53Record(
-                        effect_id="dns_update_apply",
-                        description=(
-                            "Update Route 53 A record for "
-                            f"{_require_setting_string(settings, 'demo_fqdn')}"
-                        ),
-                        zone_id=_require_setting_string(settings, "route53_zone_id"),
-                        fqdn=_require_setting_string(settings, "demo_fqdn"),
-                        ip=public_ip,
-                        ttl=_require_setting_int(settings, "demo_ttl"),
-                        aws_region=_require_setting_string(settings, "aws_region"),
-                    ),
-                    WriteStdout(
-                        effect_id="dns_update_report",
-                        description="Render DNS update report",
-                        text=_render_dns_update_report(
-                            settings=settings,
-                            public_ip=public_ip,
-                            current_record_ip=current_record_ip,
-                            action=action,
-                        ),
-                    ),
-                ],
-            )
 
 
 def _build_host_check_ports_effect(prereq_results: PrereqResults) -> Sequence | WriteStdout:
@@ -1008,62 +923,6 @@ def _build_dns_check_dag(_cmd: DNSCheckCommand) -> EffectDAG:
     )
 
 
-def _build_dns_update_dag(_cmd: DNSUpdateCommand) -> EffectDAG:
-    """Build DAG for DNS update."""
-    cmd = _cmd
-    public_ip_node = EffectNode(
-        effect=FetchPublicIP(
-            effect_id="dns_public_ip",
-            description="Fetch current public IP",
-        ),
-        prerequisites=frozenset(),
-    )
-    current_record_node = EffectNode(
-        effect=QueryRoute53Record(
-            effect_id="dns_current_record",
-            description="Query current Route 53 A record",
-            zone_id="",
-            fqdn="",
-        ),
-        prerequisites=frozenset(["settings_object", "route53_accessible"]),
-        effect_builder=lambda _reduced, prereq_results: _build_dns_query_effect(
-            "dns_current_record",
-            prereq_results,
-        ),
-    )
-    root = EffectNode(
-        effect=WriteStdout(
-            effect_id="dns_update",
-            description="Update DNS record with public IP",
-            text="",
-        ),
-        prerequisites=frozenset(["settings_object", "dns_public_ip", "dns_current_record"]),
-        effect_builder=lambda _reduced, prereq_results: _build_dns_update_effect(
-            cmd,
-            prereq_results,
-        ),
-    )
-    return EffectDAG.from_roots(
-        root,
-        registry=_merge_registry(public_ip_node, current_record_node),
-    )
-
-
-def _build_dns_ensure_timer_dag(cmd: DNSEnsureTimerCommand) -> EffectDAG:
-    """Build DAG for installing DDNS timer."""
-    root = EffectNode(
-        effect=RunSystemdCommand(
-            effect_id="dns_ensure_timer",
-            description=f"Install DDNS timer (interval: {cmd.interval}min)",
-            action="enable",
-            service="route53-ddns.timer",
-            sudo=True,
-        ),
-        prerequisites=frozenset(["settings_loaded", "systemd_available"]),
-    )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
-
-
 # =============================================================================
 # Kubernetes Command Builders
 # =============================================================================
@@ -1374,10 +1233,6 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
         # DNS commands
         case DNSCheckCommand():
             return Success(_build_dns_check_dag(command))
-        case DNSUpdateCommand():
-            return Success(_build_dns_update_dag(command))
-        case DNSEnsureTimerCommand():
-            return Success(_build_dns_ensure_timer_dag(command))
 
         # Kubernetes commands
         case K8sHealthCommand():

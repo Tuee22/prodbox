@@ -14,6 +14,7 @@ class Provider:
         region: str | None = None,
         access_key: str | None = None,
         secret_key: str | None = None,
+        token: str | None = None,
         profile: str | None = None,
         shared_credentials_file: str | None = None,
         skip_credentials_validation: bool = False,

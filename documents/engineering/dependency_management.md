@@ -2,9 +2,18 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md
+**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md
 
 > **Purpose**: Define standards for Python dependency management in prodbox using Poetry.
+
+---
+
+## 0. Planning Ownership
+
+This document defines dependency-management doctrine only.
+
+Clean-room sequencing, completion status, remaining work, and legacy-path
+removal are owned by [DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
 
 ---
 
@@ -139,7 +148,7 @@ Use the CLI entrypoints instead:
 poetry run prodbox test all   # Run full test suite
 poetry run prodbox check-code  # Policy guard + ruff + mypy
 poetry run prodbox tla-check  # TLA+ model checks
-poetry run daemon --config <path>  # Gateway daemon
+poetry run prodbox gateway start <path>  # Gateway daemon
 ```
 
 For the full supported `prodbox` command matrix, see [CLI Command Surface](./cli_command_surface.md).
@@ -204,6 +213,7 @@ Major version upgrades require:
 
 ## Cross-References
 
+- [Development Plan](../../DEVELOPMENT_PLAN.md) - Clean-room sequencing and legacy removal
 - [CLAUDE.md](../../CLAUDE.md) - Project overview and type safety requirements
 - [Pure FP Standards](./pure_fp_standards.md) - Code patterns that affect dependency choices
 - [pyproject.toml](../../pyproject.toml) - Canonical dependency definitions

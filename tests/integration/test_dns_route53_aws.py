@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from typing import Never
 
@@ -9,8 +10,10 @@ import pytest
 from click.testing import CliRunner
 
 from prodbox.cli.main import cli
+from prodbox.gateway_daemon import DnsWriteGate, Route53DnsWriteClient
 
 from .aws_helpers import (
+    ROUTE53_RECORD_TTL_SECONDS,
     Route53HostedZoneContext,
     build_dns_suite_env,
     create_ephemeral_hosted_zone,
@@ -51,12 +54,12 @@ def ephemeral_route53_zone() -> Iterator[Route53HostedZoneContext]:
 
 
 @pytest.mark.integration
-def test_dns_check_and_update_round_trip_against_ephemeral_route53_zone(
+def test_dns_check_reports_ephemeral_route53_zone_state(
     cli_runner: CliRunner,
     ephemeral_route53_zone: Route53HostedZoneContext,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """dns check/update should read and mutate only the fixture-owned hosted zone."""
+    """dns check should read only the fixture-owned hosted zone."""
     for key, value in build_dns_suite_env(ephemeral_route53_zone).items():
         monkeypatch.setenv(key, value)
 
@@ -66,19 +69,51 @@ def test_dns_check_and_update_round_trip_against_ephemeral_route53_zone(
     assert "ROUTE53_A_RECORD=<missing>" in initial_check.output
     assert "STATUS=record-missing" in initial_check.output
 
-    update_result = cli_runner.invoke(cli, ["dns", "update"], catch_exceptions=False)
-    assert update_result.exit_code == 0
-    assert "ACTION=updated" in update_result.output
-    target_public_ip = _extract_report_value(update_result.output, "TARGET_PUBLIC_IP")
-    wait_for_route53_a_record(ephemeral_route53_zone, expected_value=target_public_ip)
-    assert query_route53_a_record(ephemeral_route53_zone) == target_public_ip
+    target_public_ip = _extract_report_value(initial_check.output, "PUBLIC_IP")
+    assert target_public_ip
 
-    synced_check = cli_runner.invoke(cli, ["dns", "check"], catch_exceptions=False)
-    assert synced_check.exit_code == 0
-    assert f"PUBLIC_IP={target_public_ip}" in synced_check.output
-    assert f"ROUTE53_A_RECORD={target_public_ip}" in synced_check.output
-    assert "STATUS=in-sync" in synced_check.output
 
-    second_update = cli_runner.invoke(cli, ["dns", "update"], catch_exceptions=False)
-    assert second_update.exit_code == 0
-    assert "ACTION=no-op" in second_update.output
+@pytest.mark.integration
+def test_gateway_route53_dns_write_client_upserts_fixture_owned_record(
+    ephemeral_route53_zone: Route53HostedZoneContext,
+) -> None:
+    """Gateway Route 53 write client should own the canonical DNS mutation path."""
+    suite_env = build_dns_suite_env(ephemeral_route53_zone)
+    gate = DnsWriteGate(
+        zone_id=ephemeral_route53_zone.zone_resource_id,
+        fqdn=ephemeral_route53_zone.record_fqdn,
+        ttl=ROUTE53_RECORD_TTL_SECONDS,
+        aws_region=suite_env["AWS_REGION"],
+    )
+    client = Route53DnsWriteClient.from_gate(gate)
+
+    first_ip = "198.51.100.10"
+    second_ip = "198.51.100.11"
+
+    assert (
+        asyncio.run(
+            client.update_route53_record(
+                zone_id=gate.zone_id,
+                fqdn=gate.fqdn,
+                ip_address=first_ip,
+                ttl=gate.ttl,
+            )
+        )
+        is True
+    )
+    wait_for_route53_a_record(ephemeral_route53_zone, expected_value=first_ip)
+    assert query_route53_a_record(ephemeral_route53_zone) == first_ip
+
+    assert (
+        asyncio.run(
+            client.update_route53_record(
+                zone_id=gate.zone_id,
+                fqdn=gate.fqdn,
+                ip_address=second_ip,
+                ttl=gate.ttl,
+            )
+        )
+        is True
+    )
+    wait_for_route53_a_record(ephemeral_route53_zone, expected_value=second_ip)
+    assert query_route53_a_record(ephemeral_route53_zone) == second_ip

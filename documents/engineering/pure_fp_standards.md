@@ -230,7 +230,7 @@ Define commands as explicit unions:
 
 ```python
 Command = (
-    DNSUpdateCommand
+    DNSCheckCommand
     | RKE2StatusCommand
     | K8sHealthCommand
     | HostInfoCommand
@@ -243,9 +243,9 @@ Command = (
 Validate at construction time and return `Result`:
 
 ```python
-def dns_update_command(*, force: bool = False) -> Result[DNSUpdateCommand, str]:
+def dns_check_command() -> Result[DNSCheckCommand, str]:
     # Validation at construction time
-    return Success(DNSUpdateCommand(force=force))
+    return Success(DNSCheckCommand())
 
 def port_command(port: int) -> Result[PortCommand, str]:
     match port:

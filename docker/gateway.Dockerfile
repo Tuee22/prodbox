@@ -14,4 +14,4 @@ COPY . /app
 RUN printf "[virtualenvs]\ncreate = false\n\n[keyring]\nenabled = false\n" > /app/poetry.toml
 RUN poetry install --only main --no-interaction --no-ansi
 
-ENTRYPOINT ["/usr/bin/tini", "--", "daemon"]
+ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "prodbox.cli.main", "gateway", "start"]

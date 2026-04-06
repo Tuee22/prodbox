@@ -14,14 +14,14 @@ Architecture:
 
 Usage:
     from prodbox.cli.command_adt import (
-        DNSUpdateCommand,
-        dns_update_command,
+        DNSCheckCommand,
+        dns_check_command,
         execute_command,
         Command,
     )
 
     # Smart constructor validates and returns Result
-    match dns_update_command(force=True):
+    match dns_check_command():
         case Success(cmd):
             await execute_command(cmd)
         case Failure(error):
@@ -150,28 +150,6 @@ class RKE2LogsCommand:
 @dataclass(frozen=True)
 class DNSCheckCommand:
     """Check current DNS record and public IP."""
-
-
-@dataclass(frozen=True)
-class DNSUpdateCommand:
-    """Update Route 53 DNS with current public IP.
-
-    Attributes:
-        force: Force update even if IP unchanged
-    """
-
-    force: bool = False
-
-
-@dataclass(frozen=True)
-class DNSEnsureTimerCommand:
-    """Install systemd timer for automatic DDNS updates.
-
-    Attributes:
-        interval: Update interval in minutes
-    """
-
-    interval: int = 5
 
 
 # =============================================================================
@@ -393,8 +371,6 @@ Command = (
     | RKE2LogsCommand
     # DNS
     | DNSCheckCommand
-    | DNSUpdateCommand
-    | DNSEnsureTimerCommand
     # Kubernetes
     | K8sHealthCommand
     | K8sWaitCommand
@@ -625,44 +601,6 @@ def dns_check_command() -> Result[DNSCheckCommand, str]:
         Success with DNSCheckCommand
     """
     return Success(DNSCheckCommand())
-
-
-def dns_update_command(
-    *,
-    force: bool = False,
-) -> Result[DNSUpdateCommand, str]:
-    """Create a DNSUpdateCommand.
-
-    Args:
-        force: Force update even if IP unchanged
-
-    Returns:
-        Success with DNSUpdateCommand
-    """
-    return Success(DNSUpdateCommand(force=force))
-
-
-def dns_ensure_timer_command(
-    *,
-    interval: int = 5,
-) -> Result[DNSEnsureTimerCommand, str]:
-    """Create a DNSEnsureTimerCommand.
-
-    PLATFORM-AWARE: Returns Failure on non-Linux platforms (requires systemd).
-
-    Args:
-        interval: Update interval in minutes
-
-    Returns:
-        Success with DNSEnsureTimerCommand on Linux, Failure otherwise
-    """
-    if platform.system() != "Linux":
-        return Failure("DDNS timer requires Linux (systemd)")
-
-    if interval < 1:
-        return Failure("Interval must be at least 1 minute")
-
-    return Success(DNSEnsureTimerCommand(interval=interval))
 
 
 def k8s_health_command() -> Result[K8sHealthCommand, str]:
@@ -965,9 +903,6 @@ def requires_linux(command: Command) -> bool:
             return True
         case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2CleanupCommand() | RKE2LogsCommand():
             return True
-        # DNS timer requires Linux (systemd)
-        case DNSEnsureTimerCommand():
-            return True
         # Environment commands - cross-platform
         case EnvShowCommand() | EnvValidateCommand() | EnvTemplateCommand():
             return False
@@ -979,8 +914,8 @@ def requires_linux(command: Command) -> bool:
             | HostFirewallCommand()
         ):
             return False
-        # DNS check/update - cross-platform (AWS API)
-        case DNSCheckCommand() | DNSUpdateCommand():
+        # DNS check - cross-platform (AWS API)
+        case DNSCheckCommand():
             return False
         # Kubernetes commands - cross-platform
         case K8sHealthCommand() | K8sWaitCommand() | K8sLogsCommand():
@@ -1014,7 +949,7 @@ def requires_settings(command: Command) -> bool:
     """
     match command:
         # DNS commands require AWS settings
-        case DNSCheckCommand() | DNSUpdateCommand() | DNSEnsureTimerCommand():
+        case DNSCheckCommand():
             return True
         # Kubernetes commands require kubeconfig path
         case K8sHealthCommand() | K8sWaitCommand() | K8sLogsCommand():
@@ -1081,8 +1016,6 @@ __all__ = [
     "RKE2LogsCommand",
     # DNS
     "DNSCheckCommand",
-    "DNSUpdateCommand",
-    "DNSEnsureTimerCommand",
     # Kubernetes
     "K8sHealthCommand",
     "K8sWaitCommand",
@@ -1118,8 +1051,6 @@ __all__ = [
     "rke2_cleanup_command",
     "rke2_logs_command",
     "dns_check_command",
-    "dns_update_command",
-    "dns_ensure_timer_command",
     "k8s_health_command",
     "k8s_wait_command",
     "k8s_logs_command",

@@ -78,15 +78,15 @@ def execute_command(cmd: Command) -> int:
 
     Usage:
         from prodbox.cli.command_executor import execute_command
-        from prodbox.cli.command_adt import dns_update_command
+        from prodbox.cli.command_adt import dns_check_command
 
-        match dns_update_command(force=True):
+        match dns_check_command():
             case Success(cmd):
                 sys.exit(execute_command(cmd))
             case Failure(error):
                 sys.exit(
                     render_error_and_return_exit_code(
-                        error, effect_id="dns_update_validation_failure"
+                        error, effect_id="dns_check_validation_failure"
                     )
                 )
     """

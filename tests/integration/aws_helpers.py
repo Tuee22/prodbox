@@ -15,7 +15,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
+from prodbox.lib.aws_auth import (
+    assert_no_ambient_aws_auth_env_vars,
+    build_dotenv_aws_env,
+)
 
 FIXTURE_OWNER_TAG: str = "managed_by"
 FIXTURE_OWNER_VALUE: str = "prodbox-integration"
@@ -129,11 +132,12 @@ def _required_env_var(name: str) -> str:
 
 
 def _aws_env(extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return AWS CLI environment with paging disabled."""
-    env = dict(os.environ)
+    """Return AWS CLI environment with credentials sourced only from `.env`."""
+    env = build_dotenv_aws_env(Path(".env"), extra_env=extra_env)
     env["AWS_PAGER"] = ""
-    if extra_env is not None:
-        env.update(extra_env)
+    region = _configured_aws_region()
+    env["AWS_REGION"] = region
+    env["AWS_DEFAULT_REGION"] = region
     return env
 
 
@@ -161,20 +165,15 @@ def _run_aws_cli(*args: str, env: Mapping[str, str] | None = None) -> str:
 
 
 def _configured_aws_region() -> str:
-    """Return the effective AWS region from env, config, or fallback."""
-    explicit_region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
-    if explicit_region not in (None, ""):
-        return explicit_region
-    completed = _run_aws_cli_completed("configure", "get", "region")
-    configured_region = completed.stdout.strip()
-    if configured_region:
-        return configured_region
-    return "us-east-1"
+    """Return the effective AWS region from validated prodbox settings."""
+    from prodbox.settings import get_settings
+
+    return get_settings().aws_region
 
 
 def require_aws_cli_identity() -> str:
     """Validate that the AWS CLI is installed and credentials are usable."""
-    assert_ambient_aws_auth_only()
+    assert_no_ambient_aws_auth_env_vars()
     if shutil.which("aws") is None:
         raise AssertionError("aws CLI not installed")
     return _run_aws_cli("sts", "get-caller-identity", "--query", "Account", "--output", "text")
@@ -806,13 +805,16 @@ def wait_for_route53_a_record(
 
 def build_dns_suite_env(context: Route53HostedZoneContext) -> dict[str, str]:
     """Return environment overrides for real DNS integration tests."""
-    assert_ambient_aws_auth_only()
+    from prodbox.settings import get_settings
+
+    assert_no_ambient_aws_auth_env_vars()
+    settings = get_settings()
     return {
-        "AWS_REGION": os.environ.get("AWS_REGION", "us-east-1"),
+        "AWS_REGION": settings.aws_region,
         "ROUTE53_ZONE_ID": context.zone_resource_id,
         "DEMO_FQDN": context.record_fqdn,
         "DEMO_TTL": str(ROUTE53_RECORD_TTL_SECONDS),
-        "ACME_EMAIL": os.environ.get("ACME_EMAIL", "integration@example.com"),
+        "ACME_EMAIL": settings.acme_email,
     }
 
 

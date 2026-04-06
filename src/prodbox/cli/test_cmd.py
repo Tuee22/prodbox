@@ -156,8 +156,14 @@ INTEGRATION_CHARTS_PLATFORM_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSel
 INTEGRATION_CHARTS_VSCODE_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-charts-vscode",
     pytest_args=("tests/integration/test_charts_vscode.py",),
-    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
-    requires_integration_runbook=True,
+    integration_gate_prerequisites=frozenset(),
+    requires_integration_runbook=False,
+)
+INTEGRATION_PUBLIC_DNS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-public-dns",
+    pytest_args=("tests/integration/test_public_dns_delegation.py",),
+    integration_gate_prerequisites=frozenset(),
+    requires_integration_runbook=False,
 )
 
 
@@ -182,6 +188,7 @@ def test() -> None:
       prodbox test integration charts-storage
       prodbox test integration charts-platform
       prodbox test integration charts-vscode
+      prodbox test integration public-dns
     """
 
 
@@ -482,9 +489,29 @@ def integration_charts_platform(coverage: bool, cov_fail_under: int | None) -> N
     help="Minimum coverage percentage in [0, 100]; requires --coverage.",
 )
 def integration_charts_vscode(coverage: bool, cov_fail_under: int | None) -> None:
-    """Run VS Code public-hostname + TLS + OAuth integration tests."""
+    """Run VS Code public-hostname + TLS + auth-wall integration tests."""
     _exit_for_suite(
         suite=INTEGRATION_CHARTS_VSCODE_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("public-dns")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_public_dns(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run public Route 53 delegation proof integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_PUBLIC_DNS_TEST_SUITE,
         coverage=coverage,
         cov_fail_under=cov_fail_under,
     )

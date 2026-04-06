@@ -23,7 +23,7 @@ def get_public_ip(*, bootstrap_override: str | None = None) -> str:
     """Get current public IP address.
 
     Used to set an initial value for the A record.
-    The DDNS updater will keep it current.
+    The gateway DNS-write path keeps it current after bootstrap.
 
     Returns:
         Current public IP address or explicit bootstrap override
@@ -51,10 +51,10 @@ def deploy_dns(
     """Deploy Route 53 DNS A record.
 
     Creates an A record pointing to the current public IP.
-    The DDNS updater will keep the IP current as it changes.
+    The gateway owner DNS-write path keeps the IP current as it changes.
 
     Pulumi owns the record's existence (so destroy cleans up),
-    but ignores changes to the actual IP value (DDNS manages it).
+    but ignores changes to the actual IP value (gateway DNS writes manage it).
 
     Args:
         settings: Application settings with DNS configuration
@@ -67,7 +67,7 @@ def deploy_dns(
     current_ip = get_public_ip(bootstrap_override=settings.bootstrap_public_ip_override)
 
     # Create A record
-    # ignore_changes on records ensures DDNS updates aren't reverted
+    # ignore_changes on records ensures gateway DNS writes aren't reverted
     a_record = aws.route53.Record(
         "demo-a-record",
         zone_id=settings.route53_zone_id,

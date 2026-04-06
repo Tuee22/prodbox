@@ -44,7 +44,6 @@ from prodbox.cli.prerequisite_registry import (
     PULUMI_LOGGED_IN,
     RKE2_CONFIG_EXISTS,
     RKE2_INSTALLED,
-    RKE2_KILLALL_EXISTS,
     RKE2_SERVICE_ACTIVE,
     RKE2_SERVICE_EXISTS,
     ROUTE53_ACCESSIBLE,
@@ -103,13 +102,11 @@ class TestRegistryCompleteness:
         assert "kubeconfig_exists" in PREREQUISITE_REGISTRY
         assert "kubeconfig_home_exists" in PREREQUISITE_REGISTRY
         assert "rke2_config_exists" in PREREQUISITE_REGISTRY
-        assert "rke2_killall_exists" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["settings_loaded"] is SETTINGS_LOADED
         assert PREREQUISITE_REGISTRY["settings_object"] is SETTINGS_OBJECT
         assert PREREQUISITE_REGISTRY["kubeconfig_exists"] is KUBECONFIG_EXISTS
         assert PREREQUISITE_REGISTRY["kubeconfig_home_exists"] is KUBECONFIG_HOME_EXISTS
         assert PREREQUISITE_REGISTRY["rke2_config_exists"] is RKE2_CONFIG_EXISTS
-        assert PREREQUISITE_REGISTRY["rke2_killall_exists"] is RKE2_KILLALL_EXISTS
 
     def test_all_aws_prerequisites_in_registry(self) -> None:
         """All AWS/Route53 prerequisite nodes should be in the registry."""
@@ -153,9 +150,9 @@ class TestRegistryConsistency:
             ), f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
 
     def test_registry_has_expected_size(self) -> None:
-        """Registry should have exactly 27 prerequisites."""
-        # Platform: 3, Tools: 9, Config: 6, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
-        expected_count = 3 + 9 + 6 + 2 + 4 + 1 + 2
+        """Registry should have exactly 26 prerequisites."""
+        # Platform: 3, Tools: 9, Config: 5, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
+        expected_count = 3 + 9 + 5 + 2 + 4 + 1 + 2
         assert len(PREREQUISITE_REGISTRY) == expected_count
 
 
@@ -241,7 +238,6 @@ class TestEffectTypeCorrectness:
         assert isinstance(KUBECONFIG_EXISTS.effect, CheckFileExists)
         assert isinstance(KUBECONFIG_HOME_EXISTS.effect, CheckFileExists)
         assert isinstance(RKE2_CONFIG_EXISTS.effect, CheckFileExists)
-        assert isinstance(RKE2_KILLALL_EXISTS.effect, CheckFileExists)
         assert isinstance(RKE2_INSTALLED.effect, CheckFileExists)
 
     def test_settings_prerequisite_uses_validate_settings(self) -> None:

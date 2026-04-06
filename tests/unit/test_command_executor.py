@@ -48,7 +48,6 @@ class TestExecuteCommand:
         mock_summary = DAGExecutionSummary(
             exit_code=0,
             message="Success",
-            node_results=(),
             total_nodes=1,
             successful_nodes=1,
             failed_nodes=0,
@@ -74,7 +73,6 @@ class TestExecuteCommand:
         mock_summary = DAGExecutionSummary(
             exit_code=1,
             message="Failed",
-            node_results=(),
             total_nodes=1,
             successful_nodes=0,
             failed_nodes=1,
@@ -159,7 +157,6 @@ class TestExecuteDAG:
         mock_summary = DAGExecutionSummary(
             exit_code=0,
             message="Success",
-            node_results=(),
             total_nodes=1,
             successful_nodes=1,
             failed_nodes=0,
@@ -188,7 +185,6 @@ class TestExecuteDAG:
         mock_summary = DAGExecutionSummary(
             exit_code=1,
             message="Failed",
-            node_results=(),
             total_nodes=1,
             successful_nodes=0,
             failed_nodes=1,

@@ -8,12 +8,11 @@ Core Pattern:
     Command builds Effect DAG -> Interpreter executes effects -> Returns ExecutionSummary
 
 Example:
-    >>> def dns_update(settings: Settings) -> Effect[CommandSuccess]:
+    >>> def dns_check(settings: Settings) -> Effect[CommandSuccess]:
     ...     return Sequence([
     ...         FetchPublicIP(),
     ...         QueryRoute53Record(zone_id, fqdn),
-    ...         UpdateRoute53Record(zone_id, fqdn, ip),
-    ...         WriteStdout("DNS updated successfully")
+    ...         WriteStdout("DNS status rendered")
     ...     ])
 
 Architecture:
@@ -606,7 +605,6 @@ class CleanupProdboxAnnotatedResources(Effect[int]):
 
     prodbox_id: str
     annotation_key: str
-    cleanup_passes: int = 2
     retained_resource_kinds: tuple[str, ...] = ()
     retained_namespaces: tuple[str, ...] = ()
 
@@ -649,31 +647,6 @@ class QueryRoute53Record(Effect[str | None]):
 
     zone_id: str
     fqdn: str
-    aws_region: str = "us-east-1"
-
-
-@dataclass(frozen=True)
-class UpdateRoute53Record(Effect[None]):
-    """
-    Update or create Route 53 A record.
-
-    Returns: None
-
-    Example:
-        >>> UpdateRoute53Record(
-        ...     effect_id="update_dns",
-        ...     description="Update DNS A record",
-        ...     zone_id="Z1234567890",
-        ...     fqdn="home.example.com",
-        ...     ip="1.2.3.4",
-        ...     ttl=300
-        ... )
-    """
-
-    zone_id: str
-    fqdn: str
-    ip: str
-    ttl: int = 300
     aws_region: str = "us-east-1"
 
 
@@ -1138,12 +1111,11 @@ class Sequence(Effect[list[object]]):
 
     Example:
         >>> Sequence(
-        ...     effect_id="dns_update_workflow",
-        ...     description="Update DNS workflow",
+        ...     effect_id="dns_check_workflow",
+        ...     description="Check DNS workflow",
         ...     effects=[
         ...         FetchPublicIP(...),
         ...         QueryRoute53Record(...),
-        ...         UpdateRoute53Record(...)
         ...     ]
         ... )
     """
@@ -1431,7 +1403,6 @@ __all__ = [
     # DNS / Route 53
     "FetchPublicIP",
     "QueryRoute53Record",
-    "UpdateRoute53Record",
     "ValidateAWSCredentials",
     "ValidateRoute53Access",
     # Pulumi

@@ -37,16 +37,16 @@ Commands are immutable frozen dataclasses that represent user intent:
 ```python
 # File: src/prodbox/cli/command_adt.py
 @dataclass(frozen=True)
-class DNSUpdateCommand:
-    force: bool = False
+class DNSCheckCommand:
+    pass
 ```
 
 Smart constructors validate commands at construction time:
 
 ```python
 # File: src/prodbox/cli/command_adt.py
-def dns_update_command(*, force: bool = False) -> Result[DNSUpdateCommand, str]:
-    return Success(DNSUpdateCommand(force=force))
+def dns_check_command() -> Result[DNSCheckCommand, str]:
+    return Success(DNSCheckCommand())
 ```
 
 ### 2.2 Effect Types
@@ -119,7 +119,6 @@ dag = EffectDAG.from_roots(
 |--------|-------------|
 | `FetchPublicIP` | Get current public IP |
 | `QueryRoute53Record` | Query DNS A record |
-| `UpdateRoute53Record` | Upsert DNS A record |
 | `ValidateAWSCredentials` | Check AWS credentials |
 
 ### 3.5 Composite Effects
@@ -169,8 +168,8 @@ The `command_to_dag()` function uses exhaustive pattern matching:
 # File: src/prodbox/cli/dag_builders.py
 def command_to_dag(command: Command) -> Result[EffectDAG, str]:
     match command:
-        case DNSUpdateCommand():
-            return Success(_build_dns_update_dag(command))
+        case DNSCheckCommand():
+            return Success(_build_dns_check_dag(command))
         case RKE2StatusCommand():
             return Success(_build_rke2_status_dag(command))
         # ... all cases handled
@@ -301,7 +300,6 @@ Result = Union[Success[T], Failure[E]]
 Sequence([
     FetchPublicIP(...),
     QueryRoute53Record(...),
-    UpdateRoute53Record(...)
 ])
 ```
 
@@ -335,8 +333,8 @@ match result:
 Test DAG construction without execution:
 
 ```python
-def test_dns_update_dag_includes_aws_prereqs() -> None:
-    cmd = DNSUpdateCommand(force=True)
+def test_dns_check_dag_includes_aws_prereqs() -> None:
+    cmd = DNSCheckCommand()
     match command_to_dag(cmd):
         case Success(dag):
             assert "aws_credentials_valid" in dag

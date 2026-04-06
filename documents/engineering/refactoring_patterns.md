@@ -362,18 +362,17 @@ def update_dns() -> None:
 ### After (Pure)
 
 ```python
-def dns_update_dag(settings: Settings) -> EffectDAG:
+def dns_check_dag(settings: Settings) -> EffectDAG:
     """Settings passed explicitly - no hidden state."""
     return EffectDAG.from_roots(
         EffectNode(
-            effect=UpdateRoute53Record(
-                effect_id="update_dns",
-                description="Update DNS record",
+            effect=QueryRoute53Record(
+                effect_id="query_dns",
+                description="Query DNS record",
                 zone_id=settings.route53_zone_id,
                 fqdn=settings.fqdn,
-                ip="",  # Will be filled by prerequisite
             ),
-            prerequisites=frozenset(["fetch_public_ip", "aws_credentials_valid"])
+            prerequisites=frozenset(["aws_credentials_valid"])
         ),
         registry=PREREQUISITE_REGISTRY
     )

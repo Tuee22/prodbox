@@ -2,21 +2,26 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_COMPLETION_PLAN.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
+**Referenced by**: DEVELOPMENT_PLAN.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
 
-> **Purpose**: Define how prodbox uses host-level AWS CLI authentication for integration tests and creates, tags, isolates, and cleans up real AWS resources.
+> **Purpose**: Define how prodbox uses repository `.env` AWS authentication for integration tests and creates, tags, isolates, and cleans up real AWS resources.
 
 ---
 
 ## 0. Canonical Doctrine Statements
 
-AWS authentication material must never be stored anywhere under the repository tree, including unversioned `.env` files.
+`prodbox` AWS authentication material must be stored only in the repository `.env` file.
 
-Stateful AWS integration uses the system-level `aws` CLI on the host, not repo-local auth helpers.
+That `.env` location is fixed to `<repository-root>/.env` from inside the outer container.
+`prodbox` must not search upward from the current working directory or prefer nested `.env` files.
 
-The AWS test harness must consume ambient host authentication that already exists before the test run begins; it must not perform interactive login inside the repo or inside pytest.
+Stateful AWS integration uses explicit credentials loaded from the repository `.env` file, not ambient host AWS CLI state or shared profile discovery.
 
-AWS auth environment variables are forbidden for `prodbox` commands, fixtures, and tests. Host authentication must come from the standard AWS shared config and cache state only.
+The AWS test harness must rebuild subprocess AWS auth from `.env` before test execution; it must not perform interactive login inside the repo or inside pytest.
+
+Ambient AWS auth environment variables outside `.env` are forbidden for `prodbox` commands, fixtures, and tests.
+
+Only the following `.env` AWS auth variables are supported: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`.
 
 Stateful AWS-mutating integration tests must create only brand-new ephemeral AWS resources through AWS CLI commands owned by the test fixture.
 
@@ -26,17 +31,31 @@ Existing AWS resources are never valid mutation targets for integration tests.
 
 ---
 
+## 0A. Planning Ownership
+
+This document owns AWS integration doctrine only.
+
+Clean-room sequencing, completion status, remaining work, and legacy-path
+removal for AWS validation are owned by
+[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+
+---
+
 ## 1. Scope
 
 This doctrine applies to any integration test that creates, updates, or deletes real AWS state.
+It also defines the auth-source contract for the read-only public Route 53 delegation proof
+that compares public DNS results for `VSCODE_FQDN` against the canonical hosted zone
+identified by `ROUTE53_ZONE_ID`.
 
 Current expected users:
 
-1. Route 53 integration tests for `prodbox dns check` and `prodbox dns update`.
+1. Route 53 integration tests for `prodbox dns check` and the canonical gateway Route 53 write client.
 2. Shared-account foundation integration tests that create delegated Route 53 child zones plus tagged S3 and EC2/VPC resources and then prove selective janitor cleanup.
 3. Real EKS integration tests that create a tagged control plane plus tagged IAM role and VPC dependencies.
 4. Real Pulumi integration tests that require a fixture-owned Route 53 hosted zone ID.
-5. Any future AWS-backed integration test that provisions temporary IAM-visible resources.
+5. Read-only public Route 53 delegation proof for `VSCODE_FQDN`.
+6. Any future AWS-backed integration test that provisions temporary IAM-visible resources.
 
 It does not own the general multi-project AWS test-account topology, shared parent-domain strategy, or shared-account authentication posture. Those are defined in [AWS Test Environment](./aws_test_environment.md).
 
@@ -44,46 +63,53 @@ This document does not restate general integration skip/fail-fast policy. That r
 
 This document does not restate cluster fixture ownership rules. Those remain owned by [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 
+The public delegation proof does not create AWS resources, but it must still read auth only
+from the repository `.env` file and fail fast when `route53:GetHostedZone` on
+`ROUTE53_ZONE_ID` is unavailable.
+
 ---
 
 ## 2. Authentication Source And Storage Rules
 
-### 2.1 No Repo-Local Auth Storage
+### 2.1 Repository `.env` Ownership
 
-AWS authentication material must not be stored anywhere under the repository tree.
+AWS authentication material for `prodbox` must live only in the repository `.env` file.
 
-Prohibited examples:
+The lookup path is fixed: `pydantic` loads only `<repository-root>/.env` from inside the outer container.
+If that file is absent or incomplete, settings validation must fail; nested or cwd-local `.env` files are not valid fallback sources.
 
-1. `.env` files under the repo that contain AWS auth credentials.
-2. Unversioned repo-local shell snippets that export AWS secrets.
-3. Checked-in example files containing real AWS auth data.
-4. Temporary credential dumps written into project directories.
+Required `.env` keys:
 
-Allowed locations:
+1. `AWS_ACCESS_KEY_ID`
+2. `AWS_SECRET_ACCESS_KEY`
 
-1. System-level AWS CLI profile/config state under the operator home directory.
-2. System-level AWS CLI cache state under the operator home directory.
+Optional `.env` key:
 
-### 2.2 System-Level AWS CLI Ownership
+1. `AWS_SESSION_TOKEN`
 
-The system-installed `aws` CLI is the only supported authentication entrypoint for real AWS integration tests.
+Forbidden storage patterns:
 
-Allowed host-level authentication patterns include:
+1. Unversioned repo-local shell snippets that export AWS secrets.
+2. Checked-in example files containing real AWS auth data.
+3. Temporary credential dumps written into project directories outside `.env`.
+4. Reliance on `~/.aws` shared config or cache as the auth source for `prodbox`.
 
-1. Existing AWS CLI profiles under `~/.aws`.
-2. Existing AWS CLI login state created outside the repository.
+### 2.2 No Ambient Or Profile-Based AWS Auth
+
+The system-installed `aws` CLI may be used by tests, but only with subprocess auth rebuilt from the repository `.env` file.
 
 Forbidden test-harness behavior:
 
 1. Running `aws login` interactively as part of pytest.
 2. Running `aws configure` interactively inside the repo as part of test execution.
-3. Generating repo-local credential files for test convenience.
+3. Generating alternate repo-local credential files for test convenience.
 4. Exporting AWS auth env vars before invoking `prodbox` or pytest.
-5. Injecting AWS auth env vars into subprocesses started by repo code or tests.
+5. Relying on AWS shared config, shared credentials, or cached profile state instead of `.env`.
+6. Injecting AWS auth env vars into subprocesses started by repo code or tests unless those vars were rebuilt from `.env`.
 
-### 2.3 No AWS Auth Env Vars
+### 2.3 Disallowed Ambient AWS Auth Variables
 
-The following environment variables are forbidden because they bypass or override ambient host AWS CLI auth:
+The following environment variables are forbidden when present outside `.env`:
 
 1. `AWS_ACCESS_KEY_ID`
 2. `AWS_SECRET_ACCESS_KEY`
@@ -97,7 +123,7 @@ The following environment variables are forbidden because they bypass or overrid
 10. `AWS_ROLE_ARN`
 11. `AWS_ROLE_SESSION_NAME`
 
-`prodbox` code and tests must fail fast when any of these variables are set.
+`prodbox` code and tests must fail fast when any of these variables are set in ambient process state or used as alternate auth sources.
 
 ---
 
@@ -108,16 +134,16 @@ The following environment variables are forbidden because they bypass or overrid
 Before an AWS-mutating test body runs, the harness must prove all of the following:
 
 1. The system `aws` CLI exists on `PATH`.
-2. The host already has usable AWS authentication for the identity the test will run under.
-3. That authenticated identity can create, tag, mutate, inspect, and delete the same AWS resource types the fixture will own.
+2. The repository `.env` already defines usable AWS authentication for the identity the test will run under.
+3. That `.env`-defined identity can create, tag, mutate, inspect, and delete the same AWS resource types the fixture will own.
 
 ### 3.2 Required Check Semantics
 
 The required checks map to the following concrete obligations:
 
 1. Tool check: `aws` must be invokable by the test harness.
-2. Host-auth check: `aws sts get-caller-identity` must succeed before the suite proceeds.
-3. Resource-capability check: the fixture setup must successfully execute the same create/tag/mutate/delete AWS CLI operations that define the resource lifecycle for the suite.
+2. `.env` auth check: `aws sts get-caller-identity` must succeed with subprocess auth rebuilt from `.env` before the suite proceeds.
+3. Resource-capability check: the fixture setup must successfully execute the same create/tag/mutate/delete AWS CLI operations using `.env`-defined auth that define the resource lifecycle for the suite.
 
 ### 3.3 No In-Harness Login
 
@@ -331,6 +357,7 @@ For the EKS suite, the fixture contract is:
 
 ## Cross-References
 
+- [Development Plan](../../DEVELOPMENT_PLAN.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [CLI Command Surface](./cli_command_surface.md)

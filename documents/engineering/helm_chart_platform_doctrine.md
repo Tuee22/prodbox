@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Define the singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for the `prodbox charts` command platform.
 
@@ -114,9 +114,24 @@ Root charts:
 
 - `vscode` — deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
 
+## 10. Supported Auth Model For `vscode`
+
+The `vscode` chart stack supports one auth model only:
+
+1. nginx handles the OIDC authorization-code flow.
+2. Keycloak uses its local user database and serves the login page under `/auth`.
+3. code-server is reachable only behind the nginx auth wall.
+
+Unsupported legacy paths:
+
+- `oauth2-proxy`
+- Google OAuth as the supported identity-provider path
+- Alternate chart-specific auth-secret names outside `KEYCLOAK_NGINX_CLIENT_SECRET`
+- Standalone local `docker-compose` delivery paths outside `prodbox charts`
+
 ---
 
-## 10. Required Settings
+## 11. Required Settings
 
 The following settings from `src/prodbox/settings.py` are required for chart deployment:
 
@@ -129,60 +144,22 @@ The following settings from `src/prodbox/settings.py` are required for chart dep
 
 ---
 
-## 11. Delivery Evidence
+## 12. Planning Ownership
 
-Chart platform delivery was completed on 2026-03-28 through Sprints 5–9.
+This document is normative chart-platform doctrine only.
 
-### Sprint 5 – Contracts and scaffolding
-- `helm_chart_platform_doctrine.md` (this document) written and linked
-- `documents/engineering/cli_command_surface.md` updated with `charts` command group
-- `.gitignore` and `.dockerignore` updated with `.data/`
+Delivery sequencing, completion status, remaining work, and legacy-path removal
+are owned by
+[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
 
-### Sprint 6 – CLI integration
-- `src/prodbox/cli/effects.py`: `ChartListEffect`, `ChartStatusEffect`, `ChartDeployEffect`, `ChartDeleteEffect`
-- `src/prodbox/cli/command_adt.py`: `ChartListCommand`, `ChartStatusCommand`, `ChartDeployCommand`, `ChartDeleteCommand`
-- `src/prodbox/cli/dag_builders.py`: chart DAG builders wired to plan builders
-- `src/prodbox/cli/interpreter.py`: `_interpret_chart_*` handlers
-- `src/prodbox/cli/charts.py`: thin Click wrappers
-- `src/prodbox/cli/main.py`: `charts` group registered
-- `src/prodbox/cli/test_cmd.py`: `charts-storage`, `charts-platform`, `charts-vscode` named suites
+Canonical repository facts referenced by this doctrine:
 
-### Sprint 7 – Storage tests
-- `tests/unit/test_chart_platform.py`: pure-function tests for `_storage_binding`, plan builders, delete semantics
-- `tests/integration/test_charts_storage.py`: deploy → verify PV/PVC → delete → verify host dirs preserved → redeploy → verify same names
-
-### Sprint 8 – vscode stack end-to-end
-- `charts/` audited: all charts have pinned versions, NetworkPolicy manifests, no PV/PVC templates, same-namespace service refs
-- `tests/unit/test_chart_platform.py` extended with prerequisite ordering and same-namespace-only tests
-- `tests/integration/test_charts_platform.py`: all three releases deploy into `vscode` namespace, singleton enforcement, delete cleans up cleanly
-
-### Sprint 9 – Auth overhaul: nginx OIDC + Keycloak username/password
-- `oauth2-proxy` removed from the `vscode` chart; Google OAuth removed from Keycloak realm
-- `docker/nginx-oidc.Dockerfile` — Alpine nginx with njs OIDC module
-- `docker/vscode-dev/` — local dev docker-compose (nginx + code-server + keycloak + postgres)
-- `charts/vscode/templates/nginx-configmap.yaml` — nginx.conf and oidc.js embedded as a ConfigMap
-- `charts/vscode/templates/deployment.yaml` — nginx sidecar replaces oauth2-proxy
-- `src/prodbox/settings.py` — `KEYCLOAK_NGINX_CLIENT_SECRET` replaces oauth2-proxy and Google OAuth fields
-- `src/prodbox/lib/chart_platform.py` — nginx image and values updated
-- `tests/integration/test_charts_vscode.py` — updated to assert Keycloak username/password login (no Google OAuth)
-
-### Sprint 10 – Public hostname and closure
-- Route 53 hosted zone `Z007443829N5L4FU2HO15` created via AWS CLI; A record `vscode.resolvefintech.com → 99.217.42.203` created via `prodbox dns update`
-- `src/prodbox/infra/cluster_issuer.py`: ClusterIssuer `letsencrypt-dns01` with DNS-01 Route53 solver; AWS credentials injected via `route53-credentials` K8s Secret in `cert-manager` namespace
-- `src/prodbox/infra/ingress.py`: Traefik IngressClass `traefik` with stable name set; MetalLB IP 192.168.1.240
-- `src/prodbox/infra/cert_manager.py`: removed `commonLabels`/`commonAnnotations` (incompatible with cert-manager v1.16.2 schema); cert-manager deployed as standalone Helm release (not via Pulumi)
-- `src/prodbox/cli/interpreter.py`: `ValidateRoute53Access` now falls back to `get_settings().route53_zone_id` (pydantic Settings, not only `os.environ`)
-- `.env` created with `ROUTE53_ZONE_ID`, `ACME_EMAIL`, `VSCODE_FQDN`, and chart credentials
-- cert-manager DNS-01 challenge presented; TLS cert pending NS delegation (domain registered in separate AWS account)
-- nginx OIDC + Keycloak auth flow verified functional at cluster IP (302 redirect to Keycloak confirmed)
-- `tests/unit/test_settings.py`, `tests/unit/test_interpreter.py`: tests that clear `os.environ` now `monkeypatch.chdir(tmp_path)` to avoid reading the real `.env` file
-- `tests/integration/test_charts_vscode.py`: HTTPS reachability, TLS issuer (Let's Encrypt), auth redirect, Keycloak username/password login
-
-### Verification command
-```bash
-poetry run prodbox check-code
-poetry run prodbox test unit
-```
+1. `prodbox charts` is the only supported chart-lifecycle entrypoint.
+2. The supported auth path for `vscode` is nginx OIDC plus local Keycloak users.
+3. There is no separate repository-supported `docker/vscode-dev` flow for `vscode`.
+4. Public-host closure and any remaining cleanup refactors must be tracked in
+   [DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md), not in this doctrine
+   document.
 
 ## Cross-References
 
@@ -190,4 +167,5 @@ poetry run prodbox test unit
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
+- [Development Plan](../../DEVELOPMENT_PLAN.md)
 - [Documentation Standards](../documentation_standards.md)

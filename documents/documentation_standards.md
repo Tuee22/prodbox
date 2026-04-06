@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
 
@@ -44,7 +44,7 @@ All documentation files use `snake_case.md`:
 - `README.md`
 - `CLAUDE.md`
 - `AGENTS.md`
-- Root `UPPER_CASE_PLAN.md` files such as `DEVELOPMENT_COMPLETION_PLAN.md`
+- Root `UPPER_CASE_PLAN.md` files such as `DEVELOPMENT_PLAN.md`
 
 ### Ephemeral Root Plans
 

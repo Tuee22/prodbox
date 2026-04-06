@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -32,17 +32,22 @@ This design assumes:
 
 ---
 
-## 2. Implementation Status
+## 2. Planning Ownership
 
-The distributed gateway system is fully implemented (Phases 1-8 complete):
+This document owns gateway architecture doctrine only.
 
-- **Gateway daemon**: `src/prodbox/gateway_daemon.py` (1387 lines)
-- **CLI management**: `src/prodbox/cli/gateway.py` (`start`, `status`, `config-gen`)
-- **TLA+ models**: `documents/engineering/tla/gateway_orders_rule.tla`
-- **Unit tests**: 54 gateway daemon tests in `tests/unit/test_gateway_daemon.py`
-- **Integration tests**: `tests/integration/test_gateway_k8s_pods.py` (K8s pod deployment)
+Clean-room sequencing, completion status, remaining work, and legacy-path
+removal for gateway delivery are owned by
+[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
 
-The daemon runs as a local Python process via `poetry run daemon`. DDNS timer fallback (`scripts/`) remains for single-node operation.
+Canonical repository facts referenced by this doctrine:
+
+1. The gateway daemon implementation lives in `src/prodbox/gateway_daemon.py`.
+2. The managed CLI surface is `prodbox gateway start|status|config-gen`.
+3. Verification artifacts include `tests/unit/test_gateway_daemon.py`,
+   `tests/integration/test_gateway_daemon_k8s.py`,
+   `tests/integration/test_gateway_k8s_pods.py`, and
+   `documents/engineering/tla/gateway_orders_rule.tla`.
 
 ---
 
@@ -235,7 +240,7 @@ class DnsWriteGate:
     aws_region: str
 ```
 
-When `dns_write_gate` is `None`, DNS write loop is a no-op (backward compatible).
+When `dns_write_gate` is `None`, the daemon leaves Route 53 writes disabled.
 
 ### Route53DnsWriteClient
 
@@ -244,8 +249,9 @@ Implements the `DnsWriteClient` protocol:
 - `update_route53_record()` — boto3 UPSERT A record wrapped with `asyncio.to_thread()`
 - Auto-wired in daemon startup when gate config is present and no mock injected
 
-AWS auth for gateway DNS writes is ambient host auth only. `dns_write_gate` must not contain
-AWS access key, secret key, session token, or similar credential fields.
+AWS auth for gateway DNS writes is loaded only from the repository `.env` file.
+`dns_write_gate` must not contain AWS access key, secret key, session token, or similar
+credential fields.
 
 ---
 
@@ -275,8 +281,8 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 ## 12. Deployment Model
 
-The default operator path runs the gateway daemon as a **local Python process** via
-`poetry run daemon --config <path>`.
+The default operator path runs the gateway daemon as a local Python process via
+`poetry run prodbox gateway start <config.json>`.
 
 Containerization is also first-class for integration/runtime image publishing:
 
@@ -298,20 +304,15 @@ prodbox gateway config-gen <path> --node-id <id>  # Generate template config
 
 ---
 
-## 13. Implementation History
+## 13. Verification Surfaces
 
-All phases complete:
+Gateway verification lives in four canonical places:
 
-| Phase | Deliverable |
-|-------|-------------|
-| **1** | Orders + CommitLog schemas, node identity, stable DNS settings |
-| **2** | mTLS peer gossip, gateway rule evaluator, `daemon` daemon |
-| **3** | GatewayClaim/GatewayYield typed events |
-| **4** | DNS write gating with claim requirement |
-| **5** | K8s pod infrastructure (manifests, fixtures, helpers) |
-| **6** | K8s pod integration tests (mesh, failover, partition, DNS) |
-| **7** | TLA+ model extension (bounded timestamps, claim/yield invariants) |
-| **8** | Gateway hardening (REST API, Route53 client, CLI command group) |
+1. `tests/unit/test_gateway_daemon.py` for daemon logic and DNS-write gating.
+2. `tests/integration/test_gateway_daemon_k8s.py` for process-mode mesh behavior.
+3. `tests/integration/test_gateway_k8s_pods.py` for pod-backed mesh behavior.
+4. `prodbox tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
+   for formal safety checks.
 
 ---
 
@@ -320,4 +321,5 @@ All phases complete:
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
+- [Development Plan](../../DEVELOPMENT_PLAN.md)
 - [Documentation Standards](../documentation_standards.md)

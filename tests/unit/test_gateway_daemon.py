@@ -178,6 +178,34 @@ class TestConnectionRegistry:
         assert len(values) == 1
         assert values[0].connection_id == "a-conn"
 
+    @pytest.mark.asyncio
+    async def test_managed_connection_close_waits_for_already_closing_writer(self) -> None:
+        """ManagedConnection.close should always await writer shutdown."""
+
+        class _AlreadyClosingWriter(_DummyWriter):
+            def __init__(self) -> None:
+                super().__init__()
+                self.closed = True
+                self.wait_closed_calls = 0
+
+            async def wait_closed(self) -> None:
+                self.wait_closed_calls += 1
+
+        writer = _AlreadyClosingWriter()
+        connection = ManagedConnection(
+            key=ConnectionKey(peer_node_id="node-b", channel="mesh"),
+            connection_id="conn-1",
+            initiator_node_id="node-a",
+            reader=asyncio.StreamReader(),
+            writer=cast(asyncio.StreamWriter, writer),
+            established_at_utc=datetime.now(UTC),
+            incoming=False,
+        )
+
+        await connection.close()
+
+        assert writer.wait_closed_calls == 1
+
 
 class TestOrders:
     """Tests for order parsing and validation."""

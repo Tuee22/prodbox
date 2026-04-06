@@ -1,4 +1,4 @@
-"""ClusterIssuer infrastructure module for Let's Encrypt DNS-01."""
+"""ClusterIssuer infrastructure module for Let's Encrypt HTTP-01."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import pulumi
 import pulumi_kubernetes as k8s
 
 from prodbox.infra.metadata import object_meta
-from prodbox.lib.aws_auth import assert_ambient_aws_auth_only
 
 if TYPE_CHECKING:
     from prodbox.settings import Settings
@@ -28,28 +27,24 @@ def deploy_cluster_issuer(
     *,
     prodbox_id: str,
 ) -> ClusterIssuerResources:
-    """Deploy ClusterIssuer for Let's Encrypt DNS-01 validation.
+    """Deploy ClusterIssuer for Let's Encrypt HTTP-01 validation.
 
     Creates:
-    - A ClusterIssuer configured for DNS-01 validation
+    - A ClusterIssuer configured for HTTP-01 validation through Traefik
 
     Args:
-        settings: Application settings with Route 53 and ACME configuration
+        settings: Application settings with ACME configuration
         k8s_provider: Kubernetes provider
         prodbox_id: Canonical prodbox-id annotation value
 
     Returns:
         ClusterIssuerResources containing all created resources
     """
-    assert_ambient_aws_auth_only()
-
-    # Create ClusterIssuer for Let's Encrypt with DNS-01 validation
-    # cert-manager must receive ambient AWS auth from external cluster runtime setup.
     cluster_issuer = k8s.apiextensions.CustomResource(
-        "letsencrypt-dns01",
+        "letsencrypt-http01",
         api_version="cert-manager.io/v1",
         kind="ClusterIssuer",
-        metadata=object_meta(name="letsencrypt-dns01", prodbox_id=prodbox_id),
+        metadata=object_meta(name="letsencrypt-http01", prodbox_id=prodbox_id),
         spec={
             "acme": {
                 # ACME server URL (production or staging)
@@ -60,32 +55,23 @@ def deploy_cluster_issuer(
                 "privateKeySecretRef": {
                     "name": "letsencrypt-account-key",
                 },
-                # DNS-01 solver configuration
-                # Credentials are provided via a K8s Secret (bare-metal cluster has no IMDS).
+                # HTTP-01 solver configuration
                 "solvers": [
                     {
-                        "dns01": {
-                            "route53": {
-                                "region": settings.aws_region,
-                                "hostedZoneID": settings.route53_zone_id,
-                                "accessKeyID": "AKIAEXAMPLEKEYID0000",
-                                "secretAccessKeySecretRef": {
-                                    "name": "route53-credentials",
-                                    "key": "secret-access-key",
-                                },
+                        "http01": {
+                            "ingress": {
+                                "class": "traefik",
                             },
                         },
                     },
                 ],
             },
         },
-        opts=pulumi.ResourceOptions(
-            provider=k8s_provider,
-        ),
+        opts=pulumi.ResourceOptions(provider=k8s_provider),
     )
 
     # Export ClusterIssuer info
-    pulumi.export("cluster_issuer_name", "letsencrypt-dns01")
+    pulumi.export("cluster_issuer_name", "letsencrypt-http01")
     pulumi.export("acme_server", settings.acme_server)
 
     return ClusterIssuerResources(

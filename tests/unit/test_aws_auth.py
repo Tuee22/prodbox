@@ -1,4 +1,4 @@
-"""Unit tests for AWS ambient-auth enforcement helpers."""
+"""Unit tests for AWS `.env` auth enforcement helpers."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ from pathlib import Path
 import pytest
 
 from prodbox.lib.aws_auth import (
-    assert_ambient_aws_auth_only,
-    assert_no_aws_auth_in_dotenv,
+    assert_no_ambient_aws_auth_env_vars,
+    build_dotenv_aws_env,
     find_disallowed_aws_auth_env_vars,
     find_disallowed_aws_auth_in_dotenv,
+    load_dotenv_aws_auth,
 )
 
 
@@ -42,7 +43,7 @@ class TestFindDisallowedAwsAuthEnvVars:
 
 
 class TestAssertAmbientAwsAuthOnly:
-    """Tests for ambient-auth-only enforcement."""
+    """Tests for rejection of ambient AWS auth env vars."""
 
     def test_accepts_env_without_auth_vars(self) -> None:
         """Non-auth env vars should be accepted."""
@@ -51,7 +52,7 @@ class TestAssertAmbientAwsAuthOnly:
             "ROUTE53_ZONE_ID": "Z1234567890ABC",
         }
 
-        assert_ambient_aws_auth_only(env)
+        assert_no_ambient_aws_auth_env_vars(env)
 
     def test_rejects_env_with_auth_vars(self) -> None:
         """Forbidden auth env vars should raise a clear error."""
@@ -60,30 +61,106 @@ class TestAssertAmbientAwsAuthOnly:
             "AWS_SESSION_TOKEN": "forbidden-token",
         }
 
-        with pytest.raises(ValueError, match="AWS auth env vars are forbidden"):
-            assert_ambient_aws_auth_only(env)
+        with pytest.raises(ValueError, match="Ambient AWS auth env vars are forbidden"):
+            assert_no_ambient_aws_auth_env_vars(env)
 
 
 class TestDotenvEnforcement:
-    """Tests for dotenv-file AWS auth rejection."""
+    """Tests for dotenv-file AWS auth loading."""
 
-    def test_find_disallowed_aws_auth_in_dotenv_reads_forbidden_keys(self, tmp_path: Path) -> None:
-        """Forbidden keys in dotenv files should be detected."""
+    def test_find_disallowed_aws_auth_in_dotenv_reads_unsupported_keys(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Unsupported auth keys in dotenv files should be detected."""
         dotenv_path = tmp_path / ".env"
         dotenv_path.write_text(
-            "AWS_ACCESS_KEY_ID=forbidden-key\nAWS_SECRET_ACCESS_KEY=forbidden-secret\n",
+            "AWS_PROFILE=forbidden-profile\nAWS_ROLE_ARN=forbidden-role\n",
             encoding="utf-8",
         )
 
         assert find_disallowed_aws_auth_in_dotenv(dotenv_path) == (
-            "AWS_ACCESS_KEY_ID",
-            "AWS_SECRET_ACCESS_KEY",
+            "AWS_PROFILE",
+            "AWS_ROLE_ARN",
         )
 
-    def test_assert_no_aws_auth_in_dotenv_rejects_forbidden_keys(self, tmp_path: Path) -> None:
-        """Forbidden dotenv keys should raise a clear error."""
+    def test_load_dotenv_aws_auth_reads_required_and_optional_keys(self, tmp_path: Path) -> None:
+        """Explicit `.env` AWS auth should load into the helper dataclass."""
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text(
+            "\n".join(
+                [
+                    "AWS_ACCESS_KEY_ID=test-access-key",
+                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                    "AWS_SESSION_TOKEN=test-session-token",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        auth = load_dotenv_aws_auth(dotenv_path)
+
+        assert auth.access_key_id == "test-access-key"
+        assert auth.secret_access_key == "test-secret-key"
+        assert auth.session_token == "test-session-token"
+
+    def test_load_dotenv_aws_auth_rejects_unsupported_keys(self, tmp_path: Path) -> None:
+        """Unsupported dotenv auth keys should raise a clear error."""
         dotenv_path = tmp_path / ".env"
         dotenv_path.write_text("AWS_PROFILE=forbidden-profile\n", encoding="utf-8")
 
-        with pytest.raises(ValueError, match="must not define AWS auth env vars"):
-            assert_no_aws_auth_in_dotenv(dotenv_path)
+        with pytest.raises(ValueError, match="must not define unsupported AWS auth vars"):
+            load_dotenv_aws_auth(dotenv_path)
+
+    def test_load_dotenv_aws_auth_requires_required_keys(self, tmp_path: Path) -> None:
+        """Missing required dotenv auth keys should raise a clear error."""
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text("AWS_ACCESS_KEY_ID=test-access-key\n", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="must define AWS auth for prodbox"):
+            load_dotenv_aws_auth(dotenv_path)
+
+    def test_build_dotenv_aws_env_injects_dotenv_credentials(self, tmp_path: Path) -> None:
+        """AWS subprocess env should be rebuilt from `.env` credentials only."""
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text(
+            "\n".join(
+                [
+                    "AWS_ACCESS_KEY_ID=test-access-key",
+                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        env = build_dotenv_aws_env(
+            dotenv_path,
+            extra_env={"AWS_REGION": "us-east-1", "CUSTOM_FLAG": "1"},
+        )
+
+        assert env["AWS_ACCESS_KEY_ID"] == "test-access-key"
+        assert env["AWS_SECRET_ACCESS_KEY"] == "test-secret-key"
+        assert env["AWS_REGION"] == "us-east-1"
+        assert env["CUSTOM_FLAG"] == "1"
+
+    def test_build_dotenv_aws_env_rejects_auth_overrides_in_extra_env(self, tmp_path: Path) -> None:
+        """Extra subprocess env must not override `.env` AWS credentials."""
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text(
+            "\n".join(
+                [
+                    "AWS_ACCESS_KEY_ID=test-access-key",
+                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        with pytest.raises(ValueError, match="must not override AWS auth loaded from \\.env"):
+            build_dotenv_aws_env(
+                dotenv_path,
+                extra_env={"AWS_ACCESS_KEY_ID": "forbidden-key"},
+            )

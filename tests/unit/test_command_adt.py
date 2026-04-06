@@ -10,8 +10,6 @@ import pytest
 from prodbox.cli.command_adt import (
     # Command types
     DNSCheckCommand,
-    DNSEnsureTimerCommand,
-    DNSUpdateCommand,
     EnvShowCommand,
     EnvTemplateCommand,
     EnvValidateCommand,
@@ -39,8 +37,6 @@ from prodbox.cli.command_adt import (
     RKE2StopCommand,
     # Smart constructors
     dns_check_command,
-    dns_ensure_timer_command,
-    dns_update_command,
     env_show_command,
     env_template_command,
     env_validate_command,
@@ -107,7 +103,7 @@ class TestEnvCommands:
         match env_template_command():
             case Success(cmd):
                 assert isinstance(cmd, EnvTemplateCommand)
-                assert "AWS_ACCESS_KEY_ID=" not in cmd.template_text
+                assert "AWS_ACCESS_KEY_ID=" in cmd.template_text
                 assert "ROUTE53_ZONE_ID=" in cmd.template_text
                 assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in cmd.template_text
             case Failure(_):
@@ -319,51 +315,6 @@ class TestDNSCommands:
                 assert isinstance(cmd, DNSCheckCommand)
             case Failure(_):
                 pytest.fail("Expected Success")
-
-    def test_dns_update_command_default(self) -> None:
-        """dns_update_command should create command with defaults."""
-        match dns_update_command():
-            case Success(cmd):
-                assert isinstance(cmd, DNSUpdateCommand)
-                assert cmd.force is False
-            case Failure(_):
-                pytest.fail("Expected Success")
-
-    def test_dns_update_command_force(self) -> None:
-        """dns_update_command should accept force flag."""
-        match dns_update_command(force=True):
-            case Success(cmd):
-                assert cmd.force is True
-            case Failure(_):
-                pytest.fail("Expected Success")
-
-    def test_dns_ensure_timer_command_on_linux(self) -> None:
-        """dns_ensure_timer_command should succeed on Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            match dns_ensure_timer_command(interval=10):
-                case Success(cmd):
-                    assert isinstance(cmd, DNSEnsureTimerCommand)
-                    assert cmd.interval == 10
-                case Failure(_):
-                    pytest.fail("Expected Success on Linux")
-
-    def test_dns_ensure_timer_command_on_non_linux(self) -> None:
-        """dns_ensure_timer_command should fail on non-Linux."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
-            match dns_ensure_timer_command():
-                case Success(_):
-                    pytest.fail("Expected Failure on non-Linux")
-                case Failure(error):
-                    assert "Linux" in error
-
-    def test_dns_ensure_timer_command_invalid_interval(self) -> None:
-        """dns_ensure_timer_command should reject invalid interval."""
-        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            match dns_ensure_timer_command(interval=0):
-                case Success(_):
-                    pytest.fail("Expected Failure for invalid interval")
-                case Failure(error):
-                    assert "at least 1" in error
 
 
 class TestK8sCommands:
@@ -615,10 +566,6 @@ class TestUtilityFunctions:
         assert requires_linux(RKE2CleanupCommand()) is True
         assert requires_linux(RKE2LogsCommand()) is True
 
-    def test_requires_linux_dns_timer(self) -> None:
-        """requires_linux should return True for DNS timer."""
-        assert requires_linux(DNSEnsureTimerCommand()) is True
-
     def test_requires_linux_false_for_env(self) -> None:
         """requires_linux should return False for env commands."""
         assert requires_linux(EnvShowCommand()) is False
@@ -633,9 +580,8 @@ class TestUtilityFunctions:
         assert requires_linux(HostFirewallCommand()) is False
 
     def test_requires_linux_false_for_dns(self) -> None:
-        """requires_linux should return False for DNS check/update."""
+        """requires_linux should return False for DNS inspection commands."""
         assert requires_linux(DNSCheckCommand()) is False
-        assert requires_linux(DNSUpdateCommand()) is False
 
     def test_requires_linux_false_for_k8s(self) -> None:
         """requires_linux should return False for K8s commands."""
@@ -654,8 +600,6 @@ class TestUtilityFunctions:
     def test_requires_settings_dns_commands(self) -> None:
         """requires_settings should return True for DNS commands."""
         assert requires_settings(DNSCheckCommand()) is True
-        assert requires_settings(DNSUpdateCommand()) is True
-        assert requires_settings(DNSEnsureTimerCommand()) is True
 
     def test_requires_settings_k8s_commands(self) -> None:
         """requires_settings should return True for K8s commands."""

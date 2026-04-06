@@ -15,7 +15,7 @@ from prodbox.settings import RenderedSettingValue
 CHARTS_ROOT: Path = Path(__file__).resolve().parents[3] / "charts"
 CHART_DATA_ROOT: Path = Path(__file__).resolve().parents[3] / ".data"
 CHART_STORAGE_CLASS_NAME: str = "prodbox-chart-null-storage"
-CHART_CLUSTER_ISSUER: str = "letsencrypt-dns01"
+CHART_CLUSTER_ISSUER: str = "letsencrypt-http01"
 KEYCLOAK_REALM_NAME: str = "prodbox"
 KEYCLOAK_NGINX_CLIENT_ID: str = "vscode-nginx"
 

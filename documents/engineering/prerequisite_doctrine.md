@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/pure_fp_standards.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/pure_fp_standards.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Philosophy and patterns for prerequisite-based validation in prodbox CLI.
 
@@ -118,7 +118,6 @@ Validate configuration files exist:
 | `settings_loaded` | Environment variables configured |
 | `kubeconfig_exists` | Kubeconfig file present |
 | `rke2_config_exists` | RKE2 config.yaml present |
-| `rke2_killall_exists` | Legacy RKE2 killall script present (compatibility only) |
 
 ### 2.4 Service Prerequisites
 
@@ -136,8 +135,8 @@ Validate AWS/Route53 access:
 
 | Prerequisite | Validates |
 |--------------|-----------|
-| `aws_credentials_valid` | Host AWS authentication already configured for the selected suite |
-| `route53_accessible` | Current host AWS authentication can reach the Route 53 API |
+| `aws_credentials_valid` | Fixed repository-root `.env` AWS authentication is configured and valid for the selected suite |
+| `route53_accessible` | Current `.env` AWS authentication can reach the Route 53 API |
 
 Suite-specific AWS auth source, no-repo-auth-storage rules, and fixture capability proof are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
@@ -287,8 +286,9 @@ _build_rke2_cleanup_dag(...):
 
 Finally, it reconciles prodbox annotations.
 
-`rke2_cleanup` deletes only prodbox-annotated Kubernetes objects and prints
-manual host-path deletion instructions with explicit data-loss warnings.
+`rke2_cleanup` deletes only prodbox-annotated Kubernetes objects, deletes
+non-retained namespaces by namespace cascade before cluster-scoped cleanup, and
+prints manual host-path deletion instructions with explicit data-loss warnings.
 
 Harbor install/mirror/build details are defined in
 [Local Registry Pipeline](./local_registry_pipeline.md).

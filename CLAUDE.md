@@ -57,17 +57,17 @@ Prodbox is a Python-native infrastructure-as-code project for managing a home Ku
 
 ```python
 # ✅ CORRECT - Pure DAG builder
-def dns_update_dag(settings: Settings) -> EffectDAG:
+def dns_check_dag(settings: Settings) -> EffectDAG:
     return EffectDAG.from_roots(
         EffectNode(
-            effect=UpdateRoute53Record(...),
+            effect=QueryRoute53Record(...),
             prerequisites=frozenset(["aws_credentials_valid"])
         ),
         registry=PREREQUISITE_REGISTRY
     )
 
 # ❌ WRONG - Impure code with side effects
-def update_dns(settings: Settings) -> None:
+def check_dns(settings: Settings) -> None:
     try:
         ip = get_public_ip()  # I/O!
         print(f"IP: {ip}")    # Side effect!
@@ -166,7 +166,6 @@ poetry run prodbox host ensure-tools # Check required tools
 poetry run prodbox pulumi preview    # Preview infrastructure changes
 poetry run prodbox pulumi up --yes   # Deploy infrastructure
 poetry run prodbox dns check         # Check DNS status
-poetry run prodbox dns update        # Update DDNS
 poetry run prodbox k8s health        # Check cluster health
 poetry run prodbox gateway start <config>  # Start gateway daemon
 poetry run prodbox gateway status <config> # Query gateway daemon status
@@ -210,7 +209,7 @@ Custom type stubs in `typings/` provide full typing for external libraries:
 ### AWS
 
 - Route 53 for DNS management
-- Ambient host AWS CLI auth only; AWS auth env vars are forbidden
+- Repository `.env` AWS auth only; ambient or profile-based AWS auth outside `.env` is forbidden
 - IAM least-privilege (Route 53 + STS only)
 - DNS-01 ACME validation for Let's Encrypt
 

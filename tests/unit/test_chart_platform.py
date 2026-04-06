@@ -232,7 +232,7 @@ class TestBuildChartDeploymentPlan:
 
 
 # =============================================================================
-# Sprint 8 extensions: prerequisite ordering and namespace validation
+# Additional prerequisite ordering and namespace validation coverage
 # =============================================================================
 
 

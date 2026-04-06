@@ -17,7 +17,6 @@ classifiers = [
 
 [tool.poetry.scripts]
 prodbox = "prodbox.cli.main:main"
-daemon = "prodbox.gateway_daemon:main"
 
 [tool.poetry.urls]
 Repository = "https://github.com/Tuee22/prodbox"
@@ -43,7 +42,6 @@ pytest-timeout = "^2.3"
 pytest-subprocess = "^1.5"
 mypy = "^1.7.0"
 ruff = "^0.2.0"
-pre-commit = "^4.0"
 
 [build-system]
 requires = ["poetry-core"]

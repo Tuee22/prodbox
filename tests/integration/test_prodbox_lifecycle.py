@@ -74,20 +74,40 @@ async def _execute_command_via_dag(command_result: Result[Command, str]) -> None
                         )
 
 
-async def _ensure_rke2_runtime(*, attempts: int = 2, delay_seconds: float = 5.0) -> None:
-    """Run `rke2 ensure` with retry for transient post-cleanup reconciliation windows."""
-    last_error: AssertionError | None = None
-    for attempt in range(1, attempts + 1):
-        try:
-            await _execute_command_via_dag(rke2_ensure_command())
-            return
-        except AssertionError as error:
-            last_error = error
-            if attempt == attempts:
-                raise
-            await asyncio.sleep(delay_seconds)
-    if last_error is not None:
-        raise last_error
+async def _run_prodbox_cli(
+    *args: str,
+    kubeconfig: Path,
+    timeout_seconds: float = 300.0,
+) -> tuple[int, str, str]:
+    """Run one canonical `poetry run prodbox ...` command and capture output."""
+    repo_root = Path(__file__).resolve().parents[2]
+    env = dict(os.environ)
+    env["KUBECONFIG"] = str(kubeconfig)
+    process = await asyncio.create_subprocess_exec(
+        "poetry",
+        "run",
+        "prodbox",
+        *args,
+        cwd=repo_root,
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError as error:
+        process.kill()
+        await process.wait()
+        joined = " ".join(args)
+        raise AssertionError(f"`poetry run prodbox {joined}` timed out") from error
+    return (
+        process.returncode or 0,
+        stdout_bytes.decode("utf-8", errors="replace"),
+        stderr_bytes.decode("utf-8", errors="replace"),
+    )
 
 
 def _current_prodbox_id() -> str:
@@ -160,7 +180,7 @@ async def _wait_deployment_available(
 
 async def _ensure_post_deploy_baseline(kubeconfig: Path) -> None:
     """Reconcile and verify the canonical post-deploy prodbox runtime baseline."""
-    await _ensure_rke2_runtime(attempts=4, delay_seconds=15.0)
+    await _execute_command_via_dag(rke2_ensure_command())
     await _kubectl_expect_success(
         "get",
         "configmap",
@@ -616,7 +636,16 @@ async def test_prodbox_cleanup_lifecycle_preserves_storage_and_rebinds(
     }
     await kubectl_apply_manifest(cleanup_marker, kubeconfig=kubeconfig, tmp_dir=tmp_path)
 
-    await _execute_command_via_dag(rke2_cleanup_command(yes=True))
+    cleanup_rc, cleanup_stdout, cleanup_stderr = await _run_prodbox_cli(
+        "rke2",
+        "cleanup",
+        "--yes",
+        kubeconfig=kubeconfig,
+    )
+    assert cleanup_rc == 0, (
+        "poetry run prodbox rke2 cleanup --yes failed on first attempt: "
+        f"stdout={cleanup_stdout} stderr={cleanup_stderr}"
+    )
 
     marker_rc, _, _ = await run_kubectl_capture_via_dag(
         "get",

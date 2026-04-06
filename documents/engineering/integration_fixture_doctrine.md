@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md
+**Referenced by**: DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md
 
 > **Purpose**: Define pytest fixture doctrine for cluster-backed integration test setup, teardown, and cleanup failure handling.
 

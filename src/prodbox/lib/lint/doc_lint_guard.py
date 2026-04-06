@@ -130,7 +130,8 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
     IntentRule(
         name="integration_runbook_enforcement",
         statement=(
-            "When integration scope is selected, `prodbox test` must enforce the "
+            "When a selected integration suite requires cluster-backed runtime preparation, "
+            "`prodbox test` must enforce the "
             "runbook by executing `prodbox rke2 ensure` before pytest."
         ),
         canonical_docs=frozenset({Path("documents/engineering/unit_testing_policy.md")}),

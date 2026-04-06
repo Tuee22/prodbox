@@ -6,11 +6,13 @@ import asyncio
 import gc
 import os
 from collections.abc import Generator
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from click.testing import CliRunner
 
+import prodbox.settings as settings_module
 from prodbox.settings import Settings, clear_settings_cache
 
 
@@ -66,12 +68,28 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 
 @pytest.fixture
-def mock_env() -> Generator[dict[str, str], None, None]:
+def mock_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Generator[dict[str, str], None, None]:
     """Provide a complete mock environment for settings.
 
-    This fixture patches os.environ with test values for all
-    required settings, allowing tests to run without real credentials.
+    This fixture patches os.environ with non-auth settings and writes
+    `.env` AWS credentials into an isolated temporary working directory.
     """
+    monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "\n".join(
+            [
+                "AWS_ACCESS_KEY_ID=test-access-key",
+                "AWS_SECRET_ACCESS_KEY=test-secret-key",
+                "AWS_SESSION_TOKEN=test-session-token",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
     env = {
         "AWS_REGION": "us-east-1",
         "ROUTE53_ZONE_ID": "Z1234567890ABC",

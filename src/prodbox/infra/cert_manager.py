@@ -35,7 +35,7 @@ def deploy_cert_manager(
     """Deploy cert-manager for TLS certificate management.
 
     cert-manager automates certificate issuance and renewal
-    using Let's Encrypt with DNS-01 validation via Route 53.
+    using Let's Encrypt with HTTP-01 validation via ingress.
 
     Args:
         settings: Application settings

@@ -285,4 +285,4 @@ def test_keycloak_login_page_offers_username_password_form() -> None:
     # Confirm no Google OAuth dependency
     assert (
         "accounts.google.com" not in body_lower
-    ), "Keycloak login page references Google OAuth, which was removed in Sprint 9"
+    ), "Keycloak login page references Google OAuth, which is not a supported auth path"

@@ -16,7 +16,7 @@ _TARGET_FILES: tuple[str, ...] = (
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
-    "DEVELOPMENT_PLAN.md",
+    "DEVELOPMENT_PLAN",
     ".pre-commit-config.yaml",
     ".github/workflows/ci.yml",
     "documents/engineering/dependency_management.md",
@@ -30,6 +30,24 @@ class PolicyViolation:
     relative_path: Path
     line_number: int
     line_text: str
+
+
+def _expand_target_files(target_paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Expand configured targets to concrete files."""
+    files_to_scan: list[Path] = []
+
+    for target_path in target_paths:
+        match target_path.exists():
+            case False:
+                continue
+            case True if target_path.is_dir():
+                files_to_scan.extend(
+                    path for path in sorted(target_path.rglob("*.md")) if path.is_file()
+                )
+            case True:
+                files_to_scan.append(target_path)
+
+    return tuple(files_to_scan)
 
 
 def _repo_root() -> Path:
@@ -48,11 +66,12 @@ def find_policy_violations(
     target_files: tuple[Path, ...] | None = None,
 ) -> tuple[PolicyViolation, ...]:
     """Find direct-mypy command violations in configured files."""
-    files_to_scan = (
+    configured_targets = (
         target_files
         if target_files is not None
         else tuple(repo_root / relative_path for relative_path in _TARGET_FILES)
     )
+    files_to_scan = _expand_target_files(configured_targets)
     violations: list[PolicyViolation] = []
 
     for file_path in files_to_scan:

@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN.md
+**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md
 
 > **Purpose**: Project overview, installation guide, and documentation index for prodbox.
 
@@ -31,7 +31,7 @@ Doctrine highlights:
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
 
 Implementation status, remaining work, and legacy-path removal are tracked in
-[DEVELOPMENT_PLAN.md](./DEVELOPMENT_PLAN.md). Engineering docs under `documents/engineering/`
+[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under `documents/engineering/`
 define stable doctrine and command contracts.
 
 ## Architecture
@@ -306,7 +306,7 @@ DNS management with:
 
 Current development sequencing and delivery status:
 
-- [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md) - single roadmap, completion tracker, and legacy-removal inventory
+- [DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md) - single roadmap, completion tracker, and legacy-removal inventory
 
 Canonical engineering documentation:
 

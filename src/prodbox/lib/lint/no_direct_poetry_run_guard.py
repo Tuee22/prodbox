@@ -16,7 +16,7 @@ _TARGET_FILES: tuple[str, ...] = (
     "AGENTS.md",
     "CLAUDE.md",
     "README.md",
-    "DEVELOPMENT_PLAN.md",
+    "DEVELOPMENT_PLAN",
     ".github/workflows/ci.yml",
     "Containerfile.gateway",
     "documents/engineering/dependency_management.md",
@@ -37,6 +37,24 @@ class PolicyViolation:
     command: str
 
 
+def _expand_target_files(target_paths: tuple[Path, ...]) -> tuple[Path, ...]:
+    """Expand configured targets to concrete files."""
+    files_to_scan: list[Path] = []
+
+    for target_path in target_paths:
+        match target_path.exists():
+            case False:
+                continue
+            case True if target_path.is_dir():
+                files_to_scan.extend(
+                    path for path in sorted(target_path.rglob("*.md")) if path.is_file()
+                )
+            case True:
+                files_to_scan.append(target_path)
+
+    return tuple(files_to_scan)
+
+
 def find_policy_violations(
     repo_path: Path,
     *,
@@ -46,11 +64,12 @@ def find_policy_violations(
     pyproject_path = repo_path / "pyproject.toml"
     policy = load_entrypoint_policy(pyproject_path)
     allowed = policy.allowed_entrypoints
-    files_to_scan = (
+    configured_targets = (
         target_files
         if target_files is not None
         else tuple(repo_path / relative_path for relative_path in _TARGET_FILES)
     )
+    files_to_scan = _expand_target_files(configured_targets)
     violations: list[PolicyViolation] = []
 
     for file_path in files_to_scan:

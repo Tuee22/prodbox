@@ -20,7 +20,7 @@ When integration scope is selected, `prodbox test` must enforce the runbook by e
 
 This document defines testing doctrine only. Clean-room sequencing, completion
 status, remaining work, and legacy-path removal are owned by
-[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ---
 
@@ -335,7 +335,7 @@ This SSoT owns test skip doctrine intention.
 
 ## Cross-References
 
-- [Development Plan](../../DEVELOPMENT_PLAN.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Pure FP Standards](./pure_fp_standards.md) - Purity boundary definitions
 - [Code Quality Doctrine](./code_quality.md) - Guardrail enforcement
 - [Effectful DAG Architecture](./effectful_dag_architecture.md) - Effect system design

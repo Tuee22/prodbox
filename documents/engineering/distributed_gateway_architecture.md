@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -38,7 +38,7 @@ This document owns gateway architecture doctrine only.
 
 Clean-room sequencing, completion status, remaining work, and legacy-path
 removal for gateway delivery are owned by
-[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 Canonical repository facts referenced by this doctrine:
 
@@ -321,5 +321,5 @@ Gateway verification lives in four canonical places:
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
-- [Development Plan](../../DEVELOPMENT_PLAN.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Documentation Standards](../documentation_standards.md)

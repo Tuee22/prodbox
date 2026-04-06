@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
 
 > **Purpose**: Define how prodbox uses repository `.env` AWS authentication for integration tests and creates, tags, isolates, and cleans up real AWS resources.
 
@@ -37,7 +37,7 @@ This document owns AWS integration doctrine only.
 
 Clean-room sequencing, completion status, remaining work, and legacy-path
 removal for AWS validation are owned by
-[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ---
 
@@ -357,7 +357,7 @@ For the EKS suite, the fixture contract is:
 
 ## Cross-References
 
-- [Development Plan](../../DEVELOPMENT_PLAN.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [CLI Command Surface](./cli_command_surface.md)

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/development_plan_standards.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
 
@@ -44,20 +44,15 @@ All documentation files use `snake_case.md`:
 - `README.md`
 - `CLAUDE.md`
 - `AGENTS.md`
-- Root `UPPER_CASE_PLAN.md` files such as `DEVELOPMENT_PLAN.md`
 
-### Ephemeral Root Plans
+### Development Plan Suites
 
-Root `UPPER_CASE_PLAN.md` files are ephemeral planning artifacts and are not subject to the
-documentation standards in this document.
+Controlled repository-root documentation suites such as `DEVELOPMENT_PLAN/` may define their own
+internal structure and maintenance rules.
 
-They are explicitly exempt from:
-
-- the `snake_case.md` naming rule
-- the required header metadata block
-- the status vocabulary defined below
-- bidirectional `Referenced by` metadata requirements
-- the documentation-topology requirements in this file unless a plan explicitly opts in
+The prodbox development plan is maintained by
+[../DEVELOPMENT_PLAN/development_plan_standards.md](../DEVELOPMENT_PLAN/development_plan_standards.md).
+The plan suite still uses repository header metadata and relative-link discipline.
 
 ---
 

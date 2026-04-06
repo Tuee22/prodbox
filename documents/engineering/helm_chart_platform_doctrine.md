@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Define the singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for the `prodbox charts` command platform.
 
@@ -150,7 +150,7 @@ This document is normative chart-platform doctrine only.
 
 Delivery sequencing, completion status, remaining work, and legacy-path removal
 are owned by
-[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 Canonical repository facts referenced by this doctrine:
 
@@ -158,7 +158,7 @@ Canonical repository facts referenced by this doctrine:
 2. The supported auth path for `vscode` is nginx OIDC plus local Keycloak users.
 3. There is no separate repository-supported `docker/vscode-dev` flow for `vscode`.
 4. Public-host closure and any remaining cleanup refactors must be tracked in
-   [DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md), not in this doctrine
+   [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), not in this doctrine
    document.
 
 ## Cross-References
@@ -167,5 +167,5 @@ Canonical repository facts referenced by this doctrine:
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
-- [Development Plan](../../DEVELOPMENT_PLAN.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Documentation Standards](../documentation_standards.md)

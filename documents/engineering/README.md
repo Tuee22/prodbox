@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN.md, documents/documentation_standards.md, documents/engineering/aws_test_environment.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, documents/documentation_standards.md, documents/engineering/aws_test_environment.md
 
 > **Purpose**: Index of engineering and architecture documentation.
 
@@ -14,7 +14,7 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 Clean-room build order, current sprint status, blockers, validation closure,
 and legacy-path removal are tracked only in
-[DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 The documents in this directory are stable doctrine and architecture references. They
 should describe the canonical rules and contracts, not carry competing sprint-status
@@ -114,7 +114,7 @@ This index co-owns documentation-topology doctrine intention.
 
 ## Cross-References
 
-- [Development Plan](../../DEVELOPMENT_PLAN.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Documentation Standards](../documentation_standards.md)
 - [CLAUDE.md](../../CLAUDE.md)
 - [AGENTS.md](../../AGENTS.md)

@@ -72,3 +72,29 @@ def test_guard_ignores_non_command_lines(tmp_path: Path) -> None:
         target_files=(file_path,),
     )
     assert violations == ()
+
+
+def test_guard_scans_markdown_files_inside_directory_targets(tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    _write(
+        repo_root / "pyproject.toml",
+        "\n".join(
+            [
+                "[tool.poetry.scripts]",
+                'prodbox = "prodbox.cli.main:main"',
+                "",
+            ]
+        ),
+    )
+    _write(
+        repo_root / "DEVELOPMENT_PLAN" / "README.md",
+        "poetry run mypy src/\n",
+    )
+
+    violations = find_policy_violations(
+        repo_root,
+        target_files=(repo_root / "DEVELOPMENT_PLAN",),
+    )
+
+    assert len(violations) == 1
+    assert violations[0].relative_path == Path("DEVELOPMENT_PLAN/README.md")

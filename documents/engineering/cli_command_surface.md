@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define the explicit, no-passthrough Click command surface for `prodbox`.
 
@@ -20,7 +20,7 @@ The CLI surface is intentionally closed:
 
 This document defines the supported command contract only. Clean-room
 sequencing, completion status, remaining work, and legacy-path removal are
-owned by [DEVELOPMENT_PLAN.md](../../DEVELOPMENT_PLAN.md).
+owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ---
 
@@ -198,7 +198,7 @@ This SSoT owns the explicit CLI surface doctrine.
 
 ## Cross-References
 
-- [Development Plan](../../DEVELOPMENT_PLAN.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Documentation Standards](../documentation_standards.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Code Quality Doctrine](./code_quality.md)

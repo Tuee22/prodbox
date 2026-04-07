@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md)
+**Referenced by**: [README.md](README.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 > **Purpose**: Define the maintenance rules for the prodbox development plan so the repository
 > keeps one coherent, execution-ordered plan and one explicit ledger of cleanup/removal work.
@@ -186,6 +186,11 @@ If a change adds or edits a Mermaid block in this directory, closure requires:
 
 This standards document describes Mermaid rules with prose, inline code, or `markdown` examples
 only. Do not add live Mermaid blocks here.
+
+## Related Documents
+
+- [README.md](README.md)
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 ## Cross-Reference Conventions
 

@@ -95,3 +95,9 @@ None.
 
 - Keep `README.md` and `documents/engineering/README.md` aligned with the canonical plan entrypoint
   and phase names.
+
+## Related Documents
+
+- [README.md](README.md)
+- [00-overview.md](00-overview.md)
+- [system-components.md](system-components.md)

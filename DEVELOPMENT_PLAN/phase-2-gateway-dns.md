@@ -61,3 +61,9 @@ None.
 **Cross-references to add:**
 
 - Keep gateway and TLA+ doctrine linked back to `DEVELOPMENT_PLAN/README.md`.
+
+## Related Documents
+
+- [README.md](README.md)
+- [00-overview.md](00-overview.md)
+- [system-components.md](system-components.md)

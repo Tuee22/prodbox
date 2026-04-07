@@ -94,3 +94,8 @@ external proof part of the canonical automated validation path.
 **Cross-references to add:**
 
 - Keep public-host closure status and blockers pointed at `DEVELOPMENT_PLAN/README.md`.
+
+## Related Documents
+
+- [README.md](README.md)
+- [00-overview.md](00-overview.md)

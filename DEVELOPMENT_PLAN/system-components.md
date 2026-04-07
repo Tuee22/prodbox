@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [00-overview.md](00-overview.md)
+**Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [00-overview.md](00-overview.md), [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md), [phase-2-gateway-dns.md](phase-2-gateway-dns.md), [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
 
 > **Purpose**: Document the authoritative component inventory for infrastructure, runtime control
 > surfaces, validation surfaces, and state/authority boundaries.
@@ -85,6 +85,7 @@
 - [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md)
 - [phase-2-gateway-dns.md](phase-2-gateway-dns.md)
 - [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md)
+- [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
 - [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md)
 - [../documents/engineering/storage_lifecycle_doctrine.md](../documents/engineering/storage_lifecycle_doctrine.md)
 - [../documents/engineering/distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)

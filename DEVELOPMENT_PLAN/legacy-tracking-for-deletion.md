@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
+**Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md), [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md)
 
 > **Purpose**: Track every known compatibility helper, duplicate surface, deprecated path, and
 > stale tooling residue that still needs removal outside the declarative phase narrative.
@@ -51,3 +51,7 @@ Repository-external blockers still remain in the plan, but they are not repo-int
 | Missing explicit-record DNS doctrine for every supported public subdomain | Sprint 4.4 | Gateway config, status surfaces, and doctrine now treat explicit per-subdomain Route 53 records as canonical and wildcard public DNS as unsupported |
 | Cluster-gated invocation path for external public-host verification | Sprint 5.1 | `charts-vscode` no longer requires cluster prerequisite gates |
 | Manual-only authoritative public DNS delegation proof | Sprint 5.1 | `poetry run prodbox test integration public-dns` is the named proof path |
+
+## Related Documents
+
+- [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)

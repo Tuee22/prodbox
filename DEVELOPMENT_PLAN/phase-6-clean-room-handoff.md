@@ -77,3 +77,9 @@ remaining compatibility backlog.
 
 - Keep `README.md`, `documents/engineering/README.md`, and the cleanup ledger aligned with the
   final handoff status.
+
+## Related Documents
+
+- [README.md](README.md)
+- [00-overview.md](00-overview.md)
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)

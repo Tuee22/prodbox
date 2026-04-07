@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [system-components.md](system-components.md), [phase-0-planning-documentation.md](phase-0-planning-documentation.md), [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md), [phase-2-gateway-dns.md](phase-2-gateway-dns.md), [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md), [phase-5-public-host-validation.md](phase-5-public-host-validation.md), [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md)
 
 > **Purpose**: Provide the architectural overview, clean-room sequence, repository state, and hard
 > constraints for the prodbox development plan.
@@ -116,21 +116,28 @@ Open, incomplete, or blocked:
 
 ## Current-Environment Rerun Blockers
 
-- `poetry run prodbox host public-edge` currently fails because Route 53 hosted-zone reads are
-  denied, the live cluster has no `traefik-system` service, and the cluster does not currently
-  expose the cert-manager `certificate` CRD.
+- `poetry run prodbox check-code`, `poetry run prodbox test unit`,
+  `poetry run prodbox test integration charts-platform`,
+  `poetry run prodbox test integration gateway-daemon`, and
+  `poetry run prodbox test integration gateway-pods` all passed on April 6, 2026.
+- `poetry run prodbox host public-edge` currently fails because the active AWS identity lacks
+  `route53:GetHostedZone`, the live cluster has no `traefik-system` service, and the cluster still
+  lacks the `certificate` CRD required by cert-manager.
 - `PULUMI_ENABLE_DNS_BOOTSTRAP=false poetry run prodbox pulumi preview` is blocked because
-  `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE` is not set in the shell.
+  `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE` is not set in the current shell.
+- `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host, so
+  Sprint 4.4 still lacks live host-supervision proof even though the process and pod suites pass.
 - `poetry run prodbox test integration dns-aws` is blocked because the active AWS identity lacks
   `route53:CreateHostedZone`.
 - `poetry run prodbox pulumi up --yes` is blocked because the active AWS identity lacks
-  `route53:GetHostedZone` for the demo hosted-zone path.
+  `route53:GetHostedZone` for the configured hosted zone path.
 - `poetry run prodbox test integration charts-vscode` still fails because every HTTPS/TLS/auth
   probe to `https://vscode.resolvefintech.com` times out.
-- `poetry run prodbox test integration public-dns` is blocked because the active AWS identity
-  lacks `route53:GetHostedZone` for `ROUTE53_ZONE_ID`.
-- Sprint 5.1 remains blocked by the still-open live proof work in Sprint 4.3 and Sprint 4.4 plus
-  the AWS access still required for authoritative Route 53 proof reruns.
+- `poetry run prodbox test integration public-dns` is blocked because the active AWS identity lacks
+  `route53:GetHostedZone` for `ROUTE53_ZONE_ID`.
+- Phase 5 public-host closure remains blocked until the live public edge is reproved externally on
+  the canonical `Traefik -> vscode-nginx -> Keycloak` path and the authoritative Route 53 record
+  is shown current for the active WAN IP at rerun time.
 
 ## Hard Constraints
 
@@ -158,6 +165,8 @@ Open, incomplete, or blocked:
 
 - [README.md](README.md)
 - [system-components.md](system-components.md)
+- [phase-0-planning-documentation.md](phase-0-planning-documentation.md)
 - [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
 - [phase-5-public-host-validation.md](phase-5-public-host-validation.md)
+- [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md)
 - [../documents/engineering/README.md](../documents/engineering/README.md)

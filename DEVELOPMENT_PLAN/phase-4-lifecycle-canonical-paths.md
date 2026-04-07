@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+**Referenced by**: [README.md](README.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), [system-components.md](system-components.md)
 
 > **Purpose**: Capture the lifecycle hardening work that removes cleanup-settling retries and the
 > canonical-path cleanup work that leaves one supported surface per major capability.
@@ -110,7 +110,7 @@ canonical automated validation path.
 ## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership 🔄
 
 **Status**: Active
-**Implementation**: `src/prodbox/settings.py`, `src/prodbox/infra/__main__.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/cluster_issuer.py`, `charts/vscode/templates/ingress.yaml`, `src/prodbox/cli/host.py`, `src/prodbox/cli/dag_builders.py`, `tests/integration/test_charts_platform.py`
+**Implementation**: `src/prodbox/settings.py`, `src/prodbox/infra/__main__.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/cluster_issuer.py`, `charts/vscode/templates/ingress.yaml`, `src/prodbox/cli/host.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_charts_platform.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -186,7 +186,7 @@ canonical automation rather than ad hoc operator knowledge.
 ## Sprint 4.4: Always-On Gateway Supervision and DNS Continuity 🔄
 
 **Status**: Active
-**Implementation**: `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/settings.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py`
+**Implementation**: `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/settings.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -252,7 +252,11 @@ so Route 53 records stay current after WAN IP rotation and no wildcard DNS short
 - `documents/engineering/dependency_management.md` - supported local tooling doctrine.
 - `documents/engineering/distributed_gateway_architecture.md` - gateway startup and DNS ownership.
 - `documents/engineering/helm_chart_platform_doctrine.md` - supported chart and `vscode` paths.
+- `documents/engineering/integration_fixture_doctrine.md` - fixture-owned teardown and cleanup
+  doctrine.
+- `documents/engineering/local_registry_pipeline.md` - local registry and container build doctrine.
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite registry cleanup.
+- `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding contract.
 - `documents/engineering/unit_testing_policy.md` - authoritative named validation paths.
 
 **Product docs to create/update:**
@@ -263,3 +267,10 @@ so Route 53 records stay current after WAN IP rotation and no wildcard DNS short
 
 - Keep cleanup and compatibility ownership pointed at
   `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+## Related Documents
+
+- [README.md](README.md)
+- [00-overview.md](00-overview.md)
+- [system-components.md](system-components.md)
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)

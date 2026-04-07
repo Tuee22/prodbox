@@ -115,10 +115,18 @@ async def _require_tools_and_cluster(kubeconfig: Path) -> None:
         raise AssertionError(f"kubectl cluster-info failed: {stderr}")
 
 
+def _remove_retained_chart_data() -> None:
+    """Delete retained chart data so the suite starts from a clean auth database."""
+    data_root = CHART_DATA_ROOT / _ROOT_CHART
+    if data_root.exists():
+        subprocess.run(["sudo", "rm", "-rf", str(data_root)], check=False)
+
+
 async def _best_effort_cleanup(*, kubeconfig: Path) -> None:
     """Idempotent pre/post-test cleanup of all vscode stack resources."""
     delete_plan_result = build_chart_delete_plan(_ROOT_CHART)
     if not isinstance(delete_plan_result, Success):
+        _remove_retained_chart_data()
         return
 
     delete_plan = delete_plan_result.value
@@ -167,6 +175,7 @@ async def _best_effort_cleanup(*, kubeconfig: Path) -> None:
         kubeconfig=kubeconfig,
         timeout=120.0,
     )
+    _remove_retained_chart_data()
 
 
 # ---------------------------------------------------------------------------
@@ -217,9 +226,6 @@ async def platform_context() -> AsyncIterator[PlatformTestContext]:
 
     try:
         await _best_effort_cleanup(kubeconfig=kubeconfig)
-        data_root = CHART_DATA_ROOT / _ROOT_CHART
-        if data_root.exists():
-            subprocess.run(["sudo", "rm", "-rf", str(data_root)], check=False)
     except Exception as error:
         abort_test_session_on_teardown_failure(target=_ROOT_CHART, error=error)
 

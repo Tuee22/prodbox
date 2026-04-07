@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -59,6 +60,65 @@ from prodbox.cli.types import Failure, PrereqResults, Success
 
 if TYPE_CHECKING:
     from prodbox.cli.effects import EnsureHarborRegistry, EnsureRetainedLocalStorage
+
+
+def _gateway_orders_dict(
+    *, node_id: str = "node-a", rest_host: str = "127.0.0.1"
+) -> dict[str, object]:
+    """Return a minimal gateway orders document for status-query tests."""
+    return {
+        "version_utc": 1000,
+        "nodes": [
+            {
+                "node_id": node_id,
+                "stable_dns_name": f"{node_id}.example.test",
+                "rest_host": rest_host,
+                "rest_port": 31001,
+                "socket_host": "127.0.0.1",
+                "socket_port": 32001,
+            }
+        ],
+        "gateway_rule": {
+            "ranked_nodes": [node_id],
+            "heartbeat_timeout_seconds": 3,
+        },
+    }
+
+
+def _write_gateway_query_config(
+    tmp_path: Path,
+    *,
+    node_id: str = "node-a",
+    rest_host: str = "127.0.0.1",
+    orders_payload: dict[str, object] | list[object] | None = None,
+) -> Path:
+    """Write minimal gateway config + orders files for interpreter tests."""
+    orders_path = tmp_path / "orders.json"
+    payload = (
+        orders_payload
+        if orders_payload is not None
+        else _gateway_orders_dict(
+            node_id=node_id,
+            rest_host=rest_host,
+        )
+    )
+    orders_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    config_path = tmp_path / "gateway.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "node_id": node_id,
+                "cert_file": str(tmp_path / "node-a.crt"),
+                "key_file": str(tmp_path / "node-a.key"),
+                "ca_file": str(tmp_path / "ca.crt"),
+                "orders_file": orders_path.name,
+                "event_keys": {node_id: "secret"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return config_path
 
 
 class TestExecutionSummary:
@@ -4679,6 +4739,318 @@ class TestPulumiOptions:
 
         call_args = mock_subprocess.call_args[0][0]
         assert "--yes" not in call_args
+
+
+class TestGatewayInterpreterEffects:
+    """Tests for gateway-specific interpreter effects."""
+
+    def test_render_rke2_config_with_ingress_controller_replaces_existing_setting(self) -> None:
+        """The renderer should canonicalize existing ingress-controller lines."""
+        rendered = EffectInterpreter._render_rke2_config_with_ingress_controller(
+            existing_content="token: abc\ningress-controller: traefik\n",
+            controller="none",
+        )
+
+        assert rendered == "token: abc\ningress-controller: none\n"
+
+    def test_render_rke2_config_with_ingress_controller_bootstraps_empty_content(self) -> None:
+        """The renderer should emit the canonical line for an empty config."""
+        rendered = EffectInterpreter._render_rke2_config_with_ingress_controller(
+            existing_content="",
+            controller="none",
+        )
+
+        assert rendered == "ingress-controller: none\n"
+
+    @pytest.mark.asyncio
+    async def test_ensure_rke2_ingress_controller_writes_canonical_setting(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """EnsureRke2IngressController should append the canonical setting when missing."""
+        from prodbox.cli.effects import EnsureRke2IngressController
+
+        interpreter = EffectInterpreter()
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("token: abc\n", encoding="utf-8")
+        effect = EnsureRke2IngressController(
+            effect_id="ensure_ingress",
+            description="Ensure ingress-controller is disabled",
+            file_path=config_path,
+        )
+
+        with patch.object(
+            interpreter,
+            "_write_root_file_if_changed",
+            new_callable=AsyncMock,
+            return_value=(True, None),
+        ) as mock_write:
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value is True
+        assert "Updated RKE2 ingress-controller setting to none" in summary.message
+        assert mock_write.await_args.kwargs["content"] == "token: abc\ningress-controller: none\n"
+
+    @pytest.mark.asyncio
+    async def test_ensure_rke2_ingress_controller_reports_already_compliant(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """EnsureRke2IngressController should report no change when already compliant."""
+        from prodbox.cli.effects import EnsureRke2IngressController
+
+        interpreter = EffectInterpreter()
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("ingress-controller: none\n", encoding="utf-8")
+        effect = EnsureRke2IngressController(
+            effect_id="ensure_ingress",
+            description="Ensure ingress-controller is disabled",
+            file_path=config_path,
+        )
+
+        with patch.object(
+            interpreter,
+            "_write_root_file_if_changed",
+            new_callable=AsyncMock,
+            return_value=(False, None),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value is False
+        assert "already set to none" in summary.message
+
+    @pytest.mark.asyncio
+    async def test_ensure_rke2_ingress_controller_reports_write_errors(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """EnsureRke2IngressController should surface write failures."""
+        from prodbox.cli.effects import EnsureRke2IngressController
+
+        interpreter = EffectInterpreter()
+        config_path = tmp_path / "config.yaml"
+        effect = EnsureRke2IngressController(
+            effect_id="ensure_ingress",
+            description="Ensure ingress-controller is disabled",
+            file_path=config_path,
+        )
+
+        with patch.object(
+            interpreter,
+            "_write_root_file_if_changed",
+            new_callable=AsyncMock,
+            return_value=(False, "write failed"),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert summary.message == "write failed"
+
+    @pytest.mark.asyncio
+    async def test_generate_gateway_config_includes_dns_write_gate(self, tmp_path: Path) -> None:
+        """Gateway config generation should include the DDNS gate stanza."""
+        from prodbox.cli.effects import GenerateGatewayConfig
+
+        interpreter = EffectInterpreter()
+        output_path = tmp_path / "gateway.json"
+        effect = GenerateGatewayConfig(
+            effect_id="generate_gateway_config",
+            description="Generate gateway config",
+            output_path=output_path,
+            node_id="node-a",
+        )
+        fake_settings = MagicMock(
+            route53_zone_id="Z123",
+            vscode_fqdn="code.example.com",
+            demo_fqdn="demo.example.com",
+            demo_ttl=60,
+            aws_region="us-east-1",
+        )
+
+        with patch("prodbox.settings.Settings", return_value=fake_settings):
+            summary = await interpreter.interpret(effect)
+
+        assert summary.success
+        rendered = json.loads(output_path.read_text(encoding="utf-8"))
+        assert rendered["dns_write_gate"] == {
+            "zone_id": "Z123",
+            "fqdn": "code.example.com",
+            "ttl": 60,
+            "aws_region": "us-east-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_generate_gateway_config_reports_generation_failure(self, tmp_path: Path) -> None:
+        """Gateway config generation should fail cleanly when settings loading fails."""
+        from prodbox.cli.effects import GenerateGatewayConfig
+
+        interpreter = EffectInterpreter()
+        effect = GenerateGatewayConfig(
+            effect_id="generate_gateway_config",
+            description="Generate gateway config",
+            output_path=tmp_path / "gateway.json",
+            node_id="node-a",
+        )
+
+        with patch("prodbox.settings.Settings", side_effect=RuntimeError("boom")):
+            summary = await interpreter.interpret(effect)
+
+        assert not summary.success
+        assert "Config generation failed" in summary.message
+
+    @pytest.mark.asyncio
+    async def test_query_gateway_state_uses_rest_dial_host_and_parses_json(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Gateway state query should use the routable REST host and return a mapping."""
+        from prodbox.cli.effects import QueryGatewayState
+
+        interpreter = EffectInterpreter()
+        config_path = _write_gateway_query_config(tmp_path, rest_host="0.0.0.0")
+        effect = QueryGatewayState(
+            effect_id="query_gateway_state",
+            description="Query gateway state",
+            config_path=config_path,
+        )
+
+        mock_response = MagicMock()
+        mock_response.text = json.dumps({"node_id": "node-a", "mesh_peers": ["node-b"]})
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_async_client = MagicMock()
+        mock_async_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_client.__aexit__ = AsyncMock(return_value=None)
+
+        verify_context = MagicMock()
+        verify_context.check_hostname = True
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_async_client),
+            patch("ssl.create_default_context", return_value=verify_context),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert summary.success
+        assert value == {"node_id": "node-a", "mesh_peers": ["node-b"]}
+        mock_client.get.assert_awaited_once_with("https://node-a.example.test:31001/v1/state")
+        mock_response.raise_for_status.assert_called_once_with()
+        assert verify_context.check_hostname is False
+
+    @pytest.mark.asyncio
+    async def test_query_gateway_state_rejects_non_object_json(self, tmp_path: Path) -> None:
+        """Gateway state query should reject non-object JSON payloads."""
+        from prodbox.cli.effects import QueryGatewayState
+
+        interpreter = EffectInterpreter()
+        config_path = _write_gateway_query_config(tmp_path)
+        effect = QueryGatewayState(
+            effect_id="query_gateway_state",
+            description="Query gateway state",
+            config_path=config_path,
+        )
+
+        mock_response = MagicMock()
+        mock_response.text = json.dumps([])
+        mock_response.raise_for_status = MagicMock()
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+        mock_async_client = MagicMock()
+        mock_async_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_async_client),
+            patch("ssl.create_default_context", return_value=MagicMock(check_hostname=True)),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert "not a JSON object" in summary.message
+
+    @pytest.mark.asyncio
+    async def test_query_gateway_state_fails_when_orders_are_not_a_json_object(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Gateway state query should fail fast when the orders document is invalid."""
+        from prodbox.cli.effects import QueryGatewayState
+
+        interpreter = EffectInterpreter()
+        config_path = _write_gateway_query_config(tmp_path, orders_payload=[])
+        effect = QueryGatewayState(
+            effect_id="query_gateway_state",
+            description="Query gateway state",
+            config_path=config_path,
+        )
+
+        summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert summary.message == "Could not parse orders"
+
+    @pytest.mark.asyncio
+    async def test_query_gateway_state_fails_when_node_missing_from_orders(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Gateway state query should fail when the local node is absent from orders."""
+        from prodbox.cli.effects import QueryGatewayState
+
+        interpreter = EffectInterpreter()
+        config_path = _write_gateway_query_config(
+            tmp_path,
+            node_id="node-z",
+            orders_payload=_gateway_orders_dict(node_id="node-a"),
+        )
+        effect = QueryGatewayState(
+            effect_id="query_gateway_state",
+            description="Query gateway state",
+            config_path=config_path,
+        )
+
+        summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert summary.message == "Node node-z not in orders"
+
+    @pytest.mark.asyncio
+    async def test_query_gateway_state_handles_transport_error(self, tmp_path: Path) -> None:
+        """Gateway state query should surface transport failures cleanly."""
+        from prodbox.cli.effects import QueryGatewayState
+
+        interpreter = EffectInterpreter()
+        config_path = _write_gateway_query_config(tmp_path)
+        effect = QueryGatewayState(
+            effect_id="query_gateway_state",
+            description="Query gateway state",
+            config_path=config_path,
+        )
+
+        mock_client = AsyncMock()
+        mock_client.get = AsyncMock(side_effect=RuntimeError("network down"))
+        mock_async_client = MagicMock()
+        mock_async_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_async_client.__aexit__ = AsyncMock(return_value=None)
+
+        with (
+            patch("httpx.AsyncClient", return_value=mock_async_client),
+            patch("ssl.create_default_context", return_value=MagicMock(check_hostname=True)),
+        ):
+            summary, value = await interpreter.interpret_with_value(effect)
+
+        assert not summary.success
+        assert value is None
+        assert "Gateway state query failed: network down" in summary.message
 
     @pytest.mark.asyncio
     async def test_pulumi_destroy_without_yes(self) -> None:

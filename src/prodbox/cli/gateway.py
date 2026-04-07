@@ -9,11 +9,14 @@ import click
 
 from prodbox.cli.command_adt import (
     gateway_config_gen_command,
+    gateway_install_service_command,
     gateway_start_command,
     gateway_status_command,
 )
 from prodbox.cli.command_executor import execute_command, render_error_and_return_exit_code
 from prodbox.cli.types import Failure, Success
+
+DEFAULT_GATEWAY_SYSTEMD_UNIT: Path = Path("/etc/systemd/system/prodbox-gateway.service")
 
 
 @click.group(no_args_is_help=True)
@@ -65,3 +68,26 @@ def config_gen(output_path: str, node_id: str) -> None:
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="gateway_config_gen"))
+
+
+@gateway.command("install-service")
+@click.argument("config_path", type=click.Path(exists=True))
+@click.option(
+    "--output-path",
+    type=click.Path(),
+    default=str(DEFAULT_GATEWAY_SYSTEMD_UNIT),
+    show_default=True,
+    help="systemd unit file path to write and enable",
+)
+def install_service(config_path: str, output_path: str) -> None:
+    """Install and enable the canonical gateway systemd unit."""
+    unit_path = Path(output_path)
+    match gateway_install_service_command(
+        config_path=Path(config_path),
+        output_path=unit_path,
+        service_name=unit_path.name,
+    ):
+        case Success(cmd):
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="gateway_install_service"))

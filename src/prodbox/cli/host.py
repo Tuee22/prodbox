@@ -11,6 +11,7 @@ from prodbox.cli.command_adt import (
     host_ensure_tools_command,
     host_firewall_command,
     host_info_command,
+    host_public_edge_command,
 )
 from prodbox.cli.command_executor import execute_command, render_error_and_return_exit_code
 from prodbox.cli.types import Failure, Success
@@ -75,3 +76,17 @@ def firewall() -> None:
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="host_firewall"))
+
+
+@host.command("public-edge")
+def public_edge() -> None:
+    """Diagnose the canonical public-host edge path.
+
+    Compares host networking, Route 53 state, ingress ownership,
+    and certificate readiness for the supported VS Code public host.
+    """
+    match host_public_edge_command():
+        case Success(cmd):
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="host_public_edge"))

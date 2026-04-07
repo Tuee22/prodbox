@@ -1,7 +1,7 @@
 # File: DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md
 # Legacy Tracking
 
-**Status**: Reference only
+**Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
 
@@ -12,7 +12,8 @@
 
 ## Pending Removal
 
-None currently identified.
+None. The repository-side legacy cleanup inventory is empty; only live-environment and external
+proof blockers remain in the phase plan.
 
 Repository-external blockers still remain in the plan, but they are not repo-internal legacy items.
 
@@ -37,9 +38,16 @@ Repository-external blockers still remain in the plan, but they are not repo-int
 | Multi-pass `_collect_annotated_refs` and `_delete_ref` cleanup loop | Sprint 4.1 | Namespace-first cascade cleanup is canonical |
 | Retry-as-settling behavior after cleanup | Sprint 4.1 | Lifecycle validation now passes without the post-cleanup rerun shim |
 | `rke2_killall_exists` prerequisite | Sprint 4.2 | Compatibility-only prerequisite residue has been removed |
-| Legacy Poetry `daemon` entrypoint alongside `prodbox gateway start` | Sprint 4.2 | One supported gateway startup path remains |
+| Legacy Poetry `daemon` entrypoint and compatibility container wrapper alongside `prodbox gateway start` | Sprint 4.2 | `prodbox gateway start` and `docker/gateway.Dockerfile` are the only supported startup/build paths |
 | CLI/DDNS timer Route 53 path alongside gateway `dns_write_gate` | Sprint 4.2 | Route 53 updates are canonical through the gateway |
 | Interpreter command-summary compatibility bridge | Sprint 4.2 | Structured DAG outcomes are canonical |
 | Hook-oriented `pre-commit` workflow residue | Sprint 4.2 | Repo development doctrine forbids hook-driven tooling |
+| Static `.env`-owned `METALLB_POOL` and `INGRESS_LB_IP` LAN assumptions | Sprint 4.3 | Settings auto-discovery now derives the canonical LAN pool and ingress IP, with explicit overrides kept only as a fallback |
+| Pulumi assumption that cert-manager CRDs are pre-installed before canonical cluster infra reconcile | Sprint 4.3 | Canonical infra reconcile now deploys cert-manager directly and orders the ClusterIssuer after cert-manager plus Traefik |
+| AWS-gated local cluster infra reconcile path | Sprint 4.3 | `PULUMI_ENABLE_DNS_BOOTSTRAP=false` decouples local edge recovery from Route 53 bootstrap ownership |
+| Competing public-edge ingress ownership between canonical Traefik and bundled/live ingress-nginx | Sprint 4.3 | Canonical RKE2 config disables bundled ingress-nginx on the supported path; Traefik is the only supported cluster-edge controller |
+| Manual cross-layer diagnosis for public-host failures | Sprint 4.3 | `prodbox host public-edge` is now the named diagnostic path for DNS, ingress, and certificate drift |
+| Optional gateway daemon steady state and generated config that omits `dns_write_gate` | Sprint 4.4 | Generated gateway config now includes `dns_write_gate`, and `prodbox gateway install-service` installs the supported host supervision path |
+| Missing explicit-record DNS doctrine for every supported public subdomain | Sprint 4.4 | Gateway config, status surfaces, and doctrine now treat explicit per-subdomain Route 53 records as canonical and wildcard public DNS as unsupported |
 | Cluster-gated invocation path for external public-host verification | Sprint 5.1 | `charts-vscode` no longer requires cluster prerequisite gates |
 | Manual-only authoritative public DNS delegation proof | Sprint 5.1 | `poetry run prodbox test integration public-dns` is the named proof path |

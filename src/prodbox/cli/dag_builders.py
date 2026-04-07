@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from prodbox.cli.command_adt import (
@@ -36,12 +37,14 @@ from prodbox.cli.command_adt import (
     EnvTemplateCommand,
     EnvValidateCommand,
     GatewayConfigGenCommand,
+    GatewayInstallServiceCommand,
     GatewayStartCommand,
     GatewayStatusCommand,
     HostCheckPortsCommand,
     HostEnsureToolsCommand,
     HostFirewallCommand,
     HostInfoCommand,
+    HostPublicEdgeCommand,
     K8sHealthCommand,
     K8sLogsCommand,
     K8sWaitCommand,
@@ -75,6 +78,7 @@ from prodbox.cli.effects import (
     EnsureMinio,
     EnsureProdboxIdentityConfigMap,
     EnsureRetainedLocalStorage,
+    EnsureRke2IngressController,
     FetchPublicIP,
     GenerateGatewayConfig,
     GetJournalLogs,
@@ -96,6 +100,7 @@ from prodbox.cli.effects import (
     StartGatewayDaemon,
     ValidateSettings,
     ValidateTool,
+    WriteFile,
     WriteStdout,
 )
 from prodbox.cli.prerequisite_registry import PREREQUISITE_REGISTRY
@@ -130,7 +135,7 @@ from prodbox.lib.prodbox_k8s import (
     RKE2_REGISTRIES_PATH,
     prodbox_id_to_label_value,
 )
-from prodbox.settings import RenderedSettingValue, render_settings_display
+from prodbox.settings import REPOSITORY_ROOT, RenderedSettingValue, render_settings_display
 
 # =============================================================================
 # Shared Helpers
@@ -174,6 +179,28 @@ def _require_setting_string(settings: dict[str, RenderedSettingValue], field_nam
             return value
         case _:
             raise ValueError(f"settings field {field_name} missing or not a string")
+
+
+def _optional_setting_string(
+    settings: dict[str, RenderedSettingValue], field_name: str
+) -> str | None:
+    """Extract one optional string field from loaded settings."""
+    match settings.get(field_name):
+        case str() as value if value != "":
+            return value
+        case "" | None:
+            return None
+        case _:
+            raise ValueError(f"settings field {field_name} missing or not a string")
+
+
+def _require_setting_bool(settings: dict[str, RenderedSettingValue], field_name: str) -> bool:
+    """Extract one required boolean field from loaded settings."""
+    match settings.get(field_name):
+        case bool() as value:
+            return value
+        case _:
+            raise ValueError(f"settings field {field_name} missing or not a bool")
 
 
 def _require_string_result(prereq_results: PrereqResults, effect_id: str) -> str:
@@ -228,9 +255,32 @@ def _optional_string_result(prereq_results: PrereqResults, effect_id: str) -> st
             raise ValueError(f"{effect_id} prerequisite missing")
 
 
+def _require_object_result(prereq_results: PrereqResults, effect_id: str) -> object:
+    """Extract one arbitrary prerequisite value or raise ValueError."""
+    result = prereq_results.get(effect_id)
+    match result:
+        case Success(value=value):
+            return value
+        case Failure(error=error):
+            raise ValueError(f"{effect_id} prerequisite failed: {error}")
+        case _:
+            raise ValueError(f"{effect_id} prerequisite missing")
+
+
 def _merge_registry(*nodes: EffectNode[object]) -> dict[str, EffectNode[object]]:
     """Merge local command-specific nodes into the canonical prerequisite registry."""
     return dict(PREREQUISITE_REGISTRY) | {node.effect_id: node for node in nodes}
+
+
+def _parse_json_mapping(text: str) -> dict[str, object]:
+    """Parse a JSON object string into a typed mapping."""
+    parsed: object = json.loads(text)
+    match parsed:
+        case dict() as parsed_mapping:
+            typed_mapping: dict[object, object] = parsed_mapping
+            return {str(key): value for key, value in typed_mapping.items()}
+        case _:
+            raise ValueError("expected kubectl JSON object output")
 
 
 def _render_dns_check_report(
@@ -282,6 +332,260 @@ def _render_host_check_ports_report(results: tuple[PortAvailability, ...]) -> st
     lines.append(summary_line)
     lines.append(f"STATUS={'busy' if unavailable else 'available'}")
     return "\n".join(lines)
+
+
+def _as_json_mapping(value: object) -> dict[str, object] | None:
+    """Return a JSON-like mapping when the input is compatible."""
+    match value:
+        case dict() as mapping:
+            return {str(key): item for key, item in mapping.items()}
+        case _:
+            return None
+
+
+def _mapping_at(value: dict[str, object], key: str) -> dict[str, object] | None:
+    """Read one nested mapping from a JSON-like object."""
+    nested = value.get(key)
+    return _as_json_mapping(nested)
+
+
+def _sequence_at(value: dict[str, object], key: str) -> tuple[object, ...]:
+    """Read one nested JSON sequence from a mapping."""
+    match value.get(key):
+        case list() as nested:
+            return tuple(nested)
+        case _:
+            return ()
+
+
+def _string_at(value: dict[str, object], key: str) -> str | None:
+    """Read one optional string field from a mapping."""
+    match value.get(key):
+        case str() as nested if nested != "":
+            return nested
+        case _:
+            return None
+
+
+def _bool_condition_status(conditions: tuple[dict[str, object], ...], condition_type: str) -> str:
+    """Read one Kubernetes condition value by type."""
+    return next(
+        (
+            _string_at(condition, "status") or "Unknown"
+            for condition in conditions
+            if _string_at(condition, "type") == condition_type
+        ),
+        "Unknown",
+    )
+
+
+def _render_gateway_status_report(state: dict[str, object]) -> str:
+    """Render deterministic gateway status output."""
+    mesh_peers_obj = state.get("mesh_peers")
+    mesh_peers = (
+        ",".join(str(peer) for peer in mesh_peers_obj)
+        if isinstance(mesh_peers_obj, list) and len(mesh_peers_obj) > 0
+        else "<none>"
+    )
+    heartbeat_mapping = _as_json_mapping(state.get("heartbeat_age_seconds")) or {}
+    heartbeat_lines = [
+        f"HEARTBEAT_{node_id.upper().replace('-', '_')}=" f"{heartbeat_mapping[node_id]}"
+        for node_id in sorted(heartbeat_mapping)
+    ]
+    dns_gate = _mapping_at(state, "dns_write_gate")
+    return "\n".join(
+        [
+            "Gateway status",
+            f"NODE_ID={state.get('node_id', '<unknown>')}",
+            f"GATEWAY_OWNER={state.get('gateway_owner', '<unknown>')}",
+            f"ACTIVE_CLAIM={'true' if bool(state.get('has_active_claim')) else 'false'}",
+            f"MESH_PEERS={mesh_peers}",
+            f"EVENT_COUNT={state.get('event_count', 0)}",
+            f"LAST_PUBLIC_IP={state.get('last_public_ip_observed') or '<unknown>'}",
+            f"LAST_DNS_WRITE_IP={state.get('last_dns_write_ip') or '<none>'}",
+            f"LAST_DNS_WRITE_AT={state.get('last_dns_write_at_utc') or '<none>'}",
+            "DNS_WRITE_GATE="
+            + (
+                "<disabled>"
+                if dns_gate is None
+                else (
+                    f"{dns_gate.get('fqdn')}@{dns_gate.get('zone_id')}"
+                    f" ttl={dns_gate.get('ttl')}"
+                )
+            ),
+            *heartbeat_lines,
+        ]
+    )
+
+
+def _ingress_class_presence(ingress_class_doc: dict[str, object], class_name: str) -> bool:
+    """Check whether an IngressClass with one name is present."""
+    items = _sequence_at(ingress_class_doc, "items")
+    return any(
+        _string_at(_mapping_at(item_mapping, "metadata") or {}, "name") == class_name
+        for item in items
+        for item_mapping in (_as_json_mapping(item),)
+        if item_mapping is not None
+    )
+
+
+def _load_balancer_ips(service_doc: dict[str, object]) -> tuple[str, ...]:
+    """Extract service load-balancer IPs from Kubernetes Service JSON."""
+    status = _mapping_at(service_doc, "status") or {}
+    load_balancer = _mapping_at(status, "loadBalancer") or {}
+    ingress_items = _sequence_at(load_balancer, "ingress")
+    return tuple(
+        candidate
+        for item in ingress_items
+        for mapping in (_as_json_mapping(item),)
+        if mapping is not None
+        for candidate in ((_string_at(mapping, "ip") or _string_at(mapping, "hostname")),)
+        if candidate is not None
+    )
+
+
+def _service_count(service_list_doc: dict[str, object]) -> int:
+    """Count Service items in a Kubernetes list response."""
+    return len(_sequence_at(service_list_doc, "items"))
+
+
+def _certificate_ready_state(certificate_doc: dict[str, object] | None) -> str:
+    """Extract cert-manager ready state from a Certificate document."""
+    match certificate_doc:
+        case None:
+            return "missing"
+        case dict() as certificate_mapping:
+            status = _mapping_at(certificate_mapping, "status") or {}
+            conditions_raw = _sequence_at(status, "conditions")
+            conditions = tuple(
+                mapping
+                for item in conditions_raw
+                if (mapping := _as_json_mapping(item)) is not None
+            )
+            match _bool_condition_status(conditions, "Ready"):
+                case "True":
+                    return "true"
+                case "False":
+                    return "false"
+                case _:
+                    return "unknown"
+
+
+def _render_public_edge_report(
+    *,
+    settings: dict[str, RenderedSettingValue],
+    public_ip: str,
+    route53_record_ip: str | None,
+    ingress_classes_doc: dict[str, object],
+    traefik_service_doc: dict[str, object],
+    ingress_nginx_services_doc: dict[str, object],
+    vscode_ingress_doc: dict[str, object] | None,
+    vscode_certificate_doc: dict[str, object] | None,
+) -> str:
+    """Render deterministic public-edge diagnostics."""
+    detected_interface = _optional_setting_string(settings, "active_lan_interface") or "<unknown>"
+    detected_ipv4 = _optional_setting_string(settings, "active_lan_ipv4") or "<unknown>"
+    detected_cidr = _optional_setting_string(settings, "active_lan_network_cidr") or "<unknown>"
+    configured_fqdn = _optional_setting_string(settings, "vscode_fqdn") or _require_setting_string(
+        settings, "demo_fqdn"
+    )
+    traefik_ips = _load_balancer_ips(traefik_service_doc)
+    traefik_ip = traefik_ips[0] if len(traefik_ips) > 0 else "<missing>"
+    has_traefik_class = _ingress_class_presence(ingress_classes_doc, "traefik")
+    has_nginx_class = _ingress_class_presence(ingress_classes_doc, "nginx")
+    competing_nginx_services = _service_count(ingress_nginx_services_doc)
+    match vscode_ingress_doc:
+        case dict() as ingress_doc:
+            spec = _mapping_at(ingress_doc, "spec") or {}
+            vscode_ingress_class = _string_at(spec, "ingressClassName") or "<missing>"
+            match _sequence_at(spec, "rules"):
+                case (first_rule_obj, *_):
+                    first_rule = _as_json_mapping(first_rule_obj) or {}
+                    vscode_ingress_host = _string_at(first_rule, "host") or "<missing>"
+                case _:
+                    vscode_ingress_host = "<missing>"
+        case None:
+            vscode_ingress_class = "<missing>"
+            vscode_ingress_host = "<missing>"
+    certificate_ready = _certificate_ready_state(vscode_certificate_doc)
+
+    private_edge_ready = (
+        has_traefik_class
+        and not has_nginx_class
+        and competing_nginx_services == 0
+        and vscode_ingress_class == "traefik"
+        and certificate_ready == "true"
+        and traefik_ip != "<missing>"
+    )
+    route53_status = (
+        "in-sync"
+        if route53_record_ip == public_ip
+        else "missing"
+        if route53_record_ip is None
+        else "mismatch"
+    )
+    classification = (
+        "private-edge-ready-public-dns-stale"
+        if private_edge_ready and route53_status != "in-sync"
+        else "competing-ingress-controller"
+        if has_nginx_class or competing_nginx_services > 0
+        else "certificate-not-ready"
+        if certificate_ready != "true"
+        else "vscode-ingress-class-drift"
+        if vscode_ingress_class != "traefik"
+        else "cluster-edge-not-ready"
+        if not private_edge_ready
+        else "ready-for-external-proof"
+    )
+
+    return "\n".join(
+        [
+            "Public edge diagnostic",
+            f"FQDN={configured_fqdn}",
+            f"PUBLIC_IP={public_ip}",
+            f"ROUTE53_A_RECORD={route53_record_ip or '<missing>'}",
+            f"ROUTE53_STATUS={route53_status}",
+            f"ACTIVE_LAN_INTERFACE={detected_interface}",
+            f"ACTIVE_LAN_IPV4={detected_ipv4}",
+            f"ACTIVE_LAN_CIDR={detected_cidr}",
+            f"METALLB_POOL={_require_setting_string(settings, 'metallb_pool')}",
+            f"INGRESS_LB_IP={_require_setting_string(settings, 'ingress_lb_ip')}",
+            f"TRAEFIK_SERVICE_IP={traefik_ip}",
+            f"INGRESSCLASS_TRAEFIK={'present' if has_traefik_class else 'missing'}",
+            f"INGRESSCLASS_NGINX={'present' if has_nginx_class else 'missing'}",
+            f"INGRESS_NGINX_SERVICES={competing_nginx_services}",
+            f"VSCODE_INGRESS_CLASS={vscode_ingress_class}",
+            f"VSCODE_INGRESS_HOST={vscode_ingress_host}",
+            f"CERTIFICATE_READY={certificate_ready}",
+            f"PRIVATE_EDGE_READY={'true' if private_edge_ready else 'false'}",
+            f"CLASSIFICATION={classification}",
+        ]
+    )
+
+
+def _render_gateway_systemd_unit(*, config_path: Path) -> str:
+    """Render the canonical systemd unit for continuous gateway supervision."""
+    prodbox_bin = REPOSITORY_ROOT / ".venv" / "bin" / "prodbox"
+    return "\n".join(
+        [
+            "[Unit]",
+            "Description=prodbox gateway daemon",
+            "After=network-online.target",
+            "Wants=network-online.target",
+            "",
+            "[Service]",
+            "Type=simple",
+            f"WorkingDirectory={REPOSITORY_ROOT}",
+            f"ExecStart={prodbox_bin} gateway start {config_path.resolve()}",
+            "Restart=always",
+            "RestartSec=5",
+            "Environment=PYTHONUNBUFFERED=1",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        ]
+    )
 
 
 def _raise_effect_error(message: str) -> object:
@@ -372,6 +676,18 @@ def _require_successful_kubectl_stdout(prereq_results: PrereqResults, effect_id:
             return stdout
         case _:
             raise ValueError(f"{effect_id} prerequisite failed: {stderr}")
+
+
+def _optional_json_doc_from_capture(
+    prereq_results: PrereqResults, effect_id: str
+) -> dict[str, object] | None:
+    """Parse one optional kubectl JSON capture result."""
+    stdout = _require_successful_kubectl_stdout(prereq_results, effect_id).strip()
+    match stdout:
+        case "":
+            return None
+        case _:
+            return _parse_json_mapping(stdout)
 
 
 def _k8s_logs_effect_id(namespace: str, pod_name: str) -> str:
@@ -473,6 +789,12 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
         effect_id="rke2_ensure",
         description="Idempotently provision RKE2 cluster runtime",
         effects=[
+            EnsureRke2IngressController(
+                effect_id="rke2_ensure_disable_builtin_ingress",
+                description="Disable bundled RKE2 ingress-controller ownership",
+                file_path=Path("/etc/rancher/rke2/config.yaml"),
+                controller="none",
+            ),
             RunSystemdCommand(
                 effect_id="rke2_ensure_enable",
                 description="Enable RKE2 service",
@@ -481,9 +803,9 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
                 sudo=True,
             ),
             RunSystemdCommand(
-                effect_id="rke2_ensure_start",
-                description="Start RKE2 service",
-                action="start",
+                effect_id="rke2_ensure_restart",
+                description="Restart RKE2 service with canonical ingress settings",
+                action="restart",
                 service="rke2-server.service",
                 sudo=True,
             ),
@@ -737,6 +1059,142 @@ def _build_host_firewall_dag(_cmd: HostFirewallCommand) -> EffectDAG:
         prerequisites=frozenset(),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_host_public_edge_dag(_cmd: HostPublicEdgeCommand) -> EffectDAG:
+    """Build DAG for diagnosing the canonical public-edge path."""
+    public_ip_node = EffectNode(
+        effect=FetchPublicIP(
+            effect_id="host_public_edge_public_ip",
+            description="Fetch current public IP for edge diagnostics",
+        ),
+        prerequisites=frozenset(),
+    )
+    route53_node = EffectNode(
+        effect=QueryRoute53Record(
+            effect_id="host_public_edge_route53_record",
+            description="Query Route 53 A record for the canonical public host",
+            zone_id="",
+            fqdn="",
+        ),
+        prerequisites=frozenset(["settings_object", "route53_accessible"]),
+        effect_builder=lambda _reduced, prereq_results: QueryRoute53Record(
+            effect_id="host_public_edge_route53_record",
+            description="Query Route 53 A record for the canonical public host",
+            zone_id=_require_setting_string(_require_settings(prereq_results), "route53_zone_id"),
+            fqdn=(
+                _optional_setting_string(_require_settings(prereq_results), "vscode_fqdn")
+                or _require_setting_string(_require_settings(prereq_results), "demo_fqdn")
+            ),
+            aws_region=_require_setting_string(_require_settings(prereq_results), "aws_region"),
+        ),
+    )
+    ingress_class_node = EffectNode(
+        effect=CaptureKubectlOutput(
+            effect_id="host_public_edge_ingress_classes",
+            description="List cluster ingress classes",
+            args=["get", "ingressclass", "-o", "json"],
+        ),
+        prerequisites=frozenset(["k8s_cluster_reachable"]),
+    )
+    traefik_service_node = EffectNode(
+        effect=CaptureKubectlOutput(
+            effect_id="host_public_edge_traefik_service",
+            description="Inspect Traefik service load-balancer status",
+            args=["get", "svc", "traefik", "-o", "json"],
+            namespace="traefik-system",
+        ),
+        prerequisites=frozenset(["k8s_cluster_reachable"]),
+    )
+    ingress_nginx_services_node = EffectNode(
+        effect=CaptureKubectlOutput(
+            effect_id="host_public_edge_ingress_nginx_services",
+            description="List competing ingress-nginx services",
+            args=["get", "svc", "-A", "-l", "app.kubernetes.io/name=ingress-nginx", "-o", "json"],
+        ),
+        prerequisites=frozenset(["k8s_cluster_reachable"]),
+    )
+    vscode_ingress_node = EffectNode(
+        effect=CaptureKubectlOutput(
+            effect_id="host_public_edge_vscode_ingress",
+            description="Inspect the vscode ingress object",
+            args=["get", "ingress", "vscode", "-o", "json", "--ignore-not-found=true"],
+            namespace="vscode",
+        ),
+        prerequisites=frozenset(["k8s_cluster_reachable"]),
+    )
+    vscode_certificate_node = EffectNode(
+        effect=CaptureKubectlOutput(
+            effect_id="host_public_edge_vscode_certificate",
+            description="Inspect the vscode TLS certificate resource",
+            args=["get", "certificate", "vscode-tls", "-o", "json", "--ignore-not-found=true"],
+            namespace="vscode",
+        ),
+        prerequisites=frozenset(["k8s_cluster_reachable"]),
+    )
+    root = EffectNode(
+        effect=WriteStdout(
+            effect_id="host_public_edge",
+            description="Render canonical public-edge diagnostics",
+            text="",
+        ),
+        prerequisites=frozenset(
+            [
+                "settings_object",
+                "host_public_edge_public_ip",
+                "host_public_edge_route53_record",
+                "host_public_edge_ingress_classes",
+                "host_public_edge_traefik_service",
+                "host_public_edge_ingress_nginx_services",
+                "host_public_edge_vscode_ingress",
+                "host_public_edge_vscode_certificate",
+            ]
+        ),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="host_public_edge",
+            description="Render canonical public-edge diagnostics",
+            text=_render_public_edge_report(
+                settings=_require_settings(prereq_results),
+                public_ip=_require_string_result(prereq_results, "host_public_edge_public_ip"),
+                route53_record_ip=_optional_string_result(
+                    prereq_results, "host_public_edge_route53_record"
+                ),
+                ingress_classes_doc=_parse_json_mapping(
+                    _require_successful_kubectl_stdout(
+                        prereq_results, "host_public_edge_ingress_classes"
+                    )
+                ),
+                traefik_service_doc=_parse_json_mapping(
+                    _require_successful_kubectl_stdout(
+                        prereq_results, "host_public_edge_traefik_service"
+                    )
+                ),
+                ingress_nginx_services_doc=_parse_json_mapping(
+                    _require_successful_kubectl_stdout(
+                        prereq_results, "host_public_edge_ingress_nginx_services"
+                    )
+                ),
+                vscode_ingress_doc=_optional_json_doc_from_capture(
+                    prereq_results, "host_public_edge_vscode_ingress"
+                ),
+                vscode_certificate_doc=_optional_json_doc_from_capture(
+                    prereq_results, "host_public_edge_vscode_certificate"
+                ),
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(
+        root,
+        registry=_merge_registry(
+            public_ip_node,
+            route53_node,
+            ingress_class_node,
+            traefik_service_node,
+            ingress_nginx_services_node,
+            vscode_ingress_node,
+            vscode_certificate_node,
+        ),
+    )
 
 
 # =============================================================================
@@ -1213,6 +1671,8 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_host_ensure_tools_dag(command))
         case HostFirewallCommand():
             return Success(_build_host_firewall_dag(command))
+        case HostPublicEdgeCommand():
+            return Success(_build_host_public_edge_dag(command))
 
         # RKE2 commands
         case RKE2StatusCommand():
@@ -1261,6 +1721,8 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_gateway_status_dag(command))
         case GatewayConfigGenCommand():
             return Success(_build_gateway_config_gen_dag(command))
+        case GatewayInstallServiceCommand():
+            return Success(_build_gateway_install_service_dag(command))
 
         # Chart platform commands
         case ChartListCommand():
@@ -1296,7 +1758,7 @@ def _build_gateway_start_dag(cmd: GatewayStartCommand) -> EffectDAG:
 
 def _build_gateway_status_dag(cmd: GatewayStatusCommand) -> EffectDAG:
     """Build DAG for querying gateway daemon state."""
-    root = EffectNode(
+    query_node = EffectNode(
         effect=QueryGatewayState(
             effect_id="query_gateway_state",
             description="Query gateway daemon state",
@@ -1304,7 +1766,23 @@ def _build_gateway_status_dag(cmd: GatewayStatusCommand) -> EffectDAG:
         ),
         prerequisites=frozenset(),
     )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+    root = EffectNode(
+        effect=WriteStdout(
+            effect_id="gateway_status",
+            description="Render gateway daemon state",
+            text="",
+        ),
+        prerequisites=frozenset(["query_gateway_state"]),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="gateway_status",
+            description="Render gateway daemon state",
+            text=_render_gateway_status_report(
+                _as_json_mapping(_require_object_result(prereq_results, "query_gateway_state"))
+                or {}
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=_merge_registry(query_node))
 
 
 def _build_gateway_config_gen_dag(cmd: GatewayConfigGenCommand) -> EffectDAG:
@@ -1317,6 +1795,47 @@ def _build_gateway_config_gen_dag(cmd: GatewayConfigGenCommand) -> EffectDAG:
             node_id=cmd.node_id,
         ),
         prerequisites=frozenset(),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_gateway_install_service_dag(cmd: GatewayInstallServiceCommand) -> EffectDAG:
+    """Build DAG for installing the canonical gateway systemd unit."""
+    root = EffectNode(
+        effect=Sequence(
+            effect_id="gateway_install_service",
+            description="Install and enable the canonical gateway systemd unit",
+            effects=[
+                WriteFile(
+                    effect_id="gateway_install_service_write_unit",
+                    description="Write gateway systemd unit file",
+                    file_path=cmd.output_path,
+                    content=_render_gateway_systemd_unit(config_path=cmd.config_path),
+                    sudo=True,
+                ),
+                RunSystemdCommand(
+                    effect_id="gateway_install_service_daemon_reload",
+                    description="Reload systemd units",
+                    action="daemon-reload",
+                    sudo=True,
+                ),
+                RunSystemdCommand(
+                    effect_id="gateway_install_service_enable",
+                    description="Enable gateway systemd unit",
+                    action="enable",
+                    service=cmd.service_name,
+                    sudo=True,
+                ),
+                RunSystemdCommand(
+                    effect_id="gateway_install_service_restart",
+                    description="Restart gateway systemd unit",
+                    action="restart",
+                    service=cmd.service_name,
+                    sudo=True,
+                ),
+            ],
+        ),
+        prerequisites=frozenset(["systemd_available"]),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 

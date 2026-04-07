@@ -43,7 +43,7 @@ removal for gateway delivery are owned by
 Canonical repository facts referenced by this doctrine:
 
 1. The gateway daemon implementation lives in `src/prodbox/gateway_daemon.py`.
-2. The managed CLI surface is `prodbox gateway start|status|config-gen`.
+2. The managed CLI surface is `prodbox gateway start|status|config-gen|install-service`.
 3. Verification artifacts include `tests/unit/test_gateway_daemon.py`,
    `tests/integration/test_gateway_daemon_k8s.py`,
    `tests/integration/test_gateway_k8s_pods.py`, and
@@ -269,9 +269,19 @@ Returns current daemon state:
 {
     "node_id": "node-a",
     "gateway_owner": "node-a",
+    "has_active_claim": true,
     "event_count": 42,
     "event_hashes": ["abc123", "def456"],
-    "mesh_peers": ["node-b", "node-c"]
+    "mesh_peers": ["node-b", "node-c"],
+    "last_public_ip_observed": "203.0.113.10",
+    "last_dns_write_ip": "203.0.113.10",
+    "last_dns_write_at_utc": "2026-04-06T12:00:00Z",
+    "dns_write_gate": {
+        "zone_id": "Z1234567890",
+        "fqdn": "gw.example.test",
+        "ttl": 60,
+        "aws_region": "us-east-1"
+    }
 }
 ```
 
@@ -283,6 +293,10 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 The default operator path runs the gateway daemon as a local Python process via
 `poetry run prodbox gateway start <config.json>`.
+
+The canonical host-supervision install path is
+`poetry run prodbox gateway install-service <config.json>`, which writes and enables the supported
+systemd unit for continuous gateway runtime.
 
 Containerization is also first-class for integration/runtime image publishing:
 
@@ -300,6 +314,7 @@ Docker build/push flow, and RKE2 mirror behavior.
 prodbox gateway start <config.json>           # Run gateway event loop
 prodbox gateway status <config.json>          # Query running daemon
 prodbox gateway config-gen <path> --node-id <id>  # Generate template config
+prodbox gateway install-service <config.json> [--output-path <unit>]  # Install systemd unit
 ```
 
 ---

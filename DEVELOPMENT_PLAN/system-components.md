@@ -15,10 +15,11 @@
 | Host runtime | Linux host with systemd | Bare metal | Host operator | Host filesystem |
 | Kubernetes substrate | RKE2 | Local host | `prodbox rke2 ...` | RKE2 data dirs |
 | Load balancer IPs | MetalLB | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
-| Ingress | Traefik | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
+| Public edge ingress | Traefik | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
+| Namespace-local auth proxy | `vscode-nginx` | RKE2 workload | Chart platform | Cluster resources |
 | TLS issuance | cert-manager plus Let's Encrypt HTTP-01 | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
-| DNS control plane | Route 53 hosted zone | AWS | Pulumi plus gateway `dns_write_gate` | Route 53 |
-| Gateway mesh | Distributed gateway daemon | Host processes or pods | `prodbox gateway ...` | Runtime config plus cluster state |
+| DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus always-on gateway `dns_write_gate` | Route 53 |
+| Gateway mesh | Distributed gateway daemon | Supervised host service or pod | `prodbox gateway ...` plus steady-state supervisor | Runtime config plus cluster state |
 | Chart platform | Bespoke Helm/chart registry in repo | RKE2 workloads | `prodbox charts ...` | `.data/` retained storage |
 | Namespace-local auth stack | `keycloak-postgres`, `keycloak` | RKE2 workloads | Chart platform | `.data/` plus cluster resources |
 | Namespace-local app stack | `vscode` | RKE2 workload | Chart platform | `.data/` plus cluster resources |
@@ -29,11 +30,13 @@
 |---------|---------|---------|
 | Config validation | `prodbox env validate` | Validate required repository-root settings |
 | Host prerequisite flow | `prodbox host ensure-tools` | Verify required local tools |
+| Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, and certificate state for the supported public host |
 | RKE2 lifecycle | `prodbox rke2 ensure|status|cleanup --yes` | Provision, inspect, and clean cluster state |
 | Pulumi lifecycle | `prodbox pulumi ...` | Manage infrastructure bootstrap and previews |
 | DNS check | `prodbox dns check` | Inspect current DNS ownership state |
 | Kubernetes health | `prodbox k8s health|wait` | Inspect cluster readiness |
-| Gateway runtime | `prodbox gateway start|status|config-gen` | Manage the distributed gateway |
+| Gateway runtime | `prodbox gateway start|status|config-gen|install-service` | Manage the distributed gateway and install the canonical host supervision path |
+| Gateway steady state | `prodbox gateway install-service <config.json>` plus supervised `prodbox gateway start <config.json>` | Keep gateway ownership and Route 53 writes continuously active |
 | Chart runtime | `prodbox charts list|status|deploy|delete` | Manage the bespoke chart platform |
 | TLA+ validation | `prodbox tla-check` | Run formal safety verification |
 | Test runner | `prodbox test ...` | Run named unit and integration suites |
@@ -60,8 +63,9 @@
 | CLI and doctrine source | Repository worktree | `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Code and docs are version-controlled |
 | Retained chart storage | Host filesystem | `.data/<namespace>/<statefulset>/<ordinal>` | Rebinds deterministically after cleanup |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |
-| DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstrap plus gateway updates |
+| DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; supervised gateway updates keep their IPs current |
 | Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer is `letsencrypt-http01` |
+| Gateway runtime continuity | Host service manager or Kubernetes | Service supervisor or pod restart policy | Required to keep `dns_write_gate` active continuously |
 | Pulumi state | Pulumi backend | Stack state selected by repo config | Used only through canonical entrypoints |
 
 ## Artifact Locations

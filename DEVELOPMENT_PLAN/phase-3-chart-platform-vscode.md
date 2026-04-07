@@ -11,8 +11,9 @@
 ## Phase Summary
 
 This phase defines the chart-lifecycle platform, deterministic retained storage rooted at `.data/`,
-and the namespace-local `keycloak-postgres -> keycloak -> vscode` stack with nginx OIDC plus local
-Keycloak users as the supported auth model.
+and the namespace-local `keycloak-postgres -> keycloak -> vscode` stack with `vscode-nginx` as the
+namespace-local auth proxy behind the phase-4-owned public edge, plus local Keycloak users as the
+supported auth model.
 
 ## Sprint 3.1: Chart Platform and Deterministic Retained Storage ✅
 
@@ -56,6 +57,7 @@ Deliver the supported cluster-backed `vscode` stack and one canonical in-cluster
 
 - The namespace-local `keycloak-postgres -> keycloak -> vscode` stack exists.
 - nginx OIDC plus local Keycloak username/password is the supported auth model.
+- `vscode-nginx` is the in-namespace auth proxy and not the cluster-edge ingress controller.
 - `KEYCLOAK_NGINX_CLIENT_SECRET` is the intended shared auth-secret setting.
 - Unsupported non-cluster local-dev delivery content is removed from the repository.
 - Live public-host closure is deferred explicitly to Phase 5.

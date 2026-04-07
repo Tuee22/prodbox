@@ -69,14 +69,16 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Runtime, CLI, and AWS Validation Foundations | ✅ Done | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Distributed Gateway Runtime and DNS Ownership | ✅ Done | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening and Canonical-Path Cleanup | ⏸️ Blocked | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening and Canonical-Path Cleanup | 🔄 Active | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and Authoritative External Proof | ⏸️ Blocked | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Legacy Handoff | ⏸️ Blocked | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 
 **Canonical architecture**: one supported `prodbox` CLI surface, one repository-root `.env`
-configuration source, one gateway Route 53 write path through `dns_write_gate`, one cluster-backed
-`prodbox charts` delivery path for `vscode`, one named validation command per major surface, and
-one explicit removal ledger for anything still scheduled to disappear.
+configuration source, one always-on gateway Route 53 write path through `dns_write_gate`, explicit
+per-subdomain Route 53 records only, one coherent `MetalLB -> Traefik -> vscode-nginx` public-host
+stack, one cluster-backed `prodbox charts` delivery path for `vscode`, one named validation
+command per major surface, and one explicit removal ledger for anything still scheduled to
+disappear.
 
 ### Sprint Details
 
@@ -89,28 +91,46 @@ one explicit removal ledger for anything still scheduled to disappear.
 | 3.1 Chart Platform and Deterministic Retained Storage | ✅ Done | - | - | `src/prodbox/cli/charts.py`, `src/prodbox/lib/chart_platform.py`, `tests/integration/test_charts_storage.py`, `tests/integration/test_charts_platform.py` |
 | 3.2 `vscode` Stack and Canonical Cluster Auth Path | ✅ Done | - | - | `src/prodbox/cli/charts.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_vscode.py`, `documents/engineering/helm_chart_platform_doctrine.md` |
 | 4.1 `rke2 cleanup` Hardening and Lifecycle Regression Closure | ✅ Done | - | - | `src/prodbox/cli/rke2.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_prodbox_lifecycle.py` |
-| 4.2 Canonical-Path Cleanup and Legacy Removal | ⏸️ Blocked | External AWS Route 53 permissions for rerunning `dns-aws`, `pulumi`, and `public-dns` | Rerun the blocked AWS-backed validation gates and close the last canonical-path cleanup proof | `src/prodbox/cli/gateway.py`, `src/prodbox/settings.py`, `src/prodbox/lib/lint/` |
-| 5.1 Public Hostname Closure and Authoritative External Proof | ⏸️ Blocked | Sprint 4.2 plus external edge routing or reachability outside the repo | Restore live HTTP/HTTPS reachability for `vscode.resolvefintech.com` and rerun the public-host proof suites | `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
-| 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ⏸️ Blocked | Sprint 4.2 and Sprint 5.1 | Rerun the final clean-room validation set once the remaining blocked proofs close | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md` |
+| 4.2 Canonical-Path Cleanup and Legacy Removal | ⏸️ Blocked | External AWS Route 53 permissions still block the final AWS-backed proof reruns | Repo-local validation is now closed; only the blocked AWS-backed `dns-aws`, `pulumi`, and `public-dns` reruns remain | `src/prodbox/cli/gateway.py`, `src/prodbox/settings.py`, `src/prodbox/lib/lint/` |
+| 4.3 Adaptive Edge Infrastructure Reconcile and Ingress Ownership | 🔄 Active | - | Repo-local implementation and the live cluster-backed `charts-platform` rerun now pass; remaining work is Pulumi-driven public-edge reconcile plus the external `charts-vscode` proof on the live Traefik path | `src/prodbox/settings.py`, `src/prodbox/infra/__main__.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/cluster_issuer.py`, `src/prodbox/cli/host.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_charts_platform.py` |
+| 4.4 Always-On Gateway Supervision and DNS Continuity | 🔄 Active | - | Gateway process-mode and pod-mode validation now pass; remaining work is installing the supervised host service with a real config/orders file and proving live Route 53 continuity after WAN-IP changes | `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/settings.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py` |
+| 5.1 Public Hostname Closure and Authoritative External Proof | ⏸️ Blocked | Sprint 4.2, Sprint 4.3, and Sprint 4.4 | Restore live HTTP/HTTPS reachability for `vscode.resolvefintech.com` on the canonical Traefik path and rerun the public-host proof suites | `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
+| 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ⏸️ Blocked | Sprint 4.2, Sprint 4.3, Sprint 4.4, and Sprint 5.1 | Rerun the final clean-room validation set once the remaining blocked proofs close | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md` |
 
 ## Current Plan Status
 
 As of April 6, 2026:
 
 - Completed and closed: Phases 0 through 3, plus Sprint 4.1.
-- Blocked but partially implemented: Sprint 4.2 and Sprint 5.1.
+- Active and partially implemented: Sprint 4.3 and Sprint 4.4.
+- Blocked: Sprint 4.2, Sprint 5.1, and Sprint 6.1.
 - Not yet closable: Sprint 6.1, because it depends on the blocked work above.
+- Repository-side legacy cleanup is complete: `legacy-tracking-for-deletion.md` is now empty.
 
 Current-environment rerun blockers:
 
+- `poetry run prodbox check-code`, `poetry run prodbox test unit`,
+  `poetry run prodbox test integration charts-platform`,
+  `poetry run prodbox test integration gateway-daemon`, and
+  `poetry run prodbox test integration gateway-pods` all passed on April 6, 2026.
+- `poetry run prodbox host public-edge` currently fails because the active AWS identity lacks
+  `route53:GetHostedZone`, the live cluster has no `traefik-system` service, and the cluster still
+  lacks the `certificate` CRD required by cert-manager.
+- `PULUMI_ENABLE_DNS_BOOTSTRAP=false poetry run prodbox pulumi preview` is blocked because
+  `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE` is not set in the current shell.
+- `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host, so
+  Sprint 4.4 still lacks live host-supervision proof even though the process and pod suites pass.
 - `poetry run prodbox test integration dns-aws` is blocked because the active AWS identity lacks
   `route53:CreateHostedZone`.
 - `poetry run prodbox pulumi up --yes` is blocked because the active AWS identity lacks
   `route53:GetHostedZone` for the configured hosted zone path.
+- `poetry run prodbox test integration charts-vscode` still fails because every HTTPS/TLS/auth
+  probe to `https://vscode.resolvefintech.com` times out.
 - `poetry run prodbox test integration public-dns` is blocked because the active AWS identity lacks
   `route53:GetHostedZone` for `ROUTE53_ZONE_ID`.
-- HTTP and HTTPS requests to `vscode.resolvefintech.com` still time out before reaching the
-  canonical ingress path, so live public-host closure remains blocked outside the repository.
+- Phase 5 public-host closure remains blocked until the live public edge is reproved externally on
+  the canonical `Traefik -> vscode-nginx -> Keycloak` path and the authoritative Route 53 record
+  is shown current for the active WAN IP at rerun time.
 
 ## Exit Definition
 
@@ -119,11 +139,16 @@ This plan is done only when all of the following are true:
 1. Sprint 4.1 remains closed without retry-based cleanup settling in the lifecycle suite.
 2. Sprint 4.2 closes with one canonical runtime path, one canonical CLI path, and one canonical
    automated validation path per major surface.
-3. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
+3. Sprint 4.3 closes with one coherent public-edge ownership model: adaptive MetalLB addressing,
+   Traefik as the supported cluster-edge controller, cert-manager bootstrap ownership, and no
+   competing public ingress path.
+4. Sprint 4.4 closes with a continuously supervised gateway daemon that keeps explicit public
+   subdomain Route 53 records current through `dns_write_gate`.
+5. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
    verification for `vscode.resolvefintech.com`.
-4. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
-5. No document under `documents/` carries a competing sprint narrative or completion-status track.
-6. The remaining legacy inventory is empty.
+6. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
+7. No document under `documents/` carries a competing sprint narrative or completion-status track.
+8. The remaining legacy inventory is empty.
 
 ## Related Documents
 

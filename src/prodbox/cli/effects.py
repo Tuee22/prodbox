@@ -417,6 +417,23 @@ class CheckPortAvailability(Effect[tuple[PortAvailability, ...]]):
 
 
 # =============================================================================
+# RKE2 Configuration Effects
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class EnsureRke2IngressController(Effect[bool]):
+    """
+    Ensure the RKE2 config disables bundled ingress-controller ownership.
+
+    Returns: True when the config file changed, False when already compliant
+    """
+
+    file_path: Path
+    controller: Literal["none"] = "none"
+
+
+# =============================================================================
 # Kubernetes Effects
 # =============================================================================
 
@@ -1195,11 +1212,11 @@ class StartGatewayDaemon(Effect[None]):
 
 
 @dataclass(frozen=True)
-class QueryGatewayState(Effect[str]):
+class QueryGatewayState(Effect[dict[str, object]]):
     """
     Query running gateway daemon REST API for current state.
 
-    Returns: JSON state string
+    Returns: Parsed gateway state mapping
 
     Example:
         >>> QueryGatewayState(
@@ -1390,6 +1407,7 @@ __all__ = [
     # Host
     "PortAvailability",
     "CheckPortAvailability",
+    "EnsureRke2IngressController",
     # Kubernetes
     "RunKubectlCommand",
     "CaptureKubectlOutput",

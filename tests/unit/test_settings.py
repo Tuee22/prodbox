@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -10,7 +11,17 @@ import pytest
 from pydantic import ValidationError
 
 import prodbox.settings as settings_module
-from prodbox.settings import Settings, clear_settings_cache, get_settings
+from prodbox.settings import (
+    LanAddressing,
+    Settings,
+    _build_ifreq,
+    _default_route_interface_name,
+    _discover_lan_addressing_or_none,
+    _select_metallb_range,
+    clear_settings_cache,
+    discover_lan_addressing,
+    get_settings,
+)
 
 
 def _write_aws_auth_dotenv(path: Path) -> None:
@@ -31,6 +42,24 @@ def _write_aws_auth_dotenv(path: Path) -> None:
 def _patch_repository_root(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
     """Point settings resolution at an isolated repository root for one test."""
     monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", path)
+
+
+def _lan_addressing(
+    *,
+    interface_name: str = "enp1s0",
+    interface_ipv4: str = "192.168.1.10",
+    network_cidr: str = "192.168.1.0/24",
+    metallb_pool: str = "192.168.1.240-192.168.1.250",
+    ingress_lb_ip: str = "192.168.1.240",
+) -> LanAddressing:
+    """Return deterministic LAN discovery data for tests."""
+    return LanAddressing(
+        interface_name=interface_name,
+        interface_ipv4=interface_ipv4,
+        network_cidr=network_cidr,
+        metallb_pool=metallb_pool,
+        ingress_lb_ip=ingress_lb_ip,
+    )
 
 
 class TestSettings:
@@ -144,7 +173,13 @@ class TestSettings:
             "ROUTE53_ZONE_ID": "Z123",
             "ACME_EMAIL": "test@example.com",
         }
-        with patch.dict(os.environ, env, clear=True):
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "prodbox.settings._discover_lan_addressing_or_none",
+                return_value=_lan_addressing(),
+            ),
+        ):
             settings = Settings()
 
             assert settings.aws_region == "us-east-1"
@@ -153,6 +188,9 @@ class TestSettings:
             assert settings.metallb_pool == "192.168.1.240-192.168.1.250"
             assert settings.ingress_lb_ip == "192.168.1.240"
             assert settings.pulumi_stack == "home"
+            assert settings.active_lan_interface == "enp1s0"
+            assert settings.active_lan_ipv4 == "192.168.1.10"
+            assert settings.active_lan_network_cidr == "192.168.1.0/24"
 
     def test_settings_kubeconfig_expansion(self, mock_env: dict[str, str]) -> None:
         """Settings should expand ~ in kubeconfig path."""
@@ -180,6 +218,91 @@ class TestSettings:
 
             errors = exc_info.value.errors()
             assert any("demo_ttl" in str(e["loc"]) for e in errors)
+
+    def test_settings_auto_derives_local_edge_defaults(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Settings should derive canonical LAN-backed defaults when blank."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        _write_aws_auth_dotenv(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        env = {
+            "ROUTE53_ZONE_ID": "Z123",
+            "ACME_EMAIL": "test@example.com",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "prodbox.settings._discover_lan_addressing_or_none",
+                return_value=_lan_addressing(
+                    interface_name="eno1",
+                    interface_ipv4="192.168.50.20",
+                    network_cidr="192.168.50.0/24",
+                    metallb_pool="192.168.50.240-192.168.50.250",
+                    ingress_lb_ip="192.168.50.240",
+                ),
+            ),
+        ):
+            settings = Settings()
+
+        assert settings.metallb_pool == "192.168.50.240-192.168.50.250"
+        assert settings.ingress_lb_ip == "192.168.50.240"
+        assert settings.active_lan_interface == "eno1"
+        assert settings.active_lan_ipv4 == "192.168.50.20"
+        assert settings.active_lan_network_cidr == "192.168.50.0/24"
+
+    def test_settings_preserves_explicit_edge_overrides_when_discovery_available(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Explicit MetalLB overrides should win over auto-discovery."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        _write_aws_auth_dotenv(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        env = {
+            "ROUTE53_ZONE_ID": "Z123",
+            "ACME_EMAIL": "test@example.com",
+            "METALLB_POOL": "10.0.0.100-10.0.0.110",
+            "INGRESS_LB_IP": "10.0.0.100",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch(
+                "prodbox.settings._discover_lan_addressing_or_none",
+                return_value=_lan_addressing(interface_ipv4="192.168.9.20"),
+            ),
+        ):
+            settings = Settings()
+
+        assert settings.metallb_pool == "10.0.0.100-10.0.0.110"
+        assert settings.ingress_lb_ip == "10.0.0.100"
+        assert settings.active_lan_ipv4 == "192.168.9.20"
+
+    def test_settings_requires_explicit_edge_defaults_when_discovery_unavailable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Blank edge defaults should fail fast when LAN discovery is unavailable."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        _write_aws_auth_dotenv(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        env = {
+            "ROUTE53_ZONE_ID": "Z123",
+            "ACME_EMAIL": "test@example.com",
+        }
+        with (
+            patch.dict(os.environ, env, clear=True),
+            patch("prodbox.settings._discover_lan_addressing_or_none", return_value=None),
+            pytest.raises(ValidationError, match="Set METALLB_POOL and INGRESS_LB_IP explicitly"),
+        ):
+            Settings()
 
     def test_settings_load_repo_dotenv_from_nested_subdirectory(
         self,
@@ -307,6 +430,107 @@ class TestRenderedSettings:
         assert "ROUTE53_ZONE_ID=" in template
         assert "AWS_REGION=us-east-1" in template
         assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in template
+        assert "METALLB_POOL=" in template
+        assert "INGRESS_LB_IP=" in template
+        assert "PULUMI_ENABLE_DNS_BOOTSTRAP=true" in template
+
+
+class TestLanDiscoveryHelpers:
+    """Tests for adaptive LAN discovery helpers."""
+
+    def test_build_ifreq_returns_fixed_width_buffer(self) -> None:
+        """ifreq helper should always emit the kernel-sized buffer."""
+        buffer = _build_ifreq("eth0")
+
+        assert len(buffer) == 256
+        assert buffer.startswith(b"eth0")
+
+    def test_default_route_interface_name_reads_linux_default_route(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Default-route parsing should return the interface with the gateway flag."""
+        route_path = tmp_path / "route"
+        route_path.write_text(
+            "\n".join(
+                [
+                    "Iface\tDestination\tGateway\tFlags\tRefCnt\tUse\tMetric\tMask\tMTU\tWindow\tIRTT",
+                    "lo\t00000000\t00000000\t0001\t0\t0\t0\t00000000\t0\t0\t0",
+                    "eno1\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings_module, "_PROC_ROUTE_PATH", route_path)
+
+        assert _default_route_interface_name() == "eno1"
+
+    def test_select_metallb_range_prefers_canonical_offset_window(self) -> None:
+        """A standard /24 should use the canonical .240-.250 window."""
+        network = ipaddress.ip_network("192.168.40.0/24")
+        interface_ip = ipaddress.ip_address("192.168.40.10")
+
+        metallb_pool, ingress_lb_ip = _select_metallb_range(
+            network=network,
+            interface_ip=interface_ip,
+        )
+
+        assert metallb_pool == "192.168.40.240-192.168.40.250"
+        assert ingress_lb_ip == "192.168.40.240"
+
+    def test_select_metallb_range_falls_back_away_from_interface_collision(self) -> None:
+        """When the interface IP is inside the preferred window, choose a safe fallback."""
+        network = ipaddress.ip_network("192.168.40.0/24")
+        interface_ip = ipaddress.ip_address("192.168.40.245")
+
+        metallb_pool, ingress_lb_ip = _select_metallb_range(
+            network=network,
+            interface_ip=interface_ip,
+        )
+
+        assert metallb_pool == "192.168.40.234-192.168.40.244"
+        assert ingress_lb_ip == "192.168.40.234"
+
+    def test_select_metallb_range_rejects_tiny_subnet(self) -> None:
+        """Tiny subnets should fail fast instead of inventing invalid defaults."""
+        network = ipaddress.ip_network("192.168.40.0/29")
+        interface_ip = ipaddress.ip_address("192.168.40.2")
+
+        with pytest.raises(ValueError, match="too small"):
+            _select_metallb_range(network=network, interface_ip=interface_ip)
+
+    def test_discover_lan_addressing_uses_ioctl_and_default_route(
+        self,
+    ) -> None:
+        """LAN discovery should derive the active subnet and canonical pool."""
+        discover_lan_addressing.cache_clear()
+        with (
+            patch("prodbox.settings._default_route_interface_name", return_value="eno1"),
+            patch(
+                "prodbox.settings._ioctl_ipv4_value",
+                side_effect=["192.168.77.15", "255.255.255.0"],
+            ),
+        ):
+            discovered = discover_lan_addressing()
+        discover_lan_addressing.cache_clear()
+
+        assert discovered.interface_name == "eno1"
+        assert discovered.interface_ipv4 == "192.168.77.15"
+        assert discovered.network_cidr == "192.168.77.0/24"
+        assert discovered.metallb_pool == "192.168.77.240-192.168.77.250"
+        assert discovered.ingress_lb_ip == "192.168.77.240"
+
+    def test_discover_lan_addressing_or_none_handles_os_error(self) -> None:
+        """OSError during discovery should return None for caller fallback handling."""
+        with patch("prodbox.settings.discover_lan_addressing", side_effect=OSError("boom")):
+            assert _discover_lan_addressing_or_none() is None
+
+    def test_discover_lan_addressing_or_none_handles_value_error(self) -> None:
+        """ValueError during discovery should also return None."""
+        with patch("prodbox.settings.discover_lan_addressing", side_effect=ValueError("boom")):
+            assert _discover_lan_addressing_or_none() is None
 
 
 class TestGetSettings:

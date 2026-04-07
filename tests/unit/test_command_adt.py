@@ -14,12 +14,14 @@ from prodbox.cli.command_adt import (
     EnvTemplateCommand,
     EnvValidateCommand,
     GatewayConfigGenCommand,
+    GatewayInstallServiceCommand,
     GatewayStartCommand,
     GatewayStatusCommand,
     HostCheckPortsCommand,
     HostEnsureToolsCommand,
     HostFirewallCommand,
     HostInfoCommand,
+    HostPublicEdgeCommand,
     K8sHealthCommand,
     K8sLogsCommand,
     K8sWaitCommand,
@@ -41,12 +43,14 @@ from prodbox.cli.command_adt import (
     env_template_command,
     env_validate_command,
     gateway_config_gen_command,
+    gateway_install_service_command,
     gateway_start_command,
     gateway_status_command,
     host_check_ports_command,
     host_ensure_tools_command,
     host_firewall_command,
     host_info_command,
+    host_public_edge_command,
     # Utility functions
     is_linux,
     k8s_health_command,
@@ -161,6 +165,14 @@ class TestHostCommands:
         match host_firewall_command():
             case Success(cmd):
                 assert isinstance(cmd, HostFirewallCommand)
+            case Failure(_):
+                pytest.fail("Expected Success")
+
+    def test_host_public_edge_command(self) -> None:
+        """host_public_edge_command should create command."""
+        match host_public_edge_command():
+            case Success(cmd):
+                assert isinstance(cmd, HostPublicEdgeCommand)
             case Failure(_):
                 pytest.fail("Expected Success")
 
@@ -542,6 +554,54 @@ class TestGatewayCommands:
             case Failure(error):
                 assert "required" in error
 
+    def test_gateway_install_service_command_valid(self, tmp_path: Path) -> None:
+        """gateway_install_service_command succeeds with valid config and service name."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}", encoding="utf-8")
+        unit_path = tmp_path / "prodbox-gateway.service"
+
+        match gateway_install_service_command(
+            config_path=config_file,
+            output_path=unit_path,
+            service_name=" prodbox-gateway.service ",
+        ):
+            case Success(cmd):
+                assert isinstance(cmd, GatewayInstallServiceCommand)
+                assert cmd.config_path == config_file
+                assert cmd.output_path == unit_path
+                assert cmd.service_name == "prodbox-gateway.service"
+            case Failure(_):
+                pytest.fail("Expected Success")
+
+    def test_gateway_install_service_command_missing_config(self, tmp_path: Path) -> None:
+        """gateway_install_service_command should fail when config is missing."""
+        missing = tmp_path / "missing.json"
+
+        match gateway_install_service_command(
+            config_path=missing,
+            output_path=tmp_path / "prodbox-gateway.service",
+            service_name="prodbox-gateway.service",
+        ):
+            case Success(_):
+                pytest.fail("Expected Failure for missing config")
+            case Failure(error):
+                assert "not found" in error
+
+    def test_gateway_install_service_command_requires_service_name(self, tmp_path: Path) -> None:
+        """gateway_install_service_command should reject blank service names."""
+        config_file = tmp_path / "config.json"
+        config_file.write_text("{}", encoding="utf-8")
+
+        match gateway_install_service_command(
+            config_path=config_file,
+            output_path=tmp_path / "prodbox-gateway.service",
+            service_name="   ",
+        ):
+            case Success(_):
+                pytest.fail("Expected Failure for blank service name")
+            case Failure(error):
+                assert "Service name is required" in error
+
 
 class TestUtilityFunctions:
     """Tests for utility functions."""
@@ -578,6 +638,7 @@ class TestUtilityFunctions:
         assert requires_linux(HostCheckPortsCommand()) is False
         assert requires_linux(HostEnsureToolsCommand()) is False
         assert requires_linux(HostFirewallCommand()) is False
+        assert requires_linux(HostPublicEdgeCommand()) is False
 
     def test_requires_linux_false_for_dns(self) -> None:
         """requires_linux should return False for DNS inspection commands."""
@@ -625,11 +686,12 @@ class TestUtilityFunctions:
         assert requires_settings(EnvTemplateCommand()) is False
 
     def test_requires_settings_host_commands(self) -> None:
-        """requires_settings should return False for host commands."""
+        """requires_settings should distinguish host diagnostics from simple host commands."""
         assert requires_settings(HostInfoCommand()) is False
         assert requires_settings(HostCheckPortsCommand()) is False
         assert requires_settings(HostEnsureToolsCommand()) is False
         assert requires_settings(HostFirewallCommand()) is False
+        assert requires_settings(HostPublicEdgeCommand()) is True
 
     def test_requires_settings_rke2_commands(self) -> None:
         """requires_settings should return False for RKE2 commands."""
@@ -642,12 +704,22 @@ class TestUtilityFunctions:
         assert requires_settings(RKE2LogsCommand()) is False
 
     def test_requires_linux_false_for_gateway(self) -> None:
-        """requires_linux should return False for gateway commands."""
+        """requires_linux should require Linux only for service installation."""
         assert requires_linux(GatewayStartCommand(config_path=Path("/tmp/c.json"))) is False
         assert requires_linux(GatewayStatusCommand(config_path=Path("/tmp/c.json"))) is False
         assert (
             requires_linux(GatewayConfigGenCommand(output_path=Path("/tmp/o.json"), node_id="n"))
             is False
+        )
+        assert (
+            requires_linux(
+                GatewayInstallServiceCommand(
+                    config_path=Path("/tmp/c.json"),
+                    output_path=Path("/tmp/prodbox-gateway.service"),
+                    service_name="prodbox-gateway.service",
+                )
+            )
+            is True
         )
 
     def test_requires_settings_false_for_gateway(self) -> None:
@@ -656,5 +728,15 @@ class TestUtilityFunctions:
         assert requires_settings(GatewayStatusCommand(config_path=Path("/tmp/c.json"))) is False
         assert (
             requires_settings(GatewayConfigGenCommand(output_path=Path("/tmp/o.json"), node_id="n"))
+            is False
+        )
+        assert (
+            requires_settings(
+                GatewayInstallServiceCommand(
+                    config_path=Path("/tmp/c.json"),
+                    output_path=Path("/tmp/prodbox-gateway.service"),
+                    service_name="prodbox-gateway.service",
+                )
+            )
             is False
         )

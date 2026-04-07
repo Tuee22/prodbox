@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import pulumi
 
+from prodbox.infra.cert_manager import deploy_cert_manager
 from prodbox.infra.cluster_issuer import deploy_cluster_issuer
 from prodbox.infra.dns import deploy_dns
 from prodbox.infra.ingress import deploy_ingress
@@ -31,11 +32,14 @@ def main() -> None:
 
     # Create providers
     k8s_provider = create_k8s_provider(settings)
-    aws_provider = create_aws_provider(settings)
 
-    # Phase 1: DNS Record (independent)
-    # Pulumi owns existence, gateway DNS writes update the IP value
-    _dns_resources = deploy_dns(settings, aws_provider)
+    # Phase 1: Optional DNS bootstrap
+    # Pulumi owns record existence when enabled; gateway DNS writes update the IP value.
+    if settings.pulumi_enable_dns_bootstrap:
+        aws_provider = create_aws_provider(settings)
+        _dns_resources = deploy_dns(settings, aws_provider)
+    else:
+        pulumi.export("dns_bootstrap", "disabled")
 
     # Phase 2: MetalLB (networking layer)
     # Provides LoadBalancer IPs for services
@@ -50,8 +54,12 @@ def main() -> None:
         prodbox_id=prodbox_id,
     )
 
-    # Phase 4: cert-manager is pre-installed on this cluster (v1.20.1).
-    # Skip Helm install; create only the ClusterIssuer.
+    # Phase 4: cert-manager (TLS controller bootstrap)
+    cert_manager_resources = deploy_cert_manager(
+        settings,
+        k8s_provider,
+        prodbox_id=prodbox_id,
+    )
 
     # Phase 5: ClusterIssuer (cert-manager CRDs already present)
     # Let's Encrypt issuer with HTTP-01 validation through Traefik
@@ -59,6 +67,7 @@ def main() -> None:
         settings,
         k8s_provider,
         prodbox_id=prodbox_id,
+        depends_on=(cert_manager_resources.release, _ingress_resources.release),
     )
 
     # Summary exports
@@ -69,6 +78,7 @@ def main() -> None:
             "ingress_ip": settings.ingress_lb_ip,
             "metallb_pool": settings.metallb_pool,
             "cluster_issuer": "letsencrypt-http01",
+            "dns_bootstrap_enabled": settings.pulumi_enable_dns_bootstrap,
             "prodbox_id": prodbox_id,
         },
     )

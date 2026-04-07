@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import fcntl
+import ipaddress
+import socket
+import struct
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -19,14 +23,130 @@ from pydantic_settings import (
 
 from prodbox.lib.aws_auth import assert_no_ambient_aws_auth_env_vars, load_dotenv_aws_auth
 
-RenderedSettingValue = str | int | Path | None
+RenderedSettingValue = str | int | bool | Path | None
 
 REPOSITORY_ROOT: Path = Path(__file__).resolve().parents[2]
+_PROC_ROUTE_PATH: Path = Path("/proc/net/route")
+_DEFAULT_METALLB_POOL_SIZE: int = 11
+_DEFAULT_METALLB_POOL_OFFSET: int = 240
+_IFREQ_SIZE: int = 256
+_IFREQ_NAME_BYTES: int = 15
+_SIOCGIFADDR: int = 0x8915
+_SIOCGIFNETMASK: int = 0x891B
 
 
 def _resolve_repo_dotenv_path() -> Path:
     """Resolve the fixed repository-root `.env` path inside the outer container."""
     return REPOSITORY_ROOT / ".env"
+
+
+@dataclass(frozen=True)
+class LanAddressing:
+    """Detected host LAN facts plus deterministic MetalLB defaults."""
+
+    interface_name: str
+    interface_ipv4: str
+    network_cidr: str
+    metallb_pool: str
+    ingress_lb_ip: str
+
+
+def _build_ifreq(interface_name: str) -> bytes:
+    """Build a fixed-size ifreq buffer for ioctl lookups."""
+    return struct.pack("256s", interface_name.encode("utf-8")[:_IFREQ_NAME_BYTES])
+
+
+def _ioctl_ipv4_value(interface_name: str, request_code: int) -> str:
+    """Read one IPv4 value from an interface via ioctl."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        packed = fcntl.ioctl(sock.fileno(), request_code, _build_ifreq(interface_name))
+    return socket.inet_ntoa(packed[20:24])
+
+
+def _default_route_interface_name() -> str:
+    """Resolve the Linux default-route interface from `/proc/net/route`."""
+    route_lines = _PROC_ROUTE_PATH.read_text(encoding="utf-8").splitlines()[1:]
+    for line in route_lines:
+        columns = line.split()
+        if len(columns) < 4:
+            continue
+        interface_name = columns[0]
+        destination = columns[1]
+        flags = int(columns[3], 16)
+        if destination == "00000000" and (flags & 0x2) != 0:
+            return interface_name
+    raise ValueError("could not determine the default-route interface from /proc/net/route")
+
+
+def _select_metallb_range(
+    *,
+    network: ipaddress.IPv4Network,
+    interface_ip: ipaddress.IPv4Address,
+) -> tuple[str, str]:
+    """Choose a deterministic MetalLB pool and ingress IP on the active subnet."""
+    min_host = int(network.network_address) + 1
+    max_host = int(network.broadcast_address) - 1
+    if (max_host - min_host + 1) < _DEFAULT_METALLB_POOL_SIZE:
+        raise ValueError(
+            f"active subnet {network.with_prefixlen} is too small for the default MetalLB pool"
+        )
+
+    preferred_start = int(network.network_address) + _DEFAULT_METALLB_POOL_OFFSET
+    preferred_end = preferred_start + _DEFAULT_METALLB_POOL_SIZE - 1
+    interface_ip_int = int(interface_ip)
+    if (
+        preferred_start >= min_host
+        and preferred_end <= max_host
+        and not (preferred_start <= interface_ip_int <= preferred_end)
+    ):
+        start = preferred_start
+        end = preferred_end
+    else:
+        end = max_host
+        start = end - _DEFAULT_METALLB_POOL_SIZE + 1
+        if start <= interface_ip_int <= end:
+            end = interface_ip_int - 1
+            start = end - _DEFAULT_METALLB_POOL_SIZE + 1
+        if start < min_host:
+            raise ValueError(
+                "could not allocate a deterministic MetalLB range on the active subnet "
+                f"{network.with_prefixlen}"
+            )
+
+    ingress_ip = str(ipaddress.IPv4Address(start))
+    metallb_pool = f"{ipaddress.IPv4Address(start)}-{ipaddress.IPv4Address(end)}"
+    return metallb_pool, ingress_ip
+
+
+@lru_cache(maxsize=1)  # type: ignore[misc]  # lru_cache signature contains Callable[..., T]
+def discover_lan_addressing() -> LanAddressing:
+    """Detect the active LAN subnet and derive canonical MetalLB defaults."""
+    interface_name = _default_route_interface_name()
+    interface_ipv4 = _ioctl_ipv4_value(interface_name, _SIOCGIFADDR)
+    interface_netmask = _ioctl_ipv4_value(interface_name, _SIOCGIFNETMASK)
+    interface = ipaddress.IPv4Interface(f"{interface_ipv4}/{interface_netmask}")
+    network = interface.network
+    metallb_pool, ingress_lb_ip = _select_metallb_range(
+        network=network,
+        interface_ip=interface.ip,
+    )
+    return LanAddressing(
+        interface_name=interface_name,
+        interface_ipv4=str(interface.ip),
+        network_cidr=network.with_prefixlen,
+        metallb_pool=metallb_pool,
+        ingress_lb_ip=ingress_lb_ip,
+    )
+
+
+def _discover_lan_addressing_or_none() -> LanAddressing | None:
+    """Return LAN discovery results when available."""
+    try:
+        return discover_lan_addressing()
+    except OSError:
+        return None
+    except ValueError:
+        return None
 
 
 class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSettings uses Any internally
@@ -154,15 +274,36 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
     metallb_pool: Annotated[
         str,
         Field(
-            default="192.168.1.240-192.168.1.250",
-            description="MetalLB IP address pool range",
+            default="",
+            description="MetalLB IP address pool range; blank enables active-subnet auto-discovery",
         ),
     ]
     ingress_lb_ip: Annotated[
         str,
         Field(
-            default="192.168.1.240",
-            description="Reserved IP for ingress LoadBalancer",
+            default="",
+            description="Reserved ingress LoadBalancer IP; blank enables active-subnet auto-discovery",
+        ),
+    ]
+    active_lan_interface: Annotated[
+        str,
+        Field(
+            default="",
+            description="Detected active LAN interface for auto-derived local edge defaults",
+        ),
+    ]
+    active_lan_ipv4: Annotated[
+        str,
+        Field(
+            default="",
+            description="Detected active LAN IPv4 for auto-derived local edge defaults",
+        ),
+    ]
+    active_lan_network_cidr: Annotated[
+        str,
+        Field(
+            default="",
+            description="Detected active LAN subnet for auto-derived local edge defaults",
         ),
     ]
 
@@ -196,6 +337,13 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="Bootstrap-only public IP override for initial DNS record creation",
         ),
     ]
+    pulumi_enable_dns_bootstrap: Annotated[
+        bool,
+        Field(
+            default=True,
+            description="Whether `prodbox pulumi up` manages Route 53 bootstrap records",
+        ),
+    ]
 
     @field_validator("kubeconfig", mode="before")
     @classmethod
@@ -212,6 +360,34 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         assert_no_ambient_aws_auth_env_vars()
         load_dotenv_aws_auth(_resolve_repo_dotenv_path())
         return data
+
+    @model_validator(mode="after")
+    def derive_local_edge_defaults(self) -> Settings:
+        """Populate adaptive LAN-derived defaults for the supported local-edge path."""
+        discovered = _discover_lan_addressing_or_none()
+        if discovered is not None:
+            if self.active_lan_interface == "":
+                self.active_lan_interface = discovered.interface_name
+            if self.active_lan_ipv4 == "":
+                self.active_lan_ipv4 = discovered.interface_ipv4
+            if self.active_lan_network_cidr == "":
+                self.active_lan_network_cidr = discovered.network_cidr
+
+        if self.metallb_pool != "" and self.ingress_lb_ip != "":
+            return self
+
+        match discovered:
+            case LanAddressing() as lan_addressing:
+                if self.metallb_pool == "":
+                    self.metallb_pool = lan_addressing.metallb_pool
+                if self.ingress_lb_ip == "":
+                    self.ingress_lb_ip = lan_addressing.ingress_lb_ip
+                return self
+            case None:
+                raise ValueError(
+                    "Failed to auto-discover the active LAN subnet for MetalLB defaults. "
+                    "Set METALLB_POOL and INGRESS_LB_IP explicitly."
+                )
 
     def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
         """Return settings keyed by attribute name for deterministic display/tests."""
@@ -288,6 +464,8 @@ def _format_rendered_value(
     """Format one setting value for display."""
     if value is None:
         return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if sensitive and not show_secrets:
         return _mask_secret(str(value))
     return value
@@ -406,18 +584,18 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         attribute="metallb_pool",
         env_var="METALLB_POOL",
-        description="MetalLB IP address pool range",
+        description="MetalLB IP address pool range override (blank = auto-discover active LAN)",
         getter=lambda settings: settings.metallb_pool,
         required=False,
-        template_default="192.168.1.240-192.168.1.250",
+        template_default="",
     ),
     SettingSpec(
         attribute="ingress_lb_ip",
         env_var="INGRESS_LB_IP",
-        description="Reserved ingress LoadBalancer IP",
+        description="Reserved ingress LoadBalancer IP override (blank = auto-discover active LAN)",
         getter=lambda settings: settings.ingress_lb_ip,
         required=False,
-        template_default="192.168.1.240",
+        template_default="",
     ),
     SettingSpec(
         attribute="acme_email",
@@ -449,6 +627,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         description="Bootstrap-only public IP override for DNS creation",
         getter=lambda settings: settings.bootstrap_public_ip_override,
         required=False,
+    ),
+    SettingSpec(
+        attribute="pulumi_enable_dns_bootstrap",
+        env_var="PULUMI_ENABLE_DNS_BOOTSTRAP",
+        description="Whether `prodbox pulumi up` should manage Route 53 bootstrap records",
+        getter=lambda settings: settings.pulumi_enable_dns_bootstrap,
+        required=False,
+        template_default="true",
     ),
 )
 

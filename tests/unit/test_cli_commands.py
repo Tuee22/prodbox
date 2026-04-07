@@ -15,6 +15,7 @@ Following the Interpreter-Only Mocking Doctrine:
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
@@ -221,6 +222,21 @@ class TestHostCommands:
         assert result.exit_code == 1
         assert "Firewall check failed" in result.output
 
+    def test_host_public_edge_success(self, runner: CliRunner) -> None:
+        """host public-edge should invoke execute_command."""
+        with patch("prodbox.cli.host.execute_command", return_value=0) as mock_exec:
+            result = runner.invoke(cli, ["host", "public-edge"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_host_group_help_lists_public_edge(self, runner: CliRunner) -> None:
+        """host --help should advertise the public-edge diagnostic command."""
+        result = runner.invoke(cli, ["host", "--help"])
+
+        assert result.exit_code == 0
+        assert "public-edge" in result.output
+
 
 # =============================================================================
 # K8s Command Tests
@@ -383,6 +399,79 @@ class TestPulumiCommands:
         result = runner.invoke(cli, ["pulumi", "stack-init"])
         assert result.exit_code != 0
         assert "Missing argument" in result.output
+
+
+# =============================================================================
+# Gateway Command Tests
+# =============================================================================
+
+
+class TestGatewayCommands:
+    """Tests for gateway.py CLI commands."""
+
+    def test_gateway_group_help(self, runner: CliRunner) -> None:
+        """gateway group should display help."""
+        result = runner.invoke(cli, ["gateway", "--help"])
+
+        assert result.exit_code == 0
+        assert "Gateway daemon management" in result.output
+        assert "install-service" in result.output
+
+    def test_gateway_start_success(self, runner: CliRunner, tmp_path: Path) -> None:
+        """gateway start should invoke execute_command."""
+        config_path = tmp_path / "gateway.json"
+        config_path.write_text("{}", encoding="utf-8")
+
+        with patch("prodbox.cli.gateway.execute_command", return_value=0) as mock_exec:
+            result = runner.invoke(cli, ["gateway", "start", str(config_path)])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_gateway_status_success(self, runner: CliRunner, tmp_path: Path) -> None:
+        """gateway status should invoke execute_command."""
+        config_path = tmp_path / "gateway.json"
+        config_path.write_text("{}", encoding="utf-8")
+
+        with patch("prodbox.cli.gateway.execute_command", return_value=0) as mock_exec:
+            result = runner.invoke(cli, ["gateway", "status", str(config_path)])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_gateway_config_gen_success(self, runner: CliRunner, tmp_path: Path) -> None:
+        """gateway config-gen should invoke execute_command."""
+        output_path = tmp_path / "gateway.json"
+
+        with patch("prodbox.cli.gateway.execute_command", return_value=0) as mock_exec:
+            result = runner.invoke(
+                cli,
+                ["gateway", "config-gen", str(output_path), "--node-id", "node-a"],
+            )
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_gateway_install_service_success(self, runner: CliRunner, tmp_path: Path) -> None:
+        """gateway install-service should invoke execute_command."""
+        config_path = tmp_path / "gateway.json"
+        config_path.write_text("{}", encoding="utf-8")
+        unit_path = tmp_path / "prodbox-gateway.service"
+
+        with patch("prodbox.cli.gateway.execute_command", return_value=0) as mock_exec:
+            result = runner.invoke(
+                cli,
+                [
+                    "gateway",
+                    "install-service",
+                    str(config_path),
+                    "--output-path",
+                    str(unit_path),
+                ],
+            )
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
 
 
 # =============================================================================
@@ -618,6 +707,39 @@ class TestCommandConstructorFailures:
 
         assert result.exit_code == 1
         assert "Missing tools" in result.output
+
+    def test_host_public_edge_command_failure(self, runner: CliRunner) -> None:
+        """host public-edge should handle command constructor Failure."""
+        from prodbox.cli.types import Failure
+
+        with patch(
+            "prodbox.cli.host.host_public_edge_command",
+            return_value=Failure("Edge diagnostic unavailable"),
+        ):
+            result = runner.invoke(cli, ["host", "public-edge"])
+
+        assert result.exit_code == 1
+        assert "Edge diagnostic unavailable" in result.output
+
+    def test_gateway_install_service_command_failure(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+    ) -> None:
+        """gateway install-service should handle command constructor Failure."""
+        from prodbox.cli.types import Failure
+
+        config_path = tmp_path / "gateway.json"
+        config_path.write_text("{}", encoding="utf-8")
+
+        with patch(
+            "prodbox.cli.gateway.gateway_install_service_command",
+            return_value=Failure("Invalid unit path"),
+        ):
+            result = runner.invoke(cli, ["gateway", "install-service", str(config_path)])
+
+        assert result.exit_code == 1
+        assert "Invalid unit path" in result.output
 
     def test_host_check_ports_command_failure(self, runner: CliRunner) -> None:
         """host check-ports should handle command constructor Failure."""

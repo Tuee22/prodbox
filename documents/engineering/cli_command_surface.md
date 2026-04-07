@@ -68,6 +68,7 @@ Top-level commands:
 | `prodbox host check-ports` | none | none |
 | `prodbox host info` | none | none |
 | `prodbox host firewall` | none | none |
+| `prodbox host public-edge` | none | none |
 
 ### `prodbox rke2`
 
@@ -112,6 +113,7 @@ Top-level commands:
 | `prodbox gateway start` | `CONFIG_PATH` | none |
 | `prodbox gateway status` | `CONFIG_PATH` | none |
 | `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
+| `prodbox gateway install-service` | `CONFIG_PATH` | `--output-path` |
 
 ### `prodbox charts`
 

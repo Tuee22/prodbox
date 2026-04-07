@@ -96,6 +96,11 @@ class HostFirewallCommand:
     """Check and display firewall status."""
 
 
+@dataclass(frozen=True)
+class HostPublicEdgeCommand:
+    """Diagnose the canonical public-edge path for the VS Code host."""
+
+
 # =============================================================================
 # RKE2 Commands
 # =============================================================================
@@ -302,6 +307,15 @@ class GatewayConfigGenCommand:
     node_id: str
 
 
+@dataclass(frozen=True)
+class GatewayInstallServiceCommand:
+    """Install and enable the canonical systemd unit for the gateway daemon."""
+
+    config_path: Path
+    output_path: Path
+    service_name: str
+
+
 # =============================================================================
 # Chart Platform Commands
 # =============================================================================
@@ -361,6 +375,7 @@ Command = (
     | HostCheckPortsCommand
     | HostEnsureToolsCommand
     | HostFirewallCommand
+    | HostPublicEdgeCommand
     # RKE2
     | RKE2StatusCommand
     | RKE2StartCommand
@@ -385,6 +400,7 @@ Command = (
     | GatewayStartCommand
     | GatewayStatusCommand
     | GatewayConfigGenCommand
+    | GatewayInstallServiceCommand
     # Chart platform
     | ChartListCommand
     | ChartStatusCommand
@@ -478,6 +494,11 @@ def host_firewall_command() -> Result[HostFirewallCommand, str]:
         Success with HostFirewallCommand
     """
     return Success(HostFirewallCommand())
+
+
+def host_public_edge_command() -> Result[HostPublicEdgeCommand, str]:
+    """Create a HostPublicEdgeCommand."""
+    return Success(HostPublicEdgeCommand())
 
 
 def rke2_status_command() -> Result[RKE2StatusCommand, str]:
@@ -818,6 +839,26 @@ def gateway_config_gen_command(
     return Success(GatewayConfigGenCommand(output_path=output_path, node_id=node_id))
 
 
+def gateway_install_service_command(
+    *,
+    config_path: Path,
+    output_path: Path,
+    service_name: str,
+) -> Result[GatewayInstallServiceCommand, str]:
+    """Create a GatewayInstallServiceCommand."""
+    if not config_path.exists():
+        return Failure(f"Gateway config file not found: {config_path}")
+    if not service_name.strip():
+        return Failure("Service name is required")
+    return Success(
+        GatewayInstallServiceCommand(
+            config_path=config_path,
+            output_path=output_path,
+            service_name=service_name.strip(),
+        )
+    )
+
+
 def chart_list_command() -> Result[ChartListCommand, str]:
     """Create a ChartListCommand.
 
@@ -914,6 +955,8 @@ def requires_linux(command: Command) -> bool:
             | HostFirewallCommand()
         ):
             return False
+        case HostPublicEdgeCommand():
+            return False
         # DNS check - cross-platform (AWS API)
         case DNSCheckCommand():
             return False
@@ -928,6 +971,8 @@ def requires_linux(command: Command) -> bool:
         # Gateway commands - cross-platform
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
+        case GatewayInstallServiceCommand():
+            return True
         # Chart commands - cross-platform
         case (
             ChartListCommand()
@@ -972,6 +1017,8 @@ def requires_settings(command: Command) -> bool:
             | HostFirewallCommand()
         ):
             return False
+        case HostPublicEdgeCommand():
+            return True
         # RKE2 commands don't require prodbox settings (use system paths)
         case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand():
             return False
@@ -979,6 +1026,8 @@ def requires_settings(command: Command) -> bool:
             return False
         # Gateway commands don't require prodbox settings (use own config file)
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
+            return False
+        case GatewayInstallServiceCommand():
             return False
         # Chart commands require settings (FQDN, credentials, kubeconfig)
         case (
@@ -1006,6 +1055,7 @@ __all__ = [
     "HostCheckPortsCommand",
     "HostEnsureToolsCommand",
     "HostFirewallCommand",
+    "HostPublicEdgeCommand",
     # RKE2
     "RKE2StatusCommand",
     "RKE2StartCommand",
@@ -1030,6 +1080,7 @@ __all__ = [
     "GatewayStartCommand",
     "GatewayStatusCommand",
     "GatewayConfigGenCommand",
+    "GatewayInstallServiceCommand",
     # Chart platform
     "ChartListCommand",
     "ChartStatusCommand",
@@ -1043,6 +1094,7 @@ __all__ = [
     "host_check_ports_command",
     "host_ensure_tools_command",
     "host_firewall_command",
+    "host_public_edge_command",
     "rke2_status_command",
     "rke2_start_command",
     "rke2_stop_command",
@@ -1062,6 +1114,7 @@ __all__ = [
     "gateway_start_command",
     "gateway_status_command",
     "gateway_config_gen_command",
+    "gateway_install_service_command",
     # Chart smart constructors
     "chart_list_command",
     "chart_status_command",

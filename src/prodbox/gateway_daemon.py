@@ -731,6 +731,7 @@ class GatewayDaemon:
         self._rest_server: asyncio.AbstractServer | None = None
         self._event_server: asyncio.AbstractServer | None = None
         self._tasks: list[asyncio.Task[None]] = []
+        self._connection_tasks: set[asyncio.Task[None]] = set()
         self._running = False
         self._gateway_owner: str = config.node_id
         self._gateway_lock = asyncio.Lock()
@@ -740,7 +741,9 @@ class GatewayDaemon:
         if resolved_client is None and config.dns_write_gate is not None:
             resolved_client = Route53DnsWriteClient.from_gate(config.dns_write_gate)
         self._dns_client = resolved_client
+        self._last_public_ip_observed: str | None = None
         self._last_dns_write_ip: str | None = None
+        self._last_dns_write_at_utc: str | None = None
 
     def _validate_timing_contract(self) -> None:
         """Enforce timing relationships between daemon loops and gateway rule timeout."""
@@ -843,6 +846,23 @@ class GatewayDaemon:
             self._event_server = None
 
         await self._registry.close_all()
+        connection_tasks = tuple(self._connection_tasks)
+        for task in connection_tasks:
+            task.cancel()
+        if len(connection_tasks) > 0:
+            await asyncio.gather(*connection_tasks, return_exceptions=True)
+        self._connection_tasks.clear()
+
+    def _track_connection_task(self, task: asyncio.Task[None]) -> None:
+        """Track per-connection reader tasks so shutdown can await socket cleanup."""
+        self._connection_tasks.add(task)
+        task.add_done_callback(self._discard_connection_task)
+
+    def _discard_connection_task(self, task: asyncio.Task[None]) -> None:
+        """Remove a completed connection task and consume its terminal exception state."""
+        self._connection_tasks.discard(task)
+        with suppress(asyncio.CancelledError, Exception):
+            task.exception()
 
     @property
     def _local_endpoint(self) -> PeerEndpoint:
@@ -1014,6 +1034,7 @@ class GatewayDaemon:
         if self._dns_client is None:
             return
         ip_address = await self._dns_client.fetch_public_ip()
+        self._last_public_ip_observed = ip_address
         success = await self._dns_client.update_route53_record(
             zone_id=gate.zone_id,
             fqdn=gate.fqdn,
@@ -1022,6 +1043,7 @@ class GatewayDaemon:
         )
         if success:
             self._last_dns_write_ip = ip_address
+            self._last_dns_write_at_utc = _to_utc_iso(_utc_now())
             await self.emit_event(
                 "dns_write",
                 {
@@ -1084,7 +1106,7 @@ class GatewayDaemon:
         accepted = await self._registry.register_candidate(conn)
         if not accepted:
             return
-        asyncio.create_task(self._connection_reader_loop(conn))
+        self._track_connection_task(asyncio.create_task(self._connection_reader_loop(conn)))
 
     async def _handshake(self, *, peer: PeerEndpoint, channel: ChannelName) -> bool:
         payload = {
@@ -1289,6 +1311,7 @@ class GatewayDaemon:
                 elif method == "GET" and path == "/v1/state":
                     status = 200
                     owner = await self.gateway_owner()
+                    has_active_claim = await self.has_active_claim_from(self._config.node_id)
                     hashes = await self.log_event_hashes()
                     active_keys = await self.active_connection_keys()
                     mesh_peers = sorted(k.peer_node_id for k in active_keys if k.channel == "mesh")
@@ -1304,10 +1327,24 @@ class GatewayDaemon:
                     body = {
                         "node_id": self._config.node_id,
                         "gateway_owner": owner,
+                        "has_active_claim": has_active_claim,
                         "event_count": len(hashes),
                         "event_hashes": sorted(hashes),
                         "mesh_peers": mesh_peers,
                         "heartbeat_age_seconds": heartbeat_age_seconds,
+                        "last_public_ip_observed": self._last_public_ip_observed,
+                        "last_dns_write_ip": self._last_dns_write_ip,
+                        "last_dns_write_at_utc": self._last_dns_write_at_utc,
+                        "dns_write_gate": (
+                            None
+                            if self._config.dns_write_gate is None
+                            else {
+                                "zone_id": self._config.dns_write_gate.zone_id,
+                                "fqdn": self._config.dns_write_gate.fqdn,
+                                "ttl": self._config.dns_write_gate.ttl,
+                                "aws_region": self._config.dns_write_gate.aws_region,
+                            }
+                        ),
                     }
             await self._write_http_response(writer, status=status, payload=body)
         finally:
@@ -1360,7 +1397,7 @@ class GatewayDaemon:
             accepted = await self._registry.register_candidate(conn)
             if not accepted:
                 return
-            asyncio.create_task(self._connection_reader_loop(conn))
+            self._track_connection_task(asyncio.create_task(self._connection_reader_loop(conn)))
         except Exception:
             writer.close()
             await writer.wait_closed()

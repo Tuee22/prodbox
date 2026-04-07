@@ -147,6 +147,7 @@ from prodbox.cli.effects import (  # noqa: E402
     EnsureMinio,
     EnsureProdboxIdentityConfigMap,
     EnsureRetainedLocalStorage,
+    EnsureRke2IngressController,
     FetchPublicIP,
     GenerateGatewayConfig,
     GetJournalLogs,
@@ -954,6 +955,8 @@ class EffectInterpreter:
                 return await self._interpret_ensure_minio(effect)
             case EnsureProdboxIdentityConfigMap():
                 return await self._interpret_ensure_prodbox_identity_configmap(effect), None
+            case EnsureRke2IngressController():
+                return await self._interpret_ensure_rke2_ingress_controller(effect)
             case AnnotateProdboxManagedResources():
                 return await self._interpret_annotate_prodbox_managed_resources(effect), None
             case CleanupProdboxAnnotatedResources():
@@ -2321,6 +2324,24 @@ class EffectInterpreter:
             ]
         )
 
+    @staticmethod
+    def _render_rke2_config_with_ingress_controller(
+        *,
+        existing_content: str,
+        controller: str,
+    ) -> str:
+        """Ensure the RKE2 config contains one canonical ingress-controller setting."""
+        pattern = re.compile(r"(?m)^ingress-controller:\s*.+$")
+        canonical_line = f"ingress-controller: {controller}"
+        stripped = existing_content.rstrip("\n")
+        if stripped == "":
+            return canonical_line + "\n"
+        if pattern.search(stripped):
+            updated = pattern.sub(canonical_line, stripped)
+        else:
+            updated = stripped + "\n" + canonical_line
+        return updated.rstrip("\n") + "\n"
+
     async def _write_root_file_if_changed(
         self,
         *,
@@ -2356,6 +2377,34 @@ class EffectInterpreter:
                 f"Failed to write {file_path}: {self._stderr_or_stdout_text(write_output)}",
             )
         return True, None
+
+    async def _interpret_ensure_rke2_ingress_controller(
+        self,
+        effect: EnsureRke2IngressController,
+    ) -> tuple[ExecutionSummary, bool | None]:
+        """Ensure the RKE2 config disables bundled ingress-controller ownership."""
+        try:
+            existing_content = effect.file_path.read_text(encoding="utf-8")
+        except OSError:
+            existing_content = ""
+        updated_content = self._render_rke2_config_with_ingress_controller(
+            existing_content=existing_content,
+            controller=effect.controller,
+        )
+        changed, error = await self._write_root_file_if_changed(
+            file_path=effect.file_path,
+            content=updated_content,
+        )
+        if error is not None:
+            self.failed_effects += 1
+            return self._create_error_summary(error), None
+        self.successful_effects += 1
+        message = (
+            f"Updated RKE2 ingress-controller setting to {effect.controller}"
+            if changed
+            else f"RKE2 ingress-controller already set to {effect.controller}"
+        )
+        return self._create_success_summary(message), changed
 
     async def _ensure_harbor_project(
         self,
@@ -3916,7 +3965,7 @@ class EffectInterpreter:
     ) -> tuple[ExecutionSummary, object | None]:
         """Query running gateway daemon state via REST API."""
         try:
-            import json as json_mod
+            import ssl
 
             import httpx
 
@@ -3943,19 +3992,31 @@ class EffectInterpreter:
                 self.failed_effects += 1
                 return self._create_error_summary(f"Node {local} not in orders"), None
 
-            url = f"https://{endpoint.rest_host}:{endpoint.rest_port}/v1/state"
+            url = f"https://{endpoint.rest_dial_host}:{endpoint.rest_port}/v1/state"
             cert_tuple = (str(config.cert_file), str(config.key_file))
+            verify_context = ssl.create_default_context(
+                ssl.Purpose.SERVER_AUTH,
+                cafile=str(config.ca_file),
+            )
+            verify_context.check_hostname = False
             async with httpx.AsyncClient(
-                verify=str(config.ca_file),
+                verify=verify_context,
                 cert=cert_tuple,
                 timeout=5.0,
             ) as client:
                 response = await client.get(url)
                 state_text = response.text
+                response.raise_for_status()
 
             self.successful_effects += 1
-            state_obj: object = json_mod.loads(state_text)
-            return self._create_success_summary("Gateway state retrieved"), state_obj
+            match _parse_json(state_text):
+                case dict() as state_mapping:
+                    return self._create_success_summary("Gateway state retrieved"), state_mapping
+                case None:
+                    self.failed_effects += 1
+                    return self._create_error_summary(
+                        "Gateway state response was not a JSON object"
+                    ), None
 
         except Exception as e:
             self.failed_effects += 1
@@ -3967,8 +4028,10 @@ class EffectInterpreter:
     ) -> ExecutionSummary:
         """Generate a template gateway config file."""
         try:
-            import json as json_mod
+            from prodbox.settings import Settings
 
+            settings = Settings()
+            canonical_public_fqdn = settings.vscode_fqdn or settings.demo_fqdn
             template: dict[str, object] = {
                 "node_id": effect.node_id,
                 "cert_file": f"/path/to/{effect.node_id}.crt",
@@ -3981,8 +4044,14 @@ class EffectInterpreter:
                 "heartbeat_interval_seconds": 1.0,
                 "reconnect_interval_seconds": 1.0,
                 "sync_interval_seconds": 5.0,
+                "dns_write_gate": {
+                    "zone_id": settings.route53_zone_id,
+                    "fqdn": canonical_public_fqdn,
+                    "ttl": settings.demo_ttl,
+                    "aws_region": settings.aws_region,
+                },
             }
-            content = json_mod.dumps(template, indent=2, sort_keys=True) + "\n"
+            content = json.dumps(template, indent=2, sort_keys=True) + "\n"
             effect.output_path.write_text(content, encoding="utf-8")
 
             self.successful_effects += 1

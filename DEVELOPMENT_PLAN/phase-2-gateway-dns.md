@@ -11,8 +11,8 @@
 ## Phase Summary
 
 This phase ships the managed gateway CLI surface, the distributed runtime implementation, the TLA+
-entrypoint, and the gateway-owned Route 53 write capability that later cleanup and public-host
-phases depend on.
+entrypoint, and the gateway-owned Route 53 write capability for explicit named public records that
+later cleanup and public-host phases depend on.
 
 ## Sprint 2.1: Distributed Gateway Runtime, Formal Verification, and DNS-Write Capability ✅
 
@@ -27,10 +27,11 @@ and the gateway Route 53 write capability.
 
 ### Deliverables
 
-- `prodbox gateway start|status|config-gen` exists as the managed CLI surface.
+- `prodbox gateway start|status|config-gen|install-service` exists as the managed CLI surface.
 - Process-mode and pod-backed gateway behavior are both validated.
 - TLA+ model checking is exposed through `prodbox tla-check`.
 - The gateway runtime supports Route 53 writes through `dns_write_gate`.
+- The supported DNS ownership model uses explicit named records, not wildcard public DNS.
 
 ### Validation
 

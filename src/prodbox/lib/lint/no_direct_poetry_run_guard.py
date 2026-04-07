@@ -18,7 +18,6 @@ _TARGET_FILES: tuple[str, ...] = (
     "README.md",
     "DEVELOPMENT_PLAN",
     ".github/workflows/ci.yml",
-    "Containerfile.gateway",
     "documents/engineering/dependency_management.md",
     "documents/engineering/distributed_gateway_architecture.md",
     "documents/engineering/tla/README.md",

@@ -289,7 +289,8 @@ docker build -f docker/gateway.Dockerfile -t prodbox-gateway .
 
 Gateway image doctrine: explicit Poetry bootstrap (`python -m pip install --upgrade pip setuptools
 wheel poetry`), full-repo `COPY . /app`, and container-local `poetry.toml` override with
-`virtualenvs.create = false`. Entrypoint: `tini -- daemon`.
+`virtualenvs.create = false`. Entrypoint:
+`tini -- python -m prodbox.cli.main gateway start`.
 
 ---
 

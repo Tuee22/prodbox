@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -1008,6 +1009,56 @@ class TestStateResponse:
         mesh_peers = sorted(k.peer_node_id for k in keys if k.channel == "mesh")
         assert mesh_peers == ["node-b"]
 
+    @pytest.mark.asyncio
+    async def test_state_endpoint_includes_dns_write_diagnostics(self, tmp_path: Path) -> None:
+        """The REST state payload should expose DDNS write diagnostics and gate config."""
+        orders_path = tmp_path / "orders.json"
+        orders_path.write_text(json.dumps(_orders_dict()), encoding="utf-8")
+        gate = _dns_write_gate()
+        dns_client = _MockDnsClient(ip="203.0.113.10")
+
+        config = DaemonConfig(
+            node_id="node-a",
+            cert_file=tmp_path / "node-a.crt",
+            key_file=tmp_path / "node-a.key",
+            ca_file=tmp_path / "ca.crt",
+            orders_file=orders_path,
+            event_keys={"node-a": "k1", "node-b": "k2", "node-c": "k3"},
+            dns_write_gate=gate,
+        )
+        daemon = GatewayDaemon(config, dns_client=dns_client)
+        await daemon.emit_event(
+            "gateway_claim",
+            {"claiming_node_id": "node-a", "previous_owner": "node-a"},
+        )
+        await daemon._attempt_dns_write(gate)  # noqa: SLF001
+
+        writer = cast(asyncio.StreamWriter, _DummyWriter())
+        with (
+            patch.object(
+                daemon,
+                "_read_http_request",
+                new=AsyncMock(return_value=("GET", "/v1/state", {})),
+            ),
+            patch.object(daemon, "_write_http_response", new=AsyncMock()) as mock_write,
+        ):
+            await daemon._handle_rest_connection(asyncio.StreamReader(), writer)  # noqa: SLF001
+
+        payload = cast(dict[str, object], mock_write.await_args.kwargs["payload"])
+        assert mock_write.await_args.kwargs["status"] == 200
+        assert payload["gateway_owner"] == "node-a"
+        assert payload["has_active_claim"] is True
+        assert payload["last_public_ip_observed"] == "203.0.113.10"
+        assert payload["last_dns_write_ip"] == "203.0.113.10"
+        assert payload["last_dns_write_at_utc"] is not None
+        assert payload["dns_write_gate"] == {
+            "zone_id": gate.zone_id,
+            "fqdn": gate.fqdn,
+            "ttl": gate.ttl,
+            "aws_region": gate.aws_region,
+        }
+        assert writer.is_closing()
+
 
 class TestDaemonConfigDnsWriteGate:
     """Tests for dns_write_gate parsing in DaemonConfig.from_json_file()."""
@@ -1364,6 +1415,29 @@ class TestLifecycle:
         """Daemon _running flag is set after start intent."""
         daemon = _make_daemon(tmp_path, "node-a")
         assert daemon._running is False  # noqa: SLF001
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_tracked_connection_reader_tasks(self, tmp_path: Path) -> None:
+        """stop() should cancel and await tracked connection reader tasks."""
+        daemon = _make_daemon(tmp_path, "node-a")
+        task_started = asyncio.Event()
+        task_cancelled = asyncio.Event()
+
+        async def blocked_reader() -> None:
+            task_started.set()
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                task_cancelled.set()
+                raise
+
+        daemon._track_connection_task(asyncio.create_task(blocked_reader()))  # noqa: SLF001
+        await task_started.wait()
+
+        await daemon.stop()
+
+        assert task_cancelled.is_set() is True
+        assert daemon._connection_tasks == set()  # noqa: SLF001
 
     @pytest.mark.asyncio
     async def test_emit_event_without_key_raises(self, tmp_path: Path) -> None:

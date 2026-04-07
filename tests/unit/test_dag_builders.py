@@ -11,6 +11,9 @@ Note: These are pure function tests - no mocks needed.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from prodbox.cli.command_adt import (
@@ -18,10 +21,15 @@ from prodbox.cli.command_adt import (
     EnvShowCommand,
     EnvTemplateCommand,
     EnvValidateCommand,
+    GatewayConfigGenCommand,
+    GatewayInstallServiceCommand,
+    GatewayStartCommand,
+    GatewayStatusCommand,
     HostCheckPortsCommand,
     HostEnsureToolsCommand,
     HostFirewallCommand,
     HostInfoCommand,
+    HostPublicEdgeCommand,
     K8sHealthCommand,
     K8sLogsCommand,
     K8sWaitCommand,
@@ -50,6 +58,8 @@ from prodbox.cli.effects import (
     EnsureMinio,
     EnsureProdboxIdentityConfigMap,
     EnsureRetainedLocalStorage,
+    EnsureRke2IngressController,
+    GenerateGatewayConfig,
     GetJournalLogs,
     MachineIdentity,
     Parallel,
@@ -58,12 +68,14 @@ from prodbox.cli.effects import (
     PulumiRefresh,
     PulumiStackSelect,
     Pure,
+    QueryGatewayState,
     QueryRoute53Record,
     RunPulumiCommand,
     RunSystemdCommand,
     Sequence,
     ValidateSettings,
     ValidateTool,
+    WriteFile,
     WriteStdout,
 )
 from prodbox.cli.types import Failure, Success
@@ -144,6 +156,70 @@ class TestHostCommandDAGBuilders:
         match command_to_dag(cmd):
             case Success(dag):
                 assert "host_firewall" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_host_public_edge_dag(self) -> None:
+        """command_to_dag should build DAG for HostPublicEdgeCommand."""
+        cmd = HostPublicEdgeCommand()
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "host_public_edge" in dag
+                assert "host_public_edge_public_ip" in dag
+                assert "host_public_edge_route53_record" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+
+class TestGatewayCommandDAGBuilders:
+    """Tests for gateway command DAG builders."""
+
+    def test_gateway_start_dag(self) -> None:
+        """command_to_dag should build DAG for GatewayStartCommand."""
+        cmd = GatewayStartCommand(config_path=Path("/tmp/gateway.json"))
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "start_gateway_daemon" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_gateway_status_dag(self) -> None:
+        """command_to_dag should build DAG for GatewayStatusCommand."""
+        cmd = GatewayStatusCommand(config_path=Path("/tmp/gateway.json"))
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "gateway_status" in dag
+                assert "query_gateway_state" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_gateway_config_gen_dag(self) -> None:
+        """command_to_dag should build DAG for GatewayConfigGenCommand."""
+        cmd = GatewayConfigGenCommand(
+            output_path=Path("/tmp/gateway.json"),
+            node_id="node-a",
+        )
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "generate_gateway_config" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_gateway_install_service_dag(self) -> None:
+        """command_to_dag should build DAG for GatewayInstallServiceCommand."""
+        cmd = GatewayInstallServiceCommand(
+            config_path=Path("/tmp/gateway.json"),
+            output_path=Path("/tmp/prodbox-gateway.service"),
+            service_name="prodbox-gateway.service",
+        )
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "gateway_install_service" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -431,6 +507,127 @@ class TestHostCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
+    def test_host_public_edge_requires_settings_route53_and_k8s(self) -> None:
+        """HostPublicEdgeCommand should gather settings, Route53, and cluster diagnostics."""
+        cmd = HostPublicEdgeCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("host_public_edge")
+                assert root is not None
+                assert "settings_object" in root.prerequisites
+                assert "host_public_edge_public_ip" in root.prerequisites
+                assert "host_public_edge_route53_record" in root.prerequisites
+                assert "host_public_edge_vscode_certificate" in root.prerequisites
+                assert isinstance(root.effect, WriteStdout)
+
+                route53 = dag.get_node("host_public_edge_route53_record")
+                assert route53 is not None
+                assert route53.prerequisites == frozenset(["settings_object", "route53_accessible"])
+                built = route53.build_effect(
+                    None,
+                    {
+                        "settings_object": Success(
+                            {
+                                "route53_zone_id": "Z123",
+                                "vscode_fqdn": "code.example.com",
+                                "demo_fqdn": "demo.example.com",
+                                "aws_region": "us-east-1",
+                            }
+                        )
+                    },
+                )
+                assert isinstance(built, QueryRoute53Record)
+                assert built.zone_id == "Z123"
+                assert built.fqdn == "code.example.com"
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_host_public_edge_effect_builder_renders_ready_report(self) -> None:
+        """Host public-edge root should render the canonical readiness report."""
+        cmd = HostPublicEdgeCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("host_public_edge")
+                assert root is not None
+                built = root.build_effect(
+                    None,
+                    {
+                        "settings_object": Success(
+                            {
+                                "demo_fqdn": "demo.example.com",
+                                "vscode_fqdn": "code.example.com",
+                                "route53_zone_id": "Z123",
+                                "aws_region": "us-east-1",
+                                "metallb_pool": "192.168.1.240-192.168.1.250",
+                                "ingress_lb_ip": "192.168.1.240",
+                                "active_lan_interface": "eno1",
+                                "active_lan_ipv4": "192.168.1.20",
+                                "active_lan_network_cidr": "192.168.1.0/24",
+                            }
+                        ),
+                        "host_public_edge_public_ip": Success("203.0.113.10"),
+                        "host_public_edge_route53_record": Success("203.0.113.10"),
+                        "host_public_edge_ingress_classes": Success(
+                            (
+                                0,
+                                json.dumps({"items": [{"metadata": {"name": "traefik"}}]}),
+                                "",
+                            )
+                        ),
+                        "host_public_edge_traefik_service": Success(
+                            (
+                                0,
+                                json.dumps(
+                                    {
+                                        "status": {
+                                            "loadBalancer": {"ingress": [{"ip": "192.168.1.240"}]}
+                                        }
+                                    }
+                                ),
+                                "",
+                            )
+                        ),
+                        "host_public_edge_ingress_nginx_services": Success(
+                            (0, json.dumps({"items": []}), "")
+                        ),
+                        "host_public_edge_vscode_ingress": Success(
+                            (
+                                0,
+                                json.dumps(
+                                    {
+                                        "spec": {
+                                            "ingressClassName": "traefik",
+                                            "rules": [{"host": "code.example.com"}],
+                                        }
+                                    }
+                                ),
+                                "",
+                            )
+                        ),
+                        "host_public_edge_vscode_certificate": Success(
+                            (
+                                0,
+                                json.dumps(
+                                    {
+                                        "status": {
+                                            "conditions": [
+                                                {"type": "Ready", "status": "True"},
+                                            ]
+                                        }
+                                    }
+                                ),
+                                "",
+                            )
+                        ),
+                    },
+                )
+                assert isinstance(built, WriteStdout)
+                assert "CLASSIFICATION=ready-for-external-proof" in built.text
+                assert "ROUTE53_STATUS=in-sync" in built.text
+                assert "ACTIVE_LAN_INTERFACE=eno1" in built.text
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
 
 class TestRKE2CommandPrerequisites:
     """Verify prerequisites for RKE2 commands."""
@@ -552,11 +749,12 @@ class TestRKE2CommandPrerequisites:
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
-                assert len(built_effect.effects) == 6
-                assert isinstance(built_effect.effects[3], EnsureProdboxIdentityConfigMap)
-                assert isinstance(built_effect.effects[4], Parallel)
-                assert isinstance(built_effect.effects[5], AnnotateProdboxManagedResources)
-                parallel_effect = built_effect.effects[4]
+                assert len(built_effect.effects) == 7
+                assert isinstance(built_effect.effects[0], EnsureRke2IngressController)
+                assert isinstance(built_effect.effects[4], EnsureProdboxIdentityConfigMap)
+                assert isinstance(built_effect.effects[5], Parallel)
+                assert isinstance(built_effect.effects[6], AnnotateProdboxManagedResources)
+                parallel_effect = built_effect.effects[5]
                 assert len(parallel_effect.effects) == 2
                 assert isinstance(parallel_effect.effects[0], EnsureHarborRegistry)
                 assert isinstance(parallel_effect.effects[1], Sequence)
@@ -759,6 +957,100 @@ class TestPulumiCommandPrerequisites:
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
 
+class TestGatewayCommandPrerequisites:
+    """Verify prerequisites and renderers for gateway commands."""
+
+    def test_gateway_status_uses_query_node_and_rendered_output(self) -> None:
+        """Gateway status should depend on the query node and render extended state."""
+        cmd = GatewayStatusCommand(config_path=Path("/tmp/gateway.json"))
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("gateway_status")
+                assert root is not None
+                assert root.prerequisites == frozenset(["query_gateway_state"])
+                assert isinstance(root.effect, WriteStdout)
+
+                query = dag.get_node("query_gateway_state")
+                assert query is not None
+                assert query.prerequisites == frozenset()
+                assert isinstance(query.effect, QueryGatewayState)
+
+                built = root.build_effect(
+                    None,
+                    {
+                        "query_gateway_state": Success(
+                            {
+                                "node_id": "node-a",
+                                "gateway_owner": "node-a",
+                                "has_active_claim": True,
+                                "mesh_peers": ["node-b"],
+                                "event_count": 5,
+                                "last_public_ip_observed": "203.0.113.10",
+                                "last_dns_write_ip": "203.0.113.10",
+                                "last_dns_write_at_utc": "2026-04-06T10:00:00Z",
+                                "dns_write_gate": {
+                                    "zone_id": "Z123",
+                                    "fqdn": "code.example.com",
+                                    "ttl": 60,
+                                },
+                                "heartbeat_age_seconds": {
+                                    "node-a": 0.0,
+                                    "node-b": 1.5,
+                                },
+                            }
+                        )
+                    },
+                )
+                assert isinstance(built, WriteStdout)
+                assert "ACTIVE_CLAIM=true" in built.text
+                assert "DNS_WRITE_GATE=code.example.com@Z123 ttl=60" in built.text
+                assert "HEARTBEAT_NODE_B=1.5" in built.text
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_gateway_config_gen_has_no_prerequisites(self) -> None:
+        """Gateway config generation should be a direct single-effect DAG."""
+        cmd = GatewayConfigGenCommand(
+            output_path=Path("/tmp/gateway.json"),
+            node_id="node-a",
+        )
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("generate_gateway_config")
+                assert root is not None
+                assert root.prerequisites == frozenset()
+                assert isinstance(root.effect, GenerateGatewayConfig)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_gateway_install_service_requires_systemd_and_writes_unit(self) -> None:
+        """Gateway install-service should write the canonical unit then reload/enable/restart."""
+        cmd = GatewayInstallServiceCommand(
+            config_path=Path("/tmp/gateway.json"),
+            output_path=Path("/tmp/prodbox-gateway.service"),
+            service_name="prodbox-gateway.service",
+        )
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("gateway_install_service")
+                assert root is not None
+                assert root.prerequisites == frozenset(["systemd_available"])
+                assert isinstance(root.effect, Sequence)
+                built = root.effect
+                assert len(built.effects) == 4
+                assert isinstance(built.effects[0], WriteFile)
+                assert isinstance(built.effects[1], RunSystemdCommand)
+                assert isinstance(built.effects[2], RunSystemdCommand)
+                assert isinstance(built.effects[3], RunSystemdCommand)
+                assert "gateway start /tmp/gateway.json" in built.effects[0].content
+                assert built.effects[1].action == "daemon-reload"
+                assert built.effects[2].action == "enable"
+                assert built.effects[2].service == "prodbox-gateway.service"
+                assert built.effects[3].action == "restart"
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+
 class TestUserVisibleCommandBuilderRegressionGuards:
     """Regression guards for repaired user-facing command builders."""
 
@@ -768,7 +1060,13 @@ class TestUserVisibleCommandBuilderRegressionGuards:
             (EnvShowCommand(show_secrets=False), "env_show"),
             (EnvTemplateCommand(), "env_template"),
             (HostCheckPortsCommand(ports=(80, 443)), "host_check_ports"),
+            (HostPublicEdgeCommand(), "host_public_edge"),
             (DNSCheckCommand(), "dns_check"),
+            (GatewayStatusCommand(config_path=Path("/tmp/gateway.json")), "gateway_status"),
+            (
+                GatewayConfigGenCommand(output_path=Path("/tmp/gateway.json"), node_id="node-a"),
+                "generate_gateway_config",
+            ),
             (PulumiPreviewCommand(stack="dev"), "pulumi_preview"),
             (PulumiUpCommand(stack="dev", yes=False), "pulumi_up"),
             (PulumiDestroyCommand(stack="dev", yes=True), "pulumi_destroy"),
@@ -822,6 +1120,31 @@ class TestAllPrerequisitesExistInRegistry:
             HostCheckPortsCommand(),
             HostEnsureToolsCommand(),
             HostFirewallCommand(),
+            HostPublicEdgeCommand(),
+        ]
+        for cmd in commands:
+            match command_to_dag(cmd):
+                case Success(dag):
+                    for node in dag.nodes:
+                        for prereq_id in node.prerequisites:
+                            assert dag.get_node(prereq_id) is not None, (
+                                f"Prerequisite '{prereq_id}' not expanded into DAG "
+                                f"(referenced by '{node.effect_id}')"
+                            )
+                case Failure(error):
+                    pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_all_gateway_prerequisites_exist(self) -> None:
+        """All prerequisites referenced by gateway commands should exist."""
+        commands = [
+            GatewayStartCommand(config_path=Path("/tmp/gateway.json")),
+            GatewayStatusCommand(config_path=Path("/tmp/gateway.json")),
+            GatewayConfigGenCommand(output_path=Path("/tmp/gateway.json"), node_id="node-a"),
+            GatewayInstallServiceCommand(
+                config_path=Path("/tmp/gateway.json"),
+                output_path=Path("/tmp/prodbox-gateway.service"),
+                service_name="prodbox-gateway.service",
+            ),
         ]
         for cmd in commands:
             match command_to_dag(cmd):

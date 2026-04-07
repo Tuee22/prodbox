@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -26,6 +27,7 @@ def deploy_cluster_issuer(
     k8s_provider: k8s.Provider,
     *,
     prodbox_id: str,
+    depends_on: Sequence[object] = (),
 ) -> ClusterIssuerResources:
     """Deploy ClusterIssuer for Let's Encrypt HTTP-01 validation.
 
@@ -67,7 +69,10 @@ def deploy_cluster_issuer(
                 ],
             },
         },
-        opts=pulumi.ResourceOptions(provider=k8s_provider),
+        opts=pulumi.ResourceOptions(
+            provider=k8s_provider,
+            depends_on=list(depends_on),
+        ),
     )
 
     # Export ClusterIssuer info

@@ -63,26 +63,27 @@ Charts never create `PersistentVolume` or `PersistentVolumeClaim` objects.
 
 ---
 
-## 7. `.data/<namespace>/<statefulset>/<ordinal>` Host-Path Contract
+## 7. `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` Host-Path Contract
 
 Retained host storage for chart workloads lives at:
 
 ```
-<repo-root>/.data/<namespace>/<statefulset>/<ordinal>/
+<repo-root>/.data/<namespace>/<release>/<workload>/<ordinal>/<claim>/
 ```
 
 For example, `keycloak-postgres` in the `vscode` namespace:
 
 ```
-.data/vscode/keycloak-postgres/0/
+.data/vscode/keycloak-postgres/keycloak-postgres/0/data/
 ```
 
 Rules:
 
 1. The CLI creates host directories with `mkdir -p` before applying storage manifests.
 2. `.data/` is excluded from both `.gitignore` and `.dockerignore`.
-3. PV names are deterministic: `prodbox-chart-<namespace>-<statefulset>-<ordinal>`.
-4. The `StorageClass` `prodbox-chart-null-storage` is used for all chart PVs (no-provisioner, Retain policy).
+3. PV names are deterministic: `prodbox-chart-<namespace>-<release>-<workload>-<ordinal>-<claim>`.
+4. The `StorageClass` `manual` (provisioner `kubernetes.io/no-provisioner`, Retain policy) is the only permitted StorageClass; bootstrap fails if a chart requests a dynamic provisioner.
+5. All stateful services deploy in HA mode (multiple replicas with pod anti-affinity) by default; dev mode (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity but retains replica counts.
 
 ---
 
@@ -126,21 +127,26 @@ Unsupported legacy paths:
 
 - `oauth2-proxy`
 - Google OAuth as the supported identity-provider path
-- Alternate chart-specific auth-secret names outside `KEYCLOAK_NGINX_CLIENT_SECRET`
 - Standalone local `docker-compose` delivery paths outside `prodbox charts`
 
 ---
 
-## 11. Required Settings
+## 11. Required Settings and Auto-Generated Secrets
 
-The following settings from `src/prodbox/settings.py` are required for chart deployment:
+The following setting from `src/prodbox/settings.py` is required for chart deployment:
 
 | Setting | Purpose |
 |---------|---------|
 | `VSCODE_FQDN` | Public FQDN for VS Code and Keycloak |
-| `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin credentials |
-| `KEYCLOAK_POSTGRES_PASSWORD` | PostgreSQL database password |
-| `KEYCLOAK_NGINX_CLIENT_SECRET` | nginx OIDC client secret (registered in Keycloak as `vscode-nginx`) |
+
+Cluster-internal secrets are auto-generated at chart deploy time and persisted in
+`.data/<namespace>/.secrets.json`. They are not configured via `.env`:
+
+| Secret | Purpose |
+|--------|---------|
+| `keycloak_admin_password` | Keycloak admin credentials |
+| `keycloak_postgres_password` | PostgreSQL database password |
+| `keycloak_nginx_client_secret` | nginx OIDC client secret (registered in Keycloak as `vscode-nginx`) |
 
 ---
 

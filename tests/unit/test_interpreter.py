@@ -3037,7 +3037,7 @@ class TestRetainedStorageEffects:
                 prodbox_id="prodbox-9952fe5f838f4c80b337f1ea5186fbf3",
             ),
             namespace="prodbox",
-            storage_class_name="prodbox-local-retain",
+            storage_class_name="manual",
             persistent_volume_name="prodbox-minio-pv-0",
             persistent_volume_claim_name="minio",
             storage_size="200Gi",

@@ -77,8 +77,6 @@ class TestSettings:
         assert settings.acme_email == "test@example.com"
         assert settings.demo_fqdn == "test.example.com"
         assert settings.demo_ttl == 60
-        assert settings.metallb_pool == "10.0.0.100-10.0.0.110"
-        assert settings.ingress_lb_ip == "10.0.0.100"
 
     def test_settings_requires_route53_zone_id(
         self,
@@ -185,21 +183,9 @@ class TestSettings:
             assert settings.aws_region == "us-east-1"
             assert settings.demo_fqdn == "demo.example.com"
             assert settings.demo_ttl == 60
-            assert settings.metallb_pool == "192.168.1.240-192.168.1.250"
-            assert settings.ingress_lb_ip == "192.168.1.240"
-            assert settings.pulumi_stack == "home"
             assert settings.active_lan_interface == "enp1s0"
             assert settings.active_lan_ipv4 == "192.168.1.10"
             assert settings.active_lan_network_cidr == "192.168.1.0/24"
-
-    def test_settings_kubeconfig_expansion(self, mock_env: dict[str, str]) -> None:
-        """Settings should expand ~ in kubeconfig path."""
-        env = {**mock_env, "KUBECONFIG": "~/.kube/config"}
-        with patch.dict(os.environ, env, clear=True):
-            settings = Settings()
-
-            assert settings.kubeconfig == Path.home() / ".kube" / "config"
-            assert "~" not in str(settings.kubeconfig)
 
     def test_settings_ttl_validation(self, mock_env: dict[str, str]) -> None:
         """Settings should validate TTL range."""
@@ -248,61 +234,9 @@ class TestSettings:
         ):
             settings = Settings()
 
-        assert settings.metallb_pool == "192.168.50.240-192.168.50.250"
-        assert settings.ingress_lb_ip == "192.168.50.240"
         assert settings.active_lan_interface == "eno1"
         assert settings.active_lan_ipv4 == "192.168.50.20"
         assert settings.active_lan_network_cidr == "192.168.50.0/24"
-
-    def test_settings_preserves_explicit_edge_overrides_when_discovery_available(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Explicit MetalLB overrides should win over auto-discovery."""
-        _patch_repository_root(monkeypatch, tmp_path)
-        _write_aws_auth_dotenv(tmp_path)
-        monkeypatch.chdir(tmp_path)
-
-        env = {
-            "ROUTE53_ZONE_ID": "Z123",
-            "ACME_EMAIL": "test@example.com",
-            "METALLB_POOL": "10.0.0.100-10.0.0.110",
-            "INGRESS_LB_IP": "10.0.0.100",
-        }
-        with (
-            patch.dict(os.environ, env, clear=True),
-            patch(
-                "prodbox.settings._discover_lan_addressing_or_none",
-                return_value=_lan_addressing(interface_ipv4="192.168.9.20"),
-            ),
-        ):
-            settings = Settings()
-
-        assert settings.metallb_pool == "10.0.0.100-10.0.0.110"
-        assert settings.ingress_lb_ip == "10.0.0.100"
-        assert settings.active_lan_ipv4 == "192.168.9.20"
-
-    def test_settings_requires_explicit_edge_defaults_when_discovery_unavailable(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Blank edge defaults should fail fast when LAN discovery is unavailable."""
-        _patch_repository_root(monkeypatch, tmp_path)
-        _write_aws_auth_dotenv(tmp_path)
-        monkeypatch.chdir(tmp_path)
-
-        env = {
-            "ROUTE53_ZONE_ID": "Z123",
-            "ACME_EMAIL": "test@example.com",
-        }
-        with (
-            patch.dict(os.environ, env, clear=True),
-            patch("prodbox.settings._discover_lan_addressing_or_none", return_value=None),
-            pytest.raises(ValidationError, match="Set METALLB_POOL and INGRESS_LB_IP explicitly"),
-        ):
-            Settings()
 
     def test_settings_load_repo_dotenv_from_nested_subdirectory(
         self,
@@ -430,8 +364,6 @@ class TestRenderedSettings:
         assert "ROUTE53_ZONE_ID=" in template
         assert "AWS_REGION=us-east-1" in template
         assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in template
-        assert "METALLB_POOL=" in template
-        assert "INGRESS_LB_IP=" in template
         assert "PULUMI_ENABLE_DNS_BOOTSTRAP=true" in template
 
 

@@ -11,10 +11,13 @@
 ## Phase Summary
 
 This phase hardens `rke2 cleanup` until lifecycle validation passes without settling retries, then
-removes duplicate or compatibility-only runtime, CLI, validation, and tooling paths, and closes
+removes duplicate or compatibility-only runtime, CLI, validation, and tooling paths, closes
 the remaining local edge-infrastructure automation gaps around MetalLB, Traefik, cert-manager,
-always-on gateway supervision, explicit per-subdomain DNS continuity, and public-host diagnostics.
-All cleanup history remains centralized in
+always-on gateway supervision, explicit per-subdomain DNS continuity, and public-host diagnostics,
+consolidates the retained storage model to one StorageClass, migrates the `.data/` path scheme
+to 5 segments, adopts HA-mode deployment doctrine, and simplifies `.env` to carry only external
+auth and non-secret configuration while moving cluster-internal secrets to auto-generated K8s
+Secrets. All cleanup history remains centralized in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprint 4.1: `rke2 cleanup` Hardening and Lifecycle Regression Closure ✅
@@ -242,10 +245,163 @@ so Route 53 records stay current after WAN IP rotation and no wildcard DNS short
 - Close the sprint only after the supported public-host path no longer depends on manual daemon
   starts, wildcard DNS, or external DynDNS to keep explicit Route 53 records current.
 
+## Sprint 4.5: Storage Path Migration, Single StorageClass, and HA Doctrine ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/lib/chart_platform.py`, `src/prodbox/lib/prodbox_k8s.py`, `src/prodbox/settings.py`, `charts/keycloak-postgres/templates/statefulset.yaml`, `charts/keycloak-postgres/values.yaml`, `charts/keycloak/templates/deployment.yaml`, `charts/keycloak/values.yaml`, `charts/vscode/templates/deployment.yaml`, `charts/vscode/values.yaml`, `tests/unit/test_chart_platform.py`, `tests/unit/test_prodbox_k8s.py`, `tests/unit/test_effects.py`, `tests/unit/test_interpreter.py`, `tests/integration/test_charts_storage.py`, `tests/integration/test_charts_platform.py`
+**Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Consolidate retained storage to one StorageClass, migrate the `.data/` host-path scheme from
+4 segments to 5 segments, enforce Helm-only service deployment, and adopt HA-mode defaults.
+
+### Architecture
+
+**Storage path scheme** (supersedes the Sprint 3.1 4-segment layout):
+
+```
+.data/<namespace>/<release>/<workload>/<ordinal>/<claim>
+```
+
+- `namespace` — Kubernetes namespace (e.g. `default`)
+- `release` — Helm release name or cluster identifier
+- `workload` — StatefulSet name (e.g. `postgres`, `minio`)
+- `ordinal` — Pod ordinal index (`0`, `1`, …)
+- `claim` — PVC claim suffix (typically `data`)
+
+**Single StorageClass**: The cluster uses exactly one StorageClass named `manual` with provisioner
+`kubernetes.io/no-provisioner`. The two previous names (`prodbox-local-retain` and
+`prodbox-chart-null-storage`) have been consolidated into `manual`. Bootstrap fails if a chart
+requests a dynamic provisioner.
+
+**PV pre-creation**: PVs are created explicitly before Helm install. No implicit PVC provisioning
+is permitted. PVCs are created only by Helm charts deploying StatefulSets.
+
+**Helm-only service deployment**: All cluster services are deployed via Helm. Pulumi orchestrates
+infrastructure Helm releases (MetalLB, Traefik, cert-manager). The `prodbox charts` platform
+manages application Helm releases.
+
+**HA-mode defaults**: All stateful services deploy with multiple replicas and pod anti-affinity.
+Dev mode (`PRODBOX_DEV_MODE=true`, the default) suppresses anti-affinity constraints but retains
+multi-replica defaults.
+
+**Path stability**: The naming scheme is stable across teardown/rebuild cycles so data
+survives cluster down and cluster up. No tooling or CLI command is permitted to delete `.data/`
+itself. `.data/` appears in both `.gitignore` and `.dockerignore`.
+
+### Deliverables
+
+- StorageClass names in `chart_platform.py` and `prodbox_k8s.py` changed to `manual`.
+- `_storage_binding()` adopted the 5-segment path scheme.
+- PV naming adopted the 5-segment scheme.
+- `ChartStorageSpec` gained a `claim_suffix` field; `ChartStorageBinding` gained `release_name`
+  and `claim_suffix` fields.
+- HA-mode Helm values (`replicaCount`, `podAntiAffinity.enabled`) added to all chart definitions.
+- `PRODBOX_DEV_MODE` setting suppresses pod anti-affinity while retaining replica counts.
+- Bootstrap validation rejects charts that request a non-`manual` StorageClass.
+- Every Helm deploy passes the `manual` storage class explicitly via `CHART_STORAGE_CLASS_NAME`.
+- `documents/engineering/storage_lifecycle_doctrine.md` and
+  `documents/engineering/helm_chart_platform_doctrine.md` are updated.
+
+### Validation
+
+1. `poetry run prodbox check-code` — passed on April 7, 2026.
+2. `poetry run prodbox test unit` — passed on April 7, 2026 (994 tests).
+3. `poetry run prodbox test integration charts-storage`
+4. `poetry run prodbox test integration charts-platform`
+5. `poetry run prodbox test integration lifecycle`
+
+### Remaining Work
+
+None.
+
+## Sprint 4.6: Configuration Simplification and K8s Secret Injection ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/chart_platform.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/infra/providers.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/__main__.py`, `tests/unit/test_chart_platform.py`, `tests/unit/test_settings.py`, `tests/unit/test_dag_builders.py`, `tests/unit/test_infra_program.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_storage.py`
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `README.md`, `.env.example`
+
+### Objective
+
+Simplify `.env` to carry only external auth and non-secret configuration; auto-generate
+cluster-internal secrets at deploy time via retained `.data/` storage; enforce always-dynamic
+IP addressing; remove `KUBECONFIG` and `PULUMI_STACK` from the settings surface.
+
+### Architecture
+
+**`.env` scope** (after this sprint):
+
+| Setting | Stays in `.env` | Why |
+|---------|-----------------|-----|
+| `AWS_ACCESS_KEY_ID` | Yes | External auth — real secret |
+| `AWS_SECRET_ACCESS_KEY` | Yes | External auth — real secret |
+| `AWS_SESSION_TOKEN` | Yes | External auth — optional |
+| `AWS_REGION` | Yes | Non-secret config |
+| `ROUTE53_ZONE_ID` | Yes | Non-secret config |
+| `DEMO_FQDN` | Yes | Non-secret config |
+| `DEMO_TTL` | Yes | Non-secret config |
+| `VSCODE_FQDN` | Yes | Non-secret config |
+| `ACME_EMAIL` | Yes | Non-secret config |
+| `ACME_SERVER` | Yes | Non-secret config |
+| `PRODBOX_DEV_MODE` | Yes | Non-secret config |
+| `PULUMI_ENABLE_DNS_BOOTSTRAP` | Yes | Non-secret config |
+| `BOOTSTRAP_PUBLIC_IP_OVERRIDE` | Yes | Non-secret config |
+| `KEYCLOAK_ADMIN_PASSWORD` | **Removed** | Auto-generated, persisted in `.data/` |
+| `KEYCLOAK_POSTGRES_PASSWORD` | **Removed** | Auto-generated, persisted in `.data/` |
+| `KEYCLOAK_NGINX_CLIENT_SECRET` | **Removed** | Auto-generated, persisted in `.data/` |
+| `METALLB_POOL` | **Removed** | Always auto-discovered |
+| `INGRESS_LB_IP` | **Removed** | Always auto-discovered |
+| `KUBECONFIG` | **Removed** | Default `~/.kube/config` always used |
+| `PULUMI_STACK` | **Removed** | Hardcoded to `home` |
+
+**Cluster-internal secret injection**: `keycloak_admin_password`,
+`keycloak_postgres_password`, and `keycloak_nginx_client_secret` are auto-generated with
+`secrets.token_urlsafe(24)` at first chart deploy and persisted in
+`.data/<namespace>/.secrets.json`. On subsequent deploys, existing secrets are read back from
+the retained `.data/` directory. This ensures stable credentials across teardown/rebuild
+cycles without requiring `.env` configuration.
+
+**IP auto-discovery**: `METALLB_POOL` and `INGRESS_LB_IP` settings are removed from
+the settings surface. The auto-discovery path (`discover_lan_addressing()`) becomes the
+only path; the explicit-override escape hatch is removed. Infra code (`metallb.py`,
+`ingress.py`) calls `discover_lan_addressing()` directly.
+
+### Deliverables
+
+- Removed `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD`, and
+  `KEYCLOAK_NGINX_CLIENT_SECRET` from `Settings` and `SETTING_SPECS`.
+- Chart platform auto-generates these secrets via `resolve_chart_secrets()` and persists
+  them in `.data/<namespace>/.secrets.json`, reading them back on subsequent deploys.
+- Removed `METALLB_POOL` and `INGRESS_LB_IP` from `Settings` and `SETTING_SPECS`;
+  `discover_lan_addressing()` is the sole source.
+- Removed `KUBECONFIG` from `Settings` and `SETTING_SPECS`; `providers.py` hardcodes
+  `~/.kube/config`.
+- Removed `PULUMI_STACK` from `Settings`, `SETTING_SPECS`, and all DAG builder references;
+  `_resolve_pulumi_stack()` defaults to `"home"`.
+- `.env` template rendering omits removed settings.
+- Engineering docs and README reflect the simplified `.env` surface.
+
+### Validation
+
+1. `poetry run prodbox check-code` — passed on April 7, 2026.
+2. `poetry run prodbox test unit` — passed on April 7, 2026 (991 tests).
+3. `poetry run prodbox env show` (must not display removed settings)
+4. `poetry run prodbox test integration charts-platform`
+5. `poetry run prodbox test integration charts-storage`
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
+- `documents/engineering/storage_lifecycle_doctrine.md` - 5-segment path scheme, `manual`
+  StorageClass, PV pre-creation and PVC-only-from-StatefulSet doctrine.
+- `documents/engineering/helm_chart_platform_doctrine.md` - 5-segment path scheme, `manual`
+  StorageClass, Helm-only service deployment, HA-mode defaults.
 - `documents/engineering/aws_integration_environment_doctrine.md` - blocked AWS rerun rules and
   canonical auth ownership.
 - `documents/engineering/cli_command_surface.md` - canonical command and validation paths.

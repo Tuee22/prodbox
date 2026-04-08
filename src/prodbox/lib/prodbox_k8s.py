@@ -7,7 +7,7 @@ PRODBOX_IDENTITY_CONFIGMAP: str = "prodbox-identity"
 PRODBOX_ANNOTATION_KEY: str = "prodbox.io/id"
 PRODBOX_LABEL_KEY: str = "prodbox.io/id"
 
-PRODBOX_STORAGE_CLASS: str = "prodbox-local-retain"
+PRODBOX_STORAGE_CLASS: str = "manual"
 PRODBOX_STORAGE_BASE_PATH: str = "/var/lib/prodbox/storage"
 PRODBOX_STORAGE_RECLAIM_POLICY: str = "Retain"
 PRODBOX_STORAGE_BINDING_MODE: str = "WaitForFirstConsumer"

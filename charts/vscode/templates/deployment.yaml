@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "vscode.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/name: vscode
@@ -15,6 +15,16 @@ spec:
       labels:
         {{- include "vscode.labels" . | nindent 8 }}
     spec:
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vscode
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
       securityContext:
         fsGroup: 1000
       containers:
@@ -57,7 +67,7 @@ metadata:
   labels:
     {{- include "vscode.nginxLabels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/name: vscode-nginx
@@ -67,6 +77,16 @@ spec:
       labels:
         {{- include "vscode.nginxLabels" . | nindent 8 }}
     spec:
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: vscode-nginx
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
       containers:
         - name: nginx
           image: {{ .Values.nginx.image | quote }}

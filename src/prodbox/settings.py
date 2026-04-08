@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field, field_validator
+from pydantic import Field
 from pydantic.functional_validators import model_validator
 from pydantic_settings import (
     BaseSettings,
@@ -181,15 +181,6 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         )
         return init_settings, env_settings, resolved_dotenv, file_secret_settings
 
-    # === Kubernetes ===
-    kubeconfig: Annotated[
-        Path,
-        Field(
-            default=Path.home() / ".kube" / "config",
-            description="Path to kubeconfig file",
-        ),
-    ]
-
     # === AWS / Route 53 ===
     aws_region: Annotated[
         str,
@@ -248,43 +239,7 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="Public FQDN for the VS Code ingress endpoint",
         ),
     ]
-    keycloak_admin_password: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Admin password for the namespace-local Keycloak instance",
-        ),
-    ]
-    keycloak_postgres_password: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="Password for the namespace-local Keycloak Postgres database",
-        ),
-    ]
-    keycloak_nginx_client_secret: Annotated[
-        str | None,
-        Field(
-            default=None,
-            description="OIDC client secret shared between Keycloak and the nginx OIDC proxy",
-        ),
-    ]
-
-    # === MetalLB / Ingress ===
-    metallb_pool: Annotated[
-        str,
-        Field(
-            default="",
-            description="MetalLB IP address pool range; blank enables active-subnet auto-discovery",
-        ),
-    ]
-    ingress_lb_ip: Annotated[
-        str,
-        Field(
-            default="",
-            description="Reserved ingress LoadBalancer IP; blank enables active-subnet auto-discovery",
-        ),
-    ]
+    # === MetalLB / Ingress (auto-discovered) ===
     active_lan_interface: Annotated[
         str,
         Field(
@@ -322,14 +277,16 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         ),
     ]
 
-    # === Pulumi ===
-    pulumi_stack: Annotated[
-        str,
+    # === Deployment Mode ===
+    prodbox_dev_mode: Annotated[
+        bool,
         Field(
-            default="home",
-            description="Pulumi stack name",
+            default=True,
+            description="Dev mode suppresses pod anti-affinity while retaining HA replica counts",
         ),
     ]
+
+    # === Pulumi ===
     bootstrap_public_ip_override: Annotated[
         str | None,
         Field(
@@ -344,14 +301,6 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
             description="Whether `prodbox pulumi up` manages Route 53 bootstrap records",
         ),
     ]
-
-    @field_validator("kubeconfig", mode="before")
-    @classmethod
-    def expand_kubeconfig_path(cls, v: str | Path) -> Path:
-        """Expand ~ in kubeconfig path."""
-        if isinstance(v, str):
-            return Path(v).expanduser()
-        return v.expanduser()
 
     @model_validator(mode="before")
     @classmethod
@@ -372,22 +321,7 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
                 self.active_lan_ipv4 = discovered.interface_ipv4
             if self.active_lan_network_cidr == "":
                 self.active_lan_network_cidr = discovered.network_cidr
-
-        if self.metallb_pool != "" and self.ingress_lb_ip != "":
-            return self
-
-        match discovered:
-            case LanAddressing() as lan_addressing:
-                if self.metallb_pool == "":
-                    self.metallb_pool = lan_addressing.metallb_pool
-                if self.ingress_lb_ip == "":
-                    self.ingress_lb_ip = lan_addressing.ingress_lb_ip
-                return self
-            case None:
-                raise ValueError(
-                    "Failed to auto-discover the active LAN subnet for MetalLB defaults. "
-                    "Set METALLB_POOL and INGRESS_LB_IP explicitly."
-                )
+        return self
 
     def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
         """Return settings keyed by attribute name for deterministic display/tests."""
@@ -487,14 +421,6 @@ def render_settings_display(
 
 SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
-        attribute="kubeconfig",
-        env_var="KUBECONFIG",
-        description="Path to kubeconfig file",
-        getter=lambda settings: settings.kubeconfig,
-        required=False,
-        template_default="~/.kube/config",
-    ),
-    SettingSpec(
         attribute="aws_region",
         env_var="AWS_REGION",
         description="AWS region for Route 53",
@@ -558,46 +484,6 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         template_default="vscode.resolvefintech.com",
     ),
     SettingSpec(
-        attribute="keycloak_admin_password",
-        env_var="KEYCLOAK_ADMIN_PASSWORD",
-        description="Admin password for namespace-local Keycloak",
-        getter=lambda settings: settings.keycloak_admin_password,
-        required=False,
-        sensitive=True,
-    ),
-    SettingSpec(
-        attribute="keycloak_postgres_password",
-        env_var="KEYCLOAK_POSTGRES_PASSWORD",
-        description="Password for namespace-local Keycloak Postgres",
-        getter=lambda settings: settings.keycloak_postgres_password,
-        required=False,
-        sensitive=True,
-    ),
-    SettingSpec(
-        attribute="keycloak_nginx_client_secret",
-        env_var="KEYCLOAK_NGINX_CLIENT_SECRET",
-        description="Shared OIDC client secret for nginx OIDC proxy and Keycloak",
-        getter=lambda settings: settings.keycloak_nginx_client_secret,
-        required=False,
-        sensitive=True,
-    ),
-    SettingSpec(
-        attribute="metallb_pool",
-        env_var="METALLB_POOL",
-        description="MetalLB IP address pool range override (blank = auto-discover active LAN)",
-        getter=lambda settings: settings.metallb_pool,
-        required=False,
-        template_default="",
-    ),
-    SettingSpec(
-        attribute="ingress_lb_ip",
-        env_var="INGRESS_LB_IP",
-        description="Reserved ingress LoadBalancer IP override (blank = auto-discover active LAN)",
-        getter=lambda settings: settings.ingress_lb_ip,
-        required=False,
-        template_default="",
-    ),
-    SettingSpec(
         attribute="acme_email",
         env_var="ACME_EMAIL",
         description="Email for Let's Encrypt registration",
@@ -614,12 +500,12 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         template_default="https://acme-v02.api.letsencrypt.org/directory",
     ),
     SettingSpec(
-        attribute="pulumi_stack",
-        env_var="PULUMI_STACK",
-        description="Pulumi stack name",
-        getter=lambda settings: settings.pulumi_stack,
+        attribute="prodbox_dev_mode",
+        env_var="PRODBOX_DEV_MODE",
+        description="Dev mode suppresses pod anti-affinity while retaining HA replica counts",
+        getter=lambda settings: settings.prodbox_dev_mode,
         required=False,
-        template_default="home",
+        template_default="true",
     ),
     SettingSpec(
         attribute="bootstrap_public_ip_override",

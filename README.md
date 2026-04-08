@@ -98,9 +98,10 @@ Required when using the chart platform and public `vscode` flow:
 | Variable | Description |
 |----------|-------------|
 | `VSCODE_FQDN` | Public FQDN for the namespace-local `vscode` and Keycloak ingress path |
-| `KEYCLOAK_ADMIN_PASSWORD` | Keycloak admin password |
-| `KEYCLOAK_POSTGRES_PASSWORD` | Password for namespace-local Keycloak Postgres |
-| `KEYCLOAK_NGINX_CLIENT_SECRET` | Shared OIDC client secret used by nginx and Keycloak |
+
+Cluster-internal secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD`,
+`KEYCLOAK_NGINX_CLIENT_SECRET`) are auto-generated at chart deploy time and stored in
+`.data/<namespace>/.secrets.json`. They are not configured via `.env`.
 
 Optional (with defaults):
 
@@ -110,12 +111,17 @@ Optional (with defaults):
 | `AWS_SESSION_TOKEN` | unset | Optional AWS session token paired with `.env` credentials |
 | `DEMO_FQDN` | `demo.example.com` | Domain name |
 | `DEMO_TTL` | `60` | DNS record TTL in seconds |
-| `METALLB_POOL` | `192.168.1.240-192.168.1.250` | MetalLB IP range |
-| `INGRESS_LB_IP` | `192.168.1.240` | Traefik LoadBalancer IP |
-| `KUBECONFIG` | `~/.kube/config` | Path to kubeconfig |
 | `ACME_SERVER` | Let's Encrypt production | ACME server URL |
-| `PULUMI_STACK` | `home` | Default Pulumi stack name |
 | `BOOTSTRAP_PUBLIC_IP_OVERRIDE` | unset | Bootstrap-only DNS A-record IP override when public IP lookup is unavailable |
+
+Auto-discovered (not configurable via `.env`):
+
+| Setting | Source | Description |
+|---------|--------|-------------|
+| MetalLB pool | Host LAN auto-discovery | IP range for MetalLB LoadBalancer allocation |
+| Ingress LB IP | Host LAN auto-discovery | Traefik LoadBalancer IP |
+| Kubeconfig | `~/.kube/config` | Default kubeconfig path (always used) |
+| Pulumi stack | Hardcoded `home` | Default Pulumi stack name |
 
 Unsupported AWS auth configuration for `prodbox` includes `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`,
 `AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_ROLE_ARN`, and `AWS_ROLE_SESSION_NAME`.

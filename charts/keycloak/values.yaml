@@ -2,6 +2,11 @@ global:
   namespace: default
   rootChart: keycloak
 
+replicaCount: 2
+
+podAntiAffinity:
+  enabled: true
+
 keycloak:
   adminUser: admin
   adminPassword: change-me

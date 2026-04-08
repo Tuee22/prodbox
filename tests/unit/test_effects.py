@@ -372,7 +372,7 @@ class TestKubernetesEffects:
             description="Ensure retained storage",
             machine_identity=identity,
             namespace="prodbox",
-            storage_class_name="prodbox-local-retain",
+            storage_class_name="manual",
             persistent_volume_name="prodbox-minio-pv-0",
             persistent_volume_claim_name="minio",
             storage_size="200Gi",
@@ -381,7 +381,7 @@ class TestKubernetesEffects:
             label_key="prodbox.io/id",
             label_value="prodbox-0123456789abcdef0123456789abcdef",
         )
-        assert effect.storage_class_name == "prodbox-local-retain"
+        assert effect.storage_class_name == "manual"
         assert effect.persistent_volume_name == "prodbox-minio-pv-0"
         assert effect.persistent_volume_claim_name == "minio"
 
@@ -413,12 +413,12 @@ class TestKubernetesEffects:
     def test_storage_runtime(self) -> None:
         """StorageRuntime should expose reconciled storage coordinates."""
         runtime = StorageRuntime(
-            storage_class_name="prodbox-local-retain",
+            storage_class_name="manual",
             persistent_volume_name="prodbox-minio-pv-0",
             persistent_volume_claim_name="minio",
             host_path=Path("/var/lib/prodbox/storage/prodbox-id/prodbox-minio-pv-0"),
         )
-        assert runtime.storage_class_name == "prodbox-local-retain"
+        assert runtime.storage_class_name == "manual"
         assert runtime.persistent_volume_claim_name == "minio"
 
     def test_minio_runtime(self) -> None:
@@ -933,7 +933,7 @@ class TestEffectBaseClass:
                     prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
                 ),
                 namespace="prodbox",
-                storage_class_name="prodbox-local-retain",
+                storage_class_name="manual",
                 persistent_volume_name="prodbox-minio-pv-0",
                 persistent_volume_claim_name="minio",
                 storage_size="200Gi",

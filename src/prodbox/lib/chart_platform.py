@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import secrets as secrets_module
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -14,10 +15,40 @@ from prodbox.settings import RenderedSettingValue
 
 CHARTS_ROOT: Path = Path(__file__).resolve().parents[3] / "charts"
 CHART_DATA_ROOT: Path = Path(__file__).resolve().parents[3] / ".data"
-CHART_STORAGE_CLASS_NAME: str = "prodbox-chart-null-storage"
+CHART_STORAGE_CLASS_NAME: str = "manual"
 CHART_CLUSTER_ISSUER: str = "letsencrypt-http01"
 KEYCLOAK_REALM_NAME: str = "prodbox"
 KEYCLOAK_NGINX_CLIENT_ID: str = "vscode-nginx"
+
+_CHART_SECRET_KEYS: tuple[str, ...] = (
+    "keycloak_admin_password",
+    "keycloak_postgres_password",
+    "keycloak_nginx_client_secret",
+)
+
+
+def resolve_chart_secrets(namespace: str) -> dict[str, str]:
+    """Resolve or auto-generate chart secrets from retained .data/ storage.
+
+    On first deploy, generates random secrets and persists them under
+    `.data/<namespace>/.secrets.json`. On subsequent deploys, reads the
+    persisted secrets so credentials remain stable across teardown/rebuild.
+    """
+    secrets_path = CHART_DATA_ROOT / namespace / ".secrets.json"
+    if secrets_path.exists():
+        raw: object = json.loads(secrets_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            result: dict[str, str] = {}
+            for key in _CHART_SECRET_KEYS:
+                value = raw.get(key)
+                if isinstance(value, str) and value.strip():
+                    result[key] = value
+            if len(result) == len(_CHART_SECRET_KEYS):
+                return result
+    generated = {key: secrets_module.token_urlsafe(24) for key in _CHART_SECRET_KEYS}
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    secrets_path.write_text(json.dumps(generated, indent=2) + "\n", encoding="utf-8")
+    return generated
 
 
 @dataclass(frozen=True)
@@ -28,6 +59,7 @@ class ChartStorageSpec:
     persistent_volume_claim_name: str
     storage_size: str
     ordinal: int = 0
+    claim_suffix: str = "data"
 
 
 @dataclass(frozen=True)
@@ -35,11 +67,13 @@ class ChartStorageBinding:
     """Resolved retained-storage binding for one namespace-local StatefulSet ordinal."""
 
     statefulset_name: str
+    release_name: str
     persistent_volume_name: str
     persistent_volume_claim_name: str
     storage_size: str
     host_path: Path
     ordinal: int
+    claim_suffix: str
 
 
 @dataclass(frozen=True)
@@ -191,18 +225,47 @@ def _resolve_public_fqdn(settings: Mapping[str, RenderedSettingValue]) -> Result
             return _require_string_setting(settings, "demo_fqdn", "public FQDN")
 
 
-def _storage_binding(namespace: str, spec: ChartStorageSpec) -> ChartStorageBinding:
-    """Resolve deterministic PV/PVC names and host paths for one chart storage spec."""
-    host_path = CHART_DATA_ROOT / namespace / spec.statefulset_name / str(spec.ordinal)
-    persistent_volume_name = f"prodbox-chart-{namespace}-{spec.statefulset_name}-{spec.ordinal}"
+def _storage_binding(
+    namespace: str, release_name: str, spec: ChartStorageSpec
+) -> ChartStorageBinding:
+    """Resolve deterministic PV/PVC names and host paths for one chart storage spec.
+
+    Uses the 5-segment path scheme: .data/<namespace>/<release>/<workload>/<ordinal>/<claim>
+    """
+    host_path = (
+        CHART_DATA_ROOT
+        / namespace
+        / release_name
+        / spec.statefulset_name
+        / str(spec.ordinal)
+        / spec.claim_suffix
+    )
+    persistent_volume_name = (
+        f"prodbox-chart-{namespace}-{release_name}-"
+        f"{spec.statefulset_name}-{spec.ordinal}-{spec.claim_suffix}"
+    )
     return ChartStorageBinding(
         statefulset_name=spec.statefulset_name,
+        release_name=release_name,
         persistent_volume_name=persistent_volume_name,
         persistent_volume_claim_name=spec.persistent_volume_claim_name,
         storage_size=spec.storage_size,
         host_path=host_path,
         ordinal=spec.ordinal,
+        claim_suffix=spec.claim_suffix,
     )
+
+
+def _ha_values(
+    settings: Mapping[str, RenderedSettingValue], replica_count: int
+) -> dict[str, object]:
+    """Build HA-mode values: replica count and pod anti-affinity control."""
+    dev_mode = settings.get("prodbox_dev_mode", True)
+    anti_affinity_enabled = not dev_mode
+    return {
+        "replicaCount": replica_count,
+        "podAntiAffinity": {"enabled": anti_affinity_enabled},
+    }
 
 
 def _values_for_keycloak_postgres(
@@ -210,32 +273,31 @@ def _values_for_keycloak_postgres(
     namespace: str,
     root_chart: str,
     settings: Mapping[str, RenderedSettingValue],
+    chart_secrets: Mapping[str, str],
     binding: ChartStorageBinding,
 ) -> Result[dict[str, object], str]:
     """Build local values payload for the bespoke keycloak-postgres chart."""
-    match _require_string_setting(
-        settings, "keycloak_postgres_password", "KEYCLOAK_POSTGRES_PASSWORD"
-    ):
-        case Failure(error):
-            return Failure(error)
-        case Success(value=postgres_password):
-            return Success(
-                {
-                    "global": {
-                        "namespace": namespace,
-                        "rootChart": root_chart,
-                    },
-                    "postgres": {
-                        "database": "keycloak",
-                        "username": "keycloak",
-                        "password": postgres_password,
-                    },
-                    "persistence": {
-                        "existingClaim": binding.persistent_volume_claim_name,
-                        "size": binding.storage_size,
-                    },
-                }
-            )
+    postgres_password = chart_secrets.get("keycloak_postgres_password", "")
+    if not postgres_password:
+        return Failure("keycloak_postgres_password is required in chart secrets")
+    return Success(
+        {
+            **_ha_values(settings, replica_count=2),
+            "global": {
+                "namespace": namespace,
+                "rootChart": root_chart,
+            },
+            "postgres": {
+                "database": "keycloak",
+                "username": "keycloak",
+                "password": postgres_password,
+            },
+            "persistence": {
+                "existingClaim": binding.persistent_volume_claim_name,
+                "size": binding.storage_size,
+            },
+        }
+    )
 
 
 def _values_for_keycloak(
@@ -243,30 +305,28 @@ def _values_for_keycloak(
     namespace: str,
     root_chart: str,
     settings: Mapping[str, RenderedSettingValue],
+    chart_secrets: Mapping[str, str],
     public_fqdn: str,
 ) -> Result[dict[str, object], str]:
     """Build local values payload for the bespoke keycloak chart."""
-    required_settings = (
-        ("keycloak_admin_password", "KEYCLOAK_ADMIN_PASSWORD"),
-        ("keycloak_postgres_password", "KEYCLOAK_POSTGRES_PASSWORD"),
-        ("keycloak_nginx_client_secret", "KEYCLOAK_NGINX_CLIENT_SECRET"),
+    required_keys = (
+        "keycloak_admin_password",
+        "keycloak_postgres_password",
+        "keycloak_nginx_client_secret",
     )
-    resolved: dict[str, str] = {}
-    for attribute, description in required_settings:
-        match _require_string_setting(settings, attribute, description):
-            case Failure(error):
-                return Failure(error)
-            case Success(value=value):
-                resolved[attribute] = value
+    for key in required_keys:
+        if not chart_secrets.get(key, ""):
+            return Failure(f"{key} is required in chart secrets")
     return Success(
         {
+            **_ha_values(settings, replica_count=2),
             "global": {
                 "namespace": namespace,
                 "rootChart": root_chart,
             },
             "keycloak": {
                 "adminUser": "admin",
-                "adminPassword": resolved["keycloak_admin_password"],
+                "adminPassword": chart_secrets["keycloak_admin_password"],
                 "publicHost": public_fqdn,
                 "relativePath": "/auth",
                 "realmName": KEYCLOAK_REALM_NAME,
@@ -275,11 +335,11 @@ def _values_for_keycloak(
                 "host": "keycloak-postgres",
                 "database": "keycloak",
                 "username": "keycloak",
-                "password": resolved["keycloak_postgres_password"],
+                "password": chart_secrets["keycloak_postgres_password"],
             },
             "nginx": {
                 "clientId": KEYCLOAK_NGINX_CLIENT_ID,
-                "clientSecret": resolved["keycloak_nginx_client_secret"],
+                "clientSecret": chart_secrets["keycloak_nginx_client_secret"],
             },
         }
     )
@@ -290,20 +350,17 @@ def _values_for_vscode(
     namespace: str,
     root_chart: str,
     settings: Mapping[str, RenderedSettingValue],
+    chart_secrets: Mapping[str, str],
     binding: ChartStorageBinding,
     public_fqdn: str,
 ) -> Result[dict[str, object], str]:
     """Build local values payload for the bespoke vscode chart."""
-    required_settings = (("keycloak_nginx_client_secret", "KEYCLOAK_NGINX_CLIENT_SECRET"),)
-    resolved: dict[str, str] = {}
-    for attribute, description in required_settings:
-        match _require_string_setting(settings, attribute, description):
-            case Failure(error):
-                return Failure(error)
-            case Success(value=value):
-                resolved[attribute] = value
+    nginx_secret = chart_secrets.get("keycloak_nginx_client_secret", "")
+    if not nginx_secret:
+        return Failure("keycloak_nginx_client_secret is required in chart secrets")
     return Success(
         {
+            **_ha_values(settings, replica_count=1),
             "global": {
                 "namespace": namespace,
                 "rootChart": root_chart,
@@ -314,7 +371,7 @@ def _values_for_vscode(
             },
             "nginx": {
                 "clientId": KEYCLOAK_NGINX_CLIENT_ID,
-                "clientSecret": resolved["keycloak_nginx_client_secret"],
+                "clientSecret": nginx_secret,
                 "realm": KEYCLOAK_REALM_NAME,
                 # Internal K8s service URL — reachable from within the cluster
                 # regardless of whether the public FQDN resolves.
@@ -335,6 +392,7 @@ def _render_release_values_json(
     namespace: str,
     root_chart: str,
     settings: Mapping[str, RenderedSettingValue],
+    chart_secrets: Mapping[str, str],
     storage_bindings: tuple[ChartStorageBinding, ...],
     public_fqdn: str | None,
 ) -> Result[str, str]:
@@ -347,6 +405,7 @@ def _render_release_values_json(
                 namespace=namespace,
                 root_chart=root_chart,
                 settings=settings,
+                chart_secrets=chart_secrets,
                 binding=storage_bindings[0],
             )
         case "keycloak":
@@ -356,6 +415,7 @@ def _render_release_values_json(
                 namespace=namespace,
                 root_chart=root_chart,
                 settings=settings,
+                chart_secrets=chart_secrets,
                 public_fqdn=public_fqdn,
             )
         case "vscode":
@@ -367,6 +427,7 @@ def _render_release_values_json(
                 namespace=namespace,
                 root_chart=root_chart,
                 settings=settings,
+                chart_secrets=chart_secrets,
                 binding=storage_bindings[0],
                 public_fqdn=public_fqdn,
             )
@@ -383,8 +444,14 @@ def _render_release_values_json(
 def build_chart_deployment_plan(
     chart_name: str,
     settings: Mapping[str, RenderedSettingValue],
+    chart_secrets: Mapping[str, str] | None = None,
 ) -> Result[ChartDeploymentPlan, str]:
     """Build a deterministic deployment plan for one supported root chart."""
+    if CHART_STORAGE_CLASS_NAME != "manual":
+        return Failure(
+            f"Chart platform requires StorageClass 'manual' but found "
+            f"'{CHART_STORAGE_CLASS_NAME}'; dynamic provisioners are not permitted"
+        )
     namespace = chart_name
     match _resolve_dependency_order(chart_name):
         case Failure(error):
@@ -400,15 +467,19 @@ def build_chart_deployment_plan(
             case Success(value=value):
                 public_fqdn = value
 
+    resolved_secrets: Mapping[str, str] = chart_secrets if chart_secrets is not None else {}
     releases: list[ChartReleasePlan] = []
     for release_name in release_order:
         definition = CHART_REGISTRY[release_name]
-        storage_bindings = tuple(_storage_binding(namespace, spec) for spec in definition.storage)
+        storage_bindings = tuple(
+            _storage_binding(namespace, release_name, spec) for spec in definition.storage
+        )
         match _render_release_values_json(
             definition=definition,
             namespace=namespace,
             root_chart=chart_name,
             settings=settings,
+            chart_secrets=resolved_secrets,
             storage_bindings=storage_bindings,
             public_fqdn=public_fqdn,
         ):
@@ -452,7 +523,8 @@ def build_chart_delete_plan(chart_name: str) -> Result[ChartDeploymentPlan, str]
             chart_dir=CHART_REGISTRY[release_name].chart_dir,
             values_json="{}",
             storage_bindings=tuple(
-                _storage_binding(chart_name, spec) for spec in CHART_REGISTRY[release_name].storage
+                _storage_binding(chart_name, release_name, spec)
+                for spec in CHART_REGISTRY[release_name].storage
             ),
         )
         for release_name in reversed_order
@@ -780,8 +852,10 @@ def _render_storage_report(bindings: tuple[ChartStorageBinding, ...]) -> tuple[s
         lines.extend(
             [
                 "STORAGE_BINDING",
+                f"RELEASE={binding.release_name}",
                 f"STATEFULSET={binding.statefulset_name}",
                 f"ORDINAL={binding.ordinal}",
+                f"CLAIM={binding.claim_suffix}",
                 f"PV={binding.persistent_volume_name}",
                 f"PVC={binding.persistent_volume_claim_name}",
                 f"HOST_PATH={binding.host_path}",
@@ -984,5 +1058,6 @@ __all__ = [
     "render_chart_list",
     "render_chart_status",
     "resolve_chart",
+    "resolve_chart_secrets",
     "supported_chart_names",
 ]

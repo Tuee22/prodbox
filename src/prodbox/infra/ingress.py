@@ -9,6 +9,7 @@ import pulumi
 import pulumi_kubernetes as k8s
 
 from prodbox.infra.metadata import chart_values_with_prodbox, object_meta
+from prodbox.settings import discover_lan_addressing
 
 if TYPE_CHECKING:
     from prodbox.infra.metallb import MetalLBResources
@@ -28,7 +29,7 @@ class IngressResources:
 
 
 def deploy_ingress(
-    settings: Settings,
+    _settings: Settings,
     k8s_provider: k8s.Provider,
     metallb_resources: MetalLBResources,
     *,
@@ -40,7 +41,7 @@ def deploy_ingress(
     It gets a LoadBalancer IP from MetalLB.
 
     Args:
-        settings: Application settings with ingress configuration
+        _settings: Application settings (ingress IP is always auto-discovered)
         k8s_provider: Kubernetes provider
         metallb_resources: MetalLB resources (for dependency ordering)
         prodbox_id: Canonical prodbox-id annotation value
@@ -71,7 +72,7 @@ def deploy_ingress(
                     "type": "LoadBalancer",
                     "spec": {
                         # Request specific IP from MetalLB
-                        "loadBalancerIP": settings.ingress_lb_ip,
+                        "loadBalancerIP": discover_lan_addressing().ingress_lb_ip,
                     },
                 },
                 # Expose HTTP and HTTPS
@@ -119,7 +120,7 @@ def deploy_ingress(
 
     # Export ingress info
     pulumi.export("traefik_chart_version", TRAEFIK_CHART_VERSION)
-    pulumi.export("traefik_lb_ip", settings.ingress_lb_ip)
+    pulumi.export("traefik_lb_ip", discover_lan_addressing().ingress_lb_ip)
 
     return IngressResources(
         namespace=namespace,

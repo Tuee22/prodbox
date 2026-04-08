@@ -558,8 +558,6 @@ class TestHostCommandPrerequisites:
                                 "vscode_fqdn": "code.example.com",
                                 "route53_zone_id": "Z123",
                                 "aws_region": "us-east-1",
-                                "metallb_pool": "192.168.1.240-192.168.1.250",
-                                "ingress_lb_ip": "192.168.1.240",
                                 "active_lan_interface": "eno1",
                                 "active_lan_ipv4": "192.168.1.20",
                                 "active_lan_network_cidr": "192.168.1.0/24",

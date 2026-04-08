@@ -34,7 +34,7 @@ def test_prodbox_k8s_constants_are_stable() -> None:
     assert HARBOR_REGISTRY_PORT == 30080
     assert HARBOR_REGISTRY_ENDPOINT == "127.0.0.1:30080"
     assert HARBOR_GATEWAY_REPOSITORY == "prodbox/prodbox-gateway"
-    assert PRODBOX_STORAGE_CLASS == "prodbox-local-retain"
+    assert PRODBOX_STORAGE_CLASS == "manual"
     assert "persistentvolumes" in PRODBOX_STORAGE_RETAINED_RESOURCES
     assert "events" in PRODBOX_EPHEMERAL_RESOURCE_KINDS
     assert "events.events.k8s.io" in PRODBOX_EPHEMERAL_RESOURCE_KINDS

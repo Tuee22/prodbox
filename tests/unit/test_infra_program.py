@@ -9,6 +9,15 @@ from unittest.mock import MagicMock, patch
 
 import prodbox.infra.cert_manager as cert_manager_module
 import prodbox.infra.cluster_issuer as cluster_issuer_module
+from prodbox.settings import LanAddressing
+
+_TEST_LAN = LanAddressing(
+    interface_name="eno1",
+    interface_ipv4="192.168.1.20",
+    network_cidr="192.168.1.0/24",
+    metallb_pool="192.168.1.240-192.168.1.250",
+    ingress_lb_ip="192.168.1.240",
+)
 
 
 def _import_fresh_infra_main() -> ModuleType:
@@ -105,8 +114,6 @@ def test_infra_main_enables_dns_bootstrap_and_cert_manager() -> None:
     """Pulumi entrypoint should deploy DNS bootstrap when enabled."""
     settings = MagicMock(
         demo_fqdn="demo.example.com",
-        ingress_lb_ip="192.168.1.240",
-        metallb_pool="192.168.1.240-192.168.1.250",
         pulumi_enable_dns_bootstrap=True,
     )
     aws_provider = MagicMock()
@@ -117,6 +124,7 @@ def test_infra_main_enables_dns_bootstrap_and_cert_manager() -> None:
 
     with (
         patch("prodbox.settings.Settings", return_value=settings),
+        patch("prodbox.settings.discover_lan_addressing", return_value=_TEST_LAN),
         patch("prodbox.infra.metadata.resolve_prodbox_id", return_value="prodbox-123"),
         patch("prodbox.infra.providers.create_k8s_provider", return_value=k8s_provider),
         patch(
@@ -166,13 +174,12 @@ def test_infra_main_can_disable_dns_bootstrap() -> None:
     """Pulumi entrypoint should skip Route53 bootstrap when explicitly disabled."""
     settings = MagicMock(
         demo_fqdn="demo.example.com",
-        ingress_lb_ip="192.168.1.240",
-        metallb_pool="192.168.1.240-192.168.1.250",
         pulumi_enable_dns_bootstrap=False,
     )
 
     with (
         patch("prodbox.settings.Settings", return_value=settings),
+        patch("prodbox.settings.discover_lan_addressing", return_value=_TEST_LAN),
         patch("prodbox.infra.metadata.resolve_prodbox_id", return_value="prodbox-123"),
         patch("prodbox.infra.providers.create_k8s_provider", return_value=MagicMock()),
         patch("prodbox.infra.providers.create_aws_provider") as mock_aws,

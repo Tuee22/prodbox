@@ -9,6 +9,7 @@ import pulumi
 import pulumi_kubernetes as k8s
 
 from prodbox.infra.metadata import chart_values_with_prodbox, object_meta
+from prodbox.settings import discover_lan_addressing
 
 if TYPE_CHECKING:
     from prodbox.settings import Settings
@@ -29,7 +30,7 @@ class MetalLBResources:
 
 
 def deploy_metallb(
-    settings: Settings,
+    _settings: Settings,
     k8s_provider: k8s.Provider,
     *,
     prodbox_id: str,
@@ -40,7 +41,7 @@ def deploy_metallb(
     Kubernetes clusters using Layer 2 mode (ARP).
 
     Args:
-        settings: Application settings with MetalLB pool configuration
+        _settings: Application settings (MetalLB pool is always auto-discovered)
         k8s_provider: Kubernetes provider
         prodbox_id: Canonical prodbox-id annotation value
 
@@ -85,7 +86,7 @@ def deploy_metallb(
             prodbox_id=prodbox_id,
         ),
         spec={
-            "addresses": [settings.metallb_pool],
+            "addresses": [discover_lan_addressing().metallb_pool],
         },
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,
@@ -115,7 +116,7 @@ def deploy_metallb(
 
     # Export MetalLB info
     pulumi.export("metallb_chart_version", METALLB_CHART_VERSION)
-    pulumi.export("metallb_ip_pool", settings.metallb_pool)
+    pulumi.export("metallb_ip_pool", discover_lan_addressing().metallb_pool)
 
     return MetalLBResources(
         namespace=namespace,

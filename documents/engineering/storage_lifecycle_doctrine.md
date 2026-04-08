@@ -113,7 +113,7 @@ Shared-runtime lifecycle fixture ownership and teardown behavior are defined in 
 
 The chart platform stores retained host-path data for bespoke Helm chart workloads in the repo-local `.data/` directory.
 
-Layout: `.data/<namespace>/<statefulset>/<ordinal>/`
+Layout: `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>/`
 
 Rules:
 

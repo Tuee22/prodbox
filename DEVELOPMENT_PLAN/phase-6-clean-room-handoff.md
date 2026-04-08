@@ -43,8 +43,9 @@ remaining compatibility backlog.
 
 ### Current Validation State
 
-- `legacy-tracking-for-deletion.md` is now empty as of April 6, 2026; the remaining blockers for
-  final handoff are live-environment and AWS/public-host proofs rather than in-repo cleanup work.
+- `legacy-tracking-for-deletion.md` has no pending items. Sprint 4.6 (configuration
+  simplification) is complete. The remaining blockers for final handoff are live-environment
+  and AWS/public-host proofs.
 
 ### Remaining Work
 

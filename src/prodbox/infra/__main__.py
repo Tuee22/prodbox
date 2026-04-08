@@ -21,7 +21,7 @@ from prodbox.infra.ingress import deploy_ingress
 from prodbox.infra.metadata import resolve_prodbox_id
 from prodbox.infra.metallb import deploy_metallb
 from prodbox.infra.providers import create_aws_provider, create_k8s_provider
-from prodbox.settings import Settings
+from prodbox.settings import Settings, discover_lan_addressing
 
 
 def main() -> None:
@@ -29,6 +29,7 @@ def main() -> None:
     # Load settings from environment
     settings = Settings()
     prodbox_id = resolve_prodbox_id()
+    lan = discover_lan_addressing()
 
     # Create providers
     k8s_provider = create_k8s_provider(settings)
@@ -75,8 +76,8 @@ def main() -> None:
         "summary",
         {
             "fqdn": settings.demo_fqdn,
-            "ingress_ip": settings.ingress_lb_ip,
-            "metallb_pool": settings.metallb_pool,
+            "ingress_ip": lan.ingress_lb_ip,
+            "metallb_pool": lan.metallb_pool,
             "cluster_issuer": "letsencrypt-http01",
             "dns_bootstrap_enabled": settings.pulumi_enable_dns_bootstrap,
             "prodbox_id": prodbox_id,

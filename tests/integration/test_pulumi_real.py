@@ -159,7 +159,7 @@ def pulumi_real_project(
     pulumi_home.mkdir()
 
     settings = get_settings()
-    stack_name = settings.pulumi_stack
+    stack_name = "home"
     aws_region = settings.aws_region
     dns_env = build_dns_suite_env(ephemeral_route53_zone)
     txt_record_fqdn = f"pulumi.{ephemeral_route53_zone.zone_name}"
@@ -169,7 +169,6 @@ def pulumi_real_project(
         "PULUMI_HOME": str(pulumi_home),
         "PULUMI_BACKEND_URL": f"file://{backend_dir}",
         "PULUMI_CONFIG_PASSPHRASE": "",
-        "PULUMI_STACK": stack_name,
         "AWS_REGION": aws_region,
         "PULUMI_TEST_RECORD_FQDN": txt_record_fqdn,
         "PULUMI_TEST_RECORD_VALUE": txt_record_value,

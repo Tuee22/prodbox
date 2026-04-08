@@ -96,11 +96,7 @@ def mock_env(
         "ACME_EMAIL": "test@example.com",
         "DEMO_FQDN": "test.example.com",
         "DEMO_TTL": "60",
-        "METALLB_POOL": "10.0.0.100-10.0.0.110",
-        "INGRESS_LB_IP": "10.0.0.100",
-        "KUBECONFIG": "/tmp/test-kubeconfig",
         "ACME_SERVER": "https://acme-staging-v02.api.letsencrypt.org/directory",
-        "PULUMI_STACK": "test",
     }
     with patch.dict(os.environ, env, clear=True):
         yield env

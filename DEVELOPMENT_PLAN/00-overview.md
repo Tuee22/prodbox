@@ -13,12 +13,21 @@
 Build a clean-room prodbox repository with:
 
 1. One explicit `prodbox` CLI surface.
-2. One repository-root `.env` authentication and configuration source.
+2. One repository-root `.env` for external auth and non-secret configuration; cluster-internal
+   secrets are auto-generated and injected via K8s Secrets.
 3. One distributed gateway runtime, always-on supervision model, and Route 53 write path.
-4. One chart-platform storage model rooted at `.data/<namespace>/<statefulset>/<ordinal>`.
+4. One chart-platform storage model rooted at `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 5. One supported cluster-backed `vscode` delivery path.
 6. One named validation command per major surface.
 7. One explicit ledger for every compatibility or cleanup item still slated for removal.
+8. One cluster-wide StorageClass named `manual` of type `kubernetes.io/no-provisioner`; no dynamic
+   provisioner is permitted.
+9. All cluster services deployed via Helm; Pulumi orchestrates infrastructure Helm releases, the
+   `prodbox charts` platform manages application Helm releases.
+10. All stateful services deployed in HA mode by default, with pod anti-affinity suppressed in dev
+    mode.
+11. PVs pre-created explicitly before Helm install; PVCs created only by Helm charts deploying
+    StatefulSets.
 
 ## Clean-Room Sequence
 
@@ -37,7 +46,7 @@ Build a clean-room prodbox repository with:
 | Surface | Canonical Path | Authority |
 |---------|----------------|-----------|
 | CLI control plane | `poetry run prodbox <command>` | Repository worktree |
-| AWS auth/config | Repository-root `.env` read by `Settings()` | Repository root |
+| AWS auth/config | Repository-root `.env` (external auth and non-secret config only) read by `Settings()` | Repository root |
 | RKE2 lifecycle | `prodbox rke2 ensure`, `status`, `cleanup --yes` | `prodbox` CLI |
 | Pulumi infrastructure | `prodbox pulumi ...` | `src/prodbox/infra/` plus Route 53 |
 | Gateway startup | `prodbox gateway start` | `src/prodbox/gateway_daemon.py` |
@@ -62,8 +71,9 @@ Completed and present in the repository:
   gateway pod mode, chart storage/platform, lifecycle behavior, and public DNS delegation.
 - Distributed gateway implementation exists with `prodbox gateway` management commands, TLA+
   artifacts, unit coverage, and Kubernetes integration suites.
-- `prodbox charts` exists as a first-class capability with deterministic retained storage rooted at
-  `.data/<namespace>/<statefulset>/<ordinal>`.
+- `prodbox charts` exists as a first-class capability with deterministic retained storage currently
+  rooted at `.data/<namespace>/<statefulset>/<ordinal>`. The intended storage path scheme is
+  `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`, to be adopted by Sprint 4.5.
 - The namespace-local `keycloak-postgres -> keycloak -> vscode` stack exists, and the supported
   cluster auth model is nginx OIDC plus local Keycloak users.
 - `prodbox rke2 cleanup --yes` uses namespace-first cleanup and preserves retained storage kinds
@@ -112,12 +122,24 @@ Open, incomplete, or blocked:
   rerun the authoritative `dns-aws`, `pulumi`, and `public-dns` validations against the configured
   hosted-zone path, and the local bootstrap-disabled Pulumi reconcile path also still needs a
   configured Pulumi secrets passphrase in the current shell.
+- The cluster now uses one StorageClass named `manual` with provisioner
+  `kubernetes.io/no-provisioner`; the previous names (`prodbox-local-retain` and
+  `prodbox-chart-null-storage`) have been consolidated.
+- The storage path scheme is now the 5-segment
+  `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
+- HA-mode deployment with pod anti-affinity is now implemented; dev mode
+  (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity while retaining replica counts.
+- `.env` now carries only external auth and non-secret configuration. Cluster-internal
+  secrets are auto-generated at chart deploy time and persisted in `.data/`. IP addressing
+  is always auto-discovered. `KUBECONFIG` uses the default `~/.kube/config`. `PULUMI_STACK`
+  is hardcoded to `home`.
 - A full clean-room rerun that ends with zero remaining legacy items has not yet completed.
 
 ## Current-Environment Rerun Blockers
 
-- `poetry run prodbox check-code`, `poetry run prodbox test unit`,
-  `poetry run prodbox test integration charts-platform`,
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 7, 2026
+  after Sprint 4.6 configuration simplification (991 unit tests).
+- `poetry run prodbox test integration charts-platform`,
   `poetry run prodbox test integration gateway-daemon`, and
   `poetry run prodbox test integration gateway-pods` all passed on April 6, 2026.
 - `poetry run prodbox host public-edge` currently fails because the active AWS identity lacks
@@ -142,7 +164,12 @@ Open, incomplete, or blocked:
 ## Hard Constraints
 
 - The only supported public CLI is `prodbox`.
-- The only supported repository auth/config source is the root `.env` file.
+- The repository-root `.env` file carries external auth (AWS credentials) and non-secret
+  configuration (Route 53 zone ID, domain FQDNs, ACME email, DNS bootstrap flags, dev-mode
+  flag). Cluster-internal secrets are auto-generated at chart deploy time and injected via K8s
+  Secrets; they must not appear in `.env`. IP addressing (MetalLB pool, ingress LB IP) is always
+  auto-discovered from the host LAN; static IP overrides in `.env` are not supported.
+  `KUBECONFIG` is not configured via `.env`; the default `~/.kube/config` is always used.
 - The only supported gateway startup path is `prodbox gateway start`.
 - The only supported host-service install path for gateway supervision is
   `prodbox gateway install-service`.
@@ -160,6 +187,22 @@ Open, incomplete, or blocked:
   histories, blocker tracking, or completion state.
 - Compatibility shims, duplicate operator paths, competing ingress controllers, and transitional
   naming are removal targets, not long-term architecture.
+- The only permitted cluster StorageClass is named `manual` with provisioner
+  `kubernetes.io/no-provisioner`; bootstrap must fail if a chart requests a dynamic provisioner.
+- PVCs may only be created by Helm charts deploying StatefulSets; no other mechanism may create
+  PVCs.
+- PVs must be pre-created explicitly before Helm install; implicit PVC provisioning is not
+  permitted.
+- All cluster services are deployed via Helm. Pulumi orchestrates infrastructure-layer Helm
+  releases (MetalLB, Traefik, cert-manager). The `prodbox charts` platform manages
+  application-layer Helm releases.
+- All stateful services must be deployed in HA mode (multiple replicas with pod anti-affinity);
+  dev mode suppresses anti-affinity but retains the multi-replica default.
+- The retained storage path scheme is
+  `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`. Path naming must be stable across
+  teardown/rebuild cycles so data survives cluster down and cluster up.
+- No tooling or CLI command is permitted to delete `.data/` itself.
+- `.data/` must appear in both `.gitignore` and `.dockerignore`.
 
 ## Related Documents
 

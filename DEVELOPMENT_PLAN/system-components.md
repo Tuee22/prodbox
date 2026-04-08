@@ -20,6 +20,7 @@
 | TLS issuance | cert-manager plus Let's Encrypt HTTP-01 | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
 | DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus always-on gateway `dns_write_gate` | Route 53 |
 | Gateway mesh | Distributed gateway daemon | Supervised host service or pod | `prodbox gateway ...` plus steady-state supervisor | Runtime config plus cluster state |
+| Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | Chart platform and Pulumi infra | No durable state (cluster-scoped resource) |
 | Chart platform | Bespoke Helm/chart registry in repo | RKE2 workloads | `prodbox charts ...` | `.data/` retained storage |
 | Namespace-local auth stack | `keycloak-postgres`, `keycloak` | RKE2 workloads | Chart platform | `.data/` plus cluster resources |
 | Namespace-local app stack | `vscode` | RKE2 workload | Chart platform | `.data/` plus cluster resources |
@@ -59,9 +60,9 @@
 
 | State Class | Authority | Durable Home | Notes |
 |-------------|-----------|--------------|-------|
-| Repository configuration | Repository root | `.env` | Sole supported auth/config source |
+| Repository configuration | Repository root | `.env` | External auth (AWS) and non-secret config only; cluster-internal secrets are auto-generated and persisted in `.data/`; IP addressing is always auto-discovered; kubeconfig uses default `~/.kube/config` |
 | CLI and doctrine source | Repository worktree | `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Code and docs are version-controlled |
-| Retained chart storage | Host filesystem | `.data/<namespace>/<statefulset>/<ordinal>` | Rebinds deterministically after cleanup |
+| Retained chart storage | Host filesystem | `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | 5-segment path adopted by Sprint 4.5; rebinds deterministically after cleanup |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |
 | DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; supervised gateway updates keep their IPs current |
 | Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer is `letsencrypt-http01` |

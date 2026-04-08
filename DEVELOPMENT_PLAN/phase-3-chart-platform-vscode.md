@@ -13,7 +13,9 @@
 This phase defines the chart-lifecycle platform, deterministic retained storage rooted at `.data/`,
 and the namespace-local `keycloak-postgres -> keycloak -> vscode` stack with `vscode-nginx` as the
 namespace-local auth proxy behind the phase-4-owned public edge, plus local Keycloak users as the
-supported auth model.
+supported auth model. The Sprint 3.1 storage path scheme
+(`.data/<namespace>/<statefulset>/<ordinal>`) is superseded by the 5-segment scheme adopted in
+Sprint 4.5; see [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md).
 
 ## Sprint 3.1: Chart Platform and Deterministic Retained Storage ✅
 

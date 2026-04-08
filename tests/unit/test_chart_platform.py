@@ -34,8 +34,11 @@ class TestStorageBinding:
             storage_size="20Gi",
             ordinal=0,
         )
-        binding = _storage_binding("vscode", spec)
-        assert binding.persistent_volume_name == "prodbox-chart-vscode-keycloak-postgres-0"
+        binding = _storage_binding("vscode", "keycloak-postgres", spec)
+        assert (
+            binding.persistent_volume_name
+            == "prodbox-chart-vscode-keycloak-postgres-keycloak-postgres-0-data"
+        )
 
     def test_deterministic_host_path(self) -> None:
         spec = ChartStorageSpec(
@@ -44,8 +47,10 @@ class TestStorageBinding:
             storage_size="20Gi",
             ordinal=0,
         )
-        binding = _storage_binding("vscode", spec)
-        expected = CHART_DATA_ROOT / "vscode" / "keycloak-postgres" / "0"
+        binding = _storage_binding("vscode", "keycloak-postgres", spec)
+        expected = (
+            CHART_DATA_ROOT / "vscode" / "keycloak-postgres" / "keycloak-postgres" / "0" / "data"
+        )
         assert binding.host_path == expected
 
     def test_pvc_name_preserved(self) -> None:
@@ -55,7 +60,7 @@ class TestStorageBinding:
             storage_size="50Gi",
             ordinal=0,
         )
-        binding = _storage_binding("vscode", spec)
+        binding = _storage_binding("vscode", "vscode", spec)
         assert binding.persistent_volume_claim_name == "vscode-data-0"
         assert binding.storage_size == "50Gi"
 
@@ -66,8 +71,31 @@ class TestStorageBinding:
             storage_size="10Gi",
             ordinal=1,
         )
-        binding = _storage_binding("myns", spec)
-        assert binding.persistent_volume_name == "prodbox-chart-myns-mydb-1"
+        binding = _storage_binding("myns", "myrelease", spec)
+        assert binding.persistent_volume_name == "prodbox-chart-myns-myrelease-mydb-1-data"
+
+    def test_five_segment_host_path(self) -> None:
+        spec = ChartStorageSpec(
+            statefulset_name="mydb",
+            persistent_volume_claim_name="mydb-data-0",
+            storage_size="10Gi",
+            ordinal=0,
+            claim_suffix="data",
+        )
+        binding = _storage_binding("myns", "myrelease", spec)
+        expected = CHART_DATA_ROOT / "myns" / "myrelease" / "mydb" / "0" / "data"
+        assert binding.host_path == expected
+
+    def test_release_name_and_claim_suffix_on_binding(self) -> None:
+        spec = ChartStorageSpec(
+            statefulset_name="pg",
+            persistent_volume_claim_name="pg-data-0",
+            storage_size="20Gi",
+            claim_suffix="data",
+        )
+        binding = _storage_binding("ns", "rel", spec)
+        assert binding.release_name == "rel"
+        assert binding.claim_suffix == "data"
 
     def test_storage_binding_is_frozen(self) -> None:
         spec = ChartStorageSpec(
@@ -75,7 +103,7 @@ class TestStorageBinding:
             persistent_volume_claim_name="keycloak-postgres-data-0",
             storage_size="20Gi",
         )
-        binding = _storage_binding("vscode", spec)
+        binding = _storage_binding("vscode", "keycloak-postgres", spec)
         assert isinstance(binding, ChartStorageBinding)
         with pytest.raises(dataclasses.FrozenInstanceError):
             binding.storage_size = "100Gi"  # type: ignore[misc]
@@ -156,8 +184,12 @@ class TestBuildChartDeletePlan:
 # build_chart_deployment_plan – requires settings
 # =============================================================================
 
-_MINIMAL_VSCODE_SETTINGS: dict[str, str] = {
+_MINIMAL_VSCODE_SETTINGS: dict[str, str | bool] = {
     "vscode_fqdn": "vscode.example.com",
+    "prodbox_dev_mode": True,
+}
+
+_TEST_CHART_SECRETS: dict[str, str] = {
     "keycloak_admin_password": "adminpass",
     "keycloak_postgres_password": "pgpass",
     "keycloak_nginx_client_secret": "nginxsecret",
@@ -166,15 +198,21 @@ _MINIMAL_VSCODE_SETTINGS: dict[str, str] = {
 
 class TestBuildChartDeploymentPlan:
     def test_vscode_deployment_plan_succeeds(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
 
     def test_invalid_chart_returns_failure(self) -> None:
-        result = build_chart_deployment_plan("nonexistent", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "nonexistent", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Failure)
 
     def test_deployment_plan_correct_release_order(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         plan = result.value
         release_names = tuple(r.release_name for r in plan.releases)
@@ -182,7 +220,9 @@ class TestBuildChartDeploymentPlan:
         assert release_names == ("keycloak-postgres", "keycloak", "vscode")
 
     def test_all_releases_in_root_namespace(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         plan = result.value
         assert plan.namespace == "vscode"
@@ -191,7 +231,9 @@ class TestBuildChartDeploymentPlan:
 
     def test_singleton_violation_not_detected_at_plan_time(self) -> None:
         # The singleton check is at deploy_chart_plan runtime (helm list), not plan time
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         plan = result.value
         # No duplicate release names in the plan
@@ -199,7 +241,9 @@ class TestBuildChartDeploymentPlan:
         assert len(release_names) == len(set(release_names))
 
     def test_public_fqdn_propagated(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         plan = result.value
         assert plan.public_fqdn == "vscode.example.com"
@@ -208,12 +252,16 @@ class TestBuildChartDeploymentPlan:
         settings_without_fqdn = {
             k: v for k, v in _MINIMAL_VSCODE_SETTINGS.items() if k != "vscode_fqdn"
         }
-        result = build_chart_deployment_plan("vscode", settings_without_fqdn)
+        result = build_chart_deployment_plan("vscode", settings_without_fqdn, _TEST_CHART_SECRETS)
         assert isinstance(result, Failure)
 
     def test_storage_bindings_deterministic(self) -> None:
-        result1 = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
-        result2 = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result1 = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
+        result2 = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result1, Success)
         assert isinstance(result2, Success)
         plan1_releases = {r.release_name: r for r in result1.value.releases}
@@ -223,7 +271,9 @@ class TestBuildChartDeploymentPlan:
             assert release1.storage_bindings == release2.storage_bindings
 
     def test_plan_is_frozen_dataclass(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         plan = result.value
         assert isinstance(plan, ChartDeploymentPlan)
@@ -238,13 +288,17 @@ class TestBuildChartDeploymentPlan:
 
 class TestPrerequisiteOrdering:
     def test_vscode_plan_includes_all_three_releases(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         release_names = {r.release_name for r in result.value.releases}
         assert release_names == {"keycloak-postgres", "keycloak", "vscode"}
 
     def test_keycloak_postgres_deployed_before_keycloak(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         names = [r.release_name for r in result.value.releases]
         pg_idx = names.index("keycloak-postgres")
@@ -255,7 +309,9 @@ class TestPrerequisiteOrdering:
 
 class TestSameNamespaceOnly:
     def test_all_releases_share_root_chart_namespace(self) -> None:
-        result = build_chart_deployment_plan("vscode", _MINIMAL_VSCODE_SETTINGS)
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
         assert isinstance(result, Success)
         plan = result.value
         for release in plan.releases:

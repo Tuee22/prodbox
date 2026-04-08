@@ -42,11 +42,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(600)]
 # Minimal settings for keycloak-postgres (no public FQDN required)
 # ---------------------------------------------------------------------------
 
-_KP_SETTINGS: dict[str, str] = {
+_KP_SETTINGS: dict[str, str | bool] = {
+    "vscode_fqdn": "vscode.example.internal",
+    "prodbox_dev_mode": True,
+}
+
+_KP_CHART_SECRETS: dict[str, str] = {
     "keycloak_postgres_password": "integrationtestpass",
     "keycloak_admin_password": "integrationadminpass",
     "keycloak_nginx_client_secret": "integrationnginxsecret",
-    "vscode_fqdn": "vscode.example.internal",
 }
 
 _ROOT_CHART = "keycloak-postgres"
@@ -185,7 +189,7 @@ async def storage_context() -> AsyncIterator[StorageTestContext]:
     kubeconfig = resolve_kubeconfig()
     await _require_tools_and_cluster(kubeconfig)
 
-    deploy_plan_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS)
+    deploy_plan_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS, _KP_CHART_SECRETS)
     delete_plan_result = build_chart_delete_plan(_ROOT_CHART)
     assert isinstance(
         deploy_plan_result, Success
@@ -241,11 +245,14 @@ async def test_storage_bindings_present_after_deploy(
 async def test_pv_names_are_deterministic(
     storage_context: StorageTestContext,
 ) -> None:
-    """PV names must follow the prodbox-chart-<namespace>-<statefulset>-<ordinal> pattern."""
+    """PV names must follow the 5-segment prodbox-chart-<ns>-<release>-<workload>-<ord>-<claim> pattern."""
     for binding in storage_context.bindings:
         assert binding.persistent_volume_name.startswith(
             f"prodbox-chart-{_ROOT_CHART}-"
         ), f"unexpected PV name: {binding.persistent_volume_name}"
+        assert binding.persistent_volume_name.endswith(
+            f"-{binding.claim_suffix}"
+        ), f"PV name missing claim suffix: {binding.persistent_volume_name}"
 
 
 @pytest.mark.asyncio
@@ -377,7 +384,7 @@ async def test_same_pv_names_after_redeploy(
 
     await delete_chart_plan(storage_context.delete_plan)
 
-    redeploy_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS)
+    redeploy_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS, _KP_CHART_SECRETS)
     assert isinstance(redeploy_result, Success)
     redeploy_plan = redeploy_result.value
     await deploy_chart_plan(redeploy_plan)
@@ -402,7 +409,7 @@ async def test_same_pvc_names_after_redeploy(
 
     await delete_chart_plan(storage_context.delete_plan)
 
-    redeploy_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS)
+    redeploy_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS, _KP_CHART_SECRETS)
     assert isinstance(redeploy_result, Success)
     redeploy_plan = redeploy_result.value
     await deploy_chart_plan(redeploy_plan)
@@ -427,7 +434,7 @@ async def test_same_host_paths_after_redeploy(
 
     await delete_chart_plan(storage_context.delete_plan)
 
-    redeploy_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS)
+    redeploy_result = build_chart_deployment_plan(_ROOT_CHART, _KP_SETTINGS, _KP_CHART_SECRETS)
     assert isinstance(redeploy_result, Success)
     redeploy_plan = redeploy_result.value
     await deploy_chart_plan(redeploy_plan)

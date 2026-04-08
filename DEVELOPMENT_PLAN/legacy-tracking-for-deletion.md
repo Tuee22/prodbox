@@ -12,10 +12,7 @@
 
 ## Pending Removal
 
-None. The repository-side legacy cleanup inventory is empty; only live-environment and external
-proof blockers remain in the phase plan.
-
-Repository-external blockers still remain in the plan, but they are not repo-internal legacy items.
+None.
 
 ## Completed
 
@@ -49,6 +46,16 @@ Repository-external blockers still remain in the plan, but they are not repo-int
 | Manual cross-layer diagnosis for public-host failures | Sprint 4.3 | `prodbox host public-edge` is now the named diagnostic path for DNS, ingress, and certificate drift |
 | Optional gateway daemon steady state and generated config that omits `dns_write_gate` | Sprint 4.4 | Generated gateway config now includes `dns_write_gate`, and `prodbox gateway install-service` installs the supported host supervision path |
 | Missing explicit-record DNS doctrine for every supported public subdomain | Sprint 4.4 | Gateway config, status surfaces, and doctrine now treat explicit per-subdomain Route 53 records as canonical and wildcard public DNS as unsupported |
+| `prodbox-chart-null-storage` StorageClass name | Sprint 4.5 | Consolidated to single `manual` StorageClass |
+| `prodbox-local-retain` StorageClass name | Sprint 4.5 | Consolidated to single `manual` StorageClass |
+| 4-segment `.data/<namespace>/<statefulset>/<ordinal>` path scheme | Sprint 4.5 | Migrated to 5-segment `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` |
+| Missing HA-mode defaults and dev-mode anti-affinity suppression | Sprint 4.5 | Chart templates now include `replicaCount` and conditional `podAntiAffinity`; `PRODBOX_DEV_MODE` controls suppression |
+| `KEYCLOAK_ADMIN_PASSWORD` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.data/<namespace>/.secrets.json` |
+| `KEYCLOAK_POSTGRES_PASSWORD` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.data/<namespace>/.secrets.json` |
+| `KEYCLOAK_NGINX_CLIENT_SECRET` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.data/<namespace>/.secrets.json` |
+| `METALLB_POOL` and `INGRESS_LB_IP` explicit `.env` override path | Sprint 4.6 | Always auto-discovered via `discover_lan_addressing()` |
+| `KUBECONFIG` setting in `.env` and Settings | Sprint 4.6 | Default `~/.kube/config` always used |
+| `PULUMI_STACK` setting in `.env` and Settings | Sprint 4.6 | Hardcoded to `home` |
 | Cluster-gated invocation path for external public-host verification | Sprint 5.1 | `charts-vscode` no longer requires cluster prerequisite gates |
 | Manual-only authoritative public DNS delegation proof | Sprint 5.1 | `poetry run prodbox test integration public-dns` is the named proof path |
 

@@ -5,7 +5,7 @@ metadata:
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/name: keycloak
@@ -15,6 +15,16 @@ spec:
       labels:
         {{- include "keycloak.labels" . | nindent 8 }}
     spec:
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: keycloak
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
       containers:
         - name: keycloak
           image: quay.io/keycloak/keycloak:26.0.0

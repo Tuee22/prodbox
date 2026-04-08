@@ -6,7 +6,7 @@ metadata:
     {{- include "keycloak-postgres.labels" . | nindent 4 }}
 spec:
   serviceName: keycloak-postgres
-  replicas: 1
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
       app.kubernetes.io/name: keycloak-postgres
@@ -16,6 +16,16 @@ spec:
       labels:
         {{- include "keycloak-postgres.labels" . | nindent 8 }}
     spec:
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: keycloak-postgres
+                  app.kubernetes.io/instance: {{ .Release.Name }}
+              topologyKey: kubernetes.io/hostname
+      {{- end }}
       securityContext:
         fsGroup: 999
       containers:

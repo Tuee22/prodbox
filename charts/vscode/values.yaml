@@ -2,6 +2,11 @@ global:
   namespace: default
   rootChart: vscode
 
+replicaCount: 1
+
+podAntiAffinity:
+  enabled: true
+
 ingress:
   host: vscode.example.com
   clusterIssuer: letsencrypt-http01

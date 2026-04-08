@@ -135,11 +135,26 @@ from prodbox.lib.prodbox_k8s import (
     RKE2_REGISTRIES_PATH,
     prodbox_id_to_label_value,
 )
-from prodbox.settings import REPOSITORY_ROOT, RenderedSettingValue, render_settings_display
+from prodbox.settings import (
+    REPOSITORY_ROOT,
+    RenderedSettingValue,
+    discover_lan_addressing,
+    render_settings_display,
+)
 
 # =============================================================================
 # Shared Helpers
 # =============================================================================
+
+
+def _discovered_metallb_pool() -> str:
+    """Return the auto-discovered MetalLB pool from the active LAN."""
+    return discover_lan_addressing().metallb_pool
+
+
+def _discovered_ingress_lb_ip() -> str:
+    """Return the auto-discovered ingress LB IP from the active LAN."""
+    return discover_lan_addressing().ingress_lb_ip
 
 
 def _require_machine_identity(prereq_results: PrereqResults) -> MachineIdentity:
@@ -548,8 +563,8 @@ def _render_public_edge_report(
             f"ACTIVE_LAN_INTERFACE={detected_interface}",
             f"ACTIVE_LAN_IPV4={detected_ipv4}",
             f"ACTIVE_LAN_CIDR={detected_cidr}",
-            f"METALLB_POOL={_require_setting_string(settings, 'metallb_pool')}",
-            f"INGRESS_LB_IP={_require_setting_string(settings, 'ingress_lb_ip')}",
+            f"METALLB_POOL={_discovered_metallb_pool()}",
+            f"INGRESS_LB_IP={_discovered_ingress_lb_ip()}",
             f"TRAEFIK_SERVICE_IP={traefik_ip}",
             f"INGRESSCLASS_TRAEFIK={'present' if has_traefik_class else 'missing'}",
             f"INGRESSCLASS_NGINX={'present' if has_nginx_class else 'missing'}",
@@ -593,13 +608,16 @@ def _raise_effect_error(message: str) -> object:
     raise ValueError(message)
 
 
-def _resolve_pulumi_stack(cmd_stack: str | None, prereq_results: PrereqResults) -> str:
-    """Resolve Pulumi stack from explicit command input or settings default."""
+_DEFAULT_PULUMI_STACK: str = "home"
+
+
+def _resolve_pulumi_stack(cmd_stack: str | None) -> str:
+    """Resolve Pulumi stack from explicit command input or hardcoded default."""
     match cmd_stack:
         case str() as explicit_stack:
             return explicit_stack
         case None:
-            return _require_setting_string(_require_settings(prereq_results), "pulumi_stack")
+            return _DEFAULT_PULUMI_STACK
 
 
 def _build_dns_query_effect(effect_id: str, prereq_results: PrereqResults) -> QueryRoute53Record:
@@ -892,7 +910,7 @@ def _build_rke2_cleanup_effect(
 def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults) -> Sequence:
     """Build pulumi up effect with post-apply prodbox identity/annotation reconciliation."""
     machine_identity = _require_machine_identity(prereq_results)
-    stack = _resolve_pulumi_stack(cmd.stack, prereq_results)
+    stack = _resolve_pulumi_stack(cmd.stack)
     label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
     return Sequence(
         effect_id="pulumi_up",
@@ -1467,11 +1485,11 @@ def _build_pulumi_preview_dag(cmd: PulumiPreviewCommand) -> EffectDAG:
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
-        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
-        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+        prerequisites=frozenset(["pulumi_logged_in"]),
+        effect_builder=lambda _reduced, _prereq_results: PulumiStackSelect(
             effect_id="pulumi_preview_stack_select",
             description="Select Pulumi stack for preview",
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
@@ -1491,7 +1509,7 @@ def _build_pulumi_preview_dag(cmd: PulumiPreviewCommand) -> EffectDAG:
             effect_id="pulumi_preview",
             description="Preview infrastructure changes",
             cwd=cmd.cwd,
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             env=_pulumi_env(_require_machine_identity(prereq_results)),
         ),
     )
@@ -1508,11 +1526,11 @@ def _build_pulumi_up_dag(cmd: PulumiUpCommand) -> EffectDAG:
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
-        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
-        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+        prerequisites=frozenset(["pulumi_logged_in"]),
+        effect_builder=lambda _reduced, _prereq_results: PulumiStackSelect(
             effect_id="pulumi_up_stack_select",
             description="Select Pulumi stack for apply",
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
@@ -1549,11 +1567,11 @@ def _build_pulumi_destroy_dag(cmd: PulumiDestroyCommand) -> EffectDAG:
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
-        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
-        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+        prerequisites=frozenset(["pulumi_logged_in"]),
+        effect_builder=lambda _reduced, _prereq_results: PulumiStackSelect(
             effect_id="pulumi_destroy_stack_select",
             description="Select Pulumi stack for destroy",
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
@@ -1574,7 +1592,7 @@ def _build_pulumi_destroy_dag(cmd: PulumiDestroyCommand) -> EffectDAG:
             effect_id="pulumi_destroy",
             description="Destroy infrastructure",
             cwd=cmd.cwd,
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             env=_pulumi_env(_require_machine_identity(prereq_results)),
             yes=cmd.yes,
         ),
@@ -1592,11 +1610,11 @@ def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
-        prerequisites=frozenset(["pulumi_logged_in", "settings_object"]),
-        effect_builder=lambda _reduced, prereq_results: PulumiStackSelect(
+        prerequisites=frozenset(["pulumi_logged_in"]),
+        effect_builder=lambda _reduced, _prereq_results: PulumiStackSelect(
             effect_id="pulumi_refresh_stack_select",
             description="Select Pulumi stack for refresh",
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             cwd=cmd.cwd,
             create_if_missing=False,
         ),
@@ -1616,7 +1634,7 @@ def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
             effect_id="pulumi_refresh",
             description="Refresh infrastructure state",
             cwd=cmd.cwd,
-            stack=_resolve_pulumi_stack(cmd.stack, prereq_results),
+            stack=_resolve_pulumi_stack(cmd.stack),
             env=_pulumi_env(_require_machine_identity(prereq_results)),
         ),
     )
@@ -1882,11 +1900,12 @@ def _build_chart_status_dag(cmd: ChartStatusCommand) -> EffectDAG:
 def _build_chart_deploy_effect(
     cmd: ChartDeployCommand, prereq_results: PrereqResults
 ) -> ChartDeployEffect:
-    """Build ChartDeployEffect from prerequisite settings (pure plan resolution)."""
-    from prodbox.lib.chart_platform import build_chart_deployment_plan
+    """Build ChartDeployEffect from prerequisite settings and auto-generated secrets."""
+    from prodbox.lib.chart_platform import build_chart_deployment_plan, resolve_chart_secrets
 
     settings = _require_settings(prereq_results)
-    match build_chart_deployment_plan(cmd.chart_name, settings):
+    chart_secrets = resolve_chart_secrets(cmd.chart_name)
+    match build_chart_deployment_plan(cmd.chart_name, settings, chart_secrets):
         case Failure(error=error):
             raise ValueError(error)
         case Success(value=plan):

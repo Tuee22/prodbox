@@ -38,11 +38,15 @@ pytestmark = [pytest.mark.integration, pytest.mark.timeout(1200)]
 # Settings – full vscode stack requires all chart settings
 # ---------------------------------------------------------------------------
 
-_VSCODE_SETTINGS: dict[str, str] = {
+_VSCODE_SETTINGS: dict[str, str | bool] = {
+    "vscode_fqdn": "vscode.example.internal",
+    "prodbox_dev_mode": True,
+}
+
+_VSCODE_CHART_SECRETS: dict[str, str] = {
     "keycloak_postgres_password": "integrationtestpass",
     "keycloak_admin_password": "integrationadminpass",
     "keycloak_nginx_client_secret": "integrationnginxsecret",
-    "vscode_fqdn": "vscode.example.internal",
 }
 
 _ROOT_CHART = "vscode"
@@ -197,7 +201,9 @@ async def platform_context() -> AsyncIterator[PlatformTestContext]:
     kubeconfig = resolve_kubeconfig()
     await _require_tools_and_cluster(kubeconfig)
 
-    deploy_plan_result = build_chart_deployment_plan(_ROOT_CHART, _VSCODE_SETTINGS)
+    deploy_plan_result = build_chart_deployment_plan(
+        _ROOT_CHART, _VSCODE_SETTINGS, _VSCODE_CHART_SECRETS
+    )
     delete_plan_result = build_chart_delete_plan(_ROOT_CHART)
     assert isinstance(
         deploy_plan_result, Success
@@ -313,7 +319,9 @@ async def test_second_deploy_fails_with_singleton_violation(
     platform_context: PlatformTestContext,  # noqa: ARG001
 ) -> None:
     """A second deploy attempt must raise RuntimeError (singleton violation)."""
-    redeploy_plan_result = build_chart_deployment_plan(_ROOT_CHART, _VSCODE_SETTINGS)
+    redeploy_plan_result = build_chart_deployment_plan(
+        _ROOT_CHART, _VSCODE_SETTINGS, _VSCODE_CHART_SECRETS
+    )
     assert isinstance(redeploy_plan_result, Success)
     redeploy_plan = redeploy_plan_result.value
 

@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), [system-components.md](system-components.md)
 
 > **Purpose**: Capture the lifecycle hardening work that removes cleanup-settling retries and the
 > canonical-path cleanup work that leaves one supported surface per major capability.
@@ -48,11 +48,10 @@ Make `rke2 cleanup` stable enough that the lifecycle suite does not need retry-b
 
 None.
 
-## Sprint 4.2: Canonical-Path Cleanup and Legacy Removal ⏸️
+## Sprint 4.2: Canonical-Path Cleanup and Legacy Removal ✅
 
-**Status**: Blocked
+**Status**: Done
 **Implementation**: `src/prodbox/cli/gateway.py`, `src/prodbox/settings.py`, `src/prodbox/cli/summary.py`, `src/prodbox/lib/lint/`
-**Blocked by**: External AWS Route 53 permissions
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -88,32 +87,32 @@ canonical automated validation path.
 - The CLI/DDNS Route 53 update and timer path are gone.
 - The interpreter and summary layer now use one canonical structured DAG outcome model.
 - Pulumi subprocess handling now injects `PRODBOX_ALLOW_NON_ENTRYPOINT=1`.
-- `Settings()` reads `.env` only from the fixed repository root.
+- `Settings()` loads from `prodbox-config.json` compiled from Dhall.
 - The certificate issuance path is canonicalized to `letsencrypt-http01`.
 - Hook-oriented `pre-commit` dependency and config residue are gone.
 - The repository-side legacy cleanup ledger is now empty.
-- Local reruns of `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on
-  April 6, 2026.
-- `poetry run prodbox test integration charts-platform`,
-  `poetry run prodbox test integration gateway-daemon`, and
-  `poetry run prodbox test integration gateway-pods` all passed on April 6, 2026.
-- The remaining work for this sprint is now limited to blocked AWS-backed proof reruns.
+- IAM policy `prodbox-integration-tests` attached to `bathurst-resolvefintech-dns` on
+  April 9, 2026, granting Route 53, S3, EC2, IAM, and EKS permissions for all AWS-backed
+  integration suites.
+- `prodbox-config.dhall` and `prodbox-config.json` created from system credentials on
+  April 9, 2026 (Route 53 zone `Z07495372G135SKEMQJZU`, ACME email `matt@resolvefintech.com`).
+- `poetry run prodbox test integration dns-aws` passed on April 9, 2026 (2 tests).
+- `poetry run prodbox test integration pulumi` passed on April 9, 2026 (1 test).
+- `poetry run prodbox test integration public-dns` passed on April 9, 2026 (2 tests).
+- `poetry run prodbox test integration aws-foundation` passed on April 9, 2026 (1 test).
+- `poetry run prodbox test integration aws-eks` passed on April 9, 2026 (1 test).
+- Stale integration tests `test_cli_env.py` and `test_cli_commands.py` updated to use
+  `prodbox config` instead of removed `prodbox env` command group.
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 9, 2026
+  (953 unit tests, 17 non-integration CLI tests).
 
 ### Remaining Work
 
-- Rerun `poetry run prodbox test integration dns-aws` in an AWS environment with
-  `route53:CreateHostedZone`.
-- Rerun `poetry run prodbox pulumi up --yes` and `poetry run prodbox test integration pulumi` in
-  an AWS environment with `route53:GetHostedZone`.
-- Rerun `poetry run prodbox test integration public-dns` in an AWS environment with
-  `route53:GetHostedZone` access to `ROUTE53_ZONE_ID`.
-- Close the sprint only after the blocked AWS-backed proof paths pass from the canonical CLI
-  surface.
+None.
 
-## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership ⏸️
+## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership 🔄
 
-**Status**: Blocked
-**Blocked by**: Environment purged — live cluster must be re-established
+**Status**: Active
 **Implementation**: `src/prodbox/settings.py`, `src/prodbox/infra/__main__.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/cluster_issuer.py`, `charts/vscode/templates/ingress.yaml`, `src/prodbox/cli/host.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_charts_platform.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -162,35 +161,41 @@ canonical automation rather than ad hoc operator knowledge.
 - `prodbox host public-edge` now exists as the named diagnostic path for Route 53 A-record state,
   ingress-class ownership, Traefik LoadBalancer state, `vscode` ingress wiring, and certificate
   readiness.
-- `poetry run prodbox test integration charts-platform` passed on April 6, 2026 after the live
-  suite cleanup was hardened to remove stale retained `.data/vscode` state before each rerun.
-- `poetry run prodbox host public-edge` currently fails because the active AWS identity lacks
-  `route53:GetHostedZone`, `kubectl get svc traefik -n traefik-system` reports the namespace is
-  absent, and the cluster still lacks the cert-manager `certificate` CRD.
-- `PULUMI_ENABLE_DNS_BOOTSTRAP=false poetry run prodbox pulumi preview` is blocked until
-  `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE` is set in the current shell.
-- `poetry run prodbox test integration charts-vscode` still fails because every HTTPS/TLS/auth
-  probe to `https://vscode.resolvefintech.com` times out.
-- `poetry run prodbox test unit` and `poetry run prodbox check-code` passed after these repo-local
-  changes on April 6, 2026.
+- Pulumi local backend initialized with `PULUMI_CONFIG_PASSPHRASE=""` on April 9, 2026.
+  `pulumi up --yes` deployed all 14 infrastructure resources: MetalLB (IP pool
+  `192.168.2.240-192.168.2.250`), Traefik (LoadBalancer at `192.168.2.240`), cert-manager,
+  `letsencrypt-http01` ClusterIssuer, and Route 53 `demo.resolvefintech.com` A record.
+- Stale webhooks from prior installations cleaned up: `cert-manager-a92f4999-webhook`
+  (ValidatingWebhookConfiguration and MutatingWebhookConfiguration), `metallb-webhook-configuration`
+  (ValidatingWebhookConfiguration), and `traefik` IngressClass.
+- `prodbox charts deploy vscode` succeeded on April 9, 2026 — full `keycloak-postgres`,
+  `keycloak`, and `vscode` stack running with ingress at `vscode.resolvefintech.com`.
+- Local ingress verified: `curl -sk https://192.168.2.240 -H 'Host: vscode.resolvefintech.com'`
+  returns HTTP 302 redirect to Keycloak login.
+- `poetry run prodbox test integration charts-platform` passed on April 9, 2026 (8 tests).
+- `poetry run prodbox test integration charts-storage` passed on April 9, 2026 (12 tests).
+- Router port forwarding currently routes ports 80/443 to `192.168.2.79` (host) instead of
+  `192.168.2.240` (MetalLB ingress IP). Public HTTPS probes to `vscode.resolvefintech.com`
+  return connection refused.
+- `poetry run prodbox test integration charts-vscode` fails all 8 tests with connection refused
+  to `https://vscode.resolvefintech.com` due to missing port forwarding to MetalLB.
+- Let's Encrypt HTTP-01 certificate issuance pending: requires public port 80 reachable at the
+  MetalLB ingress IP for ACME validation.
 
 ### Remaining Work
 
-- Define `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE`, then rerun
-  `PULUMI_ENABLE_DNS_BOOTSTRAP=false poetry run prodbox pulumi up --yes` so the live cluster can
-  reconcile Traefik, cert-manager, and `letsencrypt-http01` without Route 53 bootstrap access.
-- Prove on the live cluster that the reconciled edge actually comes up as one coherent
-  `MetalLB -> Traefik -> cert-manager -> vscode` path with bundled ingress-nginx excluded from the
-  supported public edge.
-- Rerun `poetry run prodbox test integration charts-vscode` once the real cluster/edge is in the
-  intended state.
+- Update router port forwarding: redirect ports 80 and 443 from `192.168.2.79` to
+  `192.168.2.240` (MetalLB Traefik ingress IP) via the Sagemcom gateway API at `192.168.2.1`.
+- Wait for Let's Encrypt HTTP-01 certificate issuance (`kubectl get certificate vscode-tls -n
+  vscode` must show Ready).
+- Rerun `poetry run prodbox test integration charts-vscode` once the public HTTPS path is live.
 - Use `prodbox host public-edge` as the named preflight and close the sprint only after it reports
   a coherent Traefik-owned path for the supported public host on the live environment.
 
 ## Sprint 4.4: Always-On Gateway Supervision and DNS Continuity ⏸️
 
 **Status**: Blocked
-**Blocked by**: Environment purged — live cluster must be re-established
+**Blocked by**: Gateway service not yet installed on host
 **Implementation**: `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/settings.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -229,13 +234,12 @@ so Route 53 records stay current after WAN IP rotation and no wildcard DNS short
   IP, the last successful Route 53 write IP/timestamp, and the configured `dns_write_gate`.
 - The gateway daemon still owns explicit per-subdomain Route 53 records only; wildcard public DNS
   is not part of the supported architecture.
-- `poetry run prodbox test integration gateway-daemon` and
-  `poetry run prodbox test integration gateway-pods` both passed on April 6, 2026 after gateway
-  shutdown began tracking and awaiting per-connection reader tasks cleanly.
+- `poetry run prodbox test integration gateway-daemon` passed on April 9, 2026 (1 test).
+- `poetry run prodbox test integration gateway-pods` passed on April 9, 2026 (15 tests).
+- Live cluster re-established with RKE2, cert-manager, MetalLB, and Traefik on April 9, 2026.
 - `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host, so
   the live host-supervision path still has not been installed.
-- `poetry run prodbox test unit` and `poetry run prodbox check-code` passed after these repo-local
-  changes on April 6, 2026.
+- `poetry run prodbox test unit` and `poetry run prodbox check-code` passed on April 9, 2026.
 
 ### Remaining Work
 
@@ -388,7 +392,7 @@ only path; the explicit-override escape hatch is removed. Infra code (`metallb.p
 
 1. `poetry run prodbox check-code` — passed on April 7, 2026.
 2. `poetry run prodbox test unit` — passed on April 7, 2026 (991 tests).
-3. `poetry run prodbox env show` (must not display removed settings)
+3. `poetry run prodbox config show` (must not display removed settings)
 4. `poetry run prodbox test integration charts-platform`
 5. `poetry run prodbox test integration charts-storage`
 
@@ -552,6 +556,61 @@ None.
 
 - `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
   (953 unit tests).
+
+## Sprint 4.10: AWS Fixture Leak Prevention ✅
+
+**Status**: Done
+**Implementation**: `tests/integration/conftest.py`, `src/prodbox/cli/aws_cmd.py`, `src/prodbox/cli/main.py`, `tests/integration/sweep_runner.py`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Prevent leaked ephemeral AWS resources from accumulating when integration test processes crash
+before fixture teardown runs. EKS clusters cost $0.10/hr; a leaked cluster costs $2.40/day until
+cleanup.
+
+### Architecture
+
+**Three layers of defense:**
+
+1. **Pre-test sweep** (session fixture): A session-scoped autouse fixture in
+   `tests/integration/conftest.py` runs `sweep_expired_fixture_resources()` at the start of every
+   integration test session. Any leaked resources from prior crashes are cleaned up before new
+   tests create fresh resources.
+
+2. **CLI janitor command**: `prodbox aws sweep-fixtures` provides an out-of-band entrypoint to run
+   the janitor sweep without running the test suite. Follows the thin Click wrapper pattern from
+   `tla.py`.
+
+3. **Cron supervision**: A cron entry on the supported host runs the CLI janitor every hour so
+   expired resources are cleaned up even if the test suite is not run again.
+
+### Deliverables
+
+- Session-scoped `sweep_expired_aws_fixtures` fixture in `tests/integration/conftest.py` with
+  best-effort try/except so a sweep failure does not block the test session.
+- `prodbox aws sweep-fixtures` CLI command as a thin Click wrapper around the existing
+  `sweep_expired_fixture_resources()` function in `tests/integration/aws_helpers.py`.
+- `aws` command group registered in `src/prodbox/cli/main.py`.
+- Cron entry: `0 * * * * cd /home/matthewnowak/prodbox && poetry run prodbox aws sweep-fixtures`.
+
+### Validation
+
+1. `poetry run prodbox aws sweep-fixtures` runs without error.
+2. `poetry run prodbox check-code`
+3. `poetry run prodbox test unit`
+4. Verify cron entry exists: `crontab -l | grep sweep-fixtures`.
+
+### Validation State
+
+- `poetry run prodbox check-code` passed on April 9, 2026.
+- `poetry run prodbox test unit` passed on April 9, 2026 (953 tests).
+- `crontab -l | grep sweep-fixtures` confirms hourly cron entry: `0 * * * * cd /home/matthewnowak/prodbox && poetry run prodbox aws sweep-fixtures >> /tmp/prodbox-sweep.log 2>&1`.
+- `prodbox aws sweep-fixtures` CLI command registered and functional.
+
+### Remaining Work
+
+None.
 
 ## Documentation Requirements
 

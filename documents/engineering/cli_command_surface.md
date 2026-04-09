@@ -36,7 +36,7 @@ Top-level commands:
 
 | Command | Kind | Purpose |
 |---------|------|---------|
-| `env` | Group | Environment/config inspection and validation |
+| `config` | Group | Dhall configuration management |
 | `host` | Group | Host prerequisite checks |
 | `rke2` | Group | Local cluster lifecycle |
 | `pulumi` | Group | Infrastructure deployment |
@@ -44,6 +44,7 @@ Top-level commands:
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
 | `charts` | Group | Bespoke Helm chart lifecycle |
+| `aws` | Group | AWS fixture management |
 | `test` | Group | Explicit named test suites |
 | `check-code` | Command | Policy guards + `ruff` + `mypy` |
 | `tla-check` | Command | TLA+ model checking via Docker |
@@ -52,13 +53,14 @@ Top-level commands:
 
 ## 3. Command Matrix
 
-### `prodbox env`
+### `prodbox config`
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox env show` | none | `--show-secrets` |
-| `prodbox env validate` | none | none |
-| `prodbox env template` | none | none |
+| `prodbox config init` | none | none |
+| `prodbox config compile` | none | none |
+| `prodbox config show` | none | none |
+| `prodbox config validate` | none | none |
 
 ### `prodbox host`
 
@@ -123,6 +125,12 @@ Top-level commands:
 | `prodbox charts status` | `CHART` | none |
 | `prodbox charts deploy` | `CHART` | none |
 | `prodbox charts delete` | `CHART` | `--yes`, `-y` |
+
+### `prodbox aws`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox aws sweep-fixtures` | none | none |
 
 ### `prodbox test`
 

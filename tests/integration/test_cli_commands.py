@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import socket
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -98,8 +99,13 @@ class TestDNSCommands:
     def test_dns_check_fails_without_config(
         self,
         cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """dns check should fail without AWS config."""
+        import prodbox.settings as settings_module
+
+        monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
         with patch.dict(os.environ, {}, clear=True):
             result = cli_runner.invoke(cli, ["dns", "check"])
 
@@ -243,6 +249,6 @@ class TestMainCLI:
     ) -> None:
         """CLI should accept verbose flag."""
         with patch.dict(os.environ, mock_env, clear=True):
-            result = cli_runner.invoke(cli, ["-v", "env", "show"])
+            result = cli_runner.invoke(cli, ["-v", "config", "show"])
 
         assert result.exit_code in (0, 1)

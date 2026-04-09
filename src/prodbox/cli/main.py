@@ -5,6 +5,7 @@ from __future__ import annotations
 import click
 
 from prodbox.cli import (
+    aws_cmd,
     charts,
     check_code,
     config_cmd,
@@ -43,6 +44,7 @@ def cli(verbose: bool) -> None:
 
 
 # Register command groups
+cli.add_command(aws_cmd.aws)
 cli.add_command(config_cmd.config)
 cli.add_command(host.host)
 cli.add_command(rke2.rke2)

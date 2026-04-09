@@ -4,24 +4,23 @@
 **Supersedes**: N/A
 **Referenced by**: DEVELOPMENT_PLAN/README.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
 
-> **Purpose**: Define how prodbox uses repository `.env` AWS authentication for integration tests and creates, tags, isolates, and cleans up real AWS resources.
+> **Purpose**: Define how prodbox uses Dhall-configured AWS authentication for integration tests and creates, tags, isolates, and cleans up real AWS resources.
 
 ---
 
 ## 0. Canonical Doctrine Statements
 
-`prodbox` AWS authentication material must be stored only in the repository `.env` file.
+`prodbox` AWS authentication material must be stored only in the repository-root `prodbox-config.dhall`, compiled to `prodbox-config.json` by `prodbox config compile`, and read by `Settings`.
 
-That `.env` location is fixed to `<repository-root>/.env` from inside the outer container.
-`prodbox` must not search upward from the current working directory or prefer nested `.env` files.
+`prodbox` must not search upward from the current working directory or prefer alternate config files.
 
-Stateful AWS integration uses explicit credentials loaded from the repository `.env` file, not ambient host AWS CLI state or shared profile discovery.
+Stateful AWS integration uses explicit credentials loaded from the Dhall-compiled configuration, not ambient host AWS CLI state or shared profile discovery.
 
-The AWS test harness must rebuild subprocess AWS auth from `.env` before test execution; it must not perform interactive login inside the repo or inside pytest.
+The AWS test harness must rebuild subprocess AWS auth from `Settings` before test execution; it must not perform interactive login inside the repo or inside pytest.
 
-Ambient AWS auth environment variables outside `.env` are forbidden for `prodbox` commands, fixtures, and tests.
+Ambient AWS auth environment variables outside the Dhall configuration are forbidden for `prodbox` commands, fixtures, and tests.
 
-Only the following `.env` AWS auth variables are supported: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and optional `AWS_SESSION_TOKEN`.
+Only the following AWS auth fields are supported in the Dhall configuration: `aws.access_key_id`, `aws.secret_access_key`, and optional `aws.session_token`.
 
 Stateful AWS-mutating integration tests must create only brand-new ephemeral AWS resources through AWS CLI commands owned by the test fixture.
 
@@ -64,39 +63,42 @@ This document does not restate general integration skip/fail-fast policy. That r
 This document does not restate cluster fixture ownership rules. Those remain owned by [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 
 The public delegation proof does not create AWS resources, but it must still read auth only
-from the repository `.env` file and fail fast when `route53:GetHostedZone` on
+from the Dhall-compiled configuration and fail fast when `route53:GetHostedZone` on
 `ROUTE53_ZONE_ID` is unavailable.
 
 ---
 
 ## 2. Authentication Source And Storage Rules
 
-### 2.1 Repository `.env` Ownership
+### 2.1 Dhall Configuration Ownership
 
-AWS authentication material for `prodbox` must live only in the repository `.env` file.
+AWS authentication material for `prodbox` must live only in the repository-root
+`prodbox-config.dhall`, compiled to `prodbox-config.json` by `prodbox config compile`.
 
-The lookup path is fixed: `pydantic` loads only `<repository-root>/.env` from inside the outer container.
-If that file is absent or incomplete, settings validation must fail; nested or cwd-local `.env` files are not valid fallback sources.
+`Settings.from_config_json()` loads only `<repository-root>/prodbox-config.json`.
+If that file is absent or incomplete, settings validation must fail; nested or alternate
+config files are not valid fallback sources.
 
-Required `.env` keys:
+Required Dhall config fields:
 
-1. `AWS_ACCESS_KEY_ID`
-2. `AWS_SECRET_ACCESS_KEY`
+1. `aws.access_key_id`
+2. `aws.secret_access_key`
 
-Optional `.env` key:
+Optional Dhall config field:
 
-1. `AWS_SESSION_TOKEN`
+1. `aws.session_token`
 
 Forbidden storage patterns:
 
 1. Unversioned repo-local shell snippets that export AWS secrets.
 2. Checked-in example files containing real AWS auth data.
-3. Temporary credential dumps written into project directories outside `.env`.
+3. Temporary credential dumps written into project directories outside the Dhall config.
 4. Reliance on `~/.aws` shared config or cache as the auth source for `prodbox`.
+5. Use of `.env` files for AWS credentials.
 
 ### 2.2 No Ambient Or Profile-Based AWS Auth
 
-The system-installed `aws` CLI may be used by tests, but only with subprocess auth rebuilt from the repository `.env` file.
+The system-installed `aws` CLI may be used by tests, but only with subprocess auth rebuilt from `Settings` (loaded from the Dhall-compiled configuration).
 
 Forbidden test-harness behavior:
 
@@ -104,12 +106,12 @@ Forbidden test-harness behavior:
 2. Running `aws configure` interactively inside the repo as part of test execution.
 3. Generating alternate repo-local credential files for test convenience.
 4. Exporting AWS auth env vars before invoking `prodbox` or pytest.
-5. Relying on AWS shared config, shared credentials, or cached profile state instead of `.env`.
-6. Injecting AWS auth env vars into subprocesses started by repo code or tests unless those vars were rebuilt from `.env`.
+5. Relying on AWS shared config, shared credentials, or cached profile state instead of the Dhall configuration.
+6. Injecting AWS auth env vars into subprocesses started by repo code or tests unless those vars were rebuilt from `Settings`.
 
 ### 2.3 Disallowed Ambient AWS Auth Variables
 
-The following environment variables are forbidden when present outside `.env`:
+The following environment variables are forbidden when present outside the Dhall configuration:
 
 1. `AWS_ACCESS_KEY_ID`
 2. `AWS_SECRET_ACCESS_KEY`
@@ -134,16 +136,16 @@ The following environment variables are forbidden when present outside `.env`:
 Before an AWS-mutating test body runs, the harness must prove all of the following:
 
 1. The system `aws` CLI exists on `PATH`.
-2. The repository `.env` already defines usable AWS authentication for the identity the test will run under.
-3. That `.env`-defined identity can create, tag, mutate, inspect, and delete the same AWS resource types the fixture will own.
+2. The Dhall-compiled configuration already defines usable AWS authentication for the identity the test will run under.
+3. That configuration-defined identity can create, tag, mutate, inspect, and delete the same AWS resource types the fixture will own.
 
 ### 3.2 Required Check Semantics
 
 The required checks map to the following concrete obligations:
 
 1. Tool check: `aws` must be invokable by the test harness.
-2. `.env` auth check: `aws sts get-caller-identity` must succeed with subprocess auth rebuilt from `.env` before the suite proceeds.
-3. Resource-capability check: the fixture setup must successfully execute the same create/tag/mutate/delete AWS CLI operations using `.env`-defined auth that define the resource lifecycle for the suite.
+2. Config auth check: `aws sts get-caller-identity` must succeed with subprocess auth rebuilt from `Settings` before the suite proceeds.
+3. Resource-capability check: the fixture setup must successfully execute the same create/tag/mutate/delete AWS CLI operations using configuration-defined auth that define the resource lifecycle for the suite.
 
 ### 3.3 No In-Harness Login
 
@@ -352,6 +354,23 @@ For the EKS suite, the fixture contract is:
 2. Cluster-backed fixture ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 3. The explicit `prodbox test integration ...` suite surface is defined in [CLI Command Surface](./cli_command_surface.md#prodbox-test).
 4. General shared-account AWS test environment design is defined in [AWS Test Environment](./aws_test_environment.md).
+
+---
+
+## 11. Fixture Leak Prevention
+
+Three layers of defense prevent leaked ephemeral AWS resources from accumulating when
+integration test processes crash before fixture teardown runs:
+
+1. **Pre-test sweep**: A session-scoped autouse fixture (`sweep_expired_aws_fixtures`) in
+   `tests/integration/conftest.py` runs `sweep_expired_fixture_resources()` at the start of
+   every integration test session with best-effort error handling.
+
+2. **CLI janitor command**: `prodbox aws sweep-fixtures` provides an out-of-band entrypoint
+   to run the janitor sweep without running the test suite.
+
+3. **Cron supervision**: An hourly cron entry on the supported host runs the CLI janitor so
+   expired resources are cleaned up even when the test suite is not run again.
 
 ---
 

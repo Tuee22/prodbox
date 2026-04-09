@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import os
 import shutil
 import uuid
@@ -54,6 +55,32 @@ from prodbox.cli.types import Failure, Success
 from prodbox.lib.prodbox_k8s import PRODBOX_STORAGE_BASE_PATH
 
 from .helpers import run_kubectl_capture_via_dag
+
+_logger = logging.getLogger(__name__)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def sweep_expired_aws_fixtures() -> None:
+    """Best-effort pre-test sweep of expired fixture-owned AWS resources.
+
+    Runs once per test session before any tests execute. A sweep failure
+    is logged but does not block the test session.
+    """
+    try:
+        from tests.integration.aws_helpers import sweep_expired_fixture_resources
+
+        result = sweep_expired_fixture_resources()
+        total = (
+            result.deleted_hosted_zones
+            + result.deleted_buckets
+            + result.deleted_vpcs
+            + result.deleted_eks_clusters
+            + result.deleted_iam_roles
+        )
+        if total > 0:
+            _logger.warning("pre-test sweep deleted %d expired fixture resource(s)", total)
+    except Exception:
+        _logger.warning("pre-test AWS fixture sweep failed (best-effort)", exc_info=True)
 
 
 class TlsMaterial(NamedTuple):

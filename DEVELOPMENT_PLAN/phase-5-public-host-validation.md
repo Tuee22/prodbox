@@ -18,7 +18,7 @@ cluster-gated operator workflows.
 
 **Status**: Blocked
 **Implementation**: `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py`, `documents/engineering/helm_chart_platform_doctrine.md`
-**Blocked by**: Sprint 4.2, Sprint 4.3, and Sprint 4.4
+**Blocked by**: Sprint 4.3 and Sprint 4.4
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -59,20 +59,19 @@ external proof part of the canonical automated validation path.
   public-host breakage is now outside the namespace-local chart stack itself.
 - `poetry run prodbox test integration charts-vscode` currently fails all eight HTTPS/TLS/auth
   probes with TCP timeouts to `https://vscode.resolvefintech.com`.
-- `poetry run prodbox test integration public-dns` currently fails because the active AWS identity
-  lacks `route53:GetHostedZone` access to `ROUTE53_ZONE_ID`.
-- Public-host closure is still blocked until the live public edge and the authoritative Route 53
-  record are reproved against the active WAN edge from the canonical external-only path.
+- `poetry run prodbox test integration public-dns` passed on April 9, 2026 (2 tests) after IAM
+  policy `prodbox-integration-tests` was attached to `bathurst-resolvefintech-dns`.
+- `poetry run prodbox test integration dns-aws` passed on April 9, 2026 (2 tests).
+- Public-host closure is still blocked until router port forwarding is updated (ports 80/443 to
+  MetalLB `192.168.2.240`), Let's Encrypt cert issuance completes, and `charts-vscode` passes.
 
 ### Remaining Work
 
-- Close Sprint 4.2, Sprint 4.3, and Sprint 4.4 so the live environment catches up with the
-  repo-local implementation for adaptive edge reconcile, Traefik/cert-manager ownership, and
-  always-on gateway DDNS continuity.
+- Close Sprint 4.3 (router port forwarding and cert issuance) and Sprint 4.4 (gateway host
+  supervision) so the live environment matches the repo-local implementation.
 - Restore live HTTP and HTTPS reachability for `vscode.resolvefintech.com` so requests resolve to
   the current WAN IP and reach the canonical `Traefik -> vscode-nginx -> Keycloak` path.
-- Rerun `poetry run prodbox test integration public-dns` with an AWS identity that has
-  `route53:GetHostedZone` access to `ROUTE53_ZONE_ID`.
+- Rerun `poetry run prodbox test integration charts-vscode` once the public HTTPS path is live.
 - Close the sprint only after public DNS, TLS, and Keycloak redirect behavior all pass from the
   canonical external-only test path with explicit named Route 53 records and no wildcard DNS.
 

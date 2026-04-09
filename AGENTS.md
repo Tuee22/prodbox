@@ -168,7 +168,7 @@ def test_parse_success(fp: FakeProcess) -> None:
 
 - Mark with `@pytest.mark.integration`
 - Require real infrastructure (kubectl, RKE2, etc.)
-- AWS-mutating integration tests must use credentials loaded from the repository `.env` file plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
+- AWS-mutating integration tests must use credentials loaded from the Dhall-compiled configuration (`prodbox-config.json`) plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
 - Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
 - Use `poetry run prodbox test unit` when integration prerequisites are unavailable
 
@@ -200,8 +200,8 @@ This policy ensures human oversight of all code changes.
 
 ## Security
 
-- **Store AWS auth only in the repository `.env` file** - do not create alternate credential files under the repo tree
-- **AWS auth must come only from `.env`** - ambient AWS auth env vars outside `.env`, shared-profile discovery, and system `aws` CLI host auth state are not valid auth sources for `prodbox`
+- **Store AWS auth only in the repository Dhall config** (`prodbox-config.dhall`) - do not create alternate credential files under the repo tree
+- **AWS auth must come only from Dhall config** - ambient AWS auth env vars, shared-profile discovery, and system `aws` CLI host auth state are not valid auth sources for `prodbox`
 - **Validate all external input** - especially FQDN, IP addresses
 - **Least privilege IAM** - Route 53 + STS only
 
@@ -231,3 +231,4 @@ Custom stubs in `typings/` for:
 - **CLAUDE.md**: Detailed AI assistant guidelines
 - **documents/documentation_standards.md**: Documentation rules
 - **documents/engineering/**: Architecture documentation
+- **[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md)**: Development plan, sprint status, and legacy-removal tracking

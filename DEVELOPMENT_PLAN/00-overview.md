@@ -114,23 +114,20 @@ Completed and present in the repository:
 - `prodbox env` command group removed; replaced by `prodbox config`.
 - Subprocess environments built from explicit `_base_subprocess_env()` allowlist; `os.environ`
   inheritance eliminated.
+- AWS fixture leak prevention is in place: a session-scoped autouse `sweep_expired_aws_fixtures`
+  fixture in `tests/integration/conftest.py` runs a pre-test janitor sweep at the start of every
+  integration test session; `prodbox aws sweep-fixtures` CLI command provides an out-of-band
+  entrypoint; an hourly cron entry supervises expired resource cleanup between test runs.
 
 Open, incomplete, or blocked:
 
-- Sprint 4.3 is still open because the live cluster still lacks the intended public-edge
-  resources: `prodbox host public-edge` currently reports Route 53 access denied for hosted-zone
-  diagnostics, no `traefik-system` service, and no `certificate` CRD, while
-  `poetry run prodbox test integration charts-vscode` still times out against the public host.
-- Sprint 4.4 is still open because the supported host has not installed
-  `prodbox-gateway.service` yet, even though the repo-local gateway changes plus the canonical
-  `gateway-daemon` and `gateway-pods` suites now pass.
-- Public-host closure for `vscode.resolvefintech.com` is not complete because the authoritative
-  Route 53 record and the live public `80/443` path still need to be reproved against the active
-  WAN edge from the canonical external-only validation path.
-- Sprint 4.2 closure is blocked in the current AWS environment because the active identity cannot
-  rerun the authoritative `dns-aws`, `pulumi`, and `public-dns` validations against the configured
-  hosted-zone path, and the local bootstrap-disabled Pulumi reconcile path also still needs a
-  configured Pulumi secrets passphrase in the current shell.
+- Sprint 4.3 is active: Pulumi deployed the full infrastructure stack (MetalLB, Traefik,
+  cert-manager, ClusterIssuer, Route 53) on April 9, 2026. The `vscode` chart stack is deployed
+  and the local ingress path works. Router port forwarding still routes ports 80/443 to the host
+  (`192.168.2.79`) instead of the MetalLB ingress (`192.168.2.240`); `charts-vscode` tests fail
+  with connection refused until this is updated.
+- Sprint 4.4 is blocked on gateway service install: all gateway integration suites pass, but
+  `prodbox-gateway.service` has not been installed on the host.
 - The cluster now uses one StorageClass named `manual` with provisioner
   `kubernetes.io/no-provisioner`; the previous names (`prodbox-local-retain` and
   `prodbox-chart-null-storage`) have been consolidated.
@@ -145,20 +142,19 @@ Open, incomplete, or blocked:
 
 ## Current-Environment Rerun Blockers
 
-- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
-  (953 unit tests).
-- The host environment was purged on April 8, 2026: all data, containers, Pulumi state, and
-  cluster resources were removed. The live environment must be re-established before any
-  live-environment work can resume.
-- `dhall` and `dhall-to-json` must be installed on the host as system packages for runtime
-  config compilation.
-- Pulumi state was purged; Sprint 4.3 must re-initialize the stack with
-  `PULUMI_CONFIG_PASSPHRASE=""` after the Dhall config is in place.
-- All live-cluster and AWS-backed integration suites are blocked until the config migration
-  and the live environment are re-established.
-- Phase 5 public-host closure remains blocked until the live public edge is reproved externally on
-  the canonical `Traefik -> vscode-nginx -> Keycloak` path and the authoritative Route 53 record
-  is shown current for the active WAN IP at rerun time.
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 9, 2026
+  (953 unit tests, 17 non-integration CLI tests).
+- Live cluster re-established on April 9, 2026 with RKE2, MetalLB, Traefik, cert-manager, and
+  `letsencrypt-http01` ClusterIssuer via Pulumi (`PULUMI_CONFIG_PASSPHRASE=""`).
+- `prodbox-config.dhall` and `prodbox-config.json` created from system credentials (Route 53 zone
+  `Z07495372G135SKEMQJZU`, ACME email `matt@resolvefintech.com`).
+- IAM policy `prodbox-integration-tests` attached to `bathurst-resolvefintech-dns` with Route 53,
+  S3, EC2, IAM, and EKS permissions. All AWS-backed suites passed on April 9, 2026.
+- 1016/1024 tests passing. The 8 `charts-vscode` tests fail with connection refused because
+  router port forwarding routes 80/443 to the host (`192.168.2.79`) instead of MetalLB ingress
+  (`192.168.2.240`).
+- Phase 5 public-host closure remains blocked until router port forwarding is updated and Let's
+  Encrypt cert issuance completes.
 
 ## Hard Constraints
 

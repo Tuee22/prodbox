@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../documents/engineering/README.md](../documents/engineering/README.md)
+**Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md), [../documents/engineering/README.md](../documents/engineering/README.md)
 
 > **Purpose**: Provide the single execution-ordered development plan for prodbox, including honest
 > sprint status, validation gates, blocker tracking, and legacy-path removal.
@@ -93,49 +93,50 @@ credential isolation with no `os.environ` inheritance.
 | 3.1 Chart Platform and Deterministic Retained Storage | ✅ Done | - | - | `src/prodbox/cli/charts.py`, `src/prodbox/lib/chart_platform.py`, `tests/integration/test_charts_storage.py`, `tests/integration/test_charts_platform.py` |
 | 3.2 `vscode` Stack and Canonical Cluster Auth Path | ✅ Done | - | - | `src/prodbox/cli/charts.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_vscode.py`, `documents/engineering/helm_chart_platform_doctrine.md` |
 | 4.1 `rke2 cleanup` Hardening and Lifecycle Regression Closure | ✅ Done | - | - | `src/prodbox/cli/rke2.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_prodbox_lifecycle.py` |
-| 4.2 Canonical-Path Cleanup and Legacy Removal | ⏸️ Blocked | External AWS Route 53 permissions | Repo-local validation closed; only blocked AWS-backed reruns remain | `src/prodbox/cli/gateway.py`, `src/prodbox/settings.py`, `src/prodbox/cli/summary.py`, `src/prodbox/lib/lint/` |
-| 4.3 Adaptive Edge Infrastructure Reconcile and Ingress Ownership | ⏸️ Blocked | Environment purged — live cluster must be re-established | Repo-local implementation closed; Pulumi-driven public-edge reconcile plus external `charts-vscode` proof remain | Infra modules, CLI modules, `tests/integration/test_charts_platform.py` |
-| 4.4 Always-On Gateway Supervision and DNS Continuity | ⏸️ Blocked | Environment purged — live cluster must be re-established | Gateway unit/integration suites pass; supervised host service install and live Route 53 continuity remain | Gateway daemon, CLI modules, gateway integration tests |
+| 4.2 Canonical-Path Cleanup and Legacy Removal | ✅ Done | - | - | `src/prodbox/cli/gateway.py`, `src/prodbox/settings.py`, `src/prodbox/cli/summary.py`, `src/prodbox/lib/lint/` |
+| 4.3 Adaptive Edge Infrastructure Reconcile and Ingress Ownership | 🔄 Active | - | Router port forwarding, Let's Encrypt cert issuance, and `charts-vscode` proof remain | Infra modules, CLI modules, `tests/integration/test_charts_platform.py` |
+| 4.4 Always-On Gateway Supervision and DNS Continuity | ⏸️ Blocked | Gateway service not yet installed on host | Gateway integration suites pass; supervised host service install and live Route 53 continuity remain | Gateway daemon, CLI modules, gateway integration tests |
 | 4.5 Storage Path Migration, Single StorageClass, and HA Doctrine | ✅ Done | - | - | `src/prodbox/lib/chart_platform.py`, `src/prodbox/lib/prodbox_k8s.py`, `src/prodbox/settings.py`, chart templates and values |
 | 4.6 Configuration Simplification and K8s Secret Injection | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/lib/chart_platform.py`, `src/prodbox/cli/dag_builders.py`, infra modules |
 | 4.7 Dhall Config Schema, Bootstrap, and JSON Loading | ✅ Done | - | - | `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, CLI modules |
 | 4.8 Settings Migration and AWS Auth Removal | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/lib/aws_auth.py` (deletion), `src/prodbox/cli/interpreter.py`, `tests/conftest.py` |
 | 4.9 Subprocess Credential Isolation and Legacy Cleanup | ✅ Done | - | - | `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/env.py` (removal) |
-| 5.1 Public Hostname Closure and Authoritative External Proof | ⏸️ Blocked | Sprint 4.2, Sprint 4.3, and Sprint 4.4 | Restore live public-host reachability and rerun proof suites | `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
-| 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ⏸️ Blocked | Sprint 4.2, Sprint 4.3, Sprint 4.4, and Sprint 5.1 | Rerun the final clean-room validation set once the remaining blocked proofs close | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md` |
+| 4.10 AWS Fixture Leak Prevention | ✅ Done | - | - | `tests/integration/conftest.py`, `src/prodbox/cli/aws_cmd.py`, `src/prodbox/cli/main.py`, `tests/integration/sweep_runner.py` |
+| 5.1 Public Hostname Closure and Authoritative External Proof | ⏸️ Blocked | Sprint 4.3 and Sprint 4.4 | Restore live public-host reachability and rerun proof suites | `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
+| 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ⏸️ Blocked | Sprint 4.3, Sprint 4.4, and Sprint 5.1 | Rerun the final clean-room validation set once the remaining blocked proofs close | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md` |
 
 ## Current Plan Status
 
-As of April 8, 2026:
+As of April 9, 2026:
 
-- Completed and closed: Phases 0 through 3, plus Sprints 4.1, 4.5, 4.6, 4.7, 4.8, and 4.9.
-- Blocked: Sprints 4.2, 4.3, 4.4 (blocked on external environment), Sprint 5.1, and Sprint 6.1.
-- Not yet closable: Sprint 6.1, because it depends on the blocked work above.
+- Completed and closed: Phases 0 through 3, plus Sprints 4.1, 4.2, 4.5, 4.6, 4.7, 4.8, 4.9, and 4.10.
+- Active: Sprint 4.3 (router port forwarding and Let's Encrypt cert issuance remain).
+- Blocked: Sprint 4.4 (gateway service install), Sprint 5.1, and Sprint 6.1.
+- Test results: 1016/1024 tests passing. 8 `charts-vscode` tests pending public port forwarding.
 
 Current-environment rerun blockers:
 
-- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
-  (953 unit tests).
-- The host environment was purged on April 8, 2026. All live-cluster, Pulumi, and AWS-backed
-  integration suites are blocked until the live environment is re-established.
-- `poetry run prodbox host public-edge` currently fails because the active AWS identity lacks
-  `route53:GetHostedZone`, the live cluster has no `traefik-system` service, and the cluster still
-  lacks the `certificate` CRD required by cert-manager.
-- `PULUMI_ENABLE_DNS_BOOTSTRAP=false poetry run prodbox pulumi preview` is blocked because
-  `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE` is not set in the current shell.
-- `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host, so
-  Sprint 4.4 still lacks live host-supervision proof even though the process and pod suites pass.
-- `poetry run prodbox test integration dns-aws` is blocked because the active AWS identity lacks
-  `route53:CreateHostedZone`.
-- `poetry run prodbox pulumi up --yes` is blocked because the active AWS identity lacks
-  `route53:GetHostedZone` for the configured hosted zone path.
-- `poetry run prodbox test integration charts-vscode` still fails because every HTTPS/TLS/auth
-  probe to `https://vscode.resolvefintech.com` times out.
-- `poetry run prodbox test integration public-dns` is blocked because the active AWS identity lacks
-  `route53:GetHostedZone` for `ROUTE53_ZONE_ID`.
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 9, 2026
+  (953 unit tests, 17 non-integration CLI tests).
+- Live cluster re-established on April 9, 2026 with RKE2, MetalLB (`192.168.2.240-192.168.2.250`),
+  Traefik (LoadBalancer at `192.168.2.240`), cert-manager, and `letsencrypt-http01` ClusterIssuer.
+- Pulumi local backend initialized with `PULUMI_CONFIG_PASSPHRASE=""` and all 14 infrastructure
+  resources deployed.
+- `prodbox-config.dhall` and `prodbox-config.json` created from system credentials.
+- IAM policy `prodbox-integration-tests` attached to `bathurst-resolvefintech-dns` with Route 53,
+  S3, EC2, IAM, and EKS permissions.
+- All AWS-backed integration suites passed: `dns-aws` (2), `pulumi` (1), `public-dns` (2),
+  `aws-foundation` (1), `aws-eks` (1).
+- All K8s integration suites passed: `charts-platform` (8), `charts-storage` (12),
+  `gateway-daemon` (1), `gateway-pods` (15), `lifecycle` (2).
+- `poetry run prodbox test integration charts-vscode` fails 8 tests with connection refused —
+  router port forwarding routes 80/443 to `192.168.2.79` (host) instead of `192.168.2.240`
+  (MetalLB ingress IP).
+- Let's Encrypt HTTP-01 certificate issuance pending: requires public port 80 forwarded to
+  MetalLB ingress.
+- `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host.
 - Phase 5 public-host closure remains blocked until the live public edge is reproved externally on
-  the canonical `Traefik -> vscode-nginx -> Keycloak` path and the authoritative Route 53 record
-  is shown current for the active WAN IP at rerun time.
+  the canonical `Traefik -> vscode-nginx -> Keycloak` path.
 
 ## Exit Definition
 
@@ -160,11 +161,13 @@ This plan is done only when all of the following are true:
    removed, `aws_auth.py` deleted, and all AWS credential access flowing through `Settings`.
 9. Sprint 4.9 is closed with subprocess environments built explicitly from configuration (no
    `os.environ` inheritance), `prodbox env` removed, and all `.env` code deleted.
-10. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
+10. Sprint 4.10 is closed with a session-scoped pre-test janitor sweep, a `prodbox aws
+    sweep-fixtures` CLI command, and hourly cron supervision for AWS fixture leak prevention.
+11. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
     verification for `vscode.resolvefintech.com`.
-11. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
-12. No document under `documents/` carries a competing sprint narrative or completion-status track.
-13. The remaining legacy inventory is empty.
+12. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
+13. No document under `documents/` carries a competing sprint narrative or completion-status track.
+14. The remaining legacy inventory is empty.
 
 ## Related Documents
 

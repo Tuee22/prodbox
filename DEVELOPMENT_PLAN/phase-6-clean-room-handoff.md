@@ -18,7 +18,7 @@ blocked or active and the cleanup ledger is empty.
 
 **Status**: Blocked
 **Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`
-**Blocked by**: Sprint 4.2, Sprint 4.3, Sprint 4.4, and Sprint 5.1
+**Blocked by**: Sprint 4.3, Sprint 4.4, and Sprint 5.1
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -49,10 +49,8 @@ remaining compatibility backlog.
 
 ### Remaining Work
 
-- Close Sprint 4.2 in an AWS environment with the required Route 53 permissions.
-- Close Sprint 4.3 by initializing a fresh Pulumi stack with `PULUMI_CONFIG_PASSPHRASE=""`,
-  reconciling the live `MetalLB -> Traefik -> cert-manager -> vscode` edge, and rerunning the
-  external `charts-vscode` proof path.
+- Close Sprint 4.3 by updating router port forwarding, completing Let's Encrypt cert issuance,
+  and rerunning the external `charts-vscode` proof path.
 - Close Sprint 4.4 by installing the supported host `prodbox-gateway.service` with a real
   config/orders file and proving explicit-record DDNS continuity against live Route 53 state.
 - Close Sprint 5.1 by restoring live public ingress reachability and rerunning the public-host

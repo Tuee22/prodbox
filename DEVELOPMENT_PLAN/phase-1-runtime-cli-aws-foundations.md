@@ -45,7 +45,7 @@ None.
 ## Sprint 1.2: AWS Auth Doctrine and Real-System Validation Foundation ✅
 
 **Status**: Done
-**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/aws_auth.py`, `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`
+**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/aws_auth.py` (removed in Sprint 4.8), `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective

@@ -15,10 +15,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from prodbox.lib.aws_auth import (
-    assert_no_ambient_aws_auth_env_vars,
-    build_dotenv_aws_env,
-)
+from prodbox.settings import get_settings
 
 FIXTURE_OWNER_TAG: str = "managed_by"
 FIXTURE_OWNER_VALUE: str = "prodbox-integration"
@@ -132,12 +129,28 @@ def _required_env_var(name: str) -> str:
 
 
 def _aws_env(extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return AWS CLI environment with credentials sourced only from `.env`."""
-    env = build_dotenv_aws_env(Path(".env"), extra_env=extra_env)
+    """Return AWS CLI environment with credentials from Settings."""
+    settings = get_settings()
+    env: dict[str, str] = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+    }
+    env["AWS_ACCESS_KEY_ID"] = settings.aws_access_key_id
+    env["AWS_SECRET_ACCESS_KEY"] = settings.aws_secret_access_key
+    match settings.aws_session_token:
+        case str() as token:
+            env["AWS_SESSION_TOKEN"] = token
+        case None:
+            pass
     env["AWS_PAGER"] = ""
-    region = _configured_aws_region()
+    region = settings.aws_region
     env["AWS_REGION"] = region
     env["AWS_DEFAULT_REGION"] = region
+    match extra_env:
+        case dict() as extras:
+            env.update(dict(extras))
+        case None:
+            pass
     return env
 
 
@@ -173,7 +186,6 @@ def _configured_aws_region() -> str:
 
 def require_aws_cli_identity() -> str:
     """Validate that the AWS CLI is installed and credentials are usable."""
-    assert_no_ambient_aws_auth_env_vars()
     if shutil.which("aws") is None:
         raise AssertionError("aws CLI not installed")
     return _run_aws_cli("sts", "get-caller-identity", "--query", "Account", "--output", "text")
@@ -807,7 +819,6 @@ def build_dns_suite_env(context: Route53HostedZoneContext) -> dict[str, str]:
     """Return environment overrides for real DNS integration tests."""
     from prodbox.settings import get_settings
 
-    assert_no_ambient_aws_auth_env_vars()
     settings = get_settings()
     return {
         "AWS_REGION": settings.aws_region,
@@ -816,6 +827,50 @@ def build_dns_suite_env(context: Route53HostedZoneContext) -> dict[str, str]:
         "DEMO_TTL": str(ROUTE53_RECORD_TTL_SECONDS),
         "ACME_EMAIL": settings.acme_email,
     }
+
+
+@contextmanager
+def override_config_json(overrides: dict[str, object]) -> Iterator[Path]:
+    """Write a temporary ``prodbox-config.json`` with field overrides.
+
+    Patches ``REPOSITORY_ROOT`` and clears the settings cache so
+    ``get_settings()`` / ``Settings.from_config_json()`` read the
+    temporary file.  Restores the original root on exit.
+    """
+    import prodbox.settings as settings_module
+    from prodbox.settings import REPOSITORY_ROOT, clear_settings_cache, load_config_json
+
+    original_root = REPOSITORY_ROOT
+    config_path = original_root / "prodbox-config.json"
+    base_config = load_config_json(config_path)
+
+    def _deep_merge(base: dict[str, object], patch: dict[str, object]) -> dict[str, object]:
+        merged = dict(base)
+        for key, value in patch.items():
+            existing = merged.get(key)
+            match (existing, value):
+                case (dict() as edict, dict() as vdict):
+                    merged[key] = _deep_merge(
+                        {str(k): v for k, v in edict.items()},
+                        {str(k): v for k, v in vdict.items()},
+                    )
+                case _:
+                    merged[key] = value
+        return merged
+
+    merged = _deep_merge(base_config, overrides)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="prodbox-config-"))
+    tmp_config = tmp_dir / "prodbox-config.json"
+    tmp_config.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+
+    settings_module.REPOSITORY_ROOT = tmp_dir
+    clear_settings_cache()
+    try:
+        yield tmp_dir
+    finally:
+        settings_module.REPOSITORY_ROOT = original_root
+        clear_settings_cache()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _route53_mutable_record_sets(context: Route53HostedZoneContext) -> list[dict[str, object]]:

@@ -29,7 +29,7 @@
 
 | Surface | Command | Purpose |
 |---------|---------|---------|
-| Config validation | `prodbox env validate` | Validate required repository-root settings |
+| Config management | `prodbox config init|compile|show|validate` | Bootstrap, compile, display, and validate the Dhall-sourced configuration |
 | Host prerequisite flow | `prodbox host ensure-tools` | Verify required local tools |
 | Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, and certificate state for the supported public host |
 | RKE2 lifecycle | `prodbox rke2 ensure|status|cleanup --yes` | Provision, inspect, and clean cluster state |
@@ -60,7 +60,7 @@
 
 | State Class | Authority | Durable Home | Notes |
 |-------------|-----------|--------------|-------|
-| Repository configuration | Repository root | `.env` | External auth (AWS) and non-secret config only; cluster-internal secrets are auto-generated and persisted in `.data/`; IP addressing is always auto-discovered; kubeconfig uses default `~/.kube/config` |
+| Repository configuration | Repository root | `prodbox-config.dhall` | Dhall config compiled to `prodbox-config.json` by `prodbox config compile`; cluster-internal secrets auto-generated in `.data/`; IP addressing auto-discovered; kubeconfig uses default `~/.kube/config`; subprocess environments built from config only |
 | CLI and doctrine source | Repository worktree | `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Code and docs are version-controlled |
 | Retained chart storage | Host filesystem | `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | 5-segment path adopted by Sprint 4.5; rebinds deterministically after cleanup |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |

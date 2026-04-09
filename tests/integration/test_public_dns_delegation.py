@@ -11,8 +11,7 @@ from urllib.error import URLError
 
 import pytest
 
-from prodbox.lib.aws_auth import load_dotenv_aws_auth
-from prodbox.settings import REPOSITORY_ROOT, Settings
+from prodbox.settings import Settings
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
@@ -35,7 +34,7 @@ def _normalize_dns_name(name: str) -> str:
 @lru_cache(maxsize=1)
 def _settings() -> Settings:
     """Load fixed-repository settings once for this suite."""
-    return Settings()
+    return Settings.from_config_json()
 
 
 @lru_cache(maxsize=1)
@@ -44,11 +43,10 @@ def _canonical_hosted_zone_delegation() -> HostedZoneDelegation:
     import boto3
 
     settings = _settings()
-    auth = load_dotenv_aws_auth(REPOSITORY_ROOT / ".env")
     route53 = boto3.Session(
-        aws_access_key_id=auth.access_key_id,
-        aws_secret_access_key=auth.secret_access_key,
-        aws_session_token=auth.session_token,
+        aws_access_key_id=settings.aws_access_key_id,
+        aws_secret_access_key=settings.aws_secret_access_key,
+        aws_session_token=settings.aws_session_token,
         region_name=settings.aws_region,
     ).client("route53")
     try:

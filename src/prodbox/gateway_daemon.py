@@ -17,8 +17,6 @@ from typing import Literal, Protocol, cast
 
 import httpx
 
-from prodbox.lib.aws_auth import load_dotenv_aws_auth
-
 ChannelName = Literal["mesh", "gateway"]
 
 MIN_HEARTBEAT_TIMEOUT_SECONDS: int = 3
@@ -77,7 +75,7 @@ def _reject_forbidden_dns_write_gate_keys(gate_dict: Mapping[object, object]) ->
         case _:
             raise ValueError(
                 "dns_write_gate must not contain explicit AWS credentials. "
-                "Define AWS auth only in .env and remove: "
+                "Define AWS auth only in prodbox-config.dhall and remove: "
                 f"{', '.join(present)}"
             )
 
@@ -675,11 +673,13 @@ class Route53DnsWriteClient:
         import boto3
 
         def _do_upsert() -> bool:
-            auth = load_dotenv_aws_auth(Path(".env"))
+            from prodbox.settings import get_settings
+
+            settings = get_settings()
             session = boto3.Session(
-                aws_access_key_id=auth.access_key_id,
-                aws_secret_access_key=auth.secret_access_key,
-                aws_session_token=auth.session_token,
+                aws_access_key_id=settings.aws_access_key_id,
+                aws_secret_access_key=settings.aws_secret_access_key,
+                aws_session_token=settings.aws_session_token,
                 region_name=self._aws_region,
             )
             r53 = session.client("route53")
@@ -825,6 +825,16 @@ class GatewayDaemon:
         self._tasks.append(asyncio.create_task(self._sync_loop()))
         self._tasks.append(asyncio.create_task(self._gateway_loop()))
         self._tasks.append(asyncio.create_task(self._dns_write_loop()))
+
+        # Emit initial gateway_claim so the single-node owner can write DNS immediately.
+        with suppress(Exception):
+            await self.emit_event(
+                "gateway_claim",
+                {
+                    "claiming_node_id": self._config.node_id,
+                    "previous_owner": self._config.node_id,
+                },
+            )
 
     async def stop(self) -> None:
         """Stop daemon and close resources."""

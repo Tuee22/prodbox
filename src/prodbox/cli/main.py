@@ -7,8 +7,8 @@ import click
 from prodbox.cli import (
     charts,
     check_code,
+    config_cmd,
     dns,
-    env,
     gateway,
     host,
     k8s,
@@ -35,15 +35,15 @@ def cli(verbose: bool) -> None:
     with declarative, idempotent commands.
 
     \b
-    Configuration is loaded from environment variables.
-    See 'prodbox env show' for current configuration.
+    Configuration is loaded from prodbox-config.json (compiled from Dhall).
+    See 'prodbox config show' for current configuration.
     """
     # Configure logging based on verbosity
     setup_logging(level="DEBUG" if verbose else "INFO")
 
 
 # Register command groups
-cli.add_command(env.env)
+cli.add_command(config_cmd.config)
 cli.add_command(host.host)
 cli.add_command(rke2.rke2)
 cli.add_command(pulumi_cmd.pulumi)

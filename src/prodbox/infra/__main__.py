@@ -26,8 +26,8 @@ from prodbox.settings import Settings, discover_lan_addressing
 
 def main() -> None:
     """Main Pulumi program."""
-    # Load settings from environment
-    settings = Settings()
+    # Load settings from compiled config JSON
+    settings = Settings.from_config_json()
     prodbox_id = resolve_prodbox_id()
     lan = discover_lan_addressing()
 

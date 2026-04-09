@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import contextlib
 from pathlib import Path
-from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -34,28 +33,11 @@ from prodbox.cli.test_cmd import (
     CoverageSettings,
 )
 
-if TYPE_CHECKING:
-    from collections.abc import Generator
-
 
 @pytest.fixture
 def runner() -> CliRunner:
     """Create a Click CLI test runner."""
     return CliRunner()
-
-
-@pytest.fixture
-def mock_execute() -> Generator[patch, None, None]:
-    """Mock execute_command to return success (0)."""
-    with (
-        patch("prodbox.cli.dns.execute_command", return_value=0) as m,
-        patch("prodbox.cli.env.execute_command", return_value=0),
-        patch("prodbox.cli.host.execute_command", return_value=0),
-        patch("prodbox.cli.k8s.execute_command", return_value=0),
-        patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0),
-        patch("prodbox.cli.rke2.execute_command", return_value=0),
-    ):
-        yield m
 
 
 # =============================================================================
@@ -109,52 +91,6 @@ class TestDNSCommands:
         """dns check should invoke execute_command."""
         with patch("prodbox.cli.dns.execute_command", return_value=0) as mock_exec:
             result = runner.invoke(cli, ["dns", "check"])
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
-
-
-# =============================================================================
-# Env Command Tests
-# =============================================================================
-
-
-class TestEnvCommands:
-    """Tests for env.py CLI commands."""
-
-    def test_env_group_help(self, runner: CliRunner) -> None:
-        """env group should display help."""
-        result = runner.invoke(cli, ["env", "--help"])
-        assert result.exit_code == 0
-        assert "Environment and configuration" in result.output
-
-    def test_env_show_success(self, runner: CliRunner) -> None:
-        """env show should invoke execute_command."""
-        with patch("prodbox.cli.env.execute_command", return_value=0) as mock_exec:
-            result = runner.invoke(cli, ["env", "show"])
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
-
-    def test_env_show_with_secrets(self, runner: CliRunner) -> None:
-        """env show --show-secrets should pass show_secrets=True."""
-        with patch("prodbox.cli.env.execute_command", return_value=0):
-            result = runner.invoke(cli, ["env", "show", "--show-secrets"])
-
-        assert result.exit_code == 0
-
-    def test_env_validate_success(self, runner: CliRunner) -> None:
-        """env validate should invoke execute_command."""
-        with patch("prodbox.cli.env.execute_command", return_value=0) as mock_exec:
-            result = runner.invoke(cli, ["env", "validate"])
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
-
-    def test_env_template_success(self, runner: CliRunner) -> None:
-        """env template should invoke execute_command."""
-        with patch("prodbox.cli.env.execute_command", return_value=0) as mock_exec:
-            result = runner.invoke(cli, ["env", "template"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
@@ -609,13 +545,6 @@ class TestRKE2Commands:
 class TestExecuteCommandFailures:
     """Tests for execute_command returning non-zero exit codes."""
 
-    def test_env_validate_execute_failure(self, runner: CliRunner) -> None:
-        """env validate should propagate execute_command failure."""
-        with patch("prodbox.cli.env.execute_command", return_value=1):
-            result = runner.invoke(cli, ["env", "validate"])
-
-        assert result.exit_code == 1
-
     def test_k8s_health_execute_failure(self, runner: CliRunner) -> None:
         """k8s health should propagate execute_command failure."""
         with patch("prodbox.cli.k8s.execute_command", return_value=1):
@@ -655,45 +584,6 @@ class TestCommandConstructorFailures:
 
         assert result.exit_code == 1
         assert "DNS check failed" in result.output
-
-    def test_env_show_command_failure(self, runner: CliRunner) -> None:
-        """env show should handle command constructor Failure."""
-        from prodbox.cli.types import Failure
-
-        with patch(
-            "prodbox.cli.env.env_show_command",
-            return_value=Failure("Settings error"),
-        ):
-            result = runner.invoke(cli, ["env", "show"])
-
-        assert result.exit_code == 1
-        assert "Settings error" in result.output
-
-    def test_env_validate_command_failure(self, runner: CliRunner) -> None:
-        """env validate should handle command constructor Failure."""
-        from prodbox.cli.types import Failure
-
-        with patch(
-            "prodbox.cli.env.env_validate_command",
-            return_value=Failure("Invalid config"),
-        ):
-            result = runner.invoke(cli, ["env", "validate"])
-
-        assert result.exit_code == 1
-        assert "Invalid config" in result.output
-
-    def test_env_template_command_failure(self, runner: CliRunner) -> None:
-        """env template should handle command constructor Failure."""
-        from prodbox.cli.types import Failure
-
-        with patch(
-            "prodbox.cli.env.env_template_command",
-            return_value=Failure("Template error"),
-        ):
-            result = runner.invoke(cli, ["env", "template"])
-
-        assert result.exit_code == 1
-        assert "Template error" in result.output
 
     def test_host_ensure_tools_command_failure(self, runner: CliRunner) -> None:
         """host ensure-tools should handle command constructor Failure."""
@@ -942,8 +832,6 @@ class TestClickDocumentation:
         ("argv", "tokens", "expected_exit_code"),
         [
             (["--help"], ("check-code", "gateway", "test", "tla-check"), 0),
-            (["env"], ("show", "template", "validate"), 2),
-            (["env", "show", "--help"], ("--show-secrets",), 0),
             (["host"], ("check-ports", "ensure-tools", "firewall", "info"), 2),
             (
                 ["rke2"],

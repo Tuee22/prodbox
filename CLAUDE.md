@@ -18,7 +18,7 @@ Prodbox is a Python-native infrastructure-as-code project for managing a home Ku
 - **cert-manager**: Automatic TLS certificate management
 - **Route 53**: AWS DNS with dynamic DNS updates
 
-**Stack**: Python 3.12 + Click CLI + Pydantic + Pulumi IaC
+**Stack**: Python 3.12 + Click CLI + Dhall + Pydantic + Pulumi IaC
 
 ---
 
@@ -97,7 +97,7 @@ prodbox/
 │   │   ├── command_adt.py    # Command ADTs with smart constructors
 │   │   ├── command_executor.py # Single entry point for execution
 │   │   ├── prerequisite_registry.py # Prerequisite definitions
-│   │   ├── env.py            # Configuration commands
+│   │   ├── config_cmd.py      # Configuration commands (Dhall workflow)
 │   │   ├── host.py           # Host prerequisite commands
 │   │   ├── rke2.py           # RKE2 management commands
 │   │   ├── pulumi_cmd.py     # Pulumi commands
@@ -120,7 +120,7 @@ prodbox/
 │   │   └── exceptions.py     # Custom exceptions
 │   ├── gateway_daemon.py     # Distributed gateway daemon (1387 lines)
 │   ├── tla_check.py          # TLA+ model checker (Docker-based)
-│   └── settings.py           # Pydantic configuration
+│   └── settings.py           # Pydantic BaseModel configuration (loaded from compiled Dhall JSON)
 ├── tests/                    # Unit and integration tests
 ├── typings/                  # Custom type stubs
 ├── documents/                # Engineering documentation
@@ -137,10 +137,12 @@ prodbox/
    - Single entry point for command execution (`execute_command()`)
    - CLI commands are thin wrappers that call the effect system
 
-2. **Pydantic Configuration**:
-   - Single `Settings` class for all configuration
-   - Environment variable-based configuration
-   - Validation on load with actionable errors
+2. **Dhall Configuration**:
+   - Configuration authored in `prodbox-config.dhall` with typed schema (`prodbox-config-types.dhall`)
+   - Compiled to `prodbox-config.json` via `prodbox config compile` (requires `dhall-to-json`)
+   - Loaded into a Pydantic `BaseModel` (`Settings`) for runtime validation
+   - LAN addressing is auto-discovered at runtime, not stored in config
+   - One-time bootstrap from legacy `.env` via `prodbox config init`
 
 3. **CLI Command Pattern**:
    - Commands use smart constructors returning `Result[Command, str]`
@@ -160,8 +162,10 @@ poetry install
 
 # Run CLI
 poetry run prodbox --help
-poetry run prodbox env validate      # Validate configuration
-poetry run prodbox env show          # Display configuration
+poetry run prodbox config init       # Bootstrap prodbox-config.dhall from .env (one-time)
+poetry run prodbox config compile    # Compile Dhall to prodbox-config.json
+poetry run prodbox config show       # Display current configuration
+poetry run prodbox config validate   # Validate configuration
 poetry run prodbox host ensure-tools # Check required tools
 poetry run prodbox pulumi preview    # Preview infrastructure changes
 poetry run prodbox pulumi up --yes   # Deploy infrastructure
@@ -209,7 +213,7 @@ Custom type stubs in `typings/` provide full typing for external libraries:
 ### AWS
 
 - Route 53 for DNS management
-- Repository `.env` AWS auth only; ambient or profile-based AWS auth outside `.env` is forbidden
+- AWS credentials sourced from Dhall config (`prodbox-config.dhall`); ambient or profile-based AWS auth is forbidden
 - IAM least-privilege (Route 53 + STS only)
 - DNS-01 ACME validation for Let's Encrypt
 

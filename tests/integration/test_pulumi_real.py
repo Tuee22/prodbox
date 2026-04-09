@@ -14,7 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from prodbox.cli.main import cli
-from prodbox.lib.aws_auth import assert_no_ambient_aws_auth_env_vars, load_dotenv_aws_auth
+from prodbox.settings import get_settings
 
 from .aws_helpers import (
     Route53HostedZoneContext,
@@ -144,10 +144,6 @@ def pulumi_real_project(
     ephemeral_route53_zone: Route53HostedZoneContext,
 ) -> PulumiRealProject:
     """Create a temp Pulumi project wired to fixture-owned Route 53 state."""
-    from prodbox.settings import get_settings
-
-    assert_no_ambient_aws_auth_env_vars()
-    load_dotenv_aws_auth(Path(".env"))
     if shutil.which("pulumi") is None:
         raise AssertionError("pulumi not installed")
 

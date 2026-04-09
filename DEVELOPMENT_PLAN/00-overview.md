@@ -13,8 +13,9 @@
 Build a clean-room prodbox repository with:
 
 1. One explicit `prodbox` CLI surface.
-2. One repository-root `.env` for external auth and non-secret configuration; cluster-internal
-   secrets are auto-generated and injected via K8s Secrets.
+2. One repository-root `prodbox-config.dhall` compiled to `prodbox-config.json` for all
+   configuration; cluster-internal secrets are auto-generated at chart deploy time; no `.env`
+   file.
 3. One distributed gateway runtime, always-on supervision model, and Route 53 write path.
 4. One chart-platform storage model rooted at `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 5. One supported cluster-backed `vscode` delivery path.
@@ -46,7 +47,7 @@ Build a clean-room prodbox repository with:
 | Surface | Canonical Path | Authority |
 |---------|----------------|-----------|
 | CLI control plane | `poetry run prodbox <command>` | Repository worktree |
-| AWS auth/config | Repository-root `.env` (external auth and non-secret config only) read by `Settings()` | Repository root |
+| AWS auth/config | Repository-root `prodbox-config.dhall` compiled to `prodbox-config.json`, read by `Settings()` | Repository root |
 | RKE2 lifecycle | `prodbox rke2 ensure`, `status`, `cleanup --yes` | `prodbox` CLI |
 | Pulumi infrastructure | `prodbox pulumi ...` | `src/prodbox/infra/` plus Route 53 |
 | Gateway startup | `prodbox gateway start` | `src/prodbox/gateway_daemon.py` |
@@ -105,6 +106,14 @@ Completed and present in the repository:
   with `vscode-nginx` acting only as the namespace-local auth proxy behind that edge.
 - The external public-host `charts-vscode` suite now runs without cluster prerequisite gates or an
   `rke2 ensure` preflight.
+- `prodbox-config-types.dhall` exists as the version-controlled Dhall schema;
+  `prodbox config init|compile|show|validate` commands exist; `Settings` loads from
+  `prodbox-config.json` via `from_config_json()`.
+- `pydantic-settings` dependency removed; `Settings` uses `BaseModel` from plain `pydantic`.
+- `aws_auth.py` module deleted; all AWS credential access flows through `Settings`.
+- `prodbox env` command group removed; replaced by `prodbox config`.
+- Subprocess environments built from explicit `_base_subprocess_env()` allowlist; `os.environ`
+  inheritance eliminated.
 
 Open, incomplete, or blocked:
 
@@ -129,34 +138,24 @@ Open, incomplete, or blocked:
   `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 - HA-mode deployment with pod anti-affinity is now implemented; dev mode
   (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity while retaining replica counts.
-- `.env` now carries only external auth and non-secret configuration. Cluster-internal
-  secrets are auto-generated at chart deploy time and persisted in `.data/`. IP addressing
-  is always auto-discovered. `KUBECONFIG` uses the default `~/.kube/config`. `PULUMI_STACK`
-  is hardcoded to `home`.
+- Sprint 4.6 removed cluster-internal secrets, IP overrides, `KUBECONFIG`, and `PULUMI_STACK`
+  from the Settings surface. Sprints 4.7-4.9 replaced `.env` with a Dhall config file as
+  the single configuration source and enforced subprocess credential isolation.
 - A full clean-room rerun that ends with zero remaining legacy items has not yet completed.
 
 ## Current-Environment Rerun Blockers
 
-- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 7, 2026
-  after Sprint 4.6 configuration simplification (991 unit tests).
-- `poetry run prodbox test integration charts-platform`,
-  `poetry run prodbox test integration gateway-daemon`, and
-  `poetry run prodbox test integration gateway-pods` all passed on April 6, 2026.
-- `poetry run prodbox host public-edge` currently fails because the active AWS identity lacks
-  `route53:GetHostedZone`, the live cluster has no `traefik-system` service, and the cluster still
-  lacks the `certificate` CRD required by cert-manager.
-- `PULUMI_ENABLE_DNS_BOOTSTRAP=false poetry run prodbox pulumi preview` is blocked because
-  `PULUMI_CONFIG_PASSPHRASE` or `PULUMI_CONFIG_PASSPHRASE_FILE` is not set in the current shell.
-- `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host, so
-  Sprint 4.4 still lacks live host-supervision proof even though the process and pod suites pass.
-- `poetry run prodbox test integration dns-aws` is blocked because the active AWS identity lacks
-  `route53:CreateHostedZone`.
-- `poetry run prodbox pulumi up --yes` is blocked because the active AWS identity lacks
-  `route53:GetHostedZone` for the configured hosted zone path.
-- `poetry run prodbox test integration charts-vscode` still fails because every HTTPS/TLS/auth
-  probe to `https://vscode.resolvefintech.com` times out.
-- `poetry run prodbox test integration public-dns` is blocked because the active AWS identity lacks
-  `route53:GetHostedZone` for `ROUTE53_ZONE_ID`.
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
+  (953 unit tests).
+- The host environment was purged on April 8, 2026: all data, containers, Pulumi state, and
+  cluster resources were removed. The live environment must be re-established before any
+  live-environment work can resume.
+- `dhall` and `dhall-to-json` must be installed on the host as system packages for runtime
+  config compilation.
+- Pulumi state was purged; Sprint 4.3 must re-initialize the stack with
+  `PULUMI_CONFIG_PASSPHRASE=""` after the Dhall config is in place.
+- All live-cluster and AWS-backed integration suites are blocked until the config migration
+  and the live environment are re-established.
 - Phase 5 public-host closure remains blocked until the live public edge is reproved externally on
   the canonical `Traefik -> vscode-nginx -> Keycloak` path and the authoritative Route 53 record
   is shown current for the active WAN IP at rerun time.
@@ -164,12 +163,13 @@ Open, incomplete, or blocked:
 ## Hard Constraints
 
 - The only supported public CLI is `prodbox`.
-- The repository-root `.env` file carries external auth (AWS credentials) and non-secret
-  configuration (Route 53 zone ID, domain FQDNs, ACME email, DNS bootstrap flags, dev-mode
-  flag). Cluster-internal secrets are auto-generated at chart deploy time and injected via K8s
-  Secrets; they must not appear in `.env`. IP addressing (MetalLB pool, ingress LB IP) is always
-  auto-discovered from the host LAN; static IP overrides in `.env` are not supported.
-  `KUBECONFIG` is not configured via `.env`; the default `~/.kube/config` is always used.
+- The repository-root `prodbox-config.dhall` is the single configuration source. It is compiled
+  to `prodbox-config.json` by `prodbox config compile` and read by `Settings()`. Both files are
+  gitignored. Cluster-internal secrets are auto-generated at chart deploy time and persisted in
+  `.data/`; they do not appear in the config file. IP addressing (MetalLB pool, ingress LB IP)
+  is always auto-discovered from the host LAN. `KUBECONFIG` always uses the default
+  `~/.kube/config`. Subprocess environments are constructed explicitly from configuration; no
+  credentials are inherited from `os.environ`.
 - The only supported gateway startup path is `prodbox gateway start`.
 - The only supported host-service install path for gateway supervision is
   `prodbox gateway install-service`.

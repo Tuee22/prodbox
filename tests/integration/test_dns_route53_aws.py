@@ -18,6 +18,7 @@ from .aws_helpers import (
     build_dns_suite_env,
     create_ephemeral_hosted_zone,
     delete_ephemeral_hosted_zone,
+    override_config_json,
     query_route53_a_record,
     wait_for_route53_a_record,
 )
@@ -57,13 +58,18 @@ def ephemeral_route53_zone() -> Iterator[Route53HostedZoneContext]:
 def test_dns_check_reports_ephemeral_route53_zone_state(
     cli_runner: CliRunner,
     ephemeral_route53_zone: Route53HostedZoneContext,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """dns check should read only the fixture-owned hosted zone."""
-    for key, value in build_dns_suite_env(ephemeral_route53_zone).items():
-        monkeypatch.setenv(key, value)
-
-    initial_check = cli_runner.invoke(cli, ["dns", "check"], catch_exceptions=False)
+    suite_env = build_dns_suite_env(ephemeral_route53_zone)
+    config_overrides: dict[str, object] = {
+        "route53": {"zone_id": suite_env["ROUTE53_ZONE_ID"]},
+        "domain": {
+            "demo_fqdn": suite_env["DEMO_FQDN"],
+            "demo_ttl": int(suite_env["DEMO_TTL"]),
+        },
+    }
+    with override_config_json(config_overrides):
+        initial_check = cli_runner.invoke(cli, ["dns", "check"], catch_exceptions=False)
     assert initial_check.exit_code == 0
     assert f"FQDN={ephemeral_route53_zone.record_fqdn}" in initial_check.output
     assert "ROUTE53_A_RECORD=<missing>" in initial_check.output

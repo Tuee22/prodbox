@@ -15,9 +15,9 @@ removes duplicate or compatibility-only runtime, CLI, validation, and tooling pa
 the remaining local edge-infrastructure automation gaps around MetalLB, Traefik, cert-manager,
 always-on gateway supervision, explicit per-subdomain DNS continuity, and public-host diagnostics,
 consolidates the retained storage model to one StorageClass, migrates the `.data/` path scheme
-to 5 segments, adopts HA-mode deployment doctrine, and simplifies `.env` to carry only external
-auth and non-secret configuration while moving cluster-internal secrets to auto-generated K8s
-Secrets. All cleanup history remains centralized in
+to 5 segments, adopts HA-mode deployment doctrine, replaces `.env` with a Dhall configuration
+file as the single config source, and enforces subprocess credential isolation so no host
+credentials leak via `os.environ` inheritance. All cleanup history remains centralized in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprint 4.1: `rke2 cleanup` Hardening and Lifecycle Regression Closure ✅
@@ -52,7 +52,7 @@ None.
 
 **Status**: Blocked
 **Implementation**: `src/prodbox/cli/gateway.py`, `src/prodbox/settings.py`, `src/prodbox/cli/summary.py`, `src/prodbox/lib/lint/`
-**Blocked by**: external AWS Route 53 permissions are still required for the final `dns-aws`, `pulumi`, and `public-dns` proof reruns
+**Blocked by**: External AWS Route 53 permissions
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -110,9 +110,10 @@ canonical automated validation path.
 - Close the sprint only after the blocked AWS-backed proof paths pass from the canonical CLI
   surface.
 
-## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership 🔄
+## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership ⏸️
 
-**Status**: Active
+**Status**: Blocked
+**Blocked by**: Environment purged — live cluster must be re-established
 **Implementation**: `src/prodbox/settings.py`, `src/prodbox/infra/__main__.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/cluster_issuer.py`, `charts/vscode/templates/ingress.yaml`, `src/prodbox/cli/host.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_charts_platform.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -186,9 +187,10 @@ canonical automation rather than ad hoc operator knowledge.
 - Use `prodbox host public-edge` as the named preflight and close the sprint only after it reports
   a coherent Traefik-owned path for the supported public host on the live environment.
 
-## Sprint 4.4: Always-On Gateway Supervision and DNS Continuity 🔄
+## Sprint 4.4: Always-On Gateway Supervision and DNS Continuity ⏸️
 
-**Status**: Active
+**Status**: Blocked
+**Blocked by**: Environment purged — live cluster must be re-established
 **Implementation**: `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/settings.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -393,6 +395,163 @@ only path; the explicit-override escape hatch is removed. Infra code (`metallb.p
 ### Remaining Work
 
 None.
+
+## Sprint 4.7: Dhall Config Schema, Bootstrap, and JSON Loading ✅
+
+**Status**: Done
+**Implementation**: `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/effects.py`, `src/prodbox/cli/interpreter.py`
+**Docs to update**: `documents/engineering/dependency_management.md`, `documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Establish Dhall as the single configuration source with a compile-to-JSON pipeline and a
+one-time bootstrap command that populates the Dhall config from the current system state.
+
+### Architecture
+
+**Config file layout:**
+
+```
+prodbox-config-types.dhall   -- version-controlled schema with defaults
+prodbox-config.dhall         -- gitignored user config (contains secrets)
+prodbox-config.json          -- gitignored compiled output (read by Python)
+```
+
+**Schema** (maps to current `Settings` fields):
+
+```dhall
+{ aws : { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }
+, route53 : { zone_id : Text }
+, domain : { demo_fqdn : Text, demo_ttl : Natural, vscode_fqdn : Optional Text }
+, acme : { email : Text, server : Text }
+, deployment : { dev_mode : Bool, bootstrap_public_ip_override : Optional Text, pulumi_enable_dns_bootstrap : Bool }
+}
+```
+
+**Not in Dhall** (always auto-discovered at runtime via `discover_lan_addressing()`):
+`active_lan_interface`, `active_lan_ipv4`, `active_lan_network_cidr`, `metallb_pool`,
+`ingress_lb_ip`.
+
+**Bootstrap flow** (`prodbox config init`):
+
+1. Check `dhall-to-json` exists (fail fast).
+2. If `.env` exists: parse it, map keys to Dhall field paths.
+3. Call `discover_lan_addressing()` for informational display (not stored).
+4. Write `prodbox-config.dhall` importing `./prodbox-config-types.dhall`.
+5. Run `dhall-to-json < prodbox-config.dhall > prodbox-config.json`.
+6. Validate by loading `Settings.from_config_json()`.
+7. This is the last time `.env` or host system values are used.
+
+### Deliverables
+
+- `prodbox-config-types.dhall` checked into the repository (schema with defaults).
+- `prodbox-config.dhall` and `prodbox-config.json` added to `.gitignore` and `.dockerignore`.
+- `prodbox config compile` command shells out to `dhall-to-json`.
+- `prodbox config init` command performs one-time bootstrap from `.env` and system state.
+- `prodbox config show` and `prodbox config validate` commands.
+- `dhall` and `dhall-to-json` added to `ValidateEnvironment` tool check list in prerequisite
+  registry.
+- New `load_config_json(path: Path) -> dict[str, object]` function in `settings.py`.
+- New `Settings.from_config_json()` class method that maps nested JSON to flat Settings fields.
+
+### Validation
+
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. `poetry run prodbox config init` (generates valid Dhall from `.env`)
+4. `poetry run prodbox config compile` (compiles Dhall to JSON)
+5. `poetry run prodbox config validate` (validates compiled JSON)
+
+### Remaining Work
+
+None.
+
+### Validation State
+
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
+  (953 unit tests).
+
+## Sprint 4.8: Settings Migration and AWS Auth Removal ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/aws_auth.py` (deletion), `src/prodbox/cli/interpreter.py`, `src/prodbox/gateway_daemon.py`, `tests/conftest.py`, `tests/unit/test_settings.py`, `tests/unit/test_aws_auth.py` (deletion)
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Replace Pydantic `BaseSettings` (`.env`-driven) with a plain `BaseModel` that loads from
+Dhall-compiled JSON. Remove the standalone AWS auth module; all credential access flows through
+`Settings`.
+
+### Deliverables
+
+- `Settings` inherits from `BaseModel` instead of `BaseSettings`.
+- `pydantic-settings` removed from `pyproject.toml`.
+- `settings_customise_sources()`, `require_dotenv_aws_auth` validator, and
+  `_resolve_repo_dotenv_path()` removed.
+- `derive_local_edge_defaults` model validator retained (LAN auto-discovery unchanged).
+- `get_settings()` loads from `prodbox-config.json` via `Settings.from_config_json()`.
+- `src/prodbox/lib/aws_auth.py` deleted entirely.
+- `_load_repo_aws_auth()` removed from interpreter; boto3 session call sites read credentials
+  from `get_settings()` directly.
+- Gateway daemon AWS credential loading updated.
+- Test `mock_env` fixture rewritten to produce `prodbox-config.json` instead of `.env`.
+- `SETTING_SPECS` updated: env_var names become config field paths.
+
+### Validation
+
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. No `.env` file is read by any prodbox code path.
+
+### Remaining Work
+
+None.
+
+### Validation State
+
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
+  (953 unit tests).
+
+## Sprint 4.9: Subprocess Credential Isolation and Legacy Cleanup ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/env.py` (removal), `tests/integration/aws_helpers.py`
+**Docs to update**: `CLAUDE.md`, `README.md` (root), `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Build subprocess environments from explicit configuration only, eliminating `os.environ`
+inheritance as a credential leak vector. Remove the deprecated `prodbox env` command group.
+
+### Deliverables
+
+- New `_base_subprocess_env()` static method on `EffectInterpreter`: constructs a minimal
+  environment with only `PATH`, `HOME`, `LANG`, `TERM`, `USER`.
+- `_kubectl_env()` refactored to use `_base_subprocess_env()` plus `KUBECONFIG`.
+- `_pulumi_env()` refactored to use `_base_subprocess_env()` plus AWS credentials from
+  `Settings` plus extra_env.
+- `build_dotenv_aws_env()` call sites in integration test helpers replaced.
+- `prodbox env` command group removed entirely.
+- All remaining `.env` parsing code removed from the repository.
+- `CLAUDE.md` and root `README.md` updated to describe Dhall config workflow.
+- `.env` removal items added to `legacy-tracking-for-deletion.md` completed section.
+
+### Validation
+
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. `poetry run prodbox test integration cli`
+4. Subprocess env inspection confirms no leaked host credentials.
+
+### Remaining Work
+
+None.
+
+### Validation State
+
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
+  (953 unit tests).
 
 ## Documentation Requirements
 

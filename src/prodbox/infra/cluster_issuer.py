@@ -1,4 +1,4 @@
-"""ClusterIssuer infrastructure module for Let's Encrypt HTTP-01."""
+"""ClusterIssuer infrastructure module for Let's Encrypt DNS-01 via Route 53."""
 
 from __future__ import annotations
 
@@ -29,19 +29,38 @@ def deploy_cluster_issuer(
     prodbox_id: str,
     depends_on: Sequence[object] = (),
 ) -> ClusterIssuerResources:
-    """Deploy ClusterIssuer for Let's Encrypt HTTP-01 validation.
+    """Deploy ClusterIssuer for Let's Encrypt DNS-01 validation via Route 53.
 
-    Creates:
-    - A ClusterIssuer configured for HTTP-01 validation through Traefik
+    Uses DNS-01 instead of HTTP-01 because the ISP blocks ports 80/443.
+    cert-manager creates Route 53 TXT records to prove domain ownership.
 
     Args:
-        settings: Application settings with ACME configuration
+        settings: Application settings with ACME and AWS configuration
         k8s_provider: Kubernetes provider
         prodbox_id: Canonical prodbox-id annotation value
+        depends_on: Resources that must exist before the issuer
 
     Returns:
         ClusterIssuerResources containing all created resources
     """
+    # Create a Secret with AWS credentials for cert-manager to use for DNS-01
+    aws_secret = k8s.core.v1.Secret(
+        "cert-manager-route53-credentials",
+        metadata=object_meta(
+            name="route53-credentials",
+            namespace="cert-manager",
+            prodbox_id=prodbox_id,
+        ),
+        string_data={
+            "access-key-id": settings.aws_access_key_id,
+            "secret-access-key": settings.aws_secret_access_key,
+        },
+        opts=pulumi.ResourceOptions(
+            provider=k8s_provider,
+            depends_on=list(depends_on),
+        ),
+    )
+
     cluster_issuer = k8s.apiextensions.CustomResource(
         "letsencrypt-http01",
         api_version="cert-manager.io/v1",
@@ -49,20 +68,25 @@ def deploy_cluster_issuer(
         metadata=object_meta(name="letsencrypt-http01", prodbox_id=prodbox_id),
         spec={
             "acme": {
-                # ACME server URL (production or staging)
                 "server": settings.acme_server,
-                # Email for Let's Encrypt registration
                 "email": settings.acme_email,
-                # Secret to store the ACME account private key
                 "privateKeySecretRef": {
                     "name": "letsencrypt-account-key",
                 },
-                # HTTP-01 solver configuration
                 "solvers": [
                     {
-                        "http01": {
-                            "ingress": {
-                                "class": "traefik",
+                        "dns01": {
+                            "route53": {
+                                "region": settings.aws_region,
+                                "hostedZoneID": settings.route53_zone_id,
+                                "accessKeyIDSecretRef": {
+                                    "name": "route53-credentials",
+                                    "key": "access-key-id",
+                                },
+                                "secretAccessKeySecretRef": {
+                                    "name": "route53-credentials",
+                                    "key": "secret-access-key",
+                                },
                             },
                         },
                     },
@@ -71,7 +95,7 @@ def deploy_cluster_issuer(
         },
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,
-            depends_on=list(depends_on),
+            depends_on=[aws_secret, *depends_on],
         ),
     )
 

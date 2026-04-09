@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 import os
 from collections.abc import Generator
 from pathlib import Path
@@ -72,40 +73,55 @@ def mock_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Generator[dict[str, str], None, None]:
-    """Provide a complete mock environment for settings.
+    """Provide a complete mock environment for settings via prodbox-config.json.
 
-    This fixture patches os.environ with non-auth settings and writes
-    `.env` AWS credentials into an isolated temporary working directory.
+    This fixture writes a valid prodbox-config.json to an isolated temporary
+    directory and patches REPOSITORY_ROOT to point there.
     """
     monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
     monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text(
-        "\n".join(
-            [
-                "AWS_ACCESS_KEY_ID=test-access-key",
-                "AWS_SECRET_ACCESS_KEY=test-secret-key",
-                "AWS_SESSION_TOKEN=test-session-token",
-                "",
-            ]
-        ),
+    config: dict[str, object] = {
+        "aws": {
+            "access_key_id": "test-access-key",
+            "secret_access_key": "test-secret-key",
+            "session_token": "test-session-token",
+            "region": "us-east-1",
+        },
+        "route53": {"zone_id": "Z1234567890ABC"},
+        "domain": {
+            "demo_fqdn": "test.example.com",
+            "demo_ttl": 60,
+            "vscode_fqdn": None,
+        },
+        "acme": {
+            "email": "test@example.com",
+            "server": "https://acme-staging-v02.api.letsencrypt.org/directory",
+        },
+        "deployment": {
+            "dev_mode": True,
+            "bootstrap_public_ip_override": None,
+            "pulumi_enable_dns_bootstrap": True,
+        },
+    }
+    (tmp_path / "prodbox-config.json").write_text(
+        json.dumps(config, indent=2),
         encoding="utf-8",
     )
-    env = {
-        "AWS_REGION": "us-east-1",
-        "ROUTE53_ZONE_ID": "Z1234567890ABC",
-        "ACME_EMAIL": "test@example.com",
-        "DEMO_FQDN": "test.example.com",
-        "DEMO_TTL": "60",
-        "ACME_SERVER": "https://acme-staging-v02.api.letsencrypt.org/directory",
-    }
-    with patch.dict(os.environ, env, clear=True):
-        yield env
+    with patch.dict(os.environ, {}, clear=True):
+        yield {
+            "AWS_REGION": "us-east-1",
+            "ROUTE53_ZONE_ID": "Z1234567890ABC",
+            "ACME_EMAIL": "test@example.com",
+            "DEMO_FQDN": "test.example.com",
+            "DEMO_TTL": "60",
+            "ACME_SERVER": "https://acme-staging-v02.api.letsencrypt.org/directory",
+        }
 
 
 @pytest.fixture
 def settings(mock_env: dict[str, str]) -> Settings:  # noqa: ARG001
     """Get a Settings instance with mock environment."""
-    return Settings()
+    return Settings.from_config_json()
 
 
 @pytest.fixture

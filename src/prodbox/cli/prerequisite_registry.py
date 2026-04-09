@@ -163,6 +163,26 @@ TOOL_SYSTEMCTL: EffectNode[bool] = EffectNode(
     prerequisites=frozenset(["systemd_available"]),
 )
 
+TOOL_DHALL: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_dhall",
+        description="Validate dhall is installed",
+        tool_name="dhall",
+        version_flag="version",
+    ),
+    prerequisites=frozenset(),
+)
+
+TOOL_DHALL_TO_JSON: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_dhall_to_json",
+        description="Validate dhall-to-json is installed",
+        tool_name="dhall-to-json",
+        version_flag="--version",
+    ),
+    prerequisites=frozenset(),
+)
+
 
 # =============================================================================
 # Configuration Prerequisites
@@ -330,6 +350,8 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     "tool_aws": TOOL_AWS,
     "tool_rke2": TOOL_RKE2,
     "tool_systemctl": TOOL_SYSTEMCTL,
+    "tool_dhall": TOOL_DHALL,
+    "tool_dhall_to_json": TOOL_DHALL_TO_JSON,
     # Configuration
     "settings_loaded": SETTINGS_LOADED,
     "settings_object": SETTINGS_OBJECT,
@@ -373,6 +395,8 @@ __all__ = [
     "TOOL_AWS",
     "TOOL_RKE2",
     "TOOL_SYSTEMCTL",
+    "TOOL_DHALL",
+    "TOOL_DHALL_TO_JSON",
     # Configuration
     "SETTINGS_LOADED",
     "SETTINGS_OBJECT",

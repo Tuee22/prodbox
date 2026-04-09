@@ -58,6 +58,11 @@ None.
 | `PULUMI_STACK` setting in `.env` and Settings | Sprint 4.6 | Hardcoded to `home` |
 | Cluster-gated invocation path for external public-host verification | Sprint 5.1 | `charts-vscode` no longer requires cluster prerequisite gates |
 | Manual-only authoritative public DNS delegation proof | Sprint 5.1 | `poetry run prodbox test integration public-dns` is the named proof path |
+| `prodbox env` command group | Sprint 4.9 | Replaced by `prodbox config` |
+| `.env` loading in Settings | Sprint 4.8 | Replaced by Dhall-compiled JSON loading |
+| `src/prodbox/lib/aws_auth.py` | Sprint 4.8 | AWS creds read from Settings directly |
+| `dict(os.environ)` in subprocess env builders | Sprint 4.9 | Replaced by `_base_subprocess_env()` |
+| `pydantic-settings` dependency | Sprint 4.8 | No longer needed after BaseModel migration |
 
 ## Related Documents
 

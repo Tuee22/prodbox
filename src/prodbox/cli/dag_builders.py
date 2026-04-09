@@ -32,10 +32,11 @@ from prodbox.cli.command_adt import (
     ChartListCommand,
     ChartStatusCommand,
     Command,
+    ConfigCompileCommand,
+    ConfigInitCommand,
+    ConfigShowCommand,
+    ConfigValidateCommand,
     DNSCheckCommand,
-    EnvShowCommand,
-    EnvTemplateCommand,
-    EnvValidateCommand,
     GatewayConfigGenCommand,
     GatewayInstallServiceCommand,
     GatewayStartCommand,
@@ -93,11 +94,13 @@ from prodbox.cli.effects import (
     PulumiUp,
     QueryGatewayState,
     QueryRoute53Record,
+    RunDhallCompile,
     RunKubectlCommand,
     RunPulumiCommand,
     RunSystemdCommand,
     Sequence,
     StartGatewayDaemon,
+    ValidateConfigJson,
     ValidateSettings,
     ValidateTool,
     WriteFile,
@@ -949,23 +952,157 @@ def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults)
 
 
 # =============================================================================
-# Environment Command Builders
+# Config Command Builders
 # =============================================================================
 
 
-def _build_env_show_dag(_cmd: EnvShowCommand) -> EffectDAG:
-    """Build DAG for showing environment configuration."""
-    cmd = _cmd
+def _parse_dotenv_to_mapping(dotenv_path: Path) -> dict[str, str]:
+    """Parse a ``.env`` file into a plain mapping, skipping blanks and comments."""
+    match dotenv_path.is_file():
+        case False:
+            return {}
+        case True:
+            pass
+    raw_lines = dotenv_path.read_text(encoding="utf-8").splitlines()
+    stripped_lines = tuple(raw.strip() for raw in raw_lines)
+    content_lines = tuple(
+        line for line in stripped_lines if line != "" and not line.startswith("#")
+    )
+    normalized = tuple(line.removeprefix("export ").strip() for line in content_lines)
+    pairs = tuple(line.split("=", 1) for line in normalized if "=" in line)
+    return {name.strip(): value.strip() for name, value in pairs if value.strip() != ""}
+
+
+def _dhall_text(mapping: dict[str, str], key: str, default: str = "") -> str:
+    """Render a Dhall Text literal from a dotenv mapping."""
+    return f'"{mapping.get(key, default)}"'
+
+
+def _dhall_optional_text(mapping: dict[str, str], key: str) -> str:
+    """Render a Dhall ``Optional Text`` from a dotenv mapping."""
+    match mapping.get(key):
+        case str() as v:
+            return f'Some "{v}"'
+        case _:
+            return "None Text"
+
+
+def _dhall_natural(mapping: dict[str, str], key: str, default: str = "60") -> str:
+    """Render a Dhall Natural literal from a dotenv mapping."""
+    return mapping.get(key, default)
+
+
+def _dhall_bool(mapping: dict[str, str], key: str, default: str = "True") -> str:
+    """Render a Dhall Bool literal from a dotenv mapping."""
+    raw = mapping.get(key, default).lower()
+    match raw:
+        case "true" | "1" | "yes":
+            return "True"
+        case _:
+            return "False"
+
+
+def _generate_dhall_config_from_env(dotenv_path: Path) -> str:
+    """Generate a ``prodbox-config.dhall`` body from an existing ``.env`` file."""
+    m = _parse_dotenv_to_mapping(dotenv_path)
+    lines = (
+        "let Config = ./prodbox-config-types.dhall",
+        "",
+        f"in  Config::{'{'}",
+        "    aws = {",
+        f"        access_key_id = {_dhall_text(m, 'AWS_ACCESS_KEY_ID')}",
+        f"      , secret_access_key = {_dhall_text(m, 'AWS_SECRET_ACCESS_KEY')}",
+        f"      , session_token = {_dhall_optional_text(m, 'AWS_SESSION_TOKEN')}",
+        f"      , region = {_dhall_text(m, 'AWS_REGION', 'us-east-1')}",
+        "    }",
+        f"  , route53 = {'{'} zone_id = {_dhall_text(m, 'ROUTE53_ZONE_ID')} {'}'}",
+        "  , domain = {",
+        f"        demo_fqdn = {_dhall_text(m, 'DEMO_FQDN', 'demo.example.com')}",
+        f"      , demo_ttl = {_dhall_natural(m, 'DEMO_TTL', '60')}",
+        f"      , vscode_fqdn = {_dhall_optional_text(m, 'VSCODE_FQDN')}",
+        "    }",
+        "  , acme = {",
+        f"        email = {_dhall_text(m, 'ACME_EMAIL')}",
+        f"      , server = {_dhall_text(m, 'ACME_SERVER', 'https://acme-v02.api.letsencrypt.org/directory')}",
+        "    }",
+        "  , deployment = {",
+        f"        dev_mode = {_dhall_bool(m, 'PRODBOX_DEV_MODE', 'true')}",
+        f"      , bootstrap_public_ip_override = {_dhall_optional_text(m, 'BOOTSTRAP_PUBLIC_IP_OVERRIDE')}",
+        f"      , pulumi_enable_dns_bootstrap = {_dhall_bool(m, 'PULUMI_ENABLE_DNS_BOOTSTRAP', 'true')}",
+        "    }",
+        "}",
+    )
+    return "\n".join(lines) + "\n"
+
+
+def _build_config_init_dag(_cmd: ConfigInitCommand) -> EffectDAG:
+    """Build DAG for bootstrapping Dhall config from .env."""
+    dotenv_path = REPOSITORY_ROOT / ".env"
+    dhall_path = REPOSITORY_ROOT / "prodbox-config.dhall"
+    json_path = REPOSITORY_ROOT / "prodbox-config.json"
+    dhall_content = _generate_dhall_config_from_env(dotenv_path)
+
+    write_dhall = EffectNode(
+        effect=WriteFile(
+            effect_id="config_init_write_dhall",
+            description="Write prodbox-config.dhall from .env",
+            file_path=dhall_path,
+            content=dhall_content,
+        ),
+        prerequisites=frozenset(["tool_dhall_to_json"]),
+    )
+    compile_dhall = EffectNode(
+        effect=RunDhallCompile(
+            effect_id="config_init_compile",
+            description="Compile prodbox-config.dhall to JSON",
+            input_path=dhall_path,
+            output_path=json_path,
+        ),
+        prerequisites=frozenset(["config_init_write_dhall"]),
+    )
+    validate_json = EffectNode(
+        effect=ValidateConfigJson(
+            effect_id="config_init_validate",
+            description="Validate compiled config JSON",
+            config_path=json_path,
+        ),
+        prerequisites=frozenset(["config_init_compile"]),
+    )
+    return EffectDAG.from_roots(
+        validate_json,
+        registry=_merge_registry(write_dhall, compile_dhall, validate_json),
+    )
+
+
+def _build_config_compile_dag(_cmd: ConfigCompileCommand) -> EffectDAG:
+    """Build DAG for compiling Dhall config to JSON."""
+    dhall_path = REPOSITORY_ROOT / "prodbox-config.dhall"
+    json_path = REPOSITORY_ROOT / "prodbox-config.json"
+
+    root = EffectNode(
+        effect=RunDhallCompile(
+            effect_id="config_compile",
+            description="Compile prodbox-config.dhall to JSON",
+            input_path=dhall_path,
+            output_path=json_path,
+        ),
+        prerequisites=frozenset(["tool_dhall_to_json"]),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_config_show_dag(cmd: ConfigShowCommand) -> EffectDAG:
+    """Build DAG for showing configuration from compiled JSON."""
     root = EffectNode(
         effect=WriteStdout(
-            effect_id="env_show",
-            description="Show environment configuration",
+            effect_id="config_show",
+            description="Show configuration",
             text="",
         ),
         prerequisites=frozenset(["settings_object"]),
         effect_builder=lambda _reduced, prereq_results: WriteStdout(
-            effect_id="env_show",
-            description="Show environment configuration",
+            effect_id="config_show",
+            description="Show configuration",
             text=render_settings_display(
                 _require_settings(prereq_results),
                 show_secrets=cmd.show_secrets,
@@ -975,27 +1112,14 @@ def _build_env_show_dag(_cmd: EnvShowCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_env_validate_dag(_cmd: EnvValidateCommand) -> EffectDAG:
-    """Build DAG for validating environment configuration."""
+def _build_config_validate_dag(_cmd: ConfigValidateCommand) -> EffectDAG:
+    """Build DAG for validating configuration."""
     root = EffectNode(
         effect=ValidateSettings(
-            effect_id="env_validate",
-            description="Validate environment configuration",
+            effect_id="config_validate",
+            description="Validate configuration",
         ),
         prerequisites=frozenset(["settings_loaded"]),
-    )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
-
-
-def _build_env_template_dag(cmd: EnvTemplateCommand) -> EffectDAG:
-    """Build DAG for generating environment template."""
-    root = EffectNode(
-        effect=WriteStdout(
-            effect_id="env_template",
-            description="Print environment template",
-            text=cmd.template_text,
-        ),
-        prerequisites=frozenset(),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -1672,13 +1796,15 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
         Success with EffectDAG if conversion succeeds, Failure otherwise
     """
     match command:
-        # Environment commands
-        case EnvShowCommand():
-            return Success(_build_env_show_dag(command))
-        case EnvValidateCommand():
-            return Success(_build_env_validate_dag(command))
-        case EnvTemplateCommand():
-            return Success(_build_env_template_dag(command))
+        # Config commands
+        case ConfigInitCommand():
+            return Success(_build_config_init_dag(command))
+        case ConfigCompileCommand():
+            return Success(_build_config_compile_dag(command))
+        case ConfigShowCommand():
+            return Success(_build_config_show_dag(command))
+        case ConfigValidateCommand():
+            return Success(_build_config_validate_dag(command))
 
         # Host commands
         case HostInfoCommand():

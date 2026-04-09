@@ -10,9 +10,6 @@ import pytest
 from prodbox.cli.command_adt import (
     # Command types
     DNSCheckCommand,
-    EnvShowCommand,
-    EnvTemplateCommand,
-    EnvValidateCommand,
     GatewayConfigGenCommand,
     GatewayInstallServiceCommand,
     GatewayStartCommand,
@@ -39,9 +36,6 @@ from prodbox.cli.command_adt import (
     RKE2StopCommand,
     # Smart constructors
     dns_check_command,
-    env_show_command,
-    env_template_command,
-    env_validate_command,
     gateway_config_gen_command,
     gateway_install_service_command,
     gateway_start_command,
@@ -72,46 +66,6 @@ from prodbox.cli.command_adt import (
     rke2_stop_command,
 )
 from prodbox.cli.types import Failure, Success
-
-
-class TestEnvCommands:
-    """Tests for environment command smart constructors."""
-
-    def test_env_show_command_default(self) -> None:
-        """env_show_command should create command with defaults."""
-        match env_show_command():
-            case Success(cmd):
-                assert isinstance(cmd, EnvShowCommand)
-                assert cmd.show_secrets is False
-            case Failure(_):
-                pytest.fail("Expected Success")
-
-    def test_env_show_command_with_secrets(self) -> None:
-        """env_show_command should set show_secrets."""
-        match env_show_command(show_secrets=True):
-            case Success(cmd):
-                assert cmd.show_secrets is True
-            case Failure(_):
-                pytest.fail("Expected Success")
-
-    def test_env_validate_command(self) -> None:
-        """env_validate_command should create command."""
-        match env_validate_command():
-            case Success(cmd):
-                assert isinstance(cmd, EnvValidateCommand)
-            case Failure(_):
-                pytest.fail("Expected Success")
-
-    def test_env_template_command_default(self) -> None:
-        """env_template_command should embed deterministic template text."""
-        match env_template_command():
-            case Success(cmd):
-                assert isinstance(cmd, EnvTemplateCommand)
-                assert "AWS_ACCESS_KEY_ID=" in cmd.template_text
-                assert "ROUTE53_ZONE_ID=" in cmd.template_text
-                assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in cmd.template_text
-            case Failure(_):
-                pytest.fail("Expected Success")
 
 
 class TestHostCommands:
@@ -626,12 +580,6 @@ class TestUtilityFunctions:
         assert requires_linux(RKE2CleanupCommand()) is True
         assert requires_linux(RKE2LogsCommand()) is True
 
-    def test_requires_linux_false_for_env(self) -> None:
-        """requires_linux should return False for env commands."""
-        assert requires_linux(EnvShowCommand()) is False
-        assert requires_linux(EnvValidateCommand()) is False
-        assert requires_linux(EnvTemplateCommand()) is False
-
     def test_requires_linux_false_for_host(self) -> None:
         """requires_linux should return False for host commands."""
         assert requires_linux(HostInfoCommand()) is False
@@ -675,15 +623,6 @@ class TestUtilityFunctions:
         assert requires_settings(PulumiDestroyCommand()) is True
         assert requires_settings(PulumiRefreshCommand()) is True
         assert requires_settings(PulumiStackInitCommand(stack="test")) is True
-
-    def test_requires_settings_env_show_validate(self) -> None:
-        """requires_settings should return True for env show/validate."""
-        assert requires_settings(EnvShowCommand()) is True
-        assert requires_settings(EnvValidateCommand()) is True
-
-    def test_requires_settings_env_template(self) -> None:
-        """requires_settings should return False for env template."""
-        assert requires_settings(EnvTemplateCommand()) is False
 
     def test_requires_settings_host_commands(self) -> None:
         """requires_settings should distinguish host diagnostics from simple host commands."""

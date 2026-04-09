@@ -1,9 +1,14 @@
-"""Pydantic settings for prodbox configuration."""
+"""Pydantic settings for prodbox configuration.
+
+Configuration is loaded from ``prodbox-config.json`` (compiled from Dhall).
+LAN addressing is always auto-discovered at runtime.
+"""
 
 from __future__ import annotations
 
 import fcntl
 import ipaddress
+import json
 import socket
 import struct
 from collections.abc import Callable
@@ -12,16 +17,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.functional_validators import model_validator
-from pydantic_settings import (
-    BaseSettings,
-    DotEnvSettingsSource,
-    PydanticBaseSettingsSource,
-    SettingsConfigDict,
-)
-
-from prodbox.lib.aws_auth import assert_no_ambient_aws_auth_env_vars, load_dotenv_aws_auth
 
 RenderedSettingValue = str | int | bool | Path | None
 
@@ -33,11 +30,6 @@ _IFREQ_SIZE: int = 256
 _IFREQ_NAME_BYTES: int = 15
 _SIOCGIFADDR: int = 0x8915
 _SIOCGIFNETMASK: int = 0x891B
-
-
-def _resolve_repo_dotenv_path() -> Path:
-    """Resolve the fixed repository-root `.env` path inside the outer container."""
-    return REPOSITORY_ROOT / ".env"
 
 
 @dataclass(frozen=True)
@@ -149,37 +141,14 @@ def _discover_lan_addressing_or_none() -> LanAddressing | None:
         return None
 
 
-class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSettings uses Any internally
+class Settings(BaseModel):
     """Central configuration for all prodbox operations.
 
-    All non-auth configuration comes from environment variables.
-    Use `prodbox env show` to display effective configuration.
+    Configuration is loaded from ``prodbox-config.json`` (compiled from Dhall).
+    Use ``prodbox config show`` to display effective configuration.
     """
 
-    model_config = SettingsConfigDict(
-        env_file=None,
-        env_file_encoding="utf-8",
-        extra="ignore",
-        case_sensitive=False,
-    )
-
-    @classmethod
-    def settings_customise_sources(
-        cls,
-        settings_cls: type[BaseSettings],
-        init_settings: PydanticBaseSettingsSource,
-        env_settings: PydanticBaseSettingsSource,
-        dotenv_settings: PydanticBaseSettingsSource,
-        file_secret_settings: PydanticBaseSettingsSource,
-    ) -> tuple[PydanticBaseSettingsSource, ...]:
-        """Load `.env` from the fixed repository root and nowhere else."""
-        _ = dotenv_settings
-        resolved_dotenv = DotEnvSettingsSource(
-            settings_cls,
-            env_file=_resolve_repo_dotenv_path(),
-            env_file_encoding="utf-8",
-        )
-        return init_settings, env_settings, resolved_dotenv, file_secret_settings
+    model_config = ConfigDict(extra="ignore")
 
     # === AWS / Route 53 ===
     aws_region: Annotated[
@@ -192,25 +161,28 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
     aws_access_key_id: Annotated[
         str,
         Field(
-            description="AWS access key ID loaded from the repository .env file",
+            min_length=1,
+            description="AWS access key ID from config",
         ),
     ]
     aws_secret_access_key: Annotated[
         str,
         Field(
-            description="AWS secret access key loaded from the repository .env file",
+            min_length=1,
+            description="AWS secret access key from config",
         ),
     ]
     aws_session_token: Annotated[
         str | None,
         Field(
             default=None,
-            description="Optional AWS session token loaded from the repository .env file",
+            description="Optional AWS session token from config",
         ),
     ]
     route53_zone_id: Annotated[
         str,
         Field(
+            min_length=1,
             description="Route 53 hosted zone ID",
         ),
     ]
@@ -266,6 +238,7 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
     acme_email: Annotated[
         str,
         Field(
+            min_length=1,
             description="Email for Let's Encrypt registration",
         ),
     ]
@@ -302,14 +275,6 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
         ),
     ]
 
-    @model_validator(mode="before")
-    @classmethod
-    def require_dotenv_aws_auth(cls, data: object) -> object:
-        """Require repository `.env` AWS auth and reject ambient AWS auth env vars."""
-        assert_no_ambient_aws_auth_env_vars()
-        load_dotenv_aws_auth(_resolve_repo_dotenv_path())
-        return data
-
     @model_validator(mode="after")
     def derive_local_edge_defaults(self) -> Settings:
         """Populate adaptive LAN-derived defaults for the supported local-edge path."""
@@ -345,14 +310,22 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]  # Pydantic BaseSett
 
     @staticmethod
     def render_template() -> str:
-        """Render a deterministic .env template for all supported settings."""
+        """Render a deterministic config template for all supported settings."""
         return render_settings_template()
+
+    @classmethod
+    def from_config_json(cls, path: Path | None = None) -> Settings:
+        """Construct Settings from Dhall-compiled JSON."""
+        resolved = path or (REPOSITORY_ROOT / "prodbox-config.json")
+        config = load_config_json(resolved)
+        flat = _flatten_config_json(config)
+        return cls(**flat)
 
 
 def _render_template_from_specs() -> str:
     """Render the deterministic template body from static setting metadata."""
     lines = [
-        "# prodbox environment template",
+        "# prodbox configuration template",
         "# Required values are blank and must be filled in.",
         "# Optional values are pre-populated with defaults where available.",
         "",
@@ -363,7 +336,7 @@ def _render_template_from_specs() -> str:
             f", default: {spec.template_default}" if spec.template_default is not None else ""
         )
         lines.append(f"# {spec.description} ({requirement}{default_hint})")
-        lines.append(f"{spec.env_var}={spec.template_default or ''}")
+        lines.append(f"{spec.config_path}={spec.template_default or ''}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
@@ -376,7 +349,7 @@ class SettingSpec:
     """Declarative metadata for deterministic display/template rendering."""
 
     attribute: str
-    env_var: str
+    config_path: str
     description: str
     getter: SettingsGetter
     required: bool
@@ -412,7 +385,7 @@ def render_settings_display(
 ) -> str:
     """Render plain settings data as deterministic KEY=value lines."""
     lines = [
-        f"{spec.env_var}="
+        f"{spec.config_path}="
         f"{_format_rendered_value(settings_values.get(spec.attribute), sensitive=spec.sensitive, show_secrets=show_secrets)}"
         for spec in SETTING_SPECS
     ]
@@ -422,7 +395,7 @@ def render_settings_display(
 SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         attribute="aws_region",
-        env_var="AWS_REGION",
+        config_path="aws.region",
         description="AWS region for Route 53",
         getter=lambda settings: settings.aws_region,
         required=False,
@@ -430,38 +403,38 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="aws_access_key_id",
-        env_var="AWS_ACCESS_KEY_ID",
-        description="AWS access key ID loaded from .env",
+        config_path="aws.access_key_id",
+        description="AWS access key ID",
         getter=lambda settings: settings.aws_access_key_id,
         required=True,
         sensitive=True,
     ),
     SettingSpec(
         attribute="aws_secret_access_key",
-        env_var="AWS_SECRET_ACCESS_KEY",
-        description="AWS secret access key loaded from .env",
+        config_path="aws.secret_access_key",
+        description="AWS secret access key",
         getter=lambda settings: settings.aws_secret_access_key,
         required=True,
         sensitive=True,
     ),
     SettingSpec(
         attribute="aws_session_token",
-        env_var="AWS_SESSION_TOKEN",
-        description="Optional AWS session token loaded from .env",
+        config_path="aws.session_token",
+        description="Optional AWS session token",
         getter=lambda settings: settings.aws_session_token,
         required=False,
         sensitive=True,
     ),
     SettingSpec(
         attribute="route53_zone_id",
-        env_var="ROUTE53_ZONE_ID",
+        config_path="route53.zone_id",
         description="Route 53 hosted zone ID",
         getter=lambda settings: settings.route53_zone_id,
         required=True,
     ),
     SettingSpec(
         attribute="demo_fqdn",
-        env_var="DEMO_FQDN",
+        config_path="domain.demo_fqdn",
         description="Fully qualified demo domain name",
         getter=lambda settings: settings.demo_fqdn,
         required=False,
@@ -469,7 +442,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="demo_ttl",
-        env_var="DEMO_TTL",
+        config_path="domain.demo_ttl",
         description="DNS record TTL in seconds",
         getter=lambda settings: settings.demo_ttl,
         required=False,
@@ -477,7 +450,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="vscode_fqdn",
-        env_var="VSCODE_FQDN",
+        config_path="domain.vscode_fqdn",
         description="Public VS Code ingress host",
         getter=lambda settings: settings.vscode_fqdn,
         required=False,
@@ -485,7 +458,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="acme_email",
-        env_var="ACME_EMAIL",
+        config_path="acme.email",
         description="Email for Let's Encrypt registration",
         getter=lambda settings: settings.acme_email,
         required=True,
@@ -493,7 +466,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="acme_server",
-        env_var="ACME_SERVER",
+        config_path="acme.server",
         description="ACME server URL",
         getter=lambda settings: settings.acme_server,
         required=False,
@@ -501,7 +474,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="prodbox_dev_mode",
-        env_var="PRODBOX_DEV_MODE",
+        config_path="deployment.dev_mode",
         description="Dev mode suppresses pod anti-affinity while retaining HA replica counts",
         getter=lambda settings: settings.prodbox_dev_mode,
         required=False,
@@ -509,14 +482,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     ),
     SettingSpec(
         attribute="bootstrap_public_ip_override",
-        env_var="BOOTSTRAP_PUBLIC_IP_OVERRIDE",
+        config_path="deployment.bootstrap_public_ip_override",
         description="Bootstrap-only public IP override for DNS creation",
         getter=lambda settings: settings.bootstrap_public_ip_override,
         required=False,
     ),
     SettingSpec(
         attribute="pulumi_enable_dns_bootstrap",
-        env_var="PULUMI_ENABLE_DNS_BOOTSTRAP",
+        config_path="deployment.pulumi_enable_dns_bootstrap",
         description="Whether `prodbox pulumi up` should manage Route 53 bootstrap records",
         getter=lambda settings: settings.pulumi_enable_dns_bootstrap,
         required=False,
@@ -526,18 +499,75 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
 
 
 def render_settings_template() -> str:
-    """Render the deterministic `.env` template without instantiating settings."""
+    """Render the deterministic config template without instantiating settings."""
     return _render_template_from_specs()
 
 
+def load_config_json(path: Path) -> dict[str, object]:
+    """Load and parse ``prodbox-config.json`` into a typed mapping."""
+    raw = path.read_text(encoding="utf-8")
+    parsed: object = json.loads(raw)
+    match parsed:
+        case dict() as mapping:
+            return {str(k): v for k, v in mapping.items()}
+        case _:
+            raise ValueError(f"{path} must contain a JSON object")
+
+
+def _extract_dict(config: dict[str, object], key: str) -> dict[str, object]:
+    """Extract a nested dict from *config* or raise ``ValueError``."""
+    value = config.get(key)
+    match value:
+        case dict() as section:
+            return {str(k): v for k, v in section.items()}
+        case None:
+            raise ValueError(f"config.{key} is missing")
+        case _:
+            raise ValueError(f"config.{key} must be a mapping")
+
+
+def _flatten_config_json(config: dict[str, object]) -> dict[str, object]:
+    """Map nested Dhall JSON structure to flat Settings field names."""
+    aws = _extract_dict(config, "aws")
+    route53 = _extract_dict(config, "route53")
+    domain = _extract_dict(config, "domain")
+    acme = _extract_dict(config, "acme")
+    deployment = _extract_dict(config, "deployment")
+
+    flat: dict[str, object] = {
+        "aws_region": aws.get("region", "us-east-1"),
+        "aws_access_key_id": aws.get("access_key_id", ""),
+        "aws_secret_access_key": aws.get("secret_access_key", ""),
+        "aws_session_token": aws.get("session_token"),
+        "route53_zone_id": route53.get("zone_id", ""),
+        "demo_fqdn": domain.get("demo_fqdn", "demo.example.com"),
+        "demo_ttl": domain.get("demo_ttl", 60),
+        "vscode_fqdn": domain.get("vscode_fqdn"),
+        "acme_email": acme.get("email", ""),
+        "acme_server": acme.get("server", "https://acme-v02.api.letsencrypt.org/directory"),
+        "prodbox_dev_mode": deployment.get("dev_mode", True),
+        "bootstrap_public_ip_override": deployment.get("bootstrap_public_ip_override"),
+        "pulumi_enable_dns_bootstrap": deployment.get("pulumi_enable_dns_bootstrap", True),
+    }
+    return flat
+
+
+def validate_config_json(path: Path) -> None:
+    """Validate ``prodbox-config.json`` by loading it as a ``Settings`` instance.
+
+    Raises ``ValueError`` or ``pydantic.ValidationError`` on failure.
+    """
+    Settings.from_config_json(path)
+
+
 def load_settings_mapping() -> dict[str, RenderedSettingValue]:
-    """Load validated settings and return a plain typed mapping."""
-    return Settings().to_mapping()
+    """Load validated settings from config JSON and return a plain typed mapping."""
+    return Settings.from_config_json().to_mapping()
 
 
 @lru_cache(maxsize=1)  # type: ignore[misc]  # lru_cache signature contains Callable[..., T]
 def get_settings() -> Settings:
-    """Get cached settings instance.
+    """Get cached settings instance from compiled config JSON.
 
     Settings are parsed once and cached. Use clear_settings_cache()
     if you need to reload (e.g., in tests).
@@ -545,7 +575,7 @@ def get_settings() -> Settings:
     Returns:
         Validated Settings instance
     """
-    return Settings()
+    return Settings.from_config_json()
 
 
 def clear_settings_cache() -> None:

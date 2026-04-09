@@ -1475,7 +1475,7 @@ class TestEffectInterpreterPulumi:
     """Tests for Pulumi effects with mocked subprocess."""
 
     @pytest.mark.asyncio
-    async def test_pulumi_preview_success(self) -> None:
+    async def test_pulumi_preview_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiPreview should run pulumi preview."""
         from pathlib import Path
 
@@ -1511,7 +1511,7 @@ class TestEffectInterpreterPulumi:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_up_with_yes(self) -> None:
+    async def test_pulumi_up_with_yes(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiUp should pass --yes flag."""
         from prodbox.cli.effects import PulumiUp
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -1539,7 +1539,7 @@ class TestEffectInterpreterPulumi:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_stack_select_create(self) -> None:
+    async def test_pulumi_stack_select_create(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiStackSelect should pass --create flag."""
         from prodbox.cli.effects import PulumiStackSelect
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -1566,7 +1566,7 @@ class TestEffectInterpreterPulumi:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_destroy(self) -> None:
+    async def test_pulumi_destroy(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiDestroy should run pulumi destroy."""
         from prodbox.cli.effects import PulumiDestroy
 
@@ -1619,7 +1619,7 @@ class TestEffectInterpreterAWS:
         with (
             patch.dict(sys.modules, {"boto3": mock_boto3}),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -1652,7 +1652,7 @@ class TestEffectInterpreterAWS:
         with (
             patch.dict(sys.modules, {"boto3": mock_boto3}),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -1689,7 +1689,7 @@ class TestEffectInterpreterAWS:
             patch.dict(sys.modules, {"boto3": mock_boto3}),
             patch.dict(os.environ, {"AWS_ACCESS_KEY_ID": "forbidden"}, clear=True),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -1739,7 +1739,7 @@ class TestEffectInterpreterAWS:
         with (
             patch.dict(sys.modules, {"boto3": mock_boto3}),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -1774,7 +1774,7 @@ class TestEffectInterpreterAWS:
         with (
             patch.dict(sys.modules, {"boto3": mock_boto3}),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3076,6 +3076,8 @@ class TestRetainedStorageEffects:
                 new=AsyncMock(
                     side_effect=(
                         ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        # PVC existence check (not found -> create PVC)
+                        ProcessOutput(returncode=1, stdout=b"", stderr=b"not found"),
                         ProcessOutput(returncode=0, stdout=b"", stderr=b""),
                     )
                 ),
@@ -3085,10 +3087,12 @@ class TestRetainedStorageEffects:
 
         assert summary.success
         assert isinstance(value, StorageRuntime)
-        assert len(mock_run_kubectl.await_args_list) == 2
+        assert len(mock_run_kubectl.await_args_list) == 3
         delete_call = mock_run_kubectl.await_args_list[0]
-        apply_call = mock_run_kubectl.await_args_list[1]
+        pvc_check = mock_run_kubectl.await_args_list[1]
+        apply_call = mock_run_kubectl.await_args_list[2]
         assert delete_call.args[:3] == ("delete", "pv", "prodbox-minio-pv-0")
+        assert pvc_check.args[:2] == ("get", "pvc")
         assert apply_call.args[:3] == ("apply", "-f", "-")
 
     @pytest.mark.asyncio
@@ -3116,15 +3120,21 @@ class TestRetainedStorageEffects:
                 interpreter,
                 "_run_kubectl",
                 new=AsyncMock(
-                    return_value=ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    side_effect=(
+                        # PVC existence check (bound -> skip PVC in apply)
+                        ProcessOutput(returncode=0, stdout=b"Bound", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
                 ),
             ) as mock_run_kubectl,
         ):
             summary, _value = await interpreter.interpret_with_value(effect)
 
         assert summary.success
-        assert len(mock_run_kubectl.await_args_list) == 1
-        apply_call = mock_run_kubectl.await_args_list[0]
+        assert len(mock_run_kubectl.await_args_list) == 2
+        pvc_check = mock_run_kubectl.await_args_list[0]
+        apply_call = mock_run_kubectl.await_args_list[1]
+        assert pvc_check.args[:2] == ("get", "pvc")
         assert apply_call.args[:3] == ("apply", "-f", "-")
 
 
@@ -3443,7 +3453,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3475,7 +3485,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3507,7 +3517,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3541,7 +3551,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3571,7 +3581,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3603,7 +3613,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3633,7 +3643,7 @@ class TestRoute53Effects:
         with (
             patch("boto3.Session", return_value=mock_session),
             patch(
-                "prodbox.cli.interpreter._load_repo_aws_auth",
+                "prodbox.cli.interpreter._load_settings_aws_auth",
                 return_value=("test-access-key", "test-secret-key", "test-session-token"),
             ),
         ):
@@ -3648,7 +3658,7 @@ class TestPulumiEffects:
     """Tests for Pulumi-related effects."""
 
     @pytest.mark.asyncio
-    async def test_run_pulumi_command_success(self) -> None:
+    async def test_run_pulumi_command_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """RunPulumiCommand should succeed on zero exit code."""
         from prodbox.cli.effects import RunPulumiCommand
 
@@ -3670,7 +3680,7 @@ class TestPulumiEffects:
         assert value == 0
 
     @pytest.mark.asyncio
-    async def test_run_pulumi_command_failure(self) -> None:
+    async def test_run_pulumi_command_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """RunPulumiCommand should fail on non-zero exit code."""
         from prodbox.cli.effects import RunPulumiCommand
 
@@ -3692,7 +3702,7 @@ class TestPulumiEffects:
         assert value == 1
 
     @pytest.mark.asyncio
-    async def test_run_pulumi_command_timeout(self) -> None:
+    async def test_run_pulumi_command_timeout(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """RunPulumiCommand should fail on timeout."""
         from prodbox.cli.effects import RunPulumiCommand
 
@@ -3715,7 +3725,7 @@ class TestPulumiEffects:
         assert "timed out" in summary.message
 
     @pytest.mark.asyncio
-    async def test_run_pulumi_command_os_error(self) -> None:
+    async def test_run_pulumi_command_os_error(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """RunPulumiCommand should fail on OSError."""
         from prodbox.cli.effects import RunPulumiCommand
 
@@ -3737,7 +3747,7 @@ class TestPulumiEffects:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_run_pulumi_command_empty_stderr(self) -> None:
+    async def test_run_pulumi_command_empty_stderr(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """RunPulumiCommand failure should show exit code when stderr empty."""
         from prodbox.cli.effects import RunPulumiCommand
 
@@ -3759,7 +3769,7 @@ class TestPulumiEffects:
         assert "2" in summary.message or "Exit code" in summary.message
 
     @pytest.mark.asyncio
-    async def test_pulumi_stack_select_success(self) -> None:
+    async def test_pulumi_stack_select_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiStackSelect should succeed."""
         from prodbox.cli.effects import PulumiStackSelect
 
@@ -3781,7 +3791,7 @@ class TestPulumiEffects:
         assert value is True
 
     @pytest.mark.asyncio
-    async def test_pulumi_stack_select_failure(self) -> None:
+    async def test_pulumi_stack_select_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiStackSelect should fail on error."""
         from prodbox.cli.effects import PulumiStackSelect
 
@@ -3803,7 +3813,7 @@ class TestPulumiEffects:
         assert value is False
 
     @pytest.mark.asyncio
-    async def test_pulumi_stack_select_with_create(self) -> None:
+    async def test_pulumi_stack_select_with_create(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiStackSelect should include --create flag."""
         from prodbox.cli.effects import PulumiStackSelect
 
@@ -3826,7 +3836,7 @@ class TestPulumiEffects:
         assert "--create" in call_args
 
     @pytest.mark.asyncio
-    async def test_pulumi_stack_select_os_error(self) -> None:
+    async def test_pulumi_stack_select_os_error(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiStackSelect should fail on OSError."""
         from prodbox.cli.effects import PulumiStackSelect
 
@@ -3848,7 +3858,7 @@ class TestPulumiEffects:
         assert value is False
 
     @pytest.mark.asyncio
-    async def test_validate_pulumi_login_success(self) -> None:
+    async def test_validate_pulumi_login_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """ValidatePulumiLogin should succeed when `pulumi whoami` succeeds."""
         from prodbox.cli.effects import ValidatePulumiLogin
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -3872,7 +3882,7 @@ class TestPulumiEffects:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_validate_pulumi_login_failure(self) -> None:
+    async def test_validate_pulumi_login_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """ValidatePulumiLogin should fail when `pulumi whoami` fails."""
         from prodbox.cli.effects import ValidatePulumiLogin
 
@@ -3894,7 +3904,7 @@ class TestPulumiEffects:
         assert len(interpreter.environment_errors) == 1
 
     @pytest.mark.asyncio
-    async def test_pulumi_preview_success(self) -> None:
+    async def test_pulumi_preview_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiPreview should succeed."""
         from prodbox.cli.effects import PulumiPreview
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -3918,7 +3928,7 @@ class TestPulumiEffects:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_preview_failure(self) -> None:
+    async def test_pulumi_preview_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiPreview should fail on error."""
         from prodbox.cli.effects import PulumiPreview
 
@@ -3939,7 +3949,7 @@ class TestPulumiEffects:
         assert value == 1
 
     @pytest.mark.asyncio
-    async def test_pulumi_preview_with_stack(self) -> None:
+    async def test_pulumi_preview_with_stack(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiPreview should include --stack flag."""
         from prodbox.cli.effects import PulumiPreview
 
@@ -3962,7 +3972,7 @@ class TestPulumiEffects:
         assert "prod" in call_args
 
     @pytest.mark.asyncio
-    async def test_pulumi_preview_os_error(self) -> None:
+    async def test_pulumi_preview_os_error(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiPreview should fail on OSError."""
         from prodbox.cli.effects import PulumiPreview
 
@@ -3983,7 +3993,7 @@ class TestPulumiEffects:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_pulumi_up_success(self) -> None:
+    async def test_pulumi_up_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiUp should succeed."""
         from prodbox.cli.effects import PulumiUp
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -4008,7 +4018,7 @@ class TestPulumiEffects:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_up_failure(self) -> None:
+    async def test_pulumi_up_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiUp should fail on error."""
         from prodbox.cli.effects import PulumiUp
 
@@ -4030,7 +4040,7 @@ class TestPulumiEffects:
         assert value == 1
 
     @pytest.mark.asyncio
-    async def test_pulumi_up_with_stack(self) -> None:
+    async def test_pulumi_up_with_stack(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiUp should include --stack flag."""
         from prodbox.cli.effects import PulumiUp
 
@@ -4054,7 +4064,7 @@ class TestPulumiEffects:
         assert "prod" in call_args
 
     @pytest.mark.asyncio
-    async def test_pulumi_up_os_error(self) -> None:
+    async def test_pulumi_up_os_error(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiUp should fail on OSError."""
         from prodbox.cli.effects import PulumiUp
 
@@ -4076,7 +4086,7 @@ class TestPulumiEffects:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_pulumi_destroy_success(self) -> None:
+    async def test_pulumi_destroy_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiDestroy should succeed."""
         from prodbox.cli.effects import PulumiDestroy
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -4101,7 +4111,7 @@ class TestPulumiEffects:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_destroy_failure(self) -> None:
+    async def test_pulumi_destroy_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiDestroy should fail on error."""
         from prodbox.cli.effects import PulumiDestroy
 
@@ -4123,7 +4133,7 @@ class TestPulumiEffects:
         assert value == 1
 
     @pytest.mark.asyncio
-    async def test_pulumi_destroy_with_stack(self) -> None:
+    async def test_pulumi_destroy_with_stack(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiDestroy should include --stack flag."""
         from prodbox.cli.effects import PulumiDestroy
 
@@ -4147,7 +4157,7 @@ class TestPulumiEffects:
         assert "staging" in call_args
 
     @pytest.mark.asyncio
-    async def test_pulumi_destroy_os_error(self) -> None:
+    async def test_pulumi_destroy_os_error(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiDestroy should fail on OSError."""
         from prodbox.cli.effects import PulumiDestroy
 
@@ -4169,7 +4179,7 @@ class TestPulumiEffects:
         assert value is None
 
     @pytest.mark.asyncio
-    async def test_pulumi_refresh_success(self) -> None:
+    async def test_pulumi_refresh_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiRefresh should succeed."""
         from prodbox.cli.effects import PulumiRefresh
         from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
@@ -4194,7 +4204,7 @@ class TestPulumiEffects:
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
 
     @pytest.mark.asyncio
-    async def test_pulumi_refresh_failure(self) -> None:
+    async def test_pulumi_refresh_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiRefresh should fail on error."""
         from prodbox.cli.effects import PulumiRefresh
 
@@ -4216,7 +4226,7 @@ class TestPulumiEffects:
         assert value == 1
 
     @pytest.mark.asyncio
-    async def test_pulumi_refresh_with_stack(self) -> None:
+    async def test_pulumi_refresh_with_stack(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiRefresh should include --stack flag."""
         from prodbox.cli.effects import PulumiRefresh
 
@@ -4240,7 +4250,7 @@ class TestPulumiEffects:
         assert "dev" in call_args
 
     @pytest.mark.asyncio
-    async def test_pulumi_refresh_os_error(self) -> None:
+    async def test_pulumi_refresh_os_error(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiRefresh should fail on OSError."""
         from prodbox.cli.effects import PulumiRefresh
 
@@ -4719,7 +4729,7 @@ class TestPulumiOptions:
     """Tests for Pulumi effects with various options."""
 
     @pytest.mark.asyncio
-    async def test_pulumi_up_without_yes(self) -> None:
+    async def test_pulumi_up_without_yes(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiUp without --yes should not include flag."""
         from prodbox.cli.effects import PulumiUp
 
@@ -4870,7 +4880,7 @@ class TestGatewayInterpreterEffects:
             aws_region="us-east-1",
         )
 
-        with patch("prodbox.settings.Settings", return_value=fake_settings):
+        with patch("prodbox.settings.Settings.from_config_json", return_value=fake_settings):
             summary = await interpreter.interpret(effect)
 
         assert summary.success
@@ -4895,7 +4905,7 @@ class TestGatewayInterpreterEffects:
             node_id="node-a",
         )
 
-        with patch("prodbox.settings.Settings", side_effect=RuntimeError("boom")):
+        with patch("prodbox.settings.Settings.from_config_json", side_effect=RuntimeError("boom")):
             summary = await interpreter.interpret(effect)
 
         assert not summary.success
@@ -5053,7 +5063,7 @@ class TestGatewayInterpreterEffects:
         assert "Gateway state query failed: network down" in summary.message
 
     @pytest.mark.asyncio
-    async def test_pulumi_destroy_without_yes(self) -> None:
+    async def test_pulumi_destroy_without_yes(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiDestroy without --yes should not include flag."""
         from prodbox.cli.effects import PulumiDestroy
 
@@ -5075,7 +5085,7 @@ class TestGatewayInterpreterEffects:
         assert "--yes" not in call_args
 
     @pytest.mark.asyncio
-    async def test_pulumi_refresh_without_yes(self) -> None:
+    async def test_pulumi_refresh_without_yes(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiRefresh without --yes should not include flag."""
         from prodbox.cli.effects import PulumiRefresh
 

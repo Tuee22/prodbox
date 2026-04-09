@@ -27,18 +27,19 @@ def _import_fresh_infra_main() -> ModuleType:
 
 
 def test_deploy_cert_manager_wraps_chart_values_with_prodbox_metadata() -> None:
-    """cert-manager deployment should route Helm values through doctrine metadata helper."""
+    """cert-manager deployment should include prodbox labels in podLabels."""
     namespace = MagicMock()
     namespace.metadata.name = "cert-manager"
     release = MagicMock()
+    test_labels = {"prodbox.io/managed-by": "prodbox-123"}
 
     with (
         patch.object(cert_manager_module, "object_meta", return_value={"name": "cert-manager"}),
         patch.object(
             cert_manager_module,
-            "chart_values_with_prodbox",
-            return_value={"wrapped": True},
-        ) as mock_chart_values,
+            "prodbox_labels",
+            return_value=test_labels,
+        ),
         patch.object(cert_manager_module.k8s.core.v1, "Namespace", return_value=namespace),
         patch.object(
             cert_manager_module.k8s.helm.v3,
@@ -65,20 +66,25 @@ def test_deploy_cert_manager_wraps_chart_values_with_prodbox_metadata() -> None:
 
     assert result.namespace is namespace
     assert result.release is release
-    mock_chart_values.assert_called_once()
     release_kwargs = mock_release.call_args.kwargs
-    assert release_kwargs["values"] == {"wrapped": True}
+    assert release_kwargs["values"]["podLabels"] == test_labels
+    assert release_kwargs["values"]["crds"]["enabled"] is True
     assert release_kwargs["opts"]["depends_on"] == [namespace]
 
 
 def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:
     """ClusterIssuer deployment should preserve explicit dependency ordering."""
+    aws_secret = MagicMock()
     cluster_issuer = MagicMock()
     dep_one = MagicMock()
     dep_two = MagicMock()
     settings = MagicMock(
         acme_server="https://acme-v02.api.letsencrypt.org/directory",
         acme_email="test@example.com",
+        aws_access_key_id="AKIATEST",
+        aws_secret_access_key="secret",
+        aws_region="us-east-1",
+        route53_zone_id="ZTEST",
     )
 
     with (
@@ -86,6 +92,11 @@ def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:
             cluster_issuer_module,
             "object_meta",
             return_value={"name": "letsencrypt-http01"},
+        ),
+        patch.object(
+            cluster_issuer_module.k8s.core.v1,
+            "Secret",
+            return_value=aws_secret,
         ),
         patch.object(
             cluster_issuer_module.k8s.apiextensions,
@@ -107,7 +118,10 @@ def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:
         )
 
     assert result.cluster_issuer is cluster_issuer
-    assert mock_custom_resource.call_args.kwargs["opts"]["depends_on"] == [dep_one, dep_two]
+    deps = mock_custom_resource.call_args.kwargs["opts"]["depends_on"]
+    assert deps[0] is aws_secret
+    assert dep_one in deps
+    assert dep_two in deps
 
 
 def test_infra_main_enables_dns_bootstrap_and_cert_manager() -> None:
@@ -123,7 +137,7 @@ def test_infra_main_enables_dns_bootstrap_and_cert_manager() -> None:
     cert_manager_resources = MagicMock(release=MagicMock())
 
     with (
-        patch("prodbox.settings.Settings", return_value=settings),
+        patch("prodbox.settings.Settings.from_config_json", return_value=settings),
         patch("prodbox.settings.discover_lan_addressing", return_value=_TEST_LAN),
         patch("prodbox.infra.metadata.resolve_prodbox_id", return_value="prodbox-123"),
         patch("prodbox.infra.providers.create_k8s_provider", return_value=k8s_provider),
@@ -178,7 +192,7 @@ def test_infra_main_can_disable_dns_bootstrap() -> None:
     )
 
     with (
-        patch("prodbox.settings.Settings", return_value=settings),
+        patch("prodbox.settings.Settings.from_config_json", return_value=settings),
         patch("prodbox.settings.discover_lan_addressing", return_value=_TEST_LAN),
         patch("prodbox.infra.metadata.resolve_prodbox_id", return_value="prodbox-123"),
         patch("prodbox.infra.providers.create_k8s_provider", return_value=MagicMock()),

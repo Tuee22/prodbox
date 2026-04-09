@@ -150,9 +150,9 @@ class TestRegistryConsistency:
             ), f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
 
     def test_registry_has_expected_size(self) -> None:
-        """Registry should have exactly 26 prerequisites."""
-        # Platform: 3, Tools: 9, Config: 5, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
-        expected_count = 3 + 9 + 5 + 2 + 4 + 1 + 2
+        """Registry should have exactly 28 prerequisites."""
+        # Platform: 3, Tools: 11, Config: 5, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
+        expected_count = 3 + 11 + 5 + 2 + 4 + 1 + 2
         assert len(PREREQUISITE_REGISTRY) == expected_count
 
 

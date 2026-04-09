@@ -884,6 +884,32 @@ class ValidateSettings(Effect[bool]):
 
 
 # =============================================================================
+# Configuration Pipeline Effects
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class RunDhallCompile(Effect[int]):
+    """Compile ``prodbox-config.dhall`` to ``prodbox-config.json`` via ``dhall-to-json``.
+
+    Returns: exit code (0 = success)
+    """
+
+    input_path: Path
+    output_path: Path
+
+
+@dataclass(frozen=True)
+class ValidateConfigJson(Effect[bool]):
+    """Validate ``prodbox-config.json`` by loading it as Settings.
+
+    Returns: True if valid, False otherwise
+    """
+
+    config_path: Path
+
+
+# =============================================================================
 # Output Effects (Stdout/Stderr)
 # =============================================================================
 

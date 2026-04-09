@@ -80,41 +80,56 @@ poetry run prodbox --version
 
 ## Configuration
 
-All configuration, including AWS authentication, is loaded from the fixed repository-root `.env` file inside the outer container.
+All configuration is authored in the repository-root `prodbox-config.dhall` (Dhall schema with
+typed defaults), compiled to `prodbox-config.json` by `prodbox config compile`, and loaded into
+a Pydantic `BaseModel` at runtime. Both files are gitignored. Cluster-internal secrets are
+auto-generated at chart deploy time and stored in `.data/<namespace>/.secrets.json`. IP
+addressing (MetalLB pool, ingress LB IP) is always auto-discovered from the host LAN.
+Subprocess environments are built from explicit configuration only — no `os.environ` credentials
+are inherited.
 
-`prodbox` requires explicit AWS credentials in `.env` using `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, with optional `AWS_SESSION_TOKEN`. `pydantic` reads only `<repository-root>/.env`; it does not search upward from the current working directory or fall back to nested `.env` files. Ambient AWS auth env vars outside `.env`, AWS profile-based auth, and shared credential/config discovery are not valid auth sources for `prodbox`. The canonical storage and test-harness rules live in [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md#2-authentication-source-and-storage-rules).
+### Bootstrap
 
-Required environment variables:
+```bash
+# One-time: bootstrap Dhall config from existing .env (if migrating)
+prodbox config init
 
-| Variable | Description |
-|----------|-------------|
-| `AWS_ACCESS_KEY_ID` | AWS access key ID for Route 53 and AWS integration operations |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret access key for Route 53 and AWS integration operations |
-| `ROUTE53_ZONE_ID` | Route 53 hosted zone ID |
-| `ACME_EMAIL` | Email for Let's Encrypt registration |
+# Or manually create prodbox-config.dhall using the schema
+# Then compile to JSON:
+prodbox config compile
+```
+
+### Required config fields
+
+| Config Path | Description |
+|-------------|-------------|
+| `aws.access_key_id` | AWS access key ID for Route 53 and AWS integration operations |
+| `aws.secret_access_key` | AWS secret access key for Route 53 and AWS integration operations |
+| `route53.zone_id` | Route 53 hosted zone ID |
+| `acme.email` | Email for Let's Encrypt registration |
 
 Required when using the chart platform and public `vscode` flow:
 
-| Variable | Description |
-|----------|-------------|
-| `VSCODE_FQDN` | Public FQDN for the namespace-local `vscode` and Keycloak ingress path |
+| Config Path | Description |
+|-------------|-------------|
+| `domain.vscode_fqdn` | Public FQDN for the namespace-local `vscode` and Keycloak ingress path |
 
 Cluster-internal secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD`,
 `KEYCLOAK_NGINX_CLIENT_SECRET`) are auto-generated at chart deploy time and stored in
-`.data/<namespace>/.secrets.json`. They are not configured via `.env`.
+`.data/<namespace>/.secrets.json`. They do not appear in the config file.
 
-Optional (with defaults):
+### Optional fields (with defaults)
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `AWS_REGION` | `us-east-1` | AWS region |
-| `AWS_SESSION_TOKEN` | unset | Optional AWS session token paired with `.env` credentials |
-| `DEMO_FQDN` | `demo.example.com` | Domain name |
-| `DEMO_TTL` | `60` | DNS record TTL in seconds |
-| `ACME_SERVER` | Let's Encrypt production | ACME server URL |
-| `BOOTSTRAP_PUBLIC_IP_OVERRIDE` | unset | Bootstrap-only DNS A-record IP override when public IP lookup is unavailable |
+| Config Path | Default | Description |
+|-------------|---------|-------------|
+| `aws.region` | `us-east-1` | AWS region |
+| `aws.session_token` | `None` | Optional AWS session token |
+| `domain.demo_fqdn` | `demo.example.com` | Domain name |
+| `domain.demo_ttl` | `60` | DNS record TTL in seconds |
+| `acme.server` | Let's Encrypt production | ACME server URL |
+| `deployment.bootstrap_public_ip_override` | `None` | Bootstrap-only DNS A-record IP override |
 
-Auto-discovered (not configurable via `.env`):
+### Auto-discovered (not in config)
 
 | Setting | Source | Description |
 |---------|--------|-------------|
@@ -123,13 +138,10 @@ Auto-discovered (not configurable via `.env`):
 | Kubeconfig | `~/.kube/config` | Default kubeconfig path (always used) |
 | Pulumi stack | Hardcoded `home` | Default Pulumi stack name |
 
-Unsupported AWS auth configuration for `prodbox` includes `AWS_PROFILE`, `AWS_DEFAULT_PROFILE`,
-`AWS_SHARED_CREDENTIALS_FILE`, `AWS_CONFIG_FILE`, `AWS_ROLE_ARN`, and `AWS_ROLE_SESSION_NAME`.
-
 Validate your configuration:
 
 ```bash
-prodbox env validate
+prodbox config validate
 ```
 
 ## Usage

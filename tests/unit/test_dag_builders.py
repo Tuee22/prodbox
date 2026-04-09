@@ -18,9 +18,6 @@ import pytest
 
 from prodbox.cli.command_adt import (
     DNSCheckCommand,
-    EnvShowCommand,
-    EnvTemplateCommand,
-    EnvValidateCommand,
     GatewayConfigGenCommand,
     GatewayInstallServiceCommand,
     GatewayStartCommand,
@@ -73,47 +70,11 @@ from prodbox.cli.effects import (
     RunPulumiCommand,
     RunSystemdCommand,
     Sequence,
-    ValidateSettings,
     ValidateTool,
     WriteFile,
     WriteStdout,
 )
 from prodbox.cli.types import Failure, Success
-
-
-class TestEnvCommandDAGBuilders:
-    """Tests for environment command DAG builders."""
-
-    def test_env_show_dag(self) -> None:
-        """command_to_dag should build DAG for EnvShowCommand."""
-        cmd = EnvShowCommand(show_secrets=False)
-
-        match command_to_dag(cmd):
-            case Success(dag):
-                assert "env_show" in dag
-                assert len(dag) > 0
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_env_validate_dag(self) -> None:
-        """command_to_dag should build DAG for EnvValidateCommand."""
-        cmd = EnvValidateCommand()
-
-        match command_to_dag(cmd):
-            case Success(dag):
-                assert "env_validate" in dag
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_env_template_dag(self) -> None:
-        """command_to_dag should build DAG for EnvTemplateCommand."""
-        cmd = EnvTemplateCommand()
-
-        match command_to_dag(cmd):
-            case Success(dag):
-                assert "env_template" in dag
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
 
 
 class TestHostCommandDAGBuilders:
@@ -403,46 +364,6 @@ class TestPulumiCommandDAGBuilders:
 # =============================================================================
 # Phase 2: Prerequisite Verification Tests
 # =============================================================================
-
-
-class TestEnvCommandPrerequisites:
-    """Verify prerequisites for environment commands."""
-
-    def test_env_show_requires_settings(self) -> None:
-        """EnvShowCommand should require settings_loaded prerequisite."""
-        cmd = EnvShowCommand()
-        match command_to_dag(cmd):
-            case Success(dag):
-                root = dag.get_node("env_show")
-                assert root is not None
-                assert "settings_object" in root.prerequisites
-                assert isinstance(root.effect, WriteStdout)
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_env_validate_requires_settings(self) -> None:
-        """EnvValidateCommand should require settings_loaded prerequisite."""
-        cmd = EnvValidateCommand()
-        match command_to_dag(cmd):
-            case Success(dag):
-                root = dag.get_node("env_validate")
-                assert root is not None
-                assert "settings_loaded" in root.prerequisites
-                assert isinstance(root.effect, ValidateSettings)
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_env_template_no_prerequisites(self) -> None:
-        """EnvTemplateCommand should have no prerequisites."""
-        cmd = EnvTemplateCommand()
-        match command_to_dag(cmd):
-            case Success(dag):
-                root = dag.get_node("env_template")
-                assert root is not None
-                assert root.prerequisites == frozenset()
-                assert isinstance(root.effect, WriteStdout)
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
 
 
 class TestHostCommandPrerequisites:
@@ -1055,8 +976,6 @@ class TestUserVisibleCommandBuilderRegressionGuards:
     @pytest.mark.parametrize(
         ("command", "root_id"),
         [
-            (EnvShowCommand(show_secrets=False), "env_show"),
-            (EnvTemplateCommand(), "env_template"),
             (HostCheckPortsCommand(ports=(80, 443)), "host_check_ports"),
             (HostPublicEdgeCommand(), "host_public_edge"),
             (DNSCheckCommand(), "dns_check"),
@@ -1091,25 +1010,6 @@ class TestUserVisibleCommandBuilderRegressionGuards:
 
 class TestAllPrerequisitesExistInRegistry:
     """Verify all referenced prerequisites exist in the registry."""
-
-    def test_all_env_prerequisites_exist(self) -> None:
-        """All prerequisites referenced by env commands should exist."""
-        commands = [
-            EnvShowCommand(),
-            EnvValidateCommand(),
-            EnvTemplateCommand(),
-        ]
-        for cmd in commands:
-            match command_to_dag(cmd):
-                case Success(dag):
-                    for node in dag.nodes:
-                        for prereq_id in node.prerequisites:
-                            assert dag.get_node(prereq_id) is not None, (
-                                f"Prerequisite '{prereq_id}' not expanded into DAG "
-                                f"(referenced by '{node.effect_id}')"
-                            )
-                case Failure(error):
-                    pytest.fail(f"Expected Success, got Failure: {error}")
 
     def test_all_host_prerequisites_exist(self) -> None:
         """All prerequisites referenced by host commands should exist."""

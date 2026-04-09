@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from prodbox.cli.command_adt import EnvTemplateCommand
+from prodbox.cli.command_adt import HostInfoCommand
 from prodbox.cli.command_executor import (
     execute_command,
     execute_dag,
@@ -42,7 +42,7 @@ class TestExecuteCommand:
 
     def test_execute_command_success(self) -> None:
         """execute_command should return 0 on success."""
-        cmd = EnvTemplateCommand()
+        cmd = HostInfoCommand()
 
         # Mock the interpreter to return success
         mock_summary = DAGExecutionSummary(
@@ -68,7 +68,7 @@ class TestExecuteCommand:
 
     def test_execute_command_failure(self) -> None:
         """execute_command should return non-zero on failure."""
-        cmd = EnvTemplateCommand()
+        cmd = HostInfoCommand()
 
         mock_summary = DAGExecutionSummary(
             exit_code=1,
@@ -96,7 +96,7 @@ class TestExecuteCommand:
         """execute_command should return 1 when DAG build fails."""
         from prodbox.cli.types import Failure
 
-        cmd = EnvTemplateCommand()
+        cmd = HostInfoCommand()
 
         # Mock command_to_dag to return Failure
         with patch(

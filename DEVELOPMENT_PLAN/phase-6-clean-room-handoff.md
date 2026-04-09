@@ -43,16 +43,16 @@ remaining compatibility backlog.
 
 ### Current Validation State
 
-- `legacy-tracking-for-deletion.md` has no pending items. Sprint 4.6 (configuration
-  simplification) is complete. The remaining blockers for final handoff are live-environment
-  and AWS/public-host proofs.
+- `legacy-tracking-for-deletion.md` has no pending items; the Dhall config migration and
+  subprocess credential isolation are complete. The remaining blockers for final handoff are
+  live-environment provisioning and AWS/public-host proofs.
 
 ### Remaining Work
 
 - Close Sprint 4.2 in an AWS environment with the required Route 53 permissions.
-- Close Sprint 4.3 by providing the Pulumi secrets passphrase, reconciling the live
-  `MetalLB -> Traefik -> cert-manager -> vscode` edge, and rerunning the external `charts-vscode`
-  proof path.
+- Close Sprint 4.3 by initializing a fresh Pulumi stack with `PULUMI_CONFIG_PASSPHRASE=""`,
+  reconciling the live `MetalLB -> Traefik -> cert-manager -> vscode` edge, and rerunning the
+  external `charts-vscode` proof path.
 - Close Sprint 4.4 by installing the supported host `prodbox-gateway.service` with a real
   config/orders file and proving explicit-record DDNS continuity against live Route 53 state.
 - Close Sprint 5.1 by restoring live public ingress reachability and rerunning the public-host

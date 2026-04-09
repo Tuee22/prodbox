@@ -41,8 +41,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, TypeVar
 
-from prodbox.lib.aws_auth import load_dotenv_aws_auth
-
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
@@ -178,6 +176,7 @@ from prodbox.cli.effects import (  # noqa: E402
     RequireLinux,
     RequireSystemd,
     ResolveMachineIdentity,
+    RunDhallCompile,
     RunKubectlCommand,
     RunPulumiCommand,
     RunSubprocess,
@@ -187,6 +186,7 @@ from prodbox.cli.effects import (  # noqa: E402
     StorageRuntime,
     Try,
     ValidateAWSCredentials,
+    ValidateConfigJson,
     ValidateEnvironment,
     ValidatePulumiLogin,
     ValidateRoute53Access,
@@ -205,6 +205,23 @@ from prodbox.cli.types import (  # noqa: E402
 )
 from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV  # noqa: E402
 from prodbox.lib.prodbox_k8s import PRODBOX_EPHEMERAL_RESOURCE_KINDS  # noqa: E402
+
+# Subprocess environment allowlist — only these vars pass through to child processes.
+_SUBPROCESS_PASSTHROUGH_VARS: tuple[str, ...] = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "TERM",
+    "USER",
+    "PULUMI_CONFIG_PASSPHRASE",
+    "PULUMI_CONFIG_PASSPHRASE_FILE",
+    "PULUMI_HOME",
+    "PULUMI_BACKEND_URL",
+    # Non-credential vars needed by Pulumi programs and integration tests.
+    "ROUTE53_ZONE_ID",
+    "PULUMI_TEST_RECORD_FQDN",
+    "PULUMI_TEST_RECORD_VALUE",
+)
 
 # Type variable for effect return types
 T = TypeVar("T")
@@ -236,10 +253,12 @@ def _terminal_record_text(text: str) -> str:
             return f"{text}\n"
 
 
-def _load_repo_aws_auth() -> tuple[str, str, str | None]:
-    """Load explicit AWS credentials from the repository `.env` file."""
-    auth = load_dotenv_aws_auth(Path(".env"))
-    return auth.access_key_id, auth.secret_access_key, auth.session_token
+def _load_settings_aws_auth() -> tuple[str, str, str | None]:
+    """Load AWS credentials from the canonical Settings instance."""
+    from prodbox.settings import get_settings
+
+    s = get_settings()
+    return s.aws_access_key_id, s.aws_secret_access_key, s.aws_session_token
 
 
 # =============================================================================
@@ -994,6 +1013,12 @@ class EffectInterpreter:
             case ValidateSettings():
                 return await self._interpret_validate_settings(effect)
 
+            # Config pipeline
+            case RunDhallCompile():
+                return await self._interpret_run_dhall_compile(effect)
+            case ValidateConfigJson():
+                return await self._interpret_validate_config_json(effect)
+
             # Output
             case WriteStdout():
                 return await self._interpret_write_stdout(effect), None
@@ -1557,7 +1582,7 @@ class EffectInterpreter:
         try:
             import boto3
 
-            access_key_id, secret_access_key, session_token = _load_repo_aws_auth()
+            access_key_id, secret_access_key, session_token = _load_settings_aws_auth()
             session = boto3.Session(
                 aws_access_key_id=access_key_id,
                 aws_secret_access_key=secret_access_key,
@@ -1608,7 +1633,7 @@ class EffectInterpreter:
         try:
             import boto3
 
-            access_key_id, secret_access_key, session_token = _load_repo_aws_auth()
+            access_key_id, secret_access_key, session_token = _load_settings_aws_auth()
             session = boto3.Session(
                 aws_access_key_id=access_key_id,
                 aws_secret_access_key=secret_access_key,
@@ -1640,7 +1665,7 @@ class EffectInterpreter:
         try:
             import boto3
 
-            access_key_id, secret_access_key, session_token = _load_repo_aws_auth()
+            access_key_id, secret_access_key, session_token = _load_settings_aws_auth()
             session = boto3.Session(
                 aws_access_key_id=access_key_id,
                 aws_secret_access_key=secret_access_key,
@@ -1928,12 +1953,62 @@ class EffectInterpreter:
         try:
             from prodbox.settings import Settings
 
-            Settings()  # Validation happens on construction
+            Settings.from_config_json()  # Validation happens on construction
             self.successful_effects += 1
             return self._create_success_summary("Settings valid"), True
         except Exception as e:
             self.failed_effects += 1
             return self._create_error_summary(f"Invalid settings: {e}"), False
+
+    # =========================================================================
+    # Config Pipeline Effects
+    # =========================================================================
+
+    async def _interpret_run_dhall_compile(
+        self, effect: RunDhallCompile
+    ) -> tuple[ExecutionSummary, int | None]:
+        """Compile Dhall to JSON via ``dhall-to-json``."""
+        try:
+            input_bytes = effect.input_path.read_bytes()
+            output = await _run_subprocess(
+                ("dhall-to-json",),
+                input_data=input_bytes,
+                timeout=30.0,
+            )
+            match output.returncode:
+                case 0:
+                    effect.output_path.write_bytes(output.stdout)
+                    self.successful_effects += 1
+                    return (
+                        self._create_success_summary(
+                            f"Compiled {effect.input_path} -> {effect.output_path}"
+                        ),
+                        0,
+                    )
+                case _:
+                    self.failed_effects += 1
+                    stderr = output.stderr.decode("utf-8", errors="replace")
+                    return (
+                        self._create_error_summary(f"dhall-to-json failed: {stderr}"),
+                        output.returncode,
+                    )
+        except OSError as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Dhall compilation error: {e}"), None
+
+    async def _interpret_validate_config_json(
+        self, effect: ValidateConfigJson
+    ) -> tuple[ExecutionSummary, bool | None]:
+        """Validate ``prodbox-config.json`` by loading it as Settings."""
+        try:
+            from prodbox.settings import validate_config_json
+
+            validate_config_json(effect.config_path)
+            self.successful_effects += 1
+            return self._create_success_summary("Config JSON valid"), True
+        except Exception as e:
+            self.failed_effects += 1
+            return self._create_error_summary(f"Invalid config JSON: {e}"), False
 
     # =========================================================================
     # Output Effects
@@ -2067,21 +2142,46 @@ class EffectInterpreter:
             return self._create_error_summary(f"Wait timed out: {stderr}"), False
 
     @staticmethod
-    def _kubectl_env(kubeconfig: Path | None) -> dict[str, str] | None:
-        """Build kubectl subprocess environment with explicit KUBECONFIG override."""
-        if kubeconfig is None:
-            return None
-        env = dict(os.environ)
-        env["KUBECONFIG"] = str(kubeconfig)
+    def _base_subprocess_env() -> dict[str, str]:
+        """Construct a minimal subprocess environment from explicit sources only.
+
+        No ``os.environ`` inheritance beyond the allowlist. This prevents
+        ambient credentials from leaking into child processes.
+        """
+        return {key: os.environ[key] for key in _SUBPROCESS_PASSTHROUGH_VARS if key in os.environ}
+
+    @staticmethod
+    def _kubectl_env(kubeconfig: Path | None) -> dict[str, str]:
+        """Build kubectl subprocess environment with no inherited credentials."""
+        env = EffectInterpreter._base_subprocess_env()
+        match kubeconfig:
+            case Path() as kc:
+                env["KUBECONFIG"] = str(kc)
+            case None:
+                pass
         return env
 
     @staticmethod
     def _pulumi_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
-        """Build Pulumi subprocess environment and allow nested Pulumi exec."""
-        env = dict(os.environ)
+        """Build Pulumi subprocess environment with explicit credentials only."""
+        from prodbox.settings import get_settings
+
+        settings = get_settings()
+        env = EffectInterpreter._base_subprocess_env()
         env[ALLOW_NON_ENTRYPOINT_ENV] = "1"
-        if extra_env:
-            env.update(extra_env)
+        env["AWS_ACCESS_KEY_ID"] = settings.aws_access_key_id
+        env["AWS_SECRET_ACCESS_KEY"] = settings.aws_secret_access_key
+        env["AWS_REGION"] = settings.aws_region
+        match settings.aws_session_token:
+            case str() as token:
+                env["AWS_SESSION_TOKEN"] = token
+            case None:
+                pass
+        match extra_env:
+            case dict() as extras:
+                env.update(extras)
+            case None:
+                pass
         return env
 
     @staticmethod
@@ -3020,86 +3120,108 @@ class EffectInterpreter:
                     None,
                 )
 
-        manifest: dict[str, object] = {
+        manifest_items: list[dict[str, object]] = [
+            {
+                "apiVersion": "storage.k8s.io/v1",
+                "kind": "StorageClass",
+                "metadata": {
+                    "name": effect.storage_class_name,
+                    "annotations": {effect.annotation_key: effect.machine_identity.prodbox_id},
+                    "labels": {effect.label_key: effect.label_value},
+                },
+                "provisioner": "kubernetes.io/no-provisioner",
+                "volumeBindingMode": "WaitForFirstConsumer",
+                "reclaimPolicy": "Retain",
+                "allowVolumeExpansion": True,
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "PersistentVolume",
+                "metadata": {
+                    "name": effect.persistent_volume_name,
+                    "annotations": {effect.annotation_key: effect.machine_identity.prodbox_id},
+                    "labels": {effect.label_key: effect.label_value},
+                },
+                "spec": {
+                    "capacity": {"storage": effect.storage_size},
+                    "volumeMode": "Filesystem",
+                    "accessModes": ["ReadWriteOnce"],
+                    "persistentVolumeReclaimPolicy": "Retain",
+                    "storageClassName": effect.storage_class_name,
+                    "claimRef": {
+                        "namespace": effect.namespace,
+                        "name": effect.persistent_volume_claim_name,
+                    },
+                    "hostPath": {
+                        "path": str(host_path),
+                        "type": "DirectoryOrCreate",
+                    },
+                    "nodeAffinity": {
+                        "required": {
+                            "nodeSelectorTerms": [
+                                {
+                                    "matchExpressions": [
+                                        {
+                                            "key": "kubernetes.io/hostname",
+                                            "operator": "In",
+                                            "values": [node_hostname],
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    },
+                },
+            },
+            {
+                "apiVersion": "v1",
+                "kind": "PersistentVolumeClaim",
+                "metadata": {
+                    "name": effect.persistent_volume_claim_name,
+                    "namespace": effect.namespace,
+                    "annotations": {effect.annotation_key: effect.machine_identity.prodbox_id},
+                    "labels": {effect.label_key: effect.label_value},
+                },
+                "spec": {
+                    "accessModes": ["ReadWriteOnce"],
+                    "volumeMode": "Filesystem",
+                    "storageClassName": effect.storage_class_name,
+                    "volumeName": effect.persistent_volume_name,
+                    "resources": {"requests": {"storage": effect.storage_size}},
+                },
+            },
+        ]
+        # Check if the PVC already exists and is Bound (immutable after creation).
+        # When bound, skip re-apply to avoid spec-immutability errors from storage
+        # class or volume name drift across teardown/rebuild cycles.
+        pvc_check = await self._run_kubectl(
+            "get",
+            "pvc",
+            effect.persistent_volume_claim_name,
+            "-n",
+            effect.namespace,
+            "-o",
+            "jsonpath={.status.phase}",
+            timeout=10.0,
+        )
+        pvc_already_bound = pvc_check.returncode == 0 and b"Bound" in pvc_check.stdout
+
+        # Apply only the StorageClass and PV; skip PVC if already bound.
+        all_items = manifest_items
+        resources_to_apply: list[dict[str, object]] = [all_items[0], all_items[1]]
+        if not pvc_already_bound:
+            resources_to_apply.append(all_items[2])
+        apply_manifest: dict[str, object] = {
             "apiVersion": "v1",
             "kind": "List",
-            "items": [
-                {
-                    "apiVersion": "storage.k8s.io/v1",
-                    "kind": "StorageClass",
-                    "metadata": {
-                        "name": effect.storage_class_name,
-                        "annotations": {effect.annotation_key: effect.machine_identity.prodbox_id},
-                        "labels": {effect.label_key: effect.label_value},
-                    },
-                    "provisioner": "kubernetes.io/no-provisioner",
-                    "volumeBindingMode": "WaitForFirstConsumer",
-                    "reclaimPolicy": "Retain",
-                    "allowVolumeExpansion": True,
-                },
-                {
-                    "apiVersion": "v1",
-                    "kind": "PersistentVolume",
-                    "metadata": {
-                        "name": effect.persistent_volume_name,
-                        "annotations": {effect.annotation_key: effect.machine_identity.prodbox_id},
-                        "labels": {effect.label_key: effect.label_value},
-                    },
-                    "spec": {
-                        "capacity": {"storage": effect.storage_size},
-                        "volumeMode": "Filesystem",
-                        "accessModes": ["ReadWriteOnce"],
-                        "persistentVolumeReclaimPolicy": "Retain",
-                        "storageClassName": effect.storage_class_name,
-                        "claimRef": {
-                            "namespace": effect.namespace,
-                            "name": effect.persistent_volume_claim_name,
-                        },
-                        "hostPath": {
-                            "path": str(host_path),
-                            "type": "DirectoryOrCreate",
-                        },
-                        "nodeAffinity": {
-                            "required": {
-                                "nodeSelectorTerms": [
-                                    {
-                                        "matchExpressions": [
-                                            {
-                                                "key": "kubernetes.io/hostname",
-                                                "operator": "In",
-                                                "values": [node_hostname],
-                                            }
-                                        ]
-                                    }
-                                ]
-                            }
-                        },
-                    },
-                },
-                {
-                    "apiVersion": "v1",
-                    "kind": "PersistentVolumeClaim",
-                    "metadata": {
-                        "name": effect.persistent_volume_claim_name,
-                        "namespace": effect.namespace,
-                        "annotations": {effect.annotation_key: effect.machine_identity.prodbox_id},
-                        "labels": {effect.label_key: effect.label_value},
-                    },
-                    "spec": {
-                        "accessModes": ["ReadWriteOnce"],
-                        "volumeMode": "Filesystem",
-                        "storageClassName": effect.storage_class_name,
-                        "volumeName": effect.persistent_volume_name,
-                        "resources": {"requests": {"storage": effect.storage_size}},
-                    },
-                },
-            ],
+            "items": resources_to_apply,
         }
+
         output = await self._run_kubectl(
             "apply",
             "-f",
             "-",
-            input_data=json.dumps(manifest).encode("utf-8"),
+            input_data=json.dumps(apply_manifest).encode("utf-8"),
             timeout=45.0,
         )
         if output.returncode != 0:
@@ -3920,7 +4042,10 @@ class EffectInterpreter:
         # Check if any failed
         failed = tuple(r for r in results if not r.success)
         if failed:
-            return self._create_error_summary(f"Parallel execution: {len(failed)} effects failed")
+            details = "; ".join(r.message for r in failed)
+            return self._create_error_summary(
+                f"Parallel execution: {len(failed)} effects failed: {details}"
+            )
         return self._create_success_summary("Parallel execution complete")
 
     async def _interpret_try(self, effect: Try) -> tuple[ExecutionSummary, object | None]:
@@ -4030,7 +4155,7 @@ class EffectInterpreter:
         try:
             from prodbox.settings import Settings
 
-            settings = Settings()
+            settings = Settings.from_config_json()
             canonical_public_fqdn = settings.vscode_fqdn or settings.demo_fqdn
             template: dict[str, object] = {
                 "node_id": effect.node_id,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -17,24 +18,47 @@ from prodbox.settings import (
     _build_ifreq,
     _default_route_interface_name,
     _discover_lan_addressing_or_none,
+    _flatten_config_json,
     _select_metallb_range,
     clear_settings_cache,
     discover_lan_addressing,
     get_settings,
+    load_config_json,
 )
 
 
-def _write_aws_auth_dotenv(path: Path) -> None:
-    """Write minimal `.env` AWS auth required by settings validation."""
-    (path / ".env").write_text(
-        "\n".join(
-            [
-                "AWS_ACCESS_KEY_ID=test-access-key",
-                "AWS_SECRET_ACCESS_KEY=test-secret-key",
-                "AWS_SESSION_TOKEN=test-session-token",
-                "",
-            ]
-        ),
+def _write_config_json(path: Path, overrides: dict[str, object] | None = None) -> None:
+    """Write a valid ``prodbox-config.json`` into the given directory."""
+    config: dict[str, object] = {
+        "aws": {
+            "access_key_id": "test-access-key",
+            "secret_access_key": "test-secret-key",
+            "session_token": "test-session-token",
+            "region": "us-east-1",
+        },
+        "route53": {"zone_id": "Z1234567890ABC"},
+        "domain": {
+            "demo_fqdn": "test.example.com",
+            "demo_ttl": 60,
+            "vscode_fqdn": None,
+        },
+        "acme": {
+            "email": "test@example.com",
+            "server": "https://acme-staging-v02.api.letsencrypt.org/directory",
+        },
+        "deployment": {
+            "dev_mode": True,
+            "bootstrap_public_ip_override": None,
+            "pulumi_enable_dns_bootstrap": True,
+        },
+    }
+    match overrides:
+        case dict() as ovr:
+            config.update(ovr)
+        case None:
+            pass
+    (path / "prodbox-config.json").write_text(
+        json.dumps(config, indent=2),
         encoding="utf-8",
     )
 
@@ -65,12 +89,12 @@ def _lan_addressing(
 class TestSettings:
     """Tests for Settings class."""
 
-    def test_settings_loads_from_env(
+    def test_settings_loads_from_config_json(
         self,
         mock_env: dict[str, str],  # noqa: ARG002
     ) -> None:
-        """Settings should load from environment variables."""
-        settings = Settings()
+        """Settings should load from prodbox-config.json."""
+        settings = Settings.from_config_json()
 
         assert settings.aws_region == "us-east-1"
         assert settings.route53_zone_id == "Z1234567890ABC"
@@ -85,15 +109,11 @@ class TestSettings:
     ) -> None:
         """Settings should fail without Route 53 zone ID."""
         _patch_repository_root(monkeypatch, tmp_path)
-        _write_aws_auth_dotenv(tmp_path)
         monkeypatch.chdir(tmp_path)
-        env = {
-            "ACME_EMAIL": "test@example.com",
-        }
-        with patch.dict(os.environ, env, clear=True):
+        _write_config_json(tmp_path, {"route53": {"zone_id": ""}})
+        with patch.dict(os.environ, {}, clear=True):
             with pytest.raises(ValidationError) as exc_info:
-                Settings()
-
+                Settings.from_config_json()
             errors = exc_info.value.errors()
             error_fields = {e["loc"][0] for e in errors}
             assert "route53_zone_id" in error_fields
@@ -103,105 +123,79 @@ class TestSettings:
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Settings should fail without ACME email."""
+        """Settings should fail when acme.email is missing from JSON."""
         _patch_repository_root(monkeypatch, tmp_path)
-        _write_aws_auth_dotenv(tmp_path)
         monkeypatch.chdir(tmp_path)
-        env = {
-            "ROUTE53_ZONE_ID": "Z123",
+        config: dict[str, object] = {
+            "aws": {
+                "access_key_id": "k",
+                "secret_access_key": "k",
+                "session_token": None,
+                "region": "us-east-1",
+            },
+            "route53": {"zone_id": "Z123"},
+            "domain": {"demo_fqdn": "d.example.com", "demo_ttl": 60, "vscode_fqdn": None},
+            "acme": {"server": "https://acme.example.com"},
+            "deployment": {
+                "dev_mode": True,
+                "bootstrap_public_ip_override": None,
+                "pulumi_enable_dns_bootstrap": True,
+            },
         }
-        with patch.dict(os.environ, env, clear=True):
+        (tmp_path / "prodbox-config.json").write_text(
+            json.dumps(config, indent=2), encoding="utf-8"
+        )
+        with patch.dict(os.environ, {}, clear=True):
+            # acme.email missing -> _flatten_config_json returns empty string -> ValidationError
             with pytest.raises(ValidationError) as exc_info:
-                Settings()
+                Settings.from_config_json()
 
             errors = exc_info.value.errors()
             error_fields = {e["loc"][0] for e in errors}
             assert "acme_email" in error_fields
-
-    def test_settings_rejects_aws_auth_env_vars(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Settings should reject ambient AWS auth env vars outside `.env`."""
-        _patch_repository_root(monkeypatch, tmp_path)
-        _write_aws_auth_dotenv(tmp_path)
-        monkeypatch.chdir(tmp_path)
-        env = {
-            "ROUTE53_ZONE_ID": "Z123",
-            "ACME_EMAIL": "test@example.com",
-            "AWS_ACCESS_KEY_ID": "forbidden",
-        }
-        with (
-            patch.dict(os.environ, env, clear=True),
-            pytest.raises(ValidationError, match="Ambient AWS auth env vars are forbidden"),
-        ):
-            Settings()
-
-    def test_settings_requires_repo_local_dotenv_auth_vars(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Settings should fail when repo-local `.env` omits AWS auth vars."""
-        _patch_repository_root(monkeypatch, tmp_path)
-        (tmp_path / ".env").write_text(
-            "\n".join(
-                [
-                    "ROUTE53_ZONE_ID=Z123",
-                    "ACME_EMAIL=test@example.com",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.chdir(tmp_path)
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            pytest.raises(ValidationError, match="must define AWS auth for prodbox"),
-        ):
-            Settings()
 
     def test_settings_default_values(
         self,
         mock_env: dict[str, str],  # noqa: ARG002
     ) -> None:
         """Settings should use default values when not specified."""
-        env = {
-            "ROUTE53_ZONE_ID": "Z123",
-            "ACME_EMAIL": "test@example.com",
-        }
-        with (
-            patch.dict(os.environ, env, clear=True),
-            patch(
-                "prodbox.settings._discover_lan_addressing_or_none",
-                return_value=_lan_addressing(),
-            ),
+        with patch(
+            "prodbox.settings._discover_lan_addressing_or_none",
+            return_value=_lan_addressing(),
         ):
-            settings = Settings()
+            settings = Settings.from_config_json()
 
             assert settings.aws_region == "us-east-1"
-            assert settings.demo_fqdn == "demo.example.com"
+            assert settings.demo_fqdn == "test.example.com"
             assert settings.demo_ttl == 60
             assert settings.active_lan_interface == "enp1s0"
             assert settings.active_lan_ipv4 == "192.168.1.10"
             assert settings.active_lan_network_cidr == "192.168.1.0/24"
 
-    def test_settings_ttl_validation(self, mock_env: dict[str, str]) -> None:
+    def test_settings_ttl_validation(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         """Settings should validate TTL range."""
-        env = {**mock_env, "DEMO_TTL": "10"}
-        with patch.dict(os.environ, env, clear=True):
+        _patch_repository_root(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        with patch.dict(os.environ, {}, clear=True):
+            _write_config_json(
+                tmp_path,
+                {"domain": {"demo_fqdn": "d.example.com", "demo_ttl": 10, "vscode_fqdn": None}},
+            )
             with pytest.raises(ValidationError) as exc_info:
-                Settings()
-
+                Settings.from_config_json()
             errors = exc_info.value.errors()
             assert any("demo_ttl" in str(e["loc"]) for e in errors)
 
-        env = {**mock_env, "DEMO_TTL": "100000"}
-        with patch.dict(os.environ, env, clear=True):
+            _write_config_json(
+                tmp_path,
+                {"domain": {"demo_fqdn": "d.example.com", "demo_ttl": 100000, "vscode_fqdn": None}},
+            )
             with pytest.raises(ValidationError) as exc_info:
-                Settings()
-
+                Settings.from_config_json()
             errors = exc_info.value.errors()
             assert any("demo_ttl" in str(e["loc"]) for e in errors)
 
@@ -212,15 +206,11 @@ class TestSettings:
     ) -> None:
         """Settings should derive canonical LAN-backed defaults when blank."""
         _patch_repository_root(monkeypatch, tmp_path)
-        _write_aws_auth_dotenv(tmp_path)
         monkeypatch.chdir(tmp_path)
+        _write_config_json(tmp_path)
 
-        env = {
-            "ROUTE53_ZONE_ID": "Z123",
-            "ACME_EMAIL": "test@example.com",
-        }
         with (
-            patch.dict(os.environ, env, clear=True),
+            patch.dict(os.environ, {}, clear=True),
             patch(
                 "prodbox.settings._discover_lan_addressing_or_none",
                 return_value=_lan_addressing(
@@ -232,73 +222,54 @@ class TestSettings:
                 ),
             ),
         ):
-            settings = Settings()
+            settings = Settings.from_config_json()
 
         assert settings.active_lan_interface == "eno1"
         assert settings.active_lan_ipv4 == "192.168.50.20"
         assert settings.active_lan_network_cidr == "192.168.50.0/24"
 
-    def test_settings_load_repo_dotenv_from_nested_subdirectory(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Settings should load only the fixed repository-root `.env` from nested cwd."""
-        repo_root = tmp_path / "repo"
-        nested_dir = repo_root / "src" / "prodbox" / "infra"
-        nested_dir.mkdir(parents=True)
-        _patch_repository_root(monkeypatch, repo_root)
-        (repo_root / ".env").write_text(
-            "\n".join(
-                [
-                    "AWS_ACCESS_KEY_ID=test-access-key",
-                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
-                    "AWS_SESSION_TOKEN=test-session-token",
-                    "ROUTE53_ZONE_ID=Z1234567890ABC",
-                    "ACME_EMAIL=test@example.com",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.chdir(nested_dir)
 
-        with patch.dict(os.environ, {}, clear=True):
-            settings = Settings()
+class TestFromConfigJson:
+    """Tests for Settings.from_config_json() and JSON helpers."""
 
-        assert settings.route53_zone_id == "Z1234567890ABC"
-        assert settings.acme_email == "test@example.com"
+    def test_load_config_json_valid(self, tmp_path: Path) -> None:
+        """load_config_json should parse a valid JSON object."""
+        (tmp_path / "test.json").write_text('{"key": "value"}', encoding="utf-8")
+        result = load_config_json(tmp_path / "test.json")
+        assert result == {"key": "value"}
 
-    def test_settings_ignores_nested_dotenv_when_repo_root_dotenv_is_missing(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """Settings should not fall back to nested `.env` files outside the fixed root path."""
-        repo_root = tmp_path / "repo"
-        nested_dir = repo_root / "src" / "prodbox" / "infra"
-        nested_dir.mkdir(parents=True)
-        _patch_repository_root(monkeypatch, repo_root)
-        (nested_dir / ".env").write_text(
-            "\n".join(
-                [
-                    "AWS_ACCESS_KEY_ID=test-access-key",
-                    "AWS_SECRET_ACCESS_KEY=test-secret-key",
-                    "AWS_SESSION_TOKEN=test-session-token",
-                    "ROUTE53_ZONE_ID=Z1234567890ABC",
-                    "ACME_EMAIL=test@example.com",
-                    "",
-                ]
-            ),
-            encoding="utf-8",
-        )
-        monkeypatch.chdir(nested_dir)
+    def test_load_config_json_rejects_non_object(self, tmp_path: Path) -> None:
+        """load_config_json should reject non-object JSON."""
+        (tmp_path / "test.json").write_text('"hello"', encoding="utf-8")
+        with pytest.raises(ValueError, match="must contain a JSON object"):
+            load_config_json(tmp_path / "test.json")
 
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            pytest.raises(ValidationError, match="must define AWS auth for prodbox"),
-        ):
-            Settings()
+    def test_flatten_config_json_maps_fields(self) -> None:
+        """_flatten_config_json should map nested Dhall JSON to flat Settings fields."""
+        config: dict[str, object] = {
+            "aws": {
+                "access_key_id": "AKIA",
+                "secret_access_key": "secret",
+                "session_token": None,
+                "region": "eu-west-1",
+            },
+            "route53": {"zone_id": "ZTEST"},
+            "domain": {"demo_fqdn": "demo.test.com", "demo_ttl": 120, "vscode_fqdn": None},
+            "acme": {"email": "me@test.com", "server": "https://acme.test"},
+            "deployment": {
+                "dev_mode": False,
+                "bootstrap_public_ip_override": "1.2.3.4",
+                "pulumi_enable_dns_bootstrap": False,
+            },
+        }
+        flat = _flatten_config_json(config)
+        assert flat["aws_access_key_id"] == "AKIA"
+        assert flat["aws_region"] == "eu-west-1"
+        assert flat["route53_zone_id"] == "ZTEST"
+        assert flat["demo_ttl"] == 120
+        assert flat["acme_email"] == "me@test.com"
+        assert flat["prodbox_dev_mode"] is False
+        assert flat["bootstrap_public_ip_override"] == "1.2.3.4"
 
 
 class TestDisplayDict:
@@ -330,15 +301,15 @@ class TestRenderedSettings:
     """Tests for deterministic rendered settings output."""
 
     def test_render_display_lists_supported_settings(self, settings: Settings) -> None:
-        """render_display should include masked `.env` AWS auth vars."""
+        """render_display should include masked config path keys."""
         rendered = settings.render_display()
 
-        assert "AWS_ACCESS_KEY_ID=****-key" in rendered
-        assert "AWS_SECRET_ACCESS_KEY=****-key" in rendered
-        assert "AWS_SESSION_TOKEN=****oken" in rendered
-        assert "AWS_REGION=us-east-1" in rendered
-        assert "ROUTE53_ZONE_ID=Z1234567890ABC" in rendered
-        assert "ACME_EMAIL=****.com" in rendered
+        assert "aws.access_key_id=****-key" in rendered
+        assert "aws.secret_access_key=****-key" in rendered
+        assert "aws.session_token=****oken" in rendered
+        assert "aws.region=us-east-1" in rendered
+        assert "route53.zone_id=Z1234567890ABC" in rendered
+        assert "acme.email=****.com" in rendered
 
     def test_render_display_show_secrets_reveals_sensitive_values(
         self,
@@ -347,24 +318,24 @@ class TestRenderedSettings:
         """render_display(show_secrets=True) should unmask sensitive settings."""
         rendered = settings.render_display(show_secrets=True)
 
-        assert "AWS_ACCESS_KEY_ID=test-access-key" in rendered
-        assert "AWS_SECRET_ACCESS_KEY=test-secret-key" in rendered
-        assert "AWS_SESSION_TOKEN=test-session-token" in rendered
-        assert "ACME_EMAIL=test@example.com" in rendered
-        assert "ACME_EMAIL=****.com" not in rendered
+        assert "aws.access_key_id=test-access-key" in rendered
+        assert "aws.secret_access_key=test-secret-key" in rendered
+        assert "aws.session_token=test-session-token" in rendered
+        assert "acme.email=test@example.com" in rendered
+        assert "acme.email=****.com" not in rendered
 
     def test_render_template_contains_required_and_optional_settings(self) -> None:
         """render_template should list required and optional variables deterministically."""
         template = Settings.render_template()
 
-        assert "# prodbox environment template" in template
-        assert "AWS_ACCESS_KEY_ID=" in template
-        assert "AWS_SECRET_ACCESS_KEY=" in template
-        assert "AWS_SESSION_TOKEN=" in template
-        assert "ROUTE53_ZONE_ID=" in template
-        assert "AWS_REGION=us-east-1" in template
-        assert "BOOTSTRAP_PUBLIC_IP_OVERRIDE=" in template
-        assert "PULUMI_ENABLE_DNS_BOOTSTRAP=true" in template
+        assert "# prodbox configuration template" in template
+        assert "aws.access_key_id=" in template
+        assert "aws.secret_access_key=" in template
+        assert "aws.session_token=" in template
+        assert "route53.zone_id=" in template
+        assert "aws.region=us-east-1" in template
+        assert "deployment.bootstrap_public_ip_override=" in template
+        assert "deployment.pulumi_enable_dns_bootstrap=true" in template
 
 
 class TestLanDiscoveryHelpers:

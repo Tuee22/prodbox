@@ -35,16 +35,25 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from prodbox.cli.types import Failure, Result, Success
-from prodbox.settings import render_settings_template
 
 # =============================================================================
-# Environment / Settings Commands
+# Config Commands
 # =============================================================================
 
 
 @dataclass(frozen=True)
-class EnvShowCommand:
-    """Show current environment configuration.
+class ConfigInitCommand:
+    """Bootstrap Dhall config from existing .env and system state."""
+
+
+@dataclass(frozen=True)
+class ConfigCompileCommand:
+    """Compile prodbox-config.dhall to prodbox-config.json via dhall-to-json."""
+
+
+@dataclass(frozen=True)
+class ConfigShowCommand:
+    """Show configuration from compiled JSON.
 
     Attributes:
         show_secrets: Whether to show secret values (default: masked)
@@ -54,15 +63,8 @@ class EnvShowCommand:
 
 
 @dataclass(frozen=True)
-class EnvValidateCommand:
-    """Validate environment configuration is complete."""
-
-
-@dataclass(frozen=True)
-class EnvTemplateCommand:
-    """Generate environment template content for stdout."""
-
-    template_text: str = render_settings_template()
+class ConfigValidateCommand:
+    """Validate compiled JSON configuration."""
 
 
 # =============================================================================
@@ -366,10 +368,11 @@ class ChartDeleteCommand:
 # =============================================================================
 
 Command = (
-    # Environment
-    EnvShowCommand
-    | EnvValidateCommand
-    | EnvTemplateCommand
+    # Config
+    ConfigInitCommand
+    | ConfigCompileCommand
+    | ConfigShowCommand
+    | ConfigValidateCommand
     # Host
     | HostInfoCommand
     | HostCheckPortsCommand
@@ -414,37 +417,24 @@ Command = (
 # =============================================================================
 
 
-def env_show_command(
-    *,
-    show_secrets: bool = False,
-) -> Result[EnvShowCommand, str]:
-    """Create an EnvShowCommand.
-
-    Args:
-        show_secrets: Whether to show secret values
-
-    Returns:
-        Success with EnvShowCommand
-    """
-    return Success(EnvShowCommand(show_secrets=show_secrets))
+def config_init_command() -> Result[ConfigInitCommand, str]:
+    """Create a ConfigInitCommand."""
+    return Success(ConfigInitCommand())
 
 
-def env_validate_command() -> Result[EnvValidateCommand, str]:
-    """Create an EnvValidateCommand.
-
-    Returns:
-        Success with EnvValidateCommand
-    """
-    return Success(EnvValidateCommand())
+def config_compile_command() -> Result[ConfigCompileCommand, str]:
+    """Create a ConfigCompileCommand."""
+    return Success(ConfigCompileCommand())
 
 
-def env_template_command() -> Result[EnvTemplateCommand, str]:
-    """Create an EnvTemplateCommand.
+def config_show_command(*, show_secrets: bool = False) -> Result[ConfigShowCommand, str]:
+    """Create a ConfigShowCommand."""
+    return Success(ConfigShowCommand(show_secrets=show_secrets))
 
-    Returns:
-        Success with EnvTemplateCommand
-    """
-    return Success(EnvTemplateCommand(template_text=render_settings_template()))
+
+def config_validate_command() -> Result[ConfigValidateCommand, str]:
+    """Create a ConfigValidateCommand."""
+    return Success(ConfigValidateCommand())
 
 
 def host_info_command() -> Result[HostInfoCommand, str]:
@@ -944,8 +934,13 @@ def requires_linux(command: Command) -> bool:
             return True
         case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2CleanupCommand() | RKE2LogsCommand():
             return True
-        # Environment commands - cross-platform
-        case EnvShowCommand() | EnvValidateCommand() | EnvTemplateCommand():
+        # Config commands - cross-platform
+        case (
+            ConfigInitCommand()
+            | ConfigCompileCommand()
+            | ConfigShowCommand()
+            | ConfigValidateCommand()
+        ):
             return False
         # Host commands - cross-platform (will fail gracefully on non-Linux)
         case (
@@ -1004,10 +999,10 @@ def requires_settings(command: Command) -> bool:
             return True
         case PulumiRefreshCommand() | PulumiStackInitCommand():
             return True
-        # Environment commands - env validate/show inspect settings, template doesn't
-        case EnvShowCommand() | EnvValidateCommand():
+        # Config commands - show/validate need settings, init/compile do not
+        case ConfigShowCommand() | ConfigValidateCommand():
             return True
-        case EnvTemplateCommand():
+        case ConfigInitCommand() | ConfigCompileCommand():
             return False
         # Host commands don't require settings
         case (
@@ -1046,10 +1041,11 @@ def requires_settings(command: Command) -> bool:
 __all__ = [
     # Command types
     "Command",
-    # Environment
-    "EnvShowCommand",
-    "EnvValidateCommand",
-    "EnvTemplateCommand",
+    # Config
+    "ConfigInitCommand",
+    "ConfigCompileCommand",
+    "ConfigShowCommand",
+    "ConfigValidateCommand",
     # Host
     "HostInfoCommand",
     "HostCheckPortsCommand",
@@ -1087,9 +1083,10 @@ __all__ = [
     "ChartDeployCommand",
     "ChartDeleteCommand",
     # Smart constructors
-    "env_show_command",
-    "env_validate_command",
-    "env_template_command",
+    "config_init_command",
+    "config_compile_command",
+    "config_show_command",
+    "config_validate_command",
     "host_info_command",
     "host_check_ports_command",
     "host_ensure_tools_command",

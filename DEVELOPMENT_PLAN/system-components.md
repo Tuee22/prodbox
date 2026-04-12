@@ -29,7 +29,7 @@
 
 | Surface | Command | Purpose |
 |---------|---------|---------|
-| Config management | `prodbox config init|compile|show|validate` | Bootstrap, compile, display, and validate the Dhall-sourced configuration |
+| Config management | `prodbox config init|compile|show|validate` | Bootstrap, compile, auto-refresh when needed, display, and validate the Dhall-sourced configuration |
 | Host prerequisite flow | `prodbox host ensure-tools` | Verify required local tools |
 | Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, certificate, and missing-edge state for the supported public host |
 | RKE2 lifecycle | `prodbox rke2 ensure|status|cleanup --yes` | Provision, inspect, and clean the RKE2 substrate plus Harbor and retained-storage runtime |
@@ -62,7 +62,7 @@
 
 | State Class | Authority | Durable Home | Notes |
 |-------------|-----------|--------------|-------|
-| Repository configuration | Repository root | `prodbox-config.dhall` | Dhall config compiled to `prodbox-config.json` by `prodbox config compile`; cluster-internal secrets auto-generated in `.data/`; IP addressing auto-discovered; kubeconfig uses default `~/.kube/config`; subprocess environments built from config only |
+| Repository configuration | Repository root | `prodbox-config.dhall` | Dhall config is the single source of truth; `prodbox config compile` is the explicit compile surface, and canonical settings loads auto-compile `prodbox-config.json` idempotently when the compiled artifact is missing or stale; cluster-internal secrets auto-generated in `.data/`; IP addressing auto-discovered; kubeconfig uses default `~/.kube/config`; subprocess environments built from config only |
 | CLI and doctrine source | Repository worktree | `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Code and docs are version-controlled |
 | Retained chart storage | Host filesystem | `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | 5-segment path adopted by Sprint 4.5; rebinds deterministically after cleanup |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |

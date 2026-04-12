@@ -36,7 +36,7 @@ def cli(verbose: bool) -> None:
     with declarative, idempotent commands.
 
     \b
-    Configuration is loaded from prodbox-config.json (compiled from Dhall).
+    Configuration is loaded from prodbox-config.json and auto-compiled from Dhall when needed.
     See 'prodbox config show' for current configuration.
     """
     # Configure logging based on verbosity

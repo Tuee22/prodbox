@@ -11,6 +11,7 @@ import ipaddress
 import json
 import socket
 import struct
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
@@ -30,6 +31,9 @@ _IFREQ_SIZE: int = 256
 _IFREQ_NAME_BYTES: int = 15
 _SIOCGIFADDR: int = 0x8915
 _SIOCGIFNETMASK: int = 0x891B
+_REPO_DHALL_CONFIG_NAME: str = "prodbox-config.dhall"
+_REPO_DHALL_SCHEMA_NAME: str = "prodbox-config-types.dhall"
+_REPO_JSON_CONFIG_NAME: str = "prodbox-config.json"
 
 
 @dataclass(frozen=True)
@@ -139,6 +143,76 @@ def _discover_lan_addressing_or_none() -> LanAddressing | None:
         return None
     except ValueError:
         return None
+
+
+def _canonical_repo_config_paths() -> tuple[Path, Path, Path]:
+    """Return canonical repository-root Dhall, schema, and JSON config paths."""
+    return (
+        REPOSITORY_ROOT / _REPO_DHALL_CONFIG_NAME,
+        REPOSITORY_ROOT / _REPO_DHALL_SCHEMA_NAME,
+        REPOSITORY_ROOT / _REPO_JSON_CONFIG_NAME,
+    )
+
+
+def _normalized_path(path: Path) -> Path:
+    """Resolve a path for stable repository-root equality checks."""
+    return path.expanduser().resolve(strict=False)
+
+
+def _is_canonical_repo_config_json(path: Path) -> bool:
+    """Return whether *path* is the canonical repository-root JSON config."""
+    _, _, canonical_json = _canonical_repo_config_paths()
+    return _normalized_path(path) == _normalized_path(canonical_json)
+
+
+def _canonical_compile_input_paths() -> tuple[Path, ...]:
+    """Return existing Dhall inputs that define the canonical repository config."""
+    dhall_path, schema_path, _ = _canonical_repo_config_paths()
+    if not dhall_path.exists():
+        return ()
+    if schema_path.exists():
+        return (dhall_path, schema_path)
+    return (dhall_path,)
+
+
+def _compile_repo_config_json(*, dhall_path: Path, json_path: Path) -> None:
+    """Compile the canonical Dhall config to JSON in the repository root."""
+    try:
+        output = subprocess.run(
+            ("dhall-to-json",),
+            input=dhall_path.read_bytes(),
+            capture_output=True,
+            check=False,
+            cwd=dhall_path.parent,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("dhall-to-json is required to compile prodbox-config.dhall") from exc
+
+    if output.returncode != 0:
+        stderr = output.stderr.decode("utf-8", errors="replace").strip()
+        detail = stderr if stderr != "" else "dhall-to-json exited without stderr"
+        raise ValueError(f"dhall-to-json failed while compiling {dhall_path.name}: {detail}")
+
+    json_path.write_bytes(output.stdout)
+
+
+def _ensure_repo_config_json_current(path: Path) -> None:
+    """Compile the canonical JSON config when the repository Dhall inputs changed."""
+    if not _is_canonical_repo_config_json(path):
+        return
+
+    compile_inputs = _canonical_compile_input_paths()
+    if compile_inputs == ():
+        return
+
+    json_missing = not path.exists()
+    json_mtime_ns = -1 if json_missing else path.stat().st_mtime_ns
+    latest_input_mtime_ns = max(input_path.stat().st_mtime_ns for input_path in compile_inputs)
+    if not json_missing and latest_input_mtime_ns <= json_mtime_ns:
+        return
+
+    dhall_path, _, json_path = _canonical_repo_config_paths()
+    _compile_repo_config_json(dhall_path=dhall_path, json_path=json_path)
 
 
 def _is_zerossl_acme_server(server: str) -> bool:
@@ -347,7 +421,7 @@ class Settings(BaseModel):
 
     @classmethod
     def from_config_json(cls, path: Path | None = None) -> Settings:
-        """Construct Settings from Dhall-compiled JSON."""
+        """Construct Settings from canonical JSON, auto-compiling Dhall when needed."""
         resolved = path or (REPOSITORY_ROOT / "prodbox-config.json")
         config = load_config_json(resolved)
         flat = _flatten_config_json(config)
@@ -552,6 +626,7 @@ def render_settings_template() -> str:
 
 def load_config_json(path: Path) -> dict[str, object]:
     """Load and parse ``prodbox-config.json`` into a typed mapping."""
+    _ensure_repo_config_json_current(path)
     raw = path.read_text(encoding="utf-8")
     parsed: object = json.loads(raw)
     match parsed:

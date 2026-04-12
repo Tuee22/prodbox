@@ -58,10 +58,11 @@ def compile_config() -> None:
     help="Show full secret values (use with caution)",
 )
 def show(show_secrets: bool) -> None:
-    """Display current configuration from compiled JSON.
+    """Display current configuration from the canonical Dhall-backed config.
 
-    Shows all settings loaded from prodbox-config.json
-    with sensitive values masked by default.
+    Auto-compiles ``prodbox-config.dhall`` to ``prodbox-config.json`` when the
+    compiled artifact is missing or stale, then shows effective settings with
+    sensitive values masked by default.
     """
     match config_show_command(show_secrets=show_secrets):
         case Success(cmd):
@@ -72,10 +73,11 @@ def show(show_secrets: bool) -> None:
 
 @config.command()
 def validate() -> None:
-    """Validate compiled JSON configuration.
+    """Validate the canonical Dhall-backed configuration.
 
-    Checks that prodbox-config.json is present and contains
-    valid configuration according to the schema.
+    Auto-compiles ``prodbox-config.dhall`` to ``prodbox-config.json`` when the
+    compiled artifact is missing or stale, then validates the effective
+    configuration against the schema.
     """
     match config_validate_command():
         case Success(cmd):

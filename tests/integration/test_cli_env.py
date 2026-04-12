@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,36 @@ from click.testing import CliRunner
 
 import prodbox.settings as settings_module
 from prodbox.cli.main import cli
+
+
+def _compiled_config_json_bytes() -> bytes:
+    """Return one valid compiled-config payload for CLI auto-compile tests."""
+    config: dict[str, object] = {
+        "aws": {
+            "access_key_id": "test-access-key",
+            "secret_access_key": "test-secret-key",
+            "session_token": "test-session-token",
+            "region": "us-east-1",
+        },
+        "route53": {"zone_id": "Z1234567890ABC"},
+        "domain": {
+            "demo_fqdn": "test.example.com",
+            "demo_ttl": 60,
+            "vscode_fqdn": None,
+        },
+        "acme": {
+            "email": "test@example.com",
+            "server": "https://acme-staging-v02.api.letsencrypt.org/directory",
+            "eab_key_id": None,
+            "eab_hmac_key": None,
+        },
+        "deployment": {
+            "dev_mode": True,
+            "bootstrap_public_ip_override": None,
+            "pulumi_enable_dns_bootstrap": True,
+        },
+    }
+    return json.dumps(config, indent=2).encode("utf-8")
 
 
 class TestConfigShow:
@@ -68,6 +100,34 @@ class TestConfigShow:
 
         assert result.exit_code == 1
 
+    def test_auto_compiles_dhall_when_repo_json_is_missing(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """config show should auto-compile the canonical Dhall config when needed."""
+        monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prodbox-config.dhall").write_text("{ dhall = True }\n", encoding="utf-8")
+        compile_result = subprocess.CompletedProcess(
+            args=("dhall-to-json",),
+            returncode=0,
+            stdout=_compiled_config_json_bytes(),
+            stderr=b"",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("prodbox.settings.subprocess.run", return_value=compile_result) as compile_mock,
+        ):
+            result = cli_runner.invoke(cli, ["config", "show"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert "route53.zone_id=Z1234567890ABC" in result.output
+        assert (tmp_path / "prodbox-config.json").exists()
+        compile_mock.assert_called_once()
+
 
 class TestConfigValidate:
     """Tests for 'prodbox config validate' command."""
@@ -96,3 +156,30 @@ class TestConfigValidate:
             result = cli_runner.invoke(cli, ["config", "validate"])
 
         assert result.exit_code == 1
+
+    def test_validate_auto_compiles_dhall_when_repo_json_is_missing(
+        self,
+        cli_runner: CliRunner,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """config validate should auto-compile the canonical Dhall config when needed."""
+        monkeypatch.setattr(settings_module, "REPOSITORY_ROOT", tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prodbox-config.dhall").write_text("{ dhall = True }\n", encoding="utf-8")
+        compile_result = subprocess.CompletedProcess(
+            args=("dhall-to-json",),
+            returncode=0,
+            stdout=_compiled_config_json_bytes(),
+            stderr=b"",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("prodbox.settings.subprocess.run", return_value=compile_result) as compile_mock,
+        ):
+            result = cli_runner.invoke(cli, ["config", "validate"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        assert (tmp_path / "prodbox-config.json").exists()
+        compile_mock.assert_called_once()

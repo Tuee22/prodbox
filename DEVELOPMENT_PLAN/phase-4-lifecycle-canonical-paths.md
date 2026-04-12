@@ -90,7 +90,8 @@ canonical automated validation path.
 - The CLI/DDNS Route 53 update and timer path are gone.
 - The interpreter and summary layer now use one canonical structured DAG outcome model.
 - Pulumi subprocess handling now injects `PRODBOX_ALLOW_NON_ENTRYPOINT=1`.
-- `Settings()` loads from `prodbox-config.json` compiled from Dhall.
+- `Settings()` loads from `prodbox-config.json` and auto-compiles the repository Dhall config
+  when the compiled artifact is missing or stale.
 - The certificate issuance path is canonicalized to `letsencrypt-http01`.
 - Hook-oriented `pre-commit` dependency and config residue are gone.
 - The repository-side legacy cleanup ledger is now empty.
@@ -466,8 +467,9 @@ None.
 
 ### Objective
 
-Establish Dhall as the single configuration source with a compile-to-JSON pipeline and a
-one-time bootstrap command that populates the Dhall config from the current system state.
+Establish Dhall as the single configuration source with a compile-to-JSON pipeline, a
+one-time bootstrap command that populates the Dhall config from the current system state, and an
+idempotent on-demand recompile path for commands that load canonical settings.
 
 ### Architecture
 
@@ -501,8 +503,10 @@ prodbox-config.json          -- gitignored compiled output (read by Python)
 3. Call `discover_lan_addressing()` for informational display (not stored).
 4. Write `prodbox-config.dhall` importing `./prodbox-config-types.dhall`.
 5. Run `dhall-to-json < prodbox-config.dhall > prodbox-config.json`.
-6. Validate by loading `Settings.from_config_json()`.
-7. This is the last time `.env` or host system values are used.
+6. Commands that load canonical settings also auto-compile the repository-root Dhall config when
+   `prodbox-config.json` is missing or older than the Dhall source/schema.
+7. Validate by loading `Settings.from_config_json()`.
+8. This is the last time `.env` or host system values are used.
 
 ### Deliverables
 
@@ -514,7 +518,9 @@ prodbox-config.json          -- gitignored compiled output (read by Python)
 - `dhall` and `dhall-to-json` added to `ValidateEnvironment` tool check list in prerequisite
   registry.
 - New `load_config_json(path: Path) -> dict[str, object]` function in `settings.py`.
-- New `Settings.from_config_json()` class method that maps nested JSON to flat Settings fields.
+- New `Settings.from_config_json()` class method that maps nested JSON to flat Settings fields
+  and auto-compiles the canonical repository Dhall config when the JSON artifact is missing or
+  stale.
 
 ### Validation
 
@@ -522,7 +528,8 @@ prodbox-config.json          -- gitignored compiled output (read by Python)
 2. `poetry run prodbox test unit`
 3. `poetry run prodbox config init` (generates valid Dhall from `.env`)
 4. `poetry run prodbox config compile` (compiles Dhall to JSON)
-5. `poetry run prodbox config validate` (validates compiled JSON)
+5. `poetry run prodbox config show` (must succeed even when the repository-root JSON artifact is regenerated from Dhall)
+6. `poetry run prodbox config validate` (validates effective config after compile/refresh)
 
 ### Remaining Work
 
@@ -532,6 +539,9 @@ None.
 
 - `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
   (953 unit tests).
+- Sprint 6.2 follow-up on April 12, 2026 extended the canonical config path so repo-root settings
+  loads auto-compile missing or stale `prodbox-config.json` artifacts from Dhall before command
+  execution continues.
 
 ## Sprint 4.8: Settings Migration and AWS Auth Removal ✅
 

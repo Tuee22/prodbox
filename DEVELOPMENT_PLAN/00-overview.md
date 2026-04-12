@@ -13,8 +13,9 @@
 Build a clean-room prodbox repository with:
 
 1. One explicit `prodbox` CLI surface.
-2. One repository-root `prodbox-config.dhall` compiled to `prodbox-config.json` for all
-   configuration; cluster-internal secrets are auto-generated at chart deploy time; no `.env`
+2. One repository-root `prodbox-config.dhall` auto-compiled idempotently to
+   `prodbox-config.json` whenever supported commands load settings and the compiled artifact is
+   missing or stale; cluster-internal secrets are auto-generated at chart deploy time; no `.env`
    file.
 3. One distributed gateway runtime that lives entirely inside the RKE2 cluster as a Kubernetes
    workload, with leader election, partition tolerance, and Route 53 write ownership.
@@ -49,7 +50,7 @@ Build a clean-room prodbox repository with:
 | Surface | Canonical Path | Authority |
 |---------|----------------|-----------|
 | CLI control plane | `poetry run prodbox <command>` | Repository worktree |
-| AWS auth/config | Repository-root `prodbox-config.dhall` compiled to `prodbox-config.json`, read by `Settings()` | Repository root |
+| AWS auth/config | Repository-root `prodbox-config.dhall`, auto-compiled idempotently to `prodbox-config.json` by canonical settings loads and read by `Settings()` | Repository root |
 | RKE2 lifecycle | `prodbox rke2 ensure`, `status`, `cleanup --yes` | `prodbox` CLI for substrate plus Harbor and retained-storage runtime |
 | Pulumi infrastructure | `prodbox pulumi ...` | `src/prodbox/infra/` plus Route 53 for MetalLB, Traefik, cert-manager, and issuer/bootstrap ownership |
 | Gateway startup | `prodbox gateway start` (in-pod entrypoint) | `src/prodbox/gateway_daemon.py` deployed via `prodbox charts` |
@@ -134,8 +135,9 @@ Completed and present in the repository:
   names (`metallb`, `traefik`, `cert-manager`) so cluster-scoped objects can be reattached
   cleanly after clean-room teardown/recreate cycles.
 - `prodbox-config-types.dhall` exists as the version-controlled Dhall schema;
-  `prodbox config init|compile|show|validate` commands exist; `Settings` loads from
-  `prodbox-config.json` via `from_config_json()`.
+  `prodbox config init|compile|show|validate` commands exist; `Settings.from_config_json()` now
+  auto-compiles the canonical repository Dhall config when `prodbox-config.json` is missing or
+  stale.
 - `pydantic-settings` dependency removed; `Settings` uses `BaseModel` from plain `pydantic`.
 - `aws_auth.py` module deleted; all AWS credential access flows through `Settings`.
 - `prodbox env` command group removed; replaced by `prodbox config`.
@@ -161,47 +163,57 @@ Additional canonical state established by Phase 4 cleanup work:
 
 Open, incomplete, or blocked:
 
-- Sprint 6.2 is active because the current aggregate-suite rerun is not clean-room safe from
-  `poetry run prodbox rke2 cleanup --yes`.
-- `poetry run prodbox test all` currently fails before pytest suite execution because the
-  Phase 1.5 public-edge gate runs while the Pulumi-managed edge stack is absent.
-- The current cluster lacks `metallb-system`, `traefik-system`, and `cert-manager`, but still
-  retains cluster-scoped Traefik residue such as the `traefik` `IngressClass` and Traefik CRDs,
-  so teardown and recreate are not yet deterministic.
-- `/etc/hosts` on `bathurst` overrides `vscode.resolvefintech.com` to `192.168.2.240`, which is
-  incompatible with authoritative external public-host proof.
-- Final handoff still lacks a post-aggregate zero-AWS-residue proof tied to the clean-cluster
-  rerun itself.
+- Sprint 6.2 remains active because final handoff still needs one fresh aggregate rerun from a
+  repository state without a precompiled `prodbox-config.json`.
+- The clean-cluster public-edge/bootstrap path itself is now closed: a full
+  `poetry run prodbox rke2 cleanup --yes` -> `poetry run prodbox test all` run succeeded on
+  April 12, 2026 and ended with zero fixture-owned AWS resources remaining.
+- A second rerun at 17:31 on April 12, 2026 showed the remaining repo-state gap: the supported
+  restore path still assumed `prodbox-config.json` already existed after `prodbox-config.dhall`
+  changed or the compiled artifact was absent.
+- `Settings.from_config_json()` now auto-compiles the canonical Dhall config whenever the
+  repository-root JSON artifact is missing or stale, so supported commands no longer depend on a
+  manually prepared compiled config file.
+- Final handoff still needs one revalidation pass that combines both clean states at once: a clean
+  RKE2 cluster and no precompiled repository-root JSON config.
 
 ## Current-Environment Validation Snapshot
 
-- `poetry run prodbox test all` failed on April 12, 2026 in Phase 1.5 immediately after
-  `prodbox rke2 ensure`; the surfaced failure was `public-edge diagnostic failed`.
-- `poetry run prodbox config compile` and `poetry run prodbox config validate` both passed on
-  April 12, 2026.
-- `poetry run prodbox host public-edge` failed on April 12, 2026 because the cluster currently
-  does not expose the `certificate` resource type required for `certificate/vscode-tls`.
-- `kubectl get ns` on April 12, 2026 showed `metallb-system`, `traefik-system`, and
-  `cert-manager` absent.
-- `helm list -A` on April 12, 2026 showed no `metallb`, `traefik`, or `cert-manager` releases.
-- `kubectl get ingressclass traefik -o yaml` and `kubectl get crd` still showed Traefik
-  cluster-scoped residue on April 12, 2026.
-- Public resolvers return `142.115.123.42` for `vscode.resolvefintech.com`, but `/etc/hosts` on
-  `bathurst` overrides the hostname to `192.168.2.240`.
-- The last known AWS janitor audit on April 12, 2026 found no current fixture-owned Route 53, S3,
-  VPC, EKS, or IAM resources in account `751103452346`, but this proof has not yet been rerun
-  immediately after a successful clean-cluster aggregate suite.
+- `poetry run prodbox rke2 cleanup --yes` followed by `poetry run prodbox test all` completed
+  successfully on April 12, 2026; the aggregate postflight restored the supported runtime,
+  `prodbox host public-edge` ended at `CLASSIFICATION=ready-for-external-proof`, and the final
+  `poetry run prodbox aws sweep-fixtures` audit reported no fixture-owned Route 53, S3, VPC, EKS,
+  or IAM resources remaining.
+- A second `poetry run prodbox test all` invocation at 17:31 on April 12, 2026 failed in
+  `Phase 1.6/2: restoring supported runtime` with `[Errno 2] No such file or directory:
+  '/home/matthewnowak/prodbox/prodbox-config.json'`.
+- The missing-file failure came from the canonical settings load path still assuming a precompiled
+  repository-root JSON artifact even though `prodbox-config.dhall` remained present.
+- `src/prodbox/settings.py` now auto-compiles the canonical repository Dhall config when the JSON
+  artifact is missing or stale, and CLI-level coverage for that behavior now lives in
+  `tests/integration/test_cli_env.py`.
+- `poetry run prodbox config show` and `poetry run prodbox config validate` both passed on
+  April 12, 2026 after the repository-root `prodbox-config.json` artifact was removed; each
+  command regenerated the JSON artifact automatically from `prodbox-config.dhall`.
+- `poetry run prodbox pulumi refresh` also passed on April 12, 2026 after the repository-root
+  `prodbox-config.json` artifact was removed, proving that the Phase 1.6 restore-class command
+  surface no longer depends on a manually prepared compiled config.
+- `poetry run prodbox check-code` passed on April 12, 2026 after the command and plan updates.
+- Final Phase 6 closure still requires one new end-to-end rerun from a state with no precompiled
+  `prodbox-config.json` so the aggregate proof covers both clean cluster state and clean repo
+  config state.
 
 ## Hard Constraints
 
 - The only supported public CLI is `prodbox`.
-- The repository-root `prodbox-config.dhall` is the single configuration source. It is compiled
-  to `prodbox-config.json` by `prodbox config compile` and read by `Settings()`. Both files are
-  gitignored. Cluster-internal secrets are auto-generated at chart deploy time and persisted in
-  `.data/`; they do not appear in the config file. IP addressing (MetalLB pool, ingress LB IP)
-  is always auto-discovered from the host LAN. `KUBECONFIG` always uses the default
-  `~/.kube/config`. Subprocess environments are constructed explicitly from configuration; no
-  credentials are inherited from `os.environ`.
+- The repository-root `prodbox-config.dhall` is the single configuration source.
+  `prodbox config compile` remains the explicit compile surface, and canonical settings loads also
+  auto-compile `prodbox-config.json` idempotently when the repository-root JSON artifact is
+  missing or stale. Both config artifacts are gitignored. Cluster-internal secrets are
+  auto-generated at chart deploy time and persisted in `.data/`; they do not appear in the config
+  file. IP addressing (MetalLB pool, ingress LB IP) is always auto-discovered from the host LAN.
+  `KUBECONFIG` always uses the default `~/.kube/config`. Subprocess environments are constructed
+  explicitly from configuration; no credentials are inherited from `os.environ`.
 - No prodbox daemon runs on the host. The only supported steady-state location for the gateway
   daemon is inside the RKE2 cluster as a Kubernetes workload managed by `prodbox charts`.
 - The only supported gateway startup path is `prodbox gateway start`, invoked as the entrypoint

@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,8 +28,8 @@ from prodbox.settings import (
 )
 
 
-def _write_config_json(path: Path, overrides: dict[str, object] | None = None) -> None:
-    """Write a valid ``prodbox-config.json`` into the given directory."""
+def _config_json_mapping(overrides: dict[str, object] | None = None) -> dict[str, object]:
+    """Return one valid ``prodbox-config.json`` mapping with optional shallow overrides."""
     config: dict[str, object] = {
         "aws": {
             "access_key_id": "test-access-key",
@@ -59,8 +60,18 @@ def _write_config_json(path: Path, overrides: dict[str, object] | None = None) -
             config.update(ovr)
         case None:
             pass
+    return config
+
+
+def _compiled_config_json_bytes(overrides: dict[str, object] | None = None) -> bytes:
+    """Return deterministic compiled-config bytes for subprocess compile tests."""
+    return json.dumps(_config_json_mapping(overrides), indent=2).encode("utf-8")
+
+
+def _write_config_json(path: Path, overrides: dict[str, object] | None = None) -> None:
+    """Write a valid ``prodbox-config.json`` into the given directory."""
     (path / "prodbox-config.json").write_text(
-        json.dumps(config, indent=2),
+        json.dumps(_config_json_mapping(overrides), indent=2),
         encoding="utf-8",
     )
 
@@ -331,6 +342,91 @@ class TestFromConfigJson:
         assert flat["acme_eab_hmac_key"] == "hmac-456"
         assert flat["prodbox_dev_mode"] is False
         assert flat["bootstrap_public_ip_override"] == "1.2.3.4"
+
+    def test_from_config_json_auto_compiles_missing_repo_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Canonical config loads should compile Dhall when JSON is missing."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "prodbox-config.dhall").write_text("{ dhall = True }\n", encoding="utf-8")
+        compile_result = subprocess.CompletedProcess(
+            args=("dhall-to-json",),
+            returncode=0,
+            stdout=_compiled_config_json_bytes(),
+            stderr=b"",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "prodbox.settings._discover_lan_addressing_or_none", return_value=_lan_addressing()
+            ),
+            patch("prodbox.settings.subprocess.run", return_value=compile_result) as compile_mock,
+        ):
+            settings = Settings.from_config_json()
+
+        assert settings.route53_zone_id == "Z1234567890ABC"
+        assert (tmp_path / "prodbox-config.json").exists()
+        compile_mock.assert_called_once()
+
+    def test_from_config_json_recompiles_when_dhall_is_newer_than_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Canonical config loads should refresh stale compiled JSON automatically."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        _write_config_json(tmp_path, {"route53": {"zone_id": "ZOLD"}})
+        dhall_path = tmp_path / "prodbox-config.dhall"
+        dhall_path.write_text("{ dhall = True }\n", encoding="utf-8")
+        json_mtime_ns = (tmp_path / "prodbox-config.json").stat().st_mtime_ns
+        os.utime(dhall_path, ns=(json_mtime_ns + 1_000_000, json_mtime_ns + 1_000_000))
+        compile_result = subprocess.CompletedProcess(
+            args=("dhall-to-json",),
+            returncode=0,
+            stdout=_compiled_config_json_bytes({"route53": {"zone_id": "ZNEW"}}),
+            stderr=b"",
+        )
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "prodbox.settings._discover_lan_addressing_or_none", return_value=_lan_addressing()
+            ),
+            patch("prodbox.settings.subprocess.run", return_value=compile_result) as compile_mock,
+        ):
+            settings = Settings.from_config_json()
+
+        assert settings.route53_zone_id == "ZNEW"
+        compile_mock.assert_called_once()
+
+    def test_from_config_json_skips_compile_when_repo_json_is_current(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Canonical config loads should stay idempotent when JSON is already current."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        dhall_path = tmp_path / "prodbox-config.dhall"
+        dhall_path.write_text("{ dhall = True }\n", encoding="utf-8")
+        _write_config_json(tmp_path)
+
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "prodbox.settings._discover_lan_addressing_or_none", return_value=_lan_addressing()
+            ),
+            patch("prodbox.settings.subprocess.run") as compile_mock,
+        ):
+            settings = Settings.from_config_json()
+
+        assert settings.route53_zone_id == "Z1234567890ABC"
+        compile_mock.assert_not_called()
 
 
 class TestDisplayDict:

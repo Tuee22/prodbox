@@ -74,7 +74,8 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Legacy Handoff | 🔄 Active | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 
 **Canonical architecture**: one supported `prodbox` CLI surface, one repository-root Dhall
-config compiled to JSON, one in-cluster always-on gateway Route 53 write path through
+config auto-compiled idempotently to JSON when supported commands load settings, one
+in-cluster always-on gateway Route 53 write path through
 `dns_write_gate` managed by `prodbox charts` (no host-side daemons), explicit per-subdomain
 Route 53 records only, one coherent `MetalLB -> Traefik -> vscode-nginx` public-host stack, one
 cluster-backed `prodbox charts` delivery path for `vscode`, one named validation command per
@@ -107,45 +108,48 @@ service deployment path, explicit chart-owned replica counts that keep single-wr
 | 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/aws_cmd.py` |
 | 5.1 Public Hostname Closure and Authoritative External Proof | ✅ Done | - | - | `prodbox-config.dhall`, `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/infra/cluster_issuer.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
 | 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ✅ Done | - | - | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/metallb.py`, `tests/unit/test_infra_program.py`, `tests/unit/test_test_cmd.py` |
-| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | 🔄 Active | - | Clean-cluster aggregate rerun still fails before pytest because the public-edge gate runs before Pulumi-managed edge infrastructure is restored; cleanup also leaves stale public-edge resolver and cluster-scoped residue, and final handoff still lacks a post-aggregate zero-AWS proof | `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/rke2.py`, `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/test_prodbox_lifecycle.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py`, `tests/integration/aws_helpers.py`, `tests/integration/conftest.py` |
+| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | 🔄 Active | - | Final handoff still needs one fresh clean-room aggregate rerun from a repo state with no precompiled `prodbox-config.json`, now that canonical settings loads auto-compile Dhall idempotently when the compiled artifact is missing or stale | `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/unit/test_settings.py`, `tests/integration/test_cli_env.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/aws_helpers.py` |
 
 ## Current Plan Status
 
-As of April 12, 2026: **Phase 6 is active again.**
-The previous clean-room handoff claim is invalidated by the current live rerun findings on
-`bathurst`. `poetry run prodbox test all` now fails in Phase 1.5 after `prodbox rke2 ensure`
-because the aggregate-suite public-edge gate runs before MetalLB, Traefik, cert-manager, and the
-issuer path are restored from a clean cluster. Direct diagnosis shows
-`poetry run prodbox host public-edge` failing at `kubectl get certificate vscode-tls -n vscode`
-because the cluster no longer has cert-manager CRDs, while `metallb-system`, `traefik-system`,
-and `cert-manager` are absent and cluster-scoped Traefik residue still remains. Public DNS for
-`vscode.resolvefintech.com` resolves correctly through public resolvers, but `/etc/hosts` on the
-host still overrides that name to `192.168.2.240`, so the canonical public-host proof path is not
-yet clean-room safe. Sprint 6.2 now owns three closure targets: a single self-healing aggregate
-bootstrap path from `poetry run prodbox rke2 cleanup --yes`, deterministic removal of stale
-public-edge residue and unsupported host resolver overrides, and a final post-aggregate proof that
-no fixture-owned AWS Route 53, S3, VPC, EKS, or IAM resources remain.
+As of April 12, 2026: **Phase 6 remains active.**
+The clean-cluster public-edge/bootstrap blockers are closed, and a full
+`poetry run prodbox rke2 cleanup --yes` -> `poetry run prodbox test all` rerun already succeeded
+on April 12, 2026 with the post-aggregate AWS sweep reporting no fixture-owned Route 53, S3, VPC,
+EKS, or IAM resources. A second rerun at 17:31 on April 12, 2026 exposed one remaining clean-room
+handoff gap: supported commands still assumed a precompiled `prodbox-config.json` after
+`prodbox-config.dhall` changed or the compiled artifact was absent.
+
+Sprint 6.2 now owns that final repo-state closure requirement. The canonical settings load path in
+`Settings.from_config_json()` auto-compiles `prodbox-config.dhall` to `prodbox-config.json`
+whenever the repository-root JSON artifact is missing or older than the Dhall source/schema, so
+commands such as `prodbox config show`, `prodbox config validate`, `prodbox pulumi ...`, and the
+aggregate `prodbox test all` restore path no longer depend on a manually prepared compiled config.
+The remaining work is one fresh end-to-end clean-room rerun from a state where no
+`prodbox-config.json` exists before handoff is re-closed.
 
 Current-environment validation snapshot (April 12, 2026):
 
-- `poetry run prodbox test all` failed on April 12, 2026 after `Phase 1.5/2: enforcing integration runbook`;
-  root cause surfaced as `pytest_phase_two: Custom effect failed: public-edge diagnostic failed: DAG execution complete`.
-- `poetry run prodbox config compile` and `poetry run prodbox config validate` both succeeded on
-  April 12, 2026, so the current blocker is not missing compiled config.
-- `poetry run prodbox host public-edge` failed on April 12, 2026 because
-  `kubectl get certificate vscode-tls -n vscode -o json --ignore-not-found=true` returned
-  `error: the server doesn't have a resource type "certificate"`.
-- `kubectl get ns` on April 12, 2026 showed `metallb-system`, `traefik-system`, and
-  `cert-manager` absent, while `helm list -A` showed no `metallb`, `traefik`, or
-  `cert-manager` releases.
-- `kubectl get ingressclass traefik -o yaml` and `kubectl get crd` still show Traefik
-  cluster-scoped residue on April 12, 2026, so the current cleanup/recreate path is not
-  deterministic.
-- Public resolvers return `142.115.123.42` for `vscode.resolvefintech.com`, but `/etc/hosts` on
-  `bathurst` still maps that hostname to `192.168.2.240`.
-- The last known AWS janitor audit on April 12, 2026 found no fixture-owned Route 53, S3, VPC,
-  EKS, or IAM resources, but Phase 6 closure now requires rerunning that proof immediately after
-  the clean-cluster aggregate suite.
+- `poetry run prodbox rke2 cleanup --yes` followed by `poetry run prodbox test all` completed
+  successfully on April 12, 2026; the aggregate postflight restored the supported runtime,
+  `prodbox host public-edge` ended at `CLASSIFICATION=ready-for-external-proof`, and the final
+  `prodbox aws sweep-fixtures` run reported no fixture-owned AWS resources remaining.
+- A second `poetry run prodbox test all` run at 17:31 on April 12, 2026 failed in `Phase 1.6/2`
+  with `[Errno 2] No such file or directory: '/home/matthewnowak/prodbox/prodbox-config.json'`
+  after `prodbox-config.dhall` changed and the compiled JSON artifact was absent.
+- `src/prodbox/settings.py` now auto-compiles the canonical repository Dhall config whenever the
+  compiled JSON is missing or stale, and `tests/unit/test_settings.py` plus
+  `tests/integration/test_cli_env.py` now cover that command-surface behavior.
+- `poetry run prodbox config show` and `poetry run prodbox config validate` both passed on
+  April 12, 2026 after the repository-root `prodbox-config.json` artifact was removed; each
+  command regenerated the JSON artifact automatically from `prodbox-config.dhall`.
+- `poetry run prodbox pulumi refresh` also passed on April 12, 2026 after the repository-root
+  `prodbox-config.json` artifact was removed, proving that the Phase 1.6 restore-class command
+  surface no longer depends on a manually prepared compiled config.
+- `poetry run prodbox check-code` passed on April 12, 2026 after the command and plan updates.
+- The final Phase 6 closure gate remains one new aggregate rerun from a repository state without a
+  precompiled `prodbox-config.json`, so the handoff proof covers both a clean RKE2 cluster and a
+  clean repo config state.
 
 ## Exit Definition
 
@@ -166,8 +170,10 @@ This plan is done only when all of the following are true:
    path references outside completed-sprint history.
 6. Sprint 4.6 is closed with cluster-internal secrets auto-generated and persisted in `.data/`,
    IP addressing always auto-discovered, and `KUBECONFIG`/`PULUMI_STACK` removed from settings.
-7. Sprint 4.7 is closed with `prodbox-config.dhall` as the single config source, compiled to
-   JSON by `prodbox config compile`, and `prodbox config init` bootstrapping from system state.
+7. Sprint 4.7 is closed with `prodbox-config.dhall` as the single config source, explicit
+   `prodbox config compile` support, and canonical settings loads auto-compiling JSON when the
+   compiled artifact is missing or stale; `prodbox config init` still bootstraps from system
+   state.
 8. Sprint 4.8 is closed with `Settings` loading from JSON (not `.env`), `pydantic-settings`
    removed, `aws_auth.py` deleted, and all AWS credential access flowing through `Settings`.
 9. Sprint 4.9 is closed with subprocess environments built explicitly from configuration (no
@@ -189,10 +195,11 @@ This plan is done only when all of the following are true:
 15. Sprint 6.1 reruns the final doctrine-aligned validation set from canonical CLI entrypoints and
     keeps the legacy ledger empty at the point of handoff.
 16. Sprint 6.2 closes with `poetry run prodbox rke2 cleanup --yes` followed by the canonical
-    aggregate rerun restoring the full public-edge stack without manual Pulumi, Helm, or host
-    resolver intervention; `prodbox host public-edge` must render a deterministic report even when
-    the edge stack is absent or partially torn down, and the restored path must end at
-    `CLASSIFICATION=ready-for-external-proof`.
+    aggregate rerun restoring the full public-edge stack without manual Pulumi, Helm, host
+    resolver, or config-compilation intervention; `prodbox host public-edge` must render a
+    deterministic report even when the edge stack is absent or partially torn down, the rerun must
+    succeed without a preexisting repository-root `prodbox-config.json`, and the restored path must
+    end at `CLASSIFICATION=ready-for-external-proof`.
 17. Sprint 6.2 also closes with the authoritative public-host proof path using public DNS only
     (no `/etc/hosts` override for `vscode.resolvefintech.com`) and with an immediate
     post-aggregate `poetry run prodbox aws sweep-fixtures` audit proving that no fixture-owned

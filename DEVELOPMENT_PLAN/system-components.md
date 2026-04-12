@@ -50,6 +50,7 @@
 | CLI and env contract | `poetry run prodbox test integration cli`, `poetry run prodbox test integration env` |
 | AWS foundation | `poetry run prodbox test integration aws-foundation`, `poetry run prodbox test integration aws-eks` |
 | Route 53 and Pulumi | `poetry run prodbox test integration dns-aws`, `poetry run prodbox test integration pulumi` |
+| AWS fixture janitor | `poetry run prodbox aws sweep-fixtures` |
 | Gateway runtime | `poetry run prodbox test integration gateway-daemon`, `poetry run prodbox test integration gateway-pods`, `poetry run prodbox test integration gateway-partition` |
 | Chart platform | `poetry run prodbox test integration charts-storage`, `poetry run prodbox test integration charts-platform` |
 | Lifecycle cleanup | `poetry run prodbox test integration lifecycle` |
@@ -65,6 +66,7 @@
 | Retained chart storage | Host filesystem | `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | 5-segment path adopted by Sprint 4.5; rebinds deterministically after cleanup |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |
 | DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; the elected in-cluster gateway leader keeps their IPs current via `dns_write_gate` |
+| AWS integration fixture state | AWS test account | Ephemeral Route 53, S3, VPC, EKS, and IAM resources | Each AWS-mutating fixture begins with scope-owned preflight cleanup; session sweep, CLI janitor, and cron remain defense-in-depth |
 | Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer object is `letsencrypt-http01`; the ACME server URL is configured in `prodbox-config.dhall`, and the current live target is ZeroSSL DV90 |
 | Gateway runtime continuity | Kubernetes | Pod restart policy plus leader election and partition-tolerant quorum | Required to keep `dns_write_gate` active continuously across pod loss, node loss, and partition heals |
 | Pulumi state | Pulumi backend | Stack state selected by repo config | Used only through canonical entrypoints |

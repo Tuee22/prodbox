@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+**Referenced by**: [README.md](README.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), [../documents/documentation_standards.md](../documents/documentation_standards.md)
 
 > **Purpose**: Define the maintenance rules for the prodbox development plan so the repository
 > keeps one coherent, execution-ordered plan and one explicit ledger of cleanup/removal work.

@@ -264,6 +264,19 @@ class TestBuildChartDeploymentPlan:
         plan = result.value
         assert plan.public_fqdn == "vscode.example.com"
 
+    def test_vscode_stack_replica_counts_match_supported_chart_roles(self) -> None:
+        result = build_chart_deployment_plan(
+            "vscode", _MINIMAL_VSCODE_SETTINGS, _TEST_CHART_SECRETS
+        )
+        assert isinstance(result, Success)
+        plan = result.value
+        release_values = {
+            release.release_name: json.loads(release.values_json) for release in plan.releases
+        }
+        assert release_values["keycloak-postgres"]["replicaCount"] == 1
+        assert release_values["keycloak"]["replicaCount"] == 2
+        assert release_values["vscode"]["replicaCount"] == 1
+
     def test_missing_required_setting_returns_failure(self) -> None:
         settings_without_fqdn = {
             k: v for k, v in _MINIMAL_VSCODE_SETTINGS.items() if k != "vscode_fqdn"

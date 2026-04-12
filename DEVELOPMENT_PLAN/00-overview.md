@@ -26,7 +26,8 @@ Build a clean-room prodbox repository with:
    provisioner is permitted.
 9. All cluster services deployed via Helm; Pulumi orchestrates infrastructure Helm releases, the
    `prodbox charts` platform manages application Helm releases.
-10. All stateful services deployed in HA mode by default, with pod anti-affinity suppressed in dev
+10. Chart replica counts are explicit: single-writer retained-state services stay single-replica,
+    while clustered services may run multiple replicas with pod anti-affinity suppressed in dev
     mode.
 11. PVs pre-created explicitly before Helm install; PVCs created only by Helm charts deploying
     StatefulSets.
@@ -141,10 +142,11 @@ Completed and present in the repository:
 - All subprocess environment builders use explicit passthrough allowlists; no `os.environ`
   inheritance remains. The interpreter uses `_base_subprocess_env()`, `check_code.py` uses
   `_TOOL_PASSTHROUGH_VARS`, and `test_cmd.py` uses `_TEST_PASSTHROUGH_VARS`.
-- AWS fixture leak prevention is in place: a session-scoped autouse `sweep_expired_aws_fixtures`
-  fixture in `tests/integration/conftest.py` runs a pre-test janitor sweep at the start of every
-  integration test session; `prodbox aws sweep-fixtures` CLI command provides an out-of-band
-  entrypoint; an hourly cron entry supervises expired resource cleanup between test runs.
+- AWS fixture leak prevention is closed: each AWS-mutating fixture now begins with
+  scope-owned preflight cleanup via shared helpers; taggable Route 53, S3, VPC, subnet,
+  security-group, EKS, and IAM resources carry canonical ownership/expiry/safe-delete tags;
+  setup helpers roll back partial creation before fixture yield; and the session-scoped sweep,
+  `prodbox aws sweep-fixtures`, and hourly cron supervision remain defense-in-depth.
 
 Additional canonical state established by Phase 4 cleanup work:
 
@@ -153,23 +155,33 @@ Additional canonical state established by Phase 4 cleanup work:
   `prodbox-chart-null-storage`) have been consolidated.
 - The retained storage path scheme is the 5-segment
   `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
-- HA-mode deployment with pod anti-affinity is in effect; dev mode
-  (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity while retaining replica counts.
+- Replica counts now follow workload semantics: single-writer retained-state services stay
+  single-replica, while clustered services can run multiple replicas. Dev mode
+  (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity while retaining the configured counts.
 
 Open, incomplete, or blocked:
 
-- None. Sprint 5.1 is closed, Sprint 6.1 is closed, the clean-room validation rerun passes, and
-  the legacy ledger Pending Removal section remains empty.
+- None.
 
 ## Current-Environment Validation Snapshot
 
+- `poetry run prodbox aws sweep-fixtures` passed on April 12, 2026 and reported no
+  expired fixture resources.
 - `poetry run prodbox check-code` passed on April 12, 2026.
-- `poetry run prodbox test unit` passed on April 12, 2026 (961 tests).
+- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
+- `poetry run prodbox test integration aws-foundation` passed on April 12, 2026 (3 tests).
+- `poetry run prodbox test integration aws-eks` passed on April 12, 2026 (1 test).
+- `poetry run prodbox test integration dns-aws` passed on April 12, 2026 (2 tests).
+- `poetry run prodbox test integration pulumi` passed on April 12, 2026 (1 test).
 - `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
 - `poetry run prodbox test integration charts-vscode` passed on April 12, 2026 (8 tests).
 - `poetry run prodbox tla-check` passed on April 12, 2026.
 - `poetry run prodbox test integration all` passed on April 12, 2026.
-- `poetry run prodbox test all` completed cleanly in the final closure session on April 12, 2026.
+- `poetry run prodbox test all` completed cleanly on April 12, 2026 after postflight runtime
+  restore returned `prodbox host public-edge` to
+  `CLASSIFICATION=ready-for-external-proof`.
+- Live AWS inventory audit on April 12, 2026 found no current fixture-owned Route 53, S3, VPC,
+  EKS, or IAM resources in account `751103452346`.
 - Live cluster on `bathurst` has RKE2, MetalLB, Traefik, cert-manager, the
   `letsencrypt-http01` ClusterIssuer, the in-cluster gateway, and the `vscode` stack restored on
   the supported path.
@@ -216,6 +228,10 @@ Open, incomplete, or blocked:
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
 - The only supported validation paths are named `prodbox` commands; raw passthrough or alternate
   operator workflows are debt to remove, not supported surfaces.
+- Every AWS-mutating integration test must begin by searching for and deleting stale fixture-owned
+  resources for its declared scope before creating fresh AWS resources. All taggable fixture-owned
+  AWS resources must carry canonical ownership, expiry, and safe-to-delete tags, and setup
+  failure must roll back partial AWS creation before the fixture yields.
 - Documents under `documents/` are stable doctrine and reference only. They do not own sprint
   histories, blocker tracking, or completion state.
 - Compatibility shims, duplicate operator paths, competing ingress controllers, and transitional
@@ -229,8 +245,9 @@ Open, incomplete, or blocked:
 - All cluster services are deployed via Helm. Pulumi orchestrates infrastructure-layer Helm
   releases (MetalLB, Traefik, cert-manager). The `prodbox charts` platform manages
   application-layer Helm releases.
-- All stateful services must be deployed in HA mode (multiple replicas with pod anti-affinity);
-  dev mode suppresses anti-affinity but retains the multi-replica default.
+- Replica counts must follow chart storage semantics: single-writer retained-state services stay
+  single-replica, while clustered services may use multiple replicas with pod anti-affinity.
+  Dev mode suppresses anti-affinity but retains the configured replica counts.
 - The retained storage path scheme is
   `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`. Path naming must be stable across
   teardown/rebuild cycles so data survives cluster down and cluster up.

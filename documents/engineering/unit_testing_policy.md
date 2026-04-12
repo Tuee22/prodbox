@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the Interpreter-Only Mocking Doctrine for unit tests in prodbox.
 
@@ -59,7 +59,10 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 | Interpreter unit tests | **Mocked externals** | Interpreter methods with pytest-subprocess, mocked boto3 |
 | Integration tests | **None (real systems)** | Full pipeline with real kubectl, AWS, Pulumi |
 
-Stateful AWS-mutating integration tests must follow [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) instead of reusing existing AWS resources.
+Stateful AWS-mutating integration tests must follow
+[AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) instead of
+reusing existing AWS resources. That includes per-test scope-owned stale-resource preflight,
+canonical fixture tagging, setup rollback before yield, and shared janitor defense-in-depth.
 
 ### Integration Execution Policy (Fail-Fast)
 

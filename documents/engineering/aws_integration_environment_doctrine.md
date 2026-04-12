@@ -198,6 +198,10 @@ Minimum required tagging intent:
 
 If AWS creates untaggable child resources under a tagged parent resource, the fixture must delete the tagged parent and verify that the AWS-managed children disappear with it.
 
+All taggable fixture-owned Route 53, S3, VPC, subnet, security-group, EKS, and IAM resources
+must receive the canonical ownership/expiry/safe-delete tag set as soon as the create path
+allows.
+
 ---
 
 ## 5. Fixture Ownership And Cleanup
@@ -205,6 +209,9 @@ If AWS creates untaggable child resources under a tagged parent resource, the fi
 ### 5.1 Fixture Owns Setup
 
 The fixture, not the test body, creates the AWS environment.
+
+Before creating new resources, fixture setup must run scope-owned preflight cleanup for the same
+project/suite scope the fixture is about to allocate.
 
 ### 5.2 Fixture Owns Teardown
 
@@ -232,6 +239,9 @@ Required pytest idioms:
 1. Yield fixtures.
 2. Fixture-owned `try/finally`.
 3. Fixture-owned finalizers when yield fixtures are not appropriate.
+
+If setup fails before the fixture yields, the helper must roll back every resource it created in
+that attempt before surfacing the error.
 
 ### 5.4 Cleanup Failure Handling
 
@@ -327,11 +337,17 @@ This applies both to direct DNS tests and to Pulumi tests that need a Route 53 h
 
 For the shared-account foundation suite, the fixture contract is:
 
-1. Create a tagged parent hosted zone.
-2. Create tagged child hosted zones for each project scope and delegate them from the parent zone.
-3. Create tagged S3 buckets and tagged EC2/VPC resources for each project scope.
-4. Prove that an expired-scope janitor sweep deletes only the expired child zone, bucket, and VPC scope.
-5. Prove that unexpired scopes remain intact until their fixture teardown runs.
+1. Run scope-owned preflight cleanup for the same project/suite scope before creating new
+   resources.
+2. Create a tagged parent hosted zone.
+3. Create tagged child hosted zones for each project scope and delegate them from the parent
+   zone.
+4. Create tagged S3 buckets and tagged EC2/VPC resources for each project scope.
+5. Prove that scope-scoped preflight cleanup removes only the matching prior child zone, bucket,
+   and VPC scope.
+6. Prove that an expired-scope janitor sweep deletes only expired matching child zone, bucket,
+   and VPC scope.
+7. Prove that unexpired scopes remain intact until their fixture teardown runs.
 
 ---
 
@@ -344,7 +360,10 @@ For the EKS suite, the fixture contract is:
 3. Create a tagged EKS control plane that depends only on those fixture-owned resources.
 4. Wait for the control plane to become `ACTIVE`.
 5. Delete the control plane, then the IAM role, then the VPC resources in teardown.
-6. Treat AWS-managed service-linked roles as shared-account baseline state, not project-owned test resources.
+6. Janitor and preflight cleanup paths must be able to delete the cluster, role, and VPC
+   resources without rereading deleted cluster metadata.
+7. Treat AWS-managed service-linked roles as shared-account baseline state, not project-owned
+   test resources.
 
 ---
 
@@ -359,18 +378,22 @@ For the EKS suite, the fixture contract is:
 
 ## 11. Fixture Leak Prevention
 
-Three layers of defense prevent leaked ephemeral AWS resources from accumulating when
+Four layers of defense prevent leaked ephemeral AWS resources from accumulating when
 integration test processes crash before fixture teardown runs:
 
-1. **Pre-test sweep**: A session-scoped autouse fixture (`sweep_expired_aws_fixtures`) in
+1. **Per-test scope-owned preflight cleanup**: Each AWS-mutating fixture runs
+   `create_clean_fixture_scope(...)` or equivalent scope cleanup for the same project/suite
+   scope before creating new resources.
+2. **Session-scoped sweep**: A session-scoped autouse fixture (`sweep_expired_aws_fixtures`) in
    `tests/integration/conftest.py` runs `sweep_expired_fixture_resources()` at the start of
    every integration test session with best-effort error handling.
-
-2. **CLI janitor command**: `prodbox aws sweep-fixtures` provides an out-of-band entrypoint
+3. **CLI janitor command**: `prodbox aws sweep-fixtures` provides an out-of-band entrypoint
    to run the janitor sweep without running the test suite.
-
-3. **Cron supervision**: An hourly cron entry on the supported host runs the CLI janitor so
+4. **Cron supervision**: An hourly cron entry on the supported host runs the CLI janitor so
    expired resources are cleaned up even when the test suite is not run again.
+
+The session-scoped sweep is defense-in-depth only. It is not the canonical or only preflight for
+AWS-mutating fixtures.
 
 ---
 

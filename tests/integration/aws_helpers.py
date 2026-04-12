@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 import uuid
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -56,6 +56,14 @@ class AwsFixtureScope:
     account_id: str
     region: str
     expires_at: str
+
+
+@dataclass(frozen=True)
+class AwsFixtureScopeSelector:
+    """Normalized project/test-scope selector for fixture preflight cleanup."""
+
+    project_slug: str
+    test_scope: str
 
 
 @dataclass(frozen=True)
@@ -118,6 +126,9 @@ class JanitorSweepResult:
     deleted_vpcs: int
     deleted_eks_clusters: int
     deleted_iam_roles: int
+
+
+FixtureTagMatcher = Callable[[Mapping[str, str]], bool]
 
 
 def _required_env_var(name: str) -> str:
@@ -209,16 +220,15 @@ def create_fixture_scope(
     ttl_hours: int = DEFAULT_FIXTURE_TTL_HOURS,
 ) -> AwsFixtureScope:
     """Create one fixture ownership scope with deterministic tags."""
+    selector = fixture_scope_selector(project_slug=project_slug, test_scope=test_scope)
     account_id = require_aws_cli_identity()
     run_id = uuid.uuid4().hex[:10]
-    normalized_project = _normalize_name_fragment(project_slug, max_length=18)
-    normalized_scope = _normalize_name_fragment(test_scope, max_length=18)
-    scope_id = f"{normalized_project}-{normalized_scope}-{run_id}"
+    scope_id = f"{selector.project_slug}-{selector.test_scope}-{run_id}"
     resource_prefix = _normalize_name_fragment(scope_id, max_length=48)
     expires_at = datetime.now(UTC) + timedelta(hours=ttl_hours)
     return AwsFixtureScope(
-        project_slug=normalized_project,
-        test_scope=normalized_scope,
+        project_slug=selector.project_slug,
+        test_scope=selector.test_scope,
         run_id=run_id,
         scope_id=scope_id,
         resource_prefix=resource_prefix,
@@ -226,6 +236,78 @@ def create_fixture_scope(
         region=_configured_aws_region(),
         expires_at=expires_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
     )
+
+
+def fixture_scope_selector(
+    *,
+    project_slug: str,
+    test_scope: str,
+) -> AwsFixtureScopeSelector:
+    """Return the normalized selector used by preflight cleanup."""
+    return AwsFixtureScopeSelector(
+        project_slug=_normalize_name_fragment(project_slug, max_length=18),
+        test_scope=_normalize_name_fragment(test_scope, max_length=18),
+    )
+
+
+def create_clean_fixture_scope(
+    *,
+    project_slug: str,
+    test_scope: str,
+    ttl_hours: int = DEFAULT_FIXTURE_TTL_HOURS,
+) -> AwsFixtureScope:
+    """Delete stale resources for one suite scope before minting a fresh fixture scope."""
+    sweep_fixture_resources_for_scope(project_slug=project_slug, test_scope=test_scope)
+    return create_fixture_scope(
+        project_slug=project_slug,
+        test_scope=test_scope,
+        ttl_hours=ttl_hours,
+    )
+
+
+def _janitor_scope() -> AwsFixtureScope:
+    """Return a placeholder scope used only for janitor-owned cleanup contexts."""
+    return AwsFixtureScope(
+        project_slug="janitor",
+        test_scope="janitor",
+        run_id="janitor",
+        scope_id="janitor",
+        resource_prefix="janitor",
+        account_id="janitor",
+        region=_configured_aws_region(),
+        expires_at="1970-01-01T00:00:00Z",
+    )
+
+
+def _matches_fixture_selector(
+    tag_map: Mapping[str, str],
+    selector: AwsFixtureScopeSelector,
+) -> bool:
+    """Return True when a tagged resource belongs to one declared suite scope."""
+    return (
+        tag_map.get(FIXTURE_OWNER_TAG) == FIXTURE_OWNER_VALUE
+        and tag_map.get(FIXTURE_PROJECT_TAG) == selector.project_slug
+        and tag_map.get(FIXTURE_SCOPE_TAG) == selector.test_scope
+    )
+
+
+def _rollback_failed_create(
+    *,
+    operation: str,
+    rollback_actions: tuple[Callable[[], None], ...],
+    cause: BaseException,
+) -> None:
+    """Attempt all rollback actions and raise only if rollback itself fails."""
+    rollback_failures: list[str] = []
+    for rollback_action in reversed(rollback_actions):
+        try:
+            rollback_action()
+        except Exception as error:
+            rollback_failures.append(f"{type(error).__name__}: {error}")
+    if rollback_failures:
+        raise AssertionError(
+            f"{operation} failed: {cause}; rollback also failed: {'; '.join(rollback_failures)}"
+        ) from cause
 
 
 def scope_tag_map(
@@ -446,6 +528,11 @@ def ec2_network_tag_map(context: Ec2NetworkContext) -> dict[str, dict[str, str]]
     }
 
 
+def ec2_subnet_tag_maps(context: Ec2NetworkContext) -> tuple[dict[str, str], ...]:
+    """Return tag maps for every tagged subnet in one network context."""
+    return tuple(_ec2_resource_tag_map("subnet", subnet_id) for subnet_id in context.subnet_ids)
+
+
 def ec2_vpc_exists(vpc_id: str) -> bool:
     """Return True when the VPC still exists."""
     completed = _run_aws_cli_completed(
@@ -489,6 +576,73 @@ def _iam_role_tag_map(role_name: str) -> dict[str, str]:
 def iam_role_tag_map(role_name: str) -> dict[str, str]:
     """Return the tag map for one fixture-owned IAM role."""
     return _iam_role_tag_map(role_name)
+
+
+def _iam_role_names() -> tuple[str, ...]:
+    """Return every IAM role name visible to the fixture credentials."""
+    payload = json.loads(_run_aws_cli("iam", "list-roles", "--output", "json"))
+    return tuple(
+        str(role.get("RoleName"))
+        for role in payload.get("Roles", [])
+        if role.get("RoleName") not in (None, "")
+    )
+
+
+def _iam_role_exists(role_name: str) -> bool:
+    """Return True when the IAM role still exists."""
+    completed = _run_aws_cli_completed(
+        "iam",
+        "get-role",
+        "--role-name",
+        role_name,
+        "--output",
+        "json",
+    )
+    if completed.returncode == 0:
+        return True
+    stderr_text = completed.stderr.strip() or completed.stdout.strip()
+    if "NoSuchEntity" in stderr_text:
+        return False
+    if "AccessDenied" in stderr_text or "not authorized to perform: iam:GetRole" in stderr_text:
+        return role_name in _iam_role_names()
+    raise AssertionError(f"aws iam get-role failed: {stderr_text}")
+
+
+def _attached_role_policy_arns(role_name: str) -> tuple[str, ...]:
+    """Return every policy ARN currently attached to the IAM role."""
+    payload = json.loads(
+        _run_aws_cli(
+            "iam",
+            "list-attached-role-policies",
+            "--role-name",
+            role_name,
+            "--output",
+            "json",
+        )
+    )
+    return tuple(
+        str(attached_policy.get("PolicyArn"))
+        for attached_policy in payload.get("AttachedPolicies", [])
+        if attached_policy.get("PolicyArn") not in (None, "")
+    )
+
+
+def _delete_iam_role_by_name(role_name: str, *, allow_missing: bool = False) -> None:
+    """Delete one IAM role after detaching every attached policy."""
+    if not _iam_role_exists(role_name):
+        if allow_missing:
+            return
+        raise AssertionError(f"IAM role not found for cleanup: {role_name}")
+    for policy_arn in _attached_role_policy_arns(role_name):
+        _run_aws_cli(
+            "iam",
+            "detach-role-policy",
+            "--role-name",
+            role_name,
+            "--policy-arn",
+            policy_arn,
+        )
+    _run_aws_cli("iam", "delete-role", "--role-name", role_name)
 
 
 def _eks_cluster_description(cluster_name: str) -> dict[str, object]:
@@ -588,49 +742,62 @@ def _create_route53_hosted_zone(
     extra_tags: Mapping[str, str] | None = None,
 ) -> Route53HostedZoneContext:
     """Create and tag one Route 53 hosted zone."""
-    zone_id = _run_aws_cli(
-        "route53",
-        "create-hosted-zone",
-        "--name",
-        zone_name,
-        "--caller-reference",
-        f"{scope.scope_id}-{uuid.uuid4().hex}",
-        "--hosted-zone-config",
-        "Comment=prodbox-ephemeral-integration-zone,PrivateZone=false",
-        "--query",
-        "HostedZone.Id",
-        "--output",
-        "text",
-    )
-    zone_resource_id = zone_id.removeprefix("/hostedzone/")
-    tags = scope_tags(
-        scope,
-        name=zone_name,
-        extra_tags=extra_tags,
-    )
-    _run_aws_cli(
-        "route53",
-        "change-tags-for-resource",
-        "--resource-type",
-        "hostedzone",
-        "--resource-id",
-        zone_resource_id,
-        "--add-tags",
-        *_route53_cli_tag_args(tags),
-    )
-    _assert_scope_tags(scope, _route53_tag_map(zone_resource_id))
-    return Route53HostedZoneContext(
-        scope=scope,
-        zone_name=zone_name,
-        zone_id=zone_id,
-        zone_resource_id=zone_resource_id,
-        record_fqdn=f"{record_label}.{zone_name}",
-    )
+    zone_context: Route53HostedZoneContext | None = None
+    try:
+        zone_id = _run_aws_cli(
+            "route53",
+            "create-hosted-zone",
+            "--name",
+            zone_name,
+            "--caller-reference",
+            f"{scope.scope_id}-{uuid.uuid4().hex}",
+            "--hosted-zone-config",
+            "Comment=prodbox-ephemeral-integration-zone,PrivateZone=false",
+            "--query",
+            "HostedZone.Id",
+            "--output",
+            "text",
+        )
+        zone_resource_id = zone_id.removeprefix("/hostedzone/")
+        zone_context = Route53HostedZoneContext(
+            scope=scope,
+            zone_name=zone_name,
+            zone_id=zone_id,
+            zone_resource_id=zone_resource_id,
+            record_fqdn=f"{record_label}.{zone_name}",
+        )
+        tags = scope_tags(
+            scope,
+            name=zone_name,
+            extra_tags=extra_tags,
+        )
+        _run_aws_cli(
+            "route53",
+            "change-tags-for-resource",
+            "--resource-type",
+            "hostedzone",
+            "--resource-id",
+            zone_resource_id,
+            "--add-tags",
+            *_route53_cli_tag_args(tags),
+        )
+        _assert_scope_tags(scope, _route53_tag_map(zone_resource_id))
+        return zone_context
+    except Exception as error:
+        if zone_context is not None:
+            _rollback_failed_create(
+                operation=f"create Route 53 hosted zone {zone_name}",
+                rollback_actions=(
+                    lambda context=zone_context: delete_ephemeral_hosted_zone(context),
+                ),
+                cause=error,
+            )
+        raise
 
 
 def create_ephemeral_hosted_zone(*, test_scope: str) -> Route53HostedZoneContext:
     """Create a brand-new ephemeral Route 53 hosted zone for one test."""
-    scope = create_fixture_scope(project_slug="prodbox", test_scope=test_scope)
+    scope = create_clean_fixture_scope(project_slug="prodbox", test_scope=test_scope)
     zone_name = f"{scope.resource_prefix}.dev"
     return _create_route53_hosted_zone(
         scope,
@@ -992,6 +1159,7 @@ def create_ephemeral_s3_bucket(
 ) -> S3BucketContext:
     """Create and tag one ephemeral S3 bucket."""
     bucket_name = _s3_bucket_name(scope, bucket_label)
+    context = S3BucketContext(scope=scope, bucket_name=bucket_name)
     create_args = [
         "s3api",
         "create-bucket",
@@ -1005,23 +1173,33 @@ def create_ephemeral_s3_bucket(
                 f"LocationConstraint={scope.region}",
             ]
         )
-    _run_aws_cli(*create_args)
-    tagging_payload = {
-        "TagSet": [
-            {"Key": tag.key, "Value": tag.value} for tag in scope_tags(scope, name=bucket_name)
-        ]
-    }
-    with _temporary_json_file("prodbox-s3-tags-", tagging_payload) as tag_path:
-        _run_aws_cli(
-            "s3api",
-            "put-bucket-tagging",
-            "--bucket",
-            bucket_name,
-            "--tagging",
-            f"file://{tag_path}",
+    try:
+        _run_aws_cli(*create_args)
+        tagging_payload = {
+            "TagSet": [
+                {"Key": tag.key, "Value": tag.value} for tag in scope_tags(scope, name=bucket_name)
+            ]
+        }
+        with _temporary_json_file("prodbox-s3-tags-", tagging_payload) as tag_path:
+            _run_aws_cli(
+                "s3api",
+                "put-bucket-tagging",
+                "--bucket",
+                bucket_name,
+                "--tagging",
+                f"file://{tag_path}",
+            )
+        _assert_scope_tags(scope, _s3_bucket_tag_map(bucket_name))
+        return context
+    except Exception as error:
+        _rollback_failed_create(
+            operation=f"create S3 bucket {bucket_name}",
+            rollback_actions=(
+                lambda bucket_context=context: delete_ephemeral_s3_bucket(bucket_context),
+            ),
+            cause=error,
         )
-    _assert_scope_tags(scope, _s3_bucket_tag_map(bucket_name))
-    return S3BucketContext(scope=scope, bucket_name=bucket_name)
+        raise
 
 
 def put_s3_text_object(context: S3BucketContext, *, key: str, body: str) -> None:
@@ -1158,100 +1336,121 @@ def create_ephemeral_ec2_network(
         "--output",
         "text",
     )
-    _create_ec2_tags(vpc_id, tags=scope_tags(scope, name=f"{scope.resource_prefix}-vpc"))
-    _run_aws_cli(
-        "ec2",
-        "modify-vpc-attribute",
-        "--vpc-id",
-        vpc_id,
-        "--enable-dns-support",
-        '{"Value":true}',
-    )
-    _run_aws_cli(
-        "ec2",
-        "modify-vpc-attribute",
-        "--vpc-id",
-        vpc_id,
-        "--enable-dns-hostnames",
-        '{"Value":true}',
-    )
     subnet_ids: list[str] = []
-    for subnet_index, availability_zone in enumerate(availability_zones[:subnet_count]):
-        subnet_id = _run_aws_cli(
+    security_group_id: str | None = None
+    network_interface_id: str | None = None
+
+    def _rollback_network() -> None:
+        _delete_partial_ec2_network(
+            vpc_id=vpc_id,
+            subnet_ids=tuple(subnet_ids),
+            security_group_id=security_group_id,
+            network_interface_id=network_interface_id,
+        )
+
+    try:
+        _create_ec2_tags(vpc_id, tags=scope_tags(scope, name=f"{scope.resource_prefix}-vpc"))
+        _run_aws_cli(
             "ec2",
-            "create-subnet",
+            "modify-vpc-attribute",
             "--vpc-id",
             vpc_id,
-            "--cidr-block",
-            f"10.{cidr_octet}.{subnet_index}.0/24",
-            "--availability-zone",
-            availability_zone,
-            "--query",
-            "Subnet.SubnetId",
-            "--output",
-            "text",
+            "--enable-dns-support",
+            '{"Value":true}',
         )
-        _create_ec2_tags(
-            subnet_id,
-            tags=scope_tags(scope, name=f"{scope.resource_prefix}-subnet-{subnet_index}"),
-        )
-        subnet_ids.append(subnet_id)
-    security_group_id = _run_aws_cli(
-        "ec2",
-        "create-security-group",
-        "--group-name",
-        _normalize_name_fragment(f"{scope.resource_prefix}-sg", max_length=255),
-        "--description",
-        f"Fixture-owned security group for {scope.scope_id}",
-        "--vpc-id",
-        vpc_id,
-        "--query",
-        "GroupId",
-        "--output",
-        "text",
-    )
-    _create_ec2_tags(
-        security_group_id,
-        tags=scope_tags(scope, name=f"{scope.resource_prefix}-sg"),
-    )
-    network_interface_id: str | None = None
-    if create_network_interface:
-        network_interface_id = _run_aws_cli(
+        _run_aws_cli(
             "ec2",
-            "create-network-interface",
-            "--subnet-id",
-            subnet_ids[0],
-            "--groups",
-            security_group_id,
+            "modify-vpc-attribute",
+            "--vpc-id",
+            vpc_id,
+            "--enable-dns-hostnames",
+            '{"Value":true}',
+        )
+        for subnet_index, availability_zone in enumerate(availability_zones[:subnet_count]):
+            subnet_id = _run_aws_cli(
+                "ec2",
+                "create-subnet",
+                "--vpc-id",
+                vpc_id,
+                "--cidr-block",
+                f"10.{cidr_octet}.{subnet_index}.0/24",
+                "--availability-zone",
+                availability_zone,
+                "--query",
+                "Subnet.SubnetId",
+                "--output",
+                "text",
+            )
+            _create_ec2_tags(
+                subnet_id,
+                tags=scope_tags(scope, name=f"{scope.resource_prefix}-subnet-{subnet_index}"),
+            )
+            subnet_ids.append(subnet_id)
+        security_group_id = _run_aws_cli(
+            "ec2",
+            "create-security-group",
+            "--group-name",
+            _normalize_name_fragment(f"{scope.resource_prefix}-sg", max_length=255),
+            "--description",
+            f"Fixture-owned security group for {scope.scope_id}",
+            "--vpc-id",
+            vpc_id,
             "--query",
-            "NetworkInterface.NetworkInterfaceId",
+            "GroupId",
             "--output",
             "text",
         )
         _create_ec2_tags(
-            network_interface_id,
-            tags=scope_tags(scope, name=f"{scope.resource_prefix}-eni"),
+            security_group_id,
+            tags=scope_tags(scope, name=f"{scope.resource_prefix}-sg"),
         )
-    _wait_for_ec2_scope_tags(scope, resource_type="vpc", resource_id=vpc_id)
-    _wait_for_ec2_scope_tags(scope, resource_type="subnet", resource_id=subnet_ids[0])
-    _wait_for_ec2_scope_tags(
-        scope,
-        resource_type="security-group",
-        resource_id=security_group_id,
-    )
-    if network_interface_id is not None:
+        if create_network_interface:
+            network_interface_id = _run_aws_cli(
+                "ec2",
+                "create-network-interface",
+                "--subnet-id",
+                subnet_ids[0],
+                "--groups",
+                security_group_id,
+                "--query",
+                "NetworkInterface.NetworkInterfaceId",
+                "--output",
+                "text",
+            )
+            _create_ec2_tags(
+                network_interface_id,
+                tags=scope_tags(scope, name=f"{scope.resource_prefix}-eni"),
+            )
+        _wait_for_ec2_scope_tags(scope, resource_type="vpc", resource_id=vpc_id)
+        for subnet_id in subnet_ids:
+            _wait_for_ec2_scope_tags(scope, resource_type="subnet", resource_id=subnet_id)
+        if security_group_id is None:
+            raise AssertionError(f"missing security group id for scope {scope.scope_id}")
         _wait_for_ec2_scope_tags(
             scope,
-            resource_type="network-interface",
-            resource_id=network_interface_id,
+            resource_type="security-group",
+            resource_id=security_group_id,
         )
-    return Ec2NetworkContext(
-        scope=scope,
-        vpc_id=vpc_id,
-        subnet_ids=tuple(subnet_ids),
-        security_group_id=security_group_id,
-        network_interface_id=network_interface_id,
-    )
+        if network_interface_id is not None:
+            _wait_for_ec2_scope_tags(
+                scope,
+                resource_type="network-interface",
+                resource_id=network_interface_id,
+            )
+        return Ec2NetworkContext(
+            scope=scope,
+            vpc_id=vpc_id,
+            subnet_ids=tuple(subnet_ids),
+            security_group_id=security_group_id,
+            network_interface_id=network_interface_id,
+        )
+    except Exception as error:
+        _rollback_failed_create(
+            operation=f"create EC2 fixture network for {scope.scope_id}",
+            rollback_actions=(_rollback_network,),
+            cause=error,
+        )
+        raise
 
 
 def delete_ephemeral_ec2_network(context: Ec2NetworkContext) -> None:
@@ -1285,12 +1484,68 @@ def delete_ephemeral_ec2_network(context: Ec2NetworkContext) -> None:
     )
 
 
+def _ec2_delete_not_found(stderr_text: str) -> bool:
+    """Return True when one EC2 delete failure only reports a missing resource."""
+    return any(
+        marker in stderr_text
+        for marker in (
+            "InvalidNetworkInterfaceID.NotFound",
+            "InvalidGroup.NotFound",
+            "InvalidSubnetID.NotFound",
+            "InvalidVpcID.NotFound",
+        )
+    )
+
+
+def _delete_partial_ec2_network(
+    *,
+    vpc_id: str,
+    subnet_ids: tuple[str, ...],
+    security_group_id: str | None,
+    network_interface_id: str | None,
+) -> None:
+    """Delete the EC2 resources created so far during a failed network setup."""
+    if network_interface_id is not None:
+        _delete_ec2_with_retry(
+            (
+                "ec2",
+                "delete-network-interface",
+                "--network-interface-id",
+                network_interface_id,
+            ),
+            "network interface",
+            network_interface_id,
+            allow_missing=True,
+        )
+    if security_group_id is not None:
+        _delete_ec2_with_retry(
+            ("ec2", "delete-security-group", "--group-id", security_group_id),
+            "security group",
+            security_group_id,
+            allow_missing=True,
+        )
+    for subnet_id in subnet_ids:
+        _delete_ec2_with_retry(
+            ("ec2", "delete-subnet", "--subnet-id", subnet_id),
+            "subnet",
+            subnet_id,
+            allow_missing=True,
+        )
+    _delete_ec2_with_retry(
+        ("ec2", "delete-vpc", "--vpc-id", vpc_id),
+        "vpc",
+        vpc_id,
+        allow_missing=True,
+    )
+
+
 def _delete_ec2_with_retry(
     command: tuple[str, ...],
     resource_kind: str,
     resource_id: str,
     *,
     timeout_seconds: float = 120.0,
+    allow_missing: bool = False,
 ) -> None:
     """Delete one EC2 resource with dependency-violation retries."""
     deadline = time.time() + timeout_seconds
@@ -1299,6 +1554,8 @@ def _delete_ec2_with_retry(
         if completed.returncode == 0:
             return
         stderr_text = completed.stderr.strip() or completed.stdout.strip()
+        if allow_missing and _ec2_delete_not_found(stderr_text):
+            return
         if time.time() >= deadline:
             raise AssertionError(
                 f"failed to delete EC2 {resource_kind} {resource_id}: {stderr_text}"
@@ -1314,6 +1571,10 @@ def create_ephemeral_eks_cluster(scope: AwsFixtureScope) -> EksClusterContext:
         create_network_interface=False,
     )
     role_name = _normalize_name_fragment(f"{scope.resource_prefix}-eks-role", max_length=64)
+    cluster_name = _normalize_name_fragment(f"{scope.resource_prefix}-eks", max_length=100)
+    rollback_actions: list[Callable[[], None]] = [
+        lambda network_context=network: delete_ephemeral_ec2_network(network_context),
+    ]
     trust_policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -1324,51 +1585,70 @@ def create_ephemeral_eks_cluster(scope: AwsFixtureScope) -> EksClusterContext:
             }
         ],
     }
-    with _temporary_json_file("prodbox-iam-role-", trust_policy) as trust_policy_path:
-        role_arn = _run_aws_cli(
+    try:
+        with _temporary_json_file("prodbox-iam-role-", trust_policy) as trust_policy_path:
+            role_arn = _run_aws_cli(
+                "iam",
+                "create-role",
+                "--role-name",
+                role_name,
+                "--assume-role-policy-document",
+                f"file://{trust_policy_path}",
+                "--tags",
+                *_route53_cli_tag_args(scope_tags(scope, name=role_name)),
+                "--query",
+                "Role.Arn",
+                "--output",
+                "text",
+            )
+        rollback_actions.append(
+            lambda role_name_text=role_name: _delete_iam_role_by_name(
+                role_name_text,
+                allow_missing=True,
+            )
+        )
+        _run_aws_cli(
             "iam",
-            "create-role",
+            "attach-role-policy",
             "--role-name",
             role_name,
-            "--assume-role-policy-document",
-            f"file://{trust_policy_path}",
-            "--tags",
-            *_route53_cli_tag_args(scope_tags(scope, name=role_name)),
-            "--query",
-            "Role.Arn",
-            "--output",
-            "text",
+            "--policy-arn",
+            ROLE_POLICY_ARN_EKS_CLUSTER,
         )
-    _run_aws_cli(
-        "iam",
-        "attach-role-policy",
-        "--role-name",
-        role_name,
-        "--policy-arn",
-        ROLE_POLICY_ARN_EKS_CLUSTER,
-    )
-    _assert_scope_tags(scope, _iam_role_tag_map(role_name))
-    cluster_name = _normalize_name_fragment(f"{scope.resource_prefix}-eks", max_length=100)
-    create_output = _create_eks_cluster_with_retry(
-        cluster_name=cluster_name,
-        role_arn=role_arn,
-        network=network,
-        tags=scope_tags(scope, name=cluster_name),
-    )
-    cluster = create_output.get("cluster", {})
-    cluster_arn = str(cluster.get("arn", ""))
-    if not cluster_arn:
-        raise AssertionError(f"missing EKS cluster ARN for {cluster_name}")
-    _run_aws_cli("eks", "wait", "cluster-active", "--name", cluster_name)
-    _assert_scope_tags(scope, _eks_cluster_tag_map(cluster_name))
-    return EksClusterContext(
-        scope=scope,
-        cluster_name=cluster_name,
-        cluster_arn=cluster_arn,
-        role_name=role_name,
-        role_arn=role_arn,
-        network=network,
-    )
+        _assert_scope_tags(scope, _iam_role_tag_map(role_name))
+        create_output = _create_eks_cluster_with_retry(
+            cluster_name=cluster_name,
+            role_arn=role_arn,
+            network=network,
+            tags=scope_tags(scope, name=cluster_name),
+        )
+        rollback_actions.append(
+            lambda cluster_name_text=cluster_name: _delete_eks_cluster_by_name(
+                cluster_name_text,
+                allow_missing=True,
+            )
+        )
+        cluster = create_output.get("cluster", {})
+        cluster_arn = str(cluster.get("arn", ""))
+        if not cluster_arn:
+            raise AssertionError(f"missing EKS cluster ARN for {cluster_name}")
+        _run_aws_cli("eks", "wait", "cluster-active", "--name", cluster_name)
+        _assert_scope_tags(scope, _eks_cluster_tag_map(cluster_name))
+        return EksClusterContext(
+            scope=scope,
+            cluster_name=cluster_name,
+            cluster_arn=cluster_arn,
+            role_name=role_name,
+            role_arn=role_arn,
+            network=network,
+        )
+    except Exception as error:
+        _rollback_failed_create(
+            operation=f"create EKS fixture cluster {cluster_name}",
+            rollback_actions=tuple(rollback_actions),
+            cause=error,
+        )
+        raise
 
 
 def _create_eks_cluster_with_retry(
@@ -1415,19 +1695,20 @@ def _create_eks_cluster_with_retry(
         time.sleep(2.0)
 
 
+def _delete_eks_cluster_by_name(cluster_name: str, *, allow_missing: bool = False) -> None:
+    """Delete one EKS cluster by name and wait for full removal."""
+    if not eks_cluster_exists(cluster_name):
+        if allow_missing:
+            return
+        raise AssertionError(f"EKS cluster not found for cleanup: {cluster_name}")
+    _run_aws_cli("eks", "delete-cluster", "--name", cluster_name)
+    _run_aws_cli("eks", "wait", "cluster-deleted", "--name", cluster_name)
+
+
 def delete_ephemeral_eks_cluster(context: EksClusterContext) -> None:
     """Delete EKS cluster first, then IAM role and network dependencies."""
-    _run_aws_cli("eks", "delete-cluster", "--name", context.cluster_name)
-    _run_aws_cli("eks", "wait", "cluster-deleted", "--name", context.cluster_name)
-    _run_aws_cli(
-        "iam",
-        "detach-role-policy",
-        "--role-name",
-        context.role_name,
-        "--policy-arn",
-        ROLE_POLICY_ARN_EKS_CLUSTER,
-    )
-    _run_aws_cli("iam", "delete-role", "--role-name", context.role_name)
+    _delete_eks_cluster_by_name(context.cluster_name)
+    _delete_iam_role_by_name(context.role_name)
     delete_ephemeral_ec2_network(context.network)
 
 
@@ -1454,11 +1735,31 @@ def sweep_expired_fixture_resources(
 ) -> JanitorSweepResult:
     """Delete expired fixture-owned resources discovered by tags."""
     current_time = _parse_timestamp(now) if now is not None else datetime.now(UTC)
-    deleted_eks_clusters, expired_scope_ids = _sweep_expired_eks_clusters(current_time)
-    deleted_iam_roles = _sweep_expired_iam_roles(current_time)
-    deleted_buckets = _sweep_expired_s3_buckets(current_time)
-    deleted_vpcs = _sweep_expired_ec2_networks(current_time, expired_scope_ids=expired_scope_ids)
-    deleted_hosted_zones = _sweep_expired_route53_hosted_zones(current_time)
+    return _sweep_fixture_resources(
+        lambda tag_map: _is_expired_fixture_tag_map(tag_map, current_time)
+    )
+
+
+def sweep_fixture_resources_for_scope(
+    *,
+    project_slug: str,
+    test_scope: str,
+) -> JanitorSweepResult:
+    """Delete prior fixture-owned resources for one declared suite scope."""
+    selector = fixture_scope_selector(project_slug=project_slug, test_scope=test_scope)
+    return _sweep_fixture_resources(lambda tag_map: _matches_fixture_selector(tag_map, selector))
+
+
+def _sweep_fixture_resources(matcher: FixtureTagMatcher) -> JanitorSweepResult:
+    """Delete matching fixture-owned resources using one shared cleanup contract."""
+    deleted_eks_clusters, protected_scope_ids = _sweep_matching_eks_clusters(matcher)
+    deleted_iam_roles = _sweep_matching_iam_roles(matcher)
+    deleted_buckets = _sweep_matching_s3_buckets(matcher)
+    deleted_vpcs = _sweep_matching_ec2_networks(
+        matcher,
+        protected_scope_ids=protected_scope_ids,
+    )
+    deleted_hosted_zones = _sweep_matching_route53_hosted_zones(matcher)
     return JanitorSweepResult(
         deleted_hosted_zones=deleted_hosted_zones,
         deleted_buckets=deleted_buckets,
@@ -1483,27 +1784,27 @@ def _is_expired_fixture_tag_map(tag_map: Mapping[str, str], current_time: dateti
     return _parse_timestamp(expires_at) <= current_time
 
 
-def _list_expired_s3_buckets(current_time: datetime) -> tuple[str, ...]:
-    """Return all expired fixture-owned S3 bucket names."""
+def _list_matching_s3_buckets(matcher: FixtureTagMatcher) -> tuple[str, ...]:
+    """Return all fixture-owned S3 bucket names selected by the matcher."""
     payload = json.loads(_run_aws_cli("s3api", "list-buckets", "--output", "json"))
-    expired_buckets: list[str] = []
+    bucket_names: list[str] = []
     for bucket in payload.get("Buckets", []):
         bucket_name = bucket.get("Name")
         if bucket_name in (None, ""):
             continue
         tag_map = _s3_bucket_tag_map(str(bucket_name))
-        if _is_expired_fixture_tag_map(tag_map, current_time):
-            expired_buckets.append(str(bucket_name))
-    return tuple(expired_buckets)
+        if matcher(tag_map):
+            bucket_names.append(str(bucket_name))
+    return tuple(bucket_names)
 
 
-def _sweep_expired_s3_buckets(current_time: datetime) -> int:
-    """Delete all expired fixture-owned S3 buckets."""
+def _sweep_matching_s3_buckets(matcher: FixtureTagMatcher) -> int:
+    """Delete all S3 buckets selected by the matcher."""
     deleted = 0
-    for bucket_name in _list_expired_s3_buckets(current_time):
+    for bucket_name in _list_matching_s3_buckets(matcher):
         delete_ephemeral_s3_bucket(
             S3BucketContext(
-                scope=create_fixture_scope(project_slug="janitor", test_scope="janitor"),
+                scope=_janitor_scope(),
                 bucket_name=bucket_name,
             )
         )
@@ -1511,8 +1812,8 @@ def _sweep_expired_s3_buckets(current_time: datetime) -> int:
     return deleted
 
 
-def _list_expired_vpcs(current_time: datetime) -> tuple[Ec2NetworkContext, ...]:
-    """Return minimal network contexts for expired fixture-owned VPCs."""
+def _list_matching_vpcs(matcher: FixtureTagMatcher) -> tuple[Ec2NetworkContext, ...]:
+    """Return minimal network contexts for fixture-owned VPCs selected by the matcher."""
     payload = json.loads(
         _run_aws_cli(
             "ec2",
@@ -1530,7 +1831,7 @@ def _list_expired_vpcs(current_time: datetime) -> tuple[Ec2NetworkContext, ...]:
             for tag in vpc.get("Tags", [])
             if tag.get("Key") not in (None, "") and tag.get("Value") not in (None, "")
         }
-        if not _is_expired_fixture_tag_map(tags, current_time):
+        if not matcher(tags):
             continue
         vpc_id = str(vpc.get("VpcId", ""))
         if not vpc_id:
@@ -1569,7 +1870,7 @@ def _list_expired_vpcs(current_time: datetime) -> tuple[Ec2NetworkContext, ...]:
         ]
         if len(security_group_ids) != 1:
             raise AssertionError(
-                f"expected exactly one fixture-owned security group in expired VPC {vpc_id}"
+                f"expected exactly one fixture-owned security group in matching VPC {vpc_id}"
             )
         network_interfaces_payload = json.loads(
             _run_aws_cli(
@@ -1589,7 +1890,7 @@ def _list_expired_vpcs(current_time: datetime) -> tuple[Ec2NetworkContext, ...]:
         ]
         contexts.append(
             Ec2NetworkContext(
-                scope=create_fixture_scope(project_slug="janitor", test_scope="janitor"),
+                scope=_janitor_scope(),
                 vpc_id=vpc_id,
                 subnet_ids=subnet_ids,
                 security_group_id=security_group_ids[0],
@@ -1599,18 +1900,18 @@ def _list_expired_vpcs(current_time: datetime) -> tuple[Ec2NetworkContext, ...]:
     return tuple(contexts)
 
 
-def _sweep_expired_ec2_networks(
-    current_time: datetime,
+def _sweep_matching_ec2_networks(
+    matcher: FixtureTagMatcher,
     *,
-    expired_scope_ids: tuple[str, ...],
+    protected_scope_ids: tuple[str, ...],
 ) -> int:
-    """Delete all expired fixture-owned VPC networks not still needed by EKS."""
-    protected_scope_ids = set(expired_scope_ids)
+    """Delete matching VPC networks not still being removed through EKS teardown."""
+    protected_scope_id_set = set(protected_scope_ids)
     deleted = 0
-    for context in _list_expired_vpcs(current_time):
+    for context in _list_matching_vpcs(matcher):
         tag_map = _ec2_resource_tag_map("vpc", context.vpc_id)
         scope_id = tag_map.get(FIXTURE_SCOPE_ID_TAG)
-        if scope_id in protected_scope_ids:
+        if scope_id in protected_scope_id_set:
             continue
         delete_ephemeral_ec2_network(context)
         deleted += 1
@@ -1634,10 +1935,9 @@ def _route53_zone_context_from_id(zone_id: str) -> Route53HostedZoneContext:
     if not zone_name:
         raise AssertionError(f"missing hosted zone name for {zone_id}")
     tag_map = _route53_tag_map(zone_id)
-    scope = create_fixture_scope(project_slug="janitor", test_scope="janitor")
     record_label = tag_map.get("prodbox_default_record_label", DEFAULT_ROUTE53_RECORD_LABEL)
     return Route53HostedZoneContext(
-        scope=scope,
+        scope=_janitor_scope(),
         zone_name=zone_name,
         zone_id=f"/hostedzone/{zone_id}",
         zone_resource_id=zone_id,
@@ -1645,8 +1945,8 @@ def _route53_zone_context_from_id(zone_id: str) -> Route53HostedZoneContext:
     )
 
 
-def _expired_route53_zone_ids(current_time: datetime) -> tuple[str, ...]:
-    """Return all expired fixture-owned hosted zone ids."""
+def _matching_route53_zone_ids(matcher: FixtureTagMatcher) -> tuple[str, ...]:
+    """Return all Route 53 hosted zone ids selected by the matcher."""
     payload = json.loads(_run_aws_cli("route53", "list-hosted-zones", "--output", "json"))
     zone_ids: list[str] = []
     for hosted_zone in payload.get("HostedZones", []):
@@ -1654,17 +1954,17 @@ def _expired_route53_zone_ids(current_time: datetime) -> tuple[str, ...]:
         zone_id = raw_id.removeprefix("/hostedzone/")
         if not zone_id:
             continue
-        if _is_expired_fixture_tag_map(_route53_tag_map(zone_id), current_time):
+        if matcher(_route53_tag_map(zone_id)):
             zone_ids.append(zone_id)
     return tuple(zone_ids)
 
 
-def _sweep_expired_route53_hosted_zones(current_time: datetime) -> int:
-    """Delete expired Route 53 hosted zones, removing delegated NS records first."""
-    expired_zone_ids = _expired_route53_zone_ids(current_time)
-    child_zone_ids = []
-    parent_zone_ids = []
-    for zone_id in expired_zone_ids:
+def _sweep_matching_route53_hosted_zones(matcher: FixtureTagMatcher) -> int:
+    """Delete matching Route 53 hosted zones, removing delegated NS records first."""
+    matching_zone_ids = _matching_route53_zone_ids(matcher)
+    child_zone_ids: list[str] = []
+    parent_zone_ids: list[str] = []
+    for zone_id in matching_zone_ids:
         tag_map = _route53_tag_map(zone_id)
         if FIXTURE_PARENT_ZONE_ID_TAG in tag_map:
             child_zone_ids.append(zone_id)
@@ -1711,16 +2011,14 @@ def _sweep_expired_route53_hosted_zones(current_time: datetime) -> int:
     return deleted
 
 
-def _list_expired_eks_clusters(
-    current_time: datetime,
-) -> tuple[EksClusterContext, ...]:
-    """Return all expired fixture-owned EKS clusters."""
+def _list_matching_eks_clusters(matcher: FixtureTagMatcher) -> tuple[EksClusterContext, ...]:
+    """Return all fixture-owned EKS clusters selected by the matcher."""
     payload = json.loads(_run_aws_cli("eks", "list-clusters", "--output", "json"))
     contexts: list[EksClusterContext] = []
     for cluster_name in payload.get("clusters", []):
         cluster_name_text = str(cluster_name)
         tag_map = _eks_cluster_tag_map(cluster_name_text)
-        if not _is_expired_fixture_tag_map(tag_map, current_time):
+        if not matcher(tag_map):
             continue
         cluster = _eks_cluster_description(cluster_name_text)
         role_arn = str(cluster.get("roleArn", ""))
@@ -1762,13 +2060,13 @@ def _list_expired_eks_clusters(
         vpc_id = str(security_groups[0].get("VpcId", ""))
         contexts.append(
             EksClusterContext(
-                scope=create_fixture_scope(project_slug="janitor", test_scope="janitor"),
+                scope=_janitor_scope(),
                 cluster_name=cluster_name_text,
                 cluster_arn=cluster_arn,
                 role_name=role_name,
                 role_arn=role_arn,
                 network=Ec2NetworkContext(
-                    scope=create_fixture_scope(project_slug="janitor", test_scope="janitor"),
+                    scope=_janitor_scope(),
                     vpc_id=vpc_id,
                     subnet_ids=subnet_ids,
                     security_group_id=security_group_id,
@@ -1779,50 +2077,29 @@ def _list_expired_eks_clusters(
     return tuple(contexts)
 
 
-def _sweep_expired_eks_clusters(current_time: datetime) -> tuple[int, tuple[str, ...]]:
-    """Delete all expired fixture-owned EKS clusters."""
+def _sweep_matching_eks_clusters(matcher: FixtureTagMatcher) -> tuple[int, tuple[str, ...]]:
+    """Delete all fixture-owned EKS clusters selected by the matcher."""
     deleted = 0
     scope_ids: list[str] = []
-    for context in _list_expired_eks_clusters(current_time):
+    for context in _list_matching_eks_clusters(matcher):
+        scope_id = _eks_cluster_tag_map(context.cluster_name).get(FIXTURE_SCOPE_ID_TAG)
         delete_ephemeral_eks_cluster(context)
         deleted += 1
-        scope_ids.append(_eks_cluster_tag_map(context.cluster_name).get(FIXTURE_SCOPE_ID_TAG, ""))
-    return deleted, tuple(scope_id for scope_id in scope_ids if scope_id)
+        if scope_id not in (None, ""):
+            scope_ids.append(scope_id)
+    return deleted, tuple(scope_ids)
 
 
-def _sweep_expired_iam_roles(current_time: datetime) -> int:
-    """Delete expired fixture-owned IAM roles that are not still attached to live resources."""
+def _sweep_matching_iam_roles(matcher: FixtureTagMatcher) -> int:
+    """Delete matching IAM roles that are not still attached to live resources."""
     payload = json.loads(_run_aws_cli("iam", "list-roles", "--output", "json"))
     deleted = 0
     for role in payload.get("Roles", []):
         role_name = role.get("RoleName")
         if role_name in (None, ""):
             continue
-        tag_map = _iam_role_tag_map(str(role_name))
-        if not _is_expired_fixture_tag_map(tag_map, current_time):
+        if not matcher(_iam_role_tag_map(str(role_name))):
             continue
-        attached_policies_payload = json.loads(
-            _run_aws_cli(
-                "iam",
-                "list-attached-role-policies",
-                "--role-name",
-                str(role_name),
-                "--output",
-                "json",
-            )
-        )
-        for attached_policy in attached_policies_payload.get("AttachedPolicies", []):
-            policy_arn = attached_policy.get("PolicyArn")
-            if policy_arn in (None, ""):
-                continue
-            _run_aws_cli(
-                "iam",
-                "detach-role-policy",
-                "--role-name",
-                str(role_name),
-                "--policy-arn",
-                str(policy_arn),
-            )
-        _run_aws_cli("iam", "delete-role", "--role-name", str(role_name))
+        _delete_iam_role_by_name(str(role_name))
         deleted += 1
     return deleted

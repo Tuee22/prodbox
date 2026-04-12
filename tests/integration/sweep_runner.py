@@ -9,22 +9,20 @@ Exit codes:
 
 from __future__ import annotations
 
-import json
-
 from tests.integration.aws_helpers import sweep_expired_fixture_resources
 
 
 def main() -> int:
-    """Run the fixture sweep and print JSON result to stdout."""
+    """Run the fixture sweep and print line-oriented counts to stdout."""
     result = sweep_expired_fixture_resources()
-    payload: dict[str, int] = {
-        "deleted_hosted_zones": result.deleted_hosted_zones,
-        "deleted_buckets": result.deleted_buckets,
-        "deleted_vpcs": result.deleted_vpcs,
-        "deleted_eks_clusters": result.deleted_eks_clusters,
-        "deleted_iam_roles": result.deleted_iam_roles,
-    }
-    print(json.dumps(payload))
+    lines = (
+        f"deleted_hosted_zones={result.deleted_hosted_zones}",
+        f"deleted_buckets={result.deleted_buckets}",
+        f"deleted_vpcs={result.deleted_vpcs}",
+        f"deleted_eks_clusters={result.deleted_eks_clusters}",
+        f"deleted_iam_roles={result.deleted_iam_roles}",
+    )
+    print("\n".join(lines))
     return 0
 
 

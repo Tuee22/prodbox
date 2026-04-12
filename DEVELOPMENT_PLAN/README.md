@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md), [../documents/engineering/README.md](../documents/engineering/README.md)
+**Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md), [../documents/engineering/README.md](../documents/engineering/README.md), [../documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md), [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md), [../documents/engineering/dependency_management.md](../documents/engineering/dependency_management.md), [../documents/engineering/distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md), [../documents/engineering/helm_chart_platform_doctrine.md](../documents/engineering/helm_chart_platform_doctrine.md), [../documents/engineering/unit_testing_policy.md](../documents/engineering/unit_testing_policy.md)
 
 > **Purpose**: Provide the single execution-ordered development plan for prodbox, including honest
 > sprint status, validation gates, blocker tracking, and legacy-path removal.
@@ -80,8 +80,7 @@ Route 53 records only, one coherent `MetalLB -> Traefik -> vscode-nginx` public-
 cluster-backed `prodbox charts` delivery path for `vscode`, one named validation command per
 major surface, one explicit removal ledger for anything still scheduled to disappear, one
 cluster-wide StorageClass named `manual`, one explicit PV pre-creation model, one Helm-only
-service deployment path, HA-mode defaults for all stateful services, and subprocess credential
-isolation with no `os.environ` inheritance.
+service deployment path, explicit chart-owned replica counts that keep single-writer retained-state services single-replica, and subprocess credential isolation with no `os.environ` inheritance.
 
 ### Sprint Details
 
@@ -105,39 +104,51 @@ isolation with no `os.environ` inheritance.
 | 4.10 AWS Fixture Leak Prevention | ✅ Done | - | - | `tests/integration/conftest.py`, `src/prodbox/cli/aws_cmd.py`, `src/prodbox/cli/main.py`, `tests/integration/sweep_runner.py` |
 | 4.11 Final Subprocess Env Isolation and Settings-Only Config Access | ✅ Done | - | - | `src/prodbox/cli/check_code.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/interpreter.py` |
 | 4.12 Host Gateway Service Removal | ✅ Done | - | - | `src/prodbox/cli/gateway.py`, `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/dag_builders.py`, host filesystem, `documents/engineering/*`, `DEVELOPMENT_PLAN/*` |
+| 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/aws_cmd.py` |
 | 5.1 Public Hostname Closure and Authoritative External Proof | ✅ Done | - | - | `prodbox-config.dhall`, `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/infra/cluster_issuer.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
 | 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ✅ Done | - | - | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/metallb.py`, `tests/unit/test_infra_program.py`, `tests/unit/test_test_cmd.py` |
 
 ## Current Plan Status
 
 As of April 12, 2026: **the development plan is complete.**
-Phases 0 through 6 are `✅ Done`. Public DNS, live TLS, the Keycloak auth-wall proof, and the
-final clean-room rerun are all green on the supported path. Aggregate suites still gate on
-`prodbox host public-edge` before Phase 2, now run `test_charts_platform.py` before
+Phases 0 through 6 are all `✅ Done`. Sprint 4.13 closed after AWS-mutating fixtures adopted
+scope-owned preflight cleanup, canonical ownership/expiry/safe-delete tagging, setup-failure
+rollback, and shared janitor cleanup across Route 53, S3, VPC, EKS, and IAM. Aggregate suites
+still gate on `prodbox host public-edge` before Phase 2, run `test_charts_platform.py` before
 `test_charts_storage.py` so singleton chart releases are cleared before the storage-only suite,
 restore the supported runtime with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
 `prodbox charts deploy gateway`, and `prodbox charts deploy vscode` after the destructive pytest
-tail, and the Pulumi-managed
-infrastructure charts now use stable Helm release names (`metallb`, `traefik`, `cert-manager`)
-so cluster-scoped objects reattach cleanly after clean-room teardown and recreation.
+tail, and the Pulumi-managed infrastructure charts use stable Helm release names (`metallb`,
+`traefik`, `cert-manager`) so cluster-scoped objects reattach cleanly after clean-room teardown
+and recreation. The legacy ledger is empty again.
 
 Current-environment validation snapshot (April 12, 2026):
 
+- `poetry run prodbox aws sweep-fixtures` — passed; no expired fixture resources reported.
 - `poetry run prodbox check-code` — passed.
-- `poetry run prodbox test unit` — 961 passed.
+- `poetry run prodbox test unit` — 972 passed.
+- `poetry run prodbox test integration aws-foundation` — 3 passed.
+- `poetry run prodbox test integration aws-eks` — 1 passed.
+- `poetry run prodbox test integration dns-aws` — 2 passed.
+- `poetry run prodbox test integration pulumi` — 1 passed.
 - `poetry run prodbox test integration public-dns` — 2 passed.
+- `poetry run prodbox test integration charts-vscode` — 8 passed.
 - `poetry run prodbox host public-edge` — `CLASSIFICATION=ready-for-external-proof`,
-  `ROUTE53_STATUS=in-sync`, `CERTIFICATE_READY=true`, `PRIVATE_EDGE_READY=true`.
+  `ROUTE53_STATUS=in-sync`, `TRAEFIK_SERVICE_IP=192.168.2.240`, `CERTIFICATE_READY=true`,
+  `PRIVATE_EDGE_READY=true`.
 - `kubectl get clusterissuer letsencrypt-http01 -o yaml` reports
   `spec.acme.server=https://acme.zerossl.com/v2/DV90`, `externalAccountBinding` configured, and
   `status.conditions[type=Ready].status=True`.
 - Direct TLS probe for `vscode.resolvefintech.com:443` reports
   `SUBJECT_CN=vscode.resolvefintech.com`, `ISSUER_O=ZeroSSL GmbH`, and
   `ISSUER_CN=ZeroSSL RSA DV SSL CA 2`.
-- `poetry run prodbox test integration charts-vscode` — 8 passed.
 - `poetry run prodbox tla-check` — passed.
 - `poetry run prodbox test integration all` — passed.
-- `poetry run prodbox test all` — rerun completed cleanly in the final closure session.
+- `poetry run prodbox test all` — rerun completed cleanly on April 12, 2026 after postflight
+  runtime restore returned `prodbox host public-edge` to
+  `CLASSIFICATION=ready-for-external-proof`.
+- Live AWS inventory audit on April 12, 2026 found no current fixture-owned Route 53, S3, VPC,
+  EKS, or IAM resources in account `751103452346`.
 - Live cluster on `bathurst` has RKE2, MetalLB (`192.168.2.240-192.168.2.250`), Traefik
   (LoadBalancer at `192.168.2.240`), cert-manager, `letsencrypt-http01`, the in-cluster gateway,
   and the `vscode` stack on the supported path.
@@ -161,8 +172,8 @@ This plan is done only when all of the following are true:
    partition tolerance proven by a named integration suite, and explicit public subdomain
    Route 53 records kept current through `dns_write_gate`.
 5. Sprint 4.5 is closed with one StorageClass named `manual`, the 5-segment `.data/` path scheme,
-   HA-mode deployment defaults, and no residual 4-segment path references outside
-   completed-sprint history.
+   explicit replica counts aligned to each chart's storage semantics, and no residual 4-segment
+   path references outside completed-sprint history.
 6. Sprint 4.6 is closed with cluster-internal secrets auto-generated and persisted in `.data/`,
    IP addressing always auto-discovered, and `KUBECONFIG`/`PULUMI_STACK` removed from settings.
 7. Sprint 4.7 is closed with `prodbox-config.dhall` as the single config source, compiled to
@@ -178,11 +189,16 @@ This plan is done only when all of the following are true:
 12. Sprint 4.12 is closed with `prodbox-gateway.service` uninstalled from the supported host,
     `prodbox gateway install-service` removed from the CLI surface, and all "host supervisor"
     language purged from the plan and doctrine docs.
-13. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
+13. Sprint 4.13 closes with every AWS-mutating integration test beginning from scope-owned
+    stale-resource search/removal, every taggable fixture-owned AWS resource carrying the
+    canonical ownership/expiry/safe-delete tags, setup helpers rolling back partial AWS creation
+    before the fixture yields, and janitor coverage validated across Route 53, S3, VPC, EKS, and
+    IAM.
+14. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
     verification for `vscode.resolvefintech.com`.
-14. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
-15. No document under `documents/` carries a competing sprint narrative or completion-status track.
-16. The remaining legacy inventory is empty.
+15. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
+16. No document under `documents/` carries a competing sprint narrative or completion-status track.
+17. The remaining legacy inventory is empty.
 
 ## Related Documents
 

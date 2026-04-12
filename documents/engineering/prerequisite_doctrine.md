@@ -135,10 +135,10 @@ Validate AWS/Route53 access:
 
 | Prerequisite | Validates |
 |--------------|-----------|
-| `aws_credentials_valid` | Fixed repository-root `.env` AWS authentication is configured and valid for the selected suite |
-| `route53_accessible` | Current `.env` AWS authentication can reach the Route 53 API |
+| `aws_credentials_valid` | Dhall-configured AWS authentication compiled to `prodbox-config.json` is configured and valid for the selected suite |
+| `route53_accessible` | AWS authentication loaded from `Settings` can reach the Route 53 API |
 
-Suite-specific AWS auth source, no-repo-auth-storage rules, and fixture capability proof are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
+Suite-specific AWS auth source, Dhall-config storage rules, and fixture capability proof are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---
 

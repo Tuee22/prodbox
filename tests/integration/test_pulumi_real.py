@@ -21,6 +21,8 @@ from .aws_helpers import (
     build_dns_suite_env,
     create_ephemeral_hosted_zone,
     delete_ephemeral_hosted_zone,
+    has_required_fixture_tags,
+    route53_zone_tag_map,
     wait_for_route53_record_values,
 )
 
@@ -208,6 +210,10 @@ def test_pulumi_stack_preview_up_and_destroy_against_local_backend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Pulumi commands should exercise a real stack lifecycle against fixture-owned state."""
+    assert has_required_fixture_tags(
+        ephemeral_route53_zone.scope,
+        route53_zone_tag_map(ephemeral_route53_zone),
+    )
     monkeypatch.chdir(pulumi_real_project.project_dir)
     for key, value in pulumi_real_project.env_overrides.items():
         monkeypatch.setenv(key, value)

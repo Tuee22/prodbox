@@ -44,13 +44,15 @@ remaining compatibility backlog.
 
 - The legacy ledger Pending Removal section remains empty.
 - `poetry run prodbox check-code` passed on April 12, 2026.
-- `poetry run prodbox test unit` passed on April 12, 2026 (961 tests).
+- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
 - `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
 - `prodbox host public-edge` reports `CLASSIFICATION=ready-for-external-proof`.
 - `poetry run prodbox test integration charts-vscode` passed on April 12, 2026 (8 tests).
 - `poetry run prodbox test integration all` passed on April 12, 2026.
 - `poetry run prodbox tla-check` passed on April 12, 2026.
-- `poetry run prodbox test all` completed cleanly in the final closure session on April 12, 2026.
+- `poetry run prodbox test all` completed cleanly on April 12, 2026 after postflight runtime
+  restore returned `prodbox host public-edge` to
+  `CLASSIFICATION=ready-for-external-proof`.
 - Aggregate suites now run `test_charts_platform.py` before `test_charts_storage.py`, restore the
   supported runtime with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
   `prodbox charts deploy gateway`, and `prodbox charts deploy vscode` after the destructive pytest

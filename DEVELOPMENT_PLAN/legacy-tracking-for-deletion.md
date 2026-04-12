@@ -74,6 +74,9 @@ _(empty — every previously tracked removal item has been moved to Completed be
 | `_render_gateway_systemd_unit()` helper | Sprint 4.12 | Removed from `src/prodbox/cli/dag_builders.py`; no host systemd unit is rendered by prodbox |
 | Host-supervisor and `install-service` language in `documents/engineering/distributed_gateway_architecture.md` and `documents/engineering/cli_command_surface.md` | Sprint 4.12 | Doctrine docs now describe the in-cluster `prodbox charts deploy gateway` workload as the canonical steady state |
 | `prodbox-gateway.service` host systemd unit | Sprint 4.12 | `systemctl disable --now prodbox-gateway.service` and `rm /etc/systemd/system/prodbox-gateway.service` executed on `bathurst` on 2026-04-10 after the in-cluster gateway was observed converging on `node-a` and continuing to keep `vscode.resolvefintech.com` current in Route 53. Before/after evidence captured in `/tmp/prodbox-gateway-before.log`, `/tmp/prodbox-gateway-pre-removal.log`, and `/tmp/prodbox-gateway-after.log`. |
+| Session-scoped AWS pre-test sweep as the only stale-resource preflight | Sprint 4.13 | Per-test scope-owned cleanup is now canonical; session sweep, CLI janitor, and cron remain defense-in-depth |
+| Fixture setup paths that can create partially tagged or untagged AWS resources before fixture yield | Sprint 4.13 | Shared helpers now tag Route 53, S3, VPC, subnet, security-group, EKS, and IAM resources and roll back partial setup before yield |
+| Expired EKS janitor flow that depends on post-delete cluster metadata | Sprint 4.13 | Shared janitor captures scope metadata before cluster deletion and cleans IAM/VPC resources without rereading deleted cluster state |
 
 ## Related Documents
 

@@ -2,7 +2,7 @@ global:
   namespace: default
   rootChart: keycloak-postgres
 
-replicaCount: 2
+replicaCount: 1
 
 image:
   repository: postgres

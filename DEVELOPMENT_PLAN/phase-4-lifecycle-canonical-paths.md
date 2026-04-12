@@ -15,9 +15,12 @@ removes duplicate or compatibility-only runtime, CLI, validation, and tooling pa
 the remaining local edge-infrastructure automation gaps around MetalLB, Traefik, cert-manager,
 always-on gateway supervision, explicit per-subdomain DNS continuity, and public-host diagnostics,
 consolidates the retained storage model to one StorageClass, migrates the `.data/` path scheme
-to 5 segments, adopts HA-mode deployment doctrine, replaces `.env` with a Dhall configuration
+to 5 segments, adopts explicit replica-count doctrine, replaces `.env` with a Dhall configuration
 file as the single config source, and enforces subprocess credential isolation so no host
-credentials leak via `os.environ` inheritance. All cleanup history remains centralized in
+credentials leak via `os.environ` inheritance. The phase also closes AWS-backed integration
+fixture hardening so every AWS-mutating test begins with scope-owned stale-resource cleanup,
+every fixture-owned AWS resource carries canonical tags, and setup failures roll back partial AWS
+state before pytest yields control. All cleanup history remains centralized in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprint 4.1: `rke2 cleanup` Hardening and Lifecycle Regression Closure ✅
@@ -313,7 +316,7 @@ None.
 ### Objective
 
 Consolidate retained storage to one StorageClass, migrate the `.data/` host-path scheme from
-4 segments to 5 segments, enforce Helm-only service deployment, and adopt HA-mode defaults.
+4 segments to 5 segments, enforce Helm-only service deployment, and adopt explicit chart replica counts.
 
 ### Architecture
 
@@ -341,9 +344,11 @@ is permitted. PVCs are created only by Helm charts deploying StatefulSets.
 infrastructure Helm releases (MetalLB, Traefik, cert-manager). The `prodbox charts` platform
 manages application Helm releases.
 
-**HA-mode defaults**: All stateful services deploy with multiple replicas and pod anti-affinity.
-Dev mode (`PRODBOX_DEV_MODE=true`, the default) suppresses anti-affinity constraints but retains
-multi-replica defaults.
+**Replica-count doctrine**: Replica counts are chart-specific. Single-writer retained-state
+services such as `keycloak-postgres` and `vscode` stay single-replica unless they gain explicit
+clustered storage semantics, while clustered services can run multiple replicas with pod
+anti-affinity. Dev mode (`PRODBOX_DEV_MODE=true`, the default) suppresses anti-affinity
+constraints but retains the configured replica counts.
 
 **Path stability**: The naming scheme is stable across teardown/rebuild cycles so data
 survives cluster down and cluster up. No tooling or CLI command is permitted to delete `.data/`
@@ -356,8 +361,8 @@ itself. `.data/` appears in both `.gitignore` and `.dockerignore`.
 - PV naming adopted the 5-segment scheme.
 - `ChartStorageSpec` gained a `claim_suffix` field; `ChartStorageBinding` gained `release_name`
   and `claim_suffix` fields.
-- HA-mode Helm values (`replicaCount`, `podAntiAffinity.enabled`) added to all chart definitions.
-- `PRODBOX_DEV_MODE` setting suppresses pod anti-affinity while retaining replica counts.
+- Replica-count Helm values (`replicaCount`, `podAntiAffinity.enabled`) are explicit per chart.
+- `PRODBOX_DEV_MODE` setting suppresses pod anti-affinity while retaining configured replica counts.
 - Bootstrap validation rejects charts that request a non-`manual` StorageClass.
 - Every Helm deploy passes the `manual` storage class explicitly via `CHART_STORAGE_CLASS_NAME`.
 - `documents/engineering/storage_lifecycle_doctrine.md` and
@@ -772,6 +777,70 @@ now that the in-cluster gateway daemon is the only supported steady state.
 
 None.
 
+
+## Sprint 4.13: Per-Test AWS Fixture Hygiene and Resource Tagging ✅
+
+**Status**: Done
+**Implementation**: `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/aws_cmd.py`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Tighten AWS-mutating integration fixtures until every test starts from a known-clean baseline,
+every fixture-owned AWS resource is tagged, and setup failure cannot strand billable resources
+before teardown begins.
+
+### Deliverables
+
+- Each AWS-mutating integration test performs a fixture-owned stale-resource search and cleanup
+  for its declared scope before creating fresh AWS resources. Session-wide sweeps remain
+  defense-in-depth, not the only preflight.
+- All taggable fixture-owned AWS resources carry the canonical ownership, expiry, and
+  safe-to-delete tags as soon as the create path can apply them. Taggable descendants created
+  during setup inherit the same tag set; untaggable AWS-managed children are deleted transitively
+  via their tagged parent and proven absent by the suite.
+- Fixture setup helpers own rollback for partial creation failure. If setup fails before the
+  fixture yields, the helper deletes every resource it created in that attempt before surfacing
+  the error.
+- The janitor and per-test preflight paths share one deletion contract across Route 53, S3, VPC,
+  EKS, and IAM so leaked EKS/IAM/VPC resources can be cleaned reliably without post-delete
+  metadata reads.
+- Integration coverage proves scope-scoped preflight cleanup, setup-failure rollback, and full
+  tag coverage for the AWS-backed suites.
+
+### Validation
+
+1. `poetry run prodbox aws sweep-fixtures`
+2. `poetry run prodbox check-code`
+3. `poetry run prodbox test unit`
+4. `poetry run prodbox test integration aws-foundation`
+5. `poetry run prodbox test integration aws-eks`
+6. `poetry run prodbox test integration dns-aws`
+7. `poetry run prodbox test integration pulumi`
+
+### Current Validation State
+
+- `poetry run prodbox aws sweep-fixtures` passed on April 12, 2026 and reported no expired
+  fixture resources.
+- `poetry run prodbox check-code` passed on April 12, 2026.
+- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
+- `poetry run prodbox test integration aws-foundation` passed on April 12, 2026 (3 tests).
+- `poetry run prodbox test integration aws-eks` passed on April 12, 2026 (1 test).
+- `poetry run prodbox test integration dns-aws` passed on April 12, 2026 (2 tests).
+- `poetry run prodbox test integration pulumi` passed on April 12, 2026 (1 test).
+- Unit coverage now proves scope-scoped preflight cleanup matching, setup-failure rollback,
+  canonical tag propagation, CLI janitor parsing, and EKS janitor cleanup that captures scope
+  metadata before cluster deletion.
+- Live AWS inventory audit on April 12, 2026 found no current fixture-owned Route 53, S3, VPC,
+  EKS, or IAM resources in account `751103452346`.
+- `poetry run prodbox test all` completed cleanly on April 12, 2026 after postflight runtime
+  restore returned `prodbox host public-edge` to
+  `CLASSIFICATION=ready-for-external-proof`.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -780,10 +849,12 @@ None.
   StorageClass, PV pre-creation and PVC-only-from-StatefulSet doctrine, retained storage and
   rebinding contract.
 - `documents/engineering/helm_chart_platform_doctrine.md` - 5-segment path scheme, `manual`
-  StorageClass, Helm-only service deployment, HA-mode defaults, supported chart and `vscode`
-  paths.
+  StorageClass, Helm-only service deployment, replica-count doctrine, supported chart and
+  `vscode` paths.
 - `documents/engineering/aws_integration_environment_doctrine.md` - blocked AWS rerun rules and
   canonical auth ownership.
+- `documents/engineering/aws_test_environment.md` - shared-account tagging, stale-resource search,
+  and cleanup expectations for ephemeral AWS test workloads.
 - `documents/engineering/cli_command_surface.md` - canonical command and validation paths.
 - `documents/engineering/dependency_management.md` - supported local tooling doctrine.
 - `documents/engineering/distributed_gateway_architecture.md` - gateway startup and DNS ownership.

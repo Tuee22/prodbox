@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -249,7 +249,8 @@ Implements the `DnsWriteClient` protocol:
 - `update_route53_record()` — boto3 UPSERT A record wrapped with `asyncio.to_thread()`
 - Auto-wired in daemon startup when gate config is present and no mock injected
 
-AWS auth for gateway DNS writes is loaded only from the repository `.env` file.
+AWS auth for gateway DNS writes is loaded from `Settings` via the repo-root
+`prodbox-config.json` compiled from `prodbox-config.dhall`.
 `dns_write_gate` must not contain AWS access key, secret key, session token, or similar
 credential fields.
 

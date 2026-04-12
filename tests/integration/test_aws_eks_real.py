@@ -9,10 +9,11 @@ import pytest
 
 from .aws_helpers import (
     EksClusterContext,
+    create_clean_fixture_scope,
     create_ephemeral_eks_cluster,
-    create_fixture_scope,
     delete_ephemeral_eks_cluster,
     ec2_network_tag_map,
+    ec2_subnet_tag_maps,
     eks_cluster_exists,
     eks_cluster_status,
     eks_cluster_tag_map,
@@ -34,7 +35,7 @@ def _abort_session_on_teardown_failure(*, target: str, error: BaseException) -> 
 @pytest.fixture
 def ephemeral_eks_cluster() -> Iterator[EksClusterContext]:
     """Create and always clean up a tagged EKS control plane and its dependencies."""
-    scope = create_fixture_scope(project_slug="prodbox", test_scope="aws-eks", ttl_hours=1)
+    scope = create_clean_fixture_scope(project_slug="prodbox", test_scope="aws-eks", ttl_hours=1)
     context = create_ephemeral_eks_cluster(scope)
     try:
         yield context
@@ -62,7 +63,8 @@ def test_eks_control_plane_lifecycle_against_fixture_owned_resources(
 
     network_tag_maps = ec2_network_tag_map(ephemeral_eks_cluster.network)
     assert has_required_fixture_tags(ephemeral_eks_cluster.scope, network_tag_maps["vpc"])
-    assert has_required_fixture_tags(ephemeral_eks_cluster.scope, network_tag_maps["subnet"])
+    for subnet_tag_map in ec2_subnet_tag_maps(ephemeral_eks_cluster.network):
+        assert has_required_fixture_tags(ephemeral_eks_cluster.scope, subnet_tag_map)
     assert has_required_fixture_tags(
         ephemeral_eks_cluster.scope,
         network_tag_maps["security_group"],

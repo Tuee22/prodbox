@@ -291,10 +291,10 @@ def _storage_binding(
     )
 
 
-def _ha_values(
+def _replica_values(
     settings: Mapping[str, RenderedSettingValue], replica_count: int
 ) -> dict[str, object]:
-    """Build HA-mode values: replica count and pod anti-affinity control."""
+    """Build chart replica values plus pod anti-affinity control."""
     dev_mode = settings.get("prodbox_dev_mode", True)
     anti_affinity_enabled = not dev_mode
     return {
@@ -317,7 +317,8 @@ def _values_for_keycloak_postgres(
         return Failure("keycloak_postgres_password is required in chart secrets")
     return Success(
         {
-            **_ha_values(settings, replica_count=2),
+            # Plain Postgres with one retained PVC is a single-writer service.
+            **_replica_values(settings, replica_count=1),
             "global": {
                 "namespace": namespace,
                 "rootChart": root_chart,
@@ -354,7 +355,7 @@ def _values_for_keycloak(
             return Failure(f"{key} is required in chart secrets")
     return Success(
         {
-            **_ha_values(settings, replica_count=2),
+            **_replica_values(settings, replica_count=2),
             "global": {
                 "namespace": namespace,
                 "rootChart": root_chart,
@@ -415,7 +416,7 @@ def _values_for_gateway(
     session_token_value = aws_session_token if isinstance(aws_session_token, str) else ""
     return Success(
         {
-            **_ha_values(settings, replica_count=len(GATEWAY_NODE_IDS)),
+            **_replica_values(settings, replica_count=len(GATEWAY_NODE_IDS)),
             "global": {
                 "namespace": namespace,
                 "rootChart": root_chart,
@@ -492,7 +493,7 @@ def _values_for_vscode(
         return Failure("keycloak_nginx_client_secret is required in chart secrets")
     return Success(
         {
-            **_ha_values(settings, replica_count=1),
+            **_replica_values(settings, replica_count=1),
             "global": {
                 "namespace": namespace,
                 "rootChart": root_chart,

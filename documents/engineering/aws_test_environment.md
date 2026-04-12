@@ -41,7 +41,9 @@ Other AWS services may be used in the same shared test account only when they ca
 
 This document owns the general AWS test-account model, DNS namespace strategy, cross-project isolation rules, and authentication posture.
 
-Project-specific harness rules remain owned by project documents. For `prodbox`, the repository-`.env` CLI/test-harness doctrine is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
+Project-specific harness rules remain owned by project documents. For `prodbox`, the
+repository-root Dhall-configured CLI/test-harness doctrine is defined in
+[AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---
 
@@ -386,6 +388,10 @@ Minimum required tags:
 
 Tags must not contain secrets or sensitive data.
 
+Project-specific harnesses may add suite-scope ownership tags such as `test_scope` and
+`scope_id` alongside the required base tag set when they help isolate exactly one fixture-owned
+resource set.
+
 ### 6.2 Naming Rules
 
 Human-readable names must embed project and run ownership.
@@ -459,10 +465,12 @@ An environment is not compliant with this doctrine if any of the following are t
 Each run must:
 
 1. allocate a unique `test_run_id`
-2. create the run-owned DNS child zone and delegation
-3. create the run-owned VPC and all required service resources
-4. apply required tags and names immediately
-5. execute the test workload
+2. run project-harness-owned preflight cleanup for the same project/suite scope when the harness
+   defines reusable suite scopes
+3. create the run-owned DNS child zone and delegation
+4. create the run-owned VPC and all required service resources
+5. apply required tags and names immediately
+6. execute the test workload
 
 ### 7.2 Teardown Sequence
 
@@ -486,7 +494,9 @@ Required behavior:
 
 1. cleanup runs in `finally` or equivalent teardown logic
 2. cleanup attempts every owned resource even after partial failures
-3. cleanup reports explicit failures with enough information to repair them safely
+3. setup paths that fail before fixture yield or workload execution still roll back already-created
+   resources from that attempt
+4. cleanup reports explicit failures with enough information to repair them safely
 
 ### 7.4 Expiry And Janitor Model
 
@@ -499,6 +509,10 @@ The shared environment should also operate an independent janitor process that:
 3. deletes leaked resources that are marked `safe_to_delete=true`
 
 Janitor automation is a baseline administrative control, not project workload state.
+
+Project harnesses may also run scope-scoped preflight cleanup to reclaim leaked but unexpired
+resources from prior crashed runs of the same suite. That preflight is defense-in-depth alongside
+the independent janitor, not a replacement for it.
 
 ---
 

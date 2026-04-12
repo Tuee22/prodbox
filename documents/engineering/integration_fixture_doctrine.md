@@ -32,6 +32,10 @@ It does not restate `prodbox test` prerequisite/runbook gating. That operator-fa
 
 It does not own AWS environment creation/tagging/cleanup doctrine for stateful AWS tests. That is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
+AWS-backed tests follow equivalent fixture invariants: per-test clean baseline, setup rollback
+before yield, and teardown abort on cleanup failure, as defined in
+[AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
+
 ---
 
 ## 2. Fixture Ownership Rules

@@ -46,7 +46,7 @@ external proof part of the canonical automated validation path.
 ### Current Validation State
 
 - `poetry run prodbox check-code` passed on April 12, 2026.
-- `poetry run prodbox test unit` passed on April 12, 2026 (961 tests).
+- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
 - The Route 53 real-system suite in `tests/integration/test_dns_route53_aws.py` passed during the
   canonical aggregate rerun on April 12, 2026.
 - `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests) and remains

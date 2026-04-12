@@ -18,8 +18,10 @@ from .aws_helpers import (
     build_dns_suite_env,
     create_ephemeral_hosted_zone,
     delete_ephemeral_hosted_zone,
+    has_required_fixture_tags,
     override_config_json,
     query_route53_a_record,
+    route53_zone_tag_map,
     wait_for_route53_a_record,
 )
 
@@ -61,6 +63,10 @@ def test_dns_check_reports_ephemeral_route53_zone_state(
 ) -> None:
     """dns check should read only the fixture-owned hosted zone."""
     suite_env = build_dns_suite_env(ephemeral_route53_zone)
+    assert has_required_fixture_tags(
+        ephemeral_route53_zone.scope,
+        route53_zone_tag_map(ephemeral_route53_zone),
+    )
     config_overrides: dict[str, object] = {
         "route53": {"zone_id": suite_env["ROUTE53_ZONE_ID"]},
         "domain": {

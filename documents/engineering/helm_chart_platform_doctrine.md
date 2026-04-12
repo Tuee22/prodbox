@@ -83,7 +83,7 @@ Rules:
 2. `.data/` is excluded from both `.gitignore` and `.dockerignore`.
 3. PV names are deterministic: `prodbox-chart-<namespace>-<release>-<workload>-<ordinal>-<claim>`.
 4. The `StorageClass` `manual` (provisioner `kubernetes.io/no-provisioner`, Retain policy) is the only permitted StorageClass; bootstrap fails if a chart requests a dynamic provisioner.
-5. All stateful services deploy in HA mode (multiple replicas with pod anti-affinity) by default; dev mode (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity but retains replica counts.
+5. Replica counts are chart-specific. Single-writer retained-state charts such as `keycloak-postgres` and `vscode` stay single-replica unless they gain an explicit clustered storage design; charts that support concurrent replicas keep pod anti-affinity enabled by default. Dev mode (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity but retains the configured replica counts.
 
 ---
 
@@ -110,9 +110,11 @@ The chart registry is defined in `src/prodbox/lib/chart_platform.py`. Current ch
 | `keycloak-postgres` | none | 20Gi | no |
 | `keycloak` | `keycloak-postgres` | none | yes |
 | `vscode` | `keycloak` | 50Gi | yes |
+| `gateway` | none | none | yes |
 
 Root charts:
 
+- `gateway` — deploys the in-cluster distributed gateway stack into the `gateway` namespace.
 - `vscode` — deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
 
 ## 10. Supported Auth Model For `vscode`

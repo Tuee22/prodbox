@@ -3919,6 +3919,31 @@ class TestPulumiEffects:
         assert value is False
         assert len(interpreter.environment_errors) == 1
 
+    def test_pulumi_env_sets_default_repo_local_backend(
+        self,
+        mock_env: dict[str, str],  # noqa: ARG002
+    ) -> None:
+        """Pulumi env should create and select the canonical repo-local backend."""
+        backend_dir = settings_module.REPOSITORY_ROOT / ".pulumi-backend"
+
+        env = EffectInterpreter._pulumi_env()
+
+        assert env["PULUMI_BACKEND_URL"] == f"file://{backend_dir}"
+        assert backend_dir.is_dir()
+
+    def test_pulumi_env_creates_file_backend_dir_for_query_urls(
+        self,
+        mock_env: dict[str, str],  # noqa: ARG002
+    ) -> None:
+        """Pulumi env should create file-backed backend dirs even with query-string URLs."""
+        backend_dir = settings_module.REPOSITORY_ROOT / "custom-backend"
+        backend_url = f"file://{backend_dir}?no_tmp_dir=true"
+
+        env = EffectInterpreter._pulumi_env({"PULUMI_BACKEND_URL": backend_url})
+
+        assert env["PULUMI_BACKEND_URL"] == backend_url
+        assert backend_dir.is_dir()
+
     @pytest.mark.asyncio
     async def test_pulumi_preview_success(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002
         """PulumiPreview should succeed."""

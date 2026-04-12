@@ -50,8 +50,8 @@ Build a clean-room prodbox repository with:
 |---------|----------------|-----------|
 | CLI control plane | `poetry run prodbox <command>` | Repository worktree |
 | AWS auth/config | Repository-root `prodbox-config.dhall` compiled to `prodbox-config.json`, read by `Settings()` | Repository root |
-| RKE2 lifecycle | `prodbox rke2 ensure`, `status`, `cleanup --yes` | `prodbox` CLI |
-| Pulumi infrastructure | `prodbox pulumi ...` | `src/prodbox/infra/` plus Route 53 |
+| RKE2 lifecycle | `prodbox rke2 ensure`, `status`, `cleanup --yes` | `prodbox` CLI for substrate plus Harbor and retained-storage runtime |
+| Pulumi infrastructure | `prodbox pulumi ...` | `src/prodbox/infra/` plus Route 53 for MetalLB, Traefik, cert-manager, and issuer/bootstrap ownership |
 | Gateway startup | `prodbox gateway start` (in-pod entrypoint) | `src/prodbox/gateway_daemon.py` deployed via `prodbox charts` |
 | Gateway steady state | In-cluster gateway pod under leader election | Kubernetes Deployment/StatefulSet managed by `prodbox charts` |
 | Gateway DNS writes | Gateway `dns_write_gate` | In-cluster gateway pod (elected leader) |
@@ -161,45 +161,36 @@ Additional canonical state established by Phase 4 cleanup work:
 
 Open, incomplete, or blocked:
 
-- None.
+- Sprint 6.2 is active because the current aggregate-suite rerun is not clean-room safe from
+  `poetry run prodbox rke2 cleanup --yes`.
+- `poetry run prodbox test all` currently fails before pytest suite execution because the
+  Phase 1.5 public-edge gate runs while the Pulumi-managed edge stack is absent.
+- The current cluster lacks `metallb-system`, `traefik-system`, and `cert-manager`, but still
+  retains cluster-scoped Traefik residue such as the `traefik` `IngressClass` and Traefik CRDs,
+  so teardown and recreate are not yet deterministic.
+- `/etc/hosts` on `bathurst` overrides `vscode.resolvefintech.com` to `192.168.2.240`, which is
+  incompatible with authoritative external public-host proof.
+- Final handoff still lacks a post-aggregate zero-AWS-residue proof tied to the clean-cluster
+  rerun itself.
 
 ## Current-Environment Validation Snapshot
 
-- `poetry run prodbox aws sweep-fixtures` passed on April 12, 2026 and reported no
-  expired fixture resources.
-- `poetry run prodbox check-code` passed on April 12, 2026.
-- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
-- `poetry run prodbox test integration aws-foundation` passed on April 12, 2026 (3 tests).
-- `poetry run prodbox test integration aws-eks` passed on April 12, 2026 (1 test).
-- `poetry run prodbox test integration dns-aws` passed on April 12, 2026 (2 tests).
-- `poetry run prodbox test integration pulumi` passed on April 12, 2026 (1 test).
-- `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
-- `poetry run prodbox test integration charts-vscode` passed on April 12, 2026 (8 tests).
-- `poetry run prodbox tla-check` passed on April 12, 2026.
-- `poetry run prodbox test integration all` passed on April 12, 2026.
-- `poetry run prodbox test all` completed cleanly on April 12, 2026 after postflight runtime
-  restore returned `prodbox host public-edge` to
-  `CLASSIFICATION=ready-for-external-proof`.
-- Live AWS inventory audit on April 12, 2026 found no current fixture-owned Route 53, S3, VPC,
-  EKS, or IAM resources in account `751103452346`.
-- Live cluster on `bathurst` has RKE2, MetalLB, Traefik, cert-manager, the
-  `letsencrypt-http01` ClusterIssuer, the in-cluster gateway, and the `vscode` stack restored on
-  the supported path.
-- `prodbox-config.dhall` and `prodbox-config.json` carry the canonical AWS, Route 53,
-  domain, ACME, and deployment settings.
-- `kubectl get clusterissuer letsencrypt-http01 -o yaml` shows
-  `spec.acme.server=https://acme.zerossl.com/v2/DV90`, `externalAccountBinding` configured, and
-  `status.conditions[type=Ready].status=True`.
-- `kubectl wait --for=condition=Ready certificate/vscode-tls -n vscode --timeout=300s` succeeded
-  on April 12, 2026.
-- Direct TLS verification for `vscode.resolvefintech.com:443` returns
-  `SUBJECT_CN=vscode.resolvefintech.com`, `ISSUER_O=ZeroSSL GmbH`, and
-  `ISSUER_CN=ZeroSSL RSA DV SSL CA 2`.
-- `prodbox host public-edge` reports `CLASSIFICATION=ready-for-external-proof` with
-  `ROUTE53_STATUS=in-sync`, `INGRESSCLASS_TRAEFIK=present`, and the expected Traefik load-balancer
-  IP.
-- The in-cluster gateway remains the sole Route 53 writer for `vscode.resolvefintech.com`.
-- The legacy ledger Pending Removal section is empty.
+- `poetry run prodbox test all` failed on April 12, 2026 in Phase 1.5 immediately after
+  `prodbox rke2 ensure`; the surfaced failure was `public-edge diagnostic failed`.
+- `poetry run prodbox config compile` and `poetry run prodbox config validate` both passed on
+  April 12, 2026.
+- `poetry run prodbox host public-edge` failed on April 12, 2026 because the cluster currently
+  does not expose the `certificate` resource type required for `certificate/vscode-tls`.
+- `kubectl get ns` on April 12, 2026 showed `metallb-system`, `traefik-system`, and
+  `cert-manager` absent.
+- `helm list -A` on April 12, 2026 showed no `metallb`, `traefik`, or `cert-manager` releases.
+- `kubectl get ingressclass traefik -o yaml` and `kubectl get crd` still showed Traefik
+  cluster-scoped residue on April 12, 2026.
+- Public resolvers return `142.115.123.42` for `vscode.resolvefintech.com`, but `/etc/hosts` on
+  `bathurst` overrides the hostname to `192.168.2.240`.
+- The last known AWS janitor audit on April 12, 2026 found no current fixture-owned Route 53, S3,
+  VPC, EKS, or IAM resources in account `751103452346`, but this proof has not yet been rerun
+  immediately after a successful clean-cluster aggregate suite.
 
 ## Hard Constraints
 
@@ -228,6 +219,14 @@ Open, incomplete, or blocked:
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
 - The only supported validation paths are named `prodbox` commands; raw passthrough or alternate
   operator workflows are debt to remove, not supported surfaces.
+- Final clean-room handoff requires a single supported rerun path from
+  `poetry run prodbox rke2 cleanup --yes` to `poetry run prodbox test all` with no manual Pulumi,
+  Helm, or host resolver repair steps in between.
+- Final clean-room handoff also requires an immediate post-aggregate
+  `poetry run prodbox aws sweep-fixtures` result proving that no fixture-owned Route 53, S3, VPC,
+  EKS, or IAM resources remain.
+- Authoritative public-host proof may not depend on `/etc/hosts` or other local resolver overrides
+  for `vscode.resolvefintech.com`.
 - Every AWS-mutating integration test must begin by searching for and deleting stale fixture-owned
   resources for its declared scope before creating fresh AWS resources. All taggable fixture-owned
   AWS resources must carry canonical ownership, expiry, and safe-to-delete tags, and setup

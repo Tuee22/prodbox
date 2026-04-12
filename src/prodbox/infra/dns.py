@@ -75,6 +75,7 @@ def deploy_dns(
         type="A",
         ttl=settings.demo_ttl,
         records=[current_ip],
+        allow_overwrite=True,
         opts=pulumi.ResourceOptions(
             provider=aws_provider,
             ignore_changes=["records"],

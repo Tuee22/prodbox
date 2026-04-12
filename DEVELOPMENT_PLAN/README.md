@@ -71,7 +71,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 3 | Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening and Canonical-Path Cleanup | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and Authoritative External Proof | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
-| 6 | Final Clean-Room Rerun and Zero-Legacy Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
+| 6 | Final Clean-Room Rerun and Zero-Legacy Handoff | 🔄 Active | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 
 **Canonical architecture**: one supported `prodbox` CLI surface, one repository-root Dhall
 config compiled to JSON, one in-cluster always-on gateway Route 53 write path through
@@ -107,55 +107,45 @@ service deployment path, explicit chart-owned replica counts that keep single-wr
 | 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/aws_cmd.py` |
 | 5.1 Public Hostname Closure and Authoritative External Proof | ✅ Done | - | - | `prodbox-config.dhall`, `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/infra/cluster_issuer.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
 | 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ✅ Done | - | - | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/metallb.py`, `tests/unit/test_infra_program.py`, `tests/unit/test_test_cmd.py` |
+| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | 🔄 Active | - | Clean-cluster aggregate rerun still fails before pytest because the public-edge gate runs before Pulumi-managed edge infrastructure is restored; cleanup also leaves stale public-edge resolver and cluster-scoped residue, and final handoff still lacks a post-aggregate zero-AWS proof | `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/rke2.py`, `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/test_prodbox_lifecycle.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py`, `tests/integration/aws_helpers.py`, `tests/integration/conftest.py` |
 
 ## Current Plan Status
 
-As of April 12, 2026: **the development plan is complete.**
-Phases 0 through 6 are all `✅ Done`. Sprint 4.13 closed after AWS-mutating fixtures adopted
-scope-owned preflight cleanup, canonical ownership/expiry/safe-delete tagging, setup-failure
-rollback, and shared janitor cleanup across Route 53, S3, VPC, EKS, and IAM. Aggregate suites
-still gate on `prodbox host public-edge` before Phase 2, run `test_charts_platform.py` before
-`test_charts_storage.py` so singleton chart releases are cleared before the storage-only suite,
-restore the supported runtime with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
-`prodbox charts deploy gateway`, and `prodbox charts deploy vscode` after the destructive pytest
-tail, and the Pulumi-managed infrastructure charts use stable Helm release names (`metallb`,
-`traefik`, `cert-manager`) so cluster-scoped objects reattach cleanly after clean-room teardown
-and recreation. The legacy ledger is empty again.
+As of April 12, 2026: **Phase 6 is active again.**
+The previous clean-room handoff claim is invalidated by the current live rerun findings on
+`bathurst`. `poetry run prodbox test all` now fails in Phase 1.5 after `prodbox rke2 ensure`
+because the aggregate-suite public-edge gate runs before MetalLB, Traefik, cert-manager, and the
+issuer path are restored from a clean cluster. Direct diagnosis shows
+`poetry run prodbox host public-edge` failing at `kubectl get certificate vscode-tls -n vscode`
+because the cluster no longer has cert-manager CRDs, while `metallb-system`, `traefik-system`,
+and `cert-manager` are absent and cluster-scoped Traefik residue still remains. Public DNS for
+`vscode.resolvefintech.com` resolves correctly through public resolvers, but `/etc/hosts` on the
+host still overrides that name to `192.168.2.240`, so the canonical public-host proof path is not
+yet clean-room safe. Sprint 6.2 now owns three closure targets: a single self-healing aggregate
+bootstrap path from `poetry run prodbox rke2 cleanup --yes`, deterministic removal of stale
+public-edge residue and unsupported host resolver overrides, and a final post-aggregate proof that
+no fixture-owned AWS Route 53, S3, VPC, EKS, or IAM resources remain.
 
 Current-environment validation snapshot (April 12, 2026):
 
-- `poetry run prodbox aws sweep-fixtures` — passed; no expired fixture resources reported.
-- `poetry run prodbox check-code` — passed.
-- `poetry run prodbox test unit` — 972 passed.
-- `poetry run prodbox test integration aws-foundation` — 3 passed.
-- `poetry run prodbox test integration aws-eks` — 1 passed.
-- `poetry run prodbox test integration dns-aws` — 2 passed.
-- `poetry run prodbox test integration pulumi` — 1 passed.
-- `poetry run prodbox test integration public-dns` — 2 passed.
-- `poetry run prodbox test integration charts-vscode` — 8 passed.
-- `poetry run prodbox host public-edge` — `CLASSIFICATION=ready-for-external-proof`,
-  `ROUTE53_STATUS=in-sync`, `TRAEFIK_SERVICE_IP=192.168.2.240`, `CERTIFICATE_READY=true`,
-  `PRIVATE_EDGE_READY=true`.
-- `kubectl get clusterissuer letsencrypt-http01 -o yaml` reports
-  `spec.acme.server=https://acme.zerossl.com/v2/DV90`, `externalAccountBinding` configured, and
-  `status.conditions[type=Ready].status=True`.
-- Direct TLS probe for `vscode.resolvefintech.com:443` reports
-  `SUBJECT_CN=vscode.resolvefintech.com`, `ISSUER_O=ZeroSSL GmbH`, and
-  `ISSUER_CN=ZeroSSL RSA DV SSL CA 2`.
-- `poetry run prodbox tla-check` — passed.
-- `poetry run prodbox test integration all` — passed.
-- `poetry run prodbox test all` — rerun completed cleanly on April 12, 2026 after postflight
-  runtime restore returned `prodbox host public-edge` to
-  `CLASSIFICATION=ready-for-external-proof`.
-- Live AWS inventory audit on April 12, 2026 found no current fixture-owned Route 53, S3, VPC,
-  EKS, or IAM resources in account `751103452346`.
-- Live cluster on `bathurst` has RKE2, MetalLB (`192.168.2.240-192.168.2.250`), Traefik
-  (LoadBalancer at `192.168.2.240`), cert-manager, `letsencrypt-http01`, the in-cluster gateway,
-  and the `vscode` stack on the supported path.
-- Pulumi local backend remains initialized; the in-cluster gateway remains the sole Route 53 writer
-  and `ROUTE53_STATUS=in-sync` holds for `vscode.resolvefintech.com`.
-- `prodbox-gateway.service` remains removed from `bathurst`.
-- The legacy ledger Pending Removal section is empty.
+- `poetry run prodbox test all` failed on April 12, 2026 after `Phase 1.5/2: enforcing integration runbook`;
+  root cause surfaced as `pytest_phase_two: Custom effect failed: public-edge diagnostic failed: DAG execution complete`.
+- `poetry run prodbox config compile` and `poetry run prodbox config validate` both succeeded on
+  April 12, 2026, so the current blocker is not missing compiled config.
+- `poetry run prodbox host public-edge` failed on April 12, 2026 because
+  `kubectl get certificate vscode-tls -n vscode -o json --ignore-not-found=true` returned
+  `error: the server doesn't have a resource type "certificate"`.
+- `kubectl get ns` on April 12, 2026 showed `metallb-system`, `traefik-system`, and
+  `cert-manager` absent, while `helm list -A` showed no `metallb`, `traefik`, or
+  `cert-manager` releases.
+- `kubectl get ingressclass traefik -o yaml` and `kubectl get crd` still show Traefik
+  cluster-scoped residue on April 12, 2026, so the current cleanup/recreate path is not
+  deterministic.
+- Public resolvers return `142.115.123.42` for `vscode.resolvefintech.com`, but `/etc/hosts` on
+  `bathurst` still maps that hostname to `192.168.2.240`.
+- The last known AWS janitor audit on April 12, 2026 found no fixture-owned Route 53, S3, VPC,
+  EKS, or IAM resources, but Phase 6 closure now requires rerunning that proof immediately after
+  the clean-cluster aggregate suite.
 
 ## Exit Definition
 
@@ -196,9 +186,19 @@ This plan is done only when all of the following are true:
     IAM.
 14. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
     verification for `vscode.resolvefintech.com`.
-15. Sprint 6.1 reruns the full clean-room validation set from canonical CLI entrypoints only.
-16. No document under `documents/` carries a competing sprint narrative or completion-status track.
-17. The remaining legacy inventory is empty.
+15. Sprint 6.1 reruns the final doctrine-aligned validation set from canonical CLI entrypoints and
+    keeps the legacy ledger empty at the point of handoff.
+16. Sprint 6.2 closes with `poetry run prodbox rke2 cleanup --yes` followed by the canonical
+    aggregate rerun restoring the full public-edge stack without manual Pulumi, Helm, or host
+    resolver intervention; `prodbox host public-edge` must render a deterministic report even when
+    the edge stack is absent or partially torn down, and the restored path must end at
+    `CLASSIFICATION=ready-for-external-proof`.
+17. Sprint 6.2 also closes with the authoritative public-host proof path using public DNS only
+    (no `/etc/hosts` override for `vscode.resolvefintech.com`) and with an immediate
+    post-aggregate `poetry run prodbox aws sweep-fixtures` audit proving that no fixture-owned
+    Route 53, S3, VPC, EKS, or IAM resources remain.
+18. No document under `documents/` carries a competing sprint narrative or completion-status track.
+19. The remaining legacy inventory is empty.
 
 ## Related Documents
 

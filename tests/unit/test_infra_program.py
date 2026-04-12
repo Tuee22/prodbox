@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import prodbox.infra.cert_manager as cert_manager_module
 import prodbox.infra.cluster_issuer as cluster_issuer_module
+import prodbox.infra.dns as dns_module
 import prodbox.infra.ingress as ingress_module
 import prodbox.infra.metallb as metallb_module
 from prodbox.settings import LanAddressing
@@ -170,6 +171,38 @@ def test_deploy_ingress_uses_stable_helm_release_name() -> None:
     release_kwargs = mock_release.call_args.kwargs
     assert release_kwargs["name"] == "traefik"
     assert release_kwargs["namespace"] == "traefik-system"
+
+
+def test_deploy_dns_allows_overwrite_for_existing_bootstrap_record() -> None:
+    """DNS bootstrap should reattach cleanly to an existing Route 53 A record."""
+    record = MagicMock()
+    settings = MagicMock(
+        route53_zone_id="ZTEST",
+        demo_fqdn="demo.example.com",
+        demo_ttl=60,
+        bootstrap_public_ip_override=None,
+    )
+
+    with (
+        patch.object(dns_module, "get_public_ip", return_value="203.0.113.10"),
+        patch.object(
+            dns_module.aws.route53,
+            "Record",
+            return_value=record,
+        ) as mock_record,
+        patch.object(
+            dns_module.pulumi,
+            "ResourceOptions",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(dns_module.pulumi, "export"),
+    ):
+        result = dns_module.deploy_dns(settings, MagicMock())
+
+    assert result.a_record is record
+    record_kwargs = mock_record.call_args.kwargs
+    assert record_kwargs["allow_overwrite"] is True
+    assert record_kwargs["opts"]["ignore_changes"] == ["records"]
 
 
 def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:

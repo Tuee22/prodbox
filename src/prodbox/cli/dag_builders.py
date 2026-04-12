@@ -61,7 +61,7 @@ from prodbox.cli.command_adt import (
     RKE2StatusCommand,
     RKE2StopCommand,
 )
-from prodbox.cli.effect_dag import EffectDAG, EffectNode
+from prodbox.cli.effect_dag import EffectDAG, EffectNode, PrerequisiteFailurePolicy
 from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
@@ -494,7 +494,7 @@ def _render_public_edge_report(
     public_ip: str,
     route53_record_ip: str | None,
     ingress_classes_doc: dict[str, object],
-    traefik_service_doc: dict[str, object],
+    traefik_service_doc: dict[str, object] | None,
     ingress_nginx_services_doc: dict[str, object],
     vscode_ingress_doc: dict[str, object] | None,
     vscode_certificate_doc: dict[str, object] | None,
@@ -506,7 +506,9 @@ def _render_public_edge_report(
     configured_fqdn = _optional_setting_string(settings, "vscode_fqdn") or _require_setting_string(
         settings, "demo_fqdn"
     )
-    traefik_service_items = _sequence_at(traefik_service_doc, "items")
+    traefik_service_items = (
+        _sequence_at(traefik_service_doc, "items") if traefik_service_doc is not None else ()
+    )
     traefik_first_service = (
         _as_json_mapping(traefik_service_items[0]) if traefik_service_items else None
     )
@@ -677,16 +679,45 @@ def _require_successful_kubectl_stdout(prereq_results: PrereqResults, effect_id:
             raise ValueError(f"{effect_id} prerequisite failed: {stderr}")
 
 
+def _is_optional_kubectl_capture_absence(error_text: str) -> bool:
+    """Return True when one kubectl capture failure means the object or API is absent."""
+    lowered = error_text.lower()
+    return (
+        "notfound" in lowered
+        or "not found" in lowered
+        or "the server doesn't have a resource type" in lowered
+        or "could not find the requested resource" in lowered
+        or "no matches for kind" in lowered
+    )
+
+
 def _optional_json_doc_from_capture(
     prereq_results: PrereqResults, effect_id: str
 ) -> dict[str, object] | None:
     """Parse one optional kubectl JSON capture result."""
-    stdout = _require_successful_kubectl_stdout(prereq_results, effect_id).strip()
-    match stdout:
-        case "":
+    result = prereq_results.get(effect_id)
+    match result:
+        case Success(value=(int() as returncode, str() as stdout, str() as stderr)):
+            match returncode:
+                case 0:
+                    stripped_stdout = stdout.strip()
+                    match stripped_stdout:
+                        case "":
+                            return None
+                        case _:
+                            return _parse_json_mapping(stripped_stdout)
+                case _ if _is_optional_kubectl_capture_absence(stderr):
+                    return None
+                case _:
+                    raise ValueError(f"{effect_id} prerequisite failed: {stderr}")
+        case Success(value=_):
+            raise ValueError(f"{effect_id} prerequisite returned unexpected value type")
+        case Failure(error=str() as error) if _is_optional_kubectl_capture_absence(error):
             return None
+        case Failure(error=error):
+            raise ValueError(f"{effect_id} prerequisite failed: {error}")
         case _:
-            return _parse_json_mapping(stdout)
+            raise ValueError(f"{effect_id} prerequisite missing")
 
 
 def _k8s_logs_effect_id(namespace: str, pod_name: str) -> str:
@@ -867,10 +898,21 @@ def _build_rke2_cleanup_effect(
 ) -> Sequence:
     """Build dynamic rke2 cleanup effect from prerequisite machine identity."""
     machine_identity = _require_machine_identity(prereq_results)
+    label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
     return Sequence(
         effect_id="rke2_cleanup",
         description="Cleanup prodbox-annotated Kubernetes resources without touching host paths",
         effects=[
+            AnnotateProdboxManagedResources(
+                effect_id="rke2_cleanup_reconcile_prodbox_annotations",
+                description="Apply prodbox annotation doctrine before cleanup",
+                prodbox_id=machine_identity.prodbox_id,
+                annotation_key=PRODBOX_ANNOTATION_KEY,
+                label_key=PRODBOX_LABEL_KEY,
+                label_value=label_value,
+                managed_namespaces=PRODBOX_MANAGED_NAMESPACES,
+                helm_instances=PRODBOX_HELM_INSTANCES,
+            ),
             CleanupProdboxAnnotatedResources(
                 effect_id="rke2_cleanup_delete_annotated_resources",
                 description="Delete prodbox annotated resources except retained storage kinds",
@@ -1270,6 +1312,7 @@ def _build_host_public_edge_dag(_cmd: HostPublicEdgeCommand) -> EffectDAG:
                 "host_public_edge_vscode_certificate",
             ]
         ),
+        prerequisite_failure_policy=PrerequisiteFailurePolicy.IGNORE,
         effect_builder=lambda _reduced, prereq_results: WriteStdout(
             effect_id="host_public_edge",
             description="Render canonical public-edge diagnostics",
@@ -1284,10 +1327,8 @@ def _build_host_public_edge_dag(_cmd: HostPublicEdgeCommand) -> EffectDAG:
                         prereq_results, "host_public_edge_ingress_classes"
                     )
                 ),
-                traefik_service_doc=_parse_json_mapping(
-                    _require_successful_kubectl_stdout(
-                        prereq_results, "host_public_edge_traefik_service"
-                    )
+                traefik_service_doc=_optional_json_doc_from_capture(
+                    prereq_results, "host_public_edge_traefik_service"
                 ),
                 ingress_nginx_services_doc=_parse_json_mapping(
                     _require_successful_kubectl_stdout(
@@ -1626,7 +1667,7 @@ def _build_pulumi_up_dag(cmd: PulumiUpCommand) -> EffectDAG:
             description="Select Pulumi stack for apply",
             stack="",
             cwd=cmd.cwd,
-            create_if_missing=False,
+            create_if_missing=True,
         ),
         prerequisites=frozenset(["pulumi_logged_in"]),
         effect_builder=lambda _reduced, _prereq_results: PulumiStackSelect(
@@ -1634,7 +1675,7 @@ def _build_pulumi_up_dag(cmd: PulumiUpCommand) -> EffectDAG:
             description="Select Pulumi stack for apply",
             stack=_resolve_pulumi_stack(cmd.stack),
             cwd=cmd.cwd,
-            create_if_missing=False,
+            create_if_missing=True,
         ),
     )
     root = EffectNode(
@@ -1710,7 +1751,7 @@ def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
             description="Select Pulumi stack for refresh",
             stack="",
             cwd=cmd.cwd,
-            create_if_missing=False,
+            create_if_missing=True,
         ),
         prerequisites=frozenset(["pulumi_logged_in"]),
         effect_builder=lambda _reduced, _prereq_results: PulumiStackSelect(
@@ -1718,7 +1759,7 @@ def _build_pulumi_refresh_dag(cmd: PulumiRefreshCommand) -> EffectDAG:
             description="Select Pulumi stack for refresh",
             stack=_resolve_pulumi_stack(cmd.stack),
             cwd=cmd.cwd,
-            create_if_missing=False,
+            create_if_missing=True,
         ),
     )
     root = EffectNode(

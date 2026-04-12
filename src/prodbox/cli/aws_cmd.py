@@ -22,6 +22,11 @@ class _SweepResult:
     deleted_vpcs: int
     deleted_eks_clusters: int
     deleted_iam_roles: int
+    remaining_hosted_zones: int = 0
+    remaining_buckets: int = 0
+    remaining_vpcs: int = 0
+    remaining_eks_clusters: int = 0
+    remaining_iam_roles: int = 0
 
 
 def _sweep_subprocess_env() -> dict[str, str]:
@@ -69,6 +74,11 @@ def _parse_sweep_output(stdout: str) -> _SweepResult:
         deleted_vpcs=_require_int_field(payload, "deleted_vpcs"),
         deleted_eks_clusters=_require_int_field(payload, "deleted_eks_clusters"),
         deleted_iam_roles=_require_int_field(payload, "deleted_iam_roles"),
+        remaining_hosted_zones=_require_int_field(payload, "remaining_hosted_zones"),
+        remaining_buckets=_require_int_field(payload, "remaining_buckets"),
+        remaining_vpcs=_require_int_field(payload, "remaining_vpcs"),
+        remaining_eks_clusters=_require_int_field(payload, "remaining_eks_clusters"),
+        remaining_iam_roles=_require_int_field(payload, "remaining_iam_roles"),
     )
 
 
@@ -122,25 +132,50 @@ def _render_resource_line(console: Console, count: int, label: str) -> None:
 
 @aws.command("sweep-fixtures")
 def sweep_fixtures() -> None:
-    """Delete expired fixture-owned AWS resources from prior test crashes."""
+    """Delete expired fixture-owned AWS resources and prove nothing remains."""
     console = Console()
     console.print("[bold]Running AWS fixture sweep...[/bold]")
     result = _run_sweep()
-    total = (
+    total_deleted = (
         result.deleted_hosted_zones
         + result.deleted_buckets
         + result.deleted_vpcs
         + result.deleted_eks_clusters
         + result.deleted_iam_roles
     )
-    match total:
+    match total_deleted:
         case 0:
             console.print("[green]No expired fixture resources found.[/green]")
         case _:
-            console.print(f"[yellow]Deleted {total} expired fixture resource(s):[/yellow]")
+            console.print(f"[yellow]Deleted {total_deleted} expired fixture resource(s):[/yellow]")
             _render_resource_line(console, result.deleted_eks_clusters, "EKS clusters")
             _render_resource_line(console, result.deleted_iam_roles, "IAM roles")
             _render_resource_line(console, result.deleted_hosted_zones, "Route 53 hosted zones")
             _render_resource_line(console, result.deleted_buckets, "S3 buckets")
             _render_resource_line(console, result.deleted_vpcs, "VPCs")
+
+    total_remaining = (
+        result.remaining_hosted_zones
+        + result.remaining_buckets
+        + result.remaining_vpcs
+        + result.remaining_eks_clusters
+        + result.remaining_iam_roles
+    )
+    match total_remaining:
+        case 0:
+            console.print("[green]No fixture-owned AWS resources remain.[/green]")
+        case _:
+            console.print(f"[red]Fixture-owned AWS resources still remain: {total_remaining}[/red]")
+            _render_resource_line(console, result.remaining_eks_clusters, "Remaining EKS clusters")
+            _render_resource_line(console, result.remaining_iam_roles, "Remaining IAM roles")
+            _render_resource_line(
+                console,
+                result.remaining_hosted_zones,
+                "Remaining Route 53 hosted zones",
+            )
+            _render_resource_line(console, result.remaining_buckets, "Remaining S3 buckets")
+            _render_resource_line(console, result.remaining_vpcs, "Remaining VPCs")
+            raise click.ClickException(
+                "fixture-owned AWS resources still remain after the canonical sweep"
+            )
     return None

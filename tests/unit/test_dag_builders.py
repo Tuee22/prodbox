@@ -43,6 +43,7 @@ from prodbox.cli.command_adt import (
     RKE2StopCommand,
 )
 from prodbox.cli.dag_builders import command_to_dag
+from prodbox.cli.effect_dag import PrerequisiteFailurePolicy
 from prodbox.cli.effects import (
     AnnotateProdboxManagedResources,
     CaptureKubectlOutput,
@@ -423,6 +424,7 @@ class TestHostCommandPrerequisites:
                 assert "host_public_edge_public_ip" in root.prerequisites
                 assert "host_public_edge_route53_record" in root.prerequisites
                 assert "host_public_edge_vscode_certificate" in root.prerequisites
+                assert root.prerequisite_failure_policy == PrerequisiteFailurePolicy.IGNORE
                 assert isinstance(root.effect, WriteStdout)
 
                 route53 = dag.get_node("host_public_edge_route53_record")
@@ -534,6 +536,55 @@ class TestHostCommandPrerequisites:
                 assert "CLASSIFICATION=ready-for-external-proof" in built.text
                 assert "ROUTE53_STATUS=in-sync" in built.text
                 assert "ACTIVE_LAN_INTERFACE=eno1" in built.text
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_host_public_edge_effect_builder_renders_report_when_optional_edge_state_is_absent(
+        self,
+    ) -> None:
+        """Host public-edge should render a report when optional edge objects or APIs are absent."""
+        cmd = HostPublicEdgeCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("host_public_edge")
+                assert root is not None
+                built = root.build_effect(
+                    None,
+                    {
+                        "settings_object": Success(
+                            {
+                                "demo_fqdn": "demo.example.com",
+                                "vscode_fqdn": "code.example.com",
+                                "route53_zone_id": "Z123",
+                                "aws_region": "us-east-1",
+                                "active_lan_interface": "eno1",
+                                "active_lan_ipv4": "192.168.1.20",
+                                "active_lan_network_cidr": "192.168.1.0/24",
+                            }
+                        ),
+                        "host_public_edge_public_ip": Success("203.0.113.10"),
+                        "host_public_edge_route53_record": Success("203.0.113.10"),
+                        "host_public_edge_ingress_classes": Success(
+                            (0, json.dumps({"items": []}), "")
+                        ),
+                        "host_public_edge_traefik_service": Failure(
+                            'kubectl failed: Error from server (NotFound): namespaces "traefik-system" not found'
+                        ),
+                        "host_public_edge_ingress_nginx_services": Success(
+                            (0, json.dumps({"items": []}), "")
+                        ),
+                        "host_public_edge_vscode_ingress": Failure(
+                            'kubectl failed: Error from server (NotFound): namespaces "vscode" not found'
+                        ),
+                        "host_public_edge_vscode_certificate": Failure(
+                            'kubectl failed: error: the server doesn\'t have a resource type "certificate"'
+                        ),
+                    },
+                )
+                assert isinstance(built, WriteStdout)
+                assert "TRAEFIK_SERVICE_IP=<missing>" in built.text
+                assert "VSCODE_INGRESS_CLASS=<missing>" in built.text
+                assert "CERTIFICATE_READY=missing" in built.text
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -691,10 +742,11 @@ class TestRKE2CommandPrerequisites:
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
-                assert len(built_effect.effects) == 2
-                assert isinstance(built_effect.effects[0], CleanupProdboxAnnotatedResources)
-                assert built_effect.effects[0].retained_resource_kinds != ()
-                assert built_effect.effects[0].retained_namespaces == ("prodbox",)
+                assert len(built_effect.effects) == 3
+                assert isinstance(built_effect.effects[0], AnnotateProdboxManagedResources)
+                assert isinstance(built_effect.effects[1], CleanupProdboxAnnotatedResources)
+                assert built_effect.effects[1].retained_resource_kinds != ()
+                assert built_effect.effects[1].retained_namespaces == ("prodbox",)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -785,8 +837,8 @@ class TestPulumiCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_pulumi_up_requires_stack_exists(self) -> None:
-        """PulumiUpCommand should require explicit stack selection."""
+    def test_pulumi_up_bootstraps_missing_stack(self) -> None:
+        """PulumiUpCommand should auto-create the selected stack when needed."""
         cmd = PulumiUpCommand(stack="dev", yes=True)
         match command_to_dag(cmd):
             case Success(dag):
@@ -797,6 +849,10 @@ class TestPulumiCommandPrerequisites:
                 assert "k8s_cluster_reachable" in root.prerequisites
                 assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
+                stack_select = dag.get_node("pulumi_up_stack_select")
+                assert stack_select is not None
+                assert isinstance(stack_select.effect, PulumiStackSelect)
+                assert stack_select.effect.create_if_missing is True
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -814,8 +870,8 @@ class TestPulumiCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_pulumi_refresh_requires_stack_exists(self) -> None:
-        """PulumiRefreshCommand should require explicit stack selection."""
+    def test_pulumi_refresh_bootstraps_missing_stack(self) -> None:
+        """PulumiRefreshCommand should auto-create the selected stack when needed."""
         cmd = PulumiRefreshCommand(stack="dev")
         match command_to_dag(cmd):
             case Success(dag):
@@ -825,6 +881,10 @@ class TestPulumiCommandPrerequisites:
                 assert "machine_identity" in root.prerequisites
                 assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, PulumiRefresh)
+                stack_select = dag.get_node("pulumi_refresh_stack_select")
+                assert stack_select is not None
+                assert isinstance(stack_select.effect, PulumiStackSelect)
+                assert stack_select.effect.create_if_missing is True
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 

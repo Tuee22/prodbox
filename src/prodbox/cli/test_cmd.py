@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
 import sys
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Final
 
 import click
@@ -67,14 +69,25 @@ PHASE_ONE_HEADER_EFFECT_ID: Final[str] = "pytest_phase_one_header"
 PHASE_ONE_GATE_MESSAGE: Final[str] = "Phase 1/2: validating integration prerequisites"
 PHASE_ONE_NO_PREREQ_MESSAGE: Final[str] = "Phase 1/2: no integration prerequisites required"
 PHASE_ONE_POINT_FIVE_HEADER_TEXT: Final[str] = "Phase 1.5/2: enforcing integration runbook"
+PHASE_ONE_POINT_SIX_HEADER_TEXT: Final[str] = "Phase 1.6/2: restoring supported runtime"
 PHASE_TWO_HEADER_TEXT: Final[str] = "Phase 2/2: running pytest suites"
 PUBLIC_HOST_READINESS_EFFECT_ID: Final[str] = "pytest_public_host_readiness"
+PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID: Final[str] = "pytest_public_host_hosts_override_cleanup"
+PUBLIC_EDGE_CONNECT_HOST_ENV_VAR: Final[str] = "PRODBOX_PUBLIC_EDGE_CONNECT_HOST"
+PRE_PYTEST_RESTORE_HEADER_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_header"
+PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID: Final[
+    str
+] = "pytest_supported_runtime_bootstrap_pulumi_refresh"
+PRE_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_pulumi_up"
+PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_gateway"
+PRE_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_vscode"
 POST_PYTEST_RESTORE_HEADER_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_header"
 POST_PYTEST_PULUMI_REFRESH_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_refresh"
 POST_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_up"
 POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway"
 POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_vscode"
 POST_PYTEST_PUBLIC_EDGE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_public_edge"
+POST_PYTEST_AWS_SWEEP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_sweep"
 _PUBLIC_HOST_STACK_PREP_SUITE_IDS: Final[frozenset[str]] = frozenset({"all", "integration-all"})
 _SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS: Final[frozenset[str]] = frozenset(
     {"all", "integration-all"}
@@ -658,6 +671,7 @@ def _build_test_dag(
     """Build two-phase test DAG for one explicit suite."""
     env = {key: os.environ[key] for key in _TEST_PASSTHROUGH_VARS if key in os.environ}
     env[ALLOW_NON_ENTRYPOINT_ENV] = "1"
+    env.update(_public_edge_probe_env())
     pytest_invocations = _pytest_invocations_for_suite(suite=suite)
     multiple_pytest_invocations = len(pytest_invocations) > 1
     aggregate_pytest_env = (
@@ -877,10 +891,52 @@ def _runbook_effects_for_suite(
         return effects
     effects.extend(
         [
+            WriteStdout(
+                effect_id=PRE_PYTEST_RESTORE_HEADER_EFFECT_ID,
+                description="Supported runtime bootstrap header",
+                text=PHASE_ONE_POINT_SIX_HEADER_TEXT,
+            ),
+            Custom(
+                effect_id=PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID,
+                description="Remove unsupported /etc/hosts override for the public host",
+                fn=_remove_public_host_hosts_override,
+            ),
+            RunSubprocess(
+                effect_id=PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID,
+                description="Runbook: refresh Pulumi-managed infrastructure state",
+                command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "refresh"],
+                stream_stdout=True,
+                timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+                env=env,
+            ),
+            RunSubprocess(
+                effect_id=PRE_PYTEST_PULUMI_UP_EFFECT_ID,
+                description="Runbook: restore Pulumi-managed infrastructure",
+                command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "up", "--yes"],
+                stream_stdout=True,
+                timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+                env=env,
+            ),
+            RunSubprocess(
+                effect_id=PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
+                description="Runbook: deploy gateway chart",
+                command=[sys.executable, "-m", "prodbox.cli.main", "charts", "deploy", "gateway"],
+                stream_stdout=True,
+                timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+                env=env,
+            ),
+            RunSubprocess(
+                effect_id=PRE_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
+                description="Runbook: deploy vscode chart",
+                command=[sys.executable, "-m", "prodbox.cli.main", "charts", "deploy", "vscode"],
+                stream_stdout=True,
+                timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+                env=env,
+            ),
             Custom(
                 effect_id=PUBLIC_HOST_READINESS_EFFECT_ID,
                 description="Runbook: require ready public-host proof surface",
-                fn=_assert_public_host_ready_for_external_proof,
+                fn=_wait_for_public_host_ready_for_external_proof,
             ),
         ]
     )
@@ -938,7 +994,124 @@ def _post_pytest_effects_for_suite(
             description="Postflight: wait for ready public-host proof surface",
             fn=_wait_for_public_host_ready_for_external_proof,
         ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_AWS_SWEEP_EFFECT_ID,
+            description="Postflight: prove no fixture-owned AWS resources remain",
+            command=[sys.executable, "-m", "prodbox.cli.main", "aws", "sweep-fixtures"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
     ]
+
+
+def _remove_fqdn_from_hosts_text(*, hosts_text: str, fqdn: str) -> tuple[str, int]:
+    """Remove one unsupported FQDN override from hosts-file text."""
+    target = fqdn.strip().lower()
+    if target == "":
+        return hosts_text, 0
+
+    updated_lines: list[str] = []
+    removed_entries = 0
+    for raw_line in hosts_text.splitlines():
+        body, has_comment, comment = raw_line.partition("#")
+        tokens = body.split()
+        if len(tokens) < 2:
+            updated_lines.append(raw_line)
+            continue
+        names = tokens[1:]
+        kept_names = tuple(name for name in names if name.lower() != target)
+        removed_entries += len(names) - len(kept_names)
+        if len(kept_names) == len(names):
+            updated_lines.append(raw_line)
+            continue
+        if kept_names:
+            updated_line = f"{tokens[0]} {' '.join(kept_names)}"
+            if has_comment:
+                stripped_comment = comment.strip()
+                if stripped_comment != "":
+                    updated_line = f"{updated_line}  # {stripped_comment}"
+            updated_lines.append(updated_line)
+            continue
+        if has_comment:
+            stripped_comment = comment.strip()
+            if stripped_comment != "":
+                updated_lines.append(f"# {stripped_comment}")
+
+    updated_text = "\n".join(updated_lines)
+    if hosts_text.endswith("\n"):
+        updated_text = f"{updated_text}\n"
+    return updated_text, removed_entries
+
+
+def _public_edge_probe_env() -> dict[str, str]:
+    """Build optional pytest env that targets the deterministic local edge IP."""
+    match os.environ.get(PUBLIC_EDGE_CONNECT_HOST_ENV_VAR):
+        case str() as value if value.strip():
+            return {PUBLIC_EDGE_CONNECT_HOST_ENV_VAR: value.strip()}
+        case _:
+            pass
+
+    from prodbox.settings import discover_lan_addressing
+
+    try:
+        lan = discover_lan_addressing()
+    except OSError:
+        return {}
+    except ValueError:
+        return {}
+    return {PUBLIC_EDGE_CONNECT_HOST_ENV_VAR: lan.ingress_lb_ip}
+
+
+def _hosts_file_subprocess_env() -> dict[str, str]:
+    """Build a minimal subprocess env for host-file maintenance helpers."""
+    env: dict[str, str] = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", ""),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+    }
+    match os.environ.get("TERM"):
+        case str() as term:
+            env["TERM"] = term
+        case _:
+            pass
+    return env
+
+
+def _remove_public_host_hosts_override() -> str:
+    """Remove unsupported /etc/hosts overrides for the canonical public host."""
+    from prodbox.settings import Settings
+
+    settings = Settings.from_config_json()
+    fqdn = settings.vscode_fqdn or settings.demo_fqdn
+    hosts_path = Path("/etc/hosts")
+    original_text = hosts_path.read_text(encoding="utf-8")
+    updated_text, removed_entries = _remove_fqdn_from_hosts_text(
+        hosts_text=original_text,
+        fqdn=fqdn,
+    )
+    if removed_entries == 0:
+        return f"No /etc/hosts override found for {fqdn}"
+    if os.access(hosts_path, os.W_OK):
+        hosts_path.write_text(updated_text, encoding="utf-8")
+    else:
+        completed = subprocess.run(
+            ["sudo", "tee", str(hosts_path)],
+            input=updated_text,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30.0,
+            env=_hosts_file_subprocess_env(),
+        )
+        if completed.returncode != 0:
+            stderr_text = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(f"failed to rewrite {hosts_path}: {stderr_text}")
+    post_write_text = hosts_path.read_text(encoding="utf-8")
+    _, remaining_entries = _remove_fqdn_from_hosts_text(hosts_text=post_write_text, fqdn=fqdn)
+    if remaining_entries != 0:
+        raise RuntimeError(f"/etc/hosts still contains unsupported override for {fqdn}")
+    return f"Removed {removed_entries} /etc/hosts override entrie(s) for {fqdn}"
 
 
 def _extract_public_edge_classification(report: str) -> str | None:
@@ -978,7 +1151,9 @@ async def _assert_public_host_ready_for_external_proof() -> str:
             dag_summary, prereq_results = await _execute_dag_with_values_async(dag)
 
     if dag_summary.exit_code != 0:
-        raise RuntimeError(f"public-edge diagnostic failed: {dag_summary.message}")
+        execution_report = dag_summary.execution_report.strip()
+        details = execution_report if execution_report != "" else dag_summary.message
+        raise RuntimeError(f"public-edge diagnostic failed:\n{details}")
 
     report = _render_public_edge_report(
         settings=_require_settings(prereq_results),

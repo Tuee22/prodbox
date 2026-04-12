@@ -7,13 +7,18 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
+import subprocess
+from pathlib import Path
 
 import pytest
 
+import prodbox.lib.chart_platform as chart_platform_module
 from prodbox.cli.types import Failure, Success
 from prodbox.lib.chart_platform import (
     CHART_DATA_ROOT,
     ChartDeploymentPlan,
+    ChartReleasePlan,
     ChartStorageBinding,
     ChartStorageSpec,
     _storage_binding,
@@ -324,6 +329,169 @@ class TestBuildChartDeploymentPlan:
         assert image["tag"] != "latest"
         assert image["tag"].startswith("prodbox-")
         assert image["pullPolicy"] == "IfNotPresent"
+
+
+# =============================================================================
+# Retained state repair coverage
+# =============================================================================
+
+
+class TestRetainedStateRepair:
+    def test_resolve_chart_secrets_ensures_namespace_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target_root = tmp_path / "chart-data"
+        ensured_paths: list[Path] = []
+
+        def fake_ensure(path: Path) -> None:
+            ensured_paths.append(path)
+            path.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(chart_platform_module, "CHART_DATA_ROOT", target_root)
+        monkeypatch.setattr(chart_platform_module, "_ensure_chart_state_dir", fake_ensure)
+
+        secrets = chart_platform_module.resolve_chart_secrets("vscode")
+
+        assert ensured_paths == [target_root / "vscode"]
+        assert sorted(secrets.keys()) == sorted(
+            [
+                "keycloak_admin_password",
+                "keycloak_nginx_client_secret",
+                "keycloak_postgres_password",
+            ]
+        )
+        assert (target_root / "vscode" / ".secrets.json").exists()
+
+    def test_resolve_gateway_event_keys_ensures_namespace_dir(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target_root = tmp_path / "chart-data"
+        ensured_paths: list[Path] = []
+
+        def fake_ensure(path: Path) -> None:
+            ensured_paths.append(path)
+            path.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(chart_platform_module, "CHART_DATA_ROOT", target_root)
+        monkeypatch.setattr(chart_platform_module, "_ensure_chart_state_dir", fake_ensure)
+
+        keys = chart_platform_module.resolve_gateway_event_keys("gateway")
+
+        assert ensured_paths == [target_root / "gateway"]
+        assert sorted(keys.keys()) == ["node-a", "node-b", "node-c"]
+        assert (target_root / "gateway" / ".gateway-event-keys.json").exists()
+
+    def test_ensure_chart_state_dir_repairs_unwritable_directory(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target_dir = tmp_path / "gateway"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        repair_commands: list[tuple[str, ...]] = []
+        real_access = os.access
+
+        def fake_access(path_like: object, mode: int) -> bool:
+            match path_like:
+                case Path() as value:
+                    if value == target_dir:
+                        return False
+                    return real_access(value, mode)
+                case str() as value:
+                    if Path(value) == target_dir:
+                        return False
+                    return real_access(value, mode)
+                case _:
+                    return True
+
+        def fake_run(
+            command: tuple[str, ...],
+            *,
+            capture_output: bool,
+            text: bool,
+            check: bool,
+        ) -> subprocess.CompletedProcess[str]:
+            assert capture_output is True
+            assert text is True
+            assert check is False
+            repair_commands.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(chart_platform_module.os, "access", fake_access)
+        monkeypatch.setattr(chart_platform_module.subprocess, "run", fake_run)
+
+        chart_platform_module._ensure_chart_state_dir(target_dir)
+
+        expected_owner = f"{os.getuid()}:{os.getgid()}"
+        assert repair_commands == [
+            ("sudo", "mkdir", "-p", str(target_dir)),
+            ("sudo", "chown", "-R", expected_owner, str(target_dir)),
+            ("sudo", "chmod", "0770", str(target_dir)),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_ensure_chart_storage_repairs_each_binding_host_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        binding = _storage_binding(
+            "vscode",
+            "vscode",
+            ChartStorageSpec(
+                statefulset_name="vscode",
+                persistent_volume_claim_name="vscode-data-0",
+                storage_size="50Gi",
+            ),
+        )
+        plan = ChartDeploymentPlan(
+            root_chart="vscode",
+            namespace="vscode",
+            releases=(
+                ChartReleasePlan(
+                    chart_name="vscode",
+                    release_name="vscode",
+                    namespace="vscode",
+                    chart_dir=Path("charts/vscode"),
+                    values_json="{}",
+                    storage_bindings=(binding,),
+                ),
+            ),
+            public_fqdn="vscode.example.com",
+        )
+        ensured_paths: list[Path] = []
+        applied_manifests: list[dict[str, object]] = []
+
+        def fake_ensure(path: Path) -> None:
+            ensured_paths.append(path)
+
+        async def fake_single_node_hostname() -> str:
+            return "bathurst"
+
+        async def fake_persistent_volume_phase(_name: str) -> str | None:
+            return None
+
+        async def fake_apply_manifest(manifest: dict[str, object]) -> None:
+            applied_manifests.append(manifest)
+
+        monkeypatch.setattr(chart_platform_module, "_ensure_chart_state_dir", fake_ensure)
+        monkeypatch.setattr(
+            chart_platform_module, "_single_node_hostname", fake_single_node_hostname
+        )
+        monkeypatch.setattr(
+            chart_platform_module,
+            "_persistent_volume_phase",
+            fake_persistent_volume_phase,
+        )
+        monkeypatch.setattr(chart_platform_module, "_apply_manifest", fake_apply_manifest)
+
+        await chart_platform_module._ensure_chart_storage(plan)
+
+        assert ensured_paths == [binding.host_path]
+        assert len(applied_manifests) == 1
 
 
 # =============================================================================

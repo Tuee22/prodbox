@@ -9,7 +9,7 @@ its public hostname, including:
 Prerequisites (must be satisfied before running this suite):
   - The vscode chart stack is deployed and all workloads are Running
   - `VSCODE_FQDN` env var is set (or defaults to `vscode.resolvefintech.com`)
-  - Live DNS resolves the FQDN to the cluster MetalLB address
+  - Live public DNS resolves the FQDN to the cluster edge
   - The configured public ACME CA has issued a valid certificate
 
 These tests make outbound HTTPS requests from the test runner host.
@@ -18,32 +18,28 @@ They do NOT require a cluster kubeconfig or kubectl.
 
 from __future__ import annotations
 
+import json
 import os
 import ssl
 import time
 import urllib.parse
 import urllib.request
-from http.client import HTTPResponse
-from typing import NamedTuple
-from urllib.error import HTTPError, URLError
+from functools import lru_cache
+from http.client import HTTPException, HTTPSConnection
+from typing import NamedTuple, cast
+from urllib.error import URLError
 
 import pytest
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(120)]
 
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
 _DEFAULT_FQDN = "vscode.resolvefintech.com"
 _FQDN = os.environ.get("VSCODE_FQDN", _DEFAULT_FQDN)
 _BASE_URL = f"https://{_FQDN}"
 _CONNECT_TIMEOUT = 15.0
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+_PUBLIC_DOH_RESOLVER = "https://dns.google/resolve"
+_CONNECT_HOST_ENV_VAR = "PRODBOX_PUBLIC_EDGE_CONNECT_HOST"
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
 
 
 class HttpProbeResult(NamedTuple):
@@ -56,66 +52,193 @@ class HttpProbeResult(NamedTuple):
     tls_issuer: str | None
 
 
-def _probe(url: str, *, follow_redirects: bool = False) -> HttpProbeResult:
-    """Fetch one URL and return structured probe data."""
-    context = ssl.create_default_context()
-    opener = urllib.request.OpenerDirector()
-    opener.add_handler(urllib.request.HTTPHandler())
-    opener.add_handler(urllib.request.HTTPSHandler(context=context))
-    opener.add_handler(urllib.request.HTTPDefaultErrorHandler())
-    if follow_redirects:
-        opener.add_handler(urllib.request.HTTPRedirectHandler())
+class _ResolvedHTTPSConnection(HTTPSConnection):
+    """HTTPS connection that dials one explicit IP while preserving SNI/Host."""
 
-    tls_subject: str | None = None
-    tls_issuer: str | None = None
+    def __init__(
+        self,
+        *,
+        host: str,
+        connect_host: str,
+        context: ssl.SSLContext,
+        timeout: float,
+    ) -> None:
+        super().__init__(host=host, timeout=timeout, context=context)
+        self._connect_host = connect_host
 
-    try:
-        request = urllib.request.Request(url, method="GET")
-        request.add_header("Accept", "text/html,application/xhtml+xml")
-        response = opener.open(request, timeout=_CONNECT_TIMEOUT)
-        if isinstance(response, HTTPResponse):
-            body = response.read(4096).decode("utf-8", errors="replace")
-            location = response.headers.get("Location")
-            status = response.status
-        else:
-            body = ""
-            location = None
-            status = 200
-    except HTTPError as error:
-        body = error.read(4096).decode("utf-8", errors="replace") if error.fp else ""
-        location = error.headers.get("Location")
-        status = error.code
-    except URLError as error:
-        raise AssertionError(f"URL probe failed for {url}: {error}") from error
+    def connect(self) -> None:
+        self.sock = self._create_connection(
+            (self._connect_host, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=self.host)
 
-    # Attempt to read TLS cert info from the connection.
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.check_hostname = False
-        ctx.verify_mode = ssl.CERT_NONE
-        import socket
 
-        with socket.create_connection(
-            (_FQDN, 443), timeout=_CONNECT_TIMEOUT
-        ) as sock, ctx.wrap_socket(sock, server_hostname=_FQDN) as ssock:
-            cert = ssock.getpeercert()
-            if cert:
-                subject_tuples = cert.get("subject", ())
-                issuer_tuples = cert.get("issuer", ())
-                subject_map = dict(pair for group in subject_tuples for pair in group)
-                issuer_map = dict(pair for group in issuer_tuples for pair in group)
-                tls_subject = subject_map.get("commonName") or subject_map.get("CN")
-                tls_issuer = issuer_map.get("organizationName") or issuer_map.get("O")
-    except Exception:
-        pass
+def _request_path(parsed: urllib.parse.ParseResult) -> str:
+    """Build the request path from one parsed HTTPS URL."""
+    path = parsed.path or "/"
+    if parsed.query:
+        return f"{path}?{parsed.query}"
+    return path
 
-    return HttpProbeResult(
-        status=status,
-        location=location,
-        body_fragment=body[:4096],
-        tls_subject=tls_subject,
-        tls_issuer=tls_issuer,
+
+def _cert_subject_and_issuer(cert: dict[str, object] | None) -> tuple[str | None, str | None]:
+    """Extract subject CN and issuer organization/CN from one peer certificate."""
+    if cert is None:
+        return None, None
+    subject_tuples = cert.get("subject", ())
+    issuer_tuples = cert.get("issuer", ())
+    if not isinstance(subject_tuples, tuple) or not isinstance(issuer_tuples, tuple):
+        return None, None
+    subject_map = dict(pair for group in subject_tuples for pair in group)
+    issuer_map = dict(pair for group in issuer_tuples for pair in group)
+    subject = cast(str | None, subject_map.get("commonName") or subject_map.get("CN"))
+    issuer = cast(
+        str | None,
+        issuer_map.get("organizationName") or issuer_map.get("O") or issuer_map.get("CN"),
     )
+    return subject, issuer
+
+
+@lru_cache(maxsize=8)
+def _public_ipv4_address(hostname: str) -> str:
+    """Resolve one hostname through public DNS-over-HTTPS only."""
+    query = urllib.parse.urlencode({"name": hostname, "type": "A"})
+    request = urllib.request.Request(
+        f"{_PUBLIC_DOH_RESOLVER}?{query}",
+        headers={"Accept": "application/dns-json"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=_CONNECT_TIMEOUT) as response:
+            payload = cast(dict[str, object], json.loads(response.read().decode("utf-8")))
+    except URLError as error:
+        raise AssertionError(f"public DNS query failed for {hostname}: {error}") from error
+
+    status = payload.get("Status")
+    if status != 0:
+        raise AssertionError(f"public DNS query returned non-zero status for {hostname}: {status}")
+    raw_answers = payload.get("Answer")
+    if not isinstance(raw_answers, list):
+        raise AssertionError(f"public DNS query returned no Answer section for {hostname}")
+
+    addresses = sorted(
+        str(data)
+        for answer in raw_answers
+        if isinstance(answer, dict)
+        for answer_type in (answer.get("type"),)
+        for data in (answer.get("data"),)
+        if answer_type == 1 and isinstance(data, str) and data != ""
+    )
+    if not addresses:
+        raise AssertionError(f"public DNS query returned no A records for {hostname}")
+    return addresses[0]
+
+
+@lru_cache(maxsize=8)
+def _connect_host_for_probe(hostname: str) -> str:
+    """Return the connect target for one probe while still requiring public DNS proof."""
+    public_ip = _public_ipv4_address(hostname)
+    match os.environ.get(_CONNECT_HOST_ENV_VAR):
+        case str() as value if value.strip():
+            return value.strip()
+        case _:
+            return public_ip
+
+
+def _perform_https_request(
+    *,
+    url: str,
+    context: ssl.SSLContext,
+) -> tuple[int, str | None, str, str | None, str | None]:
+    """Perform one HTTPS GET through the public DNS answer for the target host."""
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    if parsed.scheme != "https" or hostname in (None, ""):
+        raise AssertionError(f"expected one https URL, got {url!r}")
+    connect_host = _connect_host_for_probe(hostname)
+    connection = _ResolvedHTTPSConnection(
+        host=hostname,
+        connect_host=connect_host,
+        context=context,
+        timeout=_CONNECT_TIMEOUT,
+    )
+    try:
+        connection.request(
+            "GET",
+            _request_path(parsed),
+            headers={
+                "Accept": "text/html,application/xhtml+xml",
+                "Host": hostname,
+            },
+        )
+        response = connection.getresponse()
+        body = response.read(4096).decode("utf-8", errors="replace")
+        location = response.headers.get("Location")
+        cert = connection.sock.getpeercert() if connection.sock is not None else None
+        tls_subject, tls_issuer = _cert_subject_and_issuer(cert)
+        return response.status, location, body[:4096], tls_subject, tls_issuer
+    except (OSError, ssl.SSLError, HTTPException) as error:
+        raise AssertionError(
+            f"URL probe failed for {url}: {type(error).__name__}: {error}"
+        ) from error
+    finally:
+        connection.close()
+
+
+@lru_cache(maxsize=1)
+def _verified_peer_certificate() -> dict[str, object]:
+    """Fetch the verified peer certificate from the public edge."""
+    context = ssl.create_default_context()
+    connect_host = _connect_host_for_probe(_FQDN)
+    connection = _ResolvedHTTPSConnection(
+        host=_FQDN,
+        connect_host=connect_host,
+        context=context,
+        timeout=_CONNECT_TIMEOUT,
+    )
+    try:
+        connection.connect()
+        cert = connection.sock.getpeercert() if connection.sock is not None else None
+    except ssl.SSLError as error:
+        raise AssertionError(f"TLS handshake failed for {_FQDN}: {error}") from error
+    except OSError as error:
+        raise AssertionError(f"TLS connection failed for {_FQDN}: {error}") from error
+    finally:
+        connection.close()
+
+    if not isinstance(cert, dict):
+        raise AssertionError(f"TLS peer certificate missing for {_FQDN}")
+    return cert
+
+
+def _probe(url: str, *, follow_redirects: bool = False) -> HttpProbeResult:
+    """Fetch one URL and return structured probe data via public DNS resolution."""
+    current_url = url
+    max_hops = 5 if follow_redirects else 1
+    result: HttpProbeResult | None = None
+    context = ssl.create_default_context()
+
+    for _ in range(max_hops):
+        status, location, body_fragment, tls_subject, tls_issuer = _perform_https_request(
+            url=current_url,
+            context=context,
+        )
+        result = HttpProbeResult(
+            status=status,
+            location=location,
+            body_fragment=body_fragment,
+            tls_subject=tls_subject,
+            tls_issuer=tls_issuer,
+        )
+        if not follow_redirects or status not in _REDIRECT_STATUSES or location in (None, ""):
+            break
+        current_url = urllib.parse.urljoin(current_url, location)
+
+    if result is None:
+        raise AssertionError(f"no HTTP probe result produced for {url}")
+    return result
 
 
 def _probe_with_retry(
@@ -137,32 +260,9 @@ def _probe_with_retry(
 
 
 def _probe_with_ssl_context() -> tuple[str | None, str | None]:
-    """Fetch TLS certificate info directly from the server."""
-    import socket
-
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = True
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.load_default_certs()
-    try:
-        with socket.create_connection(
-            (_FQDN, 443), timeout=_CONNECT_TIMEOUT
-        ) as sock, ctx.wrap_socket(sock, server_hostname=_FQDN) as ssock:
-            cert = ssock.getpeercert()
-            subject_tuples = cert.get("subject", ()) if cert else ()
-            issuer_tuples = cert.get("issuer", ()) if cert else ()
-            subject_map = dict(pair for group in subject_tuples for pair in group)
-            issuer_map = dict(pair for group in issuer_tuples for pair in group)
-            cn = subject_map.get("commonName")
-            org = issuer_map.get("organizationName")
-            return cn, org
-    except ssl.SSLError as error:
-        raise AssertionError(f"TLS handshake failed for {_FQDN}: {error}") from error
-
-
-# ---------------------------------------------------------------------------
-# Tests: HTTPS reachability
-# ---------------------------------------------------------------------------
+    """Fetch TLS certificate info directly from the public edge."""
+    cert = _verified_peer_certificate()
+    return _cert_subject_and_issuer(cert)
 
 
 def test_https_endpoint_is_reachable() -> None:
@@ -183,15 +283,10 @@ def test_http_root_returns_redirect_not_200() -> None:
     ), f"Expected redirect from {_BASE_URL}, got HTTP {result.status}"
 
 
-# ---------------------------------------------------------------------------
-# Tests: valid TLS certificate
-# ---------------------------------------------------------------------------
-
-
 def test_tls_certificate_is_valid() -> None:
     """TLS handshake must succeed and cert must pass default verification."""
     try:
-        cn, org = _probe_with_ssl_context()
+        _probe_with_ssl_context()
     except AssertionError:
         raise
     except Exception as error:
@@ -200,62 +295,31 @@ def test_tls_certificate_is_valid() -> None:
 
 def test_tls_cert_covers_expected_fqdn() -> None:
     """TLS certificate subject/SAN must cover the configured FQDN."""
-    import socket
-
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = True
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.load_default_certs()
-    try:
-        with socket.create_connection(
-            (_FQDN, 443), timeout=_CONNECT_TIMEOUT
-        ) as sock, ctx.wrap_socket(sock, server_hostname=_FQDN) as ssock:
-            cert = ssock.getpeercert()
-            san_entries = cert.get("subjectAltName", ()) if cert else ()
-            dns_names = [v for k, v in san_entries if k == "DNS"]
-            assert any(
-                name == _FQDN or name.startswith("*.") and _FQDN.endswith(name[1:])
-                for name in dns_names
-            ) or any(
-                _FQDN
-                in (v for inner in cert.get("subject", ()) for k, v in [inner] if k == "commonName")
-            ), f"FQDN {_FQDN!r} not covered by cert SANs: {dns_names}"
-    except ssl.SSLError as error:
-        raise AssertionError(f"TLS check failed for {_FQDN}: {error}") from error
+    cert = _verified_peer_certificate()
+    san_entries = cert.get("subjectAltName", ()) if cert else ()
+    dns_names = [v for k, v in san_entries if k == "DNS"]
+    assert any(
+        name == _FQDN or name.startswith("*.") and _FQDN.endswith(name[1:]) for name in dns_names
+    ) or any(
+        _FQDN in (v for inner in cert.get("subject", ()) for k, v in [inner] if k == "commonName")
+    ), f"FQDN {_FQDN!r} not covered by cert SANs: {dns_names}"
 
 
 def test_tls_cert_issued_by_supported_public_ca() -> None:
     """TLS certificate must be issued by a supported public ACME CA."""
-    import socket
-
-    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    ctx.check_hostname = True
-    ctx.verify_mode = ssl.CERT_REQUIRED
-    ctx.load_default_certs()
-    try:
-        with socket.create_connection(
-            (_FQDN, 443), timeout=_CONNECT_TIMEOUT
-        ) as sock, ctx.wrap_socket(sock, server_hostname=_FQDN) as ssock:
-            cert = ssock.getpeercert()
-            issuer_tuples = cert.get("issuer", ()) if cert else ()
-            issuer_map = dict(pair for group in issuer_tuples for pair in group)
-            org = issuer_map.get("organizationName", "")
-            cn = issuer_map.get("commonName", "")
-            assert (
-                "let's encrypt" in org.lower()
-                or "let's encrypt" in cn.lower()
-                or "zerossl" in org.lower()
-                or "zerossl" in cn.lower()
-                or "sectigo" in org.lower()
-                or "sectigo" in cn.lower()
-            ), f"Expected supported public CA issuer, got org={org!r} cn={cn!r}"
-    except ssl.SSLError as error:
-        raise AssertionError(f"TLS issuer check failed for {_FQDN}: {error}") from error
-
-
-# ---------------------------------------------------------------------------
-# Tests: auth redirect to Keycloak username/password login
-# ---------------------------------------------------------------------------
+    cert = _verified_peer_certificate()
+    issuer_tuples = cert.get("issuer", ()) if cert else ()
+    issuer_map = dict(pair for group in issuer_tuples for pair in group)
+    org = cast(str, issuer_map.get("organizationName", ""))
+    cn = cast(str, issuer_map.get("commonName", ""))
+    assert (
+        "let's encrypt" in org.lower()
+        or "let's encrypt" in cn.lower()
+        or "zerossl" in org.lower()
+        or "zerossl" in cn.lower()
+        or "sectigo" in org.lower()
+        or "sectigo" in cn.lower()
+    ), f"Expected supported public CA issuer, got org={org!r} cn={cn!r}"
 
 
 def test_root_redirects_to_keycloak_login() -> None:
@@ -292,7 +356,6 @@ def test_keycloak_login_page_offers_username_password_form() -> None:
     callback = urllib.parse.quote(f"https://{_FQDN}/auth/callback", safe="")
     params = f"?client_id=vscode-nginx&response_type=code&scope=openid&redirect_uri={callback}"
     result = _probe_with_retry(login_url + params)
-    # Keycloak may redirect to its login page (302) or return the page directly (200).
     assert result.status in (
         200,
         302,
@@ -300,8 +363,6 @@ def test_keycloak_login_page_offers_username_password_form() -> None:
     ), f"Unexpected status from Keycloak login endpoint: HTTP {result.status}"
     body_lower = result.body_fragment.lower()
     location = (result.location or "").lower()
-    # The login page must contain a password input field (username/password form)
-    # or redirect to a page that does. It must NOT have Google OAuth exclusively.
     assert (
         "password" in body_lower
         or "username" in body_lower
@@ -313,7 +374,6 @@ def test_keycloak_login_page_offers_username_password_form() -> None:
         f"Keycloak login page does not appear to offer username/password form: "
         f"status={result.status}, body_fragment={result.body_fragment[:300]!r}"
     )
-    # Confirm no Google OAuth dependency
     assert (
         "accounts.google.com" not in body_lower
     ), "Keycloak login page references Google OAuth, which is not a supported auth path"

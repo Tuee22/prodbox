@@ -40,6 +40,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Never, TypeVar
+from urllib.parse import unquote
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -1549,7 +1550,10 @@ class EffectInterpreter:
                 return self._create_success_summary("kubectl succeeded"), result
             else:
                 self.failed_effects += 1
-                return self._create_error_summary("kubectl failed"), result
+                error = (
+                    output.stderr.decode() if output.stderr else f"Exit code {output.returncode}"
+                )
+                return self._create_error_summary(f"kubectl failed: {error}"), result
 
         except OSError as e:
             self.failed_effects += 1
@@ -2160,6 +2164,28 @@ class EffectInterpreter:
         return env
 
     @staticmethod
+    def _ensure_file_pulumi_backend(env: dict[str, str]) -> None:
+        """Create the file-backed Pulumi backend directory when the backend uses `file://`."""
+        from prodbox.settings import REPOSITORY_ROOT
+
+        backend_url = env.get("PULUMI_BACKEND_URL")
+        match backend_url:
+            case str() as url:
+                backend_url_text = url
+            case None:
+                backend_dir = REPOSITORY_ROOT / ".pulumi-backend"
+                backend_dir.mkdir(parents=True, exist_ok=True)
+                env["PULUMI_BACKEND_URL"] = f"file://{backend_dir}"
+                return
+
+        if not backend_url_text.startswith("file://"):
+            return
+
+        backend_path_text = backend_url_text.removeprefix("file://")
+        backend_path_text = backend_path_text.split("?", 1)[0].split("#", 1)[0]
+        Path(unquote(backend_path_text)).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
     def _pulumi_env(extra_env: dict[str, str] | None = None) -> dict[str, str]:
         """Build Pulumi subprocess environment with explicit credentials only."""
         from prodbox.settings import get_settings
@@ -2180,6 +2206,7 @@ class EffectInterpreter:
                 env.update(extras)
             case None:
                 pass
+        EffectInterpreter._ensure_file_pulumi_backend(env)
         if "PULUMI_CONFIG_PASSPHRASE" not in env and "PULUMI_CONFIG_PASSPHRASE_FILE" not in env:
             env["PULUMI_CONFIG_PASSPHRASE"] = ""
         return env
@@ -3650,7 +3677,13 @@ class EffectInterpreter:
                 return 0, ()
             return 0, (f"list CRDs failed: {stderr}",)
 
-        suffixes = (".metallb.io", ".cert-manager.io", ".acme.cert-manager.io")
+        suffixes = (
+            ".metallb.io",
+            ".cert-manager.io",
+            ".acme.cert-manager.io",
+            ".traefik.io",
+            ".containo.us",
+        )
         errors: list[str] = []
         annotated_count = 0
         refs = self._parse_object_names(output.stdout.decode("utf-8", errors="replace"))

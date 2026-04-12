@@ -31,9 +31,9 @@
 |---------|---------|---------|
 | Config management | `prodbox config init|compile|show|validate` | Bootstrap, compile, display, and validate the Dhall-sourced configuration |
 | Host prerequisite flow | `prodbox host ensure-tools` | Verify required local tools |
-| Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, and certificate state for the supported public host |
-| RKE2 lifecycle | `prodbox rke2 ensure|status|cleanup --yes` | Provision, inspect, and clean cluster state |
-| Pulumi lifecycle | `prodbox pulumi ...` | Manage infrastructure bootstrap and previews |
+| Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, certificate, and missing-edge state for the supported public host |
+| RKE2 lifecycle | `prodbox rke2 ensure|status|cleanup --yes` | Provision, inspect, and clean the RKE2 substrate plus Harbor and retained-storage runtime |
+| Pulumi lifecycle | `prodbox pulumi ...` | Manage MetalLB, Traefik, cert-manager, issuer bootstrap, and infrastructure previews |
 | DNS check | `prodbox dns check` | Inspect current DNS ownership state |
 | Kubernetes health | `prodbox k8s health|wait` | Inspect cluster readiness |
 | Gateway runtime | `prodbox gateway start|status|config-gen` | `prodbox gateway start` is the in-pod entrypoint invoked by the gateway chart's container; `status` and `config-gen` support inspection and config authoring |
@@ -55,6 +55,7 @@
 | Chart platform | `poetry run prodbox test integration charts-storage`, `poetry run prodbox test integration charts-platform` |
 | Lifecycle cleanup | `poetry run prodbox test integration lifecycle` |
 | Public-host proof | `poetry run prodbox test integration charts-vscode`, `poetry run prodbox test integration public-dns` |
+| Clean-room handoff | `poetry run prodbox rke2 cleanup --yes`, `poetry run prodbox test all`, `poetry run prodbox host public-edge`, `poetry run prodbox aws sweep-fixtures` |
 | Static and doctrine gate | `poetry run prodbox check-code` |
 
 ## Authority and State Locations
@@ -70,6 +71,7 @@
 | Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer object is `letsencrypt-http01`; the ACME server URL is configured in `prodbox-config.dhall`, and the current live target is ZeroSSL DV90 |
 | Gateway runtime continuity | Kubernetes | Pod restart policy plus leader election and partition-tolerant quorum | Required to keep `dns_write_gate` active continuously across pod loss, node loss, and partition heals |
 | Pulumi state | Pulumi backend | Stack state selected by repo config | Used only through canonical entrypoints |
+| Host resolver state | Host operator | `/etc/hosts` plus local resolver cache | Authoritative public-host proof must not depend on a local override for `vscode.resolvefintech.com` |
 
 ## Artifact Locations
 

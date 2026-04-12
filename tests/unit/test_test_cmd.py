@@ -27,12 +27,20 @@ from prodbox.cli.test_cmd import (
     INTEGRATION_PULUMI_TEST_SUITE,
     INTEGRATION_RUNBOOK_EFFECT_ID,
     PHASE_ONE_HEADER_EFFECT_ID,
+    POST_PYTEST_AWS_SWEEP_EFFECT_ID,
     POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
     POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
     POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
     POST_PYTEST_PULUMI_UP_EFFECT_ID,
     POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
     POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
+    PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
+    PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID,
+    PRE_PYTEST_PULUMI_UP_EFFECT_ID,
+    PRE_PYTEST_RESTORE_HEADER_EFFECT_ID,
+    PRE_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
+    PUBLIC_EDGE_CONNECT_HOST_ENV_VAR,
+    PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID,
     PUBLIC_HOST_READINESS_EFFECT_ID,
     TEST_TIMEOUT_SECONDS,
     UNIT_TEST_SUITE,
@@ -41,8 +49,10 @@ from prodbox.cli.test_cmd import (
     _coverage_settings,
     _extract_public_edge_classification,
     _pytest_args,
+    _remove_fqdn_from_hosts_text,
     _run_suite,
 )
+from prodbox.settings import LanAddressing
 
 
 def test_coverage_settings_rejects_threshold_without_coverage() -> None:
@@ -78,9 +88,15 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
     assert phase_two.prerequisites == ALL_INTEGRATION_TEST_PREREQUISITES
     phase_two_effect = cast(Sequence, phase_two.effect)
     phase_two_effect_ids = [effect.effect_id for effect in phase_two_effect.effects]
-    assert phase_two_effect_ids[:4] == [
+    assert phase_two_effect_ids[:10] == [
         "pytest_integration_runbook_header",
         INTEGRATION_RUNBOOK_EFFECT_ID,
+        PRE_PYTEST_RESTORE_HEADER_EFFECT_ID,
+        PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID,
+        PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID,
+        PRE_PYTEST_PULUMI_UP_EFFECT_ID,
+        PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
+        PRE_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         PUBLIC_HOST_READINESS_EFFECT_ID,
         "pytest_phase_two_header",
     ]
@@ -130,13 +146,14 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         "pytest",
         "tests/integration/test_prodbox_lifecycle.py",
     ]
-    assert phase_two_effect_ids[-6:] == [
+    assert phase_two_effect_ids[-7:] == [
         POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
         POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
         POST_PYTEST_PULUMI_UP_EFFECT_ID,
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
+        POST_PYTEST_AWS_SWEEP_EFFECT_ID,
     ]
     pulumi_refresh = cast(
         RunSubprocess,
@@ -210,6 +227,21 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         ),
     )
     assert callable(postflight_public_edge.fn)
+    aws_sweep = cast(
+        RunSubprocess,
+        next(
+            effect
+            for effect in phase_two_effect.effects
+            if effect.effect_id == POST_PYTEST_AWS_SWEEP_EFFECT_ID
+        ),
+    )
+    assert aws_sweep.command == [
+        sys.executable,
+        "-m",
+        "prodbox.cli.main",
+        "aws",
+        "sweep-fixtures",
+    ]
     assert "tool_helm" in phase_two.prerequisites
     assert "tool_docker" in phase_two.prerequisites
     assert "tool_ctr" in phase_two.prerequisites
@@ -221,6 +253,31 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         prereq_node = dag.get_node(prereq_id)
         assert prereq_node is not None
         assert PHASE_ONE_HEADER_EFFECT_ID in prereq_node.prerequisites
+
+
+def test_build_test_dag_injects_public_edge_connect_host_into_pytest_env() -> None:
+    """Pytest subprocesses should receive the deterministic local edge IP for public-host probes."""
+    with patch(
+        "prodbox.settings.discover_lan_addressing",
+        return_value=LanAddressing(
+            interface_name="enp0s0",
+            interface_ipv4="192.168.2.79",
+            network_cidr="192.168.2.0/24",
+            metallb_pool="192.168.2.240-192.168.2.250",
+            ingress_lb_ip="192.168.2.240",
+        ),
+    ):
+        dag = _build_test_dag(
+            suite=INTEGRATION_CHARTS_VSCODE_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    phase_two = dag.get_node("pytest_phase_two")
+    assert phase_two is not None
+    phase_two_effect = cast(Sequence, phase_two.effect)
+    pytest_effect = cast(RunSubprocess, phase_two_effect.effects[1])
+    assert pytest_effect.env is not None
+    assert pytest_effect.env[PUBLIC_EDGE_CONNECT_HOST_ENV_VAR] == "192.168.2.240"
 
 
 def test_build_test_dag_omits_phase_one_gate_for_mock_only_env_suite() -> None:
@@ -324,13 +381,14 @@ def test_aggregate_suites_restore_supported_runtime_after_pytest(suite: object) 
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
     phase_two_effect = cast(Sequence, phase_two.effect)
-    assert [effect.effect_id for effect in phase_two_effect.effects][-6:] == [
+    assert [effect.effect_id for effect in phase_two_effect.effects][-7:] == [
         POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
         POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
         POST_PYTEST_PULUMI_UP_EFFECT_ID,
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
+        POST_PYTEST_AWS_SWEEP_EFFECT_ID,
     ]
 
 
@@ -455,6 +513,21 @@ async def test_phase_two_pytest_does_not_run_when_phase_one_gate_fails() -> None
 
     assert summary.exit_code == 1
     mock_run_subprocess.assert_not_awaited()
+
+
+def test_remove_fqdn_from_hosts_text_removes_only_target_host() -> None:
+    """Hosts cleanup should remove only the unsupported public-host override token."""
+    original = "127.0.0.1 localhost\n192.168.2.240 vscode.resolvefintech.com other.local  # local override\n"
+
+    updated, removed = _remove_fqdn_from_hosts_text(
+        hosts_text=original,
+        fqdn="vscode.resolvefintech.com",
+    )
+
+    assert removed == 1
+    assert "vscode.resolvefintech.com" not in updated
+    assert "other.local" in updated
+    assert "127.0.0.1 localhost" in updated
 
 
 def test_extract_public_edge_classification_returns_value() -> None:

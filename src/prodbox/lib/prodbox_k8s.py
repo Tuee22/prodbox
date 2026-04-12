@@ -49,6 +49,8 @@ PRODBOX_MANAGED_NAMESPACES: tuple[str, ...] = (
     "metallb-system",
     "traefik-system",
     "cert-manager",
+    "gateway",
+    "vscode",
 )
 
 PRODBOX_HELM_INSTANCES: tuple[str, ...] = (

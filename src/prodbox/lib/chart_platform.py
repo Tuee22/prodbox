@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets as secrets_module
+import subprocess
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +33,35 @@ _CHART_SECRET_KEYS: tuple[str, ...] = (
 _MACHINE_ID_PATH: Path = Path("/etc/machine-id")
 
 
+def _repair_chart_state_dir(path: Path) -> None:
+    """Repair one retained chart-state directory when host-path activity leaves it root-owned."""
+    uid = os.getuid()
+    gid = os.getgid()
+    commands = (
+        ("sudo", "mkdir", "-p", str(path)),
+        ("sudo", "chown", "-R", f"{uid}:{gid}", str(path)),
+        ("sudo", "chmod", "0770", str(path)),
+    )
+    for command in commands:
+        result = subprocess.run(command, capture_output=True, text=True, check=False)
+        if result.returncode != 0:
+            detail = (
+                result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+            )
+            raise PermissionError(f"Failed to repair retained chart-state path {path}: {detail}")
+
+
+def _ensure_chart_state_dir(path: Path) -> None:
+    """Ensure one retained chart-state directory exists and is writable by the current user."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        _repair_chart_state_dir(path)
+        return
+    if not os.access(path, os.W_OK | os.X_OK):
+        _repair_chart_state_dir(path)
+
+
 def resolve_chart_secrets(namespace: str) -> dict[str, str]:
     """Resolve or auto-generate chart secrets from retained .data/ storage.
 
@@ -39,6 +70,7 @@ def resolve_chart_secrets(namespace: str) -> dict[str, str]:
     persisted secrets so credentials remain stable across teardown/rebuild.
     """
     secrets_path = CHART_DATA_ROOT / namespace / ".secrets.json"
+    _ensure_chart_state_dir(secrets_path.parent)
     if secrets_path.exists():
         raw: object = json.loads(secrets_path.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
@@ -64,6 +96,7 @@ def resolve_gateway_event_keys(namespace: str) -> dict[str, str]:
     into its own namespace and must not require keycloak fixtures.
     """
     secrets_path = CHART_DATA_ROOT / namespace / ".gateway-event-keys.json"
+    _ensure_chart_state_dir(secrets_path.parent)
     if secrets_path.exists():
         raw: object = json.loads(secrets_path.read_text(encoding="utf-8"))
         if isinstance(raw, dict):
@@ -935,7 +968,7 @@ async def _ensure_chart_storage(plan: ChartDeploymentPlan) -> None:
 
     node_hostname = await _single_node_hostname()
     for binding in all_bindings:
-        binding.host_path.mkdir(parents=True, exist_ok=True)
+        _ensure_chart_state_dir(binding.host_path)
         phase = await _persistent_volume_phase(binding.persistent_volume_name)
         if phase in ("Released", "Failed"):
             await _delete_kubectl_object(

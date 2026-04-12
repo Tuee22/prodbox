@@ -43,6 +43,11 @@ def test_parse_sweep_output_reads_line_oriented_counts() -> None:
                 "deleted_vpcs=3",
                 "deleted_eks_clusters=4",
                 "deleted_iam_roles=5",
+                "remaining_hosted_zones=0",
+                "remaining_buckets=0",
+                "remaining_vpcs=0",
+                "remaining_eks_clusters=0",
+                "remaining_iam_roles=0",
             )
         )
     )
@@ -53,6 +58,11 @@ def test_parse_sweep_output_reads_line_oriented_counts() -> None:
         deleted_vpcs=3,
         deleted_eks_clusters=4,
         deleted_iam_roles=5,
+        remaining_hosted_zones=0,
+        remaining_buckets=0,
+        remaining_vpcs=0,
+        remaining_eks_clusters=0,
+        remaining_iam_roles=0,
     )
 
 
@@ -69,6 +79,11 @@ def test_run_sweep_parses_subprocess_output() -> None:
                 "deleted_vpcs=3\n"
                 "deleted_eks_clusters=4\n"
                 "deleted_iam_roles=5\n"
+                "remaining_hosted_zones=0\n"
+                "remaining_buckets=0\n"
+                "remaining_vpcs=0\n"
+                "remaining_eks_clusters=0\n"
+                "remaining_iam_roles=0\n"
             ),
             stderr="",
         ),
@@ -81,6 +96,11 @@ def test_run_sweep_parses_subprocess_output() -> None:
         deleted_vpcs=3,
         deleted_eks_clusters=4,
         deleted_iam_roles=5,
+        remaining_hosted_zones=0,
+        remaining_buckets=0,
+        remaining_vpcs=0,
+        remaining_eks_clusters=0,
+        remaining_iam_roles=0,
     )
     mock_run.assert_called_once()
     assert mock_run.call_args.kwargs["env"][ALLOW_NON_ENTRYPOINT_ENV] == "1"
@@ -98,6 +118,11 @@ def test_aws_sweep_fixtures_reports_empty_janitor_result() -> None:
             deleted_vpcs=0,
             deleted_eks_clusters=0,
             deleted_iam_roles=0,
+            remaining_hosted_zones=0,
+            remaining_buckets=0,
+            remaining_vpcs=0,
+            remaining_eks_clusters=0,
+            remaining_iam_roles=0,
         ),
     ) as mock_sweep:
         result = runner.invoke(cli, ["aws", "sweep-fixtures"])
@@ -105,6 +130,7 @@ def test_aws_sweep_fixtures_reports_empty_janitor_result() -> None:
     assert result.exit_code == 0
     assert "Running AWS fixture sweep..." in result.output
     assert "No expired fixture resources found." in result.output
+    assert "No fixture-owned AWS resources remain." in result.output
     mock_sweep.assert_called_once_with()
 
 
@@ -120,6 +146,11 @@ def test_aws_sweep_fixtures_reports_deleted_resources() -> None:
             deleted_vpcs=3,
             deleted_eks_clusters=4,
             deleted_iam_roles=5,
+            remaining_hosted_zones=0,
+            remaining_buckets=0,
+            remaining_vpcs=0,
+            remaining_eks_clusters=0,
+            remaining_iam_roles=0,
         ),
     ) as mock_sweep:
         result = runner.invoke(cli, ["aws", "sweep-fixtures"])
@@ -131,4 +162,31 @@ def test_aws_sweep_fixtures_reports_deleted_resources() -> None:
     assert "Route 53 hosted zones: 1" in result.output
     assert "S3 buckets: 2" in result.output
     assert "VPCs: 3" in result.output
+    assert "No fixture-owned AWS resources remain." in result.output
     mock_sweep.assert_called_once_with()
+
+
+def test_aws_sweep_fixtures_fails_when_fixture_resources_remain() -> None:
+    """CLI should fail when fixture-owned resources remain after the sweep."""
+    runner = CliRunner()
+
+    with patch(
+        "prodbox.cli.aws_cmd._run_sweep",
+        return_value=_SweepResult(
+            deleted_hosted_zones=0,
+            deleted_buckets=0,
+            deleted_vpcs=0,
+            deleted_eks_clusters=0,
+            deleted_iam_roles=0,
+            remaining_hosted_zones=1,
+            remaining_buckets=0,
+            remaining_vpcs=0,
+            remaining_eks_clusters=0,
+            remaining_iam_roles=0,
+        ),
+    ):
+        result = runner.invoke(cli, ["aws", "sweep-fixtures"])
+
+    assert result.exit_code != 0
+    assert "Fixture-owned AWS resources still remain: 1" in result.output
+    assert "Remaining Route 53 hosted zones: 1" in result.output

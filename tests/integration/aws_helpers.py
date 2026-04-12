@@ -128,6 +128,17 @@ class JanitorSweepResult:
     deleted_iam_roles: int
 
 
+@dataclass(frozen=True)
+class JanitorInventoryResult:
+    """Counts of fixture-owned resources still visible after one janitor sweep."""
+
+    remaining_hosted_zones: int
+    remaining_buckets: int
+    remaining_vpcs: int
+    remaining_eks_clusters: int
+    remaining_iam_roles: int
+
+
 FixtureTagMatcher = Callable[[Mapping[str, str]], bool]
 
 
@@ -1774,9 +1785,14 @@ def _parse_timestamp(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 
+def _is_fixture_owned_tag_map(tag_map: Mapping[str, str]) -> bool:
+    """Return True when one tag map belongs to the prodbox AWS fixture harness."""
+    return tag_map.get(FIXTURE_OWNER_TAG) == FIXTURE_OWNER_VALUE
+
+
 def _is_expired_fixture_tag_map(tag_map: Mapping[str, str], current_time: datetime) -> bool:
     """Return True when a tagged resource belongs to the fixture harness and is expired."""
-    if tag_map.get(FIXTURE_OWNER_TAG) != FIXTURE_OWNER_VALUE:
+    if not _is_fixture_owned_tag_map(tag_map):
         return False
     expires_at = tag_map.get(FIXTURE_EXPIRES_AT_TAG)
     if expires_at in (None, ""):
@@ -2011,6 +2027,13 @@ def _sweep_matching_route53_hosted_zones(matcher: FixtureTagMatcher) -> int:
     return deleted
 
 
+def _list_matching_iam_roles(matcher: FixtureTagMatcher) -> tuple[str, ...]:
+    """Return all fixture-owned IAM role names selected by the matcher."""
+    return tuple(
+        role_name for role_name in _iam_role_names() if matcher(_iam_role_tag_map(role_name))
+    )
+
+
 def _list_matching_eks_clusters(matcher: FixtureTagMatcher) -> tuple[EksClusterContext, ...]:
     """Return all fixture-owned EKS clusters selected by the matcher."""
     payload = json.loads(_run_aws_cli("eks", "list-clusters", "--output", "json"))
@@ -2092,14 +2115,20 @@ def _sweep_matching_eks_clusters(matcher: FixtureTagMatcher) -> tuple[int, tuple
 
 def _sweep_matching_iam_roles(matcher: FixtureTagMatcher) -> int:
     """Delete matching IAM roles that are not still attached to live resources."""
-    payload = json.loads(_run_aws_cli("iam", "list-roles", "--output", "json"))
     deleted = 0
-    for role in payload.get("Roles", []):
-        role_name = role.get("RoleName")
-        if role_name in (None, ""):
-            continue
-        if not matcher(_iam_role_tag_map(str(role_name))):
-            continue
-        _delete_iam_role_by_name(str(role_name))
+    for role_name in _list_matching_iam_roles(matcher):
+        _delete_iam_role_by_name(role_name)
         deleted += 1
     return deleted
+
+
+def fixture_owned_resource_inventory() -> JanitorInventoryResult:
+    """Return counts for every fixture-owned AWS resource class still visible."""
+    matcher = _is_fixture_owned_tag_map
+    return JanitorInventoryResult(
+        remaining_hosted_zones=len(_matching_route53_zone_ids(matcher)),
+        remaining_buckets=len(_list_matching_s3_buckets(matcher)),
+        remaining_vpcs=len(_list_matching_vpcs(matcher)),
+        remaining_eks_clusters=len(_list_matching_eks_clusters(matcher)),
+        remaining_iam_roles=len(_list_matching_iam_roles(matcher)),
+    )

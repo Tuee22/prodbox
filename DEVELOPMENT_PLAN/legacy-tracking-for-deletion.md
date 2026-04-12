@@ -14,8 +14,9 @@
 
 | Item | Location | Why | Owning Sprint |
 |------|----------|-----|---------------|
-
-_(empty — every previously tracked removal item has been moved to Completed below)_
+| Aggregate-suite clean-cluster bootstrap that gates on `prodbox host public-edge` before Pulumi-managed edge restore | `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `documents/engineering/cli_command_surface.md` | `poetry run prodbox test all` currently fails from a cleaned cluster because the runbook restores only the RKE2 substrate, Harbor, and retained storage before requiring a ready public edge | Sprint 6.2 |
+| Stale public-edge residue after clean-cluster teardown | Host `/etc/hosts`, cluster-scoped `IngressClass` and Traefik CRDs, and missing/partial edge namespaces and Helm releases | Unsupported local host overrides and orphaned cluster-scoped edge state make authoritative public-host proof and clean-room recreate non-deterministic | Sprint 6.2 |
+| Final handoff claim that lacks a post-aggregate zero-AWS-residue proof | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `src/prodbox/cli/test_cmd.py`, `documents/engineering/aws_integration_environment_doctrine.md` | The final clean-room contract must prove that the aggregate rerun leaves no fixture-owned Route 53, S3, VPC, EKS, or IAM resources, not just that per-suite janitors exist | Sprint 6.2 |
 
 ## Completed
 

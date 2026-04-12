@@ -115,7 +115,11 @@ Top-level commands:
 | `prodbox gateway start` | `CONFIG_PATH` | none |
 | `prodbox gateway status` | `CONFIG_PATH` | none |
 | `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
-| `prodbox gateway install-service` | `CONFIG_PATH` | `--output-path` |
+
+The canonical steady-state location for the gateway daemon is the in-cluster
+`prodbox charts deploy gateway` workload. `prodbox gateway start` is the in-pod
+entrypoint invoked by the gateway chart's container; manual host invocation is
+permitted only for development and is not a supported steady state.
 
 ### `prodbox charts`
 
@@ -157,12 +161,27 @@ Named suite commands:
 | `prodbox test integration env` | `tests/integration/test_cli_env.py` |
 | `prodbox test integration gateway-daemon` | `tests/integration/test_gateway_daemon_k8s.py` |
 | `prodbox test integration gateway-pods` | `tests/integration/test_gateway_k8s_pods.py` |
+| `prodbox test integration gateway-partition` | `tests/integration/test_gateway_partition.py` |
 | `prodbox test integration lifecycle` | `tests/integration/test_prodbox_lifecycle.py` |
 | `prodbox test integration pulumi` | `tests/integration/test_pulumi_real.py` |
 | `prodbox test integration charts-storage` | `tests/integration/test_charts_storage.py` |
 | `prodbox test integration charts-platform` | `tests/integration/test_charts_platform.py` |
 | `prodbox test integration charts-vscode` | `tests/integration/test_charts_vscode.py` |
 | `prodbox test integration public-dns` | `tests/integration/test_public_dns_delegation.py` |
+
+Aggregate suite commands use a deterministic file order rather than raw
+directory collection. `prodbox test all` runs `tests/unit` first and then the
+canonical integration list. `prodbox test integration all` runs the external
+public-host proof suites before cluster-backed suites that intentionally tear
+down shared runtime, runs `test_charts_platform.py` before
+`test_charts_storage.py` so the full-stack chart suite clears shared singleton
+release names before the storage-only suite, keeps the lifecycle cleanup suite
+last, fails in Phase 1.5 unless `prodbox host public-edge` reports
+`CLASSIFICATION=ready-for-external-proof`, and restores the supported runtime
+with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
+`prodbox charts deploy gateway`, `prodbox charts deploy vscode`, plus a final
+public-edge readiness check before
+exit.
 
 `prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
 It does not run cluster prerequisite gates or the `rke2 ensure` runbook.

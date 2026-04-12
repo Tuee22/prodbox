@@ -1,0 +1,6 @@
+apiVersion: v2
+name: gateway
+description: In-cluster prodbox distributed gateway daemon with mesh leader election and Route 53 DNS write ownership
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

@@ -59,6 +59,7 @@ def deploy_ingress(
     # Deploy Traefik Helm chart
     release = k8s.helm.v3.Release(
         "traefik",
+        name="traefik",
         chart="traefik",
         version=TRAEFIK_CHART_VERSION,
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(

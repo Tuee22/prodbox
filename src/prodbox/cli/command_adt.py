@@ -309,15 +309,6 @@ class GatewayConfigGenCommand:
     node_id: str
 
 
-@dataclass(frozen=True)
-class GatewayInstallServiceCommand:
-    """Install and enable the canonical systemd unit for the gateway daemon."""
-
-    config_path: Path
-    output_path: Path
-    service_name: str
-
-
 # =============================================================================
 # Chart Platform Commands
 # =============================================================================
@@ -403,7 +394,6 @@ Command = (
     | GatewayStartCommand
     | GatewayStatusCommand
     | GatewayConfigGenCommand
-    | GatewayInstallServiceCommand
     # Chart platform
     | ChartListCommand
     | ChartStatusCommand
@@ -829,26 +819,6 @@ def gateway_config_gen_command(
     return Success(GatewayConfigGenCommand(output_path=output_path, node_id=node_id))
 
 
-def gateway_install_service_command(
-    *,
-    config_path: Path,
-    output_path: Path,
-    service_name: str,
-) -> Result[GatewayInstallServiceCommand, str]:
-    """Create a GatewayInstallServiceCommand."""
-    if not config_path.exists():
-        return Failure(f"Gateway config file not found: {config_path}")
-    if not service_name.strip():
-        return Failure("Service name is required")
-    return Success(
-        GatewayInstallServiceCommand(
-            config_path=config_path,
-            output_path=output_path,
-            service_name=service_name.strip(),
-        )
-    )
-
-
 def chart_list_command() -> Result[ChartListCommand, str]:
     """Create a ChartListCommand.
 
@@ -966,8 +936,6 @@ def requires_linux(command: Command) -> bool:
         # Gateway commands - cross-platform
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
-        case GatewayInstallServiceCommand():
-            return True
         # Chart commands - cross-platform
         case (
             ChartListCommand()
@@ -1022,8 +990,6 @@ def requires_settings(command: Command) -> bool:
         # Gateway commands don't require prodbox settings (use own config file)
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
-        case GatewayInstallServiceCommand():
-            return False
         # Chart commands require settings (FQDN, credentials, kubeconfig)
         case (
             ChartListCommand()
@@ -1076,7 +1042,6 @@ __all__ = [
     "GatewayStartCommand",
     "GatewayStatusCommand",
     "GatewayConfigGenCommand",
-    "GatewayInstallServiceCommand",
     # Chart platform
     "ChartListCommand",
     "ChartStatusCommand",
@@ -1111,7 +1076,6 @@ __all__ = [
     "gateway_start_command",
     "gateway_status_command",
     "gateway_config_gen_command",
-    "gateway_install_service_command",
     # Chart smart constructors
     "chart_list_command",
     "chart_status_command",

@@ -99,6 +99,7 @@ async def _run_subprocess(
                 proc.communicate(input=input_data),
                 timeout=timeout,
             )
+            await proc.wait()
             stdout_bytes: bytes = result[0] if result[0] is not None else b""
             stderr_bytes: bytes = result[1] if result[1] is not None else b""
         except TimeoutError:
@@ -107,6 +108,7 @@ async def _run_subprocess(
             return ProcessOutput(returncode=-1, stdout=b"", stderr=b"Timeout")
     else:
         comm_result = await proc.communicate(input=input_data)
+        await proc.wait()
         stdout_bytes = comm_result[0] if comm_result[0] is not None else b""
         stderr_bytes = comm_result[1] if comm_result[1] is not None else b""
 
@@ -1675,11 +1677,7 @@ class EffectInterpreter:
             route53 = session.client("route53")
             from prodbox.settings import get_settings
 
-            zone_id = (
-                effect.zone_id
-                or os.environ.get("ROUTE53_ZONE_ID")
-                or get_settings().route53_zone_id
-            )
+            zone_id = effect.zone_id or get_settings().route53_zone_id
             match zone_id:
                 case str() as resolved_zone_id:
                     route53.get_hosted_zone(Id=resolved_zone_id)
@@ -1694,7 +1692,7 @@ class EffectInterpreter:
                 EnvironmentError(
                     tool="route53",
                     message=f"Route 53 access failed: {e}",
-                    fix_hint="Define Route 53-capable AWS credentials in .env",
+                    fix_hint="Define Route 53-capable AWS credentials in prodbox-config.dhall",
                     source_effect_id=effect.effect_id,
                 )
             )
@@ -2182,6 +2180,8 @@ class EffectInterpreter:
                 env.update(extras)
             case None:
                 pass
+        if "PULUMI_CONFIG_PASSPHRASE" not in env and "PULUMI_CONFIG_PASSPHRASE_FILE" not in env:
+            env["PULUMI_CONFIG_PASSPHRASE"] = ""
         return env
 
     @staticmethod
@@ -2676,40 +2676,73 @@ class EffectInterpreter:
         effect: EnsureHarborRegistry,
         registry_endpoint: str,
     ) -> tuple[str | None, str | None]:
-        """Ensure gateway image exists in Harbor by building/pushing if needed."""
+        """Ensure gateway image exists in Harbor by building/pushing if needed.
+
+        Publishes two tags:
+        * ``<repo>:<prodbox-id>`` — content-addressable per-host tag consumed by
+          the integration test image-resolver in ``test_gateway_k8s_pods.py``.
+        * ``<repo>:latest`` — canonical tag consumed by the in-cluster
+          ``charts/gateway`` Helm chart and ``_values_for_gateway()`` so the
+          chart deploy path needs no manual docker commands.
+        """
         gateway_tag = effect.machine_identity.prodbox_id[:63]
         gateway_image = f"{registry_endpoint}/{effect.gateway_image_repository}:{gateway_tag}"
+        latest_image = f"{registry_endpoint}/{effect.gateway_image_repository}:latest"
         inspect_output = await _run_subprocess(
             ("docker", "manifest", "inspect", gateway_image),
             timeout=30.0,
         )
-        if inspect_output.returncode == 0:
-            return gateway_image, None
+        prodbox_id_image_already_present = inspect_output.returncode == 0
 
-        if not effect.gateway_dockerfile.exists():
-            return None, f"Gateway Dockerfile not found: {effect.gateway_dockerfile}"
+        if not prodbox_id_image_already_present:
+            if not effect.gateway_dockerfile.exists():
+                return None, f"Gateway Dockerfile not found: {effect.gateway_dockerfile}"
 
-        build_output = await _run_subprocess(
-            (
-                "docker",
-                "build",
-                "-f",
-                str(effect.gateway_dockerfile),
-                "-t",
-                gateway_image,
-                str(effect.gateway_build_context),
-            ),
-            timeout=900.0,
+            build_output = await _run_subprocess(
+                (
+                    "docker",
+                    "build",
+                    "-f",
+                    str(effect.gateway_dockerfile),
+                    "-t",
+                    gateway_image,
+                    str(effect.gateway_build_context),
+                ),
+                timeout=900.0,
+            )
+            if build_output.returncode != 0:
+                return None, f"docker build failed: {self._stderr_or_stdout_text(build_output)}"
+
+            push_output = await _run_subprocess(
+                ("docker", "push", gateway_image),
+                timeout=600.0,
+            )
+            if push_output.returncode != 0:
+                return None, f"docker push failed: {self._stderr_or_stdout_text(push_output)}"
+
+        # Always publish/refresh the canonical :latest tag so the gateway chart
+        # consumes the same image even when the prodbox-id tag was already in
+        # the registry from a prior run.
+        tag_latest_output = await _run_subprocess(
+            ("docker", "tag", gateway_image, latest_image),
+            timeout=60.0,
         )
-        if build_output.returncode != 0:
-            return None, f"docker build failed: {self._stderr_or_stdout_text(build_output)}"
+        if tag_latest_output.returncode != 0:
+            return None, (
+                f"docker tag {gateway_image} {latest_image} failed: "
+                f"{self._stderr_or_stdout_text(tag_latest_output)}"
+            )
 
-        push_output = await _run_subprocess(
-            ("docker", "push", gateway_image),
+        push_latest_output = await _run_subprocess(
+            ("docker", "push", latest_image),
             timeout=600.0,
         )
-        if push_output.returncode != 0:
-            return None, f"docker push failed: {self._stderr_or_stdout_text(push_output)}"
+        if push_latest_output.returncode != 0:
+            return None, (
+                f"docker push {latest_image} failed: "
+                f"{self._stderr_or_stdout_text(push_latest_output)}"
+            )
+
         return gateway_image, None
 
     async def _import_image_into_rke2_containerd(self, image_ref: str) -> str | None:

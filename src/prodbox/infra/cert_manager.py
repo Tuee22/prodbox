@@ -55,6 +55,7 @@ def deploy_cert_manager(
     # Deploy cert-manager Helm chart
     release = k8s.helm.v3.Release(
         "cert-manager",
+        name="cert-manager",
         chart="cert-manager",
         version=CERT_MANAGER_CHART_VERSION,
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(

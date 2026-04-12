@@ -58,6 +58,7 @@ def deploy_metallb(
     # Deploy MetalLB Helm chart
     release = k8s.helm.v3.Release(
         "metallb",
+        name="metallb",
         chart="metallb",
         version=METALLB_CHART_VERSION,
         repository_opts=k8s.helm.v3.RepositoryOptsArgs(

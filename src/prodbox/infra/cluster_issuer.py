@@ -1,4 +1,4 @@
-"""ClusterIssuer infrastructure module for Let's Encrypt DNS-01 via Route 53."""
+"""ClusterIssuer infrastructure module for public ACME DNS-01 via Route 53."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def deploy_cluster_issuer(
     prodbox_id: str,
     depends_on: Sequence[object] = (),
 ) -> ClusterIssuerResources:
-    """Deploy ClusterIssuer for Let's Encrypt DNS-01 validation via Route 53.
+    """Deploy ClusterIssuer for public ACME DNS-01 validation via Route 53.
 
     Uses DNS-01 instead of HTTP-01 because the ISP blocks ports 80/443.
     cert-manager creates Route 53 TXT records to prove domain ownership.
@@ -61,41 +61,72 @@ def deploy_cluster_issuer(
         ),
     )
 
+    eab_secret: k8s.core.v1.Secret | None = None
+    acme_spec: dict[str, object] = {
+        "server": settings.acme_server,
+        "email": settings.acme_email,
+        "privateKeySecretRef": {
+            "name": "letsencrypt-account-key",
+        },
+        "solvers": [
+            {
+                "dns01": {
+                    "route53": {
+                        "region": settings.aws_region,
+                        "hostedZoneID": settings.route53_zone_id,
+                        "accessKeyIDSecretRef": {
+                            "name": "route53-credentials",
+                            "key": "access-key-id",
+                        },
+                        "secretAccessKeySecretRef": {
+                            "name": "route53-credentials",
+                            "key": "secret-access-key",
+                        },
+                    },
+                },
+            },
+        ],
+    }
+    if settings.acme_eab_key_id is not None and settings.acme_eab_hmac_key is not None:
+        eab_secret = k8s.core.v1.Secret(
+            "cert-manager-acme-eab-credentials",
+            metadata=object_meta(
+                name="acme-eab-credentials",
+                namespace="cert-manager",
+                prodbox_id=prodbox_id,
+            ),
+            string_data={
+                "secret": settings.acme_eab_hmac_key,
+            },
+            opts=pulumi.ResourceOptions(
+                provider=k8s_provider,
+                depends_on=list(depends_on),
+            ),
+        )
+        acme_spec["externalAccountBinding"] = {
+            "keyID": settings.acme_eab_key_id,
+            "keySecretRef": {
+                "name": "acme-eab-credentials",
+                "key": "secret",
+            },
+            "keyAlgorithm": "HS256",
+        }
+
+    cluster_issuer_dependencies: list[object] = [aws_secret, *depends_on]
+    if eab_secret is not None:
+        cluster_issuer_dependencies.insert(1, eab_secret)
+
     cluster_issuer = k8s.apiextensions.CustomResource(
         "letsencrypt-http01",
         api_version="cert-manager.io/v1",
         kind="ClusterIssuer",
         metadata=object_meta(name="letsencrypt-http01", prodbox_id=prodbox_id),
         spec={
-            "acme": {
-                "server": settings.acme_server,
-                "email": settings.acme_email,
-                "privateKeySecretRef": {
-                    "name": "letsencrypt-account-key",
-                },
-                "solvers": [
-                    {
-                        "dns01": {
-                            "route53": {
-                                "region": settings.aws_region,
-                                "hostedZoneID": settings.route53_zone_id,
-                                "accessKeyIDSecretRef": {
-                                    "name": "route53-credentials",
-                                    "key": "access-key-id",
-                                },
-                                "secretAccessKeySecretRef": {
-                                    "name": "route53-credentials",
-                                    "key": "secret-access-key",
-                                },
-                            },
-                        },
-                    },
-                ],
-            },
+            "acme": acme_spec,
         },
         opts=pulumi.ResourceOptions(
             provider=k8s_provider,
-            depends_on=[aws_secret, *depends_on],
+            depends_on=cluster_issuer_dependencies,
         ),
     )
 

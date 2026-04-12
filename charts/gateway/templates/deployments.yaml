@@ -1,0 +1,108 @@
+{{- range $idx, $nodeId := .Values.nodes.rankedIds }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway-{{ $nodeId }}
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+    gateway-node: {{ $nodeId | quote }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "gateway.selectorLabels" $ | nindent 6 }}
+      gateway-node: {{ $nodeId | quote }}
+  template:
+    metadata:
+      labels:
+        {{- include "gateway.labels" $ | nindent 8 }}
+        gateway-node: {{ $nodeId | quote }}
+    spec:
+      {{- if $.Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    {{- include "gateway.selectorLabels" $ | nindent 20 }}
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      containers:
+        - name: gateway
+          image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - /etc/gateway/config.json
+          ports:
+            - name: rest
+              containerPort: {{ $.Values.ports.rest }}
+              protocol: TCP
+            - name: events
+              containerPort: {{ $.Values.ports.events }}
+              protocol: TCP
+          env:
+            - name: GATEWAY_NODE_ID
+              value: {{ $nodeId | quote }}
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: ca
+              mountPath: /ca
+              readOnly: true
+            - name: orders
+              mountPath: /etc/gateway/orders.json
+              subPath: orders.json
+              readOnly: true
+            - name: config
+              mountPath: /etc/gateway/config.json
+              subPath: config.json
+              readOnly: true
+            - name: prodbox-config
+              mountPath: /app/prodbox-config.json
+              subPath: prodbox-config.json
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /v1/state
+              port: rest
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /v1/state
+              port: rest
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: tls
+          secret:
+            secretName: gateway-{{ $nodeId }}-tls
+            items:
+              - key: tls.crt
+                path: tls.crt
+              - key: tls.key
+                path: tls.key
+        - name: ca
+          secret:
+            secretName: {{ $.Values.certManager.caSecretName }}
+            items:
+              - key: ca.crt
+                path: ca.crt
+        - name: orders
+          configMap:
+            name: gateway-orders
+        - name: config
+          configMap:
+            name: gateway-config-{{ $nodeId }}
+        - name: prodbox-config
+          secret:
+            secretName: gateway-prodbox-config
+{{- end }}

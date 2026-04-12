@@ -38,7 +38,6 @@ from prodbox.cli.command_adt import (
     ConfigValidateCommand,
     DNSCheckCommand,
     GatewayConfigGenCommand,
-    GatewayInstallServiceCommand,
     GatewayStartCommand,
     GatewayStatusCommand,
     HostCheckPortsCommand,
@@ -507,7 +506,11 @@ def _render_public_edge_report(
     configured_fqdn = _optional_setting_string(settings, "vscode_fqdn") or _require_setting_string(
         settings, "demo_fqdn"
     )
-    traefik_ips = _load_balancer_ips(traefik_service_doc)
+    traefik_service_items = _sequence_at(traefik_service_doc, "items")
+    traefik_first_service = (
+        _as_json_mapping(traefik_service_items[0]) if traefik_service_items else None
+    )
+    traefik_ips = _load_balancer_ips(traefik_first_service) if traefik_first_service else ()
     traefik_ip = traefik_ips[0] if len(traefik_ips) > 0 else "<missing>"
     has_traefik_class = _ingress_class_presence(ingress_classes_doc, "traefik")
     has_nginx_class = _ingress_class_presence(ingress_classes_doc, "nginx")
@@ -577,31 +580,6 @@ def _render_public_edge_report(
             f"CERTIFICATE_READY={certificate_ready}",
             f"PRIVATE_EDGE_READY={'true' if private_edge_ready else 'false'}",
             f"CLASSIFICATION={classification}",
-        ]
-    )
-
-
-def _render_gateway_systemd_unit(*, config_path: Path) -> str:
-    """Render the canonical systemd unit for continuous gateway supervision."""
-    prodbox_bin = REPOSITORY_ROOT / ".venv" / "bin" / "prodbox"
-    return "\n".join(
-        [
-            "[Unit]",
-            "Description=prodbox gateway daemon",
-            "After=network-online.target",
-            "Wants=network-online.target",
-            "",
-            "[Service]",
-            "Type=simple",
-            f"WorkingDirectory={REPOSITORY_ROOT}",
-            f"ExecStart={prodbox_bin} gateway start {config_path.resolve()}",
-            "Restart=always",
-            "RestartSec=5",
-            "Environment=PYTHONUNBUFFERED=1",
-            "",
-            "[Install]",
-            "WantedBy=multi-user.target",
-            "",
         ]
     )
 
@@ -1243,7 +1221,7 @@ def _build_host_public_edge_dag(_cmd: HostPublicEdgeCommand) -> EffectDAG:
         effect=CaptureKubectlOutput(
             effect_id="host_public_edge_traefik_service",
             description="Inspect Traefik service load-balancer status",
-            args=["get", "svc", "traefik", "-o", "json"],
+            args=["get", "svc", "-l", "app.kubernetes.io/name=traefik", "-o", "json"],
             namespace="traefik-system",
         ),
         prerequisites=frozenset(["k8s_cluster_reachable"]),
@@ -1865,8 +1843,6 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_gateway_status_dag(command))
         case GatewayConfigGenCommand():
             return Success(_build_gateway_config_gen_dag(command))
-        case GatewayInstallServiceCommand():
-            return Success(_build_gateway_install_service_dag(command))
 
         # Chart platform commands
         case ChartListCommand():
@@ -1943,47 +1919,6 @@ def _build_gateway_config_gen_dag(cmd: GatewayConfigGenCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_gateway_install_service_dag(cmd: GatewayInstallServiceCommand) -> EffectDAG:
-    """Build DAG for installing the canonical gateway systemd unit."""
-    root = EffectNode(
-        effect=Sequence(
-            effect_id="gateway_install_service",
-            description="Install and enable the canonical gateway systemd unit",
-            effects=[
-                WriteFile(
-                    effect_id="gateway_install_service_write_unit",
-                    description="Write gateway systemd unit file",
-                    file_path=cmd.output_path,
-                    content=_render_gateway_systemd_unit(config_path=cmd.config_path),
-                    sudo=True,
-                ),
-                RunSystemdCommand(
-                    effect_id="gateway_install_service_daemon_reload",
-                    description="Reload systemd units",
-                    action="daemon-reload",
-                    sudo=True,
-                ),
-                RunSystemdCommand(
-                    effect_id="gateway_install_service_enable",
-                    description="Enable gateway systemd unit",
-                    action="enable",
-                    service=cmd.service_name,
-                    sudo=True,
-                ),
-                RunSystemdCommand(
-                    effect_id="gateway_install_service_restart",
-                    description="Restart gateway systemd unit",
-                    action="restart",
-                    service=cmd.service_name,
-                    sudo=True,
-                ),
-            ],
-        ),
-        prerequisites=frozenset(["systemd_available"]),
-    )
-    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
-
-
 # =============================================================================
 # Chart Platform Command Builders
 # =============================================================================
@@ -2027,11 +1962,18 @@ def _build_chart_deploy_effect(
     cmd: ChartDeployCommand, prereq_results: PrereqResults
 ) -> ChartDeployEffect:
     """Build ChartDeployEffect from prerequisite settings and auto-generated secrets."""
-    from prodbox.lib.chart_platform import build_chart_deployment_plan, resolve_chart_secrets
+    from prodbox.lib.chart_platform import (
+        build_chart_deployment_plan,
+        resolve_chart_secrets,
+        resolve_gateway_event_keys,
+    )
 
     settings = _require_settings(prereq_results)
     chart_secrets = resolve_chart_secrets(cmd.chart_name)
-    match build_chart_deployment_plan(cmd.chart_name, settings, chart_secrets):
+    gateway_event_keys = resolve_gateway_event_keys(cmd.chart_name)
+    match build_chart_deployment_plan(
+        cmd.chart_name, settings, chart_secrets, gateway_event_keys=gateway_event_keys
+    ):
         case Failure(error=error):
             raise ValueError(error)
         case Success(value=plan):

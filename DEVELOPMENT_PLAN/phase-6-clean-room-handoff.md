@@ -14,11 +14,10 @@ This phase reruns the authoritative validation set from the supported operator f
 blocked AWS and public-host proofs close. The repository hands off only when no sprint remains
 blocked or active and the cleanup ledger is empty.
 
-## Sprint 6.1: Final Clean-Room Validation Rerun and Zero-Legacy Handoff ⏸️
+## Sprint 6.1: Final Clean-Room Validation Rerun and Zero-Legacy Handoff ✅
 
-**Status**: Blocked
-**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`
-**Blocked by**: Sprint 4.3, Sprint 4.4, and Sprint 5.1
+**Status**: Done
+**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/metallb.py`, `tests/unit/test_infra_program.py`, `tests/unit/test_test_cmd.py`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -43,19 +42,26 @@ remaining compatibility backlog.
 
 ### Current Validation State
 
-- `legacy-tracking-for-deletion.md` has no pending items; the Dhall config migration and
-  subprocess credential isolation are complete. The remaining blockers for final handoff are
-  live-environment provisioning and AWS/public-host proofs.
+- The legacy ledger Pending Removal section remains empty.
+- `poetry run prodbox check-code` passed on April 12, 2026.
+- `poetry run prodbox test unit` passed on April 12, 2026 (961 tests).
+- `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
+- `prodbox host public-edge` reports `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox test integration charts-vscode` passed on April 12, 2026 (8 tests).
+- `poetry run prodbox test integration all` passed on April 12, 2026.
+- `poetry run prodbox tla-check` passed on April 12, 2026.
+- `poetry run prodbox test all` completed cleanly in the final closure session on April 12, 2026.
+- Aggregate suites now run `test_charts_platform.py` before `test_charts_storage.py`, restore the
+  supported runtime with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
+  `prodbox charts deploy gateway`, and `prodbox charts deploy vscode` after the destructive pytest
+  tail, and then re-check
+  `prodbox host public-edge` before exit. Pulumi-managed MetalLB, Traefik, and cert-manager
+  releases also use stable Helm release names so the supported clean-room recreate path can
+  reattach cluster-scoped objects without hashed-release drift.
 
 ### Remaining Work
 
-- Close Sprint 4.3 by updating router port forwarding, completing Let's Encrypt cert issuance,
-  and rerunning the external `charts-vscode` proof path.
-- Close Sprint 4.4 by installing the supported host `prodbox-gateway.service` with a real
-  config/orders file and proving explicit-record DDNS continuity against live Route 53 state.
-- Close Sprint 5.1 by restoring live public ingress reachability and rerunning the public-host
-  proof path.
-- Rerun the full clean-room validation set from canonical entrypoints only.
+None.
 
 ## Documentation Requirements
 

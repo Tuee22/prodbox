@@ -19,7 +19,12 @@
         , demo_ttl : Natural
         , vscode_fqdn : Optional Text
         }
-    , acme : { email : Text, server : Text }
+    , acme :
+        { email : Text
+        , server : Text
+        , eab_key_id : Optional Text
+        , eab_hmac_key : Optional Text
+        }
     , deployment :
         { dev_mode : Bool
         , bootstrap_public_ip_override : Optional Text
@@ -42,6 +47,8 @@
     , acme =
         { email = ""
         , server = "https://acme-v02.api.letsencrypt.org/directory"
+        , eab_key_id = None Text
+        , eab_hmac_key = None Text
         }
     , deployment =
         { dev_mode = True

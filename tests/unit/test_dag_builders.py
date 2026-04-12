@@ -19,7 +19,6 @@ import pytest
 from prodbox.cli.command_adt import (
     DNSCheckCommand,
     GatewayConfigGenCommand,
-    GatewayInstallServiceCommand,
     GatewayStartCommand,
     GatewayStatusCommand,
     HostCheckPortsCommand,
@@ -71,7 +70,6 @@ from prodbox.cli.effects import (
     RunSystemdCommand,
     Sequence,
     ValidateTool,
-    WriteFile,
     WriteStdout,
 )
 from prodbox.cli.types import Failure, Success
@@ -167,20 +165,6 @@ class TestGatewayCommandDAGBuilders:
         match command_to_dag(cmd):
             case Success(dag):
                 assert "generate_gateway_config" in dag
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
-    def test_gateway_install_service_dag(self) -> None:
-        """command_to_dag should build DAG for GatewayInstallServiceCommand."""
-        cmd = GatewayInstallServiceCommand(
-            config_path=Path("/tmp/gateway.json"),
-            output_path=Path("/tmp/prodbox-gateway.service"),
-            service_name="prodbox-gateway.service",
-        )
-
-        match command_to_dag(cmd):
-            case Success(dag):
-                assert "gateway_install_service" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -498,9 +482,15 @@ class TestHostCommandPrerequisites:
                                 0,
                                 json.dumps(
                                     {
-                                        "status": {
-                                            "loadBalancer": {"ingress": [{"ip": "192.168.1.240"}]}
-                                        }
+                                        "items": [
+                                            {
+                                                "status": {
+                                                    "loadBalancer": {
+                                                        "ingress": [{"ip": "192.168.1.240"}]
+                                                    }
+                                                }
+                                            }
+                                        ]
                                     }
                                 ),
                                 "",
@@ -942,33 +932,6 @@ class TestGatewayCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_gateway_install_service_requires_systemd_and_writes_unit(self) -> None:
-        """Gateway install-service should write the canonical unit then reload/enable/restart."""
-        cmd = GatewayInstallServiceCommand(
-            config_path=Path("/tmp/gateway.json"),
-            output_path=Path("/tmp/prodbox-gateway.service"),
-            service_name="prodbox-gateway.service",
-        )
-        match command_to_dag(cmd):
-            case Success(dag):
-                root = dag.get_node("gateway_install_service")
-                assert root is not None
-                assert root.prerequisites == frozenset(["systemd_available"])
-                assert isinstance(root.effect, Sequence)
-                built = root.effect
-                assert len(built.effects) == 4
-                assert isinstance(built.effects[0], WriteFile)
-                assert isinstance(built.effects[1], RunSystemdCommand)
-                assert isinstance(built.effects[2], RunSystemdCommand)
-                assert isinstance(built.effects[3], RunSystemdCommand)
-                assert "gateway start /tmp/gateway.json" in built.effects[0].content
-                assert built.effects[1].action == "daemon-reload"
-                assert built.effects[2].action == "enable"
-                assert built.effects[2].service == "prodbox-gateway.service"
-                assert built.effects[3].action == "restart"
-            case Failure(error):
-                pytest.fail(f"Expected Success, got Failure: {error}")
-
 
 class TestUserVisibleCommandBuilderRegressionGuards:
     """Regression guards for repaired user-facing command builders."""
@@ -1038,11 +1001,6 @@ class TestAllPrerequisitesExistInRegistry:
             GatewayStartCommand(config_path=Path("/tmp/gateway.json")),
             GatewayStatusCommand(config_path=Path("/tmp/gateway.json")),
             GatewayConfigGenCommand(output_path=Path("/tmp/gateway.json"), node_id="node-a"),
-            GatewayInstallServiceCommand(
-                config_path=Path("/tmp/gateway.json"),
-                output_path=Path("/tmp/prodbox-gateway.service"),
-                service_name="prodbox-gateway.service",
-            ),
         ]
         for cmd in commands:
             match command_to_dag(cmd):

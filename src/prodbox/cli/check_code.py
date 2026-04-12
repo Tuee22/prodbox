@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
+from typing import Final
 
 import click
 
@@ -18,6 +19,15 @@ from prodbox.lib.venv_utils import build_tool_command
 
 CHECK_CODE_TIMEOUT_SECONDS: float = 300.0
 
+# Subprocess environment allowlist — only these vars pass through to linter/checker processes.
+_TOOL_PASSTHROUGH_VARS: Final[tuple[str, ...]] = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "TERM",
+    "USER",
+)
+
 
 @click.command("check-code")
 def check_code() -> None:
@@ -27,7 +37,7 @@ def check_code() -> None:
 
 def _run_check_code() -> int:
     """Build and execute the canonical check-code sequence."""
-    allow_env = dict(os.environ)
+    allow_env = {key: os.environ[key] for key in _TOOL_PASSTHROUGH_VARS if key in os.environ}
     allow_env[ALLOW_NON_ENTRYPOINT_ENV] = "1"
     ruff_check_command = build_tool_command("ruff", ("check", "src/", "tests/"))
     ruff_format_command = build_tool_command("ruff", ("format", "--check", "src/", "tests/"))

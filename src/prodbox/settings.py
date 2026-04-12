@@ -141,6 +141,11 @@ def _discover_lan_addressing_or_none() -> LanAddressing | None:
         return None
 
 
+def _is_zerossl_acme_server(server: str) -> bool:
+    """Return whether the ACME directory URL points at ZeroSSL."""
+    return server.lower().startswith("https://acme.zerossl.com")
+
+
 class Settings(BaseModel):
     """Central configuration for all prodbox operations.
 
@@ -239,7 +244,7 @@ class Settings(BaseModel):
         str,
         Field(
             min_length=1,
-            description="Email for Let's Encrypt registration",
+            description="Email for public ACME registration",
         ),
     ]
     acme_server: Annotated[
@@ -247,6 +252,20 @@ class Settings(BaseModel):
         Field(
             default="https://acme-v02.api.letsencrypt.org/directory",
             description="ACME server URL",
+        ),
+    ]
+    acme_eab_key_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional ACME external account binding key ID",
+        ),
+    ]
+    acme_eab_hmac_key: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional ACME external account binding HMAC key",
         ),
     ]
 
@@ -286,6 +305,19 @@ class Settings(BaseModel):
                 self.active_lan_ipv4 = discovered.interface_ipv4
             if self.active_lan_network_cidr == "":
                 self.active_lan_network_cidr = discovered.network_cidr
+        return self
+
+    @model_validator(mode="after")
+    def validate_acme_eab_requirements(self) -> Settings:
+        """Validate that ACME EAB configuration is internally consistent."""
+        if _is_zerossl_acme_server(self.acme_server) and (
+            self.acme_eab_key_id is None or self.acme_eab_hmac_key is None
+        ):
+            raise ValueError("acme.eab_key_id and acme.eab_hmac_key are required for ZeroSSL ACME")
+        if (self.acme_eab_key_id is None) != (self.acme_eab_hmac_key is None):
+            raise ValueError(
+                "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
+            )
         return self
 
     def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
@@ -459,7 +491,7 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
     SettingSpec(
         attribute="acme_email",
         config_path="acme.email",
-        description="Email for Let's Encrypt registration",
+        description="Email for public ACME registration",
         getter=lambda settings: settings.acme_email,
         required=True,
         sensitive=True,
@@ -471,6 +503,21 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         getter=lambda settings: settings.acme_server,
         required=False,
         template_default="https://acme-v02.api.letsencrypt.org/directory",
+    ),
+    SettingSpec(
+        attribute="acme_eab_key_id",
+        config_path="acme.eab_key_id",
+        description="Optional ACME external account binding key ID",
+        getter=lambda settings: settings.acme_eab_key_id,
+        required=False,
+    ),
+    SettingSpec(
+        attribute="acme_eab_hmac_key",
+        config_path="acme.eab_hmac_key",
+        description="Optional ACME external account binding HMAC key",
+        getter=lambda settings: settings.acme_eab_hmac_key,
+        required=False,
+        sensitive=True,
     ),
     SettingSpec(
         attribute="prodbox_dev_mode",
@@ -545,6 +592,8 @@ def _flatten_config_json(config: dict[str, object]) -> dict[str, object]:
         "vscode_fqdn": domain.get("vscode_fqdn"),
         "acme_email": acme.get("email", ""),
         "acme_server": acme.get("server", "https://acme-v02.api.letsencrypt.org/directory"),
+        "acme_eab_key_id": acme.get("eab_key_id"),
+        "acme_eab_hmac_key": acme.get("eab_hmac_key"),
         "prodbox_dev_mode": deployment.get("dev_mode", True),
         "bootstrap_public_ip_override": deployment.get("bootstrap_public_ip_override"),
         "pulumi_enable_dns_bootstrap": deployment.get("pulumi_enable_dns_bootstrap", True),

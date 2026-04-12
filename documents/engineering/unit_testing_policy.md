@@ -97,6 +97,18 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
 2. Integration-selected scopes aggregate prerequisite requirements into one Phase 1 gate.
 3. Unit-only scope (`poetry run prodbox test unit`) bypasses integration gates.
 4. External public-host suites such as `charts-vscode` and `public-dns` may run with an empty prerequisite gate and no cluster runbook.
+5. Aggregate suites (`prodbox test integration all` and `prodbox test all`) use an explicit
+   canonical file order so public-host proof runs before cluster-backed teardown suites,
+   `test_charts_platform.py` runs before `test_charts_storage.py` to clear shared singleton
+   release names, and the lifecycle cleanup suite remains last.
+6. Aggregate suites never delete and redeploy the live public host as part of Phase 1.5. They
+   require `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
+   Phase 2 pytest starts.
+7. Aggregate suites restore the supported runtime after the destructive pytest tail by running
+   `prodbox pulumi refresh`, `prodbox pulumi up --yes`, `prodbox charts deploy gateway`, and
+   `prodbox charts deploy vscode`,
+   then wait for `prodbox host public-edge` to return
+   `CLASSIFICATION=ready-for-external-proof` before exit.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

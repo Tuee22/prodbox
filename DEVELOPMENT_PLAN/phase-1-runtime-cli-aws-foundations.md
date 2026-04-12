@@ -55,7 +55,10 @@ surfaces.
 
 ### Deliverables
 
-- Repository-root `.env` is the only supported AWS auth source for stateful integration runs.
+- Repository-root `prodbox-config.dhall` (compiled to `prodbox-config.json` and read by
+  `Settings.from_config_json()`) is the only supported AWS auth source for stateful integration
+  runs. Phase 4 later replaced the original `.env`-based source with this Dhall path; Sprint 1.2
+  is the sprint that originally established the single-source rule.
 - Named AWS, Route 53, and Pulumi real-system suites exist and are stable.
 - Teardown and cleanup validation are explicit rather than implied.
 - Pulumi integration runs use an isolated local backend plus a fixture-owned hosted zone.
@@ -81,8 +84,8 @@ None.
   ownership.
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite closure rules.
 - `documents/engineering/unit_testing_policy.md` - named test-suite and validation ownership.
-- `documents/engineering/aws_integration_environment_doctrine.md` - repository-root `.env` auth and
-  AWS cleanup rules.
+- `documents/engineering/aws_integration_environment_doctrine.md` - repository-root
+  `prodbox-config.dhall` auth source (compiled to `prodbox-config.json`) and AWS cleanup rules.
 - `documents/engineering/aws_test_environment.md` - shared AWS environment setup.
 - `documents/engineering/integration_fixture_doctrine.md` - fixture-owned teardown and cleanup
   doctrine.

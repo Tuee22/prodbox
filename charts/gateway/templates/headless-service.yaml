@@ -1,0 +1,24 @@
+{{- range $idx, $nodeId := .Values.nodes.rankedIds }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-{{ $nodeId }}
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+    gateway-node: {{ $nodeId | quote }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gateway.selectorLabels" $ | nindent 4 }}
+    gateway-node: {{ $nodeId | quote }}
+  ports:
+    - name: rest
+      port: {{ $.Values.ports.rest }}
+      targetPort: rest
+      protocol: TCP
+    - name: events
+      port: {{ $.Values.ports.events }}
+      targetPort: events
+      protocol: TCP
+{{- end }}

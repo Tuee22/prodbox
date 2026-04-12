@@ -13,9 +13,7 @@
 This phase defines the chart-lifecycle platform, deterministic retained storage rooted at `.data/`,
 and the namespace-local `keycloak-postgres -> keycloak -> vscode` stack with `vscode-nginx` as the
 namespace-local auth proxy behind the phase-4-owned public edge, plus local Keycloak users as the
-supported auth model. The Sprint 3.1 storage path scheme
-(`.data/<namespace>/<statefulset>/<ordinal>`) is superseded by the 5-segment scheme adopted in
-Sprint 4.5; see [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md).
+supported auth model.
 
 ## Sprint 3.1: Chart Platform and Deterministic Retained Storage ✅
 
@@ -30,7 +28,9 @@ Deliver one canonical chart-lifecycle platform with deterministic retained stora
 ### Deliverables
 
 - `prodbox charts list|status|deploy|delete` is the canonical chart surface.
-- CLI-owned chart storage lives under `.data/<namespace>/<statefulset>/<ordinal>`.
+- CLI-owned chart storage lives under
+  `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` (the canonical 5-segment scheme;
+  Sprint 4.5 migrated from the original 4-segment layout).
 - End-to-end chart integration covers retained storage and stack deploy/delete behavior.
 - Delete and redeploy preserve deterministic PV/PVC rebinding on the same retained host paths.
 

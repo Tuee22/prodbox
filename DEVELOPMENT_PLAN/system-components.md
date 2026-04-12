@@ -17,9 +17,9 @@
 | Load balancer IPs | MetalLB | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
 | Public edge ingress | Traefik | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
 | Namespace-local auth proxy | `vscode-nginx` | RKE2 workload | Chart platform | Cluster resources |
-| TLS issuance | cert-manager plus Let's Encrypt HTTP-01 | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
-| DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus always-on gateway `dns_write_gate` | Route 53 |
-| Gateway mesh | Distributed gateway daemon | Supervised host service or pod | `prodbox gateway ...` plus steady-state supervisor | Runtime config plus cluster state |
+| TLS issuance | cert-manager plus public ACME DNS-01 via Route 53 (current live server: ZeroSSL DV90 with EAB) | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
+| DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus always-on in-cluster gateway `dns_write_gate` | Route 53 |
+| Gateway mesh | Distributed gateway daemon | In-cluster Kubernetes workload (Deployment or StatefulSet) under `prodbox charts` | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources plus Route 53 |
 | Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | Chart platform and Pulumi infra | No durable state (cluster-scoped resource) |
 | Chart platform | Bespoke Helm/chart registry in repo | RKE2 workloads | `prodbox charts ...` | `.data/` retained storage |
 | Namespace-local auth stack | `keycloak-postgres`, `keycloak` | RKE2 workloads | Chart platform | `.data/` plus cluster resources |
@@ -36,8 +36,8 @@
 | Pulumi lifecycle | `prodbox pulumi ...` | Manage infrastructure bootstrap and previews |
 | DNS check | `prodbox dns check` | Inspect current DNS ownership state |
 | Kubernetes health | `prodbox k8s health|wait` | Inspect cluster readiness |
-| Gateway runtime | `prodbox gateway start|status|config-gen|install-service` | Manage the distributed gateway and install the canonical host supervision path |
-| Gateway steady state | `prodbox gateway install-service <config.json>` plus supervised `prodbox gateway start <config.json>` | Keep gateway ownership and Route 53 writes continuously active |
+| Gateway runtime | `prodbox gateway start|status|config-gen` | `prodbox gateway start` is the in-pod entrypoint invoked by the gateway chart's container; `status` and `config-gen` support inspection and config authoring |
+| Gateway steady state | `prodbox charts deploy gateway` plus `prodbox gateway status` | Deploy the in-cluster gateway workload and observe leader election and Route 53 write health |
 | Chart runtime | `prodbox charts list|status|deploy|delete` | Manage the bespoke chart platform |
 | TLA+ validation | `prodbox tla-check` | Run formal safety verification |
 | Test runner | `prodbox test ...` | Run named unit and integration suites |
@@ -50,7 +50,7 @@
 | CLI and env contract | `poetry run prodbox test integration cli`, `poetry run prodbox test integration env` |
 | AWS foundation | `poetry run prodbox test integration aws-foundation`, `poetry run prodbox test integration aws-eks` |
 | Route 53 and Pulumi | `poetry run prodbox test integration dns-aws`, `poetry run prodbox test integration pulumi` |
-| Gateway runtime | `poetry run prodbox test integration gateway-daemon`, `poetry run prodbox test integration gateway-pods` |
+| Gateway runtime | `poetry run prodbox test integration gateway-daemon`, `poetry run prodbox test integration gateway-pods`, `poetry run prodbox test integration gateway-partition` |
 | Chart platform | `poetry run prodbox test integration charts-storage`, `poetry run prodbox test integration charts-platform` |
 | Lifecycle cleanup | `poetry run prodbox test integration lifecycle` |
 | Public-host proof | `poetry run prodbox test integration charts-vscode`, `poetry run prodbox test integration public-dns` |
@@ -64,9 +64,9 @@
 | CLI and doctrine source | Repository worktree | `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Code and docs are version-controlled |
 | Retained chart storage | Host filesystem | `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | 5-segment path adopted by Sprint 4.5; rebinds deterministically after cleanup |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |
-| DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; supervised gateway updates keep their IPs current |
-| Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer is `letsencrypt-http01` |
-| Gateway runtime continuity | Host service manager or Kubernetes | Service supervisor or pod restart policy | Required to keep `dns_write_gate` active continuously |
+| DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; the elected in-cluster gateway leader keeps their IPs current via `dns_write_gate` |
+| Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer object is `letsencrypt-http01`; the ACME server URL is configured in `prodbox-config.dhall`, and the current live target is ZeroSSL DV90 |
+| Gateway runtime continuity | Kubernetes | Pod restart policy plus leader election and partition-tolerant quorum | Required to keep `dns_write_gate` active continuously across pod loss, node loss, and partition heals |
 | Pulumi state | Pulumi backend | Stack state selected by repo config | Used only through canonical entrypoints |
 
 ## Artifact Locations

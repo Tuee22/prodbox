@@ -1,0 +1,38 @@
+{{- range $idx, $nodeId := .Values.nodes.rankedIds }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config-{{ $nodeId }}
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+    gateway-node: {{ $nodeId | quote }}
+data:
+  config.json: |-
+    {
+      "node_id": {{ $nodeId | quote }},
+      "cert_file": "/tls/tls.crt",
+      "key_file": "/tls/tls.key",
+      "ca_file": "/ca/ca.crt",
+      "orders_file": "/etc/gateway/orders.json",
+      "event_keys": {
+        {{- $first := true -}}
+        {{- range $rankedNodeId, $key := $.Values.eventKeys }}
+        {{- if not $first }},{{ end -}}
+        {{- $first = false }}
+        {{ $rankedNodeId | quote }}: {{ $key | quote }}
+        {{- end }}
+      },
+      "heartbeat_interval_seconds": {{ $.Values.timing.heartbeatIntervalSeconds }},
+      "reconnect_interval_seconds": {{ $.Values.timing.reconnectIntervalSeconds }},
+      "sync_interval_seconds": {{ $.Values.timing.syncIntervalSeconds }}
+      {{- if $.Values.dnsWriteGate.enabled }},
+      "dns_write_gate": {
+        "zone_id": {{ $.Values.dnsWriteGate.zoneId | quote }},
+        "fqdn": {{ $.Values.dnsWriteGate.fqdn | quote }},
+        "ttl": {{ $.Values.dnsWriteGate.ttl }},
+        "aws_region": {{ $.Values.dnsWriteGate.awsRegion | quote }}
+      }
+      {{- end }}
+    }
+{{- end }}

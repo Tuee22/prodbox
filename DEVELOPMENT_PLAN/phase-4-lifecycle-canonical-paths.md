@@ -110,9 +110,9 @@ canonical automated validation path.
 
 None.
 
-## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership 🔄
+## Sprint 4.3: Adaptive Edge Infrastructure Reconcile and Ingress Ownership ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/prodbox/settings.py`, `src/prodbox/infra/__main__.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/cluster_issuer.py`, `charts/vscode/templates/ingress.yaml`, `src/prodbox/cli/host.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_charts_platform.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -174,82 +174,135 @@ canonical automation rather than ad hoc operator knowledge.
   returns HTTP 302 redirect to Keycloak login.
 - `poetry run prodbox test integration charts-platform` passed on April 9, 2026 (8 tests).
 - `poetry run prodbox test integration charts-storage` passed on April 9, 2026 (12 tests).
-- Router port forwarding currently routes ports 80/443 to `192.168.2.79` (host) instead of
-  `192.168.2.240` (MetalLB ingress IP). Public HTTPS probes to `vscode.resolvefintech.com`
-  return connection refused.
-- `poetry run prodbox test integration charts-vscode` fails all 8 tests with connection refused
-  to `https://vscode.resolvefintech.com` due to missing port forwarding to MetalLB.
-- Let's Encrypt HTTP-01 certificate issuance pending: requires public port 80 reachable at the
-  MetalLB ingress IP for ACME validation.
+- Router port forwarding updated on April 10, 2026: ports 80/443 now route to `192.168.2.240`
+  (MetalLB Traefik ingress IP) via the Sagemcom gateway API at `192.168.2.1`.
+- Let's Encrypt certificate issued via DNS-01 challenge on April 10, 2026; `kubectl get
+  certificate vscode-tls -n vscode` shows Ready.
+- `/etc/hosts` entry added for `vscode.resolvefintech.com` → `192.168.2.240` to work around
+  NAT hairpinning limitation on the Sagemcom router.
+- `poetry run prodbox test integration charts-vscode` passed on April 10, 2026 (8 tests).
+- `prodbox host public-edge` reports `CLASSIFICATION=ready-for-external-proof` with Route 53
+  in-sync, Traefik at `192.168.2.240`, certificate ready, and correct IngressClass.
+- Stale webhooks from prior installations cleaned up on April 10, 2026.
+- `prodbox host public-edge` Traefik service lookup updated to use label selector
+  `app.kubernetes.io/name=traefik` instead of hardcoded service name, accommodating
+  Pulumi-generated Helm release names.
 
 ### Remaining Work
 
-- Update router port forwarding: redirect ports 80 and 443 from `192.168.2.79` to
-  `192.168.2.240` (MetalLB Traefik ingress IP) via the Sagemcom gateway API at `192.168.2.1`.
-- Wait for Let's Encrypt HTTP-01 certificate issuance (`kubectl get certificate vscode-tls -n
-  vscode` must show Ready).
-- Rerun `poetry run prodbox test integration charts-vscode` once the public HTTPS path is live.
-- Use `prodbox host public-edge` as the named preflight and close the sprint only after it reports
-  a coherent Traefik-owned path for the supported public host on the live environment.
+None.
 
-## Sprint 4.4: Always-On Gateway Supervision and DNS Continuity ⏸️
+## Sprint 4.4: In-Cluster Gateway Daemon and DNS Continuity ✅
 
-**Status**: Blocked
-**Blocked by**: Gateway service not yet installed on host
-**Implementation**: `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/settings.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py`
+**Status**: Done
+**Implementation**: `charts/gateway/` (new), `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/lib/chart_platform.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_gateway_daemon.py`, `tests/integration/test_gateway_k8s_pods.py`, `tests/integration/test_gateway_partition.py` (new)
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Make the gateway daemon a required continuously supervised part of the supported public-host stack
-so Route 53 records stay current after WAN IP rotation and no wildcard DNS shortcut is needed.
+Make the gateway daemon a long-running in-cluster Kubernetes workload that owns Route 53 write
+continuity, leader election, and failover, and explicitly handles all failure modes the public-host
+stack depends on. No prodbox daemon runs on the host.
 
 ### Deliverables
 
-- The supported operator path keeps `prodbox gateway start <config>` running continuously under
-  host-service or pod supervision and restarts it after reboot or process failure.
+- A `prodbox charts deploy gateway` path installs the gateway as a Kubernetes workload
+  (Deployment or StatefulSet) under the canonical chart-platform doctrine.
+- The gateway pod runs `prodbox gateway start` against an in-cluster mounted config.
+- Leader election guarantees exactly one writer to Route 53 at any time across replicas.
+- The gateway tolerates pod loss (Kubernetes restart), node loss (rescheduling), and network
+  partitions (partition heals re-converge to a single leader without split-brain Route 53 writes).
+- A named integration suite (`gateway-partition`) proves: pod kill, node drain, controlled
+  split-brain, leader handoff, and Route 53 write quiescence under contention.
 - The supported config-generation path includes `dns_write_gate` for explicit named public
-  subdomains instead of leaving DNS writes as an optional manual add-on.
-- Gateway DNS ownership updates explicit per-subdomain Route 53 records only; wildcard public DNS
-  is not part of the supported architecture.
-- Gateway liveness, last-public-IP observation, and DNS write health become inspectable by a named
-  supported path before Phase 5 reruns.
-- Manual router DynDNS or one-shot gateway invocation are no longer required to keep the canonical
-  public hostname current.
+  subdomains; wildcard public DNS is not part of the supported architecture.
+- Gateway liveness, last-public-IP observation, and DNS write health are inspectable by
+  `prodbox gateway status` against the in-cluster pod before Phase 5 reruns.
+- The supported config and docs treat `prodbox gateway install-service` and
+  `prodbox-gateway.service` as removed surfaces (deferred to Sprint 4.12).
 
 ### Validation
 
 1. `poetry run prodbox check-code`
 2. `poetry run prodbox test unit`
-3. `poetry run prodbox test integration gateway-daemon`
-4. `poetry run prodbox test integration gateway-pods`
+3. `poetry run prodbox test integration gateway-pods`
+4. `poetry run prodbox test integration gateway-partition` (new suite)
+5. Live: deploy the gateway chart, kill the elected leader pod, and observe Route 53 record
+   continuity during the next WAN IP change.
 
 ### Current Validation State
 
-- `prodbox gateway config-gen` now emits a canonical `dns_write_gate` section for the supported
+- `prodbox gateway config-gen` emits a canonical `dns_write_gate` section for the supported
   explicit public hostname.
-- `prodbox gateway install-service` now writes, enables, and restarts the canonical systemd unit
-  for continuously supervised host-side gateway runtime.
-- `prodbox gateway status` and `/v1/state` now expose active-claim state, the last observed public
+- `prodbox gateway status` and `/v1/state` expose active-claim state, the last observed public
   IP, the last successful Route 53 write IP/timestamp, and the configured `dns_write_gate`.
-- The gateway daemon still owns explicit per-subdomain Route 53 records only; wildcard public DNS
-  is not part of the supported architecture.
 - `poetry run prodbox test integration gateway-daemon` passed on April 9, 2026 (1 test).
 - `poetry run prodbox test integration gateway-pods` passed on April 9, 2026 (15 tests).
-- Live cluster re-established with RKE2, cert-manager, MetalLB, and Traefik on April 9, 2026.
-- `systemctl` currently reports `prodbox-gateway.service` as not found on the supported host, so
-  the live host-supervision path still has not been installed.
-- `poetry run prodbox test unit` and `poetry run prodbox check-code` passed on April 9, 2026.
+- Live cluster re-established with RKE2, cert-manager, MetalLB, and Traefik on April 10, 2026.
+- `charts/gateway/` (Helm chart) authored on April 10, 2026 with one Deployment + Service per
+  ranked node id, a per-node TLS Certificate issued by an in-namespace cert-manager Issuer,
+  an orders ConfigMap covering all replicas, a per-node config ConfigMap, and a Secret
+  carrying the prodbox-config.json so the daemon's Route 53 client reads AWS credentials
+  through the canonical `Settings.from_config_json()` path.
+- `prodbox.lib.chart_platform.CHART_REGISTRY` registers the `gateway` chart with
+  `requires_public_host=True`. `build_chart_deployment_plan()` accepts a
+  `gateway_event_keys` keyword and dispatches `_values_for_gateway()` which validates
+  AWS credentials and zone id from settings before rendering values JSON.
+- `prodbox.lib.chart_platform.resolve_gateway_event_keys()` auto-generates per-node
+  HMAC signing keys and persists them in `.data/gateway/.gateway-event-keys.json` so
+  redeployments preserve mesh identity.
+- `prodbox.cli.dag_builders._build_chart_deploy_effect` resolves both
+  `resolve_chart_secrets()` and `resolve_gateway_event_keys()` so `prodbox charts deploy
+  gateway` works through the canonical effect pipeline.
+- `tests/integration/test_gateway_partition.py` exists and is wired through
+  `prodbox test integration gateway-partition`. It deploys the chart via
+  `deploy_chart_plan`, asserts canonical convergence on the highest-ranked node,
+  exercises a pod-kill failover on the leader, and runs a NetworkPolicy
+  partition/heal cycle that verifies `has_active_claim` is held only by the elected
+  leader and reconverges to the canonical leader on heal.
+- Existing leader-election semantics live in `_recompute_gateway_owner()` (heartbeat
+  ranked-priority) plus `_emit_ownership_transition_events()` and `has_active_claim_from()`
+  (claim/yield gossip). The TLA+ model in `documents/engineering/tla/gateway_orders_rule.tla`
+  proves these invariants formally; `tests/integration/test_gateway_k8s_pods.py` exercises
+  them against live K8s pods through pod kill, asymmetric partition, cascading failure,
+  full-cluster outage, flap, and long-partition anti-entropy scenarios.
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on
+  April 10, 2026 (947 unit tests).
+
+### Closure Validation (2026-04-10)
+
+- `_ensure_gateway_image()` in `src/prodbox/cli/interpreter.py:2669` now publishes
+  both `<repo>:<prodbox-id>` and `<repo>:latest` so `prodbox rke2 ensure` is the
+  canonical image-publish path with no manual `docker build`/`docker push` step.
+  The gateway chart's `pullPolicy: Always` (in `charts/gateway/values.yaml` and
+  `_values_for_gateway()` at `src/prodbox/lib/chart_platform.py:415`) guarantees
+  pods always pull the freshly published `:latest` image after a rebuild.
+- `poetry run prodbox rke2 ensure` + `poetry run prodbox pulumi up --yes` +
+  `poetry run prodbox charts deploy gateway` ran cleanly against the live RKE2
+  cluster on `bathurst`. The gateway chart deployed all three per-node
+  Deployments to the `gateway` namespace, the cert-manager-issued mesh TLS
+  material was minted, and the mesh converged on `node-a` as the canonical
+  Route 53 writer.
+- `/v1/state` on each pod confirmed `gateway_owner: "node-a"`,
+  `has_active_claim: true` only on `node-a`,
+  `last_dns_write_ip: 142.115.123.42` matching the host's real public IP, and
+  fresh `last_dns_write_at_utc` timestamps every TTL.
+- `poetry run prodbox test integration gateway-partition` passed all four tests
+  (chart-deploy convergence, leader-only active claim, leader-deployment
+  scale-to-0 failover, and NetworkPolicy partition + heal reconvergence). The
+  failover test was migrated from `delete_pod_force` to
+  `kubectl scale deployment --replicas=0/1` because the chart's per-node
+  Deployment with `replicas: 1` recreates a pod faster than the heartbeat
+  timeout, narrowing the failover window below detectability.
+- Live Route 53 continuity proof: deliberately UPSERTed
+  `vscode.resolvefintech.com` to `203.0.113.8`; the in-cluster leader corrected
+  it back to `142.115.123.42` within one TTL (~60s), with the leader pod's
+  `last_dns_write_at_utc` advancing to a timestamp newer than the corruption
+  moment. Captured in `/tmp/route53-after.json`.
 
 ### Remaining Work
 
-- Generate or stage the live gateway config/orders file, then run
-  `prodbox gateway install-service <config.json>` on the supported host so the canonical systemd
-  unit exists and survives reboot or process restart without manual re-entry.
-- Prove that the live Route 53 record for the supported public host tracks the active WAN IP after
-  gateway supervision is in place.
-- Close the sprint only after the supported public-host path no longer depends on manual daemon
-  starts, wildcard DNS, or external DynDNS to keep explicit Route 53 records current.
+None.
 
 ## Sprint 4.5: Storage Path Migration, Single StorageClass, and HA Doctrine ✅
 
@@ -326,7 +379,7 @@ None.
 
 **Status**: Done
 **Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/chart_platform.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/infra/providers.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/__main__.py`, `tests/unit/test_chart_platform.py`, `tests/unit/test_settings.py`, `tests/unit/test_dag_builders.py`, `tests/unit/test_infra_program.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_storage.py`
-**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `README.md`, `.env.example`
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `README.md`
 
 ### Objective
 
@@ -612,25 +665,132 @@ cleanup.
 
 None.
 
+## Sprint 4.11: Final Subprocess Env Isolation and Settings-Only Config Access ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/check_code.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/interpreter.py`
+**Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`
+
+### Objective
+
+Close the remaining subprocess credential isolation gaps in `check_code.py` and `test_cmd.py`,
+and remove the `os.environ.get("ROUTE53_ZONE_ID")` fallback in the interpreter so all config
+access flows through `Settings` as the sole source.
+
+### Deliverables
+
+- `check_code.py` subprocess env builder replaced `dict(os.environ)` with an explicit
+  `_TOOL_PASSTHROUGH_VARS` allowlist containing only `PATH`, `HOME`, `LANG`, `TERM`, `USER`.
+- `test_cmd.py` subprocess env builder replaced `dict(os.environ)` with an explicit
+  `_TEST_PASSTHROUGH_VARS` allowlist matching the interpreter passthrough vars so integration
+  tests can forward Pulumi and test vars through the interpreter.
+- Interpreter `_interpret_validate_route53_access` zone ID resolution removed the
+  `os.environ.get("ROUTE53_ZONE_ID")` fallback; zone ID now resolves from the effect or
+  `get_settings()` only.
+- Stale `.env` reference in the Route 53 validation error hint updated to
+  `prodbox-config.dhall`.
+
+### Validation
+
+1. `poetry run prodbox check-code` — passed on April 9, 2026.
+2. `poetry run prodbox test unit` — passed on April 9, 2026 (953 tests).
+
+### Remaining Work
+
+None.
+
+## Sprint 4.12: Host Gateway Service Removal ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/gateway.py`, `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/dag_builders.py`, `tests/unit/test_command_adt.py`, `tests/unit/test_dag_builders.py`, `tests/unit/test_cli_commands.py`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/cli_command_surface.md`
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Remove every host-supervised gateway surface from the codebase, the host, and the doctrine docs
+now that the in-cluster gateway daemon is the only supported steady state.
+
+### Deliverables
+
+- `prodbox-gateway.service` is uninstalled from the supported host (`systemctl disable --now`,
+  unit file deleted) and the host no longer runs any prodbox daemon.
+- `prodbox gateway install-service` command, its DAG builder, and any associated prerequisite
+  registry entries are removed from the CLI surface.
+- All "host supervisor", "host-service install", "supervised host", and similar architectural
+  language is purged from doctrine docs and CLI help. The development plan retains those terms
+  only in completed-sprint history.
+- Ledger entries for the removed surfaces move from Pending Removal to Completed.
+- `prodbox gateway --help` does not list `install-service`.
+
+### Validation
+
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. `systemctl status prodbox-gateway.service` returns "not loaded" on the supported host.
+4. `prodbox gateway --help` does not list `install-service`.
+5. `grep -r 'install-service' DEVELOPMENT_PLAN/` returns matches only inside completed-sprint
+   history and the legacy ledger Completed section.
+
+### Current Validation State
+
+- `prodbox gateway install-service` Click command, `GatewayInstallServiceCommand` ADT,
+  `gateway_install_service_command` smart constructor, `_build_gateway_install_service_dag`
+  builder, and `_render_gateway_systemd_unit` helper are all removed from the source tree
+  as of April 10, 2026.
+- `documents/engineering/cli_command_surface.md` and
+  `documents/engineering/distributed_gateway_architecture.md` no longer describe the
+  install-service command and now state explicitly that the canonical steady state is
+  `prodbox charts deploy gateway`.
+- `tests/unit/test_command_adt.py`, `tests/unit/test_dag_builders.py`, and
+  `tests/unit/test_cli_commands.py` no longer reference `GatewayInstallServiceCommand`;
+  the latter now asserts that `prodbox gateway install-service` is rejected as an
+  unknown subcommand.
+- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on
+  April 10, 2026 (947 unit tests, 6 fewer than before because the install-service
+  test surface was removed).
+
+### Closure Validation (2026-04-10)
+
+- `sudo systemctl disable --now prodbox-gateway.service` executed on `bathurst`
+  after the in-cluster gateway was observed converging on `node-a` and
+  continuing to keep `vscode.resolvefintech.com` current in Route 53. The unit
+  file at `/etc/systemd/system/prodbox-gateway.service` was removed and a
+  `daemon-reload` issued. Before/after evidence captured in
+  `/tmp/prodbox-gateway-before.log`, `/tmp/prodbox-gateway-pre-removal.log`, and
+  `/tmp/prodbox-gateway-after.log`.
+- Re-verification step (`systemctl status prodbox-gateway.service`) reports
+  `Unit prodbox-gateway.service could not be found.`
+- Post-removal `/v1/state` on the leader confirmed `has_active_claim: true`
+  with a `last_dns_write_at_utc` newer than the systemctl-disable moment, and
+  the Route 53 record still matched the host's real public IP — i.e., the
+  in-cluster gateway is now the sole DNS write owner.
+- The three legacy ledger entries the sprint owned (host systemd unit,
+  `install-service` CLI command, host-supervisor doctrine language) are now in
+  the Completed section of `legacy-tracking-for-deletion.md`.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
 - `documents/engineering/storage_lifecycle_doctrine.md` - 5-segment path scheme, `manual`
-  StorageClass, PV pre-creation and PVC-only-from-StatefulSet doctrine.
+  StorageClass, PV pre-creation and PVC-only-from-StatefulSet doctrine, retained storage and
+  rebinding contract.
 - `documents/engineering/helm_chart_platform_doctrine.md` - 5-segment path scheme, `manual`
-  StorageClass, Helm-only service deployment, HA-mode defaults.
+  StorageClass, Helm-only service deployment, HA-mode defaults, supported chart and `vscode`
+  paths.
 - `documents/engineering/aws_integration_environment_doctrine.md` - blocked AWS rerun rules and
   canonical auth ownership.
 - `documents/engineering/cli_command_surface.md` - canonical command and validation paths.
 - `documents/engineering/dependency_management.md` - supported local tooling doctrine.
 - `documents/engineering/distributed_gateway_architecture.md` - gateway startup and DNS ownership.
-- `documents/engineering/helm_chart_platform_doctrine.md` - supported chart and `vscode` paths.
 - `documents/engineering/integration_fixture_doctrine.md` - fixture-owned teardown and cleanup
   doctrine.
 - `documents/engineering/local_registry_pipeline.md` - local registry and container build doctrine.
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite registry cleanup.
-- `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding contract.
 - `documents/engineering/unit_testing_policy.md` - authoritative named validation paths.
 
 **Product docs to create/update:**

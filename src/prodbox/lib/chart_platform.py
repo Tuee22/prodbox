@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import secrets as secrets_module
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 
 from prodbox.cli.types import Failure, Result, Success
+from prodbox.lib.prodbox_k8s import prodbox_gateway_image_ref
 from prodbox.lib.subprocess import run_command
 from prodbox.settings import RenderedSettingValue
 
@@ -19,12 +21,14 @@ CHART_STORAGE_CLASS_NAME: str = "manual"
 CHART_CLUSTER_ISSUER: str = "letsencrypt-http01"
 KEYCLOAK_REALM_NAME: str = "prodbox"
 KEYCLOAK_NGINX_CLIENT_ID: str = "vscode-nginx"
+GATEWAY_NODE_IDS: tuple[str, ...] = ("node-a", "node-b", "node-c")
 
 _CHART_SECRET_KEYS: tuple[str, ...] = (
     "keycloak_admin_password",
     "keycloak_postgres_password",
     "keycloak_nginx_client_secret",
 )
+_MACHINE_ID_PATH: Path = Path("/etc/machine-id")
 
 
 def resolve_chart_secrets(namespace: str) -> dict[str, str]:
@@ -46,6 +50,31 @@ def resolve_chart_secrets(namespace: str) -> dict[str, str]:
             if len(result) == len(_CHART_SECRET_KEYS):
                 return result
     generated = {key: secrets_module.token_urlsafe(24) for key in _CHART_SECRET_KEYS}
+    secrets_path.parent.mkdir(parents=True, exist_ok=True)
+    secrets_path.write_text(json.dumps(generated, indent=2) + "\n", encoding="utf-8")
+    return generated
+
+
+def resolve_gateway_event_keys(namespace: str) -> dict[str, str]:
+    """Resolve or auto-generate per-node event signing keys for the gateway chart.
+
+    Persisted under `.data/<namespace>/.gateway-event-keys.json` so the mesh
+    keeps signing material stable across teardown/rebuild cycles. The file is
+    independent of the keycloak secrets file because the gateway chart deploys
+    into its own namespace and must not require keycloak fixtures.
+    """
+    secrets_path = CHART_DATA_ROOT / namespace / ".gateway-event-keys.json"
+    if secrets_path.exists():
+        raw: object = json.loads(secrets_path.read_text(encoding="utf-8"))
+        if isinstance(raw, dict):
+            existing: dict[str, str] = {}
+            for node_id in GATEWAY_NODE_IDS:
+                value = raw.get(node_id)
+                if isinstance(value, str) and value.strip():
+                    existing[node_id] = value
+            if len(existing) == len(GATEWAY_NODE_IDS):
+                return existing
+    generated = {node_id: secrets_module.token_hex(32) for node_id in GATEWAY_NODE_IDS}
     secrets_path.parent.mkdir(parents=True, exist_ok=True)
     secrets_path.write_text(json.dumps(generated, indent=2) + "\n", encoding="utf-8")
     return generated
@@ -148,6 +177,12 @@ CHART_REGISTRY: Mapping[str, ChartDefinition] = {
                 storage_size="50Gi",
             ),
         ),
+        requires_public_host=True,
+    ),
+    "gateway": ChartDefinition(
+        name="gateway",
+        chart_dir=CHARTS_ROOT / "gateway",
+        dependencies=(),
         requires_public_host=True,
     ),
 }
@@ -345,6 +380,103 @@ def _values_for_keycloak(
     )
 
 
+def _values_for_gateway(
+    *,
+    namespace: str,
+    root_chart: str,
+    settings: Mapping[str, RenderedSettingValue],
+    gateway_event_keys: Mapping[str, str],
+    public_fqdn: str,
+) -> Result[dict[str, object], str]:
+    """Build local values payload for the in-cluster gateway chart."""
+    if len(gateway_event_keys) == 0:
+        return Failure("gateway chart requires non-empty event_keys")
+    for node_id in GATEWAY_NODE_IDS:
+        if node_id not in gateway_event_keys:
+            return Failure(f"gateway chart event_keys missing entry for '{node_id}'")
+    aws_access_key_id = settings.get("aws_access_key_id")
+    aws_secret_access_key = settings.get("aws_secret_access_key")
+    aws_session_token = settings.get("aws_session_token")
+    aws_region = settings.get("aws_region")
+    zone_id = settings.get("route53_zone_id")
+    if not isinstance(aws_access_key_id, str) or aws_access_key_id == "":
+        return Failure("gateway chart requires aws_access_key_id in settings")
+    if not isinstance(aws_secret_access_key, str) or aws_secret_access_key == "":
+        return Failure("gateway chart requires aws_secret_access_key in settings")
+    if not isinstance(aws_region, str) or aws_region == "":
+        return Failure("gateway chart requires aws_region in settings")
+    if not isinstance(zone_id, str) or zone_id == "":
+        return Failure("gateway chart requires route53_zone_id in settings")
+    match _resolve_gateway_chart_image():
+        case Failure(error):
+            return Failure(error)
+        case Success(value=(gateway_repository, gateway_tag)):
+            pass
+    session_token_value = aws_session_token if isinstance(aws_session_token, str) else ""
+    return Success(
+        {
+            **_ha_values(settings, replica_count=len(GATEWAY_NODE_IDS)),
+            "global": {
+                "namespace": namespace,
+                "rootChart": root_chart,
+            },
+            "image": {
+                "repository": gateway_repository,
+                "tag": gateway_tag,
+                # `rke2 ensure` imports the machine-identity-tagged image into
+                # local RKE2 containerd, so the chart should consume that
+                # cached artifact instead of forcing a registry round-trip.
+                "pullPolicy": "IfNotPresent",
+            },
+            "ports": {
+                "rest": 8443,
+                "events": 8444,
+            },
+            "timing": {
+                "heartbeatIntervalSeconds": 0.5,
+                "reconnectIntervalSeconds": 0.5,
+                "syncIntervalSeconds": 1.0,
+                "heartbeatTimeoutSeconds": 5,
+            },
+            "nodes": {
+                "rankedIds": list(GATEWAY_NODE_IDS),
+            },
+            "eventKeys": {node_id: gateway_event_keys[node_id] for node_id in GATEWAY_NODE_IDS},
+            "dnsWriteGate": {
+                "enabled": True,
+                "zoneId": zone_id,
+                "fqdn": public_fqdn,
+                "ttl": 60,
+                "awsRegion": aws_region,
+            },
+            "aws": {
+                "accessKeyId": aws_access_key_id,
+                "secretAccessKey": aws_secret_access_key,
+                "sessionToken": session_token_value,
+            },
+            "certManager": {
+                "enabled": True,
+                "caIssuerName": "gateway-ca-issuer",
+                "caCertificateName": "gateway-ca",
+                "caSecretName": "gateway-ca-tls",
+                "caCommonName": "gateway-mesh-ca",
+            },
+        }
+    )
+
+
+def _resolve_gateway_chart_image() -> Result[tuple[str, str], str]:
+    """Resolve the canonical Harbor image ref for the local machine identity."""
+    if not _MACHINE_ID_PATH.exists():
+        return Failure(f"gateway chart requires machine identity file {_MACHINE_ID_PATH}")
+    machine_id = _MACHINE_ID_PATH.read_text(encoding="utf-8").strip().lower()
+    if re.fullmatch(r"[0-9a-f]{32}", machine_id) is None:
+        return Failure(f"Unexpected machine-id format in {_MACHINE_ID_PATH}: {machine_id!r}")
+    image_ref = prodbox_gateway_image_ref(f"prodbox-{machine_id}")
+    repository, tag = image_ref.rsplit(":", maxsplit=1)
+    return Success((repository, tag))
+
+
 def _values_for_vscode(
     *,
     namespace: str,
@@ -393,6 +525,7 @@ def _render_release_values_json(
     root_chart: str,
     settings: Mapping[str, RenderedSettingValue],
     chart_secrets: Mapping[str, str],
+    gateway_event_keys: Mapping[str, str],
     storage_bindings: tuple[ChartStorageBinding, ...],
     public_fqdn: str | None,
 ) -> Result[str, str]:
@@ -431,6 +564,16 @@ def _render_release_values_json(
                 binding=storage_bindings[0],
                 public_fqdn=public_fqdn,
             )
+        case "gateway":
+            if public_fqdn is None:
+                return Failure("gateway requires a public host")
+            values_result = _values_for_gateway(
+                namespace=namespace,
+                root_chart=root_chart,
+                settings=settings,
+                gateway_event_keys=gateway_event_keys,
+                public_fqdn=public_fqdn,
+            )
         case _:
             return Failure(f"Unsupported chart definition '{definition.name}'")
 
@@ -445,6 +588,8 @@ def build_chart_deployment_plan(
     chart_name: str,
     settings: Mapping[str, RenderedSettingValue],
     chart_secrets: Mapping[str, str] | None = None,
+    *,
+    gateway_event_keys: Mapping[str, str] | None = None,
 ) -> Result[ChartDeploymentPlan, str]:
     """Build a deterministic deployment plan for one supported root chart."""
     if CHART_STORAGE_CLASS_NAME != "manual":
@@ -468,6 +613,9 @@ def build_chart_deployment_plan(
                 public_fqdn = value
 
     resolved_secrets: Mapping[str, str] = chart_secrets if chart_secrets is not None else {}
+    resolved_event_keys: Mapping[str, str] = (
+        gateway_event_keys if gateway_event_keys is not None else {}
+    )
     releases: list[ChartReleasePlan] = []
     for release_name in release_order:
         definition = CHART_REGISTRY[release_name]
@@ -480,6 +628,7 @@ def build_chart_deployment_plan(
             root_chart=chart_name,
             settings=settings,
             chart_secrets=resolved_secrets,
+            gateway_event_keys=resolved_event_keys,
             storage_bindings=storage_bindings,
             public_fqdn=public_fqdn,
         ):
@@ -1002,7 +1151,14 @@ async def render_chart_status(
         installed_snapshot.namespace if installed_snapshot is not None else chart_name
     )
     runtime_root_chart = runtime_namespace
-    match build_chart_deployment_plan(runtime_root_chart, settings):
+    chart_secrets = resolve_chart_secrets(runtime_root_chart)
+    gateway_event_keys = resolve_gateway_event_keys(runtime_root_chart)
+    match build_chart_deployment_plan(
+        runtime_root_chart,
+        settings,
+        chart_secrets,
+        gateway_event_keys=gateway_event_keys,
+    ):
         case Failure(error):
             raise RuntimeError(error)
         case Success(value=root_plan):
@@ -1049,6 +1205,7 @@ __all__ = [
     "ChartReleasePlan",
     "ChartStorageBinding",
     "ChartStorageSpec",
+    "GATEWAY_NODE_IDS",
     "KEYCLOAK_NGINX_CLIENT_ID",
     "KEYCLOAK_REALM_NAME",
     "build_chart_delete_plan",
@@ -1059,5 +1216,6 @@ __all__ = [
     "render_chart_status",
     "resolve_chart",
     "resolve_chart_secrets",
+    "resolve_gateway_event_keys",
     "supported_chart_names",
 ]

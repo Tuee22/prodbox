@@ -16,7 +16,8 @@ Build a clean-room prodbox repository with:
 2. One repository-root `prodbox-config.dhall` compiled to `prodbox-config.json` for all
    configuration; cluster-internal secrets are auto-generated at chart deploy time; no `.env`
    file.
-3. One distributed gateway runtime, always-on supervision model, and Route 53 write path.
+3. One distributed gateway runtime that lives entirely inside the RKE2 cluster as a Kubernetes
+   workload, with leader election, partition tolerance, and Route 53 write ownership.
 4. One chart-platform storage model rooted at `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 5. One supported cluster-backed `vscode` delivery path.
 6. One named validation command per major surface.
@@ -50,9 +51,9 @@ Build a clean-room prodbox repository with:
 | AWS auth/config | Repository-root `prodbox-config.dhall` compiled to `prodbox-config.json`, read by `Settings()` | Repository root |
 | RKE2 lifecycle | `prodbox rke2 ensure`, `status`, `cleanup --yes` | `prodbox` CLI |
 | Pulumi infrastructure | `prodbox pulumi ...` | `src/prodbox/infra/` plus Route 53 |
-| Gateway startup | `prodbox gateway start` | `src/prodbox/gateway_daemon.py` |
-| Gateway steady state | Supervised `prodbox gateway start <config.json>` | Host service or pod supervisor |
-| Gateway DNS writes | Gateway `dns_write_gate` | Distributed gateway runtime |
+| Gateway startup | `prodbox gateway start` (in-pod entrypoint) | `src/prodbox/gateway_daemon.py` deployed via `prodbox charts` |
+| Gateway steady state | In-cluster gateway pod under leader election | Kubernetes Deployment/StatefulSet managed by `prodbox charts` |
+| Gateway DNS writes | Gateway `dns_write_gate` | In-cluster gateway pod (elected leader) |
 | Public edge ingress | `MetalLB -> Traefik -> chart Ingress` | Pulumi plus cluster runtime |
 | Namespace-local auth proxy | `vscode-nginx` inside the `vscode` chart | Chart platform |
 | Chart delivery | `prodbox charts list|status|deploy|delete` | Chart platform registry |
@@ -72,9 +73,8 @@ Completed and present in the repository:
   gateway pod mode, chart storage/platform, lifecycle behavior, and public DNS delegation.
 - Distributed gateway implementation exists with `prodbox gateway` management commands, TLA+
   artifacts, unit coverage, and Kubernetes integration suites.
-- `prodbox charts` exists as a first-class capability with deterministic retained storage currently
-  rooted at `.data/<namespace>/<statefulset>/<ordinal>`. The intended storage path scheme is
-  `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`, to be adopted by Sprint 4.5.
+- `prodbox charts` exists as a first-class capability with deterministic retained storage rooted
+  at `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 - The namespace-local `keycloak-postgres -> keycloak -> vscode` stack exists, and the supported
   cluster auth model is nginx OIDC plus local Keycloak users.
 - `prodbox rke2 cleanup --yes` uses namespace-first cleanup and preserves retained storage kinds
@@ -86,8 +86,11 @@ Completed and present in the repository:
 - The interpreter and summary layer expose one canonical structured DAG outcome model without the
   old command-summary compatibility bridge.
 - Pulumi subprocess handling injects the canonical nested-entrypoint override, and `Settings()`
-  reads `.env` only from the fixed repository root.
-- The canonical certificate path is Let's Encrypt HTTP-01 through `letsencrypt-http01`.
+  loads from `prodbox-config.json` (compiled from `prodbox-config.dhall`) via
+  `Settings.from_config_json()` only.
+- The canonical certificate path is public ACME via cert-manager through `letsencrypt-http01`,
+  with the ACME server configured in `prodbox-config.dhall`; the live cluster currently uses
+  ZeroSSL DV90 (`https://acme.zerossl.com/v2/DV90`) with external account binding.
 - Settings can now derive `METALLB_POOL` and `INGRESS_LB_IP` from the active LAN interface when
   those values are left blank, while still surfacing the detected interface, IPv4, and subnet in
   the effective settings model.
@@ -96,65 +99,95 @@ Completed and present in the repository:
   `PULUMI_ENABLE_DNS_BOOTSTRAP=false` when only local edge recovery is needed.
 - `prodbox host public-edge` now exists as the named diagnostic command for public-edge ownership,
   Route 53 record state, Traefik service IP, ingress-class drift, and certificate readiness.
-- `prodbox gateway install-service` now exists as the canonical host-supervision installer, and
-  generated gateway config plus `gateway status` now expose `dns_write_gate` and DDNS health.
+- `prodbox gateway config-gen` and `gateway status` expose `dns_write_gate` and DDNS health.
+  The legacy `prodbox gateway install-service` Click command, `GatewayInstallServiceCommand`
+  ADT, smart constructor, and DAG builder have been removed from the CLI surface, and the
+  host-side `prodbox-gateway.service` unit has been removed from `bathurst` by Sprint 4.12.
+- `charts/gateway/` is the canonical Helm chart for the in-cluster gateway. It renders one
+  Deployment per ranked node id (canonical ranking: `node-a`, `node-b`, `node-c`), each
+  backed by a per-node Service, an orders ConfigMap, a per-node config ConfigMap, a
+  cert-manager-issued per-node TLS Certificate (with CN equal to the node id, matching the
+  daemon's `_validate_peer_cert_cn`), a shared CA Issuer, and a Secret carrying
+  `prodbox-config.json` so the daemon's Route 53 client reads AWS credentials through the
+  canonical `Settings.from_config_json()` path. `chart_platform.CHART_REGISTRY` registers
+  the chart with `requires_public_host=True`; `resolve_gateway_event_keys()` auto-generates
+  per-node HMAC signing keys and persists them in `.data/gateway/.gateway-event-keys.json`
+  so redeployments preserve mesh identity.
 - The `charts-platform` integration fixture now clears retained `.data/vscode` state before live
   setup so reruns do not inherit stale Keycloak/Postgres credentials from previous deployments.
-- Gateway daemon shutdown now tracks and awaits per-connection reader tasks so the canonical
-  process-mode integration suite no longer leaks sockets/transports at teardown.
+- Gateway daemon shutdown now tracks and awaits per-connection reader tasks so the in-cluster
+  pod and the dev-only host process mode both teardown without leaking sockets/transports.
 - The intended public-edge stack in repository code is `MetalLB -> Traefik -> vscode` Ingress,
   with `vscode-nginx` acting only as the namespace-local auth proxy behind that edge.
 - The external public-host `charts-vscode` suite now runs without cluster prerequisite gates or an
   `rke2 ensure` preflight.
+- Aggregate suites (`prodbox test integration all`, `prodbox test all`) now preserve the live
+  public-host proof surface through the external suites, require `prodbox host public-edge` to
+  report `CLASSIFICATION=ready-for-external-proof` before Phase 2 pytest starts, run
+  `test_charts_platform.py` before `test_charts_storage.py`, keep the lifecycle suite last, and
+  finish by restoring the supported runtime through `prodbox pulumi refresh`,
+  `prodbox pulumi up --yes`, `prodbox charts deploy gateway`, `prodbox charts deploy vscode`,
+  plus a final public-edge
+  readiness recheck before exit.
+- Pulumi-managed Helm releases for MetalLB, Traefik, and cert-manager now use stable Helm release
+  names (`metallb`, `traefik`, `cert-manager`) so cluster-scoped objects can be reattached
+  cleanly after clean-room teardown/recreate cycles.
 - `prodbox-config-types.dhall` exists as the version-controlled Dhall schema;
   `prodbox config init|compile|show|validate` commands exist; `Settings` loads from
   `prodbox-config.json` via `from_config_json()`.
 - `pydantic-settings` dependency removed; `Settings` uses `BaseModel` from plain `pydantic`.
 - `aws_auth.py` module deleted; all AWS credential access flows through `Settings`.
 - `prodbox env` command group removed; replaced by `prodbox config`.
-- Subprocess environments built from explicit `_base_subprocess_env()` allowlist; `os.environ`
-  inheritance eliminated.
+- All subprocess environment builders use explicit passthrough allowlists; no `os.environ`
+  inheritance remains. The interpreter uses `_base_subprocess_env()`, `check_code.py` uses
+  `_TOOL_PASSTHROUGH_VARS`, and `test_cmd.py` uses `_TEST_PASSTHROUGH_VARS`.
 - AWS fixture leak prevention is in place: a session-scoped autouse `sweep_expired_aws_fixtures`
   fixture in `tests/integration/conftest.py` runs a pre-test janitor sweep at the start of every
   integration test session; `prodbox aws sweep-fixtures` CLI command provides an out-of-band
   entrypoint; an hourly cron entry supervises expired resource cleanup between test runs.
 
-Open, incomplete, or blocked:
+Additional canonical state established by Phase 4 cleanup work:
 
-- Sprint 4.3 is active: Pulumi deployed the full infrastructure stack (MetalLB, Traefik,
-  cert-manager, ClusterIssuer, Route 53) on April 9, 2026. The `vscode` chart stack is deployed
-  and the local ingress path works. Router port forwarding still routes ports 80/443 to the host
-  (`192.168.2.79`) instead of the MetalLB ingress (`192.168.2.240`); `charts-vscode` tests fail
-  with connection refused until this is updated.
-- Sprint 4.4 is blocked on gateway service install: all gateway integration suites pass, but
-  `prodbox-gateway.service` has not been installed on the host.
-- The cluster now uses one StorageClass named `manual` with provisioner
+- The cluster runs exactly one StorageClass named `manual` with provisioner
   `kubernetes.io/no-provisioner`; the previous names (`prodbox-local-retain` and
   `prodbox-chart-null-storage`) have been consolidated.
-- The storage path scheme is now the 5-segment
+- The retained storage path scheme is the 5-segment
   `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
-- HA-mode deployment with pod anti-affinity is now implemented; dev mode
+- HA-mode deployment with pod anti-affinity is in effect; dev mode
   (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity while retaining replica counts.
-- Sprint 4.6 removed cluster-internal secrets, IP overrides, `KUBECONFIG`, and `PULUMI_STACK`
-  from the Settings surface. Sprints 4.7-4.9 replaced `.env` with a Dhall config file as
-  the single configuration source and enforced subprocess credential isolation.
-- A full clean-room rerun that ends with zero remaining legacy items has not yet completed.
 
-## Current-Environment Rerun Blockers
+Open, incomplete, or blocked:
 
-- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 9, 2026
-  (953 unit tests, 17 non-integration CLI tests).
-- Live cluster re-established on April 9, 2026 with RKE2, MetalLB, Traefik, cert-manager, and
-  `letsencrypt-http01` ClusterIssuer via Pulumi (`PULUMI_CONFIG_PASSPHRASE=""`).
-- `prodbox-config.dhall` and `prodbox-config.json` created from system credentials (Route 53 zone
-  `Z07495372G135SKEMQJZU`, ACME email `matt@resolvefintech.com`).
-- IAM policy `prodbox-integration-tests` attached to `bathurst-resolvefintech-dns` with Route 53,
-  S3, EC2, IAM, and EKS permissions. All AWS-backed suites passed on April 9, 2026.
-- 1016/1024 tests passing. The 8 `charts-vscode` tests fail with connection refused because
-  router port forwarding routes 80/443 to the host (`192.168.2.79`) instead of MetalLB ingress
-  (`192.168.2.240`).
-- Phase 5 public-host closure remains blocked until router port forwarding is updated and Let's
-  Encrypt cert issuance completes.
+- None. Sprint 5.1 is closed, Sprint 6.1 is closed, the clean-room validation rerun passes, and
+  the legacy ledger Pending Removal section remains empty.
+
+## Current-Environment Validation Snapshot
+
+- `poetry run prodbox check-code` passed on April 12, 2026.
+- `poetry run prodbox test unit` passed on April 12, 2026 (961 tests).
+- `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
+- `poetry run prodbox test integration charts-vscode` passed on April 12, 2026 (8 tests).
+- `poetry run prodbox tla-check` passed on April 12, 2026.
+- `poetry run prodbox test integration all` passed on April 12, 2026.
+- `poetry run prodbox test all` completed cleanly in the final closure session on April 12, 2026.
+- Live cluster on `bathurst` has RKE2, MetalLB, Traefik, cert-manager, the
+  `letsencrypt-http01` ClusterIssuer, the in-cluster gateway, and the `vscode` stack restored on
+  the supported path.
+- `prodbox-config.dhall` and `prodbox-config.json` carry the canonical AWS, Route 53,
+  domain, ACME, and deployment settings.
+- `kubectl get clusterissuer letsencrypt-http01 -o yaml` shows
+  `spec.acme.server=https://acme.zerossl.com/v2/DV90`, `externalAccountBinding` configured, and
+  `status.conditions[type=Ready].status=True`.
+- `kubectl wait --for=condition=Ready certificate/vscode-tls -n vscode --timeout=300s` succeeded
+  on April 12, 2026.
+- Direct TLS verification for `vscode.resolvefintech.com:443` returns
+  `SUBJECT_CN=vscode.resolvefintech.com`, `ISSUER_O=ZeroSSL GmbH`, and
+  `ISSUER_CN=ZeroSSL RSA DV SSL CA 2`.
+- `prodbox host public-edge` reports `CLASSIFICATION=ready-for-external-proof` with
+  `ROUTE53_STATUS=in-sync`, `INGRESSCLASS_TRAEFIK=present`, and the expected Traefik load-balancer
+  IP.
+- The in-cluster gateway remains the sole Route 53 writer for `vscode.resolvefintech.com`.
+- The legacy ledger Pending Removal section is empty.
 
 ## Hard Constraints
 
@@ -166,11 +199,15 @@ Open, incomplete, or blocked:
   is always auto-discovered from the host LAN. `KUBECONFIG` always uses the default
   `~/.kube/config`. Subprocess environments are constructed explicitly from configuration; no
   credentials are inherited from `os.environ`.
-- The only supported gateway startup path is `prodbox gateway start`.
-- The only supported host-service install path for gateway supervision is
-  `prodbox gateway install-service`.
-- The supported public-host path requires the gateway daemon to run continuously under
-  supervision; ad hoc manual invocation is not a supported steady state.
+- No prodbox daemon runs on the host. The only supported steady-state location for the gateway
+  daemon is inside the RKE2 cluster as a Kubernetes workload managed by `prodbox charts`.
+- The only supported gateway startup path is `prodbox gateway start`, invoked as the entrypoint
+  of the in-cluster gateway pod.
+- The in-cluster gateway must remain available across pod restarts, node failures, and network
+  partitions; leader election determines exactly one Route 53 writer at any time, and a
+  partition heal converges to a single leader without split-brain Route 53 writes.
+- Manual `prodbox gateway start` outside Kubernetes is permitted only for development and
+  testing; it is not a supported public-host steady state.
 - The only supported Route 53 ownership/update path is gateway `dns_write_gate`.
 - The only supported DNS model is explicit per-subdomain Route 53 records; wildcard public DNS is
   not part of the supported architecture.

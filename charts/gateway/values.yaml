@@ -1,0 +1,73 @@
+global:
+  namespace: gateway
+  rootChart: gateway
+
+# Pod anti-affinity for HA defaults. Dev mode (suppressing anti-affinity)
+# is controlled by chart_platform.py via _ha_values().
+podAntiAffinity:
+  enabled: true
+
+image:
+  # Container image for the gateway daemon. The supported `prodbox charts`
+  # path overrides this with the machine-identity tag imported into local RKE2
+  # containerd by `prodbox rke2 ensure`.
+  repository: 127.0.0.1:30080/prodbox/prodbox-gateway
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# REST/event ports the daemon binds inside each pod.
+ports:
+  rest: 8443
+  events: 8444
+
+# Daemon timing knobs. The defaults align with the in-pod test suite.
+timing:
+  heartbeatIntervalSeconds: 0.5
+  reconnectIntervalSeconds: 0.5
+  syncIntervalSeconds: 1.0
+  heartbeatTimeoutSeconds: 5
+
+# Mesh node ranking. The first entry is the preferred Route 53 writer.
+# Each entry is a stable node id; the chart renders one Deployment +
+# Service named `gateway-<nodeId>` per entry.
+nodes:
+  rankedIds:
+    - node-a
+    - node-b
+    - node-c
+
+# Per-node HMAC keys for SignedEvent authentication. The chart platform
+# auto-generates these via resolve_chart_secrets() and persists them in
+# .data/<namespace>/.secrets.json so the cluster can be redeployed without
+# losing event signing material.
+# Map of node id -> hex-encoded HMAC key.
+eventKeys: {}
+
+# Route 53 ownership configuration. The dns_write_gate section is mounted
+# into the daemon config so the elected leader keeps the named record
+# pointed at the current public IP.
+dnsWriteGate:
+  enabled: true
+  zoneId: ""
+  fqdn: ""
+  ttl: 60
+  awsRegion: ""
+
+# AWS credentials are mounted as environment variables on the gateway
+# pod and consumed by the daemon's Route 53 client. They are intentionally
+# never written to the daemon config file.
+aws:
+  accessKeyId: ""
+  secretAccessKey: ""
+  sessionToken: ""
+
+# cert-manager Issuer/Certificate material for mesh mTLS. A self-signed
+# CA Issuer is created in the gateway namespace and used to mint one
+# Certificate per node id with CN=<nodeId> so the daemon can validate
+# peer node identity from the TLS handshake.
+certManager:
+  enabled: true
+  caIssuerName: gateway-ca-issuer
+  caCertificateName: gateway-ca
+  caSecretName: gateway-ca-tls
+  caCommonName: gateway-mesh-ca

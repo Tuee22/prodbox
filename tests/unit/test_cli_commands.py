@@ -351,7 +351,7 @@ class TestGatewayCommands:
 
         assert result.exit_code == 0
         assert "Gateway daemon management" in result.output
-        assert "install-service" in result.output
+        assert "install-service" not in result.output
 
     def test_gateway_start_success(self, runner: CliRunner, tmp_path: Path) -> None:
         """gateway start should invoke execute_command."""
@@ -388,26 +388,12 @@ class TestGatewayCommands:
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
-    def test_gateway_install_service_success(self, runner: CliRunner, tmp_path: Path) -> None:
-        """gateway install-service should invoke execute_command."""
-        config_path = tmp_path / "gateway.json"
-        config_path.write_text("{}", encoding="utf-8")
-        unit_path = tmp_path / "prodbox-gateway.service"
+    def test_gateway_install_service_command_removed(self, runner: CliRunner) -> None:
+        """install-service must no longer be a registered subcommand."""
+        result = runner.invoke(cli, ["gateway", "install-service", "/tmp/whatever.json"])
 
-        with patch("prodbox.cli.gateway.execute_command", return_value=0) as mock_exec:
-            result = runner.invoke(
-                cli,
-                [
-                    "gateway",
-                    "install-service",
-                    str(config_path),
-                    "--output-path",
-                    str(unit_path),
-                ],
-            )
-
-        assert result.exit_code == 0
-        mock_exec.assert_called_once()
+        assert result.exit_code != 0
+        assert "No such command 'install-service'" in result.output
 
 
 # =============================================================================
@@ -610,26 +596,6 @@ class TestCommandConstructorFailures:
 
         assert result.exit_code == 1
         assert "Edge diagnostic unavailable" in result.output
-
-    def test_gateway_install_service_command_failure(
-        self,
-        runner: CliRunner,
-        tmp_path: Path,
-    ) -> None:
-        """gateway install-service should handle command constructor Failure."""
-        from prodbox.cli.types import Failure
-
-        config_path = tmp_path / "gateway.json"
-        config_path.write_text("{}", encoding="utf-8")
-
-        with patch(
-            "prodbox.cli.gateway.gateway_install_service_command",
-            return_value=Failure("Invalid unit path"),
-        ):
-            result = runner.invoke(cli, ["gateway", "install-service", str(config_path)])
-
-        assert result.exit_code == 1
-        assert "Invalid unit path" in result.output
 
     def test_host_check_ports_command_failure(self, runner: CliRunner) -> None:
         """host check-ports should handle command constructor Failure."""

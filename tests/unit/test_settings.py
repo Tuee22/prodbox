@@ -45,6 +45,8 @@ def _write_config_json(path: Path, overrides: dict[str, object] | None = None) -
         "acme": {
             "email": "test@example.com",
             "server": "https://acme-staging-v02.api.letsencrypt.org/directory",
+            "eab_key_id": None,
+            "eab_hmac_key": None,
         },
         "deployment": {
             "dev_mode": True,
@@ -99,6 +101,8 @@ class TestSettings:
         assert settings.aws_region == "us-east-1"
         assert settings.route53_zone_id == "Z1234567890ABC"
         assert settings.acme_email == "test@example.com"
+        assert settings.acme_eab_key_id is None
+        assert settings.acme_eab_hmac_key is None
         assert settings.demo_fqdn == "test.example.com"
         assert settings.demo_ttl == 60
 
@@ -153,6 +157,56 @@ class TestSettings:
             errors = exc_info.value.errors()
             error_fields = {e["loc"][0] for e in errors}
             assert "acme_email" in error_fields
+
+    def test_settings_requires_acme_eab_for_zerossl_server(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """ZeroSSL ACME must provide external account binding credentials."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        _write_config_json(
+            tmp_path,
+            {
+                "acme": {
+                    "email": "test@example.com",
+                    "server": "https://acme.zerossl.com/v2/DV90",
+                    "eab_key_id": None,
+                    "eab_hmac_key": None,
+                }
+            },
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(ValidationError, match="required for ZeroSSL ACME"),
+        ):
+            Settings.from_config_json()
+
+    def test_settings_requires_complete_acme_eab_pair(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Partial EAB config should fail fast before cert-manager sees it."""
+        _patch_repository_root(monkeypatch, tmp_path)
+        monkeypatch.chdir(tmp_path)
+        _write_config_json(
+            tmp_path,
+            {
+                "acme": {
+                    "email": "test@example.com",
+                    "server": "https://acme-staging-v02.api.letsencrypt.org/directory",
+                    "eab_key_id": "kid",
+                    "eab_hmac_key": None,
+                }
+            },
+        )
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            pytest.raises(ValidationError, match="must either both be set"),
+        ):
+            Settings.from_config_json()
 
     def test_settings_default_values(
         self,
@@ -255,7 +309,12 @@ class TestFromConfigJson:
             },
             "route53": {"zone_id": "ZTEST"},
             "domain": {"demo_fqdn": "demo.test.com", "demo_ttl": 120, "vscode_fqdn": None},
-            "acme": {"email": "me@test.com", "server": "https://acme.test"},
+            "acme": {
+                "email": "me@test.com",
+                "server": "https://acme.test",
+                "eab_key_id": "kid-123",
+                "eab_hmac_key": "hmac-456",
+            },
             "deployment": {
                 "dev_mode": False,
                 "bootstrap_public_ip_override": "1.2.3.4",
@@ -268,6 +327,8 @@ class TestFromConfigJson:
         assert flat["route53_zone_id"] == "ZTEST"
         assert flat["demo_ttl"] == 120
         assert flat["acme_email"] == "me@test.com"
+        assert flat["acme_eab_key_id"] == "kid-123"
+        assert flat["acme_eab_hmac_key"] == "hmac-456"
         assert flat["prodbox_dev_mode"] is False
         assert flat["bootstrap_public_ip_override"] == "1.2.3.4"
 
@@ -286,6 +347,8 @@ class TestDisplayDict:
         assert display["route53_zone_id"] == "Z1234567890ABC"
         assert display["demo_fqdn"] == "test.example.com"
         assert display["acme_email"] == "****.com"
+        assert display["acme_eab_key_id"] == ""
+        assert display["acme_eab_hmac_key"] == ""
 
     def test_show_secrets_reveals_sensitive_values(self, settings: Settings) -> None:
         """display_dict(show_secrets=True) should unmask sensitive settings."""
@@ -295,6 +358,8 @@ class TestDisplayDict:
         )
         assert settings.display_dict(show_secrets=True)["aws_session_token"] == "test-session-token"
         assert settings.display_dict(show_secrets=True)["acme_email"] == "test@example.com"
+        assert settings.display_dict(show_secrets=True)["acme_eab_key_id"] == ""
+        assert settings.display_dict(show_secrets=True)["acme_eab_hmac_key"] == ""
 
 
 class TestRenderedSettings:
@@ -310,6 +375,8 @@ class TestRenderedSettings:
         assert "aws.region=us-east-1" in rendered
         assert "route53.zone_id=Z1234567890ABC" in rendered
         assert "acme.email=****.com" in rendered
+        assert "acme.eab_key_id=" in rendered
+        assert "acme.eab_hmac_key=" in rendered
 
     def test_render_display_show_secrets_reveals_sensitive_values(
         self,
@@ -322,6 +389,8 @@ class TestRenderedSettings:
         assert "aws.secret_access_key=test-secret-key" in rendered
         assert "aws.session_token=test-session-token" in rendered
         assert "acme.email=test@example.com" in rendered
+        assert "acme.eab_key_id=" in rendered
+        assert "acme.eab_hmac_key=" in rendered
         assert "acme.email=****.com" not in rendered
 
     def test_render_template_contains_required_and_optional_settings(self) -> None:
@@ -334,6 +403,8 @@ class TestRenderedSettings:
         assert "aws.session_token=" in template
         assert "route53.zone_id=" in template
         assert "aws.region=us-east-1" in template
+        assert "acme.eab_key_id=" in template
+        assert "acme.eab_hmac_key=" in template
         assert "deployment.bootstrap_public_ip_override=" in template
         assert "deployment.pulumi_enable_dns_bootstrap=true" in template
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from dataclasses import dataclass, replace
@@ -9,22 +10,75 @@ from typing import Final
 
 import click
 
-from prodbox.cli.command_executor import execute_dag
+from prodbox.cli.command_executor import _execute_dag_with_values_async, execute_dag
 from prodbox.cli.effect_dag import EffectDAG, EffectNode
-from prodbox.cli.effects import Effect, RunSubprocess, Sequence, WriteStdout
+from prodbox.cli.effects import Custom, Effect, RunSubprocess, Sequence, WriteStdout
 from prodbox.cli.prerequisite_registry import PREREQUISITE_REGISTRY
 from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
 TEST_TIMEOUT_SECONDS: float = 14400.0
 INTEGRATION_RUNBOOK_TIMEOUT_SECONDS: float = 3600.0
+AGGREGATE_COVERAGE_ERASE_TIMEOUT_SECONDS: float = 60.0
+SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS: float = 3600.0
+PUBLIC_HOST_POSTFLIGHT_TIMEOUT_SECONDS: float = 900.0
+PUBLIC_HOST_POSTFLIGHT_RETRY_INTERVAL_SECONDS: float = 10.0
+AGGREGATE_COVERAGE_FILE: Final[str] = ".coverage.prodbox.aggregate"
+
+# Subprocess environment allowlist — only these vars pass through to the pytest process.
+# Includes Pulumi/test vars because integration tests use the interpreter, which reads
+# these from os.environ when constructing subprocess environments for Pulumi operations.
+_TEST_PASSTHROUGH_VARS: Final[tuple[str, ...]] = (
+    "PATH",
+    "HOME",
+    "LANG",
+    "TERM",
+    "USER",
+    "PULUMI_CONFIG_PASSPHRASE",
+    "PULUMI_CONFIG_PASSPHRASE_FILE",
+    "PULUMI_HOME",
+    "PULUMI_BACKEND_URL",
+    "ROUTE53_ZONE_ID",
+    "PULUMI_TEST_RECORD_FQDN",
+    "PULUMI_TEST_RECORD_VALUE",
+)
+# Aggregate suites use an explicit order so the external public-host proof runs
+# before cluster-backed suites that intentionally tear down the shared vscode
+# stack, the full-stack chart suite clears the singleton release names before
+# the storage-only suite runs, and the cleanup-heavy lifecycle suite runs last.
+_CANONICAL_INTEGRATION_ALL_PYTEST_ARGS: Final[tuple[str, ...]] = (
+    "tests/integration/test_charts_vscode.py",
+    "tests/integration/test_public_dns_delegation.py",
+    "tests/integration/test_cli_commands.py",
+    "tests/integration/test_cli_env.py",
+    "tests/integration/test_dns_route53_aws.py",
+    "tests/integration/test_aws_foundation_real.py",
+    "tests/integration/test_aws_eks_real.py",
+    "tests/integration/test_pulumi_real.py",
+    "tests/integration/test_gateway_daemon_k8s.py",
+    "tests/integration/test_gateway_k8s_pods.py",
+    "tests/integration/test_gateway_partition.py",
+    "tests/integration/test_charts_platform.py",
+    "tests/integration/test_charts_storage.py",
+    "tests/integration/test_prodbox_lifecycle.py",
+)
 INTEGRATION_RUNBOOK_EFFECT_ID: str = "pytest_integration_runbook_ensure"
+AGGREGATE_COVERAGE_ERASE_EFFECT_ID: Final[str] = "pytest_aggregate_coverage_erase"
 PHASE_ONE_HEADER_EFFECT_ID: Final[str] = "pytest_phase_one_header"
 PHASE_ONE_GATE_MESSAGE: Final[str] = "Phase 1/2: validating integration prerequisites"
 PHASE_ONE_NO_PREREQ_MESSAGE: Final[str] = "Phase 1/2: no integration prerequisites required"
-PHASE_ONE_POINT_FIVE_HEADER_TEXT: Final[
-    str
-] = "Phase 1.5/2: enforcing integration runbook (poetry run prodbox rke2 ensure)"
+PHASE_ONE_POINT_FIVE_HEADER_TEXT: Final[str] = "Phase 1.5/2: enforcing integration runbook"
 PHASE_TWO_HEADER_TEXT: Final[str] = "Phase 2/2: running pytest suites"
+PUBLIC_HOST_READINESS_EFFECT_ID: Final[str] = "pytest_public_host_readiness"
+POST_PYTEST_RESTORE_HEADER_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_header"
+POST_PYTEST_PULUMI_REFRESH_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_refresh"
+POST_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_up"
+POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway"
+POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_vscode"
+POST_PYTEST_PUBLIC_EDGE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_public_edge"
+_PUBLIC_HOST_STACK_PREP_SUITE_IDS: Final[frozenset[str]] = frozenset({"all", "integration-all"})
+_SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS: Final[frozenset[str]] = frozenset(
+    {"all", "integration-all"}
+)
 CLUSTER_INTEGRATION_TEST_PREREQUISITES: frozenset[str] = frozenset(
     {
         "tool_docker",
@@ -60,6 +114,14 @@ class CoverageSettings:
 
 
 @dataclass(frozen=True)
+class PytestInvocation:
+    """One isolated pytest process to run as part of a named suite."""
+
+    invocation_id: str
+    pytest_args: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class TestSuiteSelection:
     """Explicitly named pytest suite exposed by the Click surface."""
 
@@ -67,13 +129,27 @@ class TestSuiteSelection:
     pytest_args: tuple[str, ...]
     integration_gate_prerequisites: frozenset[str]
     requires_integration_runbook: bool
+    aggregate_pytest_invocations: tuple[PytestInvocation, ...] = ()
+
+
+_CANONICAL_INTEGRATION_ALL_PYTEST_INVOCATIONS: Final[tuple[PytestInvocation, ...]] = tuple(
+    PytestInvocation(
+        invocation_id=path.removeprefix("tests/integration/test_").removesuffix(".py"),
+        pytest_args=(path,),
+    )
+    for path in _CANONICAL_INTEGRATION_ALL_PYTEST_ARGS
+)
 
 
 ALL_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="all",
-    pytest_args=("tests/unit", "tests/integration"),
+    pytest_args=("tests/unit", *_CANONICAL_INTEGRATION_ALL_PYTEST_ARGS),
     integration_gate_prerequisites=ALL_INTEGRATION_TEST_PREREQUISITES,
     requires_integration_runbook=True,
+    aggregate_pytest_invocations=(
+        PytestInvocation(invocation_id="unit", pytest_args=("tests/unit",)),
+        *_CANONICAL_INTEGRATION_ALL_PYTEST_INVOCATIONS,
+    ),
 )
 UNIT_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="unit",
@@ -83,9 +159,10 @@ UNIT_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
 )
 INTEGRATION_ALL_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-all",
-    pytest_args=("tests/integration",),
+    pytest_args=_CANONICAL_INTEGRATION_ALL_PYTEST_ARGS,
     integration_gate_prerequisites=ALL_INTEGRATION_TEST_PREREQUISITES,
     requires_integration_runbook=True,
+    aggregate_pytest_invocations=_CANONICAL_INTEGRATION_ALL_PYTEST_INVOCATIONS,
 )
 INTEGRATION_CLI_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-cli",
@@ -132,6 +209,12 @@ INTEGRATION_GATEWAY_DAEMON_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSele
 INTEGRATION_GATEWAY_PODS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-gateway-pods",
     pytest_args=("tests/integration/test_gateway_k8s_pods.py",),
+    integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
+)
+INTEGRATION_GATEWAY_PARTITION_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-gateway-partition",
+    pytest_args=("tests/integration/test_gateway_partition.py",),
     integration_gate_prerequisites=CLUSTER_INTEGRATION_TEST_PREREQUISITES,
     requires_integration_runbook=True,
 )
@@ -184,6 +267,7 @@ def test() -> None:
       prodbox test integration pulumi
       prodbox test integration gateway-daemon
       prodbox test integration gateway-pods
+      prodbox test integration gateway-partition
       prodbox test integration lifecycle
       prodbox test integration charts-storage
       prodbox test integration charts-platform
@@ -417,6 +501,26 @@ def integration_gateway_pods(coverage: bool, cov_fail_under: int | None) -> None
     )
 
 
+@integration.command("gateway-partition")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_gateway_partition(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run chart-deployed gateway partition tolerance integration tests."""
+    _exit_for_suite(
+        suite=INTEGRATION_GATEWAY_PARTITION_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
 @integration.command("lifecycle")
 @click.option(
     "--coverage",
@@ -552,8 +656,15 @@ def _build_test_dag(
     coverage_settings: CoverageSettings,
 ) -> EffectDAG:
     """Build two-phase test DAG for one explicit suite."""
-    env = dict(os.environ)
+    env = {key: os.environ[key] for key in _TEST_PASSTHROUGH_VARS if key in os.environ}
     env[ALLOW_NON_ENTRYPOINT_ENV] = "1"
+    pytest_invocations = _pytest_invocations_for_suite(suite=suite)
+    multiple_pytest_invocations = len(pytest_invocations) > 1
+    aggregate_pytest_env = (
+        {**env, "COVERAGE_FILE": AGGREGATE_COVERAGE_FILE}
+        if coverage_settings.enabled and multiple_pytest_invocations
+        else env
+    )
     integration_gate_prereqs = suite.integration_gate_prerequisites
     requires_integration_gate = bool(integration_gate_prereqs)
     runbook_required = suite.requires_integration_runbook
@@ -570,23 +681,7 @@ def _build_test_dag(
     )
     phase_two_effects: list[Effect[object]] = []
     if runbook_required:
-        phase_two_effects.extend(
-            [
-                WriteStdout(
-                    effect_id="pytest_integration_runbook_header",
-                    description="Integration runbook header",
-                    text=PHASE_ONE_POINT_FIVE_HEADER_TEXT,
-                ),
-                RunSubprocess(
-                    effect_id=INTEGRATION_RUNBOOK_EFFECT_ID,
-                    description="Runbook: ensure RKE2 + Harbor + storage runtime",
-                    command=[sys.executable, "-m", "prodbox.cli.main", "rke2", "ensure"],
-                    stream_stdout=True,
-                    timeout=INTEGRATION_RUNBOOK_TIMEOUT_SECONDS,
-                    env=env,
-                ),
-            ]
-        )
+        phase_two_effects.extend(_runbook_effects_for_suite(suite=suite, env=env))
     phase_two_effects.append(
         WriteStdout(
             effect_id="pytest_phase_two_header",
@@ -594,21 +689,43 @@ def _build_test_dag(
             text=PHASE_TWO_HEADER_TEXT,
         )
     )
-    phase_two_effects.append(
-        RunSubprocess(
-            effect_id="pytest_run",
-            description="Execute pytest",
-            command=[
-                sys.executable,
-                "-m",
-                "pytest",
-                *_pytest_args(suite=suite, coverage_settings=coverage_settings),
-            ],
-            stream_stdout=True,
-            timeout=TEST_TIMEOUT_SECONDS,
-            env=env,
+    if coverage_settings.enabled and multiple_pytest_invocations:
+        phase_two_effects.append(
+            RunSubprocess(
+                effect_id=AGGREGATE_COVERAGE_ERASE_EFFECT_ID,
+                description="Erase aggregate coverage data",
+                command=[sys.executable, "-m", "coverage", "erase"],
+                stream_stdout=True,
+                timeout=AGGREGATE_COVERAGE_ERASE_TIMEOUT_SECONDS,
+                env=aggregate_pytest_env,
+            )
         )
-    )
+    for index, invocation in enumerate(pytest_invocations):
+        is_last_invocation = index == len(pytest_invocations) - 1
+        phase_two_effects.append(
+            RunSubprocess(
+                effect_id=_pytest_effect_id(
+                    invocation_id=invocation.invocation_id,
+                    total_invocations=len(pytest_invocations),
+                ),
+                description=f"Execute pytest for {invocation.invocation_id}",
+                command=[
+                    sys.executable,
+                    "-m",
+                    "pytest",
+                    *_pytest_args_for_invocation(
+                        pytest_args=invocation.pytest_args,
+                        coverage_settings=coverage_settings,
+                        multiple_invocations=multiple_pytest_invocations,
+                        is_last_invocation=is_last_invocation,
+                    ),
+                ],
+                stream_stdout=True,
+                timeout=TEST_TIMEOUT_SECONDS,
+                env=aggregate_pytest_env,
+            )
+        )
+    phase_two_effects.extend(_post_pytest_effects_for_suite(suite=suite, env=env))
 
     phase_two = Sequence(
         effect_id="pytest_phase_two",
@@ -636,17 +753,61 @@ def _pytest_args(
     coverage_settings: CoverageSettings,
 ) -> tuple[str, ...]:
     """Build explicit pytest argv from suite + coverage selections."""
+    return _pytest_args_for_invocation(
+        pytest_args=suite.pytest_args,
+        coverage_settings=coverage_settings,
+        multiple_invocations=False,
+        is_last_invocation=True,
+    )
+
+
+def _pytest_args_for_invocation(
+    *,
+    pytest_args: tuple[str, ...],
+    coverage_settings: CoverageSettings,
+    multiple_invocations: bool,
+    is_last_invocation: bool,
+) -> tuple[str, ...]:
+    """Build explicit pytest argv for one isolated pytest process."""
     coverage_args: tuple[str, ...]
     if coverage_settings.enabled:
-        coverage_threshold_args = (
-            (f"--cov-fail-under={coverage_settings.fail_under}",)
-            if coverage_settings.fail_under is not None
-            else ()
-        )
-        coverage_args = ("--cov=src/prodbox", *coverage_threshold_args)
+        if multiple_invocations:
+            coverage_report_args = () if is_last_invocation else ("--cov-report=",)
+            coverage_threshold_args = (
+                (f"--cov-fail-under={coverage_settings.fail_under}",)
+                if coverage_settings.fail_under is not None and is_last_invocation
+                else ()
+            )
+            coverage_args = (
+                "--cov=src/prodbox",
+                "--cov-append",
+                *coverage_report_args,
+                *coverage_threshold_args,
+            )
+        else:
+            coverage_threshold_args = (
+                (f"--cov-fail-under={coverage_settings.fail_under}",)
+                if coverage_settings.fail_under is not None
+                else ()
+            )
+            coverage_args = ("--cov=src/prodbox", *coverage_threshold_args)
     else:
         coverage_args = ()
-    return (*coverage_args, *suite.pytest_args)
+    return (*coverage_args, *pytest_args)
+
+
+def _pytest_invocations_for_suite(*, suite: TestSuiteSelection) -> tuple[PytestInvocation, ...]:
+    """Return one or more isolated pytest subprocesses for a selected suite."""
+    if suite.aggregate_pytest_invocations:
+        return suite.aggregate_pytest_invocations
+    return (PytestInvocation(invocation_id=suite.suite_id, pytest_args=suite.pytest_args),)
+
+
+def _pytest_effect_id(*, invocation_id: str, total_invocations: int) -> str:
+    """Build stable pytest effect ids for single-process and aggregate suites."""
+    if total_invocations == 1:
+        return "pytest_run"
+    return f"pytest_run_{invocation_id}"
 
 
 def _build_test_prerequisite_registry(
@@ -689,3 +850,185 @@ def _transitive_prerequisite_ids(
         visit(effect_id)
 
     return frozenset(visited)
+
+
+def _runbook_effects_for_suite(
+    *,
+    suite: TestSuiteSelection,
+    env: dict[str, str],
+) -> list[Effect[object]]:
+    """Build Phase 1.5 runbook effects for one selected suite."""
+    effects: list[Effect[object]] = [
+        WriteStdout(
+            effect_id="pytest_integration_runbook_header",
+            description="Integration runbook header",
+            text=PHASE_ONE_POINT_FIVE_HEADER_TEXT,
+        ),
+        RunSubprocess(
+            effect_id=INTEGRATION_RUNBOOK_EFFECT_ID,
+            description="Runbook: ensure RKE2 + Harbor + storage runtime",
+            command=[sys.executable, "-m", "prodbox.cli.main", "rke2", "ensure"],
+            stream_stdout=True,
+            timeout=INTEGRATION_RUNBOOK_TIMEOUT_SECONDS,
+            env=env,
+        ),
+    ]
+    if suite.suite_id not in _PUBLIC_HOST_STACK_PREP_SUITE_IDS:
+        return effects
+    effects.extend(
+        [
+            Custom(
+                effect_id=PUBLIC_HOST_READINESS_EFFECT_ID,
+                description="Runbook: require ready public-host proof surface",
+                fn=_assert_public_host_ready_for_external_proof,
+            ),
+        ]
+    )
+    return effects
+
+
+def _post_pytest_effects_for_suite(
+    *,
+    suite: TestSuiteSelection,
+    env: dict[str, str],
+) -> list[Effect[object]]:
+    """Build aggregate-suite postflight effects that restore the supported runtime."""
+    if suite.suite_id not in _SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS:
+        return []
+    return [
+        WriteStdout(
+            effect_id=POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
+            description="Supported runtime restore header",
+            text="Post-pytest: restoring supported runtime",
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
+            description="Postflight: refresh Pulumi-managed infrastructure state",
+            command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "refresh"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_PULUMI_UP_EFFECT_ID,
+            description="Postflight: restore Pulumi-managed infrastructure",
+            command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "up", "--yes"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
+            description="Postflight: deploy gateway chart",
+            command=[sys.executable, "-m", "prodbox.cli.main", "charts", "deploy", "gateway"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
+            description="Postflight: deploy vscode chart",
+            command=[sys.executable, "-m", "prodbox.cli.main", "charts", "deploy", "vscode"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
+        Custom(
+            effect_id=POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
+            description="Postflight: wait for ready public-host proof surface",
+            fn=_wait_for_public_host_ready_for_external_proof,
+        ),
+    ]
+
+
+def _extract_public_edge_classification(report: str) -> str | None:
+    """Return the rendered public-edge classification when present."""
+    for line in report.splitlines():
+        if line.startswith("CLASSIFICATION="):
+            _, _, classification = line.partition("=")
+            return classification
+    return None
+
+
+async def _assert_public_host_ready_for_external_proof() -> str:
+    """Require the live public host to be ready before aggregate suites run."""
+    from prodbox.cli.command_adt import host_public_edge_command
+    from prodbox.cli.dag_builders import (
+        _optional_json_doc_from_capture,
+        _optional_string_result,
+        _parse_json_mapping,
+        _render_public_edge_report,
+        _require_settings,
+        _require_string_result,
+        _require_successful_kubectl_stdout,
+        command_to_dag,
+    )
+    from prodbox.cli.types import Failure, Success
+
+    match host_public_edge_command():
+        case Failure(error):
+            raise RuntimeError(f"failed to construct public-edge diagnostic: {error}")
+        case Success(command):
+            dag_result = command_to_dag(command)
+
+    match dag_result:
+        case Failure(error):
+            raise RuntimeError(f"failed to build public-edge diagnostic DAG: {error}")
+        case Success(dag):
+            dag_summary, prereq_results = await _execute_dag_with_values_async(dag)
+
+    if dag_summary.exit_code != 0:
+        raise RuntimeError(f"public-edge diagnostic failed: {dag_summary.message}")
+
+    report = _render_public_edge_report(
+        settings=_require_settings(prereq_results),
+        public_ip=_require_string_result(prereq_results, "host_public_edge_public_ip"),
+        route53_record_ip=_optional_string_result(
+            prereq_results, "host_public_edge_route53_record"
+        ),
+        ingress_classes_doc=_parse_json_mapping(
+            _require_successful_kubectl_stdout(prereq_results, "host_public_edge_ingress_classes")
+        ),
+        traefik_service_doc=_parse_json_mapping(
+            _require_successful_kubectl_stdout(prereq_results, "host_public_edge_traefik_service")
+        ),
+        ingress_nginx_services_doc=_parse_json_mapping(
+            _require_successful_kubectl_stdout(
+                prereq_results, "host_public_edge_ingress_nginx_services"
+            )
+        ),
+        vscode_ingress_doc=_optional_json_doc_from_capture(
+            prereq_results, "host_public_edge_vscode_ingress"
+        ),
+        vscode_certificate_doc=_optional_json_doc_from_capture(
+            prereq_results, "host_public_edge_vscode_certificate"
+        ),
+    )
+    classification = _extract_public_edge_classification(report)
+    if classification != "ready-for-external-proof":
+        raise RuntimeError(
+            "public-host readiness gate failed for aggregate suite; "
+            "expected CLASSIFICATION=ready-for-external-proof.\n"
+            f"{report}"
+        )
+    return report
+
+
+async def _wait_for_public_host_ready_for_external_proof() -> str:
+    """Poll until the public host returns to ready-for-external-proof after aggregate suites."""
+    deadline = asyncio.get_running_loop().time() + PUBLIC_HOST_POSTFLIGHT_TIMEOUT_SECONDS
+    last_error: RuntimeError | None = None
+    while True:
+        try:
+            return await _assert_public_host_ready_for_external_proof()
+        except RuntimeError as error:
+            last_error = error
+        if asyncio.get_running_loop().time() >= deadline:
+            message = (
+                "public-host readiness gate failed after aggregate-suite restore; "
+                "expected CLASSIFICATION=ready-for-external-proof."
+            )
+            if last_error is not None:
+                raise RuntimeError(f"{message}\n{last_error}") from last_error
+            raise RuntimeError(message)
+        await asyncio.sleep(PUBLIC_HOST_POSTFLIGHT_RETRY_INTERVAL_SECONDS)

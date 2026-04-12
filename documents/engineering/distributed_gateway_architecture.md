@@ -43,7 +43,7 @@ removal for gateway delivery are owned by
 Canonical repository facts referenced by this doctrine:
 
 1. The gateway daemon implementation lives in `src/prodbox/gateway_daemon.py`.
-2. The managed CLI surface is `prodbox gateway start|status|config-gen|install-service`.
+2. The managed CLI surface is `prodbox gateway start|status|config-gen`.
 3. Verification artifacts include `tests/unit/test_gateway_daemon.py`,
    `tests/integration/test_gateway_daemon_k8s.py`,
    `tests/integration/test_gateway_k8s_pods.py`, and
@@ -291,14 +291,19 @@ Used by integration tests for observability and by `prodbox gateway status` CLI.
 
 ## 12. Deployment Model
 
-The default operator path runs the gateway daemon as a local Python process via
-`poetry run prodbox gateway start <config.json>`.
+The canonical steady state for the gateway daemon is the in-cluster
+`prodbox charts deploy gateway` workload. The chart at `charts/gateway/` renders
+one Deployment per ranked node id, each backed by a per-node `gateway-<id>`
+Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
+TLS material set, and a Kubernetes Secret carrying the prodbox-config.json that
+the daemon's Route 53 client reads at runtime.
 
-The canonical host-supervision install path is
-`poetry run prodbox gateway install-service <config.json>`, which writes and enables the supported
-systemd unit for continuous gateway runtime.
+`prodbox gateway start <config.json>` is the in-pod entrypoint invoked by the
+gateway chart's container. It is also the dev-only path used when running the
+daemon directly against a host process for local iteration; that mode is not a
+supported public-host steady state and no host-side supervisor is installed.
 
-Containerization is also first-class for integration/runtime image publishing:
+Containerization is first-class for integration/runtime image publishing:
 
 - `prodbox rke2 ensure` builds the gateway image from `docker/gateway.Dockerfile`
 - the image is pushed to local Harbor and imported into local RKE2 containerd cache
@@ -311,10 +316,11 @@ Docker build/push flow, and RKE2 mirror behavior.
 ### CLI Management
 
 ```bash
-prodbox gateway start <config.json>           # Run gateway event loop
+prodbox gateway start <config.json>           # In-pod daemon entrypoint
 prodbox gateway status <config.json>          # Query running daemon
 prodbox gateway config-gen <path> --node-id <id>  # Generate template config
-prodbox gateway install-service <config.json> [--output-path <unit>]  # Install systemd unit
+prodbox charts deploy gateway                 # Install/upgrade in-cluster gateway workload
+prodbox charts status gateway                 # Inspect installed gateway release
 ```
 
 ---

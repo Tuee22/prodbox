@@ -63,7 +63,7 @@ def main() -> None:
     )
 
     # Phase 5: ClusterIssuer (cert-manager CRDs already present)
-    # Let's Encrypt issuer with HTTP-01 validation through Traefik
+    # Public ACME issuer with DNS-01 validation through Route 53
     _cluster_issuer_resources = deploy_cluster_issuer(
         settings,
         k8s_provider,

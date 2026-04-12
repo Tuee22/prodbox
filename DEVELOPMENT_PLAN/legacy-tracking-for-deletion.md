@@ -12,7 +12,10 @@
 
 ## Pending Removal
 
-None.
+| Item | Location | Why | Owning Sprint |
+|------|----------|-----|---------------|
+
+_(empty — every previously tracked removal item has been moved to Completed below)_
 
 ## Completed
 
@@ -44,7 +47,7 @@ None.
 | AWS-gated local cluster infra reconcile path | Sprint 4.3 | `PULUMI_ENABLE_DNS_BOOTSTRAP=false` decouples local edge recovery from Route 53 bootstrap ownership |
 | Competing public-edge ingress ownership between canonical Traefik and bundled/live ingress-nginx | Sprint 4.3 | Canonical RKE2 config disables bundled ingress-nginx on the supported path; Traefik is the only supported cluster-edge controller |
 | Manual cross-layer diagnosis for public-host failures | Sprint 4.3 | `prodbox host public-edge` is now the named diagnostic path for DNS, ingress, and certificate drift |
-| Optional gateway daemon steady state and generated config that omits `dns_write_gate` | Sprint 4.4 | Generated gateway config now includes `dns_write_gate`, and `prodbox gateway install-service` installs the supported host supervision path |
+| Optional gateway daemon steady state and generated config that omits `dns_write_gate` | Sprint 4.4 | Generated gateway config now includes `dns_write_gate` as a canonical section. (Sprint 4.4 was redirected from host supervision to the in-cluster gateway daemon during Phase 4; the host-side `prodbox-gateway.service` was uninstalled by Sprint 4.12.) |
 | Missing explicit-record DNS doctrine for every supported public subdomain | Sprint 4.4 | Gateway config, status surfaces, and doctrine now treat explicit per-subdomain Route 53 records as canonical and wildcard public DNS as unsupported |
 | `prodbox-chart-null-storage` StorageClass name | Sprint 4.5 | Consolidated to single `manual` StorageClass |
 | `prodbox-local-retain` StorageClass name | Sprint 4.5 | Consolidated to single `manual` StorageClass |
@@ -61,8 +64,16 @@ None.
 | `prodbox env` command group | Sprint 4.9 | Replaced by `prodbox config` |
 | `.env` loading in Settings | Sprint 4.8 | Replaced by Dhall-compiled JSON loading |
 | `src/prodbox/lib/aws_auth.py` | Sprint 4.8 | AWS creds read from Settings directly |
-| `dict(os.environ)` in subprocess env builders | Sprint 4.9 | Replaced by `_base_subprocess_env()` |
+| `dict(os.environ)` in interpreter subprocess env builders | Sprint 4.9 | Replaced by `_base_subprocess_env()` in interpreter; `check_code.py` and `test_cmd.py` remain pending |
 | `pydantic-settings` dependency | Sprint 4.8 | No longer needed after BaseModel migration |
+| `dict(os.environ)` in `check_code.py` subprocess env builder | Sprint 4.11 | Replaced by explicit `_TOOL_PASSTHROUGH_VARS` allowlist |
+| `dict(os.environ)` in `test_cmd.py` subprocess env builder | Sprint 4.11 | Replaced by explicit `_TEST_PASSTHROUGH_VARS` allowlist |
+| `os.environ.get("ROUTE53_ZONE_ID")` fallback in interpreter | Sprint 4.11 | Zone ID now resolved from effect or `get_settings()` only |
+| `prodbox gateway install-service` Click command | Sprint 4.12 | Removed from `src/prodbox/cli/gateway.py`; superseded by `prodbox charts deploy gateway` |
+| `GatewayInstallServiceCommand` ADT, smart constructor, and DAG builder | Sprint 4.12 | Removed from `src/prodbox/cli/command_adt.py` and `src/prodbox/cli/dag_builders.py`; the in-cluster gateway chart is the canonical install surface |
+| `_render_gateway_systemd_unit()` helper | Sprint 4.12 | Removed from `src/prodbox/cli/dag_builders.py`; no host systemd unit is rendered by prodbox |
+| Host-supervisor and `install-service` language in `documents/engineering/distributed_gateway_architecture.md` and `documents/engineering/cli_command_surface.md` | Sprint 4.12 | Doctrine docs now describe the in-cluster `prodbox charts deploy gateway` workload as the canonical steady state |
+| `prodbox-gateway.service` host systemd unit | Sprint 4.12 | `systemctl disable --now prodbox-gateway.service` and `rm /etc/systemd/system/prodbox-gateway.service` executed on `bathurst` on 2026-04-10 after the in-cluster gateway was observed converging on `node-a` and continuing to keep `vscode.resolvefintech.com` current in Route 53. Before/after evidence captured in `/tmp/prodbox-gateway-before.log`, `/tmp/prodbox-gateway-pre-removal.log`, and `/tmp/prodbox-gateway-after.log`. |
 
 ## Related Documents
 

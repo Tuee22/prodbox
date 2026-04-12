@@ -12,7 +12,9 @@
 
 This phase ships the managed gateway CLI surface, the distributed runtime implementation, the TLA+
 entrypoint, and the gateway-owned Route 53 write capability for explicit named public records that
-later cleanup and public-host phases depend on.
+later cleanup and public-host phases depend on. The canonical steady state for the daemon is
+inside the RKE2 cluster as a Kubernetes workload; host-side process mode is retained only as a
+development convenience and is not a supported public-host steady state.
 
 ## Sprint 2.1: Distributed Gateway Runtime, Formal Verification, and DNS-Write Capability ✅
 
@@ -27,8 +29,10 @@ and the gateway Route 53 write capability.
 
 ### Deliverables
 
-- `prodbox gateway start|status|config-gen|install-service` exists as the managed CLI surface.
-- Process-mode and pod-backed gateway behavior are both validated.
+- `prodbox gateway start|status|config-gen` exists as the managed CLI surface, with
+  `prodbox gateway start` serving as the in-pod entrypoint for the in-cluster gateway workload.
+- Pod-backed gateway behavior is validated as the canonical runtime; host process mode is
+  retained only as a development convenience and is exercised by the dev-only daemon suite.
 - TLA+ model checking is exposed through `prodbox tla-check`.
 - The gateway runtime supports Route 53 writes through `dns_write_gate`.
 - The supported DNS ownership model uses explicit named records, not wildcard public DNS.

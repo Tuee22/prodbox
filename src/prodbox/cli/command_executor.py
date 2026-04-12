@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from prodbox.cli.effect_dag import EffectDAG
     from prodbox.cli.effects import Effect
     from prodbox.cli.interpreter import DAGExecutionSummary, EffectInterpreter, ExecutionSummary
+    from prodbox.cli.types import Result
 
 
 async def _render_dag_outputs(
@@ -47,6 +48,14 @@ async def _render_effect_output(
 ) -> None:
     """Render single-effect execution summary via output effect."""
     await interpreter.interpret(display_summary(summary))
+
+
+async def _execute_dag_with_values_async(
+    dag: EffectDAG,
+) -> tuple[DAGExecutionSummary, dict[str, Result[object, object]]]:
+    """Execute an EffectDAG and return the structured node values."""
+    interpreter = create_interpreter()
+    return await interpreter.interpret_dag_with_values(dag)
 
 
 def render_error_and_return_exit_code(message: str, *, effect_id: str) -> int:
@@ -151,6 +160,25 @@ def execute_dag(dag: EffectDAG) -> int:
     return asyncio.run(_run())
 
 
+def execute_dag_with_values(
+    dag: EffectDAG,
+) -> tuple[DAGExecutionSummary, dict[str, Result[object, object]]]:
+    """Execute an EffectDAG and return the structured node values.
+
+    This keeps interpreter construction inside the centralized command-execution
+    boundary for callers that need prerequisite outputs in addition to the
+    summarized exit status.
+
+    Args:
+        dag: The EffectDAG to execute
+
+    Returns:
+        Tuple of DAG summary and per-node Result values keyed by effect_id
+    """
+
+    return asyncio.run(_execute_dag_with_values_async(dag))
+
+
 # =============================================================================
 # Exports
 # =============================================================================
@@ -159,5 +187,7 @@ __all__ = [
     "execute_command",
     "execute_effect",
     "execute_dag",
+    "execute_dag_with_values",
+    "_execute_dag_with_values_async",
     "render_error_and_return_exit_code",
 ]

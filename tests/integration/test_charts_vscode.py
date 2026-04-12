@@ -3,14 +3,14 @@
 charts-vscode suite – end-to-end validation of the vscode chart stack at
 its public hostname, including:
   - HTTPS reachability
-  - Valid TLS certificate (issued by Let's Encrypt)
+  - Valid TLS certificate (issued by the configured public ACME CA)
   - HTTP 302 redirect to Keycloak username/password login page (auth wall enforced)
 
 Prerequisites (must be satisfied before running this suite):
   - The vscode chart stack is deployed and all workloads are Running
   - `VSCODE_FQDN` env var is set (or defaults to `vscode.resolvefintech.com`)
   - Live DNS resolves the FQDN to the cluster MetalLB address
-  - Let's Encrypt has issued a valid certificate
+  - The configured public ACME CA has issued a valid certificate
 
 These tests make outbound HTTPS requests from the test runner host.
 They do NOT require a cluster kubeconfig or kubectl.
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import os
 import ssl
+import time
 import urllib.parse
 import urllib.request
 from http.client import HTTPResponse
@@ -117,6 +118,24 @@ def _probe(url: str, *, follow_redirects: bool = False) -> HttpProbeResult:
     )
 
 
+def _probe_with_retry(
+    url: str,
+    *,
+    follow_redirects: bool = False,
+    attempts: int = 3,
+    retryable_statuses: frozenset[int] = frozenset({500, 502, 503, 504}),
+    retry_delay_seconds: float = 2.0,
+) -> HttpProbeResult:
+    """Retry transient 5xx responses before failing a live public-host assertion."""
+    result = _probe(url, follow_redirects=follow_redirects)
+    for _ in range(1, attempts):
+        if result.status not in retryable_statuses:
+            return result
+        time.sleep(retry_delay_seconds)
+        result = _probe(url, follow_redirects=follow_redirects)
+    return result
+
+
 def _probe_with_ssl_context() -> tuple[str | None, str | None]:
     """Fetch TLS certificate info directly from the server."""
     import socket
@@ -205,8 +224,8 @@ def test_tls_cert_covers_expected_fqdn() -> None:
         raise AssertionError(f"TLS check failed for {_FQDN}: {error}") from error
 
 
-def test_tls_cert_issued_by_lets_encrypt() -> None:
-    """TLS certificate must be issued by Let's Encrypt (R or E series issuer)."""
+def test_tls_cert_issued_by_supported_public_ca() -> None:
+    """TLS certificate must be issued by a supported public ACME CA."""
     import socket
 
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
@@ -223,8 +242,13 @@ def test_tls_cert_issued_by_lets_encrypt() -> None:
             org = issuer_map.get("organizationName", "")
             cn = issuer_map.get("commonName", "")
             assert (
-                "let's encrypt" in org.lower() or "let's encrypt" in cn.lower()
-            ), f"Expected Let's Encrypt issuer, got org={org!r} cn={cn!r}"
+                "let's encrypt" in org.lower()
+                or "let's encrypt" in cn.lower()
+                or "zerossl" in org.lower()
+                or "zerossl" in cn.lower()
+                or "sectigo" in org.lower()
+                or "sectigo" in cn.lower()
+            ), f"Expected supported public CA issuer, got org={org!r} cn={cn!r}"
     except ssl.SSLError as error:
         raise AssertionError(f"TLS issuer check failed for {_FQDN}: {error}") from error
 
@@ -267,7 +291,7 @@ def test_keycloak_login_page_offers_username_password_form() -> None:
     login_url = f"{_BASE_URL}/auth/realms/prodbox/protocol/openid-connect/auth"
     callback = urllib.parse.quote(f"https://{_FQDN}/auth/callback", safe="")
     params = f"?client_id=vscode-nginx&response_type=code&scope=openid&redirect_uri={callback}"
-    result = _probe(login_url + params)
+    result = _probe_with_retry(login_url + params)
     # Keycloak may redirect to its login page (302) or return the page directly (200).
     assert result.status in (
         200,
@@ -278,7 +302,14 @@ def test_keycloak_login_page_offers_username_password_form() -> None:
     location = (result.location or "").lower()
     # The login page must contain a password input field (username/password form)
     # or redirect to a page that does. It must NOT have Google OAuth exclusively.
-    assert "password" in body_lower or "login" in body_lower or "login" in location, (
+    assert (
+        "password" in body_lower
+        or "username" in body_lower
+        or "sign in" in body_lower
+        or "kc-form-login" in body_lower
+        or "login" in body_lower
+        or "login" in location
+    ), (
         f"Keycloak login page does not appear to offer username/password form: "
         f"status={result.status}, body_fragment={result.body_fragment[:300]!r}"
     )

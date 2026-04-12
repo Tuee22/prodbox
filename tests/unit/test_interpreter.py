@@ -1201,6 +1201,22 @@ class TestRunSubprocessHelper:
         assert result.returncode == -1
         assert b"Timeout" in result.stderr
 
+    @pytest.mark.asyncio
+    async def test_run_subprocess_waits_for_exit_when_capture_disabled(self) -> None:
+        """_run_subprocess should always await process exit when capture is disabled."""
+        with patch("prodbox.cli.interpreter.asyncio.create_subprocess_exec") as mock_exec:
+            mock_proc = AsyncMock()
+            mock_proc.communicate = AsyncMock(return_value=(None, None))
+            mock_proc.wait = AsyncMock()
+            mock_proc.returncode = 0
+            mock_exec.return_value = mock_proc
+
+            result = await _run_subprocess(("true",), capture_output=False)
+
+        mock_proc.communicate.assert_awaited_once()
+        mock_proc.wait.assert_awaited_once()
+        assert result.returncode == 0
+
 
 class TestEffectInterpreterSubprocess:
     """Tests for subprocess effects."""
@@ -3926,6 +3942,7 @@ class TestPulumiEffects:
         assert value == 0
         env: dict[str, str] = mock_subprocess.call_args.kwargs["env"]
         assert env[ALLOW_NON_ENTRYPOINT_ENV] == "1"
+        assert env["PULUMI_CONFIG_PASSPHRASE"] == ""
 
     @pytest.mark.asyncio
     async def test_pulumi_preview_failure(self, mock_env: dict[str, str]) -> None:  # noqa: ARG002

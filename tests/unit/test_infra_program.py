@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import prodbox.infra.cert_manager as cert_manager_module
 import prodbox.infra.cluster_issuer as cluster_issuer_module
+import prodbox.infra.ingress as ingress_module
+import prodbox.infra.metallb as metallb_module
 from prodbox.settings import LanAddressing
 
 _TEST_LAN = LanAddressing(
@@ -67,9 +69,107 @@ def test_deploy_cert_manager_wraps_chart_values_with_prodbox_metadata() -> None:
     assert result.namespace is namespace
     assert result.release is release
     release_kwargs = mock_release.call_args.kwargs
+    assert release_kwargs["name"] == "cert-manager"
     assert release_kwargs["values"]["podLabels"] == test_labels
     assert release_kwargs["values"]["crds"]["enabled"] is True
     assert release_kwargs["opts"]["depends_on"] == [namespace]
+
+
+def test_deploy_metallb_uses_stable_helm_release_name() -> None:
+    """MetalLB Pulumi release should keep a stable Helm release name."""
+    namespace = MagicMock()
+    namespace.metadata.name = "metallb-system"
+    release = MagicMock()
+    ip_pool = MagicMock()
+    l2_advertisement = MagicMock()
+
+    with (
+        patch.object(metallb_module, "object_meta", side_effect=lambda **kwargs: kwargs),
+        patch.object(
+            metallb_module,
+            "chart_values_with_prodbox",
+            side_effect=lambda **kwargs: kwargs["values"],
+        ),
+        patch.object(metallb_module, "discover_lan_addressing", return_value=_TEST_LAN),
+        patch.object(metallb_module.k8s.core.v1, "Namespace", return_value=namespace),
+        patch.object(
+            metallb_module.k8s.helm.v3,
+            "Release",
+            return_value=release,
+        ) as mock_release,
+        patch.object(
+            metallb_module.k8s.helm.v3,
+            "RepositoryOptsArgs",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(
+            metallb_module.k8s.apiextensions,
+            "CustomResource",
+            side_effect=[ip_pool, l2_advertisement],
+        ),
+        patch.object(
+            metallb_module.pulumi,
+            "ResourceOptions",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(metallb_module.pulumi, "export"),
+    ):
+        result = metallb_module.deploy_metallb(
+            MagicMock(),
+            MagicMock(),
+            prodbox_id="prodbox-123",
+        )
+
+    assert result.release is release
+    release_kwargs = mock_release.call_args.kwargs
+    assert release_kwargs["name"] == "metallb"
+    assert release_kwargs["namespace"] == "metallb-system"
+
+
+def test_deploy_ingress_uses_stable_helm_release_name() -> None:
+    """Traefik Pulumi release should keep a stable Helm release name."""
+    namespace = MagicMock()
+    namespace.metadata.name = "traefik-system"
+    release = MagicMock()
+    metallb_resources = MagicMock(l2_advertisement=MagicMock())
+
+    with (
+        patch.object(ingress_module, "object_meta", side_effect=lambda **kwargs: kwargs),
+        patch.object(
+            ingress_module,
+            "chart_values_with_prodbox",
+            side_effect=lambda **kwargs: kwargs["values"],
+        ),
+        patch.object(ingress_module, "discover_lan_addressing", return_value=_TEST_LAN),
+        patch.object(ingress_module.k8s.core.v1, "Namespace", return_value=namespace),
+        patch.object(
+            ingress_module.k8s.helm.v3,
+            "Release",
+            return_value=release,
+        ) as mock_release,
+        patch.object(
+            ingress_module.k8s.helm.v3,
+            "RepositoryOptsArgs",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(
+            ingress_module.pulumi,
+            "ResourceOptions",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(ingress_module.pulumi, "export"),
+    ):
+        result = ingress_module.deploy_ingress(
+            MagicMock(),
+            MagicMock(),
+            metallb_resources,
+            prodbox_id="prodbox-123",
+        )
+
+    assert result.release is release
+    release_kwargs = mock_release.call_args.kwargs
+    assert release_kwargs["name"] == "traefik"
+    assert release_kwargs["namespace"] == "traefik-system"
 
 
 def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:
@@ -81,6 +181,8 @@ def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:
     settings = MagicMock(
         acme_server="https://acme-v02.api.letsencrypt.org/directory",
         acme_email="test@example.com",
+        acme_eab_key_id=None,
+        acme_eab_hmac_key=None,
         aws_access_key_id="AKIATEST",
         aws_secret_access_key="secret",
         aws_region="us-east-1",
@@ -122,6 +224,68 @@ def test_deploy_cluster_issuer_passes_explicit_dependencies() -> None:
     assert deps[0] is aws_secret
     assert dep_one in deps
     assert dep_two in deps
+
+
+def test_deploy_cluster_issuer_adds_external_account_binding_when_configured() -> None:
+    """ZeroSSL EAB settings should produce the binding secret and issuer stanza."""
+    aws_secret = MagicMock()
+    eab_secret = MagicMock()
+    cluster_issuer = MagicMock()
+    settings = MagicMock(
+        acme_server="https://acme.zerossl.com/v2/DV90",
+        acme_email="test@example.com",
+        acme_eab_key_id="kid-123",
+        acme_eab_hmac_key="hmac-456",
+        aws_access_key_id="AKIATEST",
+        aws_secret_access_key="secret",
+        aws_region="us-east-1",
+        route53_zone_id="ZTEST",
+    )
+
+    with (
+        patch.object(
+            cluster_issuer_module,
+            "object_meta",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(
+            cluster_issuer_module.k8s.core.v1,
+            "Secret",
+            side_effect=[aws_secret, eab_secret],
+        ) as mock_secret,
+        patch.object(
+            cluster_issuer_module.k8s.apiextensions,
+            "CustomResource",
+            return_value=cluster_issuer,
+        ) as mock_custom_resource,
+        patch.object(
+            cluster_issuer_module.pulumi,
+            "ResourceOptions",
+            side_effect=lambda **kwargs: kwargs,
+        ),
+        patch.object(cluster_issuer_module.pulumi, "export"),
+    ):
+        result = cluster_issuer_module.deploy_cluster_issuer(
+            settings,
+            MagicMock(),
+            prodbox_id="prodbox-123",
+        )
+
+    assert result.cluster_issuer is cluster_issuer
+    assert mock_secret.call_count == 2
+    spec = mock_custom_resource.call_args.kwargs["spec"]["acme"]
+    assert spec["server"] == "https://acme.zerossl.com/v2/DV90"
+    assert spec["externalAccountBinding"] == {
+        "keyID": "kid-123",
+        "keySecretRef": {
+            "name": "acme-eab-credentials",
+            "key": "secret",
+        },
+        "keyAlgorithm": "HS256",
+    }
+    deps = mock_custom_resource.call_args.kwargs["opts"]["depends_on"]
+    assert deps[0] is aws_secret
+    assert deps[1] is eab_secret
 
 
 def test_infra_main_enables_dns_bootstrap_and_cert_manager() -> None:

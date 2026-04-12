@@ -6,6 +6,7 @@ These are pure function tests – no mocks, no I/O, no side effects.
 from __future__ import annotations
 
 import dataclasses
+import json
 
 import pytest
 
@@ -195,6 +196,21 @@ _TEST_CHART_SECRETS: dict[str, str] = {
     "keycloak_nginx_client_secret": "nginxsecret",
 }
 
+_MINIMAL_GATEWAY_SETTINGS: dict[str, str | bool] = {
+    "vscode_fqdn": "vscode.example.com",
+    "aws_access_key_id": "test-access-key",
+    "aws_secret_access_key": "test-secret-key",
+    "aws_region": "us-east-1",
+    "route53_zone_id": "Z123456789",
+    "prodbox_dev_mode": True,
+}
+
+_TEST_GATEWAY_EVENT_KEYS: dict[str, str] = {
+    "node-a": "a" * 64,
+    "node-b": "b" * 64,
+    "node-c": "c" * 64,
+}
+
 
 class TestBuildChartDeploymentPlan:
     def test_vscode_deployment_plan_succeeds(self) -> None:
@@ -279,6 +295,22 @@ class TestBuildChartDeploymentPlan:
         assert isinstance(plan, ChartDeploymentPlan)
         with pytest.raises(dataclasses.FrozenInstanceError):
             plan.namespace = "other"  # type: ignore[misc]
+
+    def test_gateway_plan_uses_machine_identity_tagged_image(self) -> None:
+        result = build_chart_deployment_plan(
+            "gateway",
+            _MINIMAL_GATEWAY_SETTINGS,
+            gateway_event_keys=_TEST_GATEWAY_EVENT_KEYS,
+        )
+        assert isinstance(result, Success)
+        plan = result.value
+        assert len(plan.releases) == 1
+        values = json.loads(plan.releases[0].values_json)
+        image = values["image"]
+        assert image["repository"] == "127.0.0.1:30080/prodbox/prodbox-gateway"
+        assert image["tag"] != "latest"
+        assert image["tag"].startswith("prodbox-")
+        assert image["pullPolicy"] == "IfNotPresent"
 
 
 # =============================================================================

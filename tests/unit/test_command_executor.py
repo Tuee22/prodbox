@@ -8,6 +8,7 @@ from prodbox.cli.command_adt import HostInfoCommand
 from prodbox.cli.command_executor import (
     execute_command,
     execute_dag,
+    execute_dag_with_values,
     execute_effect,
     render_error_and_return_exit_code,
 )
@@ -202,3 +203,34 @@ class TestExecuteDAG:
 
         assert result == 1
         assert mock_interpreter.interpret.await_count == 2
+
+
+class TestExecuteDAGWithValues:
+    """Tests for execute_dag_with_values function."""
+
+    def test_execute_dag_with_values_returns_summary_and_results(self) -> None:
+        """execute_dag_with_values should proxy interpreter values unchanged."""
+        node = EffectNode(
+            effect=Pure(effect_id="test", description="Test", value="hello"),
+        )
+        dag = EffectDAG(nodes=frozenset([node]), roots=frozenset(["test"]))
+        mock_summary = DAGExecutionSummary(
+            exit_code=0,
+            message="Success",
+            total_nodes=1,
+            successful_nodes=1,
+            failed_nodes=0,
+        )
+        mock_results = {"test": MagicMock()}
+
+        with patch("prodbox.cli.command_executor.create_interpreter") as mock_create:
+            mock_interpreter = MagicMock()
+            mock_interpreter.interpret_dag_with_values = AsyncMock(
+                return_value=(mock_summary, mock_results)
+            )
+            mock_create.return_value = mock_interpreter
+
+            summary, results = execute_dag_with_values(dag)
+
+        assert summary == mock_summary
+        assert results == mock_results

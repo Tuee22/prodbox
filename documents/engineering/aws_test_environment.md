@@ -465,8 +465,8 @@ An environment is not compliant with this doctrine if any of the following are t
 Each run must:
 
 1. allocate a unique `test_run_id`
-2. run project-harness-owned preflight cleanup for the same project/suite scope when the harness
-   defines reusable suite scopes
+2. run project-harness-owned preflight cleanup for any pre-existing fixture-owned resources
+   discoverable by the canonical tag set before creating new resources
 3. create the run-owned DNS child zone and delegation
 4. create the run-owned VPC and all required service resources
 5. apply required tags and names immediately
@@ -498,21 +498,22 @@ Required behavior:
    resources from that attempt
 4. cleanup reports explicit failures with enough information to repair them safely
 
-### 7.4 Expiry And Janitor Model
+### 7.4 Expiry And Harness Reclaim Model
 
 Every run-owned resource must carry an `expires_at` tag.
 
-The shared environment should also operate an independent janitor process that:
+The supported project workflow relies on harness-owned cleanup rather than a separate janitor
+surface:
 
-1. scans for expired `aws-test` resources
-2. groups them by `project` and `test_run_id`
-3. deletes leaked resources that are marked `safe_to_delete=true`
+1. each AWS-mutating test begins by sweeping any pre-existing fixture-owned resources discoverable
+   by the canonical tag set
+2. teardown still attempts deletion of every resource created by the current run
+3. the aggregate supported test flow audits fixture-owned inventory and fails if any Route 53,
+   S3, VPC, EKS, or IAM resources remain
 
-Janitor automation is a baseline administrative control, not project workload state.
-
-Project harnesses may also run scope-scoped preflight cleanup to reclaim leaked but unexpired
-resources from prior crashed runs of the same suite. That preflight is defense-in-depth alongside
-the independent janitor, not a replacement for it.
+Administrative emergency cleanup outside the project harness may still exist for account owners,
+but it is not part of the supported `prodbox` workflow and does not replace harness-owned
+preflight plus teardown.
 
 ---
 

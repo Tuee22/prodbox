@@ -278,7 +278,7 @@ Testing note:
 - `poetry run prodbox test integration charts-vscode` is an external public-host suite and does not require cluster gates or `rke2 ensure`.
 - `poetry run prodbox test integration public-dns` is the external authoritative delegation proof for the hosted zone that owns `VSCODE_FQDN`; it does not require cluster gates or `rke2 ensure`.
 - The phase-two pytest timeout budget is 240 minutes.
-- Real shared-account AWS foundation validation uses `poetry run prodbox test integration aws-foundation` and exercises tagged delegated Route 53 child zones, S3 buckets, EC2/VPC resources, and janitor-style expired-resource cleanup.
+- Real shared-account AWS foundation validation uses `poetry run prodbox test integration aws-foundation` and exercises tagged delegated Route 53 child zones, S3 buckets, EC2/VPC resources, harness-owned preflight sweeping, and expired-resource cleanup.
 - Real EKS validation uses `poetry run prodbox test integration aws-eks` and exercises a tagged fixture-owned EKS control plane plus tagged IAM/VPC dependencies.
 - Real AWS DNS integration uses `poetry run prodbox test integration dns-aws` to validate the canonical gateway Route 53 write client against fixture-owned ephemeral hosted zones.
 - Real public DNS delegation validation uses `poetry run prodbox test integration public-dns` to compare the public NS view with the canonical Route 53 hosted zone named by `ROUTE53_ZONE_ID`.

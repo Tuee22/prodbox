@@ -44,7 +44,6 @@ Top-level commands:
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
 | `charts` | Group | Bespoke Helm chart lifecycle |
-| `aws` | Group | AWS fixture management |
 | `test` | Group | Explicit named test suites |
 | `check-code` | Command | Policy guards + `ruff` + `mypy` |
 | `tla-check` | Command | TLA+ model checking via Docker |
@@ -130,12 +129,6 @@ permitted only for development and is not a supported steady state.
 | `prodbox charts deploy` | `CHART` | none |
 | `prodbox charts delete` | `CHART` | `--yes`, `-y` |
 
-### `prodbox aws`
-
-| Command | Arguments | Options |
-|---------|-----------|---------|
-| `prodbox aws sweep-fixtures` | none | none |
-
 ### `prodbox test`
 
 `prodbox test` and `prodbox test integration` are help groups only. They do not run an implicit default suite.
@@ -179,9 +172,9 @@ release names before the storage-only suite, keeps the lifecycle cleanup suite
 last, fails in Phase 1.5 unless `prodbox host public-edge` reports
 `CLASSIFICATION=ready-for-external-proof`, and restores the supported runtime
 with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
-`prodbox charts deploy gateway`, `prodbox charts deploy vscode`, plus a final
-public-edge readiness check before
-exit.
+`prodbox charts deploy gateway`, `prodbox charts deploy vscode`, a final
+public-edge readiness check, and a final fixture-owned AWS inventory audit
+before exit.
 
 `prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
 It does not run cluster prerequisite gates or the `rke2 ensure` runbook.

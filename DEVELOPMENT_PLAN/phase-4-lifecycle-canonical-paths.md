@@ -18,9 +18,9 @@ consolidates the retained storage model to one StorageClass, migrates the `.data
 to 5 segments, adopts explicit replica-count doctrine, replaces `.env` with a Dhall configuration
 file as the single config source, and enforces subprocess credential isolation so no host
 credentials leak via `os.environ` inheritance. The phase also closes AWS-backed integration
-fixture hardening so every AWS-mutating test begins with scope-owned stale-resource cleanup,
-every fixture-owned AWS resource carries canonical tags, and setup failures roll back partial AWS
-state before pytest yields control. All cleanup history remains centralized in
+fixture hardening so every AWS-mutating test begins by sweeping any pre-existing tagged
+fixture-owned AWS resources, every fixture-owned AWS resource carries canonical tags, and setup
+failures roll back partial AWS state before pytest yields control. All cleanup history remains centralized in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprint 4.1: `rke2 cleanup` Hardening and Lifecycle Regression Closure ✅
@@ -535,7 +535,7 @@ prodbox-config.json          -- gitignored compiled output (read by Python)
 
 None.
 
-### Validation State
+### Current Validation State
 
 - `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
   (953 unit tests).
@@ -633,11 +633,11 @@ None.
 
 ### Objective
 
-Prevent leaked ephemeral AWS resources from accumulating when integration test processes crash
-before fixture teardown runs. EKS clusters cost $0.10/hr; a leaked cluster costs $2.40/day until
-cleanup.
+Capture the initial out-of-band leak-prevention surfaces that were added before the harness-owned
+AWS cleanup model was fully tightened. EKS clusters cost $0.10/hr; a leaked cluster costs
+$2.40/day until cleanup.
 
-### Architecture
+### Architecture At Time Of Implementation
 
 **Three layers of defense:**
 
@@ -669,7 +669,7 @@ cleanup.
 3. `poetry run prodbox test unit`
 4. Verify cron entry exists: `crontab -l | grep sweep-fixtures`.
 
-### Validation State
+### Historical Validation State
 
 - `poetry run prodbox check-code` passed on April 9, 2026.
 - `poetry run prodbox test unit` passed on April 9, 2026 (953 tests).
@@ -679,6 +679,12 @@ cleanup.
 ### Remaining Work
 
 None.
+
+### Current Status Note
+
+- Sprint 4.13 now owns removal of the session-scoped sweep, standalone `prodbox aws
+  sweep-fixtures`, and host cron supervision from the canonical architecture. Sprint 4.10 remains
+  the historical implementation milestone that introduced those surfaces.
 
 ## Sprint 4.11: Final Subprocess Env Isolation and Settings-Only Config Access ✅
 
@@ -791,20 +797,21 @@ None.
 ## Sprint 4.13: Per-Test AWS Fixture Hygiene and Resource Tagging ✅
 
 **Status**: Done
-**Implementation**: `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/aws_cmd.py`
-**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+**Implementation**: `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/lib/aws_fixture_audit.py`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Tighten AWS-mutating integration fixtures until every test starts from a known-clean baseline,
-every fixture-owned AWS resource is tagged, and setup failure cannot strand billable resources
-before teardown begins.
+Finish AWS-mutating fixture hygiene so the test harness owns AWS cleanup end-to-end: every
+AWS-mutating test begins by sweeping any pre-existing tagged fixture resources, every
+fixture-owned AWS resource is tagged, and no host cron or standalone janitor surface remains in
+the supported architecture.
 
 ### Deliverables
 
-- Each AWS-mutating integration test performs a fixture-owned stale-resource search and cleanup
-  for its declared scope before creating fresh AWS resources. Session-wide sweeps remain
-  defense-in-depth, not the only preflight.
+- Each AWS-mutating integration test begins with a harness-owned sweep of any pre-existing
+  fixture-owned AWS resources discoverable by canonical tags and deletes them before creating
+  fresh resources.
 - All taggable fixture-owned AWS resources carry the canonical ownership, expiry, and
   safe-to-delete tags as soon as the create path can apply them. Taggable descendants created
   during setup inherit the same tag set; untaggable AWS-managed children are deleted transitively
@@ -812,40 +819,46 @@ before teardown begins.
 - Fixture setup helpers own rollback for partial creation failure. If setup fails before the
   fixture yields, the helper deletes every resource it created in that attempt before surfacing
   the error.
-- The janitor and per-test preflight paths share one deletion contract across Route 53, S3, VPC,
-  EKS, and IAM so leaked EKS/IAM/VPC resources can be cleaned reliably without post-delete
-  metadata reads.
-- Integration coverage proves scope-scoped preflight cleanup, setup-failure rollback, and full
-  tag coverage for the AWS-backed suites.
+- Route 53, S3, VPC, EKS, and IAM cleanup continue to share one deletion contract so leaked
+  resources can be reclaimed through the same harness-owned tagged-resource sweep without
+  post-delete metadata reads.
+- Session-scoped sweeping, standalone `prodbox aws sweep-fixtures`, and host cron supervision are
+  removed from the supported architecture; no long-running host job owns AWS cleanup.
+- Integration coverage proves harness-owned pre-test sweeping, setup-failure rollback, full tag
+  coverage, and zero AWS residue through the supported test flow.
 
 ### Validation
 
-1. `poetry run prodbox aws sweep-fixtures`
-2. `poetry run prodbox check-code`
-3. `poetry run prodbox test unit`
-4. `poetry run prodbox test integration aws-foundation`
-5. `poetry run prodbox test integration aws-eks`
-6. `poetry run prodbox test integration dns-aws`
-7. `poetry run prodbox test integration pulumi`
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. `poetry run prodbox test integration aws-foundation`
+4. `poetry run prodbox test integration aws-eks`
+5. `poetry run prodbox test integration dns-aws`
+6. `poetry run prodbox test integration pulumi`
+7. `poetry run prodbox test all`
 
 ### Current Validation State
 
-- `poetry run prodbox aws sweep-fixtures` passed on April 12, 2026 and reported no expired
-  fixture resources.
 - `poetry run prodbox check-code` passed on April 12, 2026.
-- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
+- `poetry run prodbox test unit` passed on April 12, 2026 (982 tests).
 - `poetry run prodbox test integration aws-foundation` passed on April 12, 2026 (3 tests).
 - `poetry run prodbox test integration aws-eks` passed on April 12, 2026 (1 test).
 - `poetry run prodbox test integration dns-aws` passed on April 12, 2026 (2 tests).
 - `poetry run prodbox test integration pulumi` passed on April 12, 2026 (1 test).
-- Unit coverage now proves scope-scoped preflight cleanup matching, setup-failure rollback,
-  canonical tag propagation, CLI janitor parsing, and EKS janitor cleanup that captures scope
-  metadata before cluster deletion.
-- Live AWS inventory audit on April 12, 2026 found no current fixture-owned Route 53, S3, VPC,
-  EKS, or IAM resources in account `751103452346`.
-- `poetry run prodbox test all` completed cleanly on April 12, 2026 after postflight runtime
-  restore returned `prodbox host public-edge` to
-  `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox test all` passed on April 12, 2026 in `1h 33m 23s` after starting from a
+  cleaned RKE2 cluster and no precompiled `prodbox-config.json`; postflight restore returned
+  `prodbox host public-edge` to `CLASSIFICATION=ready-for-external-proof`.
+- Shared helpers provide canonical tag propagation plus setup-failure rollback across Route 53,
+  S3, VPC, subnet, security-group, EKS, and IAM resources, and `create_clean_fixture_scope()`
+  now sweeps all tagged fixture-owned AWS resources before setup rather than only scope-matching
+  resources.
+- `tests/integration/conftest.py` no longer exposes the session-scoped
+  `sweep_expired_aws_fixtures` surface, `src/prodbox/cli/aws_cmd.py` and
+  `tests/integration/sweep_runner.py` are deleted, and `crontab -l` returned no entries on the
+  supported host on April 12, 2026.
+- The aggregate supported test flow now performs the final zero-AWS-residue proof through
+  `src/prodbox/lib/aws_fixture_audit.py`; no standalone janitor command or host cron surface
+  remains.
 
 ### Remaining Work
 

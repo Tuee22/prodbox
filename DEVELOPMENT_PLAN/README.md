@@ -71,7 +71,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 3 | Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening and Canonical-Path Cleanup | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and Authoritative External Proof | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
-| 6 | Final Clean-Room Rerun and Zero-Legacy Handoff | 🔄 Active | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
+| 6 | Final Clean-Room Rerun and Zero-Legacy Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 
 **Canonical architecture**: one supported `prodbox` CLI surface, one repository-root Dhall
 config auto-compiled idempotently to JSON when supported commands load settings, one
@@ -81,7 +81,10 @@ Route 53 records only, one coherent `MetalLB -> Traefik -> vscode-nginx` public-
 cluster-backed `prodbox charts` delivery path for `vscode`, one named validation command per
 major surface, one explicit removal ledger for anything still scheduled to disappear, one
 cluster-wide StorageClass named `manual`, one explicit PV pre-creation model, one Helm-only
-service deployment path, explicit chart-owned replica counts that keep single-writer retained-state services single-replica, and subprocess credential isolation with no `os.environ` inheritance.
+service deployment path, explicit chart-owned replica counts that keep single-writer retained-state
+services single-replica, no host-side cron-driven AWS janitor, harness-owned AWS fixture cleanup
+that begins every AWS-mutating test by sweeping any pre-existing tagged fixture resources, and
+subprocess credential isolation with no `os.environ` inheritance.
 
 ### Sprint Details
 
@@ -105,51 +108,40 @@ service deployment path, explicit chart-owned replica counts that keep single-wr
 | 4.10 AWS Fixture Leak Prevention | ✅ Done | - | - | `tests/integration/conftest.py`, `src/prodbox/cli/aws_cmd.py`, `src/prodbox/cli/main.py`, `tests/integration/sweep_runner.py` |
 | 4.11 Final Subprocess Env Isolation and Settings-Only Config Access | ✅ Done | - | - | `src/prodbox/cli/check_code.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/interpreter.py` |
 | 4.12 Host Gateway Service Removal | ✅ Done | - | - | `src/prodbox/cli/gateway.py`, `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/dag_builders.py`, host filesystem, `documents/engineering/*`, `DEVELOPMENT_PLAN/*` |
-| 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`, `src/prodbox/cli/aws_cmd.py` |
+| 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/lib/aws_fixture_audit.py` |
 | 5.1 Public Hostname Closure and Authoritative External Proof | ✅ Done | - | - | `prodbox-config.dhall`, `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/infra/cluster_issuer.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
 | 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ✅ Done | - | - | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/metallb.py`, `tests/unit/test_infra_program.py`, `tests/unit/test_test_cmd.py` |
-| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | 🔄 Active | - | Final handoff still needs one fresh clean-room aggregate rerun from a repo state with no precompiled `prodbox-config.json`, now that canonical settings loads auto-compile Dhall idempotently when the compiled artifact is missing or stale | `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/unit/test_settings.py`, `tests/integration/test_cli_env.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/aws_helpers.py` |
+| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_settings.py`, `tests/integration/test_cli_env.py`, `tests/integration/test_charts_vscode.py`, `src/prodbox/lib/aws_fixture_audit.py` |
 
 ## Current Plan Status
 
-As of April 12, 2026: **Phase 6 remains active.**
-The clean-cluster public-edge/bootstrap blockers are closed, and a full
-`poetry run prodbox rke2 cleanup --yes` -> `poetry run prodbox test all` rerun already succeeded
-on April 12, 2026 with the post-aggregate AWS sweep reporting no fixture-owned Route 53, S3, VPC,
-EKS, or IAM resources. A second rerun at 17:31 on April 12, 2026 exposed one remaining clean-room
-handoff gap: supported commands still assumed a precompiled `prodbox-config.json` after
-`prodbox-config.dhall` changed or the compiled artifact was absent.
-
-Sprint 6.2 now owns that final repo-state closure requirement. The canonical settings load path in
-`Settings.from_config_json()` auto-compiles `prodbox-config.dhall` to `prodbox-config.json`
-whenever the repository-root JSON artifact is missing or older than the Dhall source/schema, so
-commands such as `prodbox config show`, `prodbox config validate`, `prodbox pulumi ...`, and the
-aggregate `prodbox test all` restore path no longer depend on a manually prepared compiled config.
-The remaining work is one fresh end-to-end clean-room rerun from a state where no
-`prodbox-config.json` exists before handoff is re-closed.
+As of April 12, 2026: **all phases are done.**
+Sprint 4.13 removed the session-scoped AWS sweep, deleted the standalone
+`prodbox aws sweep-fixtures` surface, widened AWS preflight cleanup to all tagged fixture-owned
+resources, and removed the supported-host cron entry that ran janitor cleanup. Sprint 6.2 then
+revalidated the full clean-room path from both required clean states at once: a cleaned RKE2
+cluster and a repository state with no precompiled `prodbox-config.json`.
 
 Current-environment validation snapshot (April 12, 2026):
 
-- `poetry run prodbox rke2 cleanup --yes` followed by `poetry run prodbox test all` completed
-  successfully on April 12, 2026; the aggregate postflight restored the supported runtime,
-  `prodbox host public-edge` ended at `CLASSIFICATION=ready-for-external-proof`, and the final
-  `prodbox aws sweep-fixtures` run reported no fixture-owned AWS resources remaining.
-- A second `poetry run prodbox test all` run at 17:31 on April 12, 2026 failed in `Phase 1.6/2`
-  with `[Errno 2] No such file or directory: '/home/matthewnowak/prodbox/prodbox-config.json'`
-  after `prodbox-config.dhall` changed and the compiled JSON artifact was absent.
-- `src/prodbox/settings.py` now auto-compiles the canonical repository Dhall config whenever the
-  compiled JSON is missing or stale, and `tests/unit/test_settings.py` plus
-  `tests/integration/test_cli_env.py` now cover that command-surface behavior.
+- `poetry run prodbox rke2 cleanup --yes` passed on April 12, 2026.
+- `rm -f prodbox-config.json` left the compiled config absent before the final validation run.
 - `poetry run prodbox config show` and `poetry run prodbox config validate` both passed on
-  April 12, 2026 after the repository-root `prodbox-config.json` artifact was removed; each
-  command regenerated the JSON artifact automatically from `prodbox-config.dhall`.
-- `poetry run prodbox pulumi refresh` also passed on April 12, 2026 after the repository-root
-  `prodbox-config.json` artifact was removed, proving that the Phase 1.6 restore-class command
-  surface no longer depends on a manually prepared compiled config.
-- `poetry run prodbox check-code` passed on April 12, 2026 after the command and plan updates.
-- The final Phase 6 closure gate remains one new aggregate rerun from a repository state without a
-  precompiled `prodbox-config.json`, so the handoff proof covers both a clean RKE2 cluster and a
-  clean repo config state.
+  April 12, 2026 and auto-regenerated `prodbox-config.json` from `prodbox-config.dhall`.
+- `poetry run prodbox test all` passed on April 12, 2026 in `1h 33m 23s` after starting from the
+  cleaned cluster and missing compiled config; the postflight restored the supported runtime and
+  ended at `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox host public-edge` passed on April 12, 2026 and reported
+  `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
+- `crontab -l` returned no entries on April 12, 2026, and `/etc/hosts` contains no
+  `vscode.resolvefintech.com` override.
+- The aggregate supported test flow now performs the zero-AWS-residue proof through
+  `src/prodbox/lib/aws_fixture_audit.py`; no standalone janitor command or host cron surface
+  remains.
+- `poetry run prodbox check-code` passed on April 12, 2026 after the harness and doctrine updates.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now has no pending-removal
+  items.
 
 ## Exit Definition
 
@@ -178,18 +170,20 @@ This plan is done only when all of the following are true:
    removed, `aws_auth.py` deleted, and all AWS credential access flowing through `Settings`.
 9. Sprint 4.9 is closed with subprocess environments built explicitly from configuration (no
    `os.environ` inheritance), `prodbox env` removed, and all `.env` code deleted.
-10. Sprint 4.10 is closed with a session-scoped pre-test janitor sweep, a `prodbox aws
-    sweep-fixtures` CLI command, and hourly cron supervision for AWS fixture leak prevention.
+10. Sprint 4.10 is closed only when AWS leak prevention no longer depends on host cron
+    supervision or any other standalone long-running AWS janitor surface outside the RKE2
+    cluster.
 11. Sprint 4.11 is closed with all subprocess env builders using explicit allowlists (no
     `os.environ` inheritance) and all config access flowing through `Settings` (no env fallbacks).
 12. Sprint 4.12 is closed with `prodbox-gateway.service` uninstalled from the supported host,
     `prodbox gateway install-service` removed from the CLI surface, and all "host supervisor"
     language purged from the plan and doctrine docs.
-13. Sprint 4.13 closes with every AWS-mutating integration test beginning from scope-owned
-    stale-resource search/removal, every taggable fixture-owned AWS resource carrying the
-    canonical ownership/expiry/safe-delete tags, setup helpers rolling back partial AWS creation
-    before the fixture yields, and janitor coverage validated across Route 53, S3, VPC, EKS, and
-    IAM.
+13. Sprint 4.13 closes with every AWS-mutating integration test beginning by sweeping any
+    pre-existing fixture-owned AWS resources discoverable by canonical tags before creating fresh
+    ones, every taggable fixture-owned AWS resource carrying the canonical
+    ownership/expiry/safe-delete tags as the stale-resource discovery contract, setup helpers
+    rolling back partial AWS creation before the fixture yields, and no session-scoped sweep or
+    standalone janitor surface remaining on the supported path.
 14. Sprint 5.1 closes with authoritative public DNS delegation proof plus live TLS and auth-wall
     verification for `vscode.resolvefintech.com`.
 15. Sprint 6.1 reruns the final doctrine-aligned validation set from canonical CLI entrypoints and
@@ -201,9 +195,9 @@ This plan is done only when all of the following are true:
     succeed without a preexisting repository-root `prodbox-config.json`, and the restored path must
     end at `CLASSIFICATION=ready-for-external-proof`.
 17. Sprint 6.2 also closes with the authoritative public-host proof path using public DNS only
-    (no `/etc/hosts` override for `vscode.resolvefintech.com`) and with an immediate
-    post-aggregate `poetry run prodbox aws sweep-fixtures` audit proving that no fixture-owned
-    Route 53, S3, VPC, EKS, or IAM resources remain.
+    (no `/etc/hosts` override for `vscode.resolvefintech.com`) and with the aggregate supported
+    test flow proving that no fixture-owned Route 53, S3, VPC, EKS, or IAM resources remain
+    without invoking a standalone AWS janitor command outside the test harness.
 18. No document under `documents/` carries a competing sprint narrative or completion-status track.
 19. The remaining legacy inventory is empty.
 

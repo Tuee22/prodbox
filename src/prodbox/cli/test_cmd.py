@@ -87,7 +87,7 @@ POST_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_
 POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway"
 POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_vscode"
 POST_PYTEST_PUBLIC_EDGE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_public_edge"
-POST_PYTEST_AWS_SWEEP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_sweep"
+POST_PYTEST_AWS_AUDIT_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_audit"
 _PUBLIC_HOST_STACK_PREP_SUITE_IDS: Final[frozenset[str]] = frozenset({"all", "integration-all"})
 _SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS: Final[frozenset[str]] = frozenset(
     {"all", "integration-all"}
@@ -994,13 +994,10 @@ def _post_pytest_effects_for_suite(
             description="Postflight: wait for ready public-host proof surface",
             fn=_wait_for_public_host_ready_for_external_proof,
         ),
-        RunSubprocess(
-            effect_id=POST_PYTEST_AWS_SWEEP_EFFECT_ID,
+        Custom(
+            effect_id=POST_PYTEST_AWS_AUDIT_EFFECT_ID,
             description="Postflight: prove no fixture-owned AWS resources remain",
-            command=[sys.executable, "-m", "prodbox.cli.main", "aws", "sweep-fixtures"],
-            stream_stdout=True,
-            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
-            env=env,
+            fn=_assert_no_fixture_owned_aws_resources_remain,
         ),
     ]
 
@@ -1187,6 +1184,14 @@ async def _assert_public_host_ready_for_external_proof() -> str:
             f"{report}"
         )
     return report
+
+
+def _assert_no_fixture_owned_aws_resources_remain() -> str:
+    """Fail aggregate suites when fixture-owned AWS resources remain after teardown."""
+    from prodbox.lib.aws_fixture_audit import assert_no_fixture_owned_resources_remain
+
+    assert_no_fixture_owned_resources_remain()
+    return "No fixture-owned AWS resources remain."
 
 
 async def _wait_for_public_host_ready_for_external_proof() -> str:

@@ -32,6 +32,9 @@ Build a clean-room prodbox repository with:
     mode.
 11. PVs pre-created explicitly before Helm install; PVCs created only by Helm charts deploying
     StatefulSets.
+12. AWS fixture cleanup is harness-owned: every AWS-mutating test begins by sweeping any
+    pre-existing tagged fixture resources, and no standalone host cron or long-running janitor
+    job owns AWS cleanup.
 
 ## Clean-Room Sequence
 
@@ -61,6 +64,7 @@ Build a clean-room prodbox repository with:
 | Chart delivery | `prodbox charts list|status|deploy|delete` | Chart platform registry |
 | Supported app delivery | Namespace-local `keycloak-postgres -> keycloak -> vscode` stack | Chart platform |
 | Validation | Named `prodbox test ...`, `prodbox tla-check`, `prodbox check-code` | Repository-owned commands |
+| AWS fixture cleanup | Harness-owned pre-test sweep inside each AWS-mutating test plus canonical fixture tags | Test harness plus canonical AWS tags |
 | Stable doctrine | `documents/engineering/` | Governed docs |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |
 
@@ -144,11 +148,9 @@ Completed and present in the repository:
 - All subprocess environment builders use explicit passthrough allowlists; no `os.environ`
   inheritance remains. The interpreter uses `_base_subprocess_env()`, `check_code.py` uses
   `_TOOL_PASSTHROUGH_VARS`, and `test_cmd.py` uses `_TEST_PASSTHROUGH_VARS`.
-- AWS fixture leak prevention is closed: each AWS-mutating fixture now begins with
-  scope-owned preflight cleanup via shared helpers; taggable Route 53, S3, VPC, subnet,
-  security-group, EKS, and IAM resources carry canonical ownership/expiry/safe-delete tags;
-  setup helpers roll back partial creation before fixture yield; and the session-scoped sweep,
-  `prodbox aws sweep-fixtures`, and hourly cron supervision remain defense-in-depth.
+- AWS-backed fixture helpers already tag Route 53, S3, VPC, subnet, security-group, EKS, and IAM
+  resources with canonical ownership/expiry/safe-delete tags, and setup helpers already roll back
+  partial AWS creation before fixture yield.
 
 Additional canonical state established by Phase 4 cleanup work:
 
@@ -163,45 +165,34 @@ Additional canonical state established by Phase 4 cleanup work:
 
 Open, incomplete, or blocked:
 
-- Sprint 6.2 remains active because final handoff still needs one fresh aggregate rerun from a
-  repository state without a precompiled `prodbox-config.json`.
-- The clean-cluster public-edge/bootstrap path itself is now closed: a full
-  `poetry run prodbox rke2 cleanup --yes` -> `poetry run prodbox test all` run succeeded on
-  April 12, 2026 and ended with zero fixture-owned AWS resources remaining.
-- A second rerun at 17:31 on April 12, 2026 showed the remaining repo-state gap: the supported
-  restore path still assumed `prodbox-config.json` already existed after `prodbox-config.dhall`
-  changed or the compiled artifact was absent.
-- `Settings.from_config_json()` now auto-compiles the canonical Dhall config whenever the
-  repository-root JSON artifact is missing or stale, so supported commands no longer depend on a
-  manually prepared compiled config file.
-- Final handoff still needs one revalidation pass that combines both clean states at once: a clean
-  RKE2 cluster and no precompiled repository-root JSON config.
+- None.
+
+Phase 4 and Phase 6 both closed on April 12, 2026 after the supported clean-room path
+`poetry run prodbox rke2 cleanup --yes` -> `rm -f prodbox-config.json` ->
+`poetry run prodbox test all` succeeded without manual intervention, restored
+`prodbox host public-edge` to `CLASSIFICATION=ready-for-external-proof`, and proved zero AWS
+residue through the aggregate harness flow. The session-scoped AWS sweep, standalone
+`prodbox aws sweep-fixtures` CLI, host cron entry, and host resolver override residue are all
+gone from the supported path.
 
 ## Current-Environment Validation Snapshot
 
-- `poetry run prodbox rke2 cleanup --yes` followed by `poetry run prodbox test all` completed
-  successfully on April 12, 2026; the aggregate postflight restored the supported runtime,
-  `prodbox host public-edge` ended at `CLASSIFICATION=ready-for-external-proof`, and the final
-  `poetry run prodbox aws sweep-fixtures` audit reported no fixture-owned Route 53, S3, VPC, EKS,
-  or IAM resources remaining.
-- A second `poetry run prodbox test all` invocation at 17:31 on April 12, 2026 failed in
-  `Phase 1.6/2: restoring supported runtime` with `[Errno 2] No such file or directory:
-  '/home/matthewnowak/prodbox/prodbox-config.json'`.
-- The missing-file failure came from the canonical settings load path still assuming a precompiled
-  repository-root JSON artifact even though `prodbox-config.dhall` remained present.
-- `src/prodbox/settings.py` now auto-compiles the canonical repository Dhall config when the JSON
-  artifact is missing or stale, and CLI-level coverage for that behavior now lives in
-  `tests/integration/test_cli_env.py`.
+- `poetry run prodbox rke2 cleanup --yes` passed on April 12, 2026.
+- `rm -f prodbox-config.json` left the compiled config absent before the final validation run.
 - `poetry run prodbox config show` and `poetry run prodbox config validate` both passed on
-  April 12, 2026 after the repository-root `prodbox-config.json` artifact was removed; each
-  command regenerated the JSON artifact automatically from `prodbox-config.dhall`.
-- `poetry run prodbox pulumi refresh` also passed on April 12, 2026 after the repository-root
-  `prodbox-config.json` artifact was removed, proving that the Phase 1.6 restore-class command
-  surface no longer depends on a manually prepared compiled config.
+  April 12, 2026 and auto-regenerated `prodbox-config.json` from `prodbox-config.dhall`.
+- `poetry run prodbox test all` passed on April 12, 2026 in `1h 33m 23s` from the cleaned cluster
+  and missing compiled config, restored the supported runtime, and ended at
+  `CLASSIFICATION=ready-for-external-proof`.
+- The aggregate supported test flow now performs the final zero-AWS-residue proof through
+  `src/prodbox/lib/aws_fixture_audit.py`; it does not invoke a standalone janitor command or
+  depend on host cron supervision.
+- `poetry run prodbox host public-edge` passed on April 12, 2026 and reported
+  `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
+- `crontab -l` returned no entries on April 12, 2026, and `/etc/hosts` contains no
+  `vscode.resolvefintech.com` override.
 - `poetry run prodbox check-code` passed on April 12, 2026 after the command and plan updates.
-- Final Phase 6 closure still requires one new end-to-end rerun from a state with no precompiled
-  `prodbox-config.json` so the aggregate proof covers both clean cluster state and clean repo
-  config state.
 
 ## Hard Constraints
 
@@ -214,8 +205,9 @@ Open, incomplete, or blocked:
   file. IP addressing (MetalLB pool, ingress LB IP) is always auto-discovered from the host LAN.
   `KUBECONFIG` always uses the default `~/.kube/config`. Subprocess environments are constructed
   explicitly from configuration; no credentials are inherited from `os.environ`.
-- No prodbox daemon runs on the host. The only supported steady-state location for the gateway
-  daemon is inside the RKE2 cluster as a Kubernetes workload managed by `prodbox charts`.
+- No prodbox daemon or cron-driven background job runs on the host. The only supported
+  steady-state long-running prodbox workload is inside the RKE2 cluster as a Kubernetes workload
+  managed by `prodbox charts`.
 - The only supported gateway startup path is `prodbox gateway start`, invoked as the entrypoint
   of the in-cluster gateway pod.
 - The in-cluster gateway must remain available across pod restarts, node failures, and network
@@ -234,15 +226,18 @@ Open, incomplete, or blocked:
 - Final clean-room handoff requires a single supported rerun path from
   `poetry run prodbox rke2 cleanup --yes` to `poetry run prodbox test all` with no manual Pulumi,
   Helm, or host resolver repair steps in between.
-- Final clean-room handoff also requires an immediate post-aggregate
-  `poetry run prodbox aws sweep-fixtures` result proving that no fixture-owned Route 53, S3, VPC,
-  EKS, or IAM resources remain.
+- Final clean-room handoff also requires the aggregate supported test flow to prove that no
+  fixture-owned Route 53, S3, VPC, EKS, or IAM resources remain; that proof may not depend on a
+  post-run standalone `prodbox aws sweep-fixtures` invocation or any host-side background AWS
+  cleanup job.
 - Authoritative public-host proof may not depend on `/etc/hosts` or other local resolver overrides
   for `vscode.resolvefintech.com`.
-- Every AWS-mutating integration test must begin by searching for and deleting stale fixture-owned
-  resources for its declared scope before creating fresh AWS resources. All taggable fixture-owned
-  AWS resources must carry canonical ownership, expiry, and safe-to-delete tags, and setup
-  failure must roll back partial AWS creation before the fixture yields.
+- Every AWS-mutating integration test must begin by sweeping any pre-existing fixture-owned AWS
+  resources discoverable by canonical tags and deleting them before fresh AWS resources are
+  created. Canonical ownership, expiry, and safe-to-delete tags are the stale-resource discovery
+  and safe-delete contract for all taggable fixture-owned AWS resources. Setup failure must roll
+  back partial AWS creation before the fixture yields. No session-scoped sweep, standalone janitor
+  CLI, or host cron job is part of the supported architecture.
 - Documents under `documents/` are stable doctrine and reference only. They do not own sprint
   histories, blocker tracking, or completion state.
 - Compatibility shims, duplicate operator paths, competing ingress controllers, and transitional

@@ -267,8 +267,8 @@ def create_clean_fixture_scope(
     test_scope: str,
     ttl_hours: int = DEFAULT_FIXTURE_TTL_HOURS,
 ) -> AwsFixtureScope:
-    """Delete stale resources for one suite scope before minting a fresh fixture scope."""
-    sweep_fixture_resources_for_scope(project_slug=project_slug, test_scope=test_scope)
+    """Sweep all pre-existing fixture-owned resources before minting a fresh fixture scope."""
+    sweep_fixture_owned_resources()
     return create_fixture_scope(
         project_slug=project_slug,
         test_scope=test_scope,
@@ -1751,14 +1751,9 @@ def sweep_expired_fixture_resources(
     )
 
 
-def sweep_fixture_resources_for_scope(
-    *,
-    project_slug: str,
-    test_scope: str,
-) -> JanitorSweepResult:
-    """Delete prior fixture-owned resources for one declared suite scope."""
-    selector = fixture_scope_selector(project_slug=project_slug, test_scope=test_scope)
-    return _sweep_fixture_resources(lambda tag_map: _matches_fixture_selector(tag_map, selector))
+def sweep_fixture_owned_resources() -> JanitorSweepResult:
+    """Delete every pre-existing fixture-owned resource discoverable by canonical tags."""
+    return _sweep_fixture_resources(_is_fixture_owned_tag_map)
 
 
 def _sweep_fixture_resources(matcher: FixtureTagMatcher) -> JanitorSweepResult:
@@ -2131,4 +2126,30 @@ def fixture_owned_resource_inventory() -> JanitorInventoryResult:
         remaining_vpcs=len(_list_matching_vpcs(matcher)),
         remaining_eks_clusters=len(_list_matching_eks_clusters(matcher)),
         remaining_iam_roles=len(_list_matching_iam_roles(matcher)),
+    )
+
+
+def assert_no_fixture_owned_resources_remain() -> None:
+    """Fail when any fixture-owned AWS resources remain visible after a supported run."""
+    inventory = fixture_owned_resource_inventory()
+    total_remaining = (
+        inventory.remaining_hosted_zones
+        + inventory.remaining_buckets
+        + inventory.remaining_vpcs
+        + inventory.remaining_eks_clusters
+        + inventory.remaining_iam_roles
+    )
+    if total_remaining == 0:
+        return
+    details = ", ".join(
+        (
+            f"route53={inventory.remaining_hosted_zones}",
+            f"s3={inventory.remaining_buckets}",
+            f"vpc={inventory.remaining_vpcs}",
+            f"eks={inventory.remaining_eks_clusters}",
+            f"iam={inventory.remaining_iam_roles}",
+        )
+    )
+    raise AssertionError(
+        f"fixture-owned AWS resources still remain after the supported run: {details}"
     )

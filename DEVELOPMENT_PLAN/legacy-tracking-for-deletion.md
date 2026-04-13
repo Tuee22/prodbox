@@ -12,11 +12,7 @@
 
 ## Pending Removal
 
-| Item | Location | Why | Owning Sprint |
-|------|----------|-----|---------------|
-| Aggregate-suite clean-cluster bootstrap that gates on `prodbox host public-edge` before Pulumi-managed edge restore | `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `documents/engineering/cli_command_surface.md` | `poetry run prodbox test all` currently fails from a cleaned cluster because the runbook restores only the RKE2 substrate, Harbor, and retained storage before requiring a ready public edge | Sprint 6.2 |
-| Stale public-edge residue after clean-cluster teardown | Host `/etc/hosts`, cluster-scoped `IngressClass` and Traefik CRDs, and missing/partial edge namespaces and Helm releases | Unsupported local host overrides and orphaned cluster-scoped edge state make authoritative public-host proof and clean-room recreate non-deterministic | Sprint 6.2 |
-| Final handoff claim that lacks a post-aggregate zero-AWS-residue proof | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `src/prodbox/cli/test_cmd.py`, `documents/engineering/aws_integration_environment_doctrine.md` | The final clean-room contract must prove that the aggregate rerun leaves no fixture-owned Route 53, S3, VPC, EKS, or IAM resources, not just that per-suite janitors exist | Sprint 6.2 |
+None.
 
 ## Completed
 
@@ -75,9 +71,16 @@
 | `_render_gateway_systemd_unit()` helper | Sprint 4.12 | Removed from `src/prodbox/cli/dag_builders.py`; no host systemd unit is rendered by prodbox |
 | Host-supervisor and `install-service` language in `documents/engineering/distributed_gateway_architecture.md` and `documents/engineering/cli_command_surface.md` | Sprint 4.12 | Doctrine docs now describe the in-cluster `prodbox charts deploy gateway` workload as the canonical steady state |
 | `prodbox-gateway.service` host systemd unit | Sprint 4.12 | `systemctl disable --now prodbox-gateway.service` and `rm /etc/systemd/system/prodbox-gateway.service` executed on `bathurst` on 2026-04-10 after the in-cluster gateway was observed converging on `node-a` and continuing to keep `vscode.resolvefintech.com` current in Route 53. Before/after evidence captured in `/tmp/prodbox-gateway-before.log`, `/tmp/prodbox-gateway-pre-removal.log`, and `/tmp/prodbox-gateway-after.log`. |
-| Session-scoped AWS pre-test sweep as the only stale-resource preflight | Sprint 4.13 | Per-test scope-owned cleanup is now canonical; session sweep, CLI janitor, and cron remain defense-in-depth |
+| Session-scoped AWS pre-test sweep as the only stale-resource preflight | Sprint 4.13 | Per-test cleanup and tagging became explicit; the session sweep and standalone janitor surfaces are now tracked as separate pending-removal items owned by Sprint 4.13 |
 | Fixture setup paths that can create partially tagged or untagged AWS resources before fixture yield | Sprint 4.13 | Shared helpers now tag Route 53, S3, VPC, subnet, security-group, EKS, and IAM resources and roll back partial setup before yield |
-| Expired EKS janitor flow that depends on post-delete cluster metadata | Sprint 4.13 | Shared janitor captures scope metadata before cluster deletion and cleans IAM/VPC resources without rereading deleted cluster state |
+| Expired EKS janitor flow that depends on post-delete cluster metadata | Sprint 4.13 | The shared cleanup contract captures scope metadata before cluster deletion and can clean IAM/VPC resources without rereading deleted cluster state |
+| Session-scoped AWS pre-test sweep fixture | Sprint 4.13 | Removed from `tests/integration/conftest.py`; AWS cleanup now starts inside each owning test harness |
+| Scope-scoped AWS preflight cleanup that can leave unrelated tagged test resources behind | Sprint 4.13 | `create_clean_fixture_scope()` now sweeps all tagged fixture-owned AWS resources before setup, not only scope-matching resources |
+| Standalone `prodbox aws sweep-fixtures` CLI and `tests.integration.sweep_runner` | Sprint 4.13 | Deleted; aggregate zero-residue proof now uses `src/prodbox/lib/aws_fixture_audit.py` inside the supported test flow |
+| Host cron entry that runs `prodbox aws sweep-fixtures` | Sprint 4.13 | Removed from the supported host crontab on April 12, 2026; no host-side background cleanup worker remains |
+| Aggregate-suite clean-cluster bootstrap that gated on `prodbox host public-edge` before Pulumi-managed edge restore | Sprint 6.2 | `poetry run prodbox test all` now restores the Pulumi-managed edge, redeploys gateway plus `vscode`, and reaches `CLASSIFICATION=ready-for-external-proof` from a cleaned cluster |
+| Stale public-edge residue after clean-cluster teardown | Sprint 6.2 | Verified closed on April 12, 2026 by an empty `crontab -l`, no `/etc/hosts` override for `vscode.resolvefintech.com`, a passing `prodbox host public-edge`, and a passing `prodbox test integration public-dns` |
+| Final handoff claim that lacks a post-aggregate zero-AWS-residue proof through the supported test flow | Sprint 6.2 | Closed by the April 12, 2026 clean-cluster rerun from missing `prodbox-config.json`; `poetry run prodbox test all` now performs the final AWS inventory audit without a standalone janitor |
 
 ## Related Documents
 

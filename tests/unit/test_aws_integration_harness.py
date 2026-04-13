@@ -6,6 +6,8 @@ from datetime import UTC, datetime
 from subprocess import CompletedProcess
 from unittest.mock import patch
 
+import pytest
+
 from tests.integration.aws_helpers import (
     FIXTURE_SCOPE_ID_TAG,
     AwsFixtureScope,
@@ -16,6 +18,7 @@ from tests.integration.aws_helpers import (
     _matches_fixture_selector,
     _normalize_name_fragment,
     _sweep_matching_eks_clusters,
+    assert_no_fixture_owned_resources_remain,
     create_clean_fixture_scope,
     create_fixture_scope,
     fixture_scope_selector,
@@ -80,8 +83,8 @@ def test_create_fixture_scope_derives_region_account_and_expiry_deterministicall
     assert scope.expires_at == "2026-03-26T20:00:00Z"
 
 
-def test_create_clean_fixture_scope_runs_preflight_before_scope_creation() -> None:
-    """Preflight cleanup should run before minting a fresh fixture scope."""
+def test_create_clean_fixture_scope_runs_global_preflight_before_scope_creation() -> None:
+    """Preflight cleanup should sweep all fixture-owned resources before minting a scope."""
     expected_scope = AwsFixtureScope(
         project_slug="project-alpha",
         test_scope="aws-foundation",
@@ -94,9 +97,7 @@ def test_create_clean_fixture_scope_runs_preflight_before_scope_creation() -> No
     )
     call_order: list[str] = []
 
-    def fake_sweep(*, project_slug: str, test_scope: str) -> object:
-        assert project_slug == "project-alpha"
-        assert test_scope == "aws-foundation"
+    def fake_sweep() -> object:
         call_order.append("sweep")
         return object()
 
@@ -109,7 +110,7 @@ def test_create_clean_fixture_scope_runs_preflight_before_scope_creation() -> No
 
     with (
         patch(
-            "tests.integration.aws_helpers.sweep_fixture_resources_for_scope",
+            "tests.integration.aws_helpers.sweep_fixture_owned_resources",
             side_effect=fake_sweep,
         ),
         patch("tests.integration.aws_helpers.create_fixture_scope", side_effect=fake_create),
@@ -183,6 +184,23 @@ def test_is_expired_fixture_tag_map_uses_expiry_timestamp_and_owner_tag() -> Non
     assert _is_expired_fixture_tag_map(expired_tags, current_time)
     assert not _is_expired_fixture_tag_map(future_tags, current_time)
     assert not _is_expired_fixture_tag_map(foreign_tags, current_time)
+
+
+def test_assert_no_fixture_owned_resources_remain_raises_with_inventory_details() -> None:
+    """Zero-residue audits should report each remaining resource class explicitly."""
+
+    class Inventory:
+        remaining_hosted_zones = 1
+        remaining_buckets = 2
+        remaining_vpcs = 3
+        remaining_eks_clusters = 4
+        remaining_iam_roles = 5
+
+    with patch(
+        "tests.integration.aws_helpers.fixture_owned_resource_inventory",
+        return_value=Inventory(),
+    ), pytest.raises(AssertionError, match="route53=1, s3=2, vpc=3, eks=4, iam=5"):
+        assert_no_fixture_owned_resources_remain()
 
 
 def test_sweep_matching_eks_clusters_captures_scope_id_before_delete() -> None:

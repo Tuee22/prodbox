@@ -27,7 +27,7 @@ from prodbox.cli.test_cmd import (
     INTEGRATION_PULUMI_TEST_SUITE,
     INTEGRATION_RUNBOOK_EFFECT_ID,
     PHASE_ONE_HEADER_EFFECT_ID,
-    POST_PYTEST_AWS_SWEEP_EFFECT_ID,
+    POST_PYTEST_AWS_AUDIT_EFFECT_ID,
     POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
     POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
     POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
@@ -153,7 +153,7 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
-        POST_PYTEST_AWS_SWEEP_EFFECT_ID,
+        POST_PYTEST_AWS_AUDIT_EFFECT_ID,
     ]
     pulumi_refresh = cast(
         RunSubprocess,
@@ -227,21 +227,15 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         ),
     )
     assert callable(postflight_public_edge.fn)
-    aws_sweep = cast(
-        RunSubprocess,
+    aws_audit = cast(
+        Custom[object],
         next(
             effect
             for effect in phase_two_effect.effects
-            if effect.effect_id == POST_PYTEST_AWS_SWEEP_EFFECT_ID
+            if effect.effect_id == POST_PYTEST_AWS_AUDIT_EFFECT_ID
         ),
     )
-    assert aws_sweep.command == [
-        sys.executable,
-        "-m",
-        "prodbox.cli.main",
-        "aws",
-        "sweep-fixtures",
-    ]
+    assert callable(aws_audit.fn)
     assert "tool_helm" in phase_two.prerequisites
     assert "tool_docker" in phase_two.prerequisites
     assert "tool_ctr" in phase_two.prerequisites
@@ -388,7 +382,7 @@ def test_aggregate_suites_restore_supported_runtime_after_pytest(suite: object) 
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
-        POST_PYTEST_AWS_SWEEP_EFFECT_ID,
+        POST_PYTEST_AWS_AUDIT_EFFECT_ID,
     ]
 
 

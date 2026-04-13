@@ -378,22 +378,23 @@ For the EKS suite, the fixture contract is:
 
 ## 11. Fixture Leak Prevention
 
-Four layers of defense prevent leaked ephemeral AWS resources from accumulating when
+Three harness-owned controls prevent leaked ephemeral AWS resources from accumulating when
 integration test processes crash before fixture teardown runs:
 
-1. **Per-test scope-owned preflight cleanup**: Each AWS-mutating fixture runs
-   `create_clean_fixture_scope(...)` or equivalent scope cleanup for the same project/suite
-   scope before creating new resources.
-2. **Session-scoped sweep**: A session-scoped autouse fixture (`sweep_expired_aws_fixtures`) in
-   `tests/integration/conftest.py` runs `sweep_expired_fixture_resources()` at the start of
-   every integration test session with best-effort error handling.
-3. **CLI janitor command**: `prodbox aws sweep-fixtures` provides an out-of-band entrypoint
-   to run the janitor sweep without running the test suite.
-4. **Cron supervision**: An hourly cron entry on the supported host runs the CLI janitor so
-   expired resources are cleaned up even when the test suite is not run again.
+1. **Per-test full tagged-resource preflight**: Each AWS-mutating fixture runs
+   `create_clean_fixture_scope(...)` or equivalent harness-owned cleanup before creating new
+   resources. That preflight sweeps any pre-existing fixture-owned Route 53, S3, VPC, EKS, and
+   IAM resources discoverable by the canonical tag set; it is not limited to one declared
+   project/suite scope.
+2. **Immediate tagging plus setup rollback**: Taggable fixture-owned resources receive the
+   canonical ownership, expiry, and safe-delete tags as soon as the create path can apply them,
+   and setup helpers roll back partial creation before fixture yield.
+3. **Aggregate zero-residue proof**: `poetry run prodbox test all` finishes with a supported
+   fixture inventory audit that fails if any fixture-owned Route 53, S3, VPC, EKS, or IAM
+   resources remain.
 
-The session-scoped sweep is defense-in-depth only. It is not the canonical or only preflight for
-AWS-mutating fixtures.
+No session-scoped sweep, standalone `prodbox aws ...` janitor surface, or host cron job is part
+of the supported cleanup model.
 
 ---
 

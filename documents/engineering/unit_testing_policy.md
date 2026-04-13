@@ -61,8 +61,9 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 
 Stateful AWS-mutating integration tests must follow
 [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) instead of
-reusing existing AWS resources. That includes per-test scope-owned stale-resource preflight,
-canonical fixture tagging, setup rollback before yield, and shared janitor defense-in-depth.
+reusing existing AWS resources. That includes per-test harness-owned full tagged-resource
+preflight, canonical fixture tagging, setup rollback before yield, and aggregate zero-residue
+proof through the supported `prodbox test all` flow.
 
 ### Integration Execution Policy (Fail-Fast)
 

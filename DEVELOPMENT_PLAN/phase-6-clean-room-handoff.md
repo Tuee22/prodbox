@@ -11,12 +11,11 @@
 ## Phase Summary
 
 This phase reruns the authoritative validation set from the supported operator flow after the
-blocked AWS and public-host proofs close. The repository hands off only when no sprint remains
-blocked or active and the cleanup ledger is empty. The original Sprint 6.1 closeout established
-the intended handoff contract, but Sprint 6.2 reopens the phase because the repository still
-needs one final clean-room rerun that starts from both a cleaned RKE2 cluster and a repository
-state without a precompiled `prodbox-config.json`, then re-proves zero AWS residue after the
-aggregate suite.
+public-host and AWS cleanup proofs close. The repository hands off only when no sprint remains
+blocked or active and the cleanup ledger is empty. That final handoff proof is now complete:
+Sprint 6.2 reran the clean-room path from both required clean states, restored the supported
+runtime without manual intervention, and re-proved zero AWS residue through the aggregate harness
+flow.
 
 ## Sprint 6.1: Final Clean-Room Validation Rerun and Zero-Legacy Handoff ✅
 
@@ -48,7 +47,7 @@ remaining compatibility backlog.
 
 - The legacy ledger Pending Removal section remains empty.
 - `poetry run prodbox check-code` passed on April 12, 2026.
-- `poetry run prodbox test unit` passed on April 12, 2026 (972 tests).
+- `poetry run prodbox test unit` passed on April 12, 2026 (982 tests).
 - `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
 - `prodbox host public-edge` reports `CLASSIFICATION=ready-for-external-proof`.
 - `poetry run prodbox test integration charts-vscode` passed on April 12, 2026 (8 tests).
@@ -69,17 +68,18 @@ remaining compatibility backlog.
 
 None.
 
-## Sprint 6.2: Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure 🔄
+## Sprint 6.2: Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/unit/test_settings.py`, `tests/integration/test_cli_env.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/aws_helpers.py`
-**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
 Make the aggregate validation path self-healing from a completely cleaned RKE2 cluster and a
 repository state without a precompiled `prodbox-config.json`, then prove that the same rerun
-leaves no fixture-owned AWS resources behind.
+leaves no fixture-owned AWS resources behind through the supported test harness rather than a
+standalone janitor surface.
 
 ### Deliverables
 
@@ -99,8 +99,8 @@ leaves no fixture-owned AWS resources behind.
 - Commands that load canonical settings auto-compile `prodbox-config.dhall` to the
   repository-root `prodbox-config.json` when the compiled artifact is missing or stale, so no
   supported CLI path depends on a manually prepared compiled config.
-- The final handoff validation includes an immediate post-aggregate zero-AWS-residue proof through
-  the canonical janitor surface.
+- The final handoff validation proves zero AWS residue through the aggregate supported test flow;
+  it does not depend on a standalone `prodbox aws sweep-fixtures` command or host cron.
 
 ### Validation
 
@@ -110,40 +110,34 @@ leaves no fixture-owned AWS resources behind.
 4. `poetry run prodbox test all`
 5. `poetry run prodbox host public-edge`
 6. `poetry run prodbox test integration public-dns`
-7. `poetry run prodbox aws sweep-fixtures`
-8. `poetry run prodbox check-code`
+7. `poetry run prodbox check-code`
 
 ### Current Validation State
 
-- `poetry run prodbox rke2 cleanup --yes` followed by `poetry run prodbox test all` completed
-  successfully on April 12, 2026 when the repository-root `prodbox-config.json` artifact already
-  existed; the aggregate postflight restored the supported runtime and the final
-  `poetry run prodbox aws sweep-fixtures` run reported no fixture-owned Route 53, S3, VPC, EKS,
-  or IAM resources remaining.
-- A second `poetry run prodbox test all` invocation at 17:31 on April 12, 2026 failed in
-  `Phase 1.6/2: restoring supported runtime` with `[Errno 2] No such file or directory:
-  '/home/matthewnowak/prodbox/prodbox-config.json'` after `prodbox-config.dhall` changed and the
-  compiled JSON artifact was absent.
-- The missing-file failure showed that supported commands still assumed a precompiled
-  repository-root JSON artifact even though the Dhall source remained present.
+- `poetry run prodbox rke2 cleanup --yes` passed on April 12, 2026.
+- `rm -f prodbox-config.json` left the compiled config absent before the final validation run.
 - `src/prodbox/settings.py` now auto-compiles the canonical repository Dhall config whenever the
   JSON artifact is missing or stale, and `tests/unit/test_settings.py` plus
-  `tests/integration/test_cli_env.py` now cover that behavior at both the settings-loader and CLI
+  `tests/integration/test_cli_env.py` cover that behavior at both the settings-loader and CLI
   surfaces.
 - `poetry run prodbox config show` and `poetry run prodbox config validate` both passed on
-  April 12, 2026 after the repository-root `prodbox-config.json` artifact was removed; each
-  command regenerated the JSON artifact automatically from `prodbox-config.dhall`.
-- `poetry run prodbox pulumi refresh` also passed on April 12, 2026 after the repository-root
-  `prodbox-config.json` artifact was removed, proving that the Phase 1.6 restore-class command
-  surface no longer depends on a manually prepared compiled config.
+  April 12, 2026 and auto-regenerated `prodbox-config.json` from `prodbox-config.dhall`.
+- `poetry run prodbox test all` passed on April 12, 2026 in `1h 33m 23s` from the cleaned RKE2
+  cluster and missing compiled config; postflight restore rebuilt the supported runtime, redeployed
+  the gateway and `vscode` stacks, and ended at `CLASSIFICATION=ready-for-external-proof`.
+- The aggregate supported test flow now performs the final zero-AWS-residue proof through
+  `src/prodbox/lib/aws_fixture_audit.py`; it does not invoke a standalone janitor command or
+  depend on host cron supervision.
+- `poetry run prodbox host public-edge` passed on April 12, 2026 and reported
+  `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox test integration public-dns` passed on April 12, 2026 (2 tests).
+- `crontab -l` returned no entries on April 12, 2026, and `/etc/hosts` contains no
+  `vscode.resolvefintech.com` override.
 - `poetry run prodbox check-code` passed on April 12, 2026 after the command and plan updates.
 
 ### Remaining Work
 
-- Re-run the full clean-room handoff proof from a state where the repository-root
-  `prodbox-config.json` does not exist before command execution begins.
-- Keep the final handoff contract tied to both clean states simultaneously: a cleaned RKE2
-  cluster and a repo that requires on-demand Dhall compilation.
+None.
 
 ## Documentation Requirements
 

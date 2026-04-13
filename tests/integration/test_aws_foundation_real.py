@@ -21,6 +21,7 @@ from .aws_helpers import (
     create_delegated_hosted_zone,
     create_ephemeral_ec2_network,
     create_ephemeral_s3_bucket,
+    create_fixture_scope,
     create_parent_hosted_zone,
     delete_fixture_resource,
     ec2_network_tag_map,
@@ -33,6 +34,7 @@ from .aws_helpers import (
     route53_zone_tag_map,
     s3_bucket_exists,
     sweep_expired_fixture_resources,
+    sweep_fixture_owned_resources,
 )
 
 pytestmark = [pytest.mark.integration, pytest.mark.timeout(900)]
@@ -98,17 +100,14 @@ def test_shared_account_resources_are_tagged_isolated_and_janitor_cleanup_is_sel
     aws_resource_stack: list[AwsFixtureResource],
 ) -> None:
     """Expired resources should be janitor-deleted without touching live project resources."""
-    parent_scope = create_clean_fixture_scope(
-        project_slug="shared-dns", test_scope="aws-foundation"
-    )
-    expired_scope = create_clean_fixture_scope(
+    sweep_fixture_owned_resources()
+    parent_scope = create_fixture_scope(project_slug="shared-dns", test_scope="aws-foundation")
+    expired_scope = create_fixture_scope(
         project_slug="project-alpha",
         test_scope="aws-foundation",
         ttl_hours=-1,
     )
-    live_scope = create_clean_fixture_scope(
-        project_slug="project-beta", test_scope="aws-foundation"
-    )
+    live_scope = create_fixture_scope(project_slug="project-beta", test_scope="aws-foundation")
 
     parent_zone = create_parent_hosted_zone(parent_scope, zone_label="shared-root")
     aws_resource_stack.append(parent_zone)
@@ -199,14 +198,13 @@ def test_shared_account_resources_are_tagged_isolated_and_janitor_cleanup_is_sel
     assert ec2_vpc_exists(live_network.vpc_id)
 
 
-def test_scope_preflight_cleanup_removes_only_matching_scope_resources(
+def test_preflight_cleanup_removes_all_prior_fixture_owned_resources(
     aws_resource_stack: list[AwsFixtureResource],
 ) -> None:
-    """Scope preflight should delete only prior resources for the same project/suite selector."""
-    stale_scope = create_clean_fixture_scope(
-        project_slug="project-alpha", test_scope="aws-preflight"
-    )
-    live_scope = create_clean_fixture_scope(project_slug="project-beta", test_scope="aws-preflight")
+    """Canonical preflight cleanup should remove every prior fixture-owned AWS resource."""
+    sweep_fixture_owned_resources()
+    stale_scope = create_fixture_scope(project_slug="project-alpha", test_scope="aws-preflight")
+    live_scope = create_fixture_scope(project_slug="project-beta", test_scope="aws-preflight")
 
     stale_zone = create_parent_hosted_zone(stale_scope, zone_label="stale")
     aws_resource_stack.append(stale_zone)
@@ -224,29 +222,33 @@ def test_scope_preflight_cleanup_removes_only_matching_scope_resources(
     aws_resource_stack.append(live_network)
 
     replacement_scope = create_clean_fixture_scope(
-        project_slug="project-alpha",
+        project_slug="project-gamma",
         test_scope="aws-preflight",
     )
-    assert replacement_scope.project_slug == stale_scope.project_slug
-    assert replacement_scope.test_scope == stale_scope.test_scope
+    assert replacement_scope.project_slug == "project-gamma"
+    assert replacement_scope.test_scope == "aws-preflight"
 
     aws_resource_stack.remove(stale_network)
+    aws_resource_stack.remove(live_network)
     aws_resource_stack.remove(stale_bucket)
+    aws_resource_stack.remove(live_bucket)
     aws_resource_stack.remove(stale_zone)
+    aws_resource_stack.remove(live_zone)
 
     assert not route53_hosted_zone_exists(stale_zone.zone_resource_id)
-    assert route53_hosted_zone_exists(live_zone.zone_resource_id)
+    assert not route53_hosted_zone_exists(live_zone.zone_resource_id)
     assert not s3_bucket_exists(stale_bucket.bucket_name)
-    assert s3_bucket_exists(live_bucket.bucket_name)
+    assert not s3_bucket_exists(live_bucket.bucket_name)
     assert not ec2_vpc_exists(stale_network.vpc_id)
-    assert ec2_vpc_exists(live_network.vpc_id)
+    assert not ec2_vpc_exists(live_network.vpc_id)
 
 
 def test_route53_setup_failure_rolls_back_partial_hosted_zone_creation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Route 53 setup failures should delete any hosted zone created before the error."""
-    scope = create_clean_fixture_scope(project_slug="rollback-project", test_scope="aws-rollback")
+    sweep_fixture_owned_resources()
+    scope = create_fixture_scope(project_slug="rollback-project", test_scope="aws-rollback")
     created_zone_ids: list[str] = []
     original_run_aws_cli = aws_helpers_module._run_aws_cli
 

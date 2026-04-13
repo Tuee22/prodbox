@@ -96,13 +96,17 @@ def install_rke2() -> None:
 @click.option(
     "--yes",
     is_flag=True,
-    help="Confirm full RKE2 cluster deletion while preserving the manual PV root",
+    help=(
+        "Confirm full RKE2 cluster deletion while preserving the manual PV root "
+        "and retained chart state root"
+    ),
 )
 def delete_rke2(yes: bool) -> None:
     """Delete the supported host-owned RKE2 cluster.
 
-    Removes RKE2 cluster substrate and host remnants while preserving only the
-    configured manual PV host root for retained PV contents.
+    Removes RKE2 cluster substrate and managed host remnants while preserving the
+    configured manual PV host root for retained PV contents plus the repo-local
+    retained chart-state root.
     """
     match rke2_delete_command(yes=yes):
         case Success(cmd):

@@ -997,6 +997,36 @@ def _remove_legacy_storage_root_if_needed(
             return
 
 
+def _remove_calico_endpoint_status_rke2_residue(
+    *, endpoint_status_root: Path = Path("/run/calico/endpoint-status")
+) -> str:
+    """Delete stale Calico endpoint-status files whose names still reference RKE2 pods."""
+    match endpoint_status_root.exists():
+        case False:
+            return f"No Calico endpoint-status directory found at {endpoint_status_root}"
+        case True:
+            paths = tuple(
+                path
+                for path in endpoint_status_root.iterdir()
+                if path.is_file() and "rke2" in path.name
+            )
+            match paths:
+                case ():
+                    return f"No stale RKE2 endpoint-status files found under {endpoint_status_root}"
+                case _:
+                    delete_result = _run_host_command(
+                        ("sudo", "rm", "-f", *(str(path) for path in paths)),
+                        timeout_seconds=30.0,
+                    )
+                    _require_host_command_success(
+                        delete_result,
+                        failure_prefix="Failed to remove stale Calico endpoint-status files",
+                    )
+                    return "Removed stale Calico endpoint-status files: " + ", ".join(
+                        sorted(path.name for path in paths)
+                    )
+
+
 def _delete_rke2_cluster_substrate(*, manual_pv_root: Path) -> str:
     """Delete the RKE2 substrate while preserving retained host state roots."""
     uninstall_script = Path("/usr/local/bin/rke2-uninstall.sh")
@@ -1028,6 +1058,7 @@ def _delete_rke2_cluster_substrate(*, manual_pv_root: Path) -> str:
                 failure_prefix="Fallback RKE2 delete failed",
             )
 
+    calico_endpoint_status_message = _remove_calico_endpoint_status_rke2_residue()
     kubeconfig_message = _delete_managed_kubeconfig_if_present()
     legacy_storage_root = Path("/var/lib/prodbox/storage")
     _remove_legacy_storage_root_if_needed(
@@ -1039,6 +1070,7 @@ def _delete_rke2_cluster_substrate(*, manual_pv_root: Path) -> str:
         "Deleted RKE2 cluster substrate; "
         f"preserved manual PV root {manual_pv_root}; "
         f"preserved retained chart state root {preserved_chart_state_root}; "
+        f"{calico_endpoint_status_message}; "
         f"{kubeconfig_message}"
     )
 

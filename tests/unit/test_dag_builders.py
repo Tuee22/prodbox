@@ -12,10 +12,12 @@ Note: These are pure function tests - no mocks needed.
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import prodbox.cli.dag_builders as dag_builders_module
 from prodbox.cli.command_adt import (
     DNSCheckCommand,
     GatewayConfigGenCommand,
@@ -751,6 +753,63 @@ class TestRKE2CommandPrerequisites:
                 assert ".prodbox-state" in built_effect.effects[1].text
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
+
+
+class TestRke2DeleteHelpers:
+    """Tests for delete-path host cleanup helpers."""
+
+    def test_remove_calico_endpoint_status_rke2_residue_deletes_matching_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Delete helper should remove only endpoint-status files that still reference RKE2."""
+        endpoint_status_root = tmp_path / "endpoint-status"
+        endpoint_status_root.mkdir()
+        rke2_file = endpoint_status_root / "k8s kube-system%2Frke2-coredns-rke2-coredns-abc eth0"
+        rke2_file.write_text("stale", encoding="utf-8")
+        other_file = endpoint_status_root / "k8s vscode%2Fvscode-abc eth0"
+        other_file.write_text("active", encoding="utf-8")
+        commands: list[tuple[str, ...]] = []
+
+        def fake_run_host_command(
+            command: tuple[str, ...], *, timeout_seconds: float, input_text: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
+            assert input_text is None
+            assert timeout_seconds == 30.0
+            commands.append(command)
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(dag_builders_module, "_run_host_command", fake_run_host_command)
+
+        message = dag_builders_module._remove_calico_endpoint_status_rke2_residue(
+            endpoint_status_root=endpoint_status_root
+        )
+
+        assert commands == [("sudo", "rm", "-f", str(rke2_file))]
+        assert rke2_file.name in message
+        assert other_file.name not in message
+
+    def test_remove_calico_endpoint_status_rke2_residue_reports_no_matches(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Delete helper should report clean state when no RKE2-named files remain."""
+        endpoint_status_root = tmp_path / "endpoint-status"
+        endpoint_status_root.mkdir()
+        (endpoint_status_root / "k8s vscode%2Fvscode-abc eth0").write_text(
+            "active", encoding="utf-8"
+        )
+
+        def fail_run_host_command(
+            command: tuple[str, ...], *, _timeout_seconds: float, _input_text: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
+            raise AssertionError(f"unexpected host command: {command}")
+
+        monkeypatch.setattr(dag_builders_module, "_run_host_command", fail_run_host_command)
+
+        message = dag_builders_module._remove_calico_endpoint_status_rke2_residue(
+            endpoint_status_root=endpoint_status_root
+        )
+
+        assert "No stale RKE2 endpoint-status files found" in message
 
 
 class TestDNSCommandPrerequisites:

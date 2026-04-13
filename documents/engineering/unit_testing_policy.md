@@ -14,7 +14,7 @@ Skip/xfail is prohibited by default; any allowed exception requires explicit doc
 
 The test suite cannot enumerate every partition/failure schedule; robust integration tests remain mandatory to validate TLA+ modelling choices against the implementation.
 
-When integration scope is selected, `prodbox test` must enforce the runbook by executing `prodbox rke2 ensure` before pytest.
+When a selected integration suite requires cluster-backed runtime preparation, `prodbox test` must enforce the runbook by executing `prodbox rke2 install` before pytest.
 
 `prodbox test` phase-two pytest timeout budget is capped at 240 minutes (14,400 seconds).
 
@@ -76,10 +76,10 @@ proof through the supported `prodbox test all` flow.
 Integration-selected `prodbox test` suite commands execute in two phases:
 
 1. **Phase 1 - prerequisite gate**: when integration scope is selected, the eDAG validates integration prerequisites before pytest starts.
-2. **Phase 1.5 - integration runbook gate**: cluster-backed integration suites enforce `prodbox rke2 ensure`.
+2. **Phase 1.5 - integration runbook gate**: cluster-backed integration suites enforce `prodbox rke2 install`.
 3. **Phase 2 - test execution**: pytest runs only after Phase 1 and any required Phase 1.5 gate succeed.
 
-When a selected integration suite requires cluster-backed runtime preparation, `prodbox test` must enforce the runbook by executing `prodbox rke2 ensure` before pytest.
+When a selected integration suite requires cluster-backed runtime preparation, `prodbox test` must enforce the runbook by executing `prodbox rke2 install` before pytest.
 
 If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a skip.
 
@@ -90,7 +90,7 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
 1. Visible banner order is exact: `Phase 1/2`, optional `Phase 1.5/2`, then `Phase 2/2`.
 2. Each phase banner is emitted as its own stdout line.
 3. The `Phase 1.5/2` banner is emitted if and only if the selected suite requires the cluster runbook.
-4. The `Phase 2/2` banner is emitted only after the prerequisite gate succeeds and, when required by the selected suite, after `prodbox rke2 ensure` succeeds.
+4. The `Phase 2/2` banner is emitted only after the prerequisite gate succeeds and, when required by the selected suite, after `prodbox rke2 install` succeeds.
 5. Generic terminal record framing rules are owned by [Streaming Doctrine](./streaming_doctrine.md#5-terminal-record-contract).
 
 ### Command-Scope Prerequisite Aggregation

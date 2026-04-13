@@ -15,19 +15,19 @@ Home Kubernetes cluster management with Pulumi.
 
 Prodbox is a Python-native infrastructure-as-code project for managing a home Kubernetes cluster. It deploys and manages:
 
-- **RKE2** - Kubernetes distribution lifecycle managed via eDAG (`ensure`/`cleanup`)
+- **RKE2** - Kubernetes distribution lifecycle managed via eDAG (`install`/`delete`)
 - **Harbor** - In-cluster local registry + Docker Hub mirror pipeline
 - **MinIO** - In-cluster object storage on retained local PV/PVC storage
 - **MetalLB** - LoadBalancer IP assignment using Layer 2 (ARP)
 - **Traefik** - Ingress controller for HTTP/HTTPS traffic
 - **cert-manager** - Automatic TLS certificates via Let's Encrypt
 - **Route 53** - DNS record ownership via Pulumi bootstrap plus gateway writes
-- **Bespoke Charts** - Namespace-local `keycloak-postgres`, `keycloak`, and `vscode` stacks with retained `.data/` storage
+- **Bespoke Charts** - Namespace-local `keycloak-postgres`, `keycloak`, and `vscode` stacks with retained `.data/` PV storage plus `.prodbox-state/` chart state
 
 Doctrine highlights:
 - Exactly one prodbox instance per Linux machine (derived from `/etc/machine-id`).
 - prodbox-created Kubernetes objects are tagged with `prodbox.io/id=<prodbox-id>`.
-- Storage lifecycle preserves retained `StorageClass`/`PV`/`PVC` across cleanup for deterministic rebind.
+- Storage lifecycle preserves retained host state across delete/reinstall for deterministic rebind.
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
 
 Implementation status, remaining work, and legacy-path removal are tracked in
@@ -59,8 +59,7 @@ Router port forwarding:
 ### Prerequisites
 
 - Python 3.12+
-- Linux host with systemd
-- RKE2 binary and config already installed (`/usr/local/bin/rke2`, `/etc/rancher/rke2/config.yaml`)
+- Ubuntu 24.04 LTS host with systemd
 - kubectl, helm, docker, ctr, sudo, pulumi CLI tools
 - AWS account with Route 53 hosted zone
 
@@ -83,7 +82,7 @@ poetry run prodbox --version
 All configuration is authored in the repository-root `prodbox-config.dhall` (Dhall schema with
 typed defaults), compiled to `prodbox-config.json` by `prodbox config compile`, and loaded into
 a Pydantic `BaseModel` at runtime. Both files are gitignored. Cluster-internal secrets are
-auto-generated at chart deploy time and stored in `.data/<namespace>/.secrets.json`. IP
+auto-generated at chart deploy time and stored in `.prodbox-state/<namespace>/.secrets.json`. IP
 addressing (MetalLB pool, ingress LB IP) is always auto-discovered from the host LAN.
 Subprocess environments are built from explicit configuration only — no `os.environ` credentials
 are inherited.
@@ -116,7 +115,7 @@ Required when using the chart platform and public `vscode` flow:
 
 Cluster-internal secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD`,
 `KEYCLOAK_NGINX_CLIENT_SECRET`) are auto-generated at chart deploy time and stored in
-`.data/<namespace>/.secrets.json`. They do not appear in the config file.
+`.prodbox-state/<namespace>/.secrets.json`. They do not appear in the config file.
 
 ### Optional fields (with defaults)
 
@@ -128,6 +127,7 @@ Cluster-internal secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD
 | `domain.demo_ttl` | `60` | DNS record TTL in seconds |
 | `acme.server` | Let's Encrypt production | ACME server URL |
 | `deployment.bootstrap_public_ip_override` | `None` | Bootstrap-only DNS A-record IP override |
+| `storage.manual_pv_host_root` | `.data` | Host root reserved for retained PV contents |
 
 ### Auto-discovered (not in config)
 
@@ -152,8 +152,8 @@ prodbox config validate
 # Verify required CLI tools
 prodbox host ensure-tools
 
-# Idempotently provision/start local RKE2 cluster runtime
-prodbox rke2 ensure
+# Install or reconcile the supported local RKE2 cluster runtime
+prodbox rke2 install
 
 # Check resulting RKE2 status
 prodbox rke2 status
@@ -218,8 +218,8 @@ prodbox charts delete vscode
 # Destroy all resources
 prodbox pulumi destroy
 
-# Idempotently remove all prodbox-annotated Kubernetes objects via namespace-first cascade
-prodbox rke2 cleanup --yes
+# Destructively remove the supported local RKE2 cluster while preserving retained host state
+prodbox rke2 delete --yes
 ```
 
 ## CLI Commands
@@ -274,9 +274,9 @@ and container-local `poetry.toml` override) is defined in
 Testing note:
 - `poetry run prodbox test all` runs unit + integration tests and fails fast when integration prerequisites are missing.
 - Use `poetry run prodbox test unit` for unit-only environments.
-- Cluster-backed integration suites enforce `rke2 ensure` as a runbook gate before pytest starts.
-- `poetry run prodbox test integration charts-vscode` is an external public-host suite and does not require cluster gates or `rke2 ensure`.
-- `poetry run prodbox test integration public-dns` is the external authoritative delegation proof for the hosted zone that owns `VSCODE_FQDN`; it does not require cluster gates or `rke2 ensure`.
+- Cluster-backed integration suites enforce `rke2 install` as a runbook gate before pytest starts.
+- `poetry run prodbox test integration charts-vscode` is an external public-host suite and does not require cluster gates or `rke2 install`.
+- `poetry run prodbox test integration public-dns` is the external authoritative delegation proof for the hosted zone that owns `VSCODE_FQDN`; it does not require cluster gates or `rke2 install`.
 - The phase-two pytest timeout budget is 240 minutes.
 - Real shared-account AWS foundation validation uses `poetry run prodbox test integration aws-foundation` and exercises tagged delegated Route 53 child zones, S3 buckets, EC2/VPC resources, harness-owned preflight sweeping, and expired-resource cleanup.
 - Real EKS validation uses `poetry run prodbox test integration aws-eks` and exercises a tagged fixture-owned EKS control plane plus tagged IAM/VPC dependencies.

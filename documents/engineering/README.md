@@ -98,7 +98,7 @@ reports.
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Chart Storage Contract](./helm_chart_platform_doctrine.md#7-datanamespacereleaseworkloadordinalclaim-host-path-contract)
 - [Delete Semantics](./helm_chart_platform_doctrine.md#8-delete-semantics)
-- [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-data-chart-storage)
+- [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-retained-state-layout)
 - Supported `vscode` path: cluster-backed `prodbox charts` only
 
 ---

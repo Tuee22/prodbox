@@ -461,32 +461,32 @@ class TestRKE2Commands:
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
-    def test_rke2_ensure_success(self, runner: CliRunner) -> None:
-        """rke2 ensure should invoke execute_command on Linux."""
+    def test_rke2_install_success(self, runner: CliRunner) -> None:
+        """rke2 install should invoke execute_command on Linux."""
         with (
             patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
             patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
         ):
-            result = runner.invoke(cli, ["rke2", "ensure"])
+            result = runner.invoke(cli, ["rke2", "install"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
-    def test_rke2_cleanup_success_with_yes(self, runner: CliRunner) -> None:
-        """rke2 cleanup --yes should invoke execute_command on Linux."""
+    def test_rke2_delete_success_with_yes(self, runner: CliRunner) -> None:
+        """rke2 delete --yes should invoke execute_command on Linux."""
         with (
             patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
             patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
         ):
-            result = runner.invoke(cli, ["rke2", "cleanup", "--yes"])
+            result = runner.invoke(cli, ["rke2", "delete", "--yes"])
 
         assert result.exit_code == 0
         mock_exec.assert_called_once()
 
-    def test_rke2_cleanup_requires_yes(self, runner: CliRunner) -> None:
-        """rke2 cleanup without --yes should fail fast."""
+    def test_rke2_delete_requires_yes(self, runner: CliRunner) -> None:
+        """rke2 delete without --yes should fail fast."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            result = runner.invoke(cli, ["rke2", "cleanup"])
+            result = runner.invoke(cli, ["rke2", "delete"])
 
         assert result.exit_code == 1
         assert "--yes" in result.output
@@ -748,10 +748,10 @@ class TestCommandConstructorFailures:
 
         assert result.exit_code == 1
 
-    def test_rke2_ensure_command_failure_non_linux(self, runner: CliRunner) -> None:
-        """rke2 ensure should fail on non-Linux."""
+    def test_rke2_install_command_failure_non_linux(self, runner: CliRunner) -> None:
+        """rke2 install should fail on non-Linux."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
-            result = runner.invoke(cli, ["rke2", "ensure"])
+            result = runner.invoke(cli, ["rke2", "install"])
 
         assert result.exit_code == 1
 
@@ -762,10 +762,10 @@ class TestCommandConstructorFailures:
 
         assert result.exit_code == 1
 
-    def test_rke2_cleanup_command_failure_non_linux(self, runner: CliRunner) -> None:
-        """rke2 cleanup should fail on non-Linux."""
+    def test_rke2_delete_command_failure_non_linux(self, runner: CliRunner) -> None:
+        """rke2 delete should fail on non-Linux."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
-            result = runner.invoke(cli, ["rke2", "cleanup", "--yes"])
+            result = runner.invoke(cli, ["rke2", "delete", "--yes"])
 
         assert result.exit_code == 1
 
@@ -801,10 +801,10 @@ class TestClickDocumentation:
             (["host"], ("check-ports", "ensure-tools", "firewall", "info"), 2),
             (
                 ["rke2"],
-                ("cleanup", "ensure", "logs", "restart", "start", "status", "stop"),
+                ("delete", "install", "logs", "restart", "start", "status", "stop"),
                 2,
             ),
-            (["rke2", "cleanup", "--help"], ("--yes",), 0),
+            (["rke2", "delete", "--help"], ("--yes",), 0),
             (["rke2", "logs", "--help"], ("--lines",), 0),
             (["pulumi"], ("destroy", "preview", "refresh", "stack-init", "up"), 2),
             (["pulumi", "up", "--help"], ("--yes",), 0),

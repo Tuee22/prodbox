@@ -3248,6 +3248,16 @@ class TestHarborRegistryEffects:
             ),
             patch.object(
                 interpreter,
+                "_ensure_vscode_nginx_image",
+                new=AsyncMock(
+                    return_value=(
+                        "127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest",
+                        None,
+                    )
+                ),
+            ),
+            patch.object(
+                interpreter,
                 "_import_image_into_rke2_containerd",
                 new=AsyncMock(return_value=None),
             ),

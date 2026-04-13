@@ -78,9 +78,9 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
     IntentRule(
         name="retained_storage_rebinding",
         statement=(
-            "Retained storage in prodbox is reconciled via static no-provisioner "
-            "StorageClass and prebound PV/PVC resources to guarantee deterministic "
-            "PVC->PV rebinding across cleanup/redeploy."
+            "Retained storage in prodbox is reconciled via the static `manual` "
+            "no-provisioner StorageClass plus prebound PV/PVC resources to guarantee "
+            "deterministic PVC->PV rebinding across cluster delete/reinstall."
         ),
         canonical_docs=frozenset({Path("documents/engineering/storage_lifecycle_doctrine.md")}),
     ),
@@ -132,7 +132,7 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
         statement=(
             "When a selected integration suite requires cluster-backed runtime preparation, "
             "`prodbox test` must enforce the "
-            "runbook by executing `prodbox rke2 ensure` before pytest."
+            "runbook by executing `prodbox rke2 install` before pytest."
         ),
         canonical_docs=frozenset({Path("documents/engineering/unit_testing_policy.md")}),
     ),
@@ -179,15 +179,14 @@ _INTENT_RULES: tuple[IntentRule, ...] = (
         name="lifecycle_baseline_post_deploy",
         statement=(
             "For lifecycle integration tests, prodbox baseline state is the canonical "
-            "post-deploy runtime produced by the runtime deploy action, "
-            "`prodbox rke2 ensure`."
+            "post-install runtime produced by `prodbox rke2 install`."
         ),
         canonical_docs=frozenset({Path("documents/engineering/storage_lifecycle_doctrine.md")}),
     ),
     IntentRule(
         name="storage_fixture_explicit_cleanup",
         statement=(
-            "Because `prodbox rke2 ensure` and `prodbox rke2 cleanup` preserve storage, "
+            "Because `prodbox rke2 install` and `prodbox rke2 delete` preserve retained host state, "
             "test fixtures must explicitly delete any temporary MinIO or other storage "
             "artifacts they create."
         ),

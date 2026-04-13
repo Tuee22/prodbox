@@ -7,8 +7,8 @@ import sys
 import click
 
 from prodbox.cli.command_adt import (
-    rke2_cleanup_command,
-    rke2_ensure_command,
+    rke2_delete_command,
+    rke2_install_command,
     rke2_logs_command,
     rke2_restart_command,
     rke2_start_command,
@@ -77,39 +77,38 @@ def restart() -> None:
             sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_restart"))
 
 
-@rke2.command()
-def ensure() -> None:
-    """Idempotently provision RKE2 runtime + Harbor + retained-storage MinIO.
+@rke2.command(name="install")
+def install_rke2() -> None:
+    """Install or reconcile the supported host-owned RKE2 cluster lifecycle.
 
-    Ensures RKE2 is enabled/started, Harbor is installed in-cluster,
-    local registry mirrors are configured, retained local storage is reconciled,
-    and MinIO is installed from the official Helm chart.
+    Installs RKE2 on supported hosts when missing, enables reboot-safe systemd
+    ownership, refreshes the canonical kubeconfig path, and reconciles the
+    supported runtime services.
     """
-    match rke2_ensure_command():
+    match rke2_install_command():
         case Success(cmd):
             sys.exit(execute_command(cmd))
         case Failure(error):
-            sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_ensure"))
+            sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_install"))
 
 
-@rke2.command()
+@rke2.command(name="delete")
 @click.option(
     "--yes",
     is_flag=True,
-    help="Confirm cleanup of prodbox-annotated Kubernetes resources",
+    help="Confirm full RKE2 cluster deletion while preserving the manual PV root",
 )
-def cleanup(yes: bool) -> None:
-    """Cleanup prodbox resources from Kubernetes without touching host storage.
+def delete_rke2(yes: bool) -> None:
+    """Delete the supported host-owned RKE2 cluster.
 
-    Idempotently deletes all Kubernetes objects annotated with the current
-    prodbox-id except retained storage kinds (StorageClass/PV/PVC).
-    Prints manual instructions for optional host-path deletion.
+    Removes RKE2 cluster substrate and host remnants while preserving only the
+    configured manual PV host root for retained PV contents.
     """
-    match rke2_cleanup_command(yes=yes):
+    match rke2_delete_command(yes=yes):
         case Success(cmd):
             sys.exit(execute_command(cmd))
         case Failure(error):
-            sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_cleanup"))
+            sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_delete"))
 
 
 @rke2.command()

@@ -58,7 +58,7 @@ Top-level commands:
 |---------|-----------|---------|
 | `prodbox config init` | none | none |
 | `prodbox config compile` | none | none |
-| `prodbox config show` | none | none |
+| `prodbox config show` | none | `--show-secrets` |
 | `prodbox config validate` | none | none |
 
 ### `prodbox host`
@@ -79,8 +79,8 @@ Top-level commands:
 | `prodbox rke2 start` | none | none |
 | `prodbox rke2 stop` | none | none |
 | `prodbox rke2 restart` | none | none |
-| `prodbox rke2 ensure` | none | none |
-| `prodbox rke2 cleanup` | none | `--yes` |
+| `prodbox rke2 install` | none | none |
+| `prodbox rke2 delete` | none | `--yes` |
 | `prodbox rke2 logs` | none | `--lines`, `-n` |
 
 ### `prodbox pulumi`
@@ -177,11 +177,11 @@ public-edge readiness check, and a final fixture-owned AWS inventory audit
 before exit.
 
 `prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
-It does not run cluster prerequisite gates or the `rke2 ensure` runbook.
+It does not run cluster prerequisite gates or the `rke2 install` runbook.
 
 `prodbox test integration public-dns` validates authoritative public NS delegation for the
 hosted zone that owns `VSCODE_FQDN`. It does not run cluster prerequisite gates or the
-`rke2 ensure` runbook.
+`rke2 install` runbook.
 
 ### `prodbox check-code`
 

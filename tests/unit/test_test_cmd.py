@@ -33,6 +33,7 @@ from prodbox.cli.test_cmd import (
     POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
     POST_PYTEST_PULUMI_UP_EFFECT_ID,
     POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
+    POST_PYTEST_RKE2_INSTALL_EFFECT_ID,
     POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
     PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
     PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID,
@@ -111,7 +112,7 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         "-m",
         "prodbox.cli.main",
         "rke2",
-        "ensure",
+        "install",
     ]
     public_host_readiness = cast(
         Custom[object],
@@ -146,14 +147,30 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         "pytest",
         "tests/integration/test_prodbox_lifecycle.py",
     ]
-    assert phase_two_effect_ids[-7:] == [
+    assert phase_two_effect_ids[-8:] == [
         POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
+        POST_PYTEST_RKE2_INSTALL_EFFECT_ID,
         POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
         POST_PYTEST_PULUMI_UP_EFFECT_ID,
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
         POST_PYTEST_AWS_AUDIT_EFFECT_ID,
+    ]
+    rke2_restore = cast(
+        RunSubprocess,
+        next(
+            effect
+            for effect in phase_two_effect.effects
+            if effect.effect_id == POST_PYTEST_RKE2_INSTALL_EFFECT_ID
+        ),
+    )
+    assert rke2_restore.command == [
+        sys.executable,
+        "-m",
+        "prodbox.cli.main",
+        "rke2",
+        "install",
     ]
     pulumi_refresh = cast(
         RunSubprocess,
@@ -236,10 +253,13 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         ),
     )
     assert callable(aws_audit.fn)
+    assert "supported_ubuntu_2404" in phase_two.prerequisites
     assert "tool_helm" in phase_two.prerequisites
     assert "tool_docker" in phase_two.prerequisites
     assert "tool_ctr" in phase_two.prerequisites
     assert "tool_sudo" in phase_two.prerequisites
+    assert "tool_systemctl" in phase_two.prerequisites
+    assert "settings_object" in phase_two.prerequisites
     assert phase_two.prerequisite_failure_policy == PrerequisiteFailurePolicy.PROPAGATE
     phase_one_header = dag.get_node(PHASE_ONE_HEADER_EFFECT_ID)
     assert phase_one_header is not None
@@ -291,7 +311,7 @@ def test_build_test_dag_omits_phase_one_gate_for_mock_only_env_suite() -> None:
 
 
 def test_build_test_dag_uses_aws_specific_gate_without_runbook() -> None:
-    """AWS DNS suite should gate on AWS prerequisites but not run rke2 ensure."""
+    """AWS DNS suite should gate on AWS prerequisites but not run rke2 install."""
     dag = _build_test_dag(
         suite=INTEGRATION_DNS_AWS_TEST_SUITE,
         coverage_settings=CoverageSettings(enabled=False, fail_under=None),
@@ -314,7 +334,7 @@ def test_build_test_dag_uses_aws_specific_gate_without_runbook() -> None:
     ],
 )
 def test_build_test_dag_keeps_public_host_suite_off_cluster_runbook(suite: object) -> None:
-    """External public-host suites should not require cluster gates or rke2 ensure."""
+    """External public-host suites should not require cluster gates or rke2 install."""
     dag = _build_test_dag(
         suite=cast(object, suite),
         coverage_settings=CoverageSettings(enabled=False, fail_under=None),
@@ -375,8 +395,9 @@ def test_aggregate_suites_restore_supported_runtime_after_pytest(suite: object) 
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
     phase_two_effect = cast(Sequence, phase_two.effect)
-    assert [effect.effect_id for effect in phase_two_effect.effects][-7:] == [
+    assert [effect.effect_id for effect in phase_two_effect.effects][-8:] == [
         POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
+        POST_PYTEST_RKE2_INSTALL_EFFECT_ID,
         POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
         POST_PYTEST_PULUMI_UP_EFFECT_ID,
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
@@ -488,14 +509,14 @@ async def test_phase_two_pytest_does_not_run_when_phase_one_gate_fails() -> None
     )
     interpreter = EffectInterpreter()
 
-    async def fail_file_checks(*_args: object, **_kwargs: object) -> tuple[object, bool]:
-        return interpreter._create_error_summary("File not found: forced"), False
+    async def fail_settings_load(*_args: object, **_kwargs: object) -> tuple[object, bool]:
+        return interpreter._create_error_summary("Failed to load settings: forced"), False
 
     with (
         patch.object(
             interpreter,
-            "_interpret_check_file_exists",
-            side_effect=fail_file_checks,
+            "_interpret_load_settings",
+            side_effect=fail_settings_load,
         ),
         patch.object(
             interpreter,

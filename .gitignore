@@ -89,3 +89,4 @@ documents/engineering/tla/states/
 
 # Chart platform retained storage (host-path data; never committed)
 .data/
+.prodbox-state/

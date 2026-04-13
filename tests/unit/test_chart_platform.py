@@ -349,7 +349,7 @@ class TestRetainedStateRepair:
             ensured_paths.append(path)
             path.mkdir(parents=True, exist_ok=True)
 
-        monkeypatch.setattr(chart_platform_module, "CHART_DATA_ROOT", target_root)
+        monkeypatch.setattr(chart_platform_module, "CHART_STATE_ROOT", target_root)
         monkeypatch.setattr(chart_platform_module, "_ensure_chart_state_dir", fake_ensure)
 
         secrets = chart_platform_module.resolve_chart_secrets("vscode")
@@ -376,7 +376,7 @@ class TestRetainedStateRepair:
             ensured_paths.append(path)
             path.mkdir(parents=True, exist_ok=True)
 
-        monkeypatch.setattr(chart_platform_module, "CHART_DATA_ROOT", target_root)
+        monkeypatch.setattr(chart_platform_module, "CHART_STATE_ROOT", target_root)
         monkeypatch.setattr(chart_platform_module, "_ensure_chart_state_dir", fake_ensure)
 
         keys = chart_platform_module.resolve_gateway_event_keys("gateway")

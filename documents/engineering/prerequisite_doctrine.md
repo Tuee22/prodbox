@@ -10,17 +10,19 @@
 
 ## 0. Canonical Doctrine Statements
 
-RKE2 runtime reconciliation and startup are idempotently performed via eDAG lifecycle effects once required host binaries and configuration already exist; host installation is not performed implicitly.
+The only supported operator environment is `Ubuntu 24.04 LTS` with systemd.
 
-Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
+`prodbox rke2 install` owns supported-host RKE2 install/reconcile behavior, including systemd boot ownership and retained-storage reconciliation.
 
-Cleanup must idempotently remove prodbox-annotated Kubernetes objects without deleting host storage paths used for persistent data.
+Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install occurs inside prerequisite checks themselves.
 
-Exactly one prodbox instance exists per Linux machine, anchored by machine identity (`/etc/machine-id`) and its derived `prodbox-<machine-id>` identifier.
+`prodbox rke2 delete --yes` removes managed cluster and host substrate remnants while preserving the configured manual PV host root plus the repo-local `.prodbox-state/` retained chart-state root.
+
+Exactly one prodbox instance exists per supported Linux machine, anchored by machine identity (`/etc/machine-id`) and its derived `prodbox-<machine-id>` identifier.
 
 Runtime-managed pod/service/deployment objects reconciled by prodbox lifecycle effects use the `prodbox` namespace; ephemeral integration-test fixtures may use isolated namespaces as defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 
-Retained storage resources are preserved during cleanup by default to keep deterministic PVC->PV rebinding intact.
+Retained host state is preserved across delete/reinstall to keep deterministic PVC->PV rebinding intact.
 
 ---
 
@@ -91,6 +93,7 @@ Validate operating system and capabilities:
 | Prerequisite | Validates |
 |--------------|-----------|
 | `platform_linux` | Running on Linux |
+| `supported_ubuntu_2404` | Host is Ubuntu 24.04 LTS |
 | `systemd_available` | systemd is present |
 | `machine_identity` | Valid `/etc/machine-id`, plus derived `prodbox-<machine-id>` |
 
@@ -115,7 +118,8 @@ Validate configuration files exist:
 
 | Prerequisite | Validates |
 |--------------|-----------|
-| `settings_loaded` | Environment variables configured |
+| `settings_object` | Dhall-backed settings compile and load successfully |
+| `settings_loaded` | Effective settings mapping is available to pure code |
 | `kubeconfig_exists` | Kubeconfig file present |
 | `rke2_config_exists` | RKE2 config.yaml present |
 
@@ -182,7 +186,7 @@ When you depend on `k8s_cluster_reachable`, you automatically get:
 - `kubeconfig_exists`
 - `rke2_service_active`
 
-When you depend on lifecycle roots (`rke2_ensure`, `rke2_cleanup`, `pulumi_up`), you also get:
+When you depend on lifecycle roots (`rke2_install`, `rke2_delete`, `pulumi_up`), you also get:
 - `machine_identity` result propagation (machine-id + derived prodbox-id).
 
 ---
@@ -252,17 +256,16 @@ Chain prerequisites for complex validation:
 ### 4.5 RKE2 Lifecycle Nodes
 
 RKE2 lifecycle is managed by eDAG nodes:
-- `rke2_ensure`: idempotent runtime provisioning/startup
-- `rke2_cleanup`: idempotent cleanup of prodbox-annotated Kubernetes objects
+- `rke2_install`: supported-host install/reconcile of the cluster substrate plus Harbor/storage reconciliation
+- `rke2_delete`: destructive cluster-removal flow that preserves retained host state roots
 
-Both nodes fail fast on prerequisites and consume machine identity as source-of-truth:
+Both nodes fail fast on prerequisites and consume machine identity plus settings as source-of-truth:
 
 ```python
 # File: src/prodbox/cli/dag_builders.py
-_build_rke2_ensure_dag(...):
+_build_rke2_install_dag(...):
     prerequisites=frozenset([
-        "rke2_installed",
-        "rke2_config_exists",
+        "supported_ubuntu_2404",
         "systemd_available",
         "tool_kubectl",
         "tool_helm",
@@ -270,25 +273,28 @@ _build_rke2_ensure_dag(...):
         "tool_ctr",
         "tool_sudo",
         "tool_systemctl",
-        "kubeconfig_exists",
         "machine_identity",
+        "settings_object",
     ])
 
-_build_rke2_cleanup_dag(...):
-    prerequisites=frozenset(["k8s_cluster_reachable", "machine_identity"])
+_build_rke2_delete_dag(...):
+    prerequisites=frozenset([
+        "supported_ubuntu_2404",
+        "systemd_available",
+        "tool_sudo",
+        "tool_systemctl",
+        "settings_object",
+    ])
 ```
 
-`rke2_ensure` confirms cluster access (`kubectl cluster-info`), ensures
-`prodbox/prodbox-identity` ConfigMap, then reconciles in parallel:
+`rke2_install` installs the RKE2 server binary when missing, ensures the host-owned ingress-disable config, enables and restarts the systemd service, refreshes the canonical kubeconfig path, confirms cluster access (`kubectl cluster-info`), resets cluster-scoped StorageClass state to `manual` only, ensures the `prodbox/prodbox-identity` ConfigMap, then reconciles in parallel:
 
 1. Harbor registry runtime (`EnsureHarborRegistry`)
 2. Retained local storage + MinIO (`EnsureRetainedLocalStorage` -> `EnsureMinio`)
 
 Finally, it reconciles prodbox annotations.
 
-`rke2_cleanup` deletes only prodbox-annotated Kubernetes objects, deletes
-non-retained namespaces by namespace cascade before cluster-scoped cleanup, and
-prints manual host-path deletion instructions with explicit data-loss warnings.
+`rke2_delete` removes the RKE2 substrate, deletes managed kubeconfig residue that still targets the local RKE2 API, removes the legacy storage root when safe, and preserves the configured manual PV host root plus `.prodbox-state/`.
 
 Harbor install/mirror/build details are defined in
 [Local Registry Pipeline](./local_registry_pipeline.md).

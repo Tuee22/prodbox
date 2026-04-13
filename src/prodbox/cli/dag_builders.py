@@ -24,6 +24,8 @@ Usage:
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 from prodbox.cli.command_adt import (
@@ -53,8 +55,8 @@ from prodbox.cli.command_adt import (
     PulumiRefreshCommand,
     PulumiStackInitCommand,
     PulumiUpCommand,
-    RKE2CleanupCommand,
-    RKE2EnsureCommand,
+    RKE2DeleteCommand,
+    RKE2InstallCommand,
     RKE2LogsCommand,
     RKE2RestartCommand,
     RKE2StartCommand,
@@ -72,7 +74,6 @@ from prodbox.cli.effects import (
     ChartStatusEffect,
     CheckPortAvailability,
     CheckServiceStatus,
-    CleanupProdboxAnnotatedResources,
     Custom,
     EnsureHarborRegistry,
     EnsureMinio,
@@ -130,10 +131,7 @@ from prodbox.lib.prodbox_k8s import (
     PRODBOX_LABEL_KEY,
     PRODBOX_MANAGED_NAMESPACES,
     PRODBOX_NAMESPACE,
-    PRODBOX_STORAGE_BASE_PATH,
     PRODBOX_STORAGE_CLASS,
-    PRODBOX_STORAGE_RETAINED_RESOURCES,
-    RKE2_DATA_PATHS,
     RKE2_REGISTRIES_PATH,
     prodbox_id_to_label_value,
 )
@@ -218,6 +216,17 @@ def _require_setting_bool(settings: dict[str, RenderedSettingValue], field_name:
             return value
         case _:
             raise ValueError(f"settings field {field_name} missing or not a bool")
+
+
+def _require_setting_path(settings: dict[str, RenderedSettingValue], field_name: str) -> Path:
+    """Extract one required path field from loaded settings."""
+    match settings.get(field_name):
+        case Path() as value:
+            return value
+        case str() as value if value != "":
+            return Path(value)
+        case _:
+            raise ValueError(f"settings field {field_name} missing or not a path")
 
 
 def _require_string_result(prereq_results: PrereqResults, effect_id: str) -> str:
@@ -770,21 +779,287 @@ def _build_k8s_logs_effect(
             )
 
 
+def _host_subprocess_env() -> dict[str, str]:
+    """Build a minimal host-command environment for RKE2 lifecycle helpers."""
+    base_env: dict[str, str] = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": os.environ.get("HOME", str(Path.home())),
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+    }
+    optional_pairs = tuple(
+        (key, value) for key in ("TERM", "USER") if (value := os.environ.get(key)) is not None
+    )
+    return {**base_env, **dict(optional_pairs)}
+
+
+def _completed_process_detail(result: subprocess.CompletedProcess[str]) -> str:
+    """Render stderr/stdout detail for one completed subprocess."""
+    match (result.stderr.strip(), result.stdout.strip()):
+        case (stderr, _) if stderr != "":
+            return stderr
+        case ("", stdout) if stdout != "":
+            return stdout
+        case _:
+            return f"exit code {result.returncode}"
+
+
+def _require_host_command_success(
+    result: subprocess.CompletedProcess[str], *, failure_prefix: str
+) -> None:
+    """Raise when a host command exits non-zero."""
+    match result.returncode:
+        case 0:
+            return
+        case _:
+            raise RuntimeError(f"{failure_prefix}: {_completed_process_detail(result)}")
+
+
+def _run_host_command(
+    command: tuple[str, ...],
+    *,
+    timeout_seconds: float,
+    input_text: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Run one host command with explicit environment and captured output."""
+    return subprocess.run(
+        command,
+        input=input_text,
+        text=True,
+        capture_output=True,
+        check=False,
+        timeout=timeout_seconds,
+        env=_host_subprocess_env(),
+    )
+
+
+def _install_rke2_server_if_missing() -> str:
+    """Install the RKE2 server binary when it is not already present."""
+    rke2_binary = Path("/usr/local/bin/rke2")
+    match rke2_binary.exists():
+        case True:
+            return f"RKE2 already installed at {rke2_binary}"
+        case False:
+            install_result = _run_host_command(
+                (
+                    "sudo",
+                    "bash",
+                    "-lc",
+                    "command -v curl >/dev/null 2>&1 || { echo 'curl is required for rke2 install' >&2; exit 127; }; "
+                    "curl -sfL https://get.rke2.io | INSTALL_RKE2_TYPE=server sh -",
+                ),
+                timeout_seconds=1200.0,
+            )
+            _require_host_command_success(install_result, failure_prefix="RKE2 install failed")
+            return "Installed RKE2 server"
+
+
+def _sync_rke2_kubeconfig() -> str:
+    """Refresh the canonical user kubeconfig from the host-owned RKE2 kubeconfig."""
+    source_path = Path("/etc/rancher/rke2/rke2.yaml")
+    target_path = Path.home() / ".kube" / "config"
+    install_dir = _run_host_command(
+        ("sudo", "mkdir", "-p", str(target_path.parent)),
+        timeout_seconds=30.0,
+    )
+    _require_host_command_success(
+        install_dir,
+        failure_prefix=f"Failed to create kubeconfig dir {target_path.parent}",
+    )
+    copy_result = _run_host_command(
+        ("sudo", "cp", str(source_path), str(target_path)),
+        timeout_seconds=30.0,
+    )
+    _require_host_command_success(
+        copy_result,
+        failure_prefix=f"Failed to copy kubeconfig from {source_path}",
+    )
+    ownership_result = _run_host_command(
+        ("sudo", "chown", f"{os.getuid()}:{os.getgid()}", str(target_path)),
+        timeout_seconds=30.0,
+    )
+    _require_host_command_success(
+        ownership_result,
+        failure_prefix="Failed to set kubeconfig ownership",
+    )
+    chmod_result = _run_host_command(
+        ("chmod", "600", str(target_path)),
+        timeout_seconds=10.0,
+    )
+    _require_host_command_success(
+        chmod_result,
+        failure_prefix="Failed to secure kubeconfig permissions",
+    )
+    return f"Refreshed kubeconfig at {target_path}"
+
+
+def _storageclass_name_for_deletion(item: object) -> str | None:
+    """Return one StorageClass name when it should be deleted."""
+    match item:
+        case {"metadata": {"name": str() as name}} if name not in ("", PRODBOX_STORAGE_CLASS):
+            return name
+        case _:
+            return None
+
+
+def _storageclass_names_for_deletion(payload: object) -> tuple[str, ...]:
+    """Extract deletable StorageClass names from kubectl JSON output."""
+    match payload:
+        case {"items": list() as items}:
+            return tuple(
+                name
+                for item in items
+                for name in (_storageclass_name_for_deletion(item),)
+                if name is not None
+            )
+        case _:
+            raise RuntimeError("Unexpected StorageClass JSON payload")
+
+
+def _raise_first_failure(messages: tuple[str, ...]) -> None:
+    """Raise the first failure message when a host-operation batch fails."""
+    match messages:
+        case ():
+            return
+        case (first, *_):
+            raise RuntimeError(first)
+
+
+def _delete_non_manual_storageclasses() -> str:
+    """Delete every StorageClass other than the supported `manual` class."""
+    get_result = _run_host_command(
+        ("kubectl", "get", "storageclass", "-o", "json"),
+        timeout_seconds=30.0,
+    )
+    _require_host_command_success(
+        get_result,
+        failure_prefix="Failed to list StorageClasses",
+    )
+    raw_payload: object = json.loads(get_result.stdout)
+    names = _storageclass_names_for_deletion(raw_payload)
+    delete_results = tuple(
+        (
+            name,
+            _run_host_command(
+                ("kubectl", "delete", "storageclass", name, "--ignore-not-found=true"),
+                timeout_seconds=30.0,
+            ),
+        )
+        for name in names
+    )
+    _raise_first_failure(
+        tuple(
+            f"Failed to delete StorageClass {name}: {_completed_process_detail(result)}"
+            for name, result in delete_results
+            if result.returncode != 0
+        )
+    )
+    match names:
+        case ():
+            return "No non-manual StorageClasses found"
+        case _:
+            return "Deleted non-manual StorageClasses: " + ", ".join(sorted(names))
+
+
+def _delete_managed_kubeconfig_if_present() -> str:
+    """Delete the canonical user kubeconfig when it still points at the local RKE2 cluster."""
+    kubeconfig_path = Path.home() / ".kube" / "config"
+    match kubeconfig_path.exists():
+        case False:
+            return f"No kubeconfig found at {kubeconfig_path}"
+        case True:
+            kubeconfig_text = kubeconfig_path.read_text(encoding="utf-8")
+            match "https://127.0.0.1:6443" in kubeconfig_text:
+                case True:
+                    kubeconfig_path.unlink()
+                    return f"Removed managed kubeconfig {kubeconfig_path}"
+                case False:
+                    return f"Left non-RKE2 kubeconfig untouched at {kubeconfig_path}"
+
+
+def _remove_legacy_storage_root_if_needed(
+    *, legacy_storage_root: Path, manual_pv_root: Path
+) -> None:
+    """Delete the legacy storage root only when it is outside the configured PV root."""
+    preserves_legacy_root = (
+        legacy_storage_root == manual_pv_root or legacy_storage_root in manual_pv_root.parents
+    )
+    match (legacy_storage_root.exists(), preserves_legacy_root):
+        case (True, False):
+            delete_result = _run_host_command(
+                ("sudo", "rm", "-rf", str(legacy_storage_root)),
+                timeout_seconds=120.0,
+            )
+            _require_host_command_success(
+                delete_result,
+                failure_prefix=f"Failed to remove legacy storage root {legacy_storage_root}",
+            )
+        case _:
+            return
+
+
+def _delete_rke2_cluster_substrate(*, manual_pv_root: Path) -> str:
+    """Delete the RKE2 substrate while preserving retained host state roots."""
+    uninstall_script = Path("/usr/local/bin/rke2-uninstall.sh")
+    match uninstall_script.exists():
+        case True:
+            uninstall_result = _run_host_command(
+                ("sudo", str(uninstall_script)),
+                timeout_seconds=1200.0,
+            )
+            _require_host_command_success(
+                uninstall_result,
+                failure_prefix="RKE2 uninstall failed",
+            )
+        case False:
+            fallback_result = _run_host_command(
+                (
+                    "sudo",
+                    "bash",
+                    "-lc",
+                    "systemctl disable --now rke2-server.service >/dev/null 2>&1 || true; "
+                    "rm -rf /var/lib/rancher/rke2 /var/lib/rancher /etc/rancher/rke2 "
+                    "/usr/local/bin/rke2 /usr/local/bin/rke2-killall.sh "
+                    "/usr/local/bin/rke2-uninstall.sh",
+                ),
+                timeout_seconds=300.0,
+            )
+            _require_host_command_success(
+                fallback_result,
+                failure_prefix="Fallback RKE2 delete failed",
+            )
+
+    kubeconfig_message = _delete_managed_kubeconfig_if_present()
+    legacy_storage_root = Path("/var/lib/prodbox/storage")
+    _remove_legacy_storage_root_if_needed(
+        legacy_storage_root=legacy_storage_root,
+        manual_pv_root=manual_pv_root,
+    )
+    preserved_chart_state_root = REPOSITORY_ROOT / ".prodbox-state"
+    return (
+        "Deleted RKE2 cluster substrate; "
+        f"preserved manual PV root {manual_pv_root}; "
+        f"preserved retained chart state root {preserved_chart_state_root}; "
+        f"{kubeconfig_message}"
+    )
+
+
 def _pulumi_env(machine_identity: MachineIdentity) -> dict[str, str]:
     """Build Pulumi subprocess env overrides from machine identity."""
     return {"PRODBOX_ID": machine_identity.prodbox_id}
 
 
-def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
-    """Build dynamic rke2 ensure effect from prerequisite machine identity."""
+def _build_rke2_install_effect(prereq_results: PrereqResults) -> Sequence:
+    """Build the host-owned RKE2 install/reconcile effect from prerequisites."""
+    settings = _require_settings(prereq_results)
+    manual_pv_root = _require_setting_path(settings, "manual_pv_host_root")
     machine_identity = _require_machine_identity(prereq_results)
     label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
     storage_and_minio = Sequence(
-        effect_id="rke2_ensure_storage_and_minio",
+        effect_id="rke2_install_storage_and_minio",
         description="Ensure retained local storage and MinIO runtime",
         effects=[
             EnsureRetainedLocalStorage(
-                effect_id="rke2_ensure_retained_storage",
+                effect_id="rke2_install_retained_storage",
                 description="Ensure retained local StorageClass/PV/PVC for MinIO",
                 machine_identity=machine_identity,
                 namespace=MINIO_NAMESPACE,
@@ -792,13 +1067,13 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
                 persistent_volume_name=MINIO_PERSISTENT_VOLUME,
                 persistent_volume_claim_name=MINIO_PERSISTENT_CLAIM,
                 storage_size=MINIO_STORAGE_SIZE,
-                host_storage_base_path=Path(PRODBOX_STORAGE_BASE_PATH),
+                host_storage_base_path=manual_pv_root,
                 annotation_key=PRODBOX_ANNOTATION_KEY,
                 label_key=PRODBOX_LABEL_KEY,
                 label_value=label_value,
             ),
             EnsureMinio(
-                effect_id="rke2_ensure_minio_runtime",
+                effect_id="rke2_install_minio_runtime",
                 description="Ensure MinIO runtime via official Helm chart",
                 machine_identity=machine_identity,
                 namespace=MINIO_NAMESPACE,
@@ -816,38 +1091,59 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
         ],
     )
     return Sequence(
-        effect_id="rke2_ensure",
-        description="Idempotently provision RKE2 cluster runtime",
+        effect_id="rke2_install",
+        description="Install or reconcile the host-owned RKE2 cluster lifecycle",
         effects=[
+            Custom(
+                effect_id="rke2_install_binary",
+                description="Install the RKE2 server binary when it is missing",
+                fn=_install_rke2_server_if_missing,
+            ),
             EnsureRke2IngressController(
-                effect_id="rke2_ensure_disable_builtin_ingress",
+                effect_id="rke2_install_disable_builtin_ingress",
                 description="Disable bundled RKE2 ingress-controller ownership",
                 file_path=Path("/etc/rancher/rke2/config.yaml"),
                 controller="none",
             ),
             RunSystemdCommand(
-                effect_id="rke2_ensure_enable",
-                description="Enable RKE2 service",
+                effect_id="rke2_install_enable",
+                description="Enable the RKE2 systemd service",
                 action="enable",
                 service="rke2-server.service",
                 sudo=True,
             ),
             RunSystemdCommand(
-                effect_id="rke2_ensure_restart",
-                description="Restart RKE2 service with canonical ingress settings",
+                effect_id="rke2_install_restart",
+                description="Restart RKE2 with the canonical ingress settings",
                 action="restart",
                 service="rke2-server.service",
                 sudo=True,
             ),
+            Custom(
+                effect_id="rke2_install_sync_kubeconfig",
+                description="Refresh the canonical user kubeconfig from the host-owned path",
+                fn=_sync_rke2_kubeconfig,
+            ),
             RunKubectlCommand(
-                effect_id="rke2_ensure_verify_kubectl",
-                description="Confirm kubectl access to cluster",
+                effect_id="rke2_install_verify_kubectl",
+                description="Confirm kubectl access to the cluster",
                 args=["cluster-info"],
-                timeout=30.0,
+                timeout=60.0,
+            ),
+            RunKubectlCommand(
+                effect_id="rke2_install_wait_for_node_ready",
+                description="Wait for all cluster nodes to report Ready",
+                args=["wait", "--for=condition=Ready", "node", "--all", "--timeout=300s"],
+                timeout=330.0,
+            ),
+            Custom(
+                effect_id="rke2_install_reset_storageclasses",
+                description="Delete every StorageClass other than the supported manual class",
+                fn=_delete_non_manual_storageclasses,
             ),
             EnsureProdboxIdentityConfigMap(
-                effect_id="rke2_ensure_prodbox_identity_configmap",
-                description="Ensure prodbox identity ConfigMap exists",
+                effect_id="rke2_install_prodbox_identity_configmap",
+                description="Ensure the prodbox identity ConfigMap exists",
                 machine_identity=machine_identity,
                 namespace=PRODBOX_NAMESPACE,
                 configmap_name=PRODBOX_IDENTITY_CONFIGMAP,
@@ -856,14 +1152,12 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
                 label_value=label_value,
             ),
             Parallel(
-                effect_id="rke2_ensure_registry_and_storage",
+                effect_id="rke2_install_registry_and_storage",
                 description="Ensure Harbor and MinIO/storage runtime in parallel",
                 effects=[
                     EnsureHarborRegistry(
-                        effect_id="rke2_ensure_harbor_registry",
-                        description=(
-                            "Ensure local Harbor registry and prodbox gateway image pipeline"
-                        ),
+                        effect_id="rke2_install_harbor_registry",
+                        description=("Ensure the local Harbor registry and gateway image pipeline"),
                         machine_identity=machine_identity,
                         namespace=HARBOR_NAMESPACE,
                         release_name=HARBOR_HELM_RELEASE,
@@ -880,7 +1174,7 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
                 ],
             ),
             AnnotateProdboxManagedResources(
-                effect_id="rke2_ensure_reconcile_prodbox_annotations",
+                effect_id="rke2_install_reconcile_prodbox_annotations",
                 description="Apply prodbox annotation doctrine to managed resources",
                 prodbox_id=machine_identity.prodbox_id,
                 annotation_key=PRODBOX_ANNOTATION_KEY,
@@ -893,38 +1187,30 @@ def _build_rke2_ensure_effect(prereq_results: PrereqResults) -> Sequence:
     )
 
 
-def _build_rke2_cleanup_effect(
-    prereq_results: PrereqResults, storage_instructions: str
-) -> Sequence:
-    """Build dynamic rke2 cleanup effect from prerequisite machine identity."""
-    machine_identity = _require_machine_identity(prereq_results)
-    label_value = prodbox_id_to_label_value(machine_identity.prodbox_id)
+def _build_rke2_delete_effect(prereq_results: PrereqResults) -> Sequence:
+    """Build the host-owned RKE2 delete effect from prerequisites."""
+    settings = _require_settings(prereq_results)
+    manual_pv_root = _require_setting_path(settings, "manual_pv_host_root")
+    preserved_chart_state_root = REPOSITORY_ROOT / ".prodbox-state"
     return Sequence(
-        effect_id="rke2_cleanup",
-        description="Cleanup prodbox-annotated Kubernetes resources without touching host paths",
+        effect_id="rke2_delete",
+        description="Delete the host-owned RKE2 cluster while preserving retained state",
         effects=[
-            AnnotateProdboxManagedResources(
-                effect_id="rke2_cleanup_reconcile_prodbox_annotations",
-                description="Apply prodbox annotation doctrine before cleanup",
-                prodbox_id=machine_identity.prodbox_id,
-                annotation_key=PRODBOX_ANNOTATION_KEY,
-                label_key=PRODBOX_LABEL_KEY,
-                label_value=label_value,
-                managed_namespaces=PRODBOX_MANAGED_NAMESPACES,
-                helm_instances=PRODBOX_HELM_INSTANCES,
-            ),
-            CleanupProdboxAnnotatedResources(
-                effect_id="rke2_cleanup_delete_annotated_resources",
-                description="Delete prodbox annotated resources except retained storage kinds",
-                prodbox_id=machine_identity.prodbox_id,
-                annotation_key=PRODBOX_ANNOTATION_KEY,
-                retained_resource_kinds=PRODBOX_STORAGE_RETAINED_RESOURCES,
-                retained_namespaces=(PRODBOX_NAMESPACE,),
+            Custom(
+                effect_id="rke2_delete_cluster_substrate",
+                description="Delete the RKE2 cluster substrate while preserving retained state",
+                fn=lambda: _delete_rke2_cluster_substrate(manual_pv_root=manual_pv_root),
             ),
             WriteStdout(
-                effect_id="rke2_cleanup_storage_warning",
-                description="Print manual host storage cleanup warning",
-                text=storage_instructions + "\n",
+                effect_id="rke2_delete_retained_state_notice",
+                description="Render retained host-state notice",
+                text="\n".join(
+                    [
+                        "Preserved host state:",
+                        f"  - manual PV root: {manual_pv_root}",
+                        f"  - retained chart state root: {preserved_chart_state_root}",
+                    ]
+                ),
             ),
         ],
     )
@@ -1049,6 +1335,9 @@ def _generate_dhall_config_from_env(dotenv_path: Path) -> str:
         f"        dev_mode = {_dhall_bool(m, 'PRODBOX_DEV_MODE', 'true')}",
         f"      , bootstrap_public_ip_override = {_dhall_optional_text(m, 'BOOTSTRAP_PUBLIC_IP_OVERRIDE')}",
         f"      , pulumi_enable_dns_bootstrap = {_dhall_bool(m, 'PULUMI_ENABLE_DNS_BOOTSTRAP', 'true')}",
+        "    }",
+        "  , storage = {",
+        f"        manual_pv_host_root = {_dhall_text(m, 'MANUAL_PV_HOST_ROOT', '.data')}",
         "    }",
         "}",
     )
@@ -1421,18 +1710,17 @@ def _build_rke2_restart_dag(_cmd: RKE2RestartCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_rke2_ensure_dag(_cmd: RKE2EnsureCommand) -> EffectDAG:
-    """Build DAG for idempotent RKE2 runtime provisioning."""
+def _build_rke2_install_dag(_cmd: RKE2InstallCommand) -> EffectDAG:
+    """Build DAG for the host-owned RKE2 install/reconcile lifecycle."""
     root = EffectNode(
         effect=Sequence(
-            effect_id="rke2_ensure",
-            description="Idempotently provision RKE2 cluster runtime",
+            effect_id="rke2_install",
+            description="Install or reconcile the host-owned RKE2 cluster lifecycle",
             effects=[],
         ),
         prerequisites=frozenset(
             [
-                "rke2_installed",
-                "rke2_config_exists",
+                "supported_ubuntu_2404",
                 "systemd_available",
                 "tool_kubectl",
                 "tool_helm",
@@ -1440,40 +1728,33 @@ def _build_rke2_ensure_dag(_cmd: RKE2EnsureCommand) -> EffectDAG:
                 "tool_ctr",
                 "tool_sudo",
                 "tool_systemctl",
-                "kubeconfig_exists",
                 "machine_identity",
+                "settings_object",
             ]
         ),
-        effect_builder=lambda _reduced, prereq_results: _build_rke2_ensure_effect(prereq_results),
+        effect_builder=lambda _reduced, prereq_results: _build_rke2_install_effect(prereq_results),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_rke2_cleanup_dag(_cmd: RKE2CleanupCommand) -> EffectDAG:
-    """Build DAG for idempotent cleanup of prodbox-annotated Kubernetes resources."""
-    storage_instructions = "\n".join(
-        [
-            "Cleanup intentionally preserved local RKE2 storage paths:",
-            *(f"  - {path}" for path in RKE2_DATA_PATHS),
-            "Cleanup also preserved retained storage resource kinds:",
-            *(f"  - {kind}" for kind in PRODBOX_STORAGE_RETAINED_RESOURCES),
-            "Cleanup also preserved storage namespace:",
-            f"  - {PRODBOX_NAMESPACE}",
-            "To remove these manually, stop RKE2 first and then delete paths yourself.",
-            "WARNING: deleting these paths can permanently destroy cluster state and data.",
-        ]
-    )
+def _build_rke2_delete_dag(_cmd: RKE2DeleteCommand) -> EffectDAG:
+    """Build DAG for the destructive host-owned RKE2 delete lifecycle."""
     root = EffectNode(
         effect=Sequence(
-            effect_id="rke2_cleanup",
-            description="Cleanup prodbox-annotated Kubernetes resources without touching host paths",
+            effect_id="rke2_delete",
+            description="Delete the host-owned RKE2 cluster while preserving retained state",
             effects=[],
         ),
-        prerequisites=frozenset(["k8s_cluster_reachable", "machine_identity"]),
-        effect_builder=lambda _reduced, prereq_results: _build_rke2_cleanup_effect(
-            prereq_results,
-            storage_instructions,
+        prerequisites=frozenset(
+            [
+                "supported_ubuntu_2404",
+                "systemd_available",
+                "tool_sudo",
+                "tool_systemctl",
+                "settings_object",
+            ]
         ),
+        effect_builder=lambda _reduced, prereq_results: _build_rke2_delete_effect(prereq_results),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
@@ -1846,10 +2127,10 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_rke2_stop_dag(command))
         case RKE2RestartCommand():
             return Success(_build_rke2_restart_dag(command))
-        case RKE2EnsureCommand():
-            return Success(_build_rke2_ensure_dag(command))
-        case RKE2CleanupCommand():
-            return Success(_build_rke2_cleanup_dag(command))
+        case RKE2InstallCommand():
+            return Success(_build_rke2_install_dag(command))
+        case RKE2DeleteCommand():
+            return Success(_build_rke2_delete_dag(command))
         case RKE2LogsCommand():
             return Success(_build_rke2_logs_dag(command))
 
@@ -2042,11 +2323,14 @@ def _build_chart_deploy_dag(cmd: ChartDeployCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
-def _build_chart_delete_effect(cmd: ChartDeleteCommand) -> ChartDeleteEffect:
-    """Build ChartDeleteEffect via pure plan resolution (no settings needed for delete)."""
+def _build_chart_delete_effect(
+    cmd: ChartDeleteCommand, prereq_results: PrereqResults
+) -> ChartDeleteEffect:
+    """Build ChartDeleteEffect from the active settings-aware delete plan."""
     from prodbox.lib.chart_platform import build_chart_delete_plan
 
-    match build_chart_delete_plan(cmd.chart_name):
+    settings = _require_settings(prereq_results)
+    match build_chart_delete_plan(cmd.chart_name, settings):
         case Failure(error=error):
             raise ValueError(error)
         case Success(value=plan):
@@ -2065,8 +2349,10 @@ def _build_chart_delete_dag(cmd: ChartDeleteCommand) -> EffectDAG:
             description=f"Delete chart stack {cmd.chart_name}",
             plan=None,
         ),
-        prerequisites=frozenset(),
-        effect_builder=lambda _reduced, _prereq_results: _build_chart_delete_effect(cmd),
+        prerequisites=frozenset(["settings_object"]),
+        effect_builder=lambda _reduced, prereq_results: _build_chart_delete_effect(
+            cmd, prereq_results
+        ),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 

@@ -1,4 +1,4 @@
-"""Integration lifecycle tests for prodbox storage + cleanup doctrine."""
+"""Integration lifecycle tests for prodbox delete/reinstall storage doctrine."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from typing import NamedTuple
 import pytest
 import pytest_asyncio
 
-from prodbox.cli.command_adt import Command, rke2_cleanup_command, rke2_ensure_command
+from prodbox.cli.command_adt import Command, rke2_install_command
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
 from prodbox.cli.types import Failure, Result, Success
@@ -25,10 +25,10 @@ from prodbox.lib.prodbox_k8s import (
     PRODBOX_ANNOTATION_KEY,
     PRODBOX_LABEL_KEY,
     PRODBOX_NAMESPACE,
-    PRODBOX_STORAGE_BASE_PATH,
     PRODBOX_STORAGE_CLASS,
     prodbox_id_to_label_value,
 )
+from prodbox.settings import Settings
 
 from .conftest import (
     abort_test_session_on_teardown_failure,
@@ -38,7 +38,7 @@ from .conftest import (
 )
 from .helpers import run_kubectl_capture_via_dag
 
-pytestmark = pytest.mark.timeout(600)
+pytestmark = pytest.mark.timeout(900)
 
 
 class LifecycleRebindContext(NamedTuple):
@@ -118,9 +118,14 @@ def _current_prodbox_id() -> str:
     return f"prodbox-{machine_id}"
 
 
+def _manual_pv_root() -> Path:
+    """Resolve the configured manual PV root for lifecycle host-path checks."""
+    return Settings.from_config_json().manual_pv_host_root
+
+
 def _rebind_host_paths(*, prodbox_id: str, pv_names: tuple[str, ...]) -> tuple[Path, ...]:
     """Build deterministic host-path artifacts owned by one rebind test."""
-    rebind_root = Path(PRODBOX_STORAGE_BASE_PATH) / prodbox_id / "rebind"
+    rebind_root = _manual_pv_root() / prodbox_id / "rebind"
     return tuple(rebind_root / pv_name for pv_name in pv_names)
 
 
@@ -180,7 +185,7 @@ async def _wait_deployment_available(
 
 async def _ensure_post_deploy_baseline(kubeconfig: Path) -> None:
     """Reconcile and verify the canonical post-deploy prodbox runtime baseline."""
-    await _execute_command_via_dag(rke2_ensure_command())
+    await _execute_command_via_dag(rke2_install_command())
     await _kubectl_expect_success(
         "get",
         "configmap",
@@ -371,8 +376,7 @@ async def lifecycle_runtime_baseline() -> AsyncIterator[Path]:
     yield kubeconfig
 
     try:
-        await _execute_command_via_dag(rke2_cleanup_command(yes=True))
-        await _ensure_post_deploy_baseline(kubeconfig)
+        await _ensure_post_deploy_baseline(resolve_kubeconfig())
     except AssertionError as error:
         abort_test_session_on_teardown_failure(target="shared runtime baseline", error=error)
 
@@ -581,13 +585,15 @@ async def lifecycle_rebind_context(
 
 @pytest.mark.integration  # type: ignore[misc]
 @pytest.mark.asyncio
-async def test_prodbox_cleanup_lifecycle_preserves_storage_and_rebinds(
+async def test_prodbox_delete_lifecycle_preserves_storage_and_rebinds(
     lifecycle_runtime_baseline: Path,
     tmp_path: Path,
 ) -> None:
-    """Cleanup removes runtime objects but preserves retained storage for deterministic rebinding."""
+    """Full cluster delete/reinstall must preserve retained storage and stable PVC/PV rebinding."""
     kubeconfig = lifecycle_runtime_baseline
     prodbox_id = _current_prodbox_id()
+    manual_pv_root = _manual_pv_root()
+    minio_host_path = manual_pv_root / prodbox_id / MINIO_PERSISTENT_VOLUME
 
     await _kubectl_expect_success("cluster-info", kubeconfig=kubeconfig, timeout=30.0)
 
@@ -616,87 +622,92 @@ async def test_prodbox_cleanup_lifecycle_preserves_storage_and_rebinds(
         name="minio",
         timeout_seconds=300,
     )
-    pre_cleanup_binding = await _resolve_pvc_binding(
+    pre_delete_binding = await _resolve_pvc_binding(
         kubeconfig=kubeconfig,
         namespace=MINIO_NAMESPACE,
         pvc_name=MINIO_PERSISTENT_CLAIM,
     )
-    assert pre_cleanup_binding[1] == MINIO_PERSISTENT_VOLUME
+    assert pre_delete_binding[1] == MINIO_PERSISTENT_VOLUME
+    assert (
+        minio_host_path.exists()
+    ), f"retained MinIO host path missing before delete: {minio_host_path}"
 
-    cleanup_marker: dict[str, object] = {
+    delete_marker: dict[str, object] = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
         "metadata": {
-            "name": "prodbox-cleanup-marker",
+            "name": "prodbox-delete-marker",
             "namespace": PRODBOX_NAMESPACE,
             "annotations": {PRODBOX_ANNOTATION_KEY: prodbox_id},
             "labels": {PRODBOX_LABEL_KEY: prodbox_id_to_label_value(prodbox_id)},
         },
         "data": {"marker": "true"},
     }
-    await kubectl_apply_manifest(cleanup_marker, kubeconfig=kubeconfig, tmp_dir=tmp_path)
+    await kubectl_apply_manifest(delete_marker, kubeconfig=kubeconfig, tmp_dir=tmp_path)
 
-    cleanup_rc, cleanup_stdout, cleanup_stderr = await _run_prodbox_cli(
+    delete_rc, delete_stdout, delete_stderr = await _run_prodbox_cli(
         "rke2",
-        "cleanup",
+        "delete",
         "--yes",
         kubeconfig=kubeconfig,
     )
-    assert cleanup_rc == 0, (
-        "poetry run prodbox rke2 cleanup --yes failed on first attempt: "
-        f"stdout={cleanup_stdout} stderr={cleanup_stderr}"
+    assert delete_rc == 0, (
+        "poetry run prodbox rke2 delete --yes failed on first attempt: "
+        f"stdout={delete_stdout} stderr={delete_stderr}"
     )
+    assert minio_host_path.exists(), (
+        "configured manual PV root was not preserved across delete: " f"{minio_host_path}"
+    )
+
+    install_rc, install_stdout, install_stderr = await _run_prodbox_cli(
+        "rke2",
+        "install",
+        kubeconfig=kubeconfig,
+        timeout_seconds=900.0,
+    )
+    assert install_rc == 0, (
+        "poetry run prodbox rke2 install failed after delete: "
+        f"stdout={install_stdout} stderr={install_stderr}"
+    )
+
+    restored_kubeconfig = Path.home() / ".kube" / "config"
+    assert restored_kubeconfig.exists(), "rke2 install did not restore ~/.kube/config"
+    await _kubectl_expect_success("cluster-info", kubeconfig=restored_kubeconfig, timeout=30.0)
+
+    storageclasses_stdout, _ = await _kubectl_expect_success(
+        "get",
+        "storageclass",
+        "-o",
+        "json",
+        kubeconfig=restored_kubeconfig,
+        timeout=30.0,
+    )
+    storageclasses = json.loads(storageclasses_stdout)
+    items = storageclasses.get("items", [])
+    assert isinstance(items, list)
+    storageclass_names = sorted(
+        item.get("metadata", {}).get("name", "") for item in items if isinstance(item, dict)
+    )
+    assert storageclass_names == [PRODBOX_STORAGE_CLASS]
 
     marker_rc, _, _ = await run_kubectl_capture_via_dag(
         "get",
         "configmap",
-        "prodbox-cleanup-marker",
-        kubeconfig=kubeconfig,
+        "prodbox-delete-marker",
+        kubeconfig=restored_kubeconfig,
         namespace=PRODBOX_NAMESPACE,
         timeout=20.0,
     )
     assert marker_rc != 0
 
-    minio_deploy_rc, _, _ = await run_kubectl_capture_via_dag(
-        "get",
-        "deployment",
-        "minio",
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        timeout=20.0,
-    )
-    assert minio_deploy_rc != 0
-
-    await _kubectl_expect_success(
-        "get",
-        "storageclass",
-        PRODBOX_STORAGE_CLASS,
-        kubeconfig=kubeconfig,
-        timeout=20.0,
-    )
-    await _kubectl_expect_success(
-        "get",
-        "pv",
-        MINIO_PERSISTENT_VOLUME,
-        kubeconfig=kubeconfig,
-        timeout=20.0,
-    )
-
-    post_cleanup_binding = await _resolve_pvc_binding(
-        kubeconfig=kubeconfig,
+    post_install_binding = await _resolve_pvc_binding(
+        kubeconfig=restored_kubeconfig,
         namespace=MINIO_NAMESPACE,
         pvc_name=MINIO_PERSISTENT_CLAIM,
     )
-    assert post_cleanup_binding == pre_cleanup_binding
+    assert post_install_binding == pre_delete_binding
 
-    await _ensure_post_deploy_baseline(kubeconfig)
-
-    post_reensure_binding = await _resolve_pvc_binding(
-        kubeconfig=kubeconfig,
-        namespace=MINIO_NAMESPACE,
-        pvc_name=MINIO_PERSISTENT_CLAIM,
-    )
-    assert post_reensure_binding == pre_cleanup_binding
+    await _ensure_post_deploy_baseline(restored_kubeconfig)
 
 
 @pytest.mark.integration  # type: ignore[misc]

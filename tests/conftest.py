@@ -102,6 +102,9 @@ def mock_env(
             "bootstrap_public_ip_override": None,
             "pulumi_enable_dns_bootstrap": True,
         },
+        "storage": {
+            "manual_pv_host_root": ".data",
+        },
     }
     (tmp_path / "prodbox-config.json").write_text(
         json.dumps(config, indent=2),

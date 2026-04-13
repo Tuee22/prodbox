@@ -12,7 +12,7 @@
 
 This document is the SSoT for the local image-registry doctrine:
 
-1. Harbor is installed/reconciled during `prodbox rke2 ensure`.
+1. Harbor is installed/reconciled during `prodbox rke2 install`.
 2. Custom prodbox images are built outside the cluster via Docker CLI and pushed to Harbor.
 3. RKE2 is configured to mirror `docker.io` pulls through local Harbor.
 4. Missing mirrored images are populated on demand (once) from currently referenced cluster images.
@@ -24,7 +24,7 @@ Retained storage and MinIO persistence doctrine are intentionally out-of-scope h
 
 ## 2. eDAG Contract
 
-`rke2_ensure` includes a dedicated effect node:
+`rke2_install` includes a dedicated effect node:
 
 ```python
 # File: src/prodbox/cli/effects.py
@@ -53,7 +53,7 @@ Deployment.
 Policy:
 
 1. `prodbox` MUST NOT treat the Harbor chart's default `harbor-nginx` `/` probe as the
-   canonical readiness event for `rke2 ensure`.
+   canonical readiness event for `rke2 install`.
 2. `prodbox` MUST patch the `harbor-nginx` ConfigMap to publish a local `GET /readyz`
    response from nginx itself.
 3. `prodbox` MUST patch the `harbor-nginx` Deployment so readiness and liveness use
@@ -97,7 +97,7 @@ class HarborRuntime:
 
 ## 4. RKE2 Mirror Behavior
 
-`rke2 ensure` reconciles:
+`rke2 install` reconciles:
 
 - file: `/etc/rancher/rke2/registries.yaml`
 - mirror target: local Harbor endpoint (`127.0.0.1:30080`)
@@ -163,7 +163,7 @@ ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "prodbox.cli.main", "gateway"
 Recommended flow before gateway pod integration tests:
 
 ```bash
-poetry run prodbox rke2 ensure
+poetry run prodbox rke2 install
 poetry run prodbox test integration gateway-pods
 ```
 

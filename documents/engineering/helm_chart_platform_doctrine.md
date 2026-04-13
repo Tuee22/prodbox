@@ -80,10 +80,12 @@ For example, `keycloak-postgres` in the `vscode` namespace:
 Rules:
 
 1. The CLI creates host directories with `mkdir -p` before applying storage manifests.
-2. `.data/` is excluded from both `.gitignore` and `.dockerignore`.
+2. `.data/` is excluded from both `.gitignore` and `.dockerignore` and is reserved for PV contents only.
 3. PV names are deterministic: `prodbox-chart-<namespace>-<release>-<workload>-<ordinal>-<claim>`.
 4. The `StorageClass` `manual` (provisioner `kubernetes.io/no-provisioner`, Retain policy) is the only permitted StorageClass; bootstrap fails if a chart requests a dynamic provisioner.
 5. Replica counts are chart-specific. Single-writer retained-state charts such as `keycloak-postgres` and `vscode` stay single-replica unless they gain an explicit clustered storage design; charts that support concurrent replicas keep pod anti-affinity enabled by default. Dev mode (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity but retains the configured replica counts.
+
+Retained non-PV chart state lives separately under `.prodbox-state/<namespace>/`. That root stores generated secrets and gateway event keys so full cluster delete/reinstall can reconnect retained services without violating the PV-only `.data/` boundary.
 
 ---
 
@@ -95,7 +97,7 @@ Rules:
 2. Deletes all CLI-created PVCs in the chart namespace.
 3. Deletes all CLI-created PVs (cluster-scoped).
 4. Deletes the namespace (which garbage-collects remaining namespace-scoped resources).
-5. **Never deletes `.data/` host directories** — data is always preserved on disk.
+5. **Never deletes retained host-state directories** — `.data/` PV contents and `.prodbox-state/` retained chart state are preserved on disk.
 
 This means a subsequent `prodbox charts deploy <chart>` will rebind to the same host paths with new PV/PVC objects.
 
@@ -142,7 +144,7 @@ The following setting from `src/prodbox/settings.py` is required for chart deplo
 | `VSCODE_FQDN` | Public FQDN for VS Code and Keycloak |
 
 Cluster-internal secrets are auto-generated at chart deploy time and persisted in
-`.data/<namespace>/.secrets.json`. They are not configured via `.env`:
+`.prodbox-state/<namespace>/.secrets.json`. They are not configured via `.env`:
 
 | Secret | Purpose |
 |--------|---------|

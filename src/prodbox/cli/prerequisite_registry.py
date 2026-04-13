@@ -32,6 +32,7 @@ from prodbox.cli.effects import (
     Pure,
     RequireLinux,
     RequireSystemd,
+    RequireUbuntu2404,
     ResolveMachineIdentity,
     ValidateAWSCredentials,
     ValidatePulumiLogin,
@@ -56,6 +57,14 @@ SYSTEMD_AVAILABLE: EffectNode[None] = EffectNode(
     effect=RequireSystemd(
         effect_id="systemd_available",
         description="Require systemd availability",
+    ),
+    prerequisites=frozenset(["platform_linux"]),
+)
+
+SUPPORTED_UBUNTU_2404: EffectNode[None] = EffectNode(
+    effect=RequireUbuntu2404(
+        effect_id="supported_ubuntu_2404",
+        description="Require Ubuntu 24.04 LTS",
     ),
     prerequisites=frozenset(["platform_linux"]),
 )
@@ -262,7 +271,7 @@ RKE2_INSTALLED: EffectNode[bool] = EffectNode(
         description="Check RKE2 binary is installed",
         file_path=Path("/usr/local/bin/rke2"),
     ),
-    prerequisites=frozenset(["platform_linux"]),
+    prerequisites=frozenset(["supported_ubuntu_2404"]),
 )
 
 RKE2_SERVICE_EXISTS: EffectNode[str] = EffectNode(
@@ -271,7 +280,7 @@ RKE2_SERVICE_EXISTS: EffectNode[str] = EffectNode(
         description="Check RKE2 service exists",
         service="rke2-server.service",
     ),
-    prerequisites=frozenset(["rke2_installed", "systemd_available"]),
+    prerequisites=frozenset(["rke2_installed", "systemd_available", "supported_ubuntu_2404"]),
 )
 
 RKE2_SERVICE_ACTIVE: EffectNode[str] = EffectNode(
@@ -339,6 +348,7 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     # Platform
     "platform_linux": PLATFORM_LINUX,
     "systemd_available": SYSTEMD_AVAILABLE,
+    "supported_ubuntu_2404": SUPPORTED_UBUNTU_2404,
     "machine_identity": MACHINE_IDENTITY,
     # Tools
     "tool_kubectl": TOOL_KUBECTL,
@@ -384,6 +394,7 @@ __all__ = [
     # Platform
     "PLATFORM_LINUX",
     "SYSTEMD_AVAILABLE",
+    "SUPPORTED_UBUNTU_2404",
     "MACHINE_IDENTITY",
     # Tools
     "TOOL_KUBECTL",

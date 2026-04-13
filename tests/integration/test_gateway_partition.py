@@ -13,7 +13,7 @@ and asserts that:
 
 These tests assume a live RKE2 cluster with cert-manager installed and the
 gateway image already imported into the local containerd cache (the standard
-``prodbox rke2 ensure`` flow).  Settings come from ``prodbox-config.json`` so
+``prodbox rke2 install`` flow).  Settings come from ``prodbox-config.json`` so
 the chart's prodbox-config secret carries the operator's real AWS region and
 zone id; the gateway's Route 53 writes are best-effort and silently no-op
 when DNS write attempts fail, so the partition coverage does not depend on

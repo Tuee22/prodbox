@@ -54,6 +54,7 @@ def _config_json_mapping(overrides: dict[str, object] | None = None) -> dict[str
             "bootstrap_public_ip_override": None,
             "pulumi_enable_dns_bootstrap": True,
         },
+        "storage": {"manual_pv_host_root": ".data"},
     }
     match overrides:
         case dict() as ovr:
@@ -156,6 +157,7 @@ class TestSettings:
                 "bootstrap_public_ip_override": None,
                 "pulumi_enable_dns_bootstrap": True,
             },
+            "storage": {"manual_pv_host_root": ".data"},
         }
         (tmp_path / "prodbox-config.json").write_text(
             json.dumps(config, indent=2), encoding="utf-8"
@@ -331,6 +333,7 @@ class TestFromConfigJson:
                 "bootstrap_public_ip_override": "1.2.3.4",
                 "pulumi_enable_dns_bootstrap": False,
             },
+            "storage": {"manual_pv_host_root": "/tmp/manual-pv"},
         }
         flat = _flatten_config_json(config)
         assert flat["aws_access_key_id"] == "AKIA"
@@ -342,6 +345,7 @@ class TestFromConfigJson:
         assert flat["acme_eab_hmac_key"] == "hmac-456"
         assert flat["prodbox_dev_mode"] is False
         assert flat["bootstrap_public_ip_override"] == "1.2.3.4"
+        assert flat["manual_pv_host_root"] == "/tmp/manual-pv"
 
     def test_from_config_json_auto_compiles_missing_repo_json(
         self,
@@ -503,6 +507,7 @@ class TestRenderedSettings:
         assert "acme.eab_hmac_key=" in template
         assert "deployment.bootstrap_public_ip_override=" in template
         assert "deployment.pulumi_enable_dns_bootstrap=true" in template
+        assert "storage.manual_pv_host_root=.data" in template
 
 
 class TestLanDiscoveryHelpers:

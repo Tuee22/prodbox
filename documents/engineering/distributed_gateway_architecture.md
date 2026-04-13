@@ -306,7 +306,7 @@ supported public-host steady state and no host-side supervisor is installed.
 
 Containerization is first-class for integration/runtime image publishing:
 
-- `prodbox rke2 ensure` builds the gateway image from `docker/gateway.Dockerfile`
+- `prodbox rke2 install` builds the gateway image from `docker/gateway.Dockerfile`
 - the image is pushed to local Harbor and imported into local RKE2 containerd cache
 - Kubernetes pod integration tests run against that image by default
 - `PRODBOX_GATEWAY_IMAGE` remains an override for explicit image pinning/testing

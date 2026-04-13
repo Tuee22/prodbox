@@ -26,8 +26,8 @@ from prodbox.cli.command_adt import (
     PulumiRefreshCommand,
     PulumiStackInitCommand,
     PulumiUpCommand,
-    RKE2CleanupCommand,
-    RKE2EnsureCommand,
+    RKE2DeleteCommand,
+    RKE2InstallCommand,
     RKE2LogsCommand,
     RKE2RestartCommand,
     RKE2StartCommand,
@@ -55,8 +55,8 @@ from prodbox.cli.command_adt import (
     pulumi_up_command,
     requires_linux,
     requires_settings,
-    rke2_cleanup_command,
-    rke2_ensure_command,
+    rke2_delete_command,
+    rke2_install_command,
     rke2_logs_command,
     rke2_restart_command,
     rke2_start_command,
@@ -204,46 +204,46 @@ class TestRKE2Commands:
                 case Failure(error):
                     assert "Linux" in error
 
-    def test_rke2_ensure_command_on_linux(self) -> None:
-        """rke2_ensure_command should succeed on Linux."""
+    def test_rke2_install_command_on_linux(self) -> None:
+        """rke2_install_command should succeed on Linux."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            match rke2_ensure_command():
+            match rke2_install_command():
                 case Success(cmd):
-                    assert isinstance(cmd, RKE2EnsureCommand)
+                    assert isinstance(cmd, RKE2InstallCommand)
                 case Failure(_):
                     pytest.fail("Expected Success on Linux")
 
-    def test_rke2_ensure_command_on_non_linux(self) -> None:
-        """rke2_ensure_command should fail on non-Linux."""
+    def test_rke2_install_command_on_non_linux(self) -> None:
+        """rke2_install_command should fail on non-Linux."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
-            match rke2_ensure_command():
+            match rke2_install_command():
                 case Success(_):
                     pytest.fail("Expected Failure on non-Linux")
                 case Failure(error):
                     assert "Linux" in error
 
-    def test_rke2_cleanup_command_on_linux_with_yes(self) -> None:
-        """rke2_cleanup_command should succeed on Linux with yes=True."""
+    def test_rke2_delete_command_on_linux_with_yes(self) -> None:
+        """rke2_delete_command should succeed on Linux with yes=True."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            match rke2_cleanup_command(yes=True):
+            match rke2_delete_command(yes=True):
                 case Success(cmd):
-                    assert isinstance(cmd, RKE2CleanupCommand)
+                    assert isinstance(cmd, RKE2DeleteCommand)
                 case Failure(_):
                     pytest.fail("Expected Success on Linux with yes=True")
 
-    def test_rke2_cleanup_command_requires_yes(self) -> None:
-        """rke2_cleanup_command should require explicit yes flag."""
+    def test_rke2_delete_command_requires_yes(self) -> None:
+        """rke2_delete_command should require explicit yes flag."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
-            match rke2_cleanup_command(yes=False):
+            match rke2_delete_command(yes=False):
                 case Success(_):
                     pytest.fail("Expected Failure when yes=False")
                 case Failure(error):
                     assert "--yes" in error
 
-    def test_rke2_cleanup_command_on_non_linux(self) -> None:
-        """rke2_cleanup_command should fail on non-Linux."""
+    def test_rke2_delete_command_on_non_linux(self) -> None:
+        """rke2_delete_command should fail on non-Linux."""
         with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
-            match rke2_cleanup_command(yes=True):
+            match rke2_delete_command(yes=True):
                 case Success(_):
                     pytest.fail("Expected Failure on non-Linux")
                 case Failure(error):
@@ -526,8 +526,8 @@ class TestUtilityFunctions:
         assert requires_linux(RKE2StartCommand()) is True
         assert requires_linux(RKE2StopCommand()) is True
         assert requires_linux(RKE2RestartCommand()) is True
-        assert requires_linux(RKE2EnsureCommand()) is True
-        assert requires_linux(RKE2CleanupCommand()) is True
+        assert requires_linux(RKE2InstallCommand()) is True
+        assert requires_linux(RKE2DeleteCommand()) is True
         assert requires_linux(RKE2LogsCommand()) is True
 
     def test_requires_linux_false_for_host(self) -> None:
@@ -583,13 +583,13 @@ class TestUtilityFunctions:
         assert requires_settings(HostPublicEdgeCommand()) is True
 
     def test_requires_settings_rke2_commands(self) -> None:
-        """requires_settings should return False for RKE2 commands."""
+        """requires_settings should distinguish install/delete from service-only RKE2 commands."""
         assert requires_settings(RKE2StatusCommand()) is False
         assert requires_settings(RKE2StartCommand()) is False
         assert requires_settings(RKE2StopCommand()) is False
         assert requires_settings(RKE2RestartCommand()) is False
-        assert requires_settings(RKE2EnsureCommand()) is False
-        assert requires_settings(RKE2CleanupCommand()) is False
+        assert requires_settings(RKE2InstallCommand()) is True
+        assert requires_settings(RKE2DeleteCommand()) is True
         assert requires_settings(RKE2LogsCommand()) is False
 
     def test_requires_linux_false_for_gateway(self) -> None:

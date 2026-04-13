@@ -133,6 +133,15 @@ class RequireSystemd(Effect[None]):
 
 
 @dataclass(frozen=True)
+class RequireUbuntu2404(Effect[None]):
+    """Require the supported Ubuntu 24.04 LTS host environment."""
+
+    os_release_path: Path = Path("/etc/os-release")
+    expected_id: str = "ubuntu"
+    expected_version_id: str = "24.04"
+
+
+@dataclass(frozen=True)
 class ResolveMachineIdentity(Effect[MachineIdentity]):
     """
     Resolve Linux machine identity and derived prodbox-id.

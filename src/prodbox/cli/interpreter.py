@@ -178,6 +178,7 @@ from prodbox.cli.effects import (  # noqa: E402
     ReadFile,
     RequireLinux,
     RequireSystemd,
+    RequireUbuntu2404,
     ResolveMachineIdentity,
     RunDhallCompile,
     RunKubectlCommand,
@@ -931,6 +932,8 @@ class EffectInterpreter:
                 return await self._interpret_require_linux(effect), None
             case RequireSystemd():
                 return await self._interpret_require_systemd(effect), None
+            case RequireUbuntu2404():
+                return await self._interpret_require_ubuntu_2404(effect), None
             case ResolveMachineIdentity():
                 return await self._interpret_resolve_machine_identity(effect)
 
@@ -1102,6 +1105,38 @@ class EffectInterpreter:
         else:
             self.failed_effects += 1
             return self._create_error_summary("systemd is not available")
+
+    async def _interpret_require_ubuntu_2404(self, effect: RequireUbuntu2404) -> ExecutionSummary:
+        """Require the supported Ubuntu 24.04 LTS host environment."""
+        try:
+            lines = effect.os_release_path.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            self.failed_effects += 1
+            return self._create_error_summary(
+                f"Supported-host validation failed reading {effect.os_release_path}: {exc}"
+            )
+
+        values: dict[str, str] = {}
+        for raw_line in lines:
+            line = raw_line.strip()
+            if line == "" or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", maxsplit=1)
+            values[key] = value.strip().strip('"')
+
+        detected_id = values.get("ID", "<unknown>")
+        detected_version = values.get("VERSION_ID", "<unknown>")
+        if detected_id == effect.expected_id and detected_version == effect.expected_version_id:
+            self.successful_effects += 1
+            return self._create_success_summary(
+                f"Supported host detected: Ubuntu {effect.expected_version_id}"
+            )
+
+        self.failed_effects += 1
+        return self._create_error_summary(
+            "Unsupported host. prodbox supports Ubuntu 24.04 LTS only; "
+            f"detected ID={detected_id} VERSION_ID={detected_version}"
+        )
 
     async def _interpret_resolve_machine_identity(
         self, effect: ResolveMachineIdentity
@@ -2772,6 +2807,53 @@ class EffectInterpreter:
 
         return gateway_image, None
 
+    async def _ensure_vscode_nginx_image(
+        self,
+        *,
+        registry_endpoint: str,
+    ) -> tuple[str | None, str | None]:
+        """Ensure the custom vscode-nginx OIDC image exists in Harbor."""
+        image_repository = "prodbox/prodbox-nginx-oidc"
+        image_ref = f"{registry_endpoint}/{image_repository}:latest"
+        dockerfile = Path("docker/nginx-oidc.Dockerfile")
+        build_context = Path(".")
+        inspect_output = await _run_subprocess(
+            ("docker", "manifest", "inspect", image_ref),
+            timeout=30.0,
+        )
+        if inspect_output.returncode == 0:
+            return image_ref, None
+        if not dockerfile.exists():
+            return None, f"VSCode nginx Dockerfile not found: {dockerfile}"
+
+        build_output = await _run_subprocess(
+            (
+                "docker",
+                "build",
+                "-f",
+                str(dockerfile),
+                "-t",
+                image_ref,
+                str(build_context),
+            ),
+            timeout=300.0,
+        )
+        if build_output.returncode != 0:
+            return None, (
+                "vscode-nginx docker build failed: " f"{self._stderr_or_stdout_text(build_output)}"
+            )
+
+        push_output = await _run_subprocess(
+            ("docker", "push", image_ref),
+            timeout=600.0,
+        )
+        if push_output.returncode != 0:
+            return None, (
+                "vscode-nginx docker push failed: " f"{self._stderr_or_stdout_text(push_output)}"
+            )
+
+        return image_ref, None
+
     async def _import_image_into_rke2_containerd(self, image_ref: str) -> str | None:
         """Import image into the local RKE2 containerd cache for fast local pulls."""
         containerd_socket_candidates = (
@@ -2983,6 +3065,19 @@ class EffectInterpreter:
                 None,
             )
 
+        vscode_nginx_image, vscode_nginx_error = await self._ensure_vscode_nginx_image(
+            registry_endpoint=registry_endpoint,
+        )
+        if vscode_nginx_error is not None or vscode_nginx_image is None:
+            self.failed_effects += 1
+            return (
+                self._create_error_summary(
+                    "Failed to ensure Harbor vscode-nginx image: "
+                    f"{vscode_nginx_error or 'unknown error'}"
+                ),
+                None,
+            )
+
         containerd_import_error = await self._import_image_into_rke2_containerd(gateway_image)
         if containerd_import_error is not None:
             self.failed_effects += 1
@@ -2990,6 +3085,19 @@ class EffectInterpreter:
                 self._create_error_summary(
                     "Failed to import gateway image into RKE2 containerd: "
                     f"{containerd_import_error}"
+                ),
+                None,
+            )
+
+        vscode_nginx_import_error = await self._import_image_into_rke2_containerd(
+            vscode_nginx_image,
+        )
+        if vscode_nginx_import_error is not None:
+            self.failed_effects += 1
+            return (
+                self._create_error_summary(
+                    "Failed to import vscode-nginx image into RKE2 containerd: "
+                    f"{vscode_nginx_import_error}"
                 ),
                 None,
             )
@@ -3040,8 +3148,9 @@ class EffectInterpreter:
             )
         return (
             self._create_success_summary(
-                "Ensured Harbor registry runtime and gateway image "
-                f"({gateway_image}){mirror_warning_suffix}"
+                "Ensured Harbor registry runtime and images "
+                f"(gateway={gateway_image}; vscode-nginx={vscode_nginx_image})"
+                f"{mirror_warning_suffix}"
             ),
             HarborRuntime(
                 registry_endpoint=registry_endpoint,

@@ -30,6 +30,9 @@
         , bootstrap_public_ip_override : Optional Text
         , pulumi_enable_dns_bootstrap : Bool
         }
+    , storage :
+        { manual_pv_host_root : Text
+        }
     }
 , default =
     { aws =
@@ -54,6 +57,9 @@
         { dev_mode = True
         , bootstrap_public_ip_override = None Text
         , pulumi_enable_dns_bootstrap = True
+        }
+    , storage =
+        { manual_pv_host_root = ".data"
         }
     }
 }

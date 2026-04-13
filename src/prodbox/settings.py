@@ -159,6 +159,13 @@ def _normalized_path(path: Path) -> Path:
     return path.expanduser().resolve(strict=False)
 
 
+def _resolve_repo_relative_path(path: Path) -> Path:
+    """Resolve relative paths against the repository root."""
+    if path.is_absolute():
+        return _normalized_path(path)
+    return _normalized_path(REPOSITORY_ROOT / path)
+
+
 def _is_canonical_repo_config_json(path: Path) -> bool:
     """Return whether *path* is the canonical repository-root JSON config."""
     _, _, canonical_json = _canonical_repo_config_paths()
@@ -367,6 +374,13 @@ class Settings(BaseModel):
             description="Whether `prodbox pulumi up` manages Route 53 bootstrap records",
         ),
     ]
+    manual_pv_host_root: Annotated[
+        Path,
+        Field(
+            default=Path(".data"),
+            description="Configured manual PV host root resolved against the repository root",
+        ),
+    ]
 
     @model_validator(mode="after")
     def derive_local_edge_defaults(self) -> Settings:
@@ -392,6 +406,12 @@ class Settings(BaseModel):
             raise ValueError(
                 "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
             )
+        return self
+
+    @model_validator(mode="after")
+    def resolve_manual_pv_root(self) -> Settings:
+        """Resolve the configured manual PV host root against the repository root."""
+        self.manual_pv_host_root = _resolve_repo_relative_path(self.manual_pv_host_root)
         return self
 
     def display_dict(self, *, show_secrets: bool = False) -> dict[str, RenderedSettingValue]:
@@ -616,6 +636,14 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         required=False,
         template_default="true",
     ),
+    SettingSpec(
+        attribute="manual_pv_host_root",
+        config_path="storage.manual_pv_host_root",
+        description="Configured manual PV host root for retained PV contents",
+        getter=lambda settings: settings.manual_pv_host_root,
+        required=False,
+        template_default=".data",
+    ),
 )
 
 
@@ -655,6 +683,7 @@ def _flatten_config_json(config: dict[str, object]) -> dict[str, object]:
     domain = _extract_dict(config, "domain")
     acme = _extract_dict(config, "acme")
     deployment = _extract_dict(config, "deployment")
+    storage = _extract_dict(config, "storage")
 
     flat: dict[str, object] = {
         "aws_region": aws.get("region", "us-east-1"),
@@ -672,6 +701,7 @@ def _flatten_config_json(config: dict[str, object]) -> dict[str, object]:
         "prodbox_dev_mode": deployment.get("dev_mode", True),
         "bootstrap_public_ip_override": deployment.get("bootstrap_public_ip_override"),
         "pulumi_enable_dns_bootstrap": deployment.get("pulumi_enable_dns_bootstrap", True),
+        "manual_pv_host_root": storage.get("manual_pv_host_root", ".data"),
     }
     return flat
 

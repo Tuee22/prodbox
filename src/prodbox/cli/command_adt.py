@@ -129,13 +129,13 @@ class RKE2RestartCommand:
 
 
 @dataclass(frozen=True)
-class RKE2EnsureCommand:
-    """Idempotently provision RKE2 runtime, Harbor registry, and retained-storage MinIO."""
+class RKE2InstallCommand:
+    """Install or reconcile the supported host-owned RKE2 cluster lifecycle."""
 
 
 @dataclass(frozen=True)
-class RKE2CleanupCommand:
-    """Cleanup prodbox runtime resources while preserving retained storage resources."""
+class RKE2DeleteCommand:
+    """Delete the supported host-owned RKE2 cluster while preserving the manual PV root."""
 
 
 @dataclass(frozen=True)
@@ -375,8 +375,8 @@ Command = (
     | RKE2StartCommand
     | RKE2StopCommand
     | RKE2RestartCommand
-    | RKE2EnsureCommand
-    | RKE2CleanupCommand
+    | RKE2InstallCommand
+    | RKE2DeleteCommand
     | RKE2LogsCommand
     # DNS
     | DNSCheckCommand
@@ -537,39 +537,39 @@ def rke2_restart_command() -> Result[RKE2RestartCommand, str]:
     return Success(RKE2RestartCommand())
 
 
-def rke2_ensure_command() -> Result[RKE2EnsureCommand, str]:
-    """Create an RKE2EnsureCommand.
+def rke2_install_command() -> Result[RKE2InstallCommand, str]:
+    """Create an RKE2InstallCommand.
 
     PLATFORM-AWARE: Returns Failure on non-Linux platforms.
 
     Returns:
-        Success with RKE2EnsureCommand on Linux, Failure otherwise
+        Success with RKE2InstallCommand on Linux, Failure otherwise
     """
     if platform.system() != "Linux":
         return Failure("RKE2 commands require Linux")
 
-    return Success(RKE2EnsureCommand())
+    return Success(RKE2InstallCommand())
 
 
-def rke2_cleanup_command(*, yes: bool = False) -> Result[RKE2CleanupCommand, str]:
-    """Create an RKE2CleanupCommand.
+def rke2_delete_command(*, yes: bool = False) -> Result[RKE2DeleteCommand, str]:
+    """Create an RKE2DeleteCommand.
 
     PLATFORM-AWARE: Returns Failure on non-Linux platforms.
-    SAFETY: Requires explicit --yes acknowledgement because cleanup is destructive.
+    SAFETY: Requires explicit --yes acknowledgement because delete is destructive.
 
     Args:
         yes: Confirmation flag from CLI --yes option
 
     Returns:
-        Success with RKE2CleanupCommand on Linux when yes=True, Failure otherwise
+        Success with RKE2DeleteCommand on Linux when yes=True, Failure otherwise
     """
     if platform.system() != "Linux":
         return Failure("RKE2 commands require Linux")
 
     if not yes:
-        return Failure("rke2 cleanup requires --yes confirmation")
+        return Failure("rke2 delete requires --yes confirmation")
 
-    return Success(RKE2CleanupCommand())
+    return Success(RKE2DeleteCommand())
 
 
 def rke2_logs_command(
@@ -902,7 +902,7 @@ def requires_linux(command: Command) -> bool:
         # RKE2 commands require Linux (systemd)
         case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand():
             return True
-        case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2CleanupCommand() | RKE2LogsCommand():
+        case RKE2RestartCommand() | RKE2InstallCommand() | RKE2DeleteCommand() | RKE2LogsCommand():
             return True
         # Config commands - cross-platform
         case (
@@ -982,10 +982,12 @@ def requires_settings(command: Command) -> bool:
             return False
         case HostPublicEdgeCommand():
             return True
-        # RKE2 commands don't require prodbox settings (use system paths)
-        case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand():
+        # RKE2 inspection/service commands use system paths; install/delete read settings.
+        case RKE2StatusCommand() | RKE2StartCommand() | RKE2StopCommand() | RKE2RestartCommand():
             return False
-        case RKE2RestartCommand() | RKE2EnsureCommand() | RKE2CleanupCommand() | RKE2LogsCommand():
+        case RKE2InstallCommand() | RKE2DeleteCommand():
+            return True
+        case RKE2LogsCommand():
             return False
         # Gateway commands don't require prodbox settings (use own config file)
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
@@ -1023,8 +1025,8 @@ __all__ = [
     "RKE2StartCommand",
     "RKE2StopCommand",
     "RKE2RestartCommand",
-    "RKE2EnsureCommand",
-    "RKE2CleanupCommand",
+    "RKE2InstallCommand",
+    "RKE2DeleteCommand",
     "RKE2LogsCommand",
     # DNS
     "DNSCheckCommand",
@@ -1061,8 +1063,8 @@ __all__ = [
     "rke2_start_command",
     "rke2_stop_command",
     "rke2_restart_command",
-    "rke2_ensure_command",
-    "rke2_cleanup_command",
+    "rke2_install_command",
+    "rke2_delete_command",
     "rke2_logs_command",
     "dns_check_command",
     "k8s_health_command",

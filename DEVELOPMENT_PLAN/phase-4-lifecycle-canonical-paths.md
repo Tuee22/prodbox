@@ -10,20 +10,17 @@
 
 ## Phase Summary
 
-This phase hardens `rke2 cleanup` until lifecycle validation passes without settling retries, then
-removes duplicate or compatibility-only runtime, CLI, validation, and tooling paths, closes
-the remaining local edge-infrastructure automation gaps around MetalLB, Traefik, cert-manager,
-always-on gateway supervision, explicit per-subdomain DNS continuity, and public-host diagnostics,
-consolidates the retained storage model to one StorageClass, migrates the `.data/` path scheme
-to 5 segments, adopts explicit replica-count doctrine, replaces `.env` with a Dhall configuration
-file as the single config source, and enforces subprocess credential isolation so no host
-credentials leak via `os.environ` inheritance. The phase also closes AWS-backed integration
-fixture hardening so every AWS-mutating test begins by sweeping any pre-existing tagged
-fixture-owned AWS resources, every fixture-owned AWS resource carries canonical tags, and setup
-failures roll back partial AWS state before pytest yields control. All cleanup history remains centralized in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+This phase hardens the lifecycle surface, removes duplicate or compatibility-only runtime, CLI,
+validation, and tooling paths, closes the remaining local edge-infrastructure automation gaps
+around MetalLB, Traefik, cert-manager, always-on gateway supervision, explicit per-subdomain DNS
+continuity, and public-host diagnostics, and converges retained storage on one config-declared PV
+root and one `manual` StorageClass. Under the updated doctrine, this phase also reserves the
+manual PV root purely for PV content, extends Dhall config to declare that root explicitly, replaces
+remnant-preserving cluster cleanup with full cluster delete/install semantics, and requires cluster
+install to recreate `manual` while deleting every other StorageClass. All cleanup history remains
+centralized in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
-## Sprint 4.1: `rke2 cleanup` Hardening and Lifecycle Regression Closure ✅
+## Sprint 4.1: Legacy Cleanup Hardening and Lifecycle Regression Closure ✅
 
 **Status**: Done
 **Implementation**: `src/prodbox/cli/rke2.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_prodbox_lifecycle.py`
@@ -31,7 +28,7 @@ failures roll back partial AWS state before pytest yields control. All cleanup h
 
 ### Objective
 
-Make `rke2 cleanup` stable enough that the lifecycle suite does not need retry-based settling.
+Make the legacy cleanup surface stable enough that the lifecycle suite does not need retry-based settling.
 
 ### Deliverables
 
@@ -81,7 +78,7 @@ canonical automated validation path.
 7. `poetry run prodbox test integration dns-aws`
 8. `poetry run prodbox test integration pulumi`
 
-### Current Validation State
+### Closure Validation (2026-04-09; historical baseline)
 
 - Repository-wide status tracking has been centralized in this plan suite.
 - The `rke2_killall_exists` prerequisite has been removed.
@@ -94,7 +91,8 @@ canonical automated validation path.
   when the compiled artifact is missing or stale.
 - The certificate issuance path is canonicalized to `letsencrypt-http01`.
 - Hook-oriented `pre-commit` dependency and config residue are gone.
-- The repository-side legacy cleanup ledger is now empty.
+- At closure time, the repository-side legacy cleanup ledger was empty; the April 13, 2026
+  doctrine update later reopened new cleanup items that are now tracked in the ledger again.
 - IAM policy `prodbox-integration-tests` attached to `bathurst-resolvefintech-dns` on
   April 9, 2026, granting Route 53, S3, EC2, IAM, and EKS permissions for all AWS-backed
   integration suites.
@@ -158,8 +156,8 @@ canonical automation rather than ad hoc operator knowledge.
   those values are blank, while preserving explicit overrides as an escape hatch.
 - The canonical Pulumi path now deploys cert-manager directly and wires the
   `letsencrypt-http01` ClusterIssuer after both cert-manager and Traefik are present.
-- `prodbox rke2 ensure` now forces `ingress-controller: none` into the canonical RKE2 config so
-  bundled ingress-nginx does not remain part of the supported public-edge path.
+- The canonical RKE2 config now forces `ingress-controller: none` so bundled ingress-nginx does
+  not remain part of the supported public-edge path.
 - Local edge reconcile can now run with `PULUMI_ENABLE_DNS_BOOTSTRAP=false`, so MetalLB, Traefik,
   cert-manager, and the cluster issuer can recover even when the AWS-backed proof path is blocked.
 - `prodbox host public-edge` now exists as the named diagnostic path for Route 53 A-record state,
@@ -253,7 +251,7 @@ stack depends on. No prodbox daemon runs on the host.
   `gateway_event_keys` keyword and dispatches `_values_for_gateway()` which validates
   AWS credentials and zone id from settings before rendering values JSON.
 - `prodbox.lib.chart_platform.resolve_gateway_event_keys()` auto-generates per-node
-  HMAC signing keys and persists them in `.data/gateway/.gateway-event-keys.json` so
+  HMAC signing keys and persists them in `.prodbox-state/gateway/.gateway-event-keys.json` so
   redeployments preserve mesh identity.
 - `prodbox.cli.dag_builders._build_chart_deploy_effect` resolves both
   `resolve_chart_secrets()` and `resolve_gateway_event_keys()` so `prodbox charts deploy
@@ -276,12 +274,12 @@ stack depends on. No prodbox daemon runs on the host.
 ### Closure Validation (2026-04-10)
 
 - `_ensure_gateway_image()` in `src/prodbox/cli/interpreter.py:2669` now publishes
-  both `<repo>:<prodbox-id>` and `<repo>:latest` so `prodbox rke2 ensure` is the
-  canonical image-publish path with no manual `docker build`/`docker push` step.
+  both `<repo>:<prodbox-id>` and `<repo>:latest` so the canonical cluster bootstrap path has no
+  manual `docker build`/`docker push` step.
   The gateway chart's `pullPolicy: Always` (in `charts/gateway/values.yaml` and
   `_values_for_gateway()` at `src/prodbox/lib/chart_platform.py:415`) guarantees
   pods always pull the freshly published `:latest` image after a rebuild.
-- `poetry run prodbox rke2 ensure` + `poetry run prodbox pulumi up --yes` +
+- The then-current cluster bootstrap path plus `poetry run prodbox pulumi up --yes` +
   `poetry run prodbox charts deploy gateway` ran cleanly against the live RKE2
   cluster on `bathurst`. The gateway chart deployed all three per-node
   Deployments to the `gateway` namespace, the cert-manager-issued mesh TLS
@@ -321,10 +319,10 @@ Consolidate retained storage to one StorageClass, migrate the `.data/` host-path
 
 ### Architecture
 
-**Storage path scheme** (supersedes the Sprint 3.1 4-segment layout):
+**Storage path scheme** (relative to the configured manual PV host root; default `.data/`):
 
 ```
-.data/<namespace>/<release>/<workload>/<ordinal>/<claim>
+<manual-pv-root>/<namespace>/<release>/<workload>/<ordinal>/<claim>
 ```
 
 - `namespace` — Kubernetes namespace (e.g. `default`)
@@ -351,9 +349,10 @@ clustered storage semantics, while clustered services can run multiple replicas 
 anti-affinity. Dev mode (`PRODBOX_DEV_MODE=true`, the default) suppresses anti-affinity
 constraints but retains the configured replica counts.
 
-**Path stability**: The naming scheme is stable across teardown/rebuild cycles so data
-survives cluster down and cluster up. No tooling or CLI command is permitted to delete `.data/`
-itself. `.data/` appears in both `.gitignore` and `.dockerignore`.
+**Path stability**: The naming scheme is stable across cluster delete/install cycles so PV
+contents survive ephemeral teardown and spin-up. No tooling or CLI command is permitted to delete
+the configured manual PV root itself as part of cluster delete. The default `.data/` root appears in
+both `.gitignore` and `.dockerignore`.
 
 ### Deliverables
 
@@ -381,95 +380,76 @@ itself. `.data/` appears in both `.gitignore` and `.dockerignore`.
 
 None.
 
-## Sprint 4.6: Configuration Simplification and K8s Secret Injection ✅
+
+## Sprint 4.6: Configuration Simplification, Secret Boundary, and PV-Only Storage Root ✅
 
 **Status**: Done
-**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/chart_platform.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/infra/providers.py`, `src/prodbox/infra/metallb.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/__main__.py`, `tests/unit/test_chart_platform.py`, `tests/unit/test_settings.py`, `tests/unit/test_dag_builders.py`, `tests/unit/test_infra_program.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_storage.py`
-**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `README.md`
+**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/chart_platform.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/gateway_daemon.py`, `tests/unit/test_settings.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_storage.py`
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `README.md`
 
 ### Objective
 
-Simplify `.env` to carry only external auth and non-secret configuration; auto-generate
-cluster-internal secrets at deploy time via retained `.data/` storage; enforce always-dynamic
-IP addressing; remove `KUBECONFIG` and `PULUMI_STACK` from the settings surface.
+Keep external configuration simple while reserving the configured manual PV host root purely for PV
+content and moving non-PV retained artifacts out of that root.
 
 ### Architecture
 
-**`.env` scope** (after this sprint):
+**Config surface**: External auth and non-secret deployment configuration remain in the Dhall/JSON
+settings path. `METALLB_POOL`, `INGRESS_LB_IP`, `KUBECONFIG`, and `PULUMI_STACK` stay removed from
+the public settings surface.
 
-| Setting | Stays in `.env` | Why |
-|---------|-----------------|-----|
-| `AWS_ACCESS_KEY_ID` | Yes | External auth — real secret |
-| `AWS_SECRET_ACCESS_KEY` | Yes | External auth — real secret |
-| `AWS_SESSION_TOKEN` | Yes | External auth — optional |
-| `AWS_REGION` | Yes | Non-secret config |
-| `ROUTE53_ZONE_ID` | Yes | Non-secret config |
-| `DEMO_FQDN` | Yes | Non-secret config |
-| `DEMO_TTL` | Yes | Non-secret config |
-| `VSCODE_FQDN` | Yes | Non-secret config |
-| `ACME_EMAIL` | Yes | Non-secret config |
-| `ACME_SERVER` | Yes | Non-secret config |
-| `PRODBOX_DEV_MODE` | Yes | Non-secret config |
-| `PULUMI_ENABLE_DNS_BOOTSTRAP` | Yes | Non-secret config |
-| `BOOTSTRAP_PUBLIC_IP_OVERRIDE` | Yes | Non-secret config |
-| `KEYCLOAK_ADMIN_PASSWORD` | **Removed** | Auto-generated, persisted in `.data/` |
-| `KEYCLOAK_POSTGRES_PASSWORD` | **Removed** | Auto-generated, persisted in `.data/` |
-| `KEYCLOAK_NGINX_CLIENT_SECRET` | **Removed** | Auto-generated, persisted in `.data/` |
-| `METALLB_POOL` | **Removed** | Always auto-discovered |
-| `INGRESS_LB_IP` | **Removed** | Always auto-discovered |
-| `KUBECONFIG` | **Removed** | Default `~/.kube/config` always used |
-| `PULUMI_STACK` | **Removed** | Hardcoded to `home` |
+**Manual PV root boundary**: The configured manual PV host root (default `.data/`) is a PV-content
+boundary only. Generated cluster secrets, gateway mesh keys, or any other non-PV retained artifacts
+must move out of that root.
 
-**Cluster-internal secret injection**: `keycloak_admin_password`,
-`keycloak_postgres_password`, and `keycloak_nginx_client_secret` are auto-generated with
-`secrets.token_urlsafe(24)` at first chart deploy and persisted in
-`.data/<namespace>/.secrets.json`. On subsequent deploys, existing secrets are read back from
-the retained `.data/` directory. This ensures stable credentials across teardown/rebuild
-cycles without requiring `.env` configuration.
-
-**IP auto-discovery**: `METALLB_POOL` and `INGRESS_LB_IP` settings are removed from
-the settings surface. The auto-discovery path (`discover_lan_addressing()`) becomes the
-only path; the explicit-override escape hatch is removed. Infra code (`metallb.py`,
-`ingress.py`) calls `discover_lan_addressing()` directly.
+**IP auto-discovery**: `METALLB_POOL` and `INGRESS_LB_IP` remain auto-discovered. Infra code
+continues to call `discover_lan_addressing()` directly.
 
 ### Deliverables
 
-- Removed `KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD`, and
-  `KEYCLOAK_NGINX_CLIENT_SECRET` from `Settings` and `SETTING_SPECS`.
-- Chart platform auto-generates these secrets via `resolve_chart_secrets()` and persists
-  them in `.data/<namespace>/.secrets.json`, reading them back on subsequent deploys.
-- Removed `METALLB_POOL` and `INGRESS_LB_IP` from `Settings` and `SETTING_SPECS`;
-  `discover_lan_addressing()` is the sole source.
-- Removed `KUBECONFIG` from `Settings` and `SETTING_SPECS`; `providers.py` hardcodes
-  `~/.kube/config`.
-- Removed `PULUMI_STACK` from `Settings`, `SETTING_SPECS`, and all DAG builder references;
-  `_resolve_pulumi_stack()` defaults to `"home"`.
-- `.env` template rendering omits removed settings.
-- Engineering docs and README reflect the simplified `.env` surface.
+- Removed settings stay removed from `Settings` and the public config surface.
+- The chart platform and gateway runtime stop treating the manual PV host root as a mixed-purpose
+  persistence directory.
+- Generated non-PV retained artifacts move out of the manual PV host root.
+- Engineering docs and README describe the configured manual PV root as PV-content-only storage.
 
 ### Validation
 
-1. `poetry run prodbox check-code` — passed on April 7, 2026.
-2. `poetry run prodbox test unit` — passed on April 7, 2026 (991 tests).
-3. `poetry run prodbox config show` (must not display removed settings)
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. `poetry run prodbox config show`
 4. `poetry run prodbox test integration charts-platform`
 5. `poetry run prodbox test integration charts-storage`
+
+### Closure Validation (2026-04-13)
+
+- `src/prodbox/lib/chart_platform.py` now persists generated chart secrets under
+  `.prodbox-state/<namespace>/.secrets.json` and gateway mesh keys under
+  `.prodbox-state/<namespace>/.gateway-event-keys.json`, leaving the configured manual PV host
+  root for PV contents only.
+- `poetry run prodbox rke2 delete --yes` passed on April 13, 2026 and explicitly reported both
+  preserved roots: `/home/matthewnowak/prodbox/.data` and
+  `/home/matthewnowak/prodbox/.prodbox-state`.
+- The April 13, 2026 aggregate rerun passed `tests/integration/test_charts_platform.py`
+  (8 tests) and `tests/integration/test_charts_storage.py` (13 tests) under the PV-only storage
+  boundary.
+- `poetry run prodbox test unit` and `poetry run prodbox check-code` both passed on April 13,
+  2026 after the storage-boundary closure work.
 
 ### Remaining Work
 
 None.
 
-## Sprint 4.7: Dhall Config Schema, Bootstrap, and JSON Loading ✅
+## Sprint 4.7: Dhall Config Schema, Bootstrap, and Manual PV Host Root ✅
 
 **Status**: Done
 **Implementation**: `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/effects.py`, `src/prodbox/cli/interpreter.py`
-**Docs to update**: `documents/engineering/dependency_management.md`, `documents/engineering/cli_command_surface.md`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/storage_lifecycle_doctrine.md`
 
 ### Objective
 
-Establish Dhall as the single configuration source with a compile-to-JSON pipeline, a
-one-time bootstrap command that populates the Dhall config from the current system state, and an
-idempotent on-demand recompile path for commands that load canonical settings.
+Keep Dhall as the single configuration source while extending it to declare the manual PV host root
+explicitly and default it to the repository `.data/` directory.
 
 ### Architecture
 
@@ -489,6 +469,7 @@ prodbox-config.json          -- gitignored compiled output (read by Python)
 , domain : { demo_fqdn : Text, demo_ttl : Natural, vscode_fqdn : Optional Text }
 , acme : { email : Text, server : Text }
 , deployment : { dev_mode : Bool, bootstrap_public_ip_override : Optional Text, pulumi_enable_dns_bootstrap : Bool }
+, storage : { manual_pv_host_root : Text }
 }
 ```
 
@@ -500,48 +481,50 @@ prodbox-config.json          -- gitignored compiled output (read by Python)
 
 1. Check `dhall-to-json` exists (fail fast).
 2. If `.env` exists: parse it, map keys to Dhall field paths.
-3. Call `discover_lan_addressing()` for informational display (not stored).
-4. Write `prodbox-config.dhall` importing `./prodbox-config-types.dhall`.
+3. Resolve the repository-root default manual PV host root as `.data/`.
+4. Write `prodbox-config.dhall` importing `./prodbox-config-types.dhall`, with the manual PV host
+   root expressed explicitly.
 5. Run `dhall-to-json < prodbox-config.dhall > prodbox-config.json`.
 6. Commands that load canonical settings also auto-compile the repository-root Dhall config when
    `prodbox-config.json` is missing or older than the Dhall source/schema.
 7. Validate by loading `Settings.from_config_json()`.
-8. This is the last time `.env` or host system values are used.
 
 ### Deliverables
 
-- `prodbox-config-types.dhall` checked into the repository (schema with defaults).
-- `prodbox-config.dhall` and `prodbox-config.json` added to `.gitignore` and `.dockerignore`.
-- `prodbox config compile` command shells out to `dhall-to-json`.
-- `prodbox config init` command performs one-time bootstrap from `.env` and system state.
-- `prodbox config show` and `prodbox config validate` commands.
-- `dhall` and `dhall-to-json` added to `ValidateEnvironment` tool check list in prerequisite
-  registry.
-- New `load_config_json(path: Path) -> dict[str, object]` function in `settings.py`.
-- New `Settings.from_config_json()` class method that maps nested JSON to flat Settings fields
-  and auto-compiles the canonical repository Dhall config when the JSON artifact is missing or
-  stale.
+- `prodbox-config-types.dhall` includes the explicit manual PV host-root field.
+- `prodbox config init` writes that field explicitly and defaults it to the repository `.data/`
+  directory when the operator does not override it.
+- `Settings.from_config_json()` exposes the configured manual PV host root to lifecycle and chart
+  code.
+- `prodbox config show` and `prodbox config validate` display and validate the configured PV root.
 
 ### Validation
 
 1. `poetry run prodbox check-code`
 2. `poetry run prodbox test unit`
-3. `poetry run prodbox config init` (generates valid Dhall from `.env`)
-4. `poetry run prodbox config compile` (compiles Dhall to JSON)
-5. `poetry run prodbox config show` (must succeed even when the repository-root JSON artifact is regenerated from Dhall)
-6. `poetry run prodbox config validate` (validates effective config after compile/refresh)
+3. `poetry run prodbox config init`
+4. `poetry run prodbox config compile`
+5. `poetry run prodbox config show`
+6. `poetry run prodbox config validate`
+
+### Closure Validation (2026-04-13)
+
+- `prodbox-config-types.dhall` and `prodbox-config.dhall` now declare
+  `storage.manual_pv_host_root`, defaulting to `.data`.
+- `Settings.from_config_json()` surfaces the configured root to lifecycle and chart code, and the
+  unit plus CLI-environment fixtures were updated to include the explicit `storage` block.
+- `rm -f prodbox-config.json` removed the compiled artifact before the closure rerun; both
+  `poetry run prodbox config show` and `poetry run prodbox config validate` then passed on
+  April 13, 2026 and auto-regenerated `prodbox-config.json` from Dhall.
+- `poetry run prodbox config show` reported
+  `storage.manual_pv_host_root=/home/matthewnowak/prodbox/.data` during the April 13, 2026
+  closure proof.
+- `poetry run prodbox test unit`, `poetry run prodbox test all`, and `poetry run prodbox check-code`
+  all passed with the explicit field present.
 
 ### Remaining Work
 
 None.
-
-### Current Validation State
-
-- `poetry run prodbox check-code` and `poetry run prodbox test unit` passed on April 8, 2026
-  (953 unit tests).
-- Sprint 6.2 follow-up on April 12, 2026 extended the canonical config path so repo-root settings
-  loads auto-compile missing or stale `prodbox-config.json` artifacts from Dhall before command
-  execution continues.
 
 ## Sprint 4.8: Settings Migration and AWS Auth Removal ✅
 
@@ -864,28 +847,72 @@ the supported architecture.
 
 None.
 
+
+## Sprint 4.14: Full Cluster Delete, StorageClass Reset, and Reinstall Rebinding ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/rke2.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/lib/prodbox_k8s.py`, `tests/integration/test_prodbox_lifecycle.py`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`
+
+### Objective
+
+Replace remnant-preserving cleanup with full cluster delete/install semantics while preserving the
+configured manual PV host root plus the repo-local `.prodbox-state/` retained chart-state root and
+proving deterministic rebinding after reinstall.
+
+### Deliverables
+
+- `prodbox rke2 delete --yes` wipes all managed cluster remnants other than the configured manual
+  PV host root plus the repo-local `.prodbox-state/` retained chart-state root.
+- `prodbox rke2 install` creates the `manual` StorageClass and deletes every other StorageClass.
+- Lifecycle validation proves that retained PVCs automatically rebind to the intended PVs after
+  full cluster delete plus reinstall.
+- Cleanup/reporting text describes the preserved PV-content root, the preserved retained chart-state
+  root, and the data-loss boundary precisely.
+
+### Validation
+
+1. `poetry run prodbox rke2 install`
+2. `poetry run prodbox test integration lifecycle`
+3. `poetry run prodbox rke2 delete --yes`
+4. Reinstall proof: `poetry run prodbox rke2 install`
+5. Rebinding proof: verify PVC/PV names and bindings are stable after reinstall
+6. `poetry run prodbox check-code`
+
+### Closure Validation (2026-04-13)
+
+- `poetry run prodbox rke2 delete --yes` passed on April 13, 2026 and preserved exactly two roots:
+  `/home/matthewnowak/prodbox/.data` and `/home/matthewnowak/prodbox/.prodbox-state`.
+- `poetry run prodbox rke2 install` passed on April 13, 2026 in `6m 40s` and returned the host to
+  the supported RKE2 state.
+- The lifecycle integration suite passed inside the April 13, 2026 aggregate rerun
+  (`tests/integration/test_prodbox_lifecycle.py`: 2 passed in `16m 10s`), proving retained PVC/PV
+  rebinding across full delete plus reinstall.
+- The April 13 aggregate rerun also passed the chart-storage and chart-platform suites and finished
+  at `CLASSIFICATION=ready-for-external-proof`, which is consistent with the `manual` StorageClass
+  recreate-and-rebind contract on the supported path.
+- `poetry run prodbox check-code` passed on April 13, 2026 after the lifecycle closure work.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/storage_lifecycle_doctrine.md` - 5-segment path scheme, `manual`
-  StorageClass, PV pre-creation and PVC-only-from-StatefulSet doctrine, retained storage and
-  rebinding contract.
-- `documents/engineering/helm_chart_platform_doctrine.md` - 5-segment path scheme, `manual`
-  StorageClass, Helm-only service deployment, replica-count doctrine, supported chart and
-  `vscode` paths.
-- `documents/engineering/aws_integration_environment_doctrine.md` - blocked AWS rerun rules and
-  canonical auth ownership.
-- `documents/engineering/aws_test_environment.md` - shared-account tagging, stale-resource search,
-  and cleanup expectations for ephemeral AWS test workloads.
-- `documents/engineering/cli_command_surface.md` - canonical command and validation paths.
-- `documents/engineering/dependency_management.md` - supported local tooling doctrine.
-- `documents/engineering/distributed_gateway_architecture.md` - gateway startup and DNS ownership.
-- `documents/engineering/integration_fixture_doctrine.md` - fixture-owned teardown and cleanup
-  doctrine.
-- `documents/engineering/local_registry_pipeline.md` - local registry and container build doctrine.
-- `documents/engineering/prerequisite_doctrine.md` - prerequisite registry cleanup.
-- `documents/engineering/unit_testing_policy.md` - authoritative named validation paths.
+- `documents/engineering/storage_lifecycle_doctrine.md` - configured manual PV root, `manual`-only
+  StorageClass lifecycle, full cluster delete semantics, and delete/reinstall rebinding contract.
+- `documents/engineering/helm_chart_platform_doctrine.md` - chart storage consumes the configured
+  manual PV host root and treats it as PV-content-only storage.
+- `documents/engineering/cli_command_surface.md` - `rke2 install|delete` command matrix and
+  destructive confirmation rules.
+- `documents/engineering/prerequisite_doctrine.md` - Ubuntu 24.04 gate, install/delete
+  prerequisites, and remnant-free delete semantics.
+- `documents/engineering/effectful_dag_architecture.md` - host-owned cluster lifecycle plus storage
+  reset ordering.
+- `documents/engineering/unit_testing_policy.md` - lifecycle validation from install/delete
+  baseline.
 
 **Product docs to create/update:**
 
@@ -893,8 +920,8 @@ None.
 
 **Cross-references to add:**
 
-- Keep cleanup and compatibility ownership pointed at
-  `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+- Keep `README.md`, `00-overview.md`, `system-components.md`, and the legacy ledger aligned with the
+  active lifecycle and storage work.
 
 ## Related Documents
 

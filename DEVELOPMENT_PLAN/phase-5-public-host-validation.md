@@ -32,7 +32,7 @@ external proof part of the canonical automated validation path.
 - The supported public path resolves through explicit named Route 53 records only; wildcard public
   DNS is not part of the supported architecture.
 - The public-host validation path stays external-only: no kubeconfig, cluster prerequisite gate, or
-  `rke2 ensure` runbook is required.
+  `rke2 install` runbook is required.
 - Manual-only authoritative delegation proof is replaced by a named automated suite.
 
 ### Validation

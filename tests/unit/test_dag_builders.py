@@ -34,8 +34,8 @@ from prodbox.cli.command_adt import (
     PulumiRefreshCommand,
     PulumiStackInitCommand,
     PulumiUpCommand,
-    RKE2CleanupCommand,
-    RKE2EnsureCommand,
+    RKE2DeleteCommand,
+    RKE2InstallCommand,
     RKE2LogsCommand,
     RKE2RestartCommand,
     RKE2StartCommand,
@@ -50,7 +50,7 @@ from prodbox.cli.effects import (
     CaptureSubprocessOutput,
     CheckPortAvailability,
     CheckServiceStatus,
-    CleanupProdboxAnnotatedResources,
+    Custom,
     EnsureHarborRegistry,
     EnsureMinio,
     EnsureProdboxIdentityConfigMap,
@@ -213,13 +213,13 @@ class TestRKE2CommandDAGBuilders:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_ensure_dag(self) -> None:
-        """command_to_dag should build DAG for RKE2EnsureCommand."""
-        cmd = RKE2EnsureCommand()
+    def test_rke2_install_dag(self) -> None:
+        """command_to_dag should build DAG for RKE2InstallCommand."""
+        cmd = RKE2InstallCommand()
 
         match command_to_dag(cmd):
             case Success(dag):
-                assert "rke2_ensure" in dag
+                assert "rke2_install" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -233,13 +233,13 @@ class TestRKE2CommandDAGBuilders:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_cleanup_dag(self) -> None:
-        """command_to_dag should build DAG for RKE2CleanupCommand."""
-        cmd = RKE2CleanupCommand()
+    def test_rke2_delete_dag(self) -> None:
+        """command_to_dag should build DAG for RKE2DeleteCommand."""
+        cmd = RKE2DeleteCommand()
 
         match command_to_dag(cmd):
             case Success(dag):
-                assert "rke2_cleanup" in dag
+                assert "rke2_delete" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -644,15 +644,14 @@ class TestRKE2CommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_ensure_requires_install_and_config(self) -> None:
-        """RKE2EnsureCommand should fail fast on missing RKE2 binary/config."""
-        cmd = RKE2EnsureCommand()
+    def test_rke2_install_requires_supported_host_tools_and_settings(self) -> None:
+        """RKE2InstallCommand should gate on the supported host, tools, and settings."""
+        cmd = RKE2InstallCommand()
         match command_to_dag(cmd):
             case Success(dag):
-                root = dag.get_node("rke2_ensure")
+                root = dag.get_node("rke2_install")
                 assert root is not None
-                assert "rke2_installed" in root.prerequisites
-                assert "rke2_config_exists" in root.prerequisites
+                assert "supported_ubuntu_2404" in root.prerequisites
                 assert "systemd_available" in root.prerequisites
                 assert "tool_kubectl" in root.prerequisites
                 assert "tool_helm" in root.prerequisites
@@ -660,21 +659,24 @@ class TestRKE2CommandPrerequisites:
                 assert "tool_ctr" in root.prerequisites
                 assert "tool_sudo" in root.prerequisites
                 assert "tool_systemctl" in root.prerequisites
-                assert "kubeconfig_exists" in root.prerequisites
                 assert "machine_identity" in root.prerequisites
+                assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_cleanup_requires_cluster_access_and_machine_identity(self) -> None:
-        """RKE2CleanupCommand should require cluster access and machine identity."""
-        cmd = RKE2CleanupCommand()
+    def test_rke2_delete_requires_supported_host_and_settings(self) -> None:
+        """RKE2DeleteCommand should require the supported host, sudo, and settings."""
+        cmd = RKE2DeleteCommand()
         match command_to_dag(cmd):
             case Success(dag):
-                root = dag.get_node("rke2_cleanup")
+                root = dag.get_node("rke2_delete")
                 assert root is not None
-                assert "k8s_cluster_reachable" in root.prerequisites
-                assert "machine_identity" in root.prerequisites
+                assert "supported_ubuntu_2404" in root.prerequisites
+                assert "systemd_available" in root.prerequisites
+                assert "tool_sudo" in root.prerequisites
+                assert "tool_systemctl" in root.prerequisites
+                assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
@@ -692,12 +694,12 @@ class TestRKE2CommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_ensure_effect_builder_uses_machine_identity(self) -> None:
-        """rke2 ensure should build Harbor + storage/MinIO reconciliation effects."""
-        cmd = RKE2EnsureCommand()
+    def test_rke2_install_effect_builder_uses_machine_identity_and_settings(self) -> None:
+        """rke2 install should build the host-owned install/reconcile sequence."""
+        cmd = RKE2InstallCommand()
         match command_to_dag(cmd):
             case Success(dag):
-                root = dag.get_node("rke2_ensure")
+                root = dag.get_node("rke2_install")
                 assert root is not None
                 prereq_results = {
                     "machine_identity": Success(
@@ -705,48 +707,48 @@ class TestRKE2CommandPrerequisites:
                             machine_id="0123456789abcdef0123456789abcdef",
                             prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
                         )
-                    )
+                    ),
+                    "settings_object": Success({"manual_pv_host_root": Path("/tmp/manual-pv")}),
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
-                assert len(built_effect.effects) == 7
-                assert isinstance(built_effect.effects[0], EnsureRke2IngressController)
-                assert isinstance(built_effect.effects[4], EnsureProdboxIdentityConfigMap)
-                assert isinstance(built_effect.effects[5], Parallel)
-                assert isinstance(built_effect.effects[6], AnnotateProdboxManagedResources)
-                parallel_effect = built_effect.effects[5]
+                assert len(built_effect.effects) == 11
+                assert isinstance(built_effect.effects[0], Custom)
+                assert isinstance(built_effect.effects[1], EnsureRke2IngressController)
+                assert isinstance(built_effect.effects[8], EnsureProdboxIdentityConfigMap)
+                assert isinstance(built_effect.effects[9], Parallel)
+                assert isinstance(built_effect.effects[10], AnnotateProdboxManagedResources)
+                parallel_effect = built_effect.effects[9]
                 assert len(parallel_effect.effects) == 2
                 assert isinstance(parallel_effect.effects[0], EnsureHarborRegistry)
                 assert isinstance(parallel_effect.effects[1], Sequence)
                 storage_minio_effect = parallel_effect.effects[1]
                 assert len(storage_minio_effect.effects) == 2
                 assert isinstance(storage_minio_effect.effects[0], EnsureRetainedLocalStorage)
+                assert storage_minio_effect.effects[0].host_storage_base_path == Path(
+                    "/tmp/manual-pv"
+                )
                 assert isinstance(storage_minio_effect.effects[1], EnsureMinio)
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_cleanup_effect_builder_uses_machine_identity(self) -> None:
-        """rke2 cleanup should build annotation-based cleanup effect."""
-        cmd = RKE2CleanupCommand()
+    def test_rke2_delete_effect_builder_uses_settings(self) -> None:
+        """rke2 delete should build the destructive delete sequence from settings."""
+        cmd = RKE2DeleteCommand()
         match command_to_dag(cmd):
             case Success(dag):
-                root = dag.get_node("rke2_cleanup")
+                root = dag.get_node("rke2_delete")
                 assert root is not None
                 prereq_results = {
-                    "machine_identity": Success(
-                        MachineIdentity(
-                            machine_id="0123456789abcdef0123456789abcdef",
-                            prodbox_id="prodbox-0123456789abcdef0123456789abcdef",
-                        )
-                    )
+                    "settings_object": Success({"manual_pv_host_root": Path("/tmp/manual-pv")}),
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
-                assert len(built_effect.effects) == 3
-                assert isinstance(built_effect.effects[0], AnnotateProdboxManagedResources)
-                assert isinstance(built_effect.effects[1], CleanupProdboxAnnotatedResources)
-                assert built_effect.effects[1].retained_resource_kinds != ()
-                assert built_effect.effects[1].retained_namespaces == ("prodbox",)
+                assert len(built_effect.effects) == 2
+                assert isinstance(built_effect.effects[0], Custom)
+                assert isinstance(built_effect.effects[1], WriteStdout)
+                assert "/tmp/manual-pv" in built_effect.effects[1].text
+                assert ".prodbox-state" in built_effect.effects[1].text
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -1081,8 +1083,8 @@ class TestAllPrerequisitesExistInRegistry:
             RKE2StartCommand(),
             RKE2StopCommand(),
             RKE2RestartCommand(),
-            RKE2EnsureCommand(),
-            RKE2CleanupCommand(),
+            RKE2InstallCommand(),
+            RKE2DeleteCommand(),
             RKE2LogsCommand(),
         ]
         for cmd in commands:

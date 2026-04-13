@@ -10,6 +10,7 @@
 
 > **Authoritative Reference**: [development_plan_standards.md](development_plan_standards.md#i-explicit-cleanup-and-removal-ledger)
 
+
 ## Pending Removal
 
 None.
@@ -23,9 +24,11 @@ None.
 | Unconditional prerequisite success paths | Sprint 1.1 | Placeholder prerequisite success is no longer supported |
 | Raw pytest passthrough from the public `prodbox test` surface | Sprint 1.1 | Only named suites remain public |
 | Undocumented command-surface side paths | Sprint 1.1 | Click surface is now explicitly owned and documented |
-| Ambient or shared-profile AWS auth assumptions | Sprint 1.2 | Repository-root `.env` is the sole supported source |
+| Ambient or shared-profile AWS auth assumptions | Sprint 1.2 | Repository configuration is the only supported auth source; Sprint 4.8 later moved it from `.env` to Dhall-compiled JSON |
 | Unnamed high-risk AWS real-system validation | Sprint 1.2 | AWS-backed validation now runs through named suites |
 | Implicit cleanup assumptions for AWS suites | Sprint 1.2 | Teardown and cleanup proof are explicit closure work |
+| Preinstalled RKE2 cluster assumption | Sprint 1.3 | `prodbox` now owns `rke2 install|delete` on the supported host |
+| Generic Linux support language | Sprint 1.3 | The only supported operator environment is `Ubuntu 24.04 LTS` |
 | Cross-namespace chart composition | Sprint 3.1 | Chart delivery is namespace-local and canonical |
 | Chart-authored `PersistentVolume` creation | Sprint 3.1 | Retained storage is CLI-owned and deterministic |
 | `oauth2-proxy` and Google OAuth as the supported `vscode` auth path | Sprint 3.2 | nginx OIDC plus local Keycloak users is canonical |
@@ -50,9 +53,11 @@ None.
 | `prodbox-local-retain` StorageClass name | Sprint 4.5 | Consolidated to single `manual` StorageClass |
 | 4-segment `.data/<namespace>/<statefulset>/<ordinal>` path scheme | Sprint 4.5 | Migrated to 5-segment `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` |
 | Missing HA-mode defaults and dev-mode anti-affinity suppression | Sprint 4.5 | Chart templates now include `replicaCount` and conditional `podAntiAffinity`; `PRODBOX_DEV_MODE` controls suppression |
-| `KEYCLOAK_ADMIN_PASSWORD` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.data/<namespace>/.secrets.json` |
-| `KEYCLOAK_POSTGRES_PASSWORD` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.data/<namespace>/.secrets.json` |
-| `KEYCLOAK_NGINX_CLIENT_SECRET` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.data/<namespace>/.secrets.json` |
+| Mixed-purpose `.data/` root that stores non-PV artifacts | Sprint 4.6 | `.data/` is reserved for PV contents only; generated secrets and gateway event keys moved to `.prodbox-state/<namespace>/` |
+| Missing explicit Dhall field for the manual PV host root | Sprint 4.7 | `storage.manual_pv_host_root` is explicit in `prodbox-config.dhall` and defaults to `.data/` |
+| `KEYCLOAK_ADMIN_PASSWORD` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.prodbox-state/<namespace>/.secrets.json` |
+| `KEYCLOAK_POSTGRES_PASSWORD` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.prodbox-state/<namespace>/.secrets.json` |
+| `KEYCLOAK_NGINX_CLIENT_SECRET` in `.env` and Settings | Sprint 4.6 | Auto-generated and persisted in `.prodbox-state/<namespace>/.secrets.json` |
 | `METALLB_POOL` and `INGRESS_LB_IP` explicit `.env` override path | Sprint 4.6 | Always auto-discovered via `discover_lan_addressing()` |
 | `KUBECONFIG` setting in `.env` and Settings | Sprint 4.6 | Default `~/.kube/config` always used |
 | `PULUMI_STACK` setting in `.env` and Settings | Sprint 4.6 | Hardcoded to `home` |
@@ -61,7 +66,7 @@ None.
 | `prodbox env` command group | Sprint 4.9 | Replaced by `prodbox config` |
 | `.env` loading in Settings | Sprint 4.8 | Replaced by Dhall-compiled JSON loading |
 | `src/prodbox/lib/aws_auth.py` | Sprint 4.8 | AWS creds read from Settings directly |
-| `dict(os.environ)` in interpreter subprocess env builders | Sprint 4.9 | Replaced by `_base_subprocess_env()` in interpreter; `check_code.py` and `test_cmd.py` remain pending |
+| `dict(os.environ)` in interpreter subprocess env builders | Sprint 4.9 | Replaced by `_base_subprocess_env()` in interpreter; Sprint 4.11 later closed the remaining command-surface env builders |
 | `pydantic-settings` dependency | Sprint 4.8 | No longer needed after BaseModel migration |
 | `dict(os.environ)` in `check_code.py` subprocess env builder | Sprint 4.11 | Replaced by explicit `_TOOL_PASSTHROUGH_VARS` allowlist |
 | `dict(os.environ)` in `test_cmd.py` subprocess env builder | Sprint 4.11 | Replaced by explicit `_TEST_PASSTHROUGH_VARS` allowlist |
@@ -78,6 +83,8 @@ None.
 | Scope-scoped AWS preflight cleanup that can leave unrelated tagged test resources behind | Sprint 4.13 | `create_clean_fixture_scope()` now sweeps all tagged fixture-owned AWS resources before setup, not only scope-matching resources |
 | Standalone `prodbox aws sweep-fixtures` CLI and `tests.integration.sweep_runner` | Sprint 4.13 | Deleted; aggregate zero-residue proof now uses `src/prodbox/lib/aws_fixture_audit.py` inside the supported test flow |
 | Host cron entry that runs `prodbox aws sweep-fixtures` | Sprint 4.13 | Removed from the supported host crontab on April 12, 2026; no host-side background cleanup worker remains |
+| `prodbox rke2 ensure|cleanup` as the canonical lifecycle surface | Sprint 4.14 | Full `install|delete` semantics are canonical; delete preserves the configured manual PV host root plus `.prodbox-state/` |
+| Surviving non-`manual` StorageClasses after cluster install | Sprint 4.14 | `prodbox rke2 install` recreates the cluster-scoped `manual` StorageClass and deletes every other StorageClass |
 | Aggregate-suite clean-cluster bootstrap that gated on `prodbox host public-edge` before Pulumi-managed edge restore | Sprint 6.2 | `poetry run prodbox test all` now restores the Pulumi-managed edge, redeploys gateway plus `vscode`, and reaches `CLASSIFICATION=ready-for-external-proof` from a cleaned cluster |
 | Stale public-edge residue after clean-cluster teardown | Sprint 6.2 | Verified closed on April 12, 2026 by an empty `crontab -l`, no `/etc/hosts` override for `vscode.resolvefintech.com`, a passing `prodbox host public-edge`, and a passing `prodbox test integration public-dns` |
 | Final handoff claim that lacks a post-aggregate zero-AWS-residue proof through the supported test flow | Sprint 6.2 | Closed by the April 12, 2026 clean-cluster rerun from missing `prodbox-config.json`; `poetry run prodbox test all` now performs the final AWS inventory audit without a standalone janitor |

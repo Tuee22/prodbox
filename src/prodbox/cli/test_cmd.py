@@ -63,7 +63,7 @@ _CANONICAL_INTEGRATION_ALL_PYTEST_ARGS: Final[tuple[str, ...]] = (
     "tests/integration/test_charts_storage.py",
     "tests/integration/test_prodbox_lifecycle.py",
 )
-INTEGRATION_RUNBOOK_EFFECT_ID: str = "pytest_integration_runbook_ensure"
+INTEGRATION_RUNBOOK_EFFECT_ID: str = "pytest_integration_runbook_install"
 AGGREGATE_COVERAGE_ERASE_EFFECT_ID: Final[str] = "pytest_aggregate_coverage_erase"
 PHASE_ONE_HEADER_EFFECT_ID: Final[str] = "pytest_phase_one_header"
 PHASE_ONE_GATE_MESSAGE: Final[str] = "Phase 1/2: validating integration prerequisites"
@@ -82,6 +82,7 @@ PRE_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap
 PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_gateway"
 PRE_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_vscode"
 POST_PYTEST_RESTORE_HEADER_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_header"
+POST_PYTEST_RKE2_INSTALL_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_rke2_install"
 POST_PYTEST_PULUMI_REFRESH_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_refresh"
 POST_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_up"
 POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway"
@@ -94,13 +95,14 @@ _SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS: Final[frozenset[str]] = frozenset(
 )
 CLUSTER_INTEGRATION_TEST_PREREQUISITES: frozenset[str] = frozenset(
     {
+        "supported_ubuntu_2404",
         "tool_docker",
         "tool_ctr",
         "tool_helm",
         "tool_kubectl",
         "tool_sudo",
-        "kubeconfig_home_exists",
-        "rke2_service_active",
+        "tool_systemctl",
+        "settings_object",
     }
 )
 DNS_AWS_TEST_PREREQUISITES: frozenset[str] = frozenset(
@@ -546,7 +548,7 @@ def integration_gateway_partition(coverage: bool, cov_fail_under: int | None) ->
     help="Minimum coverage percentage in [0, 100]; requires --coverage.",
 )
 def integration_lifecycle(coverage: bool, cov_fail_under: int | None) -> None:
-    """Run storage + cleanup lifecycle integration tests."""
+    """Run storage + delete/reinstall lifecycle integration tests."""
     _exit_for_suite(
         suite=INTEGRATION_LIFECYCLE_TEST_SUITE,
         coverage=coverage,
@@ -880,8 +882,8 @@ def _runbook_effects_for_suite(
         ),
         RunSubprocess(
             effect_id=INTEGRATION_RUNBOOK_EFFECT_ID,
-            description="Runbook: ensure RKE2 + Harbor + storage runtime",
-            command=[sys.executable, "-m", "prodbox.cli.main", "rke2", "ensure"],
+            description="Runbook: install or reconcile the host-owned RKE2 + Harbor + storage runtime",
+            command=[sys.executable, "-m", "prodbox.cli.main", "rke2", "install"],
             stream_stdout=True,
             timeout=INTEGRATION_RUNBOOK_TIMEOUT_SECONDS,
             env=env,
@@ -956,6 +958,14 @@ def _post_pytest_effects_for_suite(
             effect_id=POST_PYTEST_RESTORE_HEADER_EFFECT_ID,
             description="Supported runtime restore header",
             text="Post-pytest: restoring supported runtime",
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_RKE2_INSTALL_EFFECT_ID,
+            description="Postflight: reinstall or reconcile the host-owned RKE2 cluster",
+            command=[sys.executable, "-m", "prodbox.cli.main", "rke2", "install"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
         ),
         RunSubprocess(
             effect_id=POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,

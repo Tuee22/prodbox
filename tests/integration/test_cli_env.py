@@ -41,6 +41,9 @@ def _compiled_config_json_bytes() -> bytes:
             "bootstrap_public_ip_override": None,
             "pulumi_enable_dns_bootstrap": True,
         },
+        "storage": {
+            "manual_pv_host_root": ".data",
+        },
     }
     return json.dumps(config, indent=2).encode("utf-8")
 

@@ -15,10 +15,11 @@ from tempfile import NamedTemporaryFile
 from prodbox.cli.types import Failure, Result, Success
 from prodbox.lib.prodbox_k8s import prodbox_gateway_image_ref
 from prodbox.lib.subprocess import run_command
-from prodbox.settings import RenderedSettingValue
+from prodbox.settings import REPOSITORY_ROOT, RenderedSettingValue
 
-CHARTS_ROOT: Path = Path(__file__).resolve().parents[3] / "charts"
-CHART_DATA_ROOT: Path = Path(__file__).resolve().parents[3] / ".data"
+CHARTS_ROOT: Path = REPOSITORY_ROOT / "charts"
+CHART_DATA_ROOT: Path = REPOSITORY_ROOT / ".data"
+CHART_STATE_ROOT: Path = REPOSITORY_ROOT / ".prodbox-state"
 CHART_STORAGE_CLASS_NAME: str = "manual"
 CHART_CLUSTER_ISSUER: str = "letsencrypt-http01"
 KEYCLOAK_REALM_NAME: str = "prodbox"
@@ -62,14 +63,29 @@ def _ensure_chart_state_dir(path: Path) -> None:
         _repair_chart_state_dir(path)
 
 
+def _chart_state_dir(namespace: str) -> Path:
+    """Return the repo-local retained non-PV state directory for one chart namespace."""
+    return CHART_STATE_ROOT / namespace
+
+
+def _manual_pv_root(settings: Mapping[str, RenderedSettingValue] | None = None) -> Path:
+    """Resolve the configured manual PV root or fall back to the canonical default."""
+    if settings is None:
+        return CHART_DATA_ROOT
+    value = settings.get("manual_pv_host_root")
+    if isinstance(value, Path):
+        return value
+    return CHART_DATA_ROOT
+
+
 def resolve_chart_secrets(namespace: str) -> dict[str, str]:
-    """Resolve or auto-generate chart secrets from retained .data/ storage.
+    """Resolve or auto-generate chart secrets from repo-local retained state.
 
     On first deploy, generates random secrets and persists them under
-    `.data/<namespace>/.secrets.json`. On subsequent deploys, reads the
+    `.prodbox-state/<namespace>/.secrets.json`. On subsequent deploys, reads the
     persisted secrets so credentials remain stable across teardown/rebuild.
     """
-    secrets_path = CHART_DATA_ROOT / namespace / ".secrets.json"
+    secrets_path = _chart_state_dir(namespace) / ".secrets.json"
     _ensure_chart_state_dir(secrets_path.parent)
     if secrets_path.exists():
         raw: object = json.loads(secrets_path.read_text(encoding="utf-8"))
@@ -90,12 +106,12 @@ def resolve_chart_secrets(namespace: str) -> dict[str, str]:
 def resolve_gateway_event_keys(namespace: str) -> dict[str, str]:
     """Resolve or auto-generate per-node event signing keys for the gateway chart.
 
-    Persisted under `.data/<namespace>/.gateway-event-keys.json` so the mesh
+    Persisted under `.prodbox-state/<namespace>/.gateway-event-keys.json` so the mesh
     keeps signing material stable across teardown/rebuild cycles. The file is
     independent of the keycloak secrets file because the gateway chart deploys
     into its own namespace and must not require keycloak fixtures.
     """
-    secrets_path = CHART_DATA_ROOT / namespace / ".gateway-event-keys.json"
+    secrets_path = _chart_state_dir(namespace) / ".gateway-event-keys.json"
     _ensure_chart_state_dir(secrets_path.parent)
     if secrets_path.exists():
         raw: object = json.loads(secrets_path.read_text(encoding="utf-8"))
@@ -294,14 +310,18 @@ def _resolve_public_fqdn(settings: Mapping[str, RenderedSettingValue]) -> Result
 
 
 def _storage_binding(
-    namespace: str, release_name: str, spec: ChartStorageSpec
+    namespace: str,
+    release_name: str,
+    spec: ChartStorageSpec,
+    *,
+    manual_pv_root: Path = CHART_DATA_ROOT,
 ) -> ChartStorageBinding:
     """Resolve deterministic PV/PVC names and host paths for one chart storage spec.
 
-    Uses the 5-segment path scheme: .data/<namespace>/<release>/<workload>/<ordinal>/<claim>
+    Uses the 5-segment path scheme: <manual-pv-root>/<namespace>/<release>/<workload>/<ordinal>/<claim>
     """
     host_path = (
-        CHART_DATA_ROOT
+        manual_pv_root
         / namespace
         / release_name
         / spec.statefulset_name
@@ -457,7 +477,7 @@ def _values_for_gateway(
             "image": {
                 "repository": gateway_repository,
                 "tag": gateway_tag,
-                # `rke2 ensure` imports the machine-identity-tagged image into
+                # `rke2 install` imports the machine-identity-tagged image into
                 # local RKE2 containerd, so the chart should consume that
                 # cached artifact instead of forcing a registry round-trip.
                 "pullPolicy": "IfNotPresent",
@@ -650,11 +670,13 @@ def build_chart_deployment_plan(
     resolved_event_keys: Mapping[str, str] = (
         gateway_event_keys if gateway_event_keys is not None else {}
     )
+    manual_pv_root = _manual_pv_root(settings)
     releases: list[ChartReleasePlan] = []
     for release_name in release_order:
         definition = CHART_REGISTRY[release_name]
         storage_bindings = tuple(
-            _storage_binding(namespace, release_name, spec) for spec in definition.storage
+            _storage_binding(namespace, release_name, spec, manual_pv_root=manual_pv_root)
+            for spec in definition.storage
         )
         match _render_release_values_json(
             definition=definition,
@@ -690,7 +712,10 @@ def build_chart_deployment_plan(
     )
 
 
-def build_chart_delete_plan(chart_name: str) -> Result[ChartDeploymentPlan, str]:
+def build_chart_delete_plan(
+    chart_name: str,
+    settings: Mapping[str, RenderedSettingValue] | None = None,
+) -> Result[ChartDeploymentPlan, str]:
     """Build a deterministic delete plan for one supported root chart."""
     match _resolve_dependency_order(chart_name):
         case Failure(error):
@@ -698,6 +723,7 @@ def build_chart_delete_plan(chart_name: str) -> Result[ChartDeploymentPlan, str]
         case Success(value=release_order):
             reversed_order = tuple(reversed(release_order))
 
+    manual_pv_root = _manual_pv_root(settings)
     releases = tuple(
         ChartReleasePlan(
             chart_name=release_name,
@@ -706,7 +732,7 @@ def build_chart_delete_plan(chart_name: str) -> Result[ChartDeploymentPlan, str]
             chart_dir=CHART_REGISTRY[release_name].chart_dir,
             values_json="{}",
             storage_bindings=tuple(
-                _storage_binding(chart_name, release_name, spec)
+                _storage_binding(chart_name, release_name, spec, manual_pv_root=manual_pv_root)
                 for spec in CHART_REGISTRY[release_name].storage
             ),
         )
@@ -1232,6 +1258,7 @@ async def render_chart_status(
 __all__ = [
     "CHARTS_ROOT",
     "CHART_DATA_ROOT",
+    "CHART_STATE_ROOT",
     "CHART_STORAGE_CLASS_NAME",
     "ChartDefinition",
     "ChartDeploymentPlan",

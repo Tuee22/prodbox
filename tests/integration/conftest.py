@@ -10,8 +10,7 @@ Each integration test must:
    including failing tests.
 3. **Fail hard on teardown cleanup failure** by aborting the pytest session.
 4. **Explicitly remove temporary storage artifacts** created by the fixture
-   because `prodbox rke2 ensure` and `prodbox rke2 cleanup` intentionally
-   preserve storage.
+   because `prodbox rke2 install|delete` preserve retained host state by design.
 
 This keeps cluster setup/teardown idempotent: tests get the state they need from
 fixtures rather than from prior test side effects, and teardown still runs when a
@@ -46,12 +45,12 @@ from typing import NamedTuple, Never, cast
 import pytest
 import pytest_asyncio
 
-from prodbox.cli.command_adt import rke2_ensure_command
+from prodbox.cli.command_adt import rke2_install_command
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
 from prodbox.cli.summary import format_dag_failure_report
 from prodbox.cli.types import Failure, Success
-from prodbox.lib.prodbox_k8s import PRODBOX_STORAGE_BASE_PATH
+from prodbox.settings import Settings
 
 from .helpers import run_kubectl_capture_via_dag
 
@@ -64,8 +63,8 @@ class TlsMaterial(NamedTuple):
     ca_file: Path
 
 
-_RKE2_ENSURE_COMPLETE: bool = False
-_RKE2_ENSURE_FAILURE: str | None = None
+_RKE2_INSTALL_COMPLETE: bool = False
+_RKE2_INSTALL_FAILURE: str | None = None
 
 
 def abort_test_session_on_teardown_failure(*, target: str, error: BaseException) -> Never:
@@ -103,7 +102,7 @@ async def _run_command_capture(
 
 def _assert_storage_path_is_fixture_owned(host_path: Path) -> Path:
     """Restrict destructive test storage cleanup to the canonical prodbox storage root."""
-    storage_root = Path(PRODBOX_STORAGE_BASE_PATH).resolve()
+    storage_root = Settings.from_config_json().manual_pv_host_root.resolve()
     resolved_path = host_path.resolve()
     try:
         resolved_path.relative_to(storage_root)
@@ -189,32 +188,32 @@ def resolve_kubeconfig() -> Path:
 
 
 async def _ensure_rke2_via_dag() -> None:
-    global _RKE2_ENSURE_COMPLETE
-    global _RKE2_ENSURE_FAILURE
-    if _RKE2_ENSURE_COMPLETE:
+    global _RKE2_INSTALL_COMPLETE
+    global _RKE2_INSTALL_FAILURE
+    if _RKE2_INSTALL_COMPLETE:
         return
-    if _RKE2_ENSURE_FAILURE is not None:
-        raise AssertionError(_RKE2_ENSURE_FAILURE)
-    match rke2_ensure_command():
+    if _RKE2_INSTALL_FAILURE is not None:
+        raise AssertionError(_RKE2_INSTALL_FAILURE)
+    match rke2_install_command():
         case Failure(error):
-            failure_message = f"rke2 ensure command unavailable: {error}"
-            _RKE2_ENSURE_FAILURE = failure_message
+            failure_message = f"rke2 install command unavailable: {error}"
+            _RKE2_INSTALL_FAILURE = failure_message
             raise AssertionError(failure_message)
         case Success(command):
             match command_to_dag(command):
                 case Failure(error):
-                    failure_message = f"failed to build rke2 ensure DAG: {error}"
-                    _RKE2_ENSURE_FAILURE = failure_message
+                    failure_message = f"failed to build rke2 install DAG: {error}"
+                    _RKE2_INSTALL_FAILURE = failure_message
                     raise AssertionError(failure_message)
                 case Success(dag):
                     interpreter = create_interpreter()
                     summary = await interpreter.interpret_dag(dag)
                     if summary.exit_code != 0:
                         failure_report = format_dag_failure_report(summary).strip()
-                        failure_message = f"rke2 ensure DAG failed\n{failure_report}"
-                        _RKE2_ENSURE_FAILURE = failure_message
+                        failure_message = f"rke2 install DAG failed\n{failure_report}"
+                        _RKE2_INSTALL_FAILURE = failure_message
                         raise AssertionError(failure_message)
-                    _RKE2_ENSURE_COMPLETE = True
+                    _RKE2_INSTALL_COMPLETE = True
 
 
 async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
@@ -222,7 +221,7 @@ async def require_rke2_and_cert_manager(kubeconfig: Path) -> None:
     if shutil.which("kubectl") is None:
         raise AssertionError("kubectl not installed")
     if shutil.which("helm") is None:
-        raise AssertionError("helm not installed (required for Harbor bootstrap in rke2 ensure)")
+        raise AssertionError("helm not installed (required for Harbor bootstrap in rke2 install)")
     if shutil.which("docker") is None:
         raise AssertionError("docker not installed (required for Harbor image pipeline)")
     if shutil.which("ctr") is None:

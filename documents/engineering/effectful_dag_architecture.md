@@ -178,15 +178,14 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
 ### 4.4 RKE2 Lifecycle via eDAG
 
 RKE2 cluster lifecycle is modeled as idempotent DAG nodes:
-- `rke2_ensure`: provision/start runtime from existing RKE2 install, then reconcile Harbor registry pipeline
-- `rke2_cleanup`: cleanup prodbox-annotated Kubernetes resources without host-path deletion
+- `rke2_install`: install or reconcile the supported host-owned RKE2 lifecycle, then reconcile Harbor and retained storage
+- `rke2_delete`: remove the RKE2 substrate and managed cluster remnants while preserving retained host state
 
-Provisioning/cleanup use fail-fast prerequisites from the registry (for example,
-`rke2_installed`, `rke2_config_exists`, `tool_helm`, `tool_docker`, `machine_identity`,
-`k8s_cluster_reachable`)
-before any destructive or expensive effect runs.
+Install/delete use fail-fast prerequisites from the registry (for example,
+`supported_ubuntu_2404`, `systemd_available`, `tool_helm`, `tool_docker`, `tool_systemctl`,
+`machine_identity`, and `settings_object`) before any destructive or expensive effect runs.
 
-During `rke2_ensure`, Harbor and retained-storage/MinIO reconciliation execute in parallel:
+During `rke2_install`, Harbor and retained-storage/MinIO reconciliation execute in parallel:
 
 1. `EnsureHarborRegistry`
 2. `Sequence(EnsureRetainedLocalStorage -> EnsureMinio)`

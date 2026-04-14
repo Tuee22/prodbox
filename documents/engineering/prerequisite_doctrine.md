@@ -109,8 +109,11 @@ Validate external tools are installed:
 | `tool_sudo` | sudo CLI available for root-owned host operations |
 | `tool_pulumi` | pulumi CLI available |
 | `tool_aws` | system-level aws CLI available for real AWS integration tooling |
+| `tool_ssh` | OpenSSH client available for HA-RKE2 node orchestration |
 | `tool_rke2` | RKE2 binary installed |
 | `tool_systemctl` | systemctl available |
+| `tool_dhall` | Dhall CLI available for config bootstrap helpers |
+| `tool_dhall_to_json` | Dhall-to-JSON compiler available |
 
 ### 2.3 Configuration Prerequisites
 
@@ -120,7 +123,8 @@ Validate configuration files exist:
 |--------------|-----------|
 | `settings_object` | Dhall-backed settings compile and load successfully |
 | `settings_loaded` | Effective settings mapping is available to pure code |
-| `kubeconfig_exists` | Kubeconfig file present |
+| `kubeconfig_exists` | Local RKE2 kubeconfig file present |
+| `kubeconfig_home_exists` | User-home kubeconfig file present |
 | `rke2_config_exists` | RKE2 config.yaml present |
 
 ### 2.4 Service Prerequisites
@@ -283,6 +287,9 @@ _build_rke2_delete_dag(...):
         "systemd_available",
         "tool_sudo",
         "tool_systemctl",
+        "tool_pulumi",
+        "tool_aws",
+        "k8s_cluster_reachable",
         "settings_object",
     ])
 ```
@@ -294,7 +301,10 @@ _build_rke2_delete_dag(...):
 
 Finally, it reconciles prodbox annotations.
 
-`rke2_delete` removes the RKE2 substrate, deletes managed kubeconfig residue that still targets the local RKE2 API, removes the legacy storage root when safe, and preserves the configured manual PV host root plus `.prodbox-state/`.
+`rke2_delete` first invokes the same Pulumi-owned AWS test-stack destroy path exposed by
+`prodbox pulumi test-destroy --yes`, then removes the RKE2 substrate, deletes managed
+kubeconfig residue that still targets the local RKE2 API, removes the legacy storage root when
+safe, and preserves the configured manual PV host root plus `.prodbox-state/`.
 
 Harbor install/mirror/build details are defined in
 [Local Registry Pipeline](./local_registry_pipeline.md).

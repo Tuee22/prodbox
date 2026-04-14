@@ -11,6 +11,8 @@ from prodbox.cli.command_adt import (
     pulumi_preview_command,
     pulumi_refresh_command,
     pulumi_stack_init_command,
+    pulumi_test_destroy_command,
+    pulumi_test_resources_command,
     pulumi_up_command,
 )
 from prodbox.cli.command_executor import execute_command, render_error_and_return_exit_code
@@ -89,3 +91,24 @@ def stack_init(stack: str) -> None:
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_stack_init"))
+
+
+@pulumi.command("test-resources")
+def resources() -> None:
+    """Provision or inspect the canonical AWS HA-RKE2 test stack."""
+    match pulumi_test_resources_command():
+        case Success(cmd):
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_test_resources"))
+
+
+@pulumi.command("test-destroy")
+@click.option("--yes", "-y", is_flag=True, help="Confirm AWS test-stack destruction")
+def destroy_test_stack(yes: bool) -> None:
+    """Destroy the canonical AWS HA-RKE2 test stack."""
+    match pulumi_test_destroy_command(yes=yes):
+        case Success(cmd):
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_test_destroy"))

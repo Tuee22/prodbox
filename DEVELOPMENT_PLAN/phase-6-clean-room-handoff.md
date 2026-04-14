@@ -11,12 +11,13 @@
 ## Phase Summary
 
 This phase reruns the authoritative validation set from the supported operator flow after the
-public-host and AWS cleanup proofs close. Under the April 13, 2026 doctrine update, the previous
-final handoff proof is no longer sufficient because the supported clean-room path must now start
-from a full cluster delete that preserves the configured manual PV root plus the repo-local
-`.prodbox-state/` retained chart-state root, plus a missing compiled config artifact. The
-repository hands off only when no sprint remains blocked or active and the cleanup ledger is
-empty.
+public-host and AWS cleanup proofs close. Under the reopened doctrine, the previous final handoff
+proof is no longer sufficient because the supported clean-room path must now start from a full
+local cluster delete that preserves the configured manual PV root plus the repo-local
+`.prodbox-state/` retained chart-state root, plus a missing compiled config artifact, then rebuild
+the local cluster and MinIO backend, provision the remote three-node AWS test stack, install HA
+RKE2 over SSH, and finally destroy the Pulumi-managed AWS test resources before handoff. The
+repository hands off only when no sprint remains blocked or active and the cleanup ledger is empty.
 
 ## Sprint 6.1: Final Clean-Room Validation Rerun and Zero-Legacy Handoff ✅
 
@@ -142,6 +143,12 @@ standalone janitor surface.
 
 None.
 
+### Current Status Note
+
+- Sprint 6.4 supersedes the `aws_fixture_audit.py`-based zero-AWS-residue proof. Sprint 6.2
+  remains the April 12, 2026 single-host baseline that restored the supported local runtime from a
+  cleaned cluster.
+
 
 ## Sprint 6.3: Final Handoff Proof from Full Cluster Delete and Missing Compiled Config ✅
 
@@ -194,7 +201,64 @@ artifact under the new host-owned lifecycle doctrine.
   `PRIVATE_EDGE_READY=true`.
 - `poetry run prodbox test integration public-dns` passed on April 13, 2026 (2 tests).
 - `poetry run prodbox check-code` passed on April 13, 2026 after the closure updates.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) has no pending removal items.
+- At the April 13, 2026 closure point the legacy ledger was empty; Sprint 6.4 later
+  revalidated the same handoff with the Pulumi-owned AWS test stack and the HA-over-SSH proof on
+  April 14, 2026.
+
+### Remaining Work
+
+None.
+
+## Sprint 6.4: Final Clean-Room Proof for Local-Backend and Remote-HA Validation ✅
+
+**Status**: Done
+**Implementation**: `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/rke2.py`, `src/prodbox/lib/aws_test_stack.py`, `src/prodbox/infra/aws_test_stack_program.py`, `tests/integration/test_ha_rke2_aws.py`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Re-prove the final clean-room handoff from full local cluster delete and missing compiled config
+through local MinIO backend restore, remote HA RKE2 deployment over SSH, and final Pulumi-owned
+AWS teardown.
+
+### Deliverables
+
+- The authoritative rerun starts from `poetry run prodbox rke2 delete --yes` and a missing
+  repository-root `prodbox-config.json`.
+- The host machine reinstalls the local RKE2 cluster first, restores the MinIO backend, and makes
+  the dedicated bucket `prodbox-test-pulumi-backends` available before any remote AWS test stack
+  exists.
+- `prodbox pulumi test-resources` provisions or inspects the remote three-node AWS test stack, and
+  the named `ha-rke2-aws` suite proves HA RKE2 deployment over SSH on three separate-AZ
+  `Ubuntu 24.04 LTS` EC2 instances.
+- `prodbox pulumi test-destroy --yes` destroys the remote AWS test stack, and the same destroy
+  path is automatically invoked by `prodbox rke2 delete --yes` before local backend teardown.
+- The rerun finishes at `CLASSIFICATION=ready-for-external-proof` and leaves no Pulumi-managed AWS
+  resources or backend-bucket residue behind.
+
+### Validation
+
+1. `poetry run prodbox rke2 delete --yes`
+2. `rm -f prodbox-config.json`
+3. `poetry run prodbox rke2 install`
+4. `poetry run prodbox config show`
+5. `poetry run prodbox config validate`
+6. `poetry run prodbox pulumi test-resources`
+7. `poetry run prodbox test integration ha-rke2-aws`
+8. `poetry run prodbox pulumi test-destroy --yes`
+9. `poetry run prodbox test all`
+10. `poetry run prodbox host public-edge`
+11. `poetry run prodbox test integration public-dns`
+12. `poetry run prodbox check-code`
+
+### Current Validation State
+
+- `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, and `poetry run prodbox config validate` passed on April 13, 2026 from the missing compiled-config baseline required by the clean-room handoff.
+- `poetry run prodbox pulumi test-resources` passed on April 14, 2026 and created the canonical three-node AWS test stack.
+- `poetry run prodbox test all` passed on April 14, 2026 in `1h 20m 39s`; the aggregate rerun included `tests/integration/test_pulumi_real.py`, `tests/integration/test_ha_rke2_aws.py`, and `tests/integration/test_prodbox_lifecycle.py`, restored the supported runtime, and reached `CLASSIFICATION=ready-for-external-proof`.
+- `poetry run prodbox host public-edge` passed on April 13, 2026 and `poetry run prodbox test integration public-dns` passed on April 13, 2026 (2 tests); the April 14 aggregate rerun re-proved the same public-edge state during its restore tail.
+- `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and verified no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
+- A final `poetry run prodbox rke2 delete --yes` passed on April 14, 2026, auto-ran the shared Pulumi destroy path first, preserved only `.data/` and `.prodbox-state/`, left `rke2-server` inactive, and left `kubectl` unable to reach a cluster.
 
 ### Remaining Work
 
@@ -204,19 +268,18 @@ None.
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/aws_integration_environment_doctrine.md` - final AWS-backed rerun posture.
+- `documents/engineering/aws_integration_environment_doctrine.md` - final AWS-backed rerun posture,
+  the local-cluster-first MinIO backend, and Pulumi-exclusive teardown.
+- `documents/engineering/aws_test_environment.md` - local MinIO backend plus the three-node,
+  separate-AZ `Ubuntu 24.04 LTS` AWS test environment.
 - `documents/engineering/cli_command_surface.md` - canonical final validation path including
-  `rke2 install|delete`.
-- `documents/engineering/distributed_gateway_architecture.md` - clean-cluster ownership boundary
-  between substrate restore and public-edge restore.
-- `documents/engineering/helm_chart_platform_doctrine.md` - final `vscode` delivery and retained-PV
-  posture.
-- `documents/engineering/prerequisite_doctrine.md` - Ubuntu 24.04 support gate and final clean-room
-  prerequisite path.
+  `rke2 install|delete`, `pulumi test-resources`, and `pulumi test-destroy --yes`.
+- `documents/engineering/prerequisite_doctrine.md` - Ubuntu 24.04 support gate, the
+  local-cluster-first backend prerequisite, and the final clean-room prerequisite path.
 - `documents/engineering/storage_lifecycle_doctrine.md` - preserved manual PV root plus
-  delete/reinstall rebinding posture at handoff.
-- `documents/engineering/unit_testing_policy.md` - final authoritative test-command matrix and
-  delete/install rerun proof.
+  delete/reinstall rebinding posture and the pre-delete Pulumi destroy ordering at handoff.
+- `documents/engineering/unit_testing_policy.md` - final authoritative test-command matrix,
+  `ha-rke2-aws` ownership, and delete/install rerun proof.
 
 **Product docs to create/update:**
 
@@ -225,7 +288,7 @@ None.
 **Cross-references to add:**
 
 - Keep `README.md`, `00-overview.md`, `system-components.md`, and the cleanup ledger aligned with
-  the final handoff status.
+  the completed final-handoff status and the empty legacy backlog.
 
 ## Related Documents
 

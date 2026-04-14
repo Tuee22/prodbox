@@ -19,6 +19,10 @@ None.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| EKS-based AWS integration validation surface | Sprint 1.4 | `tests/integration/test_aws_eks_real.py` is deleted; the supported AWS validation path is now the Pulumi-managed three-node EC2 stack plus `prodbox test integration ha-rke2-aws` |
+| Tag-based AWS fixture cleanup contract | Sprint 4.15 | The supported architecture now uses fixture-owned Route 53 teardown for `dns-aws` plus Pulumi-owned lifecycle for the multi-resource AWS stack; `aws_fixture_audit.py` is deleted |
+| Pulumi test-state backend that is not the local-cluster MinIO bucket `prodbox-test-pulumi-backends` | Sprint 4.15 | `src/prodbox/lib/aws_test_stack.py` and `src/prodbox/infra/aws_test_stack_program.py` now harden the dedicated local MinIO backend bucket as the only supported AWS test-stack state location |
+| Manual AWS test-stack teardown that is not invoked by `prodbox rke2 delete --yes` | Sprint 4.15 | `src/prodbox/cli/dag_builders.py` prepends the shared `prodbox pulumi test-destroy --yes` path during `rke2 delete --yes` before local backend teardown |
 | Competing implementation-status narratives in doctrine docs | Sprint 0.1 | `documents/` now defer status and blocker tracking to the development plan |
 | Runtime placeholders that reported success without performing documented behavior | Sprint 1.1 | Removed inert command behavior from the supported CLI surface |
 | Unconditional prerequisite success paths | Sprint 1.1 | Placeholder prerequisite success is no longer supported |

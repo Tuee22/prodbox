@@ -24,6 +24,7 @@ from prodbox.cli.effects import (
     Pure,
     RequireLinux,
     RequireSystemd,
+    RequireUbuntu2404,
     ResolveMachineIdentity,
     ValidateAWSCredentials,
     ValidatePulumiLogin,
@@ -49,14 +50,18 @@ from prodbox.cli.prerequisite_registry import (
     ROUTE53_ACCESSIBLE,
     SETTINGS_LOADED,
     SETTINGS_OBJECT,
+    SUPPORTED_UBUNTU_2404,
     SYSTEMD_AVAILABLE,
     TOOL_AWS,
     TOOL_CTR,
+    TOOL_DHALL,
+    TOOL_DHALL_TO_JSON,
     TOOL_DOCKER,
     TOOL_HELM,
     TOOL_KUBECTL,
     TOOL_PULUMI,
     TOOL_RKE2,
+    TOOL_SSH,
     TOOL_SUDO,
     TOOL_SYSTEMCTL,
 )
@@ -69,9 +74,11 @@ class TestRegistryCompleteness:
         """All platform prerequisite nodes should be in the registry."""
         assert "platform_linux" in PREREQUISITE_REGISTRY
         assert "systemd_available" in PREREQUISITE_REGISTRY
+        assert "supported_ubuntu_2404" in PREREQUISITE_REGISTRY
         assert "machine_identity" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["platform_linux"] is PLATFORM_LINUX
         assert PREREQUISITE_REGISTRY["systemd_available"] is SYSTEMD_AVAILABLE
+        assert PREREQUISITE_REGISTRY["supported_ubuntu_2404"] is SUPPORTED_UBUNTU_2404
         assert PREREQUISITE_REGISTRY["machine_identity"] is MACHINE_IDENTITY
 
     def test_all_tool_prerequisites_in_registry(self) -> None:
@@ -83,8 +90,11 @@ class TestRegistryCompleteness:
         assert "tool_sudo" in PREREQUISITE_REGISTRY
         assert "tool_pulumi" in PREREQUISITE_REGISTRY
         assert "tool_aws" in PREREQUISITE_REGISTRY
+        assert "tool_ssh" in PREREQUISITE_REGISTRY
         assert "tool_rke2" in PREREQUISITE_REGISTRY
         assert "tool_systemctl" in PREREQUISITE_REGISTRY
+        assert "tool_dhall" in PREREQUISITE_REGISTRY
+        assert "tool_dhall_to_json" in PREREQUISITE_REGISTRY
         assert PREREQUISITE_REGISTRY["tool_kubectl"] is TOOL_KUBECTL
         assert PREREQUISITE_REGISTRY["tool_docker"] is TOOL_DOCKER
         assert PREREQUISITE_REGISTRY["tool_ctr"] is TOOL_CTR
@@ -92,8 +102,11 @@ class TestRegistryCompleteness:
         assert PREREQUISITE_REGISTRY["tool_sudo"] is TOOL_SUDO
         assert PREREQUISITE_REGISTRY["tool_pulumi"] is TOOL_PULUMI
         assert PREREQUISITE_REGISTRY["tool_aws"] is TOOL_AWS
+        assert PREREQUISITE_REGISTRY["tool_ssh"] is TOOL_SSH
         assert PREREQUISITE_REGISTRY["tool_rke2"] is TOOL_RKE2
         assert PREREQUISITE_REGISTRY["tool_systemctl"] is TOOL_SYSTEMCTL
+        assert PREREQUISITE_REGISTRY["tool_dhall"] is TOOL_DHALL
+        assert PREREQUISITE_REGISTRY["tool_dhall_to_json"] is TOOL_DHALL_TO_JSON
 
     def test_all_config_prerequisites_in_registry(self) -> None:
         """All configuration prerequisite nodes should be in the registry."""
@@ -150,9 +163,9 @@ class TestRegistryConsistency:
             ), f"Registry key '{key}' doesn't match effect_id '{node.effect.effect_id}'"
 
     def test_registry_has_expected_size(self) -> None:
-        """Registry should have exactly 29 prerequisites."""
-        # Platform: 4, Tools: 11, Config: 5, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
-        expected_count = 4 + 11 + 5 + 2 + 4 + 1 + 2
+        """Registry should have exactly 30 prerequisites."""
+        # Platform: 4, Tools: 12, Config: 5, AWS: 2, K8s: 4, Pulumi: 1, Composite: 2
+        expected_count = 4 + 12 + 5 + 2 + 4 + 1 + 2
         assert len(PREREQUISITE_REGISTRY) == expected_count
 
 
@@ -220,6 +233,7 @@ class TestEffectTypeCorrectness:
         """Platform prerequisites should use Require* effects."""
         assert isinstance(PLATFORM_LINUX.effect, RequireLinux)
         assert isinstance(SYSTEMD_AVAILABLE.effect, RequireSystemd)
+        assert isinstance(SUPPORTED_UBUNTU_2404.effect, RequireUbuntu2404)
         assert isinstance(MACHINE_IDENTITY.effect, ResolveMachineIdentity)
 
     def test_tool_prerequisites_use_validate_tool(self) -> None:
@@ -230,8 +244,12 @@ class TestEffectTypeCorrectness:
         assert isinstance(TOOL_HELM.effect, ValidateTool)
         assert isinstance(TOOL_SUDO.effect, ValidateTool)
         assert isinstance(TOOL_PULUMI.effect, ValidateTool)
+        assert isinstance(TOOL_AWS.effect, ValidateTool)
+        assert isinstance(TOOL_SSH.effect, ValidateTool)
         assert isinstance(TOOL_RKE2.effect, ValidateTool)
         assert isinstance(TOOL_SYSTEMCTL.effect, ValidateTool)
+        assert isinstance(TOOL_DHALL.effect, ValidateTool)
+        assert isinstance(TOOL_DHALL_TO_JSON.effect, ValidateTool)
 
     def test_file_prerequisites_use_check_file_exists(self) -> None:
         """File prerequisites should use CheckFileExists effect."""

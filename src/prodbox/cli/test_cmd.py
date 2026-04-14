@@ -53,9 +53,8 @@ _CANONICAL_INTEGRATION_ALL_PYTEST_ARGS: Final[tuple[str, ...]] = (
     "tests/integration/test_cli_commands.py",
     "tests/integration/test_cli_env.py",
     "tests/integration/test_dns_route53_aws.py",
-    "tests/integration/test_aws_foundation_real.py",
-    "tests/integration/test_aws_eks_real.py",
     "tests/integration/test_pulumi_real.py",
+    "tests/integration/test_ha_rke2_aws.py",
     "tests/integration/test_gateway_daemon_k8s.py",
     "tests/integration/test_gateway_k8s_pods.py",
     "tests/integration/test_gateway_partition.py",
@@ -88,7 +87,7 @@ POST_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_
 POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway"
 POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_vscode"
 POST_PYTEST_PUBLIC_EDGE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_public_edge"
-POST_PYTEST_AWS_AUDIT_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_audit"
+POST_PYTEST_AWS_DESTROY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_test_destroy"
 _PUBLIC_HOST_STACK_PREP_SUITE_IDS: Final[frozenset[str]] = frozenset({"all", "integration-all"})
 _SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS: Final[frozenset[str]] = frozenset(
     {"all", "integration-all"}
@@ -113,10 +112,19 @@ DNS_AWS_TEST_PREREQUISITES: frozenset[str] = frozenset(
 PULUMI_TEST_PREREQUISITES: frozenset[str] = CLUSTER_INTEGRATION_TEST_PREREQUISITES | frozenset(
     {
         "tool_pulumi",
+        "tool_aws",
+    }
+)
+AWS_HA_RKE2_TEST_PREREQUISITES: frozenset[str] = PULUMI_TEST_PREREQUISITES | frozenset(
+    {
+        "tool_ssh",
     }
 )
 ALL_INTEGRATION_TEST_PREREQUISITES: frozenset[str] = (
-    CLUSTER_INTEGRATION_TEST_PREREQUISITES | DNS_AWS_TEST_PREREQUISITES | PULUMI_TEST_PREREQUISITES
+    CLUSTER_INTEGRATION_TEST_PREREQUISITES
+    | DNS_AWS_TEST_PREREQUISITES
+    | PULUMI_TEST_PREREQUISITES
+    | AWS_HA_RKE2_TEST_PREREQUISITES
 )
 
 
@@ -197,17 +205,11 @@ INTEGRATION_DNS_AWS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
     requires_integration_runbook=False,
 )
-INTEGRATION_AWS_FOUNDATION_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
-    suite_id="integration-aws-foundation",
-    pytest_args=("tests/integration/test_aws_foundation_real.py",),
-    integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
-    requires_integration_runbook=False,
-)
-INTEGRATION_AWS_EKS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
-    suite_id="integration-aws-eks",
-    pytest_args=("tests/integration/test_aws_eks_real.py",),
-    integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
-    requires_integration_runbook=False,
+INTEGRATION_HA_RKE2_AWS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-ha-rke2-aws",
+    pytest_args=("tests/integration/test_ha_rke2_aws.py",),
+    integration_gate_prerequisites=AWS_HA_RKE2_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
 )
 INTEGRATION_PULUMI_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-pulumi",
@@ -274,8 +276,7 @@ def test() -> None:
       prodbox test all
       prodbox test unit
       prodbox test integration all
-      prodbox test integration aws-foundation
-      prodbox test integration aws-eks
+      prodbox test integration ha-rke2-aws
       prodbox test integration cli
       prodbox test integration dns-aws
       prodbox test integration env
@@ -376,7 +377,7 @@ def integration_cli(coverage: bool, cov_fail_under: int | None) -> None:
     )
 
 
-@integration.command("aws-foundation")
+@integration.command("ha-rke2-aws")
 @click.option(
     "--coverage",
     is_flag=True,
@@ -387,30 +388,10 @@ def integration_cli(coverage: bool, cov_fail_under: int | None) -> None:
     type=int,
     help="Minimum coverage percentage in [0, 100]; requires --coverage.",
 )
-def integration_aws_foundation(coverage: bool, cov_fail_under: int | None) -> None:
-    """Run real shared-account AWS foundation integration tests."""
+def integration_ha_rke2_aws(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run SSH-driven HA RKE2 integration tests against Pulumi-managed AWS nodes."""
     _exit_for_suite(
-        suite=INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
-        coverage=coverage,
-        cov_fail_under=cov_fail_under,
-    )
-
-
-@integration.command("aws-eks")
-@click.option(
-    "--coverage",
-    is_flag=True,
-    help="Enable pytest-cov for src/prodbox.",
-)
-@click.option(
-    "--cov-fail-under",
-    type=int,
-    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
-)
-def integration_aws_eks(coverage: bool, cov_fail_under: int | None) -> None:
-    """Run real EKS control-plane integration tests."""
-    _exit_for_suite(
-        suite=INTEGRATION_AWS_EKS_TEST_SUITE,
+        suite=INTEGRATION_HA_RKE2_AWS_TEST_SUITE,
         coverage=coverage,
         cov_fail_under=cov_fail_under,
     )
@@ -1004,10 +985,13 @@ def _post_pytest_effects_for_suite(
             description="Postflight: wait for ready public-host proof surface",
             fn=_wait_for_public_host_ready_for_external_proof,
         ),
-        Custom(
-            effect_id=POST_PYTEST_AWS_AUDIT_EFFECT_ID,
-            description="Postflight: prove no fixture-owned AWS resources remain",
-            fn=_assert_no_fixture_owned_aws_resources_remain,
+        RunSubprocess(
+            effect_id=POST_PYTEST_AWS_DESTROY_EFFECT_ID,
+            description="Postflight: destroy the Pulumi-managed AWS test stack",
+            command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "test-destroy", "--yes"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
         ),
     ]
 
@@ -1194,14 +1178,6 @@ async def _assert_public_host_ready_for_external_proof() -> str:
             f"{report}"
         )
     return report
-
-
-def _assert_no_fixture_owned_aws_resources_remain() -> str:
-    """Fail aggregate suites when fixture-owned AWS resources remain after teardown."""
-    from prodbox.lib.aws_fixture_audit import assert_no_fixture_owned_resources_remain
-
-    assert_no_fixture_owned_resources_remain()
-    return "No fixture-owned AWS resources remain."
 
 
 async def _wait_for_public_host_ready_for_external_proof() -> str:

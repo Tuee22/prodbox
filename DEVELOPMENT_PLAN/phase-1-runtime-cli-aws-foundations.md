@@ -11,9 +11,10 @@
 ## Phase Summary
 
 This phase establishes one explicit CLI surface, one named test-command surface, one
-supported-host gate, one host-owned RKE2 install/delete lifecycle, one repository-root AWS
-auth/config source, and one authoritative real-system validation baseline for AWS-backed
-surfaces.
+supported-host gate, one host-owned local RKE2 install/delete lifecycle, one repository-root AWS
+auth and config source, one local-cluster-first MinIO backend for Pulumi test state, and one
+authoritative AWS validation baseline that closes only when `prodbox` can deploy RKE2 in HA mode
+over SSH onto three separate-AZ `Ubuntu 24.04 LTS` EC2 instances.
 
 ## Sprint 1.1: Runtime, CLI, and Test-Command Foundations ✅
 
@@ -46,7 +47,7 @@ None.
 ## Sprint 1.2: AWS Auth Doctrine and Real-System Validation Foundation ✅
 
 **Status**: Done
-**Implementation**: `src/prodbox/settings.py`, `src/prodbox/lib/aws_auth.py` (removed in Sprint 4.8), `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`
+**Implementation**: `src/prodbox/settings.py`, `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/aws_helpers.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py`
 **Docs to update**: `documents/engineering/README.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -68,10 +69,8 @@ surfaces.
 
 1. `poetry run prodbox check-code`
 2. `poetry run prodbox test unit`
-3. `poetry run prodbox test integration aws-foundation`
-4. `poetry run prodbox test integration aws-eks`
-5. `poetry run prodbox test integration dns-aws`
-6. `poetry run prodbox test integration pulumi`
+3. `poetry run prodbox test integration dns-aws`
+4. `poetry run prodbox test integration pulumi`
 
 ### Remaining Work
 
@@ -125,21 +124,76 @@ Make `prodbox` the owner of the RKE2 cluster lifecycle itself on the only suppor
 
 None.
 
+## Sprint 1.4: SSH-Driven HA RKE2 on Pulumi-Managed Ubuntu 24.04 EC2 Nodes ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/infra/aws_test_stack_program.py`, `src/prodbox/lib/aws_test_stack.py`, `src/prodbox/lib/ha_rke2_aws.py`, `tests/integration/test_ha_rke2_aws.py`, `tests/integration/test_pulumi_real.py`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Expand the AWS-backed validation path from local-only or EKS-oriented proof to `prodbox`-owned
+RKE2 HA deployment over SSH against three Pulumi-managed `Ubuntu 24.04 LTS` EC2 instances in
+separate availability zones.
+
+### Deliverables
+
+- Pulumi provisions exactly three `Ubuntu 24.04 LTS` EC2 instances in separate AZs, plus the VPC,
+  subnet, security-group, IAM, and Route 53 prerequisites needed for the supported test stack.
+- `prodbox` owns the SSH-driven HA RKE2 bootstrap and join sequence across those three nodes;
+  EKS is no longer the supported AWS cluster validation surface.
+- The host machine running the tests boots the local RKE2 cluster first, runs MinIO there, and
+  provides the Pulumi backend before any remote AWS test resources are created.
+- The Pulumi backend uses one dedicated MinIO bucket named `prodbox-test-pulumi-backends` so test
+  backend leakage is easy to spot.
+- A named integration suite, `poetry run prodbox test integration ha-rke2-aws`, provisions the
+  AWS test stack, installs HA RKE2 over SSH, validates cluster readiness, and returns a destroyable
+  test environment owned by Pulumi.
+
+### Validation
+
+1. `poetry run prodbox rke2 delete --yes`
+2. `rm -f prodbox-config.json`
+3. `poetry run prodbox rke2 install`
+4. `poetry run prodbox config show`
+5. `poetry run prodbox config validate`
+6. `poetry run prodbox pulumi test-resources`
+7. `poetry run prodbox test integration ha-rke2-aws`
+8. `poetry run prodbox pulumi test-destroy --yes`
+9. `poetry run prodbox check-code`
+
+### Current Validation State
+
+- `poetry run prodbox check-code` passed on April 14, 2026.
+- `poetry run prodbox test unit` passed on April 14, 2026 (`989 passed`).
+- `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, and `poetry run prodbox config validate` passed on April 13, 2026 from the missing compiled-config baseline.
+- `poetry run prodbox pulumi test-resources` passed on April 14, 2026 and created the canonical `aws-test` stack with three Pulumi-managed EC2 nodes in separate AZs.
+- The same HA-over-SSH proof executed by `poetry run prodbox test integration ha-rke2-aws` passed inside the canonical `poetry run prodbox test all` rerun on April 14, 2026 as `tests/integration/test_ha_rke2_aws.py::test_ha_rke2_bootstrap_succeeds_on_three_pulumi_managed_nodes`.
+- `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and verified no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
+- `poetry run prodbox rke2 delete --yes` passed again on April 14, 2026 and auto-ran the shared Pulumi destroy path before local backend teardown.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/cli_command_surface.md` - canonical command matrix and test-command
-  ownership.
+- `documents/engineering/cli_command_surface.md` - canonical command matrix, test-command
+  ownership, and Pulumi test-resource inspection and destroy surfaces.
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite closure rules and Ubuntu 24.04 support gate.
 - `documents/engineering/unit_testing_policy.md` - named test-suite and validation ownership.
-- `documents/engineering/effectful_dag_architecture.md` - host-owned cluster install/delete ordering.
+- `documents/engineering/effectful_dag_architecture.md` - local cluster install/delete
+  ordering plus remote HA-over-SSH sequencing.
 - `documents/engineering/storage_lifecycle_doctrine.md` - lifecycle boundary between full cluster delete and preserved PV content root.
 - `documents/engineering/aws_integration_environment_doctrine.md` - repository-root
-  `prodbox-config.dhall` auth source (compiled to `prodbox-config.json`) and AWS cleanup rules.
-- `documents/engineering/aws_test_environment.md` - shared AWS environment setup.
-- `documents/engineering/integration_fixture_doctrine.md` - fixture-owned teardown and cleanup
-  doctrine.
+  `prodbox-config.dhall` auth source (compiled to `prodbox-config.json`), the local-cluster-first
+  MinIO backend, and Pulumi-exclusive AWS provisioning and teardown rules.
+- `documents/engineering/aws_test_environment.md` - local MinIO backend plus the three-node,
+  separate-AZ `Ubuntu 24.04 LTS` AWS test environment setup.
+- `documents/engineering/integration_fixture_doctrine.md` - replacement of tag-sweep fixture
+  cleanup with Pulumi-owned AWS test-stack teardown ordering.
 
 **Product docs to create/update:**
 

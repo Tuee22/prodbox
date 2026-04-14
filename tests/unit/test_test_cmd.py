@@ -16,18 +16,17 @@ from prodbox.cli.test_cmd import (
     AGGREGATE_COVERAGE_ERASE_EFFECT_ID,
     ALL_INTEGRATION_TEST_PREREQUISITES,
     ALL_TEST_SUITE,
-    CLUSTER_INTEGRATION_TEST_PREREQUISITES,
+    AWS_HA_RKE2_TEST_PREREQUISITES,
     INTEGRATION_ALL_TEST_SUITE,
-    INTEGRATION_AWS_EKS_TEST_SUITE,
-    INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
     INTEGRATION_CHARTS_VSCODE_TEST_SUITE,
     INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_ENV_TEST_SUITE,
+    INTEGRATION_HA_RKE2_AWS_TEST_SUITE,
     INTEGRATION_PUBLIC_DNS_TEST_SUITE,
     INTEGRATION_PULUMI_TEST_SUITE,
     INTEGRATION_RUNBOOK_EFFECT_ID,
     PHASE_ONE_HEADER_EFFECT_ID,
-    POST_PYTEST_AWS_AUDIT_EFFECT_ID,
+    POST_PYTEST_AWS_DESTROY_EFFECT_ID,
     POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
     POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
     POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
@@ -43,6 +42,7 @@ from prodbox.cli.test_cmd import (
     PUBLIC_EDGE_CONNECT_HOST_ENV_VAR,
     PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID,
     PUBLIC_HOST_READINESS_EFFECT_ID,
+    PULUMI_TEST_PREREQUISITES,
     TEST_TIMEOUT_SECONDS,
     UNIT_TEST_SUITE,
     CoverageSettings,
@@ -155,7 +155,7 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
-        POST_PYTEST_AWS_AUDIT_EFFECT_ID,
+        POST_PYTEST_AWS_DESTROY_EFFECT_ID,
     ]
     rke2_restore = cast(
         RunSubprocess,
@@ -244,21 +244,29 @@ def test_build_test_dag_adds_integration_gate_prerequisites() -> None:
         ),
     )
     assert callable(postflight_public_edge.fn)
-    aws_audit = cast(
-        Custom[object],
+    aws_destroy = cast(
+        RunSubprocess,
         next(
             effect
             for effect in phase_two_effect.effects
-            if effect.effect_id == POST_PYTEST_AWS_AUDIT_EFFECT_ID
+            if effect.effect_id == POST_PYTEST_AWS_DESTROY_EFFECT_ID
         ),
     )
-    assert callable(aws_audit.fn)
+    assert aws_destroy.command == [
+        sys.executable,
+        "-m",
+        "prodbox.cli.main",
+        "pulumi",
+        "test-destroy",
+        "--yes",
+    ]
     assert "supported_ubuntu_2404" in phase_two.prerequisites
     assert "tool_helm" in phase_two.prerequisites
     assert "tool_docker" in phase_two.prerequisites
     assert "tool_ctr" in phase_two.prerequisites
     assert "tool_sudo" in phase_two.prerequisites
     assert "tool_systemctl" in phase_two.prerequisites
+    assert "tool_ssh" in phase_two.prerequisites
     assert "settings_object" in phase_two.prerequisites
     assert phase_two.prerequisite_failure_policy == PrerequisiteFailurePolicy.PROPAGATE
     phase_one_header = dag.get_node(PHASE_ONE_HEADER_EFFECT_ID)
@@ -349,26 +357,20 @@ def test_build_test_dag_keeps_public_host_suite_off_cluster_runbook(suite: objec
     ]
 
 
-@pytest.mark.parametrize(
-    "suite",
-    [
-        INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
-        INTEGRATION_AWS_EKS_TEST_SUITE,
-    ],
-)
-def test_build_test_dag_uses_aws_gate_for_new_real_aws_suites(suite: object) -> None:
-    """New real AWS suites should use the AWS prerequisite gate without the cluster runbook."""
+def test_build_test_dag_uses_cluster_aws_ssh_gate_for_ha_rke2_suite() -> None:
+    """HA RKE2 AWS suite should use the SSH-capable AWS gate and runbook."""
     dag = _build_test_dag(
-        suite=cast(object, suite),
+        suite=INTEGRATION_HA_RKE2_AWS_TEST_SUITE,
         coverage_settings=CoverageSettings(enabled=False, fail_under=None),
     )
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
-    assert phase_two.prerequisites == frozenset({"tool_aws"})
+    assert phase_two.prerequisites == AWS_HA_RKE2_TEST_PREREQUISITES
     phase_two_effect = cast(Sequence, phase_two.effect)
-    assert [effect.effect_id for effect in phase_two_effect.effects] == [
+    assert [effect.effect_id for effect in phase_two_effect.effects[:3]] == [
+        "pytest_integration_runbook_header",
+        INTEGRATION_RUNBOOK_EFFECT_ID,
         "pytest_phase_two_header",
-        "pytest_run",
     ]
 
 
@@ -380,9 +382,7 @@ def test_build_test_dag_uses_cluster_and_pulumi_gate_for_pulumi_suite() -> None:
     )
     phase_two = dag.get_node("pytest_phase_two")
     assert phase_two is not None
-    assert phase_two.prerequisites == CLUSTER_INTEGRATION_TEST_PREREQUISITES | frozenset(
-        {"tool_pulumi"}
-    )
+    assert phase_two.prerequisites == PULUMI_TEST_PREREQUISITES
 
 
 @pytest.mark.parametrize("suite", [ALL_TEST_SUITE, INTEGRATION_ALL_TEST_SUITE])
@@ -403,7 +403,7 @@ def test_aggregate_suites_restore_supported_runtime_after_pytest(suite: object) 
         POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID,
         POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID,
         POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
-        POST_PYTEST_AWS_AUDIT_EFFECT_ID,
+        POST_PYTEST_AWS_DESTROY_EFFECT_ID,
     ]
 
 

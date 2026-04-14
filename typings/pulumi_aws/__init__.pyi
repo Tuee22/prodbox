@@ -1,9 +1,9 @@
 """Type stubs for pulumi-aws.
 
-Provides typed interfaces for AWS provider and Route 53 resources.
+Provides typed interfaces for AWS provider and the EC2/IAM/Route 53 surfaces used in repo code.
 """
 
-from pulumi import ResourceOptions
+from pulumi import InvokeOptions
 
 class Provider:
     """AWS provider."""
@@ -22,7 +22,24 @@ class Provider:
         skip_region_validation: bool = False,
     ) -> None: ...
 
-# Re-export submodules
+class GetAvailabilityZonesResult:
+    names: tuple[str, ...]
+
+def get_availability_zones(
+    *,
+    state: str | None = None,
+    opts: InvokeOptions | None = None,
+) -> GetAvailabilityZonesResult: ...
+
+from pulumi_aws import ec2 as ec2
+from pulumi_aws import iam as iam
 from pulumi_aws import route53 as route53
 
-__all__ = ["Provider", "route53"]
+__all__ = [
+    "GetAvailabilityZonesResult",
+    "Provider",
+    "ec2",
+    "get_availability_zones",
+    "iam",
+    "route53",
+]

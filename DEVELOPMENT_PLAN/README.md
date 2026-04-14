@@ -75,22 +75,26 @@ A sprint can move to `Done` only when all of the following are true:
 
 **Canonical architecture**: one supported `prodbox` CLI surface, one repository-root Dhall
 config auto-compiled idempotently to JSON when supported commands load settings, one supported
-host OS (`Ubuntu 24.04 LTS` with systemd), one host-owned
-`prodbox rke2 install|delete --yes|status|start|stop|restart|logs` lifecycle for the RKE2
-cluster itself, one in-cluster always-on gateway Route 53 write path through `dns_write_gate`
-managed by `prodbox charts` (no host-side daemons), explicit per-subdomain Route 53 records only,
-one coherent `MetalLB -> Traefik -> vscode-nginx` public-host stack, one cluster-backed
+host OS (`Ubuntu 24.04 LTS` with systemd), one host-owned local
+`prodbox rke2 install|delete --yes|status|start|stop|restart|logs` lifecycle for the test-runner
+cluster itself, one SSH-driven HA RKE2 deployment path against three Pulumi-managed
+`Ubuntu 24.04 LTS` EC2 instances in separate AZs for AWS integration validation, one local-cluster
+MinIO backend for AWS test stacks with one dedicated bucket named
+`prodbox-test-pulumi-backends`, Pulumi-exclusive AWS provisioning and deprovisioning for test
+resources through named `prodbox pulumi test-resources|test-destroy --yes` surfaces, automatic
+Pulumi test-stack destroy during `prodbox rke2 delete --yes` before the local backend cluster is
+removed, one in-cluster always-on gateway Route 53 write path through `dns_write_gate` managed by
+`prodbox charts` (no host-side daemons), explicit per-subdomain Route 53 records only, one
+coherent `MetalLB -> Traefik -> vscode-nginx` public-host stack, one cluster-backed
 `prodbox charts` delivery path for `vscode`, one named validation command per major surface, one
 explicit removal ledger for anything still scheduled to disappear, one cluster-wide StorageClass
 named `manual` recreated at cluster install while every other StorageClass is deleted, one
 config-declared manual PV host root (default repository `.data/`) reserved purely for PV content,
 one repo-local retained chart-state root `.prodbox-state/` for generated secrets and gateway
-event keys preserved across cluster delete/reinstall, one explicit PV pre-creation model with
-deterministic PVC/PV rebinding across cluster delete/reinstall cycles, one Helm-only service
-deployment path, explicit chart-owned replica counts that keep single-writer retained-state services
-single-replica, no host-side cron-driven AWS janitor, harness-owned AWS fixture cleanup that
-begins every AWS-mutating test by sweeping any pre-existing tagged fixture resources, and
-subprocess credential isolation with no `os.environ` inheritance.
+event keys preserved across cluster delete/reinstall cycles, one explicit PV pre-creation model
+with deterministic PVC/PV rebinding across cluster delete/reinstall cycles, one Helm-only service
+deployment path, explicit chart-owned replica counts that keep single-writer retained-state
+services single-replica, and subprocess credential isolation with no `os.environ` inheritance.
 
 ### Sprint Details
 
@@ -98,8 +102,9 @@ subprocess credential isolation with no `os.environ` inheritance.
 |--------|--------|------------|----------------|----------------|
 | 0.1 Planning and Documentation Topology Baseline | ✅ Done | - | - | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`, `documents/engineering/README.md` |
 | 1.1 Runtime, CLI, and Test-Command Foundations | ✅ Done | - | - | `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `tests/integration/test_cli_commands.py`, `tests/integration/test_cli_env.py` |
-| 1.2 AWS Auth Doctrine and Real-System Validation Foundation | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/test_aws_foundation_real.py`, `tests/integration/test_aws_eks_real.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py` |
+| 1.2 AWS Auth Doctrine and Real-System Validation Foundation | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/cli/pulumi_cmd.py`, `tests/integration/aws_helpers.py`, `tests/integration/test_dns_route53_aws.py`, `tests/integration/test_pulumi_real.py` |
 | 1.3 Supported Host Gate and Host-Owned RKE2 Cluster Lifecycle | ✅ Done | - | - | `src/prodbox/cli/rke2.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/prerequisite_registry.py`, `src/prodbox/settings.py` |
+| 1.4 SSH-Driven HA RKE2 on Pulumi-Managed Ubuntu 24.04 EC2 Nodes | ✅ Done | - | - | `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/infra/aws_test_stack_program.py`, `src/prodbox/lib/aws_test_stack.py`, `src/prodbox/lib/ha_rke2_aws.py`, `tests/integration/test_ha_rke2_aws.py`, `tests/integration/test_pulumi_real.py` |
 | 2.1 Distributed Gateway Runtime, Formal Verification, and DNS-Write Capability | ✅ Done | - | - | `src/prodbox/gateway_daemon.py`, `src/prodbox/cli/gateway.py`, `src/prodbox/cli/tla.py`, `src/prodbox/tla_check.py`, `tests/integration/test_gateway_daemon_k8s.py`, `tests/integration/test_gateway_k8s_pods.py` |
 | 3.1 Chart Platform and Deterministic Retained Storage | ✅ Done | - | - | `src/prodbox/cli/charts.py`, `src/prodbox/lib/chart_platform.py`, `tests/integration/test_charts_storage.py`, `tests/integration/test_charts_platform.py` |
 | 3.2 `vscode` Stack and Canonical Cluster Auth Path | ✅ Done | - | - | `src/prodbox/cli/charts.py`, `tests/integration/test_charts_platform.py`, `tests/integration/test_charts_vscode.py`, `documents/engineering/helm_chart_platform_doctrine.md` |
@@ -115,108 +120,73 @@ subprocess credential isolation with no `os.environ` inheritance.
 | 4.10 AWS Fixture Leak Prevention | ✅ Done | - | - | `tests/integration/conftest.py`, `src/prodbox/cli/aws_cmd.py`, `src/prodbox/cli/main.py`, `tests/integration/sweep_runner.py` |
 | 4.11 Final Subprocess Env Isolation and Settings-Only Config Access | ✅ Done | - | - | `src/prodbox/cli/check_code.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/interpreter.py` |
 | 4.12 Host Gateway Service Removal | ✅ Done | - | - | `src/prodbox/cli/gateway.py`, `src/prodbox/cli/command_adt.py`, `src/prodbox/cli/dag_builders.py`, host filesystem, `documents/engineering/*`, `DEVELOPMENT_PLAN/*` |
-| 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/conftest.py`, `tests/integration/test_aws_foundation_real.py`, `src/prodbox/cli/main.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/lib/aws_fixture_audit.py` |
+| 4.13 Per-Test AWS Fixture Hygiene and Resource Tagging | ✅ Done | - | - | `tests/integration/aws_helpers.py`, `tests/integration/test_dns_route53_aws.py`, `src/prodbox/cli/test_cmd.py`, `documents/engineering/aws_integration_environment_doctrine.md` |
 | 4.14 Full Cluster Delete, StorageClass Reset, and Reinstall Rebinding | ✅ Done | - | - | `src/prodbox/cli/rke2.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/interpreter.py`, `tests/integration/test_prodbox_lifecycle.py` |
+| 4.15 Pulumi-Owned AWS Test Stack Lifecycle and Auto-Teardown | ✅ Done | - | - | `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/lib/aws_test_stack.py`, `src/prodbox/infra/aws_test_stack_program.py`, `tests/integration/test_pulumi_real.py`, `tests/integration/test_ha_rke2_aws.py` |
 | 5.1 Public Hostname Closure and Authoritative External Proof | ✅ Done | - | - | `prodbox-config.dhall`, `prodbox-config-types.dhall`, `src/prodbox/settings.py`, `src/prodbox/infra/cluster_issuer.py`, `tests/integration/test_charts_vscode.py`, `tests/integration/test_public_dns_delegation.py` |
 | 6.1 Final Clean-Room Validation Rerun and Zero-Legacy Handoff | ✅ Done | - | - | `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/infra/cert_manager.py`, `src/prodbox/infra/ingress.py`, `src/prodbox/infra/metallb.py`, `tests/unit/test_infra_program.py`, `tests/unit/test_test_cmd.py` |
-| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_settings.py`, `tests/integration/test_cli_env.py`, `tests/integration/test_charts_vscode.py`, `src/prodbox/lib/aws_fixture_audit.py` |
+| 6.2 Clean-Cluster Aggregate Bootstrap and Zero-AWS-Residue Closure | ✅ Done | - | - | `src/prodbox/settings.py`, `src/prodbox/cli/config_cmd.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_settings.py`, `tests/integration/test_cli_env.py`, `tests/integration/test_charts_vscode.py`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md` |
 | 6.3 Final Handoff Proof from Full Cluster Delete and Missing Compiled Config | ✅ Done | - | - | `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `tests/integration/test_prodbox_lifecycle.py` |
+| 6.4 Final Clean-Room Proof for Local-Backend and Remote-HA Validation | ✅ Done | - | - | `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/rke2.py`, `src/prodbox/lib/aws_test_stack.py`, `tests/integration/test_ha_rke2_aws.py` |
 
 ## Current Plan Status
 
-As of April 13, 2026: **the plan is closed.**
-The remaining April 13 doctrine deltas were implemented and revalidated on the supported host:
+As of April 14, 2026: **the plan is complete on the supported path.**
 
-- `prodbox` now owns the RKE2 cluster lifecycle on `Ubuntu 24.04 LTS`, including
-  `install|delete` and reboot-time systemd enablement.
-- `prodbox-config.dhall` explicitly declares `storage.manual_pv_host_root`, defaulting to the
-  repository `.data/` directory.
-- Full cluster delete now preserves the configured manual PV host root plus the repo-local
-  `.prodbox-state/` retained chart-state root, recreates `manual`, deletes every other
-  StorageClass, and re-proves PVC/PV rebinding after reinstall.
+Fresh validation established:
 
-Current-environment validation snapshot:
+- `poetry run prodbox check-code` passed on April 14, 2026 after the final AWS HA / Pulumi lifecycle closure updates.
+- `poetry run prodbox test unit` passed on April 14, 2026 (`989 passed`).
+- `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, and `poetry run prodbox config validate` passed on April 13, 2026 from the missing compiled-config baseline required by the clean-room handoff.
+- `poetry run prodbox pulumi test-resources` passed on April 14, 2026 and created the canonical `aws-test` stack with three Pulumi-managed EC2 nodes in separate availability zones.
+- `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and verified no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
+- `poetry run prodbox test all` passed on April 14, 2026 in `1h 20m 39s`; the aggregate rerun included `tests/integration/test_pulumi_real.py`, `tests/integration/test_ha_rke2_aws.py`, and `tests/integration/test_prodbox_lifecycle.py`, restored the supported runtime, and reached `CLASSIFICATION=ready-for-external-proof`.
+- A final `poetry run prodbox rke2 delete --yes` passed on April 14, 2026, auto-ran the shared Pulumi destroy path first, preserved only `.data/` and `.prodbox-state/`, and left `rke2-server` inactive.
 
-- `poetry run prodbox rke2 delete --yes` passed on April 13, 2026 and reported preserved roots
-  `/home/matthewnowak/prodbox/.data` and `/home/matthewnowak/prodbox/.prodbox-state`.
-- `rm -f prodbox-config.json` removed the compiled config before the closure rerun.
-- `poetry run prodbox rke2 install` passed on April 13, 2026 in `6m 40s`.
-- `poetry run prodbox config show` and `poetry run prodbox config validate` both passed on
-  April 13, 2026 and auto-regenerated `prodbox-config.json`; `config show` reported
-  `storage.manual_pv_host_root=/home/matthewnowak/prodbox/.data`.
-- `systemctl is-enabled rke2-server` returned `enabled`, and `/etc/os-release` reported
-  `Ubuntu 24.04.4 LTS`.
-- `poetry run prodbox test all` passed on April 13, 2026 in `1h 27m 34s` from full cluster
-  delete plus missing compiled config and restored the runtime to
-  `CLASSIFICATION=ready-for-external-proof`.
-- `poetry run prodbox host public-edge`, `poetry run prodbox test integration public-dns`, and
-  `poetry run prodbox check-code` all passed on April 13, 2026.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) has no pending removal items.
+Implication:
+
+- Sprint 1.4, Sprint 4.15, and Sprint 6.4 are now closed.
+- The AWS HA RKE2 validation path, Pulumi-owned AWS lifecycle, and final clean-room rerun all pass on the supported architecture.
+- The remaining legacy ledger stays empty.
 
 ## Exit Definition
 
 This plan is done only when all of the following are true:
 
-1. Sprint 1.3 closes with `prodbox` owning the RKE2 cluster lifecycle on `Ubuntu 24.04 LTS`
-   only, including install, delete, and the system-level service enablement needed for restart
-   after reboot.
-2. Sprint 4.1 remains closed without retry-based cleanup settling in the lifecycle suite.
-3. Sprint 4.2 remains closed with one canonical runtime path, one canonical CLI path, and one
-   canonical automated validation path per major surface.
-4. Sprint 4.3 remains closed with one coherent public-edge ownership model: adaptive MetalLB
-   addressing, Traefik as the supported cluster-edge controller, cert-manager bootstrap ownership,
-   and no competing public ingress path.
-5. Sprint 4.4 remains closed with the gateway daemon running as an in-cluster Kubernetes workload
-   under `prodbox charts`, with leader election guaranteeing exactly one Route 53 writer,
-   partition tolerance proven by a named integration suite, and explicit public subdomain
-   Route 53 records kept current through `dns_write_gate`.
-6. Sprint 4.5 remains closed with one StorageClass named `manual`, the 5-segment retained PV path
-   scheme, explicit replica counts aligned to each chart's storage semantics, and no residual
-   4-segment path references outside completed-sprint history.
-7. Sprint 4.6 closes with the configured manual PV host root reserved purely for PV contents; no
-   generated secrets, gateway mesh keys, or other non-PV retained artifacts may live there.
-8. Sprint 4.7 closes with `prodbox-config.dhall` as the single config source and with an explicit
-   manual PV host-root field that defaults to the repository `.data/` directory; canonical settings
-   loads must continue auto-compiling JSON when the compiled artifact is missing or stale.
-9. Sprint 4.8 remains closed with `Settings` loading from JSON (not `.env`), `pydantic-settings`
-   removed, `aws_auth.py` deleted, and all AWS credential access flowing through `Settings`.
-10. Sprint 4.9 remains closed with subprocess environments built explicitly from configuration (no
-    `os.environ` inheritance), `prodbox env` removed, and all `.env` code deleted.
-11. Sprint 4.10 remains closed with AWS leak prevention independent of host cron supervision or any
-    other standalone long-running janitor surface outside the RKE2 cluster.
-12. Sprint 4.11 remains closed with all subprocess env builders using explicit allowlists (no
-    `os.environ` inheritance) and all config access flowing through `Settings` (no env fallbacks).
-13. Sprint 4.12 remains closed with `prodbox-gateway.service` uninstalled from the supported host,
-    `prodbox gateway install-service` removed from the CLI surface, and all "host supervisor"
-    language purged from the plan and doctrine docs.
-14. Sprint 4.13 remains closed with every AWS-mutating integration test beginning by sweeping any
-    pre-existing fixture-owned AWS resources discoverable by canonical tags before creating fresh
-    ones, every taggable fixture-owned AWS resource carrying the canonical
-    ownership/expiry/safe-delete tags as the stale-resource discovery contract, setup helpers
-    rolling back partial AWS creation before the fixture yields, and no session-scoped sweep or
-    standalone janitor surface remaining on the supported path.
-15. Sprint 4.14 closes with `prodbox rke2 install` recreating the cluster-scoped `manual`
-    StorageClass and deleting every other StorageClass, `prodbox rke2 delete --yes` wiping every
-    managed cluster remnant other than the configured manual PV host root plus the repo-local
-    `.prodbox-state/` retained chart-state root, and lifecycle validation proving deterministic
-    PVC/PV rebinding after delete/reinstall.
-16. Sprint 5.1 remains closed with authoritative public DNS delegation proof plus live TLS and
-    auth-wall verification for `vscode.resolvefintech.com`.
-17. Sprint 6.1 remains closed with doctrine-aligned validation reruns from canonical CLI
-    entrypoints and with no competing sprint narrative under `documents/`.
-18. Sprint 6.2 remains closed with a canonical aggregate rerun restoring the public-edge stack
-    without manual Pulumi, Helm, host resolver, or config-compilation intervention from the
-    prior `cleanup`-based baseline.
-19. Sprint 6.3 closes with the authoritative clean-room handoff rerun starting from
-    `poetry run prodbox rke2 delete --yes` plus a missing repository-root `prodbox-config.json`,
-    preserving the configured PV-content root plus the repo-local `.prodbox-state/` retained
-    chart-state root while deleting every other managed cluster remnant, then restoring the
-    supported runtime and ending at `CLASSIFICATION=ready-for-external-proof`.
-20. Sprint 6.3 also closes with authoritative public-host proof using public DNS only (no
-    `/etc/hosts` override for `vscode.resolvefintech.com`) and with the aggregate supported test
-    flow proving that no fixture-owned Route 53, S3, VPC, EKS, or IAM resources remain without
-    invoking a standalone AWS janitor command outside the test harness.
-21. The remaining legacy inventory is empty.
+1. Sprint 1.3 remains closed with `prodbox` owning the local host RKE2 lifecycle on
+   `Ubuntu 24.04 LTS`, including install, delete, and reboot-time systemd enablement.
+2. Sprint 1.4 closes with `prodbox` able to deploy RKE2 in HA mode over SSH against exactly three
+   Pulumi-managed `Ubuntu 24.04 LTS` EC2 instances placed in separate AWS availability zones.
+3. Sprint 1.4 also closes with the local host cluster bootstrapped first and hosting the Pulumi
+   backend for AWS test stacks through MinIO and one dedicated bucket named
+   `prodbox-test-pulumi-backends`.
+4. Previously closed gateway, ingress, DNS, public-host, config, and retained-storage sprints
+   remain closed on the supported path: one `manual` StorageClass, one in-cluster gateway Route 53
+   writer through `dns_write_gate`, Traefik as the only supported edge controller, and
+   `prodbox-config.dhall` as the single configuration source.
+5. Sprint 4.15 closes with Pulumi as the exclusive creator and destroyer of AWS test resources; no
+   canonical ownership/expiry/safe-delete tag contract, pre-test AWS sweep, or standalone janitor
+   surface remains.
+6. Sprint 4.15 also closes with named inspection and destroy surfaces
+   `prodbox pulumi test-resources` and `prodbox pulumi test-destroy --yes`.
+7. Sprint 4.15 also closes with `prodbox rke2 delete --yes` automatically invoking the same
+   Pulumi destroy path before the local cluster that hosts the MinIO backend is removed.
+8. The dedicated `prodbox-test-pulumi-backends` bucket contains only AWS test-stack state so
+   leaked backend objects are easy to identify and part of the destroy proof.
+9. The EKS-backed AWS integration suite is removed from the supported architecture and replaced by
+   the EC2-backed HA RKE2 proof path.
+10. Sprint 6.2 remains closed with canonical settings loads auto-compiling `prodbox-config.json`
+    when the compiled artifact is missing or stale.
+11. Sprint 6.3 remains closed with full local-cluster delete preserving only the configured
+    PV-content root plus `.prodbox-state/` and with deterministic PVC/PV rebinding after
+    delete/reinstall.
+12. Sprint 6.4 closes with a clean-room rerun that starts from
+    `poetry run prodbox rke2 delete --yes` plus a missing `prodbox-config.json`, recreates the
+    local cluster and MinIO backend, provisions the remote three-node AWS test stack, installs HA
+    RKE2 over SSH, restores the supported runtime, and re-proves the public-host path.
+13. Sprint 6.4 also closes with the final proof destroying the AWS test stack and leaving no
+    Pulumi-managed Route 53, VPC, subnet, security-group, EC2, IAM, or backend-bucket residue.
+14. The remaining legacy inventory is empty.
 
 ## Related Documents
 

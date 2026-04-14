@@ -25,6 +25,8 @@ from prodbox.cli.command_adt import (
     PulumiPreviewCommand,
     PulumiRefreshCommand,
     PulumiStackInitCommand,
+    PulumiTestDestroyCommand,
+    PulumiTestResourcesCommand,
     PulumiUpCommand,
     RKE2DeleteCommand,
     RKE2InstallCommand,
@@ -52,6 +54,8 @@ from prodbox.cli.command_adt import (
     pulumi_preview_command,
     pulumi_refresh_command,
     pulumi_stack_init_command,
+    pulumi_test_destroy_command,
+    pulumi_test_resources_command,
     pulumi_up_command,
     requires_linux,
     requires_settings,
@@ -445,6 +449,51 @@ class TestPulumiCommands:
             case Failure(error):
                 assert "Invalid stack name" in error
 
+    def test_pulumi_test_resources_command_on_linux(self) -> None:
+        """pulumi_test_resources_command should succeed on Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            match pulumi_test_resources_command():
+                case Success(cmd):
+                    assert isinstance(cmd, PulumiTestResourcesCommand)
+                case Failure(_):
+                    pytest.fail("Expected Success on Linux")
+
+    def test_pulumi_test_resources_command_on_non_linux(self) -> None:
+        """pulumi_test_resources_command should fail on non-Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
+            match pulumi_test_resources_command():
+                case Success(_):
+                    pytest.fail("Expected Failure on non-Linux")
+                case Failure(error):
+                    assert "Linux" in error
+
+    def test_pulumi_test_destroy_command_requires_yes(self) -> None:
+        """pulumi_test_destroy_command should require explicit yes confirmation."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            match pulumi_test_destroy_command(yes=False):
+                case Success(_):
+                    pytest.fail("Expected Failure when yes=False")
+                case Failure(error):
+                    assert "--yes" in error
+
+    def test_pulumi_test_destroy_command_on_linux_with_yes(self) -> None:
+        """pulumi_test_destroy_command should succeed on Linux when yes=True."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            match pulumi_test_destroy_command(yes=True):
+                case Success(cmd):
+                    assert isinstance(cmd, PulumiTestDestroyCommand)
+                case Failure(_):
+                    pytest.fail("Expected Success on Linux with yes=True")
+
+    def test_pulumi_test_destroy_command_on_non_linux(self) -> None:
+        """pulumi_test_destroy_command should fail on non-Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
+            match pulumi_test_destroy_command(yes=True):
+                case Success(_):
+                    pytest.fail("Expected Failure on non-Linux")
+                case Failure(error):
+                    assert "Linux" in error
+
 
 class TestGatewayCommands:
     """Tests for gateway command smart constructors."""
@@ -548,13 +597,18 @@ class TestUtilityFunctions:
         assert requires_linux(K8sWaitCommand()) is False
         assert requires_linux(K8sLogsCommand()) is False
 
-    def test_requires_linux_false_for_pulumi(self) -> None:
-        """requires_linux should return False for Pulumi commands."""
+    def test_requires_linux_false_for_standard_pulumi_commands(self) -> None:
+        """requires_linux should return False for cross-platform Pulumi commands."""
         assert requires_linux(PulumiPreviewCommand()) is False
         assert requires_linux(PulumiUpCommand()) is False
         assert requires_linux(PulumiDestroyCommand()) is False
         assert requires_linux(PulumiRefreshCommand()) is False
         assert requires_linux(PulumiStackInitCommand(stack="test")) is False
+
+    def test_requires_linux_true_for_pulumi_test_stack_commands(self) -> None:
+        """AWS test-stack Pulumi commands should be Linux-only."""
+        assert requires_linux(PulumiTestResourcesCommand()) is True
+        assert requires_linux(PulumiTestDestroyCommand()) is True
 
     def test_requires_settings_dns_commands(self) -> None:
         """requires_settings should return True for DNS commands."""
@@ -567,12 +621,14 @@ class TestUtilityFunctions:
         assert requires_settings(K8sLogsCommand()) is True
 
     def test_requires_settings_pulumi_commands(self) -> None:
-        """requires_settings should return True for Pulumi commands."""
+        """requires_settings should return True for all Pulumi commands."""
         assert requires_settings(PulumiPreviewCommand()) is True
         assert requires_settings(PulumiUpCommand()) is True
         assert requires_settings(PulumiDestroyCommand()) is True
         assert requires_settings(PulumiRefreshCommand()) is True
         assert requires_settings(PulumiStackInitCommand(stack="test")) is True
+        assert requires_settings(PulumiTestResourcesCommand()) is True
+        assert requires_settings(PulumiTestDestroyCommand()) is True
 
     def test_requires_settings_host_commands(self) -> None:
         """requires_settings should distinguish host diagnostics from simple host commands."""

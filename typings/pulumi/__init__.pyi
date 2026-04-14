@@ -4,16 +4,20 @@ Provides typed interfaces for Pulumi primitives: Output, Input, ResourceOptions,
 Zero any types - uses 'object' for dynamic values.
 """
 
-from typing import TypeVar, Generic, Callable, Sequence
-from pathlib import Path
+from typing import Callable, Generic, Sequence, TypeVar
 
 T = TypeVar("T")
+U = TypeVar("U")
 
 class Output(Generic[T]):
     """Represents an asynchronous output value from a Pulumi resource."""
 
-    def apply(self, func: Callable[[T], object]) -> "Output[object]": ...
+    def apply(self, func: Callable[[T], U]) -> "Output[U]": ...
     def __getitem__(self, key: str | int) -> "Output[object]": ...
+    @classmethod
+    def all(cls, *values: object) -> "Output[tuple[object, ...]]": ...
+    @classmethod
+    def from_input(cls, value: T) -> "Output[T]": ...
 
 class Input(Generic[T]):
     """Represents a value that may be an Output or literal."""
@@ -34,6 +38,16 @@ class ResourceOptions:
         version: str | None = None,
         aliases: list[str] | None = None,
         custom_timeouts: object | None = None,
+    ) -> None: ...
+
+class InvokeOptions:
+    """Options for configuring invoke/data-source calls."""
+
+    def __init__(
+        self,
+        provider: object | None = None,
+        parent: object | None = None,
+        version: str | None = None,
     ) -> None: ...
 
 class CustomResource:
@@ -69,17 +83,9 @@ class ProviderResource:
         opts: ResourceOptions | None = None,
     ) -> None: ...
 
-def export(name: str, value: object) -> None:
-    """Export a stack output."""
-    ...
-
-def get_stack() -> str:
-    """Get the current stack name."""
-    ...
-
-def get_project() -> str:
-    """Get the current project name."""
-    ...
+def export(name: str, value: object) -> None: ...
+def get_stack() -> str: ...
+def get_project() -> str: ...
 
 class Config:
     """Pulumi configuration."""
@@ -97,14 +103,15 @@ class Config:
     def require_secret(self, key: str) -> Output[str]: ...
 
 __all__ = [
-    "Output",
-    "Input",
-    "ResourceOptions",
-    "CustomResource",
-    "ComponentResource",
-    "ProviderResource",
     "Config",
+    "CustomResource",
+    "Input",
+    "InvokeOptions",
+    "Output",
+    "ProviderResource",
+    "ResourceOptions",
+    "ComponentResource",
     "export",
-    "get_stack",
     "get_project",
+    "get_stack",
 ]

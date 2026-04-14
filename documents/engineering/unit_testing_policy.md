@@ -61,9 +61,10 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 
 Stateful AWS-mutating integration tests must follow
 [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) instead of
-reusing existing AWS resources. That includes per-test harness-owned full tagged-resource
-preflight, canonical fixture tagging, setup rollback before yield, and aggregate zero-residue
-proof through the supported `prodbox test all` flow.
+reusing existing AWS resources. In the supported architecture that means per-test Route 53 hosted
+zone fixtures for `dns-aws`, Pulumi-owned AWS stack lifecycle for `pulumi` and `ha-rke2-aws`,
+setup rollback before yield where fixtures allocate resources directly, and aggregate postflight
+destroy through the supported `prodbox test all` flow.
 
 ### Integration Execution Policy (Fail-Fast)
 
@@ -109,10 +110,9 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
    require `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
    Phase 2 pytest starts.
 7. Aggregate suites restore the supported runtime after the destructive pytest tail by running
-   `prodbox pulumi refresh`, `prodbox pulumi up --yes`, `prodbox charts deploy gateway`, and
-   `prodbox charts deploy vscode`,
-   then wait for `prodbox host public-edge` to return
-   `CLASSIFICATION=ready-for-external-proof` before exit.
+   `prodbox pulumi refresh`, `prodbox pulumi up --yes`, `prodbox charts deploy gateway`,
+   `prodbox charts deploy vscode`, and `prodbox pulumi test-destroy --yes`, then wait for
+   `prodbox host public-edge` to return `CLASSIFICATION=ready-for-external-proof` before exit.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

@@ -269,6 +269,16 @@ class PulumiStackInitCommand:
     cwd: Path | None = None
 
 
+@dataclass(frozen=True)
+class PulumiTestResourcesCommand:
+    """Provision or inspect the canonical Pulumi-managed AWS test stack."""
+
+
+@dataclass(frozen=True)
+class PulumiTestDestroyCommand:
+    """Destroy the canonical Pulumi-managed AWS test stack."""
+
+
 # =============================================================================
 # Gateway Commands
 # =============================================================================
@@ -390,6 +400,8 @@ Command = (
     | PulumiDestroyCommand
     | PulumiRefreshCommand
     | PulumiStackInitCommand
+    | PulumiTestResourcesCommand
+    | PulumiTestDestroyCommand
     # Gateway
     | GatewayStartCommand
     | GatewayStatusCommand
@@ -758,6 +770,41 @@ def pulumi_stack_init_command(
     return Success(PulumiStackInitCommand(stack=stack, cwd=cwd))
 
 
+def pulumi_test_resources_command() -> Result[PulumiTestResourcesCommand, str]:
+    """Create a PulumiTestResourcesCommand.
+
+    PLATFORM-AWARE: Returns Failure on non-Linux platforms.
+
+    Returns:
+        Success with PulumiTestResourcesCommand on Linux, Failure otherwise
+    """
+    if platform.system() != "Linux":
+        return Failure("Pulumi AWS test-stack commands require Linux")
+
+    return Success(PulumiTestResourcesCommand())
+
+
+def pulumi_test_destroy_command(*, yes: bool = False) -> Result[PulumiTestDestroyCommand, str]:
+    """Create a PulumiTestDestroyCommand.
+
+    PLATFORM-AWARE: Returns Failure on non-Linux platforms.
+    SAFETY: Requires explicit --yes acknowledgement because destroy is destructive.
+
+    Args:
+        yes: Confirmation flag from CLI --yes option
+
+    Returns:
+        Success with PulumiTestDestroyCommand on Linux when yes=True, Failure otherwise
+    """
+    if platform.system() != "Linux":
+        return Failure("Pulumi AWS test-stack commands require Linux")
+
+    if not yes:
+        return Failure("pulumi test-destroy requires --yes confirmation")
+
+    return Success(PulumiTestDestroyCommand())
+
+
 # =============================================================================
 # Utility Functions
 # =============================================================================
@@ -933,6 +980,8 @@ def requires_linux(command: Command) -> bool:
             return False
         case PulumiRefreshCommand() | PulumiStackInitCommand():
             return False
+        case PulumiTestResourcesCommand() | PulumiTestDestroyCommand():
+            return True
         # Gateway commands - cross-platform
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
             return False
@@ -966,6 +1015,8 @@ def requires_settings(command: Command) -> bool:
         case PulumiPreviewCommand() | PulumiUpCommand() | PulumiDestroyCommand():
             return True
         case PulumiRefreshCommand() | PulumiStackInitCommand():
+            return True
+        case PulumiTestResourcesCommand() | PulumiTestDestroyCommand():
             return True
         # Config commands - show/validate need settings, init/compile do not
         case ConfigShowCommand() | ConfigValidateCommand():
@@ -1040,6 +1091,8 @@ __all__ = [
     "PulumiDestroyCommand",
     "PulumiRefreshCommand",
     "PulumiStackInitCommand",
+    "PulumiTestResourcesCommand",
+    "PulumiTestDestroyCommand",
     # Gateway
     "GatewayStartCommand",
     "GatewayStatusCommand",
@@ -1075,6 +1128,8 @@ __all__ = [
     "pulumi_destroy_command",
     "pulumi_refresh_command",
     "pulumi_stack_init_command",
+    "pulumi_test_resources_command",
+    "pulumi_test_destroy_command",
     "gateway_start_command",
     "gateway_status_command",
     "gateway_config_gen_command",

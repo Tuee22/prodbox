@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 from prodbox.cli.command_adt import (
@@ -54,6 +55,8 @@ from prodbox.cli.command_adt import (
     PulumiPreviewCommand,
     PulumiRefreshCommand,
     PulumiStackInitCommand,
+    PulumiTestDestroyCommand,
+    PulumiTestResourcesCommand,
     PulumiUpCommand,
     RKE2DeleteCommand,
     RKE2InstallCommand,
@@ -892,6 +895,73 @@ def _sync_rke2_kubeconfig() -> str:
     return f"Refreshed kubeconfig at {target_path}"
 
 
+_RKE2_NODE_DISCOVERY_TIMEOUT_SECONDS: float = 300.0
+_RKE2_NODE_DISCOVERY_POLL_SECONDS: float = 2.0
+
+
+def _registered_node_names(stdout: str) -> tuple[str, ...]:
+    """Parse one `kubectl get nodes -o name` payload into registered node names."""
+    return tuple(line.strip() for line in stdout.splitlines() if line.strip() != "")
+
+
+def _wait_for_cluster_nodes_ready_before_deadline(deadline: float, last_detail: str) -> str:
+    """Recursively poll for registered nodes before waiting for Ready."""
+    match time.monotonic() < deadline:
+        case False:
+            raise RuntimeError(
+                "Failed to observe registered cluster nodes before readiness wait: "
+                f"{last_detail}"
+            )
+        case True:
+            get_result = _run_host_command(
+                ("kubectl", "get", "nodes", "-o", "name"),
+                timeout_seconds=30.0,
+            )
+            match get_result.returncode:
+                case 0:
+                    match _registered_node_names(get_result.stdout):
+                        case ():
+                            time.sleep(_RKE2_NODE_DISCOVERY_POLL_SECONDS)
+                            return _wait_for_cluster_nodes_ready_before_deadline(
+                                deadline,
+                                "cluster API reachable but no node objects registered yet",
+                            )
+                        case _:
+                            remaining_seconds = max(1, int(deadline - time.monotonic()))
+                            wait_result = _run_host_command(
+                                (
+                                    "kubectl",
+                                    "wait",
+                                    "--for=condition=Ready",
+                                    "node",
+                                    "--all",
+                                    f"--timeout={remaining_seconds}s",
+                                ),
+                                timeout_seconds=float(remaining_seconds + 30),
+                            )
+                            _require_host_command_success(
+                                wait_result,
+                                failure_prefix=(
+                                    "Failed to wait for all cluster nodes to report Ready"
+                                ),
+                            )
+                            return "All cluster nodes reported Ready"
+                case _:
+                    time.sleep(_RKE2_NODE_DISCOVERY_POLL_SECONDS)
+                    return _wait_for_cluster_nodes_ready_before_deadline(
+                        deadline,
+                        _completed_process_detail(get_result),
+                    )
+
+
+def _wait_for_cluster_nodes_ready() -> str:
+    """Wait for node objects to register, then wait for them to become Ready."""
+    return _wait_for_cluster_nodes_ready_before_deadline(
+        time.monotonic() + _RKE2_NODE_DISCOVERY_TIMEOUT_SECONDS,
+        "cluster API not yet reachable",
+    )
+
+
 def _storageclass_name_for_deletion(item: object) -> str | None:
     """Return one StorageClass name when it should be deleted."""
     match item:
@@ -1162,11 +1232,10 @@ def _build_rke2_install_effect(prereq_results: PrereqResults) -> Sequence:
                 args=["cluster-info"],
                 timeout=60.0,
             ),
-            RunKubectlCommand(
+            Custom(
                 effect_id="rke2_install_wait_for_node_ready",
                 description="Wait for all cluster nodes to report Ready",
-                args=["wait", "--for=condition=Ready", "node", "--all", "--timeout=300s"],
-                timeout=330.0,
+                fn=_wait_for_cluster_nodes_ready,
             ),
             Custom(
                 effect_id="rke2_install_reset_storageclasses",
@@ -1219,6 +1288,21 @@ def _build_rke2_install_effect(prereq_results: PrereqResults) -> Sequence:
     )
 
 
+def _destroy_aws_test_stack_effect() -> str:
+    """Destroy the canonical AWS test stack through the shared Pulumi lifecycle."""
+    from prodbox.lib.aws_test_stack import destroy_aws_test_stack
+
+    return destroy_aws_test_stack()
+
+
+def _ensure_aws_test_stack_effect() -> str:
+    """Provision or inspect the canonical AWS test stack through Pulumi."""
+    from prodbox.lib.aws_test_stack import ensure_aws_test_stack_resources
+
+    ensure_aws_test_stack_resources()
+    return "AWS test stack ready"
+
+
 def _build_rke2_delete_effect(prereq_results: PrereqResults) -> Sequence:
     """Build the host-owned RKE2 delete effect from prerequisites."""
     settings = _require_settings(prereq_results)
@@ -1228,6 +1312,13 @@ def _build_rke2_delete_effect(prereq_results: PrereqResults) -> Sequence:
         effect_id="rke2_delete",
         description="Delete the host-owned RKE2 cluster while preserving retained state",
         effects=[
+            Custom(
+                effect_id="rke2_delete_aws_test_stack_destroy",
+                description=(
+                    "Destroy the Pulumi-managed AWS test stack before local backend teardown"
+                ),
+                fn=_destroy_aws_test_stack_effect,
+            ),
             Custom(
                 effect_id="rke2_delete_cluster_substrate",
                 description="Delete the RKE2 cluster substrate while preserving retained state",
@@ -1783,6 +1874,9 @@ def _build_rke2_delete_dag(_cmd: RKE2DeleteCommand) -> EffectDAG:
                 "systemd_available",
                 "tool_sudo",
                 "tool_systemctl",
+                "tool_pulumi",
+                "tool_aws",
+                "k8s_cluster_reachable",
                 "settings_object",
             ]
         ),
@@ -2111,6 +2205,48 @@ def _build_pulumi_stack_init_dag(cmd: PulumiStackInitCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
+def _build_pulumi_test_resources_dag(_cmd: PulumiTestResourcesCommand) -> EffectDAG:
+    """Build DAG for provisioning or inspecting the AWS test stack."""
+    root: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="pulumi_test_resources",
+            description="Provision or inspect the canonical AWS test stack",
+            fn=_ensure_aws_test_stack_effect,
+        ),
+        prerequisites=frozenset(
+            [
+                "supported_ubuntu_2404",
+                "tool_pulumi",
+                "tool_aws",
+                "k8s_cluster_reachable",
+                "settings_object",
+            ]
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_pulumi_test_destroy_dag(_cmd: PulumiTestDestroyCommand) -> EffectDAG:
+    """Build DAG for destroying the AWS test stack."""
+    root: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="pulumi_test_destroy",
+            description="Destroy the canonical AWS test stack",
+            fn=_destroy_aws_test_stack_effect,
+        ),
+        prerequisites=frozenset(
+            [
+                "supported_ubuntu_2404",
+                "tool_pulumi",
+                "tool_aws",
+                "k8s_cluster_reachable",
+                "settings_object",
+            ]
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -2189,6 +2325,10 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_pulumi_refresh_dag(command))
         case PulumiStackInitCommand():
             return Success(_build_pulumi_stack_init_dag(command))
+        case PulumiTestResourcesCommand():
+            return Success(_build_pulumi_test_resources_dag(command))
+        case PulumiTestDestroyCommand():
+            return Success(_build_pulumi_test_destroy_dag(command))
 
         # Gateway commands
         case GatewayStartCommand():

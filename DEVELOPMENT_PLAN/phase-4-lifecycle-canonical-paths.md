@@ -13,12 +13,14 @@
 This phase hardens the lifecycle surface, removes duplicate or compatibility-only runtime, CLI,
 validation, and tooling paths, closes the remaining local edge-infrastructure automation gaps
 around MetalLB, Traefik, cert-manager, always-on gateway supervision, explicit per-subdomain DNS
-continuity, and public-host diagnostics, and converges retained storage on one config-declared PV
-root and one `manual` StorageClass. Under the updated doctrine, this phase also reserves the
-manual PV root purely for PV content, extends Dhall config to declare that root explicitly, replaces
-remnant-preserving cluster cleanup with full cluster delete/install semantics, and requires cluster
-install to recreate `manual` while deleting every other StorageClass. All cleanup history remains
-centralized in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+continuity, and public-host diagnostics, converges retained storage on one config-declared PV root
+and one `manual` StorageClass, and now also moves AWS test provisioning and teardown entirely under
+Pulumi. Under the reopened doctrine, this phase reserves the manual PV root purely for PV content,
+extends Dhall config to declare that root explicitly, replaces remnant-preserving cluster cleanup
+with full cluster delete/install semantics, requires cluster install to recreate `manual` while
+deleting every other StorageClass, and adds automatic Pulumi test-stack destroy before local cluster
+delete removes the MinIO backend host. All cleanup history remains centralized in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Sprint 4.1: Legacy Cleanup Hardening and Lifecycle Regression Closure ✅
 
@@ -843,6 +845,12 @@ the supported architecture.
   `src/prodbox/lib/aws_fixture_audit.py`; no standalone janitor command or host cron surface
   remains.
 
+### Current Status Note
+
+- Sprint 4.15 supersedes the tag-based AWS cleanup model for the supported architecture. Sprint
+  4.13 remains the April 12, 2026 milestone that introduced the now-legacy harness-owned cleanup
+  contract.
+
 ### Remaining Work
 
 None.
@@ -897,6 +905,59 @@ proving deterministic rebinding after reinstall.
 
 None.
 
+## Sprint 4.15: Pulumi-Owned AWS Test Stack Lifecycle and Auto-Teardown ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/test_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/lib/aws_test_stack.py`, `src/prodbox/infra/aws_test_stack_program.py`, `tests/integration/test_pulumi_real.py`, `tests/integration/test_ha_rke2_aws.py`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Make Pulumi the sole owner of AWS-backed test resource provisioning, inspection, and teardown, and
+wire that destroy path directly into `prodbox rke2 delete --yes` before the local MinIO backend is
+removed.
+
+### Deliverables
+
+- All AWS test resources needed for the supported HA validation path are created and destroyed only
+  through Pulumi; no canonical ownership, expiry, or safe-delete tag contract remains on the
+  supported path.
+- `prodbox pulumi test-resources` reports the Pulumi-managed AWS test resources and backend state
+  for the currently selected test stack.
+- `prodbox pulumi test-destroy --yes` destroys the Pulumi-managed AWS test stack and leaves the
+  dedicated MinIO backend bucket easy to inspect for leaked objects.
+- `prodbox rke2 delete --yes` invokes the same Pulumi destroy path automatically before it removes
+  the local cluster that hosts the MinIO backend.
+- The cleanup ledger no longer treats EKS, tag-sweep helpers, or `aws_fixture_audit.py` as pending
+  supported-path residue.
+
+### Validation
+
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox rke2 delete --yes`
+3. `rm -f prodbox-config.json`
+4. `poetry run prodbox rke2 install`
+5. `poetry run prodbox config show`
+6. `poetry run prodbox config validate`
+7. `poetry run prodbox pulumi test-resources`
+8. `poetry run prodbox test integration pulumi`
+9. `poetry run prodbox test integration ha-rke2-aws`
+10. `poetry run prodbox pulumi test-destroy --yes`
+
+### Current Validation State
+
+- `poetry run prodbox check-code` passed on April 14, 2026.
+- `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, and `poetry run prodbox config validate` passed on April 13, 2026 from the missing compiled-config baseline.
+- `poetry run prodbox pulumi test-resources` passed on April 14, 2026 and created the canonical `aws-test` stack with three Pulumi-managed EC2 nodes in separate AZs.
+- The Pulumi lifecycle proof executed by `poetry run prodbox test integration pulumi` passed inside the canonical `poetry run prodbox test all` rerun on April 14, 2026 as `tests/integration/test_pulumi_real.py::test_pulumi_test_stack_resources_and_destroy_are_idempotent`.
+- The same shared AWS test stack also supported the HA-over-SSH proof during the April 14, 2026 aggregate rerun as `tests/integration/test_ha_rke2_aws.py::test_ha_rke2_bootstrap_succeeds_on_three_pulumi_managed_nodes`.
+- `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and reported no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
+- `poetry run prodbox rke2 delete --yes` passed on April 14, 2026 and auto-ran the same Pulumi destroy path before local backend teardown.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -905,14 +966,20 @@ None.
   StorageClass lifecycle, full cluster delete semantics, and delete/reinstall rebinding contract.
 - `documents/engineering/helm_chart_platform_doctrine.md` - chart storage consumes the configured
   manual PV host root and treats it as PV-content-only storage.
-- `documents/engineering/cli_command_surface.md` - `rke2 install|delete` command matrix and
-  destructive confirmation rules.
+- `documents/engineering/cli_command_surface.md` - `rke2 install|delete`, `pulumi test-resources`,
+  and `pulumi test-destroy --yes` command matrix and destructive confirmation rules.
 - `documents/engineering/prerequisite_doctrine.md` - Ubuntu 24.04 gate, install/delete
   prerequisites, and remnant-free delete semantics.
-- `documents/engineering/effectful_dag_architecture.md` - host-owned cluster lifecycle plus storage
-  reset ordering.
-- `documents/engineering/unit_testing_policy.md` - lifecycle validation from install/delete
-  baseline.
+- `documents/engineering/effectful_dag_architecture.md` - host-owned local cluster lifecycle,
+  remote HA-over-SSH sequencing, and pre-delete Pulumi destroy ordering.
+- `documents/engineering/unit_testing_policy.md` - lifecycle validation from the install/delete
+  baseline plus the named `ha-rke2-aws` suite.
+- `documents/engineering/aws_integration_environment_doctrine.md` - Pulumi-exclusive AWS test
+  lifecycle, local-cluster-first MinIO backend, and destroy ordering.
+- `documents/engineering/aws_test_environment.md` - three separate-AZ `Ubuntu 24.04 LTS` EC2 test
+  topology plus the dedicated MinIO backend bucket.
+- `documents/engineering/integration_fixture_doctrine.md` - removal of tag-based AWS sweep helpers
+  from the supported architecture in favor of Pulumi-owned teardown.
 
 **Product docs to create/update:**
 
@@ -920,8 +987,8 @@ None.
 
 **Cross-references to add:**
 
-- Keep `README.md`, `00-overview.md`, `system-components.md`, and the legacy ledger aligned with the
-  active lifecycle and storage work.
+- Keep `README.md`, `00-overview.md`, `system-components.md`, and the legacy ledger aligned with
+  the active lifecycle, AWS teardown, and storage work.
 
 ## Related Documents
 

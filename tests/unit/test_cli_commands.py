@@ -24,10 +24,9 @@ from click.testing import CliRunner
 from prodbox.cli.main import cli
 from prodbox.cli.test_cmd import (
     ALL_TEST_SUITE,
-    INTEGRATION_AWS_EKS_TEST_SUITE,
-    INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
     INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_GATEWAY_PODS_TEST_SUITE,
+    INTEGRATION_HA_RKE2_AWS_TEST_SUITE,
     INTEGRATION_PUBLIC_DNS_TEST_SUITE,
     INTEGRATION_PULUMI_TEST_SUITE,
     CoverageSettings,
@@ -335,6 +334,36 @@ class TestPulumiCommands:
         result = runner.invoke(cli, ["pulumi", "stack-init"])
         assert result.exit_code != 0
         assert "Missing argument" in result.output
+
+    def test_pulumi_test_resources_success(self, runner: CliRunner) -> None:
+        """pulumi test-resources should invoke execute_command on Linux."""
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["pulumi", "test-resources"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_pulumi_test_destroy_requires_yes(self, runner: CliRunner) -> None:
+        """pulumi test-destroy should require explicit confirmation."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            result = runner.invoke(cli, ["pulumi", "test-destroy"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+
+    def test_pulumi_test_destroy_with_yes(self, runner: CliRunner) -> None:
+        """pulumi test-destroy --yes should invoke execute_command on Linux."""
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["pulumi", "test-destroy", "--yes"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
 
 
 # =============================================================================
@@ -806,7 +835,19 @@ class TestClickDocumentation:
             ),
             (["rke2", "delete", "--help"], ("--yes",), 0),
             (["rke2", "logs", "--help"], ("--lines",), 0),
-            (["pulumi"], ("destroy", "preview", "refresh", "stack-init", "up"), 2),
+            (
+                ["pulumi"],
+                (
+                    "destroy",
+                    "preview",
+                    "refresh",
+                    "stack-init",
+                    "test-destroy",
+                    "test-resources",
+                    "up",
+                ),
+                2,
+            ),
             (["pulumi", "up", "--help"], ("--yes",), 0),
             (["pulumi", "stack-init", "--help"], ("STACK",), 0),
             (["dns"], ("check",), 2),
@@ -828,6 +869,7 @@ class TestClickDocumentation:
                     "env",
                     "gateway-daemon",
                     "gateway-pods",
+                    "ha-rke2-aws",
                     "lifecycle",
                     "pulumi",
                     "public-dns",
@@ -896,28 +938,14 @@ class TestTestCommandSurface:
             coverage_settings=CoverageSettings(enabled=False, fail_under=None),
         )
 
-    def test_test_integration_aws_foundation_invokes_named_suite(
-        self,
-        runner: CliRunner,
-    ) -> None:
-        """aws-foundation should dispatch the shared-account AWS foundation suite."""
+    def test_test_integration_ha_rke2_aws_invokes_named_suite(self, runner: CliRunner) -> None:
+        """ha-rke2-aws should dispatch the canonical SSH-driven AWS HA RKE2 suite."""
         with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
-            result = runner.invoke(cli, ["test", "integration", "aws-foundation"])
+            result = runner.invoke(cli, ["test", "integration", "ha-rke2-aws"])
 
         assert result.exit_code == 0
         mock_run_suite.assert_called_once_with(
-            suite=INTEGRATION_AWS_FOUNDATION_TEST_SUITE,
-            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
-        )
-
-    def test_test_integration_aws_eks_invokes_named_suite(self, runner: CliRunner) -> None:
-        """aws-eks should dispatch the real EKS control-plane integration suite."""
-        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
-            result = runner.invoke(cli, ["test", "integration", "aws-eks"])
-
-        assert result.exit_code == 0
-        mock_run_suite.assert_called_once_with(
-            suite=INTEGRATION_AWS_EKS_TEST_SUITE,
+            suite=INTEGRATION_HA_RKE2_AWS_TEST_SUITE,
             coverage_settings=CoverageSettings(enabled=False, fail_under=None),
         )
 

@@ -500,20 +500,21 @@ Required behavior:
 
 ### 7.4 Expiry And Harness Reclaim Model
 
-Every run-owned resource must carry an `expires_at` tag.
+Every run-owned resource must carry an `expires_at` tag unless a stricter project doctrine
+forbids tag-based lifecycle as part of its supported workflow.
 
-The supported project workflow relies on harness-owned cleanup rather than a separate janitor
+The supported project workflow relies on project-owned cleanup rather than an always-on janitor
 surface:
 
-1. each AWS-mutating test begins by sweeping any pre-existing fixture-owned resources discoverable
-   by the canonical tag set
-2. teardown still attempts deletion of every resource created by the current run
-3. the aggregate supported test flow audits fixture-owned inventory and fails if any Route 53,
-   S3, VPC, EKS, or IAM resources remain
+1. teardown still attempts deletion of every resource created by the current run
+2. project-specific doctrine may choose fixture-owned delete, Pulumi-owned destroy, or another
+   explicit cleanup surface, but it must be deterministic and documented
+3. account-owner emergency cleanup outside the project harness may still exist, but it is not a
+   substitute for the project's supported teardown path
 
-Administrative emergency cleanup outside the project harness may still exist for account owners,
-but it is not part of the supported `prodbox` workflow and does not replace harness-owned
-preflight plus teardown.
+For `prodbox`, the supported cleanup model is stricter: Route 53-only tests use per-test hosted
+zone teardown, and the multi-resource AWS HA test stack is created and destroyed only through
+`prodbox pulumi test-resources` and `prodbox pulumi test-destroy --yes`.
 
 ---
 
@@ -560,9 +561,10 @@ Project-specific documents may add stricter rules for their own harnesses, CLI t
 
 For `prodbox`:
 
-1. host-side AWS CLI credential-source restrictions and fixture behavior are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
-2. general pytest fixture ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
-3. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
+1. host-side AWS CLI credential-source restrictions and AWS suite ownership are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
+2. the supported remote AWS stack is exactly three Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones, backed by Pulumi state stored in the local-cluster MinIO bucket `prodbox-test-pulumi-backends`
+3. general pytest fixture ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
+4. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
 
 ---
 

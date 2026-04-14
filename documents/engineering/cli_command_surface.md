@@ -92,6 +92,8 @@ Top-level commands:
 | `prodbox pulumi preview` | none | none |
 | `prodbox pulumi refresh` | none | none |
 | `prodbox pulumi stack-init` | `STACK` | none |
+| `prodbox pulumi test-resources` | none | none |
+| `prodbox pulumi test-destroy` | none | `--yes`, `-y` |
 
 ### `prodbox dns`
 
@@ -147,14 +149,13 @@ Named suite commands:
 | `prodbox test all` | `tests/unit` + `tests/integration` |
 | `prodbox test unit` | `tests/unit` |
 | `prodbox test integration all` | `tests/integration` |
-| `prodbox test integration aws-foundation` | `tests/integration/test_aws_foundation_real.py` |
-| `prodbox test integration aws-eks` | `tests/integration/test_aws_eks_real.py` |
 | `prodbox test integration cli` | `tests/integration/test_cli_commands.py` |
 | `prodbox test integration dns-aws` | `tests/integration/test_dns_route53_aws.py` |
 | `prodbox test integration env` | `tests/integration/test_cli_env.py` |
 | `prodbox test integration gateway-daemon` | `tests/integration/test_gateway_daemon_k8s.py` |
 | `prodbox test integration gateway-pods` | `tests/integration/test_gateway_k8s_pods.py` |
 | `prodbox test integration gateway-partition` | `tests/integration/test_gateway_partition.py` |
+| `prodbox test integration ha-rke2-aws` | `tests/integration/test_ha_rke2_aws.py` |
 | `prodbox test integration lifecycle` | `tests/integration/test_prodbox_lifecycle.py` |
 | `prodbox test integration pulumi` | `tests/integration/test_pulumi_real.py` |
 | `prodbox test integration charts-storage` | `tests/integration/test_charts_storage.py` |
@@ -173,8 +174,8 @@ last, fails in Phase 1.5 unless `prodbox host public-edge` reports
 `CLASSIFICATION=ready-for-external-proof`, and restores the supported runtime
 with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
 `prodbox charts deploy gateway`, `prodbox charts deploy vscode`, a final
-public-edge readiness check, and a final fixture-owned AWS inventory audit
-before exit.
+public-edge readiness check, and `prodbox pulumi test-destroy --yes` before
+exit.
 
 `prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
 It does not run cluster prerequisite gates or the `rke2 install` runbook.

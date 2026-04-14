@@ -35,6 +35,8 @@ from prodbox.cli.command_adt import (
     PulumiPreviewCommand,
     PulumiRefreshCommand,
     PulumiStackInitCommand,
+    PulumiTestDestroyCommand,
+    PulumiTestResourcesCommand,
     PulumiUpCommand,
     RKE2DeleteCommand,
     RKE2InstallCommand,
@@ -344,6 +346,26 @@ class TestPulumiCommandDAGBuilders:
         match command_to_dag(cmd):
             case Success(dag):
                 assert "pulumi_stack_init" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_pulumi_test_resources_dag(self) -> None:
+        """command_to_dag should build DAG for PulumiTestResourcesCommand."""
+        cmd = PulumiTestResourcesCommand()
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "pulumi_test_resources" in dag
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_pulumi_test_destroy_dag(self) -> None:
+        """command_to_dag should build DAG for PulumiTestDestroyCommand."""
+        cmd = PulumiTestDestroyCommand()
+
+        match command_to_dag(cmd):
+            case Success(dag):
+                assert "pulumi_test_destroy" in dag
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -667,8 +689,8 @@ class TestRKE2CommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_delete_requires_supported_host_and_settings(self) -> None:
-        """RKE2DeleteCommand should require the supported host, sudo, and settings."""
+    def test_rke2_delete_requires_supported_host_cluster_aws_and_settings(self) -> None:
+        """RKE2DeleteCommand should gate on the supported host, cluster, AWS tools, and settings."""
         cmd = RKE2DeleteCommand()
         match command_to_dag(cmd):
             case Success(dag):
@@ -678,6 +700,9 @@ class TestRKE2CommandPrerequisites:
                 assert "systemd_available" in root.prerequisites
                 assert "tool_sudo" in root.prerequisites
                 assert "tool_systemctl" in root.prerequisites
+                assert "tool_pulumi" in root.prerequisites
+                assert "tool_aws" in root.prerequisites
+                assert "k8s_cluster_reachable" in root.prerequisites
                 assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
             case Failure(error):
@@ -717,6 +742,7 @@ class TestRKE2CommandPrerequisites:
                 assert len(built_effect.effects) == 11
                 assert isinstance(built_effect.effects[0], Custom)
                 assert isinstance(built_effect.effects[1], EnsureRke2IngressController)
+                assert isinstance(built_effect.effects[6], Custom)
                 assert isinstance(built_effect.effects[8], EnsureProdboxIdentityConfigMap)
                 assert isinstance(built_effect.effects[9], Parallel)
                 assert isinstance(built_effect.effects[10], AnnotateProdboxManagedResources)
@@ -746,13 +772,112 @@ class TestRKE2CommandPrerequisites:
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
-                assert len(built_effect.effects) == 2
+                assert len(built_effect.effects) == 3
                 assert isinstance(built_effect.effects[0], Custom)
-                assert isinstance(built_effect.effects[1], WriteStdout)
-                assert "/tmp/manual-pv" in built_effect.effects[1].text
-                assert ".prodbox-state" in built_effect.effects[1].text
+                assert built_effect.effects[0].effect_id == "rke2_delete_aws_test_stack_destroy"
+                assert isinstance(built_effect.effects[1], Custom)
+                assert built_effect.effects[1].effect_id == "rke2_delete_cluster_substrate"
+                assert isinstance(built_effect.effects[2], WriteStdout)
+                assert "/tmp/manual-pv" in built_effect.effects[2].text
+                assert ".prodbox-state" in built_effect.effects[2].text
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
+
+
+class TestRke2InstallHelpers:
+    """Tests for install-path host readiness helpers."""
+
+    def test_wait_for_cluster_nodes_ready_retries_until_node_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Install helper should poll until node objects exist before waiting for Ready."""
+        commands: list[tuple[tuple[str, ...], float]] = []
+        results = iter(
+            [
+                subprocess.CompletedProcess(
+                    ("kubectl", "get", "nodes", "-o", "name"),
+                    0,
+                    stdout="",
+                    stderr="",
+                ),
+                subprocess.CompletedProcess(
+                    ("kubectl", "get", "nodes", "-o", "name"),
+                    0,
+                    stdout="node/bathurst\n",
+                    stderr="",
+                ),
+                subprocess.CompletedProcess(
+                    (
+                        "kubectl",
+                        "wait",
+                        "--for=condition=Ready",
+                        "node",
+                        "--all",
+                        "--timeout=298s",
+                    ),
+                    0,
+                    stdout="node/bathurst condition met\n",
+                    stderr="",
+                ),
+            ]
+        )
+        monotonic_values = iter((0.0, 0.0, 1.0, 1.5))
+        sleep_calls: list[float] = []
+
+        def fake_run_host_command(
+            command: tuple[str, ...], *, timeout_seconds: float, input_text: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
+            assert input_text is None
+            commands.append((command, timeout_seconds))
+            return next(results)
+
+        monkeypatch.setattr(dag_builders_module, "_run_host_command", fake_run_host_command)
+        monkeypatch.setattr(dag_builders_module.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(dag_builders_module.time, "sleep", sleep_calls.append)
+
+        message = dag_builders_module._wait_for_cluster_nodes_ready()
+
+        assert message == "All cluster nodes reported Ready"
+        assert commands == [
+            (("kubectl", "get", "nodes", "-o", "name"), 30.0),
+            (("kubectl", "get", "nodes", "-o", "name"), 30.0),
+            (
+                (
+                    "kubectl",
+                    "wait",
+                    "--for=condition=Ready",
+                    "node",
+                    "--all",
+                    "--timeout=298s",
+                ),
+                328.0,
+            ),
+        ]
+        assert sleep_calls == [dag_builders_module._RKE2_NODE_DISCOVERY_POLL_SECONDS]
+
+    def test_wait_for_cluster_nodes_ready_raises_after_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Install helper should fail with the last probe detail when no nodes register."""
+        sleep_calls: list[float] = []
+        monotonic_values = iter((0.0, 0.0, 300.0))
+
+        def fake_run_host_command(
+            command: tuple[str, ...], *, timeout_seconds: float, input_text: str | None = None
+        ) -> subprocess.CompletedProcess[str]:
+            assert input_text is None
+            assert command == ("kubectl", "get", "nodes", "-o", "name")
+            assert timeout_seconds == 30.0
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="connection refused")
+
+        monkeypatch.setattr(dag_builders_module, "_run_host_command", fake_run_host_command)
+        monkeypatch.setattr(dag_builders_module.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(dag_builders_module.time, "sleep", sleep_calls.append)
+
+        with pytest.raises(RuntimeError, match="connection refused"):
+            dag_builders_module._wait_for_cluster_nodes_ready()
+
+        assert sleep_calls == [dag_builders_module._RKE2_NODE_DISCOVERY_POLL_SECONDS]
 
 
 class TestRke2DeleteHelpers:
@@ -986,6 +1111,46 @@ class TestPulumiCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
+    def test_pulumi_test_resources_requires_supported_cluster_aws_and_settings(self) -> None:
+        """PulumiTestResourcesCommand should require the canonical local backend prerequisites."""
+        cmd = PulumiTestResourcesCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("pulumi_test_resources")
+                assert root is not None
+                assert root.prerequisites == frozenset(
+                    {
+                        "supported_ubuntu_2404",
+                        "tool_pulumi",
+                        "tool_aws",
+                        "k8s_cluster_reachable",
+                        "settings_object",
+                    }
+                )
+                assert isinstance(root.effect, Custom)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_pulumi_test_destroy_requires_supported_cluster_aws_and_settings(self) -> None:
+        """PulumiTestDestroyCommand should require the canonical local backend prerequisites."""
+        cmd = PulumiTestDestroyCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("pulumi_test_destroy")
+                assert root is not None
+                assert root.prerequisites == frozenset(
+                    {
+                        "supported_ubuntu_2404",
+                        "tool_pulumi",
+                        "tool_aws",
+                        "k8s_cluster_reachable",
+                        "settings_object",
+                    }
+                )
+                assert isinstance(root.effect, Custom)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
 
 class TestGatewayCommandPrerequisites:
     """Verify prerequisites and renderers for gateway commands."""
@@ -1073,6 +1238,8 @@ class TestUserVisibleCommandBuilderRegressionGuards:
             (PulumiDestroyCommand(stack="dev", yes=True), "pulumi_destroy"),
             (PulumiRefreshCommand(stack="dev"), "pulumi_refresh"),
             (PulumiStackInitCommand(stack="dev"), "pulumi_stack_init"),
+            (PulumiTestResourcesCommand(), "pulumi_test_resources"),
+            (PulumiTestDestroyCommand(), "pulumi_test_destroy"),
         ],
     )
     def test_repaired_commands_do_not_regress_to_lone_pure_root(
@@ -1202,6 +1369,8 @@ class TestAllPrerequisitesExistInRegistry:
             PulumiDestroyCommand(),
             PulumiRefreshCommand(),
             PulumiStackInitCommand(stack="test"),
+            PulumiTestResourcesCommand(),
+            PulumiTestDestroyCommand(),
         ]
         for cmd in commands:
             match command_to_dag(cmd):

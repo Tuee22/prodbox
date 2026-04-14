@@ -152,6 +152,16 @@ TOOL_AWS: EffectNode[bool] = EffectNode(
     prerequisites=frozenset(),
 )
 
+TOOL_SSH: EffectNode[bool] = EffectNode(
+    effect=ValidateTool(
+        effect_id="tool_ssh",
+        description="Validate OpenSSH client is installed",
+        tool_name="ssh",
+        version_flag="-V",
+    ),
+    prerequisites=frozenset(),
+)
+
 TOOL_RKE2: EffectNode[bool] = EffectNode(
     effect=ValidateTool(
         effect_id="tool_rke2",
@@ -358,6 +368,7 @@ PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
     "tool_sudo": TOOL_SUDO,
     "tool_pulumi": TOOL_PULUMI,
     "tool_aws": TOOL_AWS,
+    "tool_ssh": TOOL_SSH,
     "tool_rke2": TOOL_RKE2,
     "tool_systemctl": TOOL_SYSTEMCTL,
     "tool_dhall": TOOL_DHALL,
@@ -404,6 +415,7 @@ __all__ = [
     "TOOL_SUDO",
     "TOOL_PULUMI",
     "TOOL_AWS",
+    "TOOL_SSH",
     "TOOL_RKE2",
     "TOOL_SYSTEMCTL",
     "TOOL_DHALL",

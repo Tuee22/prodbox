@@ -30,10 +30,13 @@ This doctrine applies to integration tests that mutate real cluster state:
 
 It does not restate `prodbox test` prerequisite/runbook gating. That operator-facing contract remains owned by [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine).
 
-It does not own AWS environment creation/tagging/cleanup doctrine for stateful AWS tests. That is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
+It does not own AWS environment creation/cleanup doctrine for stateful AWS tests. That is
+defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
-AWS-backed tests follow equivalent fixture invariants: per-test clean baseline, setup rollback
-before yield, and teardown abort on cleanup failure, as defined in
+For `prodbox`, AWS-backed tests split into two ownership modes that follow equivalent invariants:
+per-test Route 53 hosted-zone fixtures for `dns-aws`, and Pulumi-owned AWS stack lifecycle for
+`pulumi` plus `ha-rke2-aws`. In both cases setup rollback before yield and teardown abort on
+cleanup failure remain mandatory, as defined in
 [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
 
 ---

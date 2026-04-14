@@ -689,8 +689,8 @@ class TestRKE2CommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
-    def test_rke2_delete_requires_supported_host_cluster_aws_and_settings(self) -> None:
-        """RKE2DeleteCommand should gate on the supported host, cluster, AWS tools, and settings."""
+    def test_rke2_delete_requires_supported_host_aws_and_settings(self) -> None:
+        """RKE2DeleteCommand should gate on the supported host, AWS tools, and settings."""
         cmd = RKE2DeleteCommand()
         match command_to_dag(cmd):
             case Success(dag):
@@ -702,7 +702,7 @@ class TestRKE2CommandPrerequisites:
                 assert "tool_systemctl" in root.prerequisites
                 assert "tool_pulumi" in root.prerequisites
                 assert "tool_aws" in root.prerequisites
-                assert "k8s_cluster_reachable" in root.prerequisites
+                assert "k8s_cluster_reachable" not in root.prerequisites
                 assert "settings_object" in root.prerequisites
                 assert isinstance(root.effect, Sequence)
             case Failure(error):

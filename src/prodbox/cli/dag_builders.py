@@ -1876,7 +1876,6 @@ def _build_rke2_delete_dag(_cmd: RKE2DeleteCommand) -> EffectDAG:
                 "tool_systemctl",
                 "tool_pulumi",
                 "tool_aws",
-                "k8s_cluster_reachable",
                 "settings_object",
             ]
         ),

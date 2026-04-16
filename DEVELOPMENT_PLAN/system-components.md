@@ -1,106 +1,109 @@
-# File: DEVELOPMENT_PLAN/system-components.md
 # System Components
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [00-overview.md](00-overview.md), [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md), [phase-2-gateway-dns.md](phase-2-gateway-dns.md), [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md), [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
 
-> **Purpose**: Document the authoritative component inventory for infrastructure, runtime control
-> surfaces, validation surfaces, and state/authority boundaries.
-
+> **Purpose**: Document the authoritative target component inventory for infrastructure, runtime
+> control surfaces, validation surfaces, and state or authority boundaries in the Haskell rewrite.
 
 ## Infrastructure Layer
 
 | Component | Technology | Deployment | Authority | Durable State |
 |-----------|------------|------------|-----------|---------------|
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | Bare metal | `prodbox` supported-host gate | Host filesystem |
+| Host build root | `.build/` | Repository worktree | `cabal.project` | Host filesystem |
+| Container build root | `/opt/build` | Docker build stage | Dockerfile | Container filesystem |
 | Local Kubernetes substrate | RKE2 | Local host | `prodbox rke2 install|delete|status|start|stop|restart|logs` | RKE2 data dirs and systemd units |
-| AWS-backed EKS validation cluster | Amazon EKS | AWS | `prodbox pulumi eks-resources|eks-destroy --yes` plus `poetry run prodbox test integration aws-eks` | EKS resources in AWS |
-| AWS-backed HA RKE2 test nodes | `Ubuntu 24.04 LTS` EC2 instances | AWS | Pulumi plus SSH-driven `prodbox` RKE2 bootstrap | EC2 instances plus VPC, subnet, security-group, Route 53, and IAM state |
-| Pulumi test backend | MinIO | Local RKE2 workload | Local-cluster-first bootstrap plus Pulumi backend configuration | S3-compatible objects in bucket `prodbox-test-pulumi-backends` |
+| AWS-backed EKS validation cluster | Amazon EKS | AWS | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | EKS resources in AWS |
+| AWS-backed HA RKE2 test nodes | `Ubuntu 24.04 LTS` EC2 instances | AWS | `prodbox pulumi test-resources|test-destroy --yes` plus Haskell SSH orchestration | EC2, VPC, subnet, security-group, IAM, and Route 53 state |
+| Pulumi test backend | MinIO | Local RKE2 workload | Local-cluster-first bootstrap plus Pulumi backend configuration | S3-compatible objects in `prodbox-test-pulumi-backends` |
 | Load balancer IPs | MetalLB | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
 | Public edge ingress | Traefik | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
-| Namespace-local auth proxy | `vscode-nginx` | RKE2 workload | Chart platform | Cluster resources |
-| TLS issuance | cert-manager plus public ACME DNS-01 via Route 53 (current live server: ZeroSSL DV90 with EAB) | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
-| DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus always-on in-cluster gateway `dns_write_gate` | Route 53 |
-| Gateway mesh | Distributed gateway daemon | In-cluster Kubernetes workload under `prodbox charts` | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources plus Route 53 |
-| Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | `prodbox rke2 install` | Cluster-scoped resource recreated at cluster install |
-| Manual PV root | Configured host path (default `.data/`) | Host filesystem | `prodbox-config.dhall` plus cluster and chart lifecycle commands | PV contents only |
-| Retained chart-state root | Repo-local `.prodbox-state/` | Host filesystem | `prodbox charts` helpers plus `prodbox rke2 delete --yes` preservation contract | Generated secrets and gateway event keys |
-| Chart platform | Bespoke Helm and chart registry in repo | RKE2 workloads | `prodbox charts ...` | Configured manual PV root plus repo-local `.prodbox-state/` plus cluster resources |
-| Namespace-local auth stack | `keycloak-postgres`, `keycloak` | RKE2 workloads | Chart platform | Configured manual PV root plus repo-local `.prodbox-state/` plus cluster resources |
-| Namespace-local app stack | `vscode` | RKE2 workload | Chart platform | Configured manual PV root plus repo-local `.prodbox-state/` plus cluster resources |
-| AWS admin credential isolation | Dhall config `aws_admin` section | Test suite and destructive recovery helpers | `prodbox-config.dhall` `aws_admin` block | Test-only elevated credentials; used to restore blank operational `aws.*` during destructive validation and ignored by steady-state non-AWS runtime commands |
+| TLS issuance | cert-manager plus ACME provider selected from config | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
+| DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus in-cluster gateway `dns_write_gate` | Route 53 |
+| Gateway mesh | Haskell distributed gateway daemon | In-cluster Kubernetes workload | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources plus Route 53 |
+| Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | `prodbox rke2 install` | Cluster-scoped resource |
+| Manual PV root | Configured host path, default `.data/` | Host filesystem | `prodbox-config.dhall` plus cluster and chart lifecycle commands | PV contents only |
+| Retained chart-state root | `.prodbox-state/` | Host filesystem | `prodbox charts` helpers plus `prodbox rke2 delete --yes` preservation contract | Generated secrets and gateway event keys |
+| Chart platform | Helm plus Haskell orchestration | RKE2 workloads | `prodbox charts ...` | Cluster resources plus retained roots |
+| Namespace-local auth stack | `keycloak-postgres`, `keycloak`, `vscode-nginx` | RKE2 workloads | Haskell chart platform | Cluster resources plus retained roots |
+| Namespace-local app stack | `vscode` | RKE2 workload | Haskell chart platform | Cluster resources plus retained roots |
+| AWS admin credential isolation | Dhall config `aws_admin` section | Repository config plus integration tests | Haskell config and AWS admin helpers | Repository root |
 
 ## CLI and Runtime Layer
 
 | Surface | Command | Purpose |
 |---------|---------|---------|
-| Config management | `prodbox config compile|setup|show|validate` | Run the supported interactive onboarding flow, compile, auto-refresh when needed, display, and validate the Dhall-sourced configuration, including the manual PV host root |
-| Host prerequisite flow | `prodbox host ensure-tools` | Verify required local tools |
-| Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, certificate, and missing-edge state for the supported public host |
-| RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Install, inspect, control, and remove the local RKE2 cluster itself, including reboot-time systemd ownership, remnant-free delete except the configured manual PV root plus repo-local `.prodbox-state/` retained chart state, and automatic Pulumi AWS test-stack destroy before local cluster teardown |
-| Pulumi lifecycle | `prodbox pulumi up|destroy|preview|refresh|stack-init|eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` | Manage local-cluster infrastructure plus inspect and destroy the Pulumi-managed AWS EKS and HA RKE2 test resources backed by the local MinIO bucket |
-| DNS check | `prodbox dns check` | Inspect current DNS ownership state |
+| Config management | `prodbox config compile|setup|show|validate` | Compile, materialize, display, validate, and interactively author configuration |
+| RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Install, inspect, control, and remove the local cluster |
+| Pulumi lifecycle | `prodbox pulumi up|destroy|preview|refresh|stack-init|eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` | Manage local-cluster infrastructure and AWS validation stacks |
+| Host prerequisite flow | `prodbox host ensure-tools` | Verify local tools required by the supported path |
+| Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, TLS, and external-reachability state |
+| Gateway runtime | `prodbox gateway start|status|config-gen` | Start the in-pod gateway entrypoint, inspect gateway state, and generate config |
+| Chart runtime | `prodbox charts list|status|deploy|delete` | Manage the chart platform and app stacks |
+| DNS check | `prodbox dns check` | Inspect DNS ownership state |
 | Kubernetes health | `prodbox k8s health|wait` | Inspect cluster readiness |
-| Gateway runtime | `prodbox gateway start|status|config-gen` | `prodbox gateway start` is the in-pod entrypoint invoked by the gateway chart's container; `status` and `config-gen` support inspection and config authoring |
-| Gateway steady state | `prodbox charts deploy gateway` plus `prodbox gateway status` | Deploy the in-cluster gateway workload and observe leader election and Route 53 write health |
-| Chart runtime | `prodbox charts list|status|deploy|delete` | Manage the bespoke chart platform |
-| Interactive onboarding | `prodbox config setup` | Walk user through complete `prodbox-config.dhall` population: AWS account creation guidance with Free Tier options, AWS-console guidance for one temporary elevated credential set, live region and Route 53 zone selection, ACME provider guidance (ZeroSSL or Let's Encrypt), domain and deployment configuration, IAM user creation with inline policy, and post-setup root key deletion advice |
-| AWS IAM and quota management | `prodbox aws policy\|setup\|teardown\|check-quotas\|request-quotas` | Generate IAM inline policy, create/delete IAM users with inline policy, manage service quotas, inject/clear operational credentials in Dhall config — all via ephemeral admin credentials and AWS CLI subprocess |
-| TLA+ validation | `prodbox tla-check` | Run formal safety verification |
-| Test runner | `prodbox test ...` | Run named unit and integration suites, including destructive-suite preflight that repairs blank operational `aws.*` credentials from `aws_admin.*`, idempotently selects or creates the canonical Pulumi `home` stack for supported-runtime repair, and restores supported runtime state before aggregate validation |
-| Code quality | `prodbox check-code` | Run the required doctrine and static-analysis gate |
+| Interactive onboarding | `prodbox config setup` | Guided Dhall authoring plus live AWS and operator prompts |
+| AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Generate policies, manage IAM users, and manage AWS quotas |
+| TLA+ validation | `prodbox tla-check` | Run formal verification |
+| Test runner | `prodbox test ...` | Run named unit and integration suites on the Haskell stack |
+| Code quality | `prodbox check-code` | Run the required doctrine, formatting, lint, and type-check gate |
 
 ## Validation Layer
 
 | Surface | Canonical Validation |
 |---------|----------------------|
-| CLI and env contract | `poetry run prodbox test integration cli`, `poetry run prodbox test integration env` |
-| Supported host gate and local cluster lifecycle | Fresh-host Ubuntu 24.04 proof for `poetry run prodbox rke2 install`, destructive proof for `poetry run prodbox rke2 delete --yes`, and `poetry run prodbox test integration lifecycle` |
-| AWS auth and Route 53 | `poetry run prodbox test integration dns-aws` |
-| Pulumi-owned AWS lifecycle | `poetry run prodbox test integration pulumi`, `poetry run prodbox pulumi test-resources`, `poetry run prodbox pulumi test-destroy --yes` |
-| AWS EKS validation | `poetry run prodbox test integration aws-eks`, `poetry run prodbox pulumi eks-resources`, `poetry run prodbox pulumi eks-destroy --yes` |
-| AWS HA RKE2 validation | `poetry run prodbox test integration ha-rke2-aws` |
-| Gateway runtime | `poetry run prodbox test integration gateway-daemon`, `poetry run prodbox test integration gateway-pods`, `poetry run prodbox test integration gateway-partition` |
-| Chart platform | `poetry run prodbox test integration charts-storage`, `poetry run prodbox test integration charts-platform` |
-| Lifecycle cleanup | `poetry run prodbox test integration lifecycle` |
-| Public-host proof | `poetry run prodbox test integration charts-vscode`, `poetry run prodbox test integration public-dns` |
-| Clean-room handoff | `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, `poetry run prodbox config validate`, `poetry run prodbox pulumi eks-resources`, `poetry run prodbox test integration aws-eks`, `poetry run prodbox pulumi test-resources`, `poetry run prodbox test integration ha-rke2-aws`, `poetry run prodbox pulumi eks-destroy --yes`, `poetry run prodbox pulumi test-destroy --yes`, `poetry run prodbox test all`, `poetry run prodbox host public-edge`; the strongest destructive revalidation also covers `docker system prune -af --volumes` and `rm -rf .data` before the final aggregate rerun |
-| AWS IAM lifecycle | `poetry run prodbox test integration aws-iam` |
-| Static and doctrine gate | `poetry run prodbox check-code` |
+| Build artifact contract | Host build proof shows artifacts under `.build/`; Dockerfile build proof shows artifacts under `/opt/build` |
+| CLI and env contract | `prodbox test integration cli`, `prodbox test integration env` |
+| Supported host gate and local cluster lifecycle | `prodbox test integration lifecycle`, fresh-host `prodbox rke2 install`, and destructive `prodbox rke2 delete --yes` proof |
+| AWS Route 53 validation | `prodbox test integration dns-aws` |
+| Pulumi-owned AWS lifecycle | `prodbox pulumi test-resources`, `prodbox pulumi test-destroy --yes`, `prodbox test integration pulumi` |
+| AWS EKS validation | `prodbox pulumi eks-resources`, `prodbox pulumi eks-destroy --yes`, `prodbox test integration aws-eks` |
+| AWS HA RKE2 validation | `prodbox test integration ha-rke2-aws` |
+| Gateway runtime | `prodbox test integration gateway-daemon`, `prodbox test integration gateway-pods`, `prodbox test integration gateway-partition`, `prodbox tla-check` |
+| Chart platform | `prodbox test integration charts-storage`, `prodbox test integration charts-platform`, `prodbox test integration charts-vscode` |
+| Public-host proof | `prodbox host public-edge`, `prodbox test integration public-dns` |
+| Clean-room handoff | `prodbox rke2 delete --yes`, deletion of the materialized `prodbox-config.json` artifact, `prodbox rke2 install`, `prodbox config show`, `prodbox config validate`, AWS-backed validation, `prodbox test all`, `prodbox host public-edge`, and a zero-Python repository file-search proof |
+| AWS IAM lifecycle | `prodbox test integration aws-iam` |
+| Static and doctrine gate | `prodbox check-code` |
 
 ## Authority and State Locations
 
 | State Class | Authority | Durable Home | Notes |
 |-------------|-----------|--------------|-------|
-| Repository configuration | Repository root | `prodbox-config.dhall` | Dhall config is the single source of truth; `prodbox config compile` is the explicit compile surface; canonical settings loads auto-compile `prodbox-config.json` idempotently when the compiled artifact is missing or stale; the config explicitly declares the manual PV host root and defaults it to `.data/`; subprocess environments are built from config only |
-| CLI and doctrine source | Repository worktree | `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Code and docs are version-controlled |
-| Manual PV content root | Host filesystem | Configured path, default `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | PV contents only; preserved across full cluster delete; deterministic rebinding depends on path stability |
-| Retained non-PV chart state | Chart platform helpers | Repo-local `.prodbox-state/<namespace>/` | Generated secrets and gateway event keys; preserved across full cluster delete |
-| Local RKE2 host state | Host lifecycle commands | RKE2 data dirs, kubeconfig files, systemd unit state | Deleted by `prodbox rke2 delete --yes` except for the configured manual PV root and repo-local `.prodbox-state/` retained chart-state root; delete must auto-destroy Pulumi-managed AWS test stacks first |
-| Remote EKS AWS test stack | `prodbox` plus Pulumi orchestration | EKS resources in AWS | Ephemeral EKS cluster plus managed node group and VPC resources created and destroyed only through the named `prodbox pulumi` surface |
-| Remote HA RKE2 AWS test stack | Pulumi plus SSH-driven `prodbox` install orchestration | EC2, VPC, subnet, security-group, Route 53, and IAM resources in AWS | Exactly three Ubuntu 24.04 EC2 instances in separate AZs; created and destroyed only through Pulumi |
-| Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |
-| DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; the elected in-cluster gateway leader keeps their IPs current via `dns_write_gate` |
-| Pulumi backend state | Local-cluster MinIO | Dedicated bucket `prodbox-test-pulumi-backends` | The local cluster must exist before any remote AWS test stack is created; the dedicated bucket keeps leaked backend objects easy to spot, and aggregate supported-runtime repair re-selects or creates the canonical `home` stack when backend selection is blank |
-| Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer object is `letsencrypt-http01`; the ACME server URL is configured in `prodbox-config.dhall`, and the current live target is ZeroSSL DV90 |
-| Gateway runtime continuity | Kubernetes | Pod restart policy plus leader election and partition-tolerant quorum | Required to keep `dns_write_gate` active continuously across pod loss, node loss, and partition heals |
-| Host resolver state | Host operator | `/etc/hosts` plus local resolver cache | Authoritative public-host proof must not depend on a local override for `vscode.resolvefintech.com` |
-| AWS admin credentials (test-only) | `prodbox-config.dhall` `aws_admin` section | Repository root | Elevated credentials for IAM management tests and destructive recovery of blank operational `aws.*`; not read by steady-state production command paths |
+| Repository configuration | Repository root | `prodbox-config.dhall` | Single configuration source; materialized JSON may exist when required by downstream tools |
+| Host build artifacts | Cabal build configuration | `.build/` | Canonical host build root |
+| Container build artifacts | Dockerfile | `/opt/build` | Canonical container build root |
+| CLI and doctrine source | Repository worktree | `app/`, `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Version-controlled source of truth |
+| Manual PV content root | Host filesystem | Configured path, default `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | PV contents only |
+| Retained non-PV chart state | Chart platform helpers | `.prodbox-state/<namespace>/` | Generated secrets and gateway event keys |
+| Local RKE2 host state | Host lifecycle commands | RKE2 data dirs, kubeconfig files, systemd state | Deleted by `prodbox rke2 delete --yes` except retained roots |
+| Remote EKS AWS test stack | Pulumi plus Haskell orchestration | EKS resources in AWS | Created and destroyed only through named `prodbox pulumi` surfaces |
+| Remote HA RKE2 AWS test stack | Pulumi plus Haskell orchestration | EC2 and supporting AWS resources | Exactly three Ubuntu 24.04 EC2 instances in separate AZs |
+| Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical Haskell CLI flows |
+| DNS ownership | AWS Route 53 | Hosted zone records | Explicit per-FQDN records only |
+| Pulumi backend state | Local-cluster MinIO | `prodbox-test-pulumi-backends` bucket | The local cluster must exist before remote AWS resources are created |
+| Certificate material | Kubernetes | Secrets issued by cert-manager | ACME server URL comes from repository config |
+| Gateway continuity state | Kubernetes plus retained chart state | Cluster resources plus `.prodbox-state/` | Used for leader election and event-key continuity |
+| AWS admin credentials | `prodbox-config.dhall` `aws_admin` section | Repository root | Test-only elevated credentials |
 
 ## Artifact Locations
 
 | Type | Location | Purpose |
 |------|----------|---------|
-| Source package | `src/prodbox/` | CLI, runtime, infra, and lint implementation |
-| Unit tests | `tests/unit/` | Pure and interpreter-adjacent validation |
-| Integration tests | `tests/integration/` | Real-system validation surfaces |
+| Haskell application entrypoint | `app/prodbox/Main.hs` | Main CLI binary entrypoint |
+| Haskell source modules | `src/Prodbox/` | CLI, infra, gateway, settings, and library implementation |
+| Haskell tests | `test/` | Unit and integration validation |
+| Cabal package definition | `prodbox.cabal` | Build, test, and dependency definition |
+| Cabal project definition | `cabal.project` | Repository-wide build configuration including `.build/` ownership |
+| Host build root | `.build/` | Canonical host-side Haskell build artifacts |
+| Container build root | `/opt/build` | Canonical container-side Haskell build artifacts |
+| Pulumi definitions | `pulumi/` | Non-Python Pulumi stacks and supporting assets |
 | Engineering doctrine | `documents/engineering/` | Stable architecture and operator docs |
 | Development plan | `DEVELOPMENT_PLAN/` | Status, blockers, sequencing, and cleanup ownership |
-| Manual PV content root | Configured path, default `.data/` | PV contents only; not deleted by full cluster delete |
-| Retained chart-state root | `.prodbox-state/` | Generated secrets and gateway event keys preserved across full cluster delete |
-| Pulumi backend bucket | MinIO bucket `prodbox-test-pulumi-backends` | Dedicated backend state for Pulumi-managed AWS test stacks |
+| Manual PV content root | Configured path, default `.data/` | PV contents only |
+| Retained chart-state root | `.prodbox-state/` | Generated secrets and gateway event keys |
 
 ## Related Documents
 
@@ -110,6 +113,3 @@
 - [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md)
 - [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
 - [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
-- [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md)
-- [../documents/engineering/storage_lifecycle_doctrine.md](../documents/engineering/storage_lifecycle_doctrine.md)
-- [../documents/engineering/distributed_gateway_architecture.md](../documents/engineering/distributed_gateway_architecture.md)

@@ -1,43 +1,42 @@
-# File: DEVELOPMENT_PLAN/phase-0-planning-documentation.md
-# Phase 0: Planning and Documentation Topology
+# Phase 0: Planning and Documentation Topology for Haskell Rewrite
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md)
 
-> **Purpose**: Define the plan-ownership baseline so status, blockers, and cleanup work have one
-> canonical home and doctrine docs stay architecture-only.
+> **Purpose**: Define the plan-ownership baseline for the Haskell rewrite so status, sequencing,
+> and Python-removal work have one canonical home.
 
 ## Phase Summary
 
-This phase makes the development plan the single source of truth for sequencing, blocker tracking,
-completion state, and legacy removal. Doctrine docs under `documents/` remain stable references and
-do not carry competing sprint or phase narratives.
+This phase reopens the development plan against a Haskell-only repository handoff. The plan suite no
+longer describes the previously closed Python architecture as the target end state. Instead, it
+owns the execution-ordered rewrite narrative, the reopened phase model, and the Python-removal
+ledger that later phases must close.
 
-## Sprint 0.1: Planning and Documentation Topology Baseline ✅
+## Sprint 0.1: Reopen the Canonical Plan Suite for the Haskell Rewrite ✅
 
 **Status**: Done
-**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`, `documents/documentation_standards.md`, `documents/engineering/README.md`
-**Docs to update**: `documents/documentation_standards.md`, `documents/engineering/README.md`
+**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`, `DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`, `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`, `DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md`, `DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`, `DEVELOPMENT_PLAN/phase-5-public-host-validation.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 
 ### Objective
 
-Make this plan suite the only repository-wide tracker for sequencing, blockers, completion state,
-and cleanup/removal ownership.
+Rewrite the canonical plan suite so every phase reflects the Haskell end state and the complete
+removal of Python from the supported architecture.
 
 ### Deliverables
 
-- Repository-wide planning moves from a monolithic root plan into the canonical `DEVELOPMENT_PLAN/`
-  suite.
-- Doctrine docs under `documents/` defer sprint history, blocker tracking, and completion state to
-  this plan.
-- Documentation ownership stays aligned with
-  `documents/documentation_standards.md`.
+- The top-level plan docs describe the Haskell rewrite rather than the closed Python architecture.
+- Phase names `0-7` are retained, but their owned surfaces now target Haskell implementation work.
+- The plan suite defines the build-artifact contract: `.build/` on the host and `/opt/build` in
+  container builds.
+- The legacy ledger is reopened with Python source, Python toolchain, and Python Pulumi removal
+  work.
 
 ### Validation
 
-1. `poetry run prodbox check-code`
-2. `poetry run prodbox test unit`
+1. `prodbox check-code`
 
 ### Remaining Work
 
@@ -47,9 +46,8 @@ None.
 
 **Engineering docs to create/update:**
 
-- `documents/documentation_standards.md` - align documentation-topology doctrine with the
-  directory-based plan suite.
-- `documents/engineering/README.md` - point the engineering roadmap index at `DEVELOPMENT_PLAN/`.
+- None in this plan-suite rewrite. Governed doctrine alignment is owned by later implementation
+  phases.
 
 **Product docs to create/update:**
 
@@ -57,9 +55,11 @@ None.
 
 **Cross-references to add:**
 
-- Keep `README.md` and governed engineering docs pointed at `DEVELOPMENT_PLAN/README.md`.
+- Keep root guidance docs pointed at [README.md](README.md) when the broader documentation refresh
+  lands.
 
 ## Related Documents
 
 - [README.md](README.md)
 - [00-overview.md](00-overview.md)
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)

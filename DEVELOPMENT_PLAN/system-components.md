@@ -49,7 +49,7 @@
 | Interactive onboarding | `prodbox config setup` | Walk user through complete `prodbox-config.dhall` population: AWS account creation guidance with Free Tier options, AWS-console guidance for one temporary elevated credential set, live region and Route 53 zone selection, ACME provider guidance (ZeroSSL or Let's Encrypt), domain and deployment configuration, IAM user creation with inline policy, and post-setup root key deletion advice |
 | AWS IAM and quota management | `prodbox aws policy\|setup\|teardown\|check-quotas\|request-quotas` | Generate IAM inline policy, create/delete IAM users with inline policy, manage service quotas, inject/clear operational credentials in Dhall config — all via ephemeral admin credentials and AWS CLI subprocess |
 | TLA+ validation | `prodbox tla-check` | Run formal safety verification |
-| Test runner | `prodbox test ...` | Run named unit and integration suites, including destructive-suite preflight that repairs blank operational `aws.*` credentials from `aws_admin.*` and restores supported runtime state before aggregate validation |
+| Test runner | `prodbox test ...` | Run named unit and integration suites, including destructive-suite preflight that repairs blank operational `aws.*` credentials from `aws_admin.*`, idempotently selects or creates the canonical Pulumi `home` stack for supported-runtime repair, and restores supported runtime state before aggregate validation |
 | Code quality | `prodbox check-code` | Run the required doctrine and static-analysis gate |
 
 ## Validation Layer
@@ -83,7 +83,7 @@
 | Remote HA RKE2 AWS test stack | Pulumi plus SSH-driven `prodbox` install orchestration | EC2, VPC, subnet, security-group, Route 53, and IAM resources in AWS | Exactly three Ubuntu 24.04 EC2 instances in separate AZs; created and destroyed only through Pulumi |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical CLI flows |
 | DNS ownership | AWS Route 53 | Hosted zone records | Pulumi bootstraps explicit per-FQDN records when enabled; the elected in-cluster gateway leader keeps their IPs current via `dns_write_gate` |
-| Pulumi backend state | Local-cluster MinIO | Dedicated bucket `prodbox-test-pulumi-backends` | The local cluster must exist before any remote AWS test stack is created; the dedicated bucket keeps leaked backend objects easy to spot |
+| Pulumi backend state | Local-cluster MinIO | Dedicated bucket `prodbox-test-pulumi-backends` | The local cluster must exist before any remote AWS test stack is created; the dedicated bucket keeps leaked backend objects easy to spot, and aggregate supported-runtime repair re-selects or creates the canonical `home` stack when backend selection is blank |
 | Certificate material | Kubernetes | Secrets issued by cert-manager | Canonical issuer object is `letsencrypt-http01`; the ACME server URL is configured in `prodbox-config.dhall`, and the current live target is ZeroSSL DV90 |
 | Gateway runtime continuity | Kubernetes | Pod restart policy plus leader election and partition-tolerant quorum | Required to keep `dns_write_gate` active continuously across pod loss, node loss, and partition heals |
 | Host resolver state | Host operator | `/etc/hosts` plus local resolver cache | Authoritative public-host proof must not depend on a local override for `vscode.resolvefintech.com` |

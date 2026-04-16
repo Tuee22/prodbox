@@ -194,7 +194,10 @@ last, fails in Phase 1.5 unless `prodbox host public-edge` reports
 with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
 `prodbox charts deploy gateway`, `prodbox charts deploy vscode`, a final
 public-edge readiness check, `prodbox pulumi eks-destroy --yes`, and
-`prodbox pulumi test-destroy --yes` before exit.
+`prodbox pulumi test-destroy --yes` before exit. Aggregate supported-runtime
+repair also idempotently selects or creates the canonical Pulumi `home` stack
+before any raw Pulumi AWS/provider repair runs, so no manual `pulumi stack
+select` step is part of the supported flow.
 
 `prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
 It does not run cluster prerequisite gates or the `rke2 install` runbook.

@@ -183,11 +183,11 @@ normal operational `aws.*` section.
 
 - `poetry run prodbox check-code` passed on April 15, 2026 after the destructive-rerun fixes and
   Phase 7 status-documentation refresh.
-- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`).
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1078 passed`).
 - `poetry run prodbox test integration aws-iam` passed on April 14, 2026 (`2 passed`).
 - The April 15, 2026 destructive rerun from `poetry run prodbox rke2 delete --yes`,
   `docker system prune -af --volumes`, `sudo rm -rf .data`, and `poetry run prodbox test all`
-  passed in `1h 49m 7s`; the aggregate rerun included `tests/integration/test_aws_eks.py`,
+  passed in `1h 42m 48s`; the aggregate rerun included `tests/integration/test_aws_eks.py`,
   `tests/integration/test_pulumi_real.py`, `tests/integration/test_ha_rke2_aws.py`,
   `tests/integration/test_gateway_k8s_pods.py`, `tests/integration/test_charts_platform.py`,
   `tests/integration/test_prodbox_lifecycle.py`, and `tests/integration/test_aws_iam_lifecycle.py`,

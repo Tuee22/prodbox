@@ -121,6 +121,7 @@ POST_PYTEST_AWS_EKS_DESTROY_EFFECT_ID: Final[
 ] = "pytest_supported_runtime_restore_aws_eks_destroy"
 POST_PYTEST_AWS_DESTROY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_test_destroy"
 TEST_PREFLIGHT_EFFECT_ID: Final[str] = "test_preflight"
+SUPPORTED_RUNTIME_PULUMI_STACK: Final[str] = "home"
 HOME_STACK_AWS_PROVIDER_URN: Final[
     str
 ] = "urn:pulumi:home::prodbox::pulumi:providers:aws::aws-provider"
@@ -1281,11 +1282,40 @@ def _run_supported_runtime_pulumi_command(*args: str) -> subprocess.CompletedPro
     )
 
 
+def _ensure_supported_runtime_pulumi_stack_selected() -> None:
+    """Select or create the canonical stack used by supported-runtime repair helpers."""
+    from prodbox.settings import REPOSITORY_ROOT
+
+    stack = SUPPORTED_RUNTIME_PULUMI_STACK
+    selected = subprocess.run(
+        ["pulumi", "stack", "select", stack, "--create"],
+        cwd=REPOSITORY_ROOT,
+        env=_supported_runtime_pulumi_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+    )
+    if selected.returncode == 0:
+        return
+
+    detail = (
+        selected.stderr.strip() or selected.stdout.strip() or f"exit code {selected.returncode}"
+    )
+    raise RuntimeError(f"pulumi stack select failed for {stack}: {detail}")
+
+
 def _repair_delete_pending_aws_pulumi_state() -> str:
     """Delete stale delete-pending AWS resources from the Pulumi checkpoint."""
     from prodbox.lib.aws_admin import _json_loads, _mapping_from_object
 
-    exported = _run_supported_runtime_pulumi_command("stack", "export")
+    _ensure_supported_runtime_pulumi_stack_selected()
+    exported = _run_supported_runtime_pulumi_command(
+        "stack",
+        "export",
+        "--stack",
+        SUPPORTED_RUNTIME_PULUMI_STACK,
+    )
     if exported.returncode != 0:
         stderr_text = exported.stderr.strip() or exported.stdout.strip()
         raise RuntimeError(f"pulumi stack export failed: {stderr_text}")
@@ -1325,7 +1355,12 @@ def _repair_delete_pending_aws_pulumi_state() -> str:
         temp_path = Path(temp_file.name)
     try:
         imported = _run_supported_runtime_pulumi_command(
-            "stack", "import", "--file", str(temp_path)
+            "stack",
+            "import",
+            "--stack",
+            SUPPORTED_RUNTIME_PULUMI_STACK,
+            "--file",
+            str(temp_path),
         )
         if imported.returncode != 0:
             stderr_text = imported.stderr.strip() or imported.stdout.strip()
@@ -1337,7 +1372,10 @@ def _repair_delete_pending_aws_pulumi_state() -> str:
 
 def _repair_pulumi_stack_after_operational_aws_rotation() -> str:
     """Advance the Pulumi stack to the freshly restored AWS credentials."""
+    _ensure_supported_runtime_pulumi_stack_selected()
     target_args = (
+        "--stack",
+        SUPPORTED_RUNTIME_PULUMI_STACK,
         "--target",
         HOME_STACK_AWS_PROVIDER_URN,
         "--target",

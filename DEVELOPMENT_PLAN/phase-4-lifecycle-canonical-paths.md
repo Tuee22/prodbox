@@ -92,7 +92,7 @@ canonical automated validation path.
   `letsencrypt-http01` issuance path are now the only supported implementations for the affected
   surfaces.
 - `poetry run prodbox check-code` passed on April 15, 2026 after the latest clean-room rerun.
-- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`).
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1078 passed`).
 - The April 15, 2026 destructive aggregate rerun through `poetry run prodbox test all`
   re-proved the CLI, gateway, chart, Route 53, EKS, Pulumi, lifecycle, and IAM surfaces that
   depend on this cleanup work.
@@ -889,7 +889,7 @@ removed.
 - `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and again inside the April 15, 2026 aggregate postflight, each time reporting no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
 - `poetry run prodbox rke2 delete --yes`, `docker system prune -af --volumes`, `sudo rm -rf .data`,
   and `poetry run prodbox test all` passed on April 15, 2026; the aggregate rerun finished in
-  `1h 49m 7s`, re-proved the EKS, Pulumi, and HA-over-SSH suites from the wiped baseline, and
+  `1h 42m 48s`, re-proved the EKS, Pulumi, and HA-over-SSH suites from the wiped baseline, and
   auto-destroyed both `aws-eks-test` and `aws-test` with no Pulumi-managed AWS residue.
 
 ### Remaining Work

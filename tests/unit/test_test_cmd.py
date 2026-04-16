@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
 import sys
 from types import SimpleNamespace
 from typing import cast
@@ -55,16 +57,20 @@ from prodbox.cli.test_cmd import (
     PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID,
     PUBLIC_HOST_READINESS_EFFECT_ID,
     PULUMI_TEST_PREREQUISITES,
+    SUPPORTED_RUNTIME_PULUMI_STACK,
     TEST_TIMEOUT_SECONDS,
     UNIT_TEST_SUITE,
     CoverageSettings,
     _build_test_dag,
     _coverage_settings,
     _ensure_operational_aws_identity_for_supported_runtime,
+    _ensure_supported_runtime_pulumi_stack_selected,
     _exit_for_suite,
     _extract_public_edge_classification,
     _pytest_args,
     _remove_fqdn_from_hosts_text,
+    _repair_delete_pending_aws_pulumi_state,
+    _repair_pulumi_stack_after_operational_aws_rotation,
     _restore_operational_aws_identity_from_admin_harness,
     _run_suite,
 )
@@ -780,6 +786,109 @@ def test_ensure_operational_aws_identity_for_supported_runtime_repairs_when_poli
     restore.assert_called_once_with()
     repair.assert_called_once_with()
     assert result == "restored; repaired"
+
+
+def test_ensure_supported_runtime_pulumi_stack_selected_creates_canonical_home_stack() -> None:
+    """Supported-runtime repair should bootstrap the canonical Pulumi stack idempotently."""
+    with (
+        patch(
+            "prodbox.cli.test_cmd._supported_runtime_pulumi_env",
+            return_value={"PATH": "/tmp/bin"},
+        ),
+        patch(
+            "prodbox.cli.test_cmd.subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=["pulumi", "stack", "select", SUPPORTED_RUNTIME_PULUMI_STACK, "--create"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            ),
+        ) as run,
+    ):
+        _ensure_supported_runtime_pulumi_stack_selected()
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == [
+        "pulumi",
+        "stack",
+        "select",
+        SUPPORTED_RUNTIME_PULUMI_STACK,
+        "--create",
+    ]
+    assert run.call_args.kwargs["env"] == {"PATH": "/tmp/bin"}
+    assert run.call_args.kwargs["check"] is False
+
+
+def test_repair_pulumi_stack_after_operational_aws_rotation_selects_supported_stack() -> None:
+    """Supported-runtime Pulumi repair should not depend on ambient stack selection."""
+    with (
+        patch(
+            "prodbox.cli.test_cmd._ensure_supported_runtime_pulumi_stack_selected"
+        ) as select_stack,
+        patch(
+            "prodbox.cli.test_cmd._run_supported_runtime_pulumi_command",
+            return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
+        ) as run_command,
+    ):
+        result = _repair_pulumi_stack_after_operational_aws_rotation()
+
+    select_stack.assert_called_once_with()
+    run_command.assert_called_once_with(
+        "up",
+        "--yes",
+        "--stack",
+        SUPPORTED_RUNTIME_PULUMI_STACK,
+        "--target",
+        "urn:pulumi:home::prodbox::pulumi:providers:aws::aws-provider",
+        "--target",
+        "urn:pulumi:home::prodbox::aws:route53/record:Record::demo-a-record",
+    )
+    assert result == "Pulumi stack updated to the current operational AWS credentials"
+
+
+def test_repair_delete_pending_aws_pulumi_state_uses_explicit_supported_stack() -> None:
+    """Checkpoint repair should export and import the canonical stack explicitly."""
+    export_payload = json.dumps(
+        {
+            "deployment": {
+                "resources": [
+                    {"type": "pulumi:providers:aws", "delete": True},
+                    {"type": "aws:route53/record:Record", "delete": True},
+                    {"type": "kubernetes:core/v1:Namespace", "delete": False},
+                ]
+            }
+        }
+    )
+    completed_calls = [
+        SimpleNamespace(returncode=0, stdout=export_payload, stderr=""),
+        SimpleNamespace(returncode=0, stdout="", stderr=""),
+    ]
+
+    with (
+        patch(
+            "prodbox.cli.test_cmd._ensure_supported_runtime_pulumi_stack_selected"
+        ) as select_stack,
+        patch(
+            "prodbox.cli.test_cmd._run_supported_runtime_pulumi_command",
+            side_effect=completed_calls,
+        ) as run_command,
+    ):
+        result = _repair_delete_pending_aws_pulumi_state()
+
+    select_stack.assert_called_once_with()
+    assert run_command.call_args_list[0].args == (
+        "stack",
+        "export",
+        "--stack",
+        SUPPORTED_RUNTIME_PULUMI_STACK,
+    )
+    assert run_command.call_args_list[1].args[:4] == (
+        "stack",
+        "import",
+        "--stack",
+        SUPPORTED_RUNTIME_PULUMI_STACK,
+    )
+    assert result == "Removed 2 stale delete-pending AWS Pulumi state resources"
 
 
 def test_run_suite_executes_built_dag_via_execute_dag() -> None:

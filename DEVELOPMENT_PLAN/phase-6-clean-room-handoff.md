@@ -100,6 +100,9 @@ standalone janitor surface.
 - Commands that load canonical settings auto-compile `prodbox-config.dhall` to the
   repository-root `prodbox-config.json` when the compiled artifact is missing or stale, so no
   supported CLI path depends on a manually prepared compiled config.
+- Aggregate supported-runtime repair idempotently selects or creates the canonical Pulumi `home`
+  stack before raw Pulumi AWS/provider repair runs, so `poetry run prodbox test all` does not
+  depend on a manual `pulumi stack select`.
 - The final handoff validation proves zero AWS residue through the aggregate supported test flow;
   it does not depend on any standalone janitor command or host cron.
 
@@ -252,12 +255,13 @@ SSH, and final Pulumi-owned AWS teardown.
 - `poetry run prodbox host public-edge` passed on April 13, 2026 and `poetry run prodbox test integration public-dns` passed on April 13, 2026 (2 tests); the April 14 aggregate rerun re-proved the same public-edge state during its restore tail.
 - `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and verified no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
 - A final `poetry run prodbox rke2 delete --yes` passed on April 14, 2026, auto-ran the shared Pulumi destroy path first, preserved only `.data/` and `.prodbox-state/`, left `rke2-server` inactive, and left `kubectl` unable to reach a cluster.
-- The April 15, 2026 destructive rerun fixed and re-proved the last clean-room gaps on the supported path: blank operational `aws.*` credentials are now restored from raw-config `aws_admin.*` before settings load, the supported-runtime preflight now advances stale Pulumi AWS provider state before `pulumi refresh`, and Harbor image publication re-authenticates after a fully pruned Docker baseline.
+- The April 15, 2026 destructive rerun fixed and re-proved the last clean-room gaps on the supported path: blank operational `aws.*` credentials are now restored from raw-config `aws_admin.*` before settings load, the supported-runtime preflight now idempotently selects or creates the canonical `home` stack and advances stale Pulumi AWS provider state before `pulumi refresh`, and Harbor image publication re-authenticates after a fully pruned Docker baseline.
 - `poetry run prodbox rke2 delete --yes`, `docker system prune -af --volumes`, `sudo rm -rf .data`,
-  and `poetry run prodbox test all` passed on April 15, 2026; the aggregate rerun finished in
-  `1h 49m 7s`, re-proved the Pulumi lifecycle, HA-over-SSH, lifecycle, and IAM suites from the
-  wiped baseline, restored the supported runtime to `CLASSIFICATION=ready-for-external-proof`, and
-  auto-destroyed both `aws-eks-test` and `aws-test` with an empty backend bucket.
+  and `poetry run prodbox test all` passed on April 15, 2026 from a local file-backed Pulumi
+  backend with no active stack selection; the aggregate rerun finished in `1h 42m 48s`, re-proved
+  the Pulumi lifecycle, HA-over-SSH, lifecycle, and IAM suites from the wiped baseline, restored
+  the supported runtime to `CLASSIFICATION=ready-for-external-proof`, and auto-destroyed both
+  `aws-eks-test` and `aws-test` with an empty backend bucket.
 - These validations closed the HA RKE2 branch first; Sprint 6.5 later closed the companion
   EKS-backed branch and the full dual-path handoff on April 15, 2026.
 
@@ -323,7 +327,7 @@ the latest destructive rerun re-proves the now-empty legacy ledger.
   entries.
 - `poetry run prodbox check-code` passed on April 15, 2026 after the final
   status-documentation refresh.
-- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`) after the EKS and
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1078 passed`) after the EKS and
   zero-legacy closure work.
 - `poetry run prodbox pulumi eks-resources`, `poetry run prodbox test integration aws-eks`, and
   `poetry run prodbox pulumi eks-destroy --yes` passed on April 15, 2026; the named EKS suite
@@ -333,8 +337,10 @@ the latest destructive rerun re-proves the now-empty legacy ledger.
   shared backend bucket empty before local-cluster teardown.
 - `docker system prune -af --volumes` and `sudo rm -rf .data` both passed on April 15, 2026,
   proving the final rerun from a pruned Docker baseline and a removed manual PV root.
-- `poetry run prodbox test all` passed on April 15, 2026 in `1h 49m 7s`; the aggregate rerun
-  included `tests/integration/test_public_dns_delegation.py`,
+- `poetry run prodbox test all` passed on April 15, 2026 in `1h 42m 48s` from a local file-backed
+  Pulumi backend with no active stack selection; the aggregate rerun selected or created the
+  canonical `home` stack during supported-runtime repair and included
+  `tests/integration/test_public_dns_delegation.py`,
   `tests/integration/test_aws_eks.py`, `tests/integration/test_pulumi_real.py`,
   `tests/integration/test_ha_rke2_aws.py`, `tests/integration/test_charts_storage.py`,
   `tests/integration/test_prodbox_lifecycle.py`, and

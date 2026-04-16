@@ -115,6 +115,9 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
    `prodbox charts deploy vscode`, `prodbox pulumi eks-destroy --yes`, and
    `prodbox pulumi test-destroy --yes`, then wait for `prodbox host public-edge` to return
    `CLASSIFICATION=ready-for-external-proof` before exit.
+8. Aggregate supported-runtime repair helpers must idempotently select or create the canonical
+   Pulumi `home` stack before raw Pulumi AWS/provider repair runs; no supported aggregate rerun
+   depends on a manual `pulumi stack select`.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

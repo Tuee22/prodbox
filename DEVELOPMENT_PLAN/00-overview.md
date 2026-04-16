@@ -117,6 +117,10 @@ Completed and present in the repository:
 - The intended public-edge stack in repository code is `MetalLB -> Traefik -> vscode` Ingress, with `vscode-nginx` acting only as the namespace-local auth proxy behind that edge.
 - Pulumi subprocess handling injects the canonical nested-entrypoint override, and `Settings()` loads from `prodbox-config.json` (compiled from `prodbox-config.dhall`) via `Settings.from_config_json()` only.
 - Phase 7 implementation is present: `prodbox config setup`, `prodbox aws policy|setup|teardown|check-quotas|request-quotas`, the `aws_admin` Dhall/settings harness, the new onboarding/AWS engineering docs, and the dedicated `aws-iam` integration suite.
+- Aggregate supported-runtime repair now uses the canonical `home` stack semantics even when the
+  local backend has no active selection: it idempotently selects or creates `home` before raw
+  Pulumi AWS/provider repair runs, so `poetry run prodbox test all` does not depend on a manual
+  `pulumi stack select`.
 
 Open, incomplete, or blocked:
 
@@ -129,15 +133,15 @@ close phases 0-7 on their owned surfaces. The repository exposes both intended A
 validation branches through named `prodbox` create/validate/destroy surfaces, the zero-legacy
 ledger is empty in `Pending Removal`, and Phase 7 is fully validated in the worktree including
 the dedicated `aws_admin.*` harness, raw-config recovery when operational `aws.*` credentials are
-blank, and the supported-runtime repair that refreshes stale Pulumi AWS provider state before
-EC2-backed validation. The repository is back at the zero-legacy architecture state on paper and
-in code.
+blank, and the supported-runtime repair that refreshes stale Pulumi AWS provider state after
+idempotently selecting or creating the canonical `home` stack before EC2-backed validation. The
+repository is back at the zero-legacy architecture state on paper and in code.
 
 ## Current-Environment Validation Snapshot
 
 - `poetry run prodbox check-code` passed on April 15, 2026 after the final
   status-documentation refresh.
-- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`).
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1078 passed`).
 - `poetry run prodbox test integration aws-iam` passed on April 14, 2026 (`2 passed`).
 - `poetry run prodbox test integration lifecycle` passed on April 15, 2026 (`2 passed` in `16m 06s`), proving Harbor-backed lifecycle reinstall and PVC/PV rebinding after the fully pruned Docker baseline.
 - `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, and `poetry run prodbox config validate` passed on April 13, 2026 from the missing compiled-config baseline; `config show` reported `storage.manual_pv_host_root=/home/matthewnowak/prodbox/.data`.
@@ -147,10 +151,11 @@ in code.
 - `poetry run prodbox pulumi test-resources` passed on April 14, 2026 and created the canonical `aws-test` stack with three Pulumi-managed EC2 nodes in separate AZs.
 - `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and again inside the April 15, 2026 aggregate postflight tail, each time reporting no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
 - `poetry run prodbox rke2 delete --yes`, `docker system prune -af --volumes`, `sudo rm -rf .data`,
-  and `poetry run prodbox test all` passed on April 15, 2026; the aggregate rerun finished in
-  `1h 49m 7s`, included the public-DNS proof, the EKS-backed proof, the Pulumi lifecycle proof,
-  the HA-over-SSH proof, the gateway and chart suites, the lifecycle rebinding proof, and the
-  real IAM lifecycle proof, restored the supported runtime to
+  and `poetry run prodbox test all` passed on April 15, 2026 from a local file-backed Pulumi
+  backend with no active stack selection; the aggregate rerun finished in `1h 42m 48s`, selected
+  or created the canonical `home` stack during supported-runtime repair, included the public-DNS
+  proof, the EKS-backed proof, the Pulumi lifecycle proof, the HA-over-SSH proof, the gateway and
+  chart suites, the lifecycle rebinding proof, and the real IAM lifecycle proof, restored the supported runtime to
   `CLASSIFICATION=ready-for-external-proof`, and auto-destroyed both `aws-eks-test` and
   `aws-test` with an empty backend bucket.
 - `poetry run prodbox host public-edge` passed on April 13, 2026 with `CLASSIFICATION=ready-for-external-proof`, and `poetry run prodbox test integration public-dns` passed on April 13, 2026 (2 tests); the April 14 aggregate rerun re-proved the same public-edge state during runtime restore.
@@ -196,6 +201,9 @@ in code.
   on the test host, using the dedicated bucket `prodbox-test-pulumi-backends`.
 - The local cluster must be deployed before any remote AWS test stack is provisioned because it
   owns the Pulumi backend.
+- Aggregate supported-runtime repair must idempotently select or create the canonical Pulumi
+  `home` stack when backend state is blank or unselected; no supported rerun requires a manual
+  `pulumi stack select`.
 - Pulumi is the exclusive provisioner and deprovisioner for AWS test resources. No tag-based
   cleanup contract, pre-test AWS sweep, standalone janitor CLI, host cron job, or standalone
   final AWS audit helper is part of the supported architecture.

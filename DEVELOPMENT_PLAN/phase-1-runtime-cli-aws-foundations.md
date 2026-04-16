@@ -230,14 +230,14 @@ and HA RKE2 for AWS-backed cluster validation.
   `pulumi test-destroy --yes` during `prodbox rke2 delete --yes`.
 - `poetry run prodbox check-code` passed on April 15, 2026 after the final
   status-documentation refresh.
-- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`) with the EKS command
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1078 passed`) with the EKS command
   ADTs, DAGs, helpers, CLI surface, Pulumi program, and policy-repair flow covered.
 - `poetry run prodbox pulumi eks-resources`, `poetry run prodbox test integration aws-eks`, and
   `poetry run prodbox pulumi eks-destroy --yes` passed on April 15, 2026; the named EKS suite
   `tests/integration/test_aws_eks.py` passed (`1 passed` in `22m 03s`).
 - The April 15, 2026 destructive rerun from `poetry run prodbox rke2 delete --yes`,
   `docker system prune -af --volumes`, `sudo rm -rf .data`, and `poetry run prodbox test all`
-  passed in `1h 49m 7s`, included `tests/integration/test_aws_eks.py`, restored the supported
+  passed in `1h 42m 48s`, included `tests/integration/test_aws_eks.py`, restored the supported
   runtime to `CLASSIFICATION=ready-for-external-proof`, and auto-destroyed both `aws-eks-test`
   and `aws-test` with no residue.
 

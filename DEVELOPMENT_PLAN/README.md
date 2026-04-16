@@ -90,7 +90,9 @@ stacks with one dedicated bucket named
 `prodbox-test-pulumi-backends`, Pulumi-exclusive AWS provisioning and deprovisioning for test
 resources through named `prodbox pulumi eks-resources|eks-destroy --yes` and
 `prodbox pulumi test-resources|test-destroy --yes` surfaces, automatic destroy of both AWS test
-stacks during `prodbox rke2 delete --yes` before the local backend cluster is removed, one
+stacks during `prodbox rke2 delete --yes` before the local backend cluster is removed, aggregate
+supported-runtime repair that idempotently selects or creates the canonical Pulumi `home` stack
+before raw Pulumi AWS/provider repair runs, one
 in-cluster always-on gateway Route 53 write path through `dns_write_gate` managed by
 `prodbox charts` (no host-side daemons), explicit per-subdomain Route 53 records only, one
 coherent `MetalLB -> Traefik -> vscode-nginx` public-host stack, one cluster-backed
@@ -160,7 +162,7 @@ Fresh validation established:
 
 - `poetry run prodbox check-code` passed on April 15, 2026 after the final
   status-documentation refresh.
-- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`).
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1078 passed`).
 - `poetry run prodbox test integration aws-iam` passed on April 14, 2026 (`2 passed`).
 - `poetry run prodbox test integration lifecycle` passed on April 15, 2026 (`2 passed` in `16m 06s`), proving that the internal `rke2 install` path now republishes Harbor images correctly after the fully pruned Docker baseline.
 - `poetry run prodbox rke2 delete --yes`, `rm -f prodbox-config.json`, `poetry run prodbox rke2 install`, `poetry run prodbox config show`, and `poetry run prodbox config validate` passed on April 13, 2026 from the missing compiled-config baseline required by the clean-room handoff.
@@ -170,8 +172,10 @@ Fresh validation established:
 - `poetry run prodbox pulumi test-resources` passed on April 14, 2026 and created the canonical `aws-test` stack with three Pulumi-managed EC2 nodes in separate availability zones.
 - `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and again in the April 15, 2026 aggregate postflight, each time verifying no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
 - `poetry run prodbox rke2 delete --yes`, `docker system prune -af --volumes`, `sudo rm -rf .data`,
-  and `poetry run prodbox test all` all passed on April 15, 2026; the aggregate rerun finished in
-  `1h 49m 7s`, exercised `tests/integration/test_public_dns_delegation.py`,
+  and `poetry run prodbox test all` all passed on April 15, 2026 from a local file-backed Pulumi
+  backend with no active stack selection; the aggregate rerun finished in `1h 42m 48s`, selected
+  or created the canonical `home` stack during supported-runtime repair, exercised
+  `tests/integration/test_public_dns_delegation.py`,
   `tests/integration/test_aws_eks.py`, `tests/integration/test_pulumi_real.py`,
   `tests/integration/test_ha_rke2_aws.py`, `tests/integration/test_gateway_k8s_pods.py`,
   `tests/integration/test_charts_platform.py`, `tests/integration/test_prodbox_lifecycle.py`, and
@@ -215,36 +219,39 @@ This plan is done only when all of the following are true:
    `prodbox-config.dhall` as the single configuration source.
 9. Sprint 6.2 remains closed with canonical settings loads auto-compiling `prodbox-config.json`
    when the compiled artifact is missing or stale.
-10. Sprint 6.3 remains closed with full local-cluster delete preserving only the configured
+10. Sprint 6.2 also remains closed with aggregate supported-runtime repair idempotently selecting
+    or creating the canonical Pulumi `home` stack, so `poetry run prodbox test all` does not
+    require a manual `pulumi stack select`.
+11. Sprint 6.3 remains closed with full local-cluster delete preserving only the configured
     PV-content root plus `.prodbox-state/` and with deterministic PVC/PV rebinding after
     delete/reinstall.
-11. Sprint 6.4 remains closed for the implemented HA RKE2 clean-room rerun path from
+12. Sprint 6.4 remains closed for the implemented HA RKE2 clean-room rerun path from
     `poetry run prodbox rke2 delete --yes` plus a missing `prodbox-config.json` through final AWS
     destroy and public-host restore.
-12. Sprint 6.5 closes with a final clean-room rerun that proves both the EKS-backed path and the
+13. Sprint 6.5 closes with a final clean-room rerun that proves both the EKS-backed path and the
     HA RKE2 path from the supported baseline and leaves no Pulumi-managed Route 53, VPC, subnet,
     security-group, EC2, IAM, EKS, or backend-bucket residue behind.
-13. The remaining legacy inventory has no pending-removal entries.
-14. `prodbox aws policy` emits valid IAM inline policy JSON for both `core` and `full` tiers,
+14. The remaining legacy inventory has no pending-removal entries.
+15. `prodbox aws policy` emits valid IAM inline policy JSON for both `core` and `full` tiers,
     covering all permissions required by the supported architecture.
-15. `prodbox config setup` walks a new user from zero through AWS account creation guidance,
+16. `prodbox config setup` walks a new user from zero through AWS account creation guidance,
     region and Route 53 zone selection from live AWS queries, ACME provider guidance with Free Tier
     options (ZeroSSL with EAB or Let's Encrypt), domain and deployment configuration, dedicated
     IAM user creation with a single inline policy, and complete `prodbox-config.dhall` generation,
     compilation, and validation — using ephemeral admin credentials that are never persisted.
-16. `prodbox aws setup` creates a dedicated IAM user with the consolidated inline policy, creates
+17. `prodbox aws setup` creates a dedicated IAM user with the consolidated inline policy, creates
     access keys, injects operational credentials into `prodbox-config.dhall`, and ensures baseline
     service quotas (auto-approvable: 32 Standard vCPU, 10 VPCs, 10 internet gateways) via
     ephemeral admin credentials.
-17. `prodbox aws teardown` deletes the IAM user, all access keys, and the inline policy, clears
+18. `prodbox aws teardown` deletes the IAM user, all access keys, and the inline policy, clears
     `aws.*` credentials in Dhall config, and recompiles.
-18. `prodbox aws check-quotas` and `prodbox aws request-quotas` inspect and request service quota
+19. `prodbox aws check-quotas` and `prodbox aws request-quotas` inspect and request service quota
     increases via ephemeral admin credentials and the AWS CLI Service Quotas API.
-19. The `aws_admin` section in `prodbox-config-types.dhall` provides test-only elevated
+20. The `aws_admin` section in `prodbox-config-types.dhall` provides test-only elevated
     credentials that are ignored by all prodbox commands outside `prodbox aws *` and the test
     suite. Normal `aws.*` operational credentials are populated exclusively through the interactive
     `prodbox config setup` or `prodbox aws setup` flows.
-20. Integration tests validate the full IAM user lifecycle (create → verify → delete) using
+21. Integration tests validate the full IAM user lifecycle (create → verify → delete) using
     `aws_admin.*` credentials from config.
 
 ## Related Documents

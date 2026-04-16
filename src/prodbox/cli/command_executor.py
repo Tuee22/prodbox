@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 
 from rich.console import Console
 
-from prodbox.cli.command_adt import Command
+from prodbox.cli.command_adt import Command, renders_execution_summary
 from prodbox.cli.dag_builders import command_to_dag
 from prodbox.cli.interpreter import create_interpreter
 from prodbox.cli.summary import display_dag_failure_report, display_dag_summary, display_summary
@@ -105,7 +105,8 @@ def execute_command(cmd: Command) -> int:
             case Success(dag):
                 interpreter = create_interpreter()
                 dag_summary = await interpreter.interpret_dag(dag)
-                await _render_dag_outputs(interpreter, dag_summary)
+                if renders_execution_summary(cmd) or dag_summary.exit_code != 0:
+                    await _render_dag_outputs(interpreter, dag_summary)
                 return dag_summary.exit_code
             case Failure(error):
                 return render_error_and_return_exit_code(

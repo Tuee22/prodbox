@@ -22,7 +22,7 @@ For lifecycle integration tests, prodbox baseline state is the canonical post-in
 
 Because `prodbox rke2 install` and `prodbox rke2 delete` preserve retained host state, test fixtures must explicitly delete any temporary MinIO or other storage artifacts they create.
 
-`prodbox rke2 delete --yes` must destroy any Pulumi-managed AWS test stack before local backend
+`prodbox rke2 delete --yes` must destroy both Pulumi-managed AWS test stacks before local backend
 teardown removes the MinIO host that stores Pulumi state.
 
 ---
@@ -69,9 +69,9 @@ Parallel(
 
 `EnsureMinio` must install `minio/minio` in the `prodbox` namespace with `persistence.existingClaim=<prebound-claim>`.
 
-`rke2_delete` must first invoke the same Pulumi-owned AWS test-stack destroy path exposed by
-`prodbox pulumi test-destroy --yes`, then remove the RKE2 substrate, managed kubeconfig residue,
-and legacy cluster remnants while preserving:
+`rke2_delete` must first invoke the same Pulumi-owned AWS test-stack destroy paths exposed by
+`prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes`, then remove the RKE2
+substrate, managed kubeconfig residue, and legacy cluster remnants while preserving:
 
 1. The configured manual PV host root.
 2. The repo-local `.prodbox-state/` retained chart-state root.
@@ -98,17 +98,16 @@ For this reason, the source of truth for storage host paths is the machine-ident
 
 `prodbox rke2 delete --yes`:
 
-1. Runs `prodbox pulumi test-destroy --yes` semantics first so Pulumi-managed AWS test resources
-   are gone before the local MinIO backend disappears.
+1. Runs `prodbox pulumi eks-destroy --yes` semantics first, then
+   `prodbox pulumi test-destroy --yes`, so Pulumi-managed AWS test resources are gone before the
+   local MinIO backend disappears.
 2. Runs the supported RKE2 uninstall flow when present, otherwise disables the service and removes
    the known RKE2 data directories.
 3. Deletes a managed `~/.kube/config` only when it still targets the local RKE2 API endpoint.
-4. Deletes the legacy `/var/lib/prodbox/storage` root only when it is not the configured manual PV
-   host root and not an ancestor of that configured root.
-5. Preserves the configured manual PV host root because it contains retained PV contents.
-6. Preserves `.prodbox-state/` because it contains retained non-PV chart state required to
+4. Preserves the configured manual PV host root because it contains retained PV contents.
+5. Preserves `.prodbox-state/` because it contains retained non-PV chart state required to
    reconnect retained services after reinstall.
-7. Prints the preserved-state boundary explicitly so the data-loss contract is unambiguous to the
+6. Prints the preserved-state boundary explicitly so the data-loss contract is unambiguous to the
    operator.
 
 This keeps retained data recoverable and supports deterministic rebinding after reinstall.

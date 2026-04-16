@@ -22,6 +22,8 @@ from prodbox.cli.command_adt import (
     K8sLogsCommand,
     K8sWaitCommand,
     PulumiDestroyCommand,
+    PulumiEksDestroyCommand,
+    PulumiEksResourcesCommand,
     PulumiPreviewCommand,
     PulumiRefreshCommand,
     PulumiStackInitCommand,
@@ -51,6 +53,8 @@ from prodbox.cli.command_adt import (
     k8s_logs_command,
     k8s_wait_command,
     pulumi_destroy_command,
+    pulumi_eks_destroy_command,
+    pulumi_eks_resources_command,
     pulumi_preview_command,
     pulumi_refresh_command,
     pulumi_stack_init_command,
@@ -494,6 +498,51 @@ class TestPulumiCommands:
                 case Failure(error):
                     assert "Linux" in error
 
+    def test_pulumi_eks_resources_command_on_linux(self) -> None:
+        """pulumi_eks_resources_command should succeed on Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            match pulumi_eks_resources_command():
+                case Success(cmd):
+                    assert isinstance(cmd, PulumiEksResourcesCommand)
+                case Failure(_):
+                    pytest.fail("Expected Success on Linux")
+
+    def test_pulumi_eks_resources_command_on_non_linux(self) -> None:
+        """pulumi_eks_resources_command should fail on non-Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
+            match pulumi_eks_resources_command():
+                case Success(_):
+                    pytest.fail("Expected Failure on non-Linux")
+                case Failure(error):
+                    assert "Linux" in error
+
+    def test_pulumi_eks_destroy_command_requires_yes(self) -> None:
+        """pulumi_eks_destroy_command should require explicit yes confirmation."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            match pulumi_eks_destroy_command(yes=False):
+                case Success(_):
+                    pytest.fail("Expected Failure when yes=False")
+                case Failure(error):
+                    assert "--yes" in error
+
+    def test_pulumi_eks_destroy_command_on_linux_with_yes(self) -> None:
+        """pulumi_eks_destroy_command should succeed on Linux when yes=True."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            match pulumi_eks_destroy_command(yes=True):
+                case Success(cmd):
+                    assert isinstance(cmd, PulumiEksDestroyCommand)
+                case Failure(_):
+                    pytest.fail("Expected Success on Linux with yes=True")
+
+    def test_pulumi_eks_destroy_command_on_non_linux(self) -> None:
+        """pulumi_eks_destroy_command should fail on non-Linux."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Darwin"):
+            match pulumi_eks_destroy_command(yes=True):
+                case Success(_):
+                    pytest.fail("Expected Failure on non-Linux")
+                case Failure(error):
+                    assert "Linux" in error
+
 
 class TestGatewayCommands:
     """Tests for gateway command smart constructors."""
@@ -609,6 +658,8 @@ class TestUtilityFunctions:
         """AWS test-stack Pulumi commands should be Linux-only."""
         assert requires_linux(PulumiTestResourcesCommand()) is True
         assert requires_linux(PulumiTestDestroyCommand()) is True
+        assert requires_linux(PulumiEksResourcesCommand()) is True
+        assert requires_linux(PulumiEksDestroyCommand()) is True
 
     def test_requires_settings_dns_commands(self) -> None:
         """requires_settings should return True for DNS commands."""
@@ -629,6 +680,8 @@ class TestUtilityFunctions:
         assert requires_settings(PulumiStackInitCommand(stack="test")) is True
         assert requires_settings(PulumiTestResourcesCommand()) is True
         assert requires_settings(PulumiTestDestroyCommand()) is True
+        assert requires_settings(PulumiEksResourcesCommand()) is True
+        assert requires_settings(PulumiEksDestroyCommand()) is True
 
     def test_requires_settings_host_commands(self) -> None:
         """requires_settings should distinguish host diagnostics from simple host commands."""

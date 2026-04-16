@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_test_environment.md, AGENTS.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_test_environment.md, AGENTS.md
 
 > **Purpose**: Define how `prodbox` authenticates to AWS for integration work and how the
 > supported AWS validation path creates, owns, and tears down real AWS resources.
@@ -27,16 +27,18 @@ Ambient AWS auth environment variables outside the Dhall configuration are forbi
 Route 53-only AWS tests create brand-new hosted zones through fixture-owned AWS CLI commands with
 subprocess auth rebuilt from `Settings`.
 
-The multi-resource AWS HA test stack is created and destroyed only through
-`prodbox pulumi test-resources` and `prodbox pulumi test-destroy --yes`; Pulumi is the sole owner
-of its VPC, subnet, security-group, IAM, EC2, and Route 53 lifecycle.
+The Pulumi-managed AWS test stacks are created and destroyed only through named `prodbox pulumi`
+surfaces. `prodbox pulumi eks-resources` and `prodbox pulumi eks-destroy --yes` own the EKS test
+stack. `prodbox pulumi test-resources` and `prodbox pulumi test-destroy --yes` own the HA RKE2
+test stack. Pulumi is the sole owner of the VPC, subnet, security-group, IAM, EC2, EKS, and Route
+53 lifecycle for those stacks.
 
-The local `prodbox` RKE2 cluster and its MinIO service must exist before any remote AWS HA test
-stack is created because Pulumi state for that stack lives only in the dedicated bucket
+The local `prodbox` RKE2 cluster and its MinIO service must exist before any remote AWS test stack
+is created because Pulumi state for those stacks lives only in the dedicated bucket
 `prodbox-test-pulumi-backends`.
 
-`prodbox rke2 delete --yes` must invoke the same Pulumi-owned AWS test-stack destroy path before it
-removes the local MinIO backend.
+`prodbox rke2 delete --yes` must invoke the same Pulumi-owned AWS test-stack destroy paths before
+it removes the local MinIO backend.
 
 Existing AWS resources are never valid mutation targets for supported `prodbox` integration tests.
 
@@ -63,11 +65,15 @@ Current expected users:
 1. Route 53 integration tests for `prodbox dns check` and the canonical gateway Route 53 write
    client.
 2. Real Pulumi integration tests that validate the Pulumi-owned AWS HA test stack surface.
-3. Real HA RKE2 integration tests that bootstrap RKE2 over SSH against the Pulumi-managed AWS test
-   stack.
-4. Read-only public Route 53 delegation proof for `VSCODE_FQDN`.
-5. Any future AWS-backed integration test that follows the same Dhall-only auth and
-   Pulumi-or-fixture ownership model.
+3. Real EKS integration tests that validate the Pulumi-managed AWS EKS test stack.
+4. Real HA RKE2 integration tests that bootstrap RKE2 over SSH against the Pulumi-managed AWS HA
+   test stack.
+5. Read-only public Route 53 delegation proof for `VSCODE_FQDN`.
+6. Any AWS-backed integration test that follows the same Dhall-only auth and Pulumi-or-fixture
+   ownership model.
+7. The IAM lifecycle integration suite `poetry run prodbox test integration aws-iam`, which uses
+   the test-only `aws_admin.*` credential section to drive `prodbox aws` lifecycle logic against
+   real AWS.
 
 It does not own the general multi-project AWS test-account topology, shared parent-domain strategy,
 or shared-account authentication posture. Those are defined in
@@ -104,6 +110,14 @@ Required Dhall config fields:
 Optional Dhall config field:
 
 1. `aws.session_token`
+2. `aws_admin.access_key_id`
+3. `aws_admin.secret_access_key`
+4. `aws_admin.session_token`
+5. `aws_admin.region`
+
+`aws_admin.*` is reserved for `prodbox aws *` command flows and the dedicated IAM lifecycle
+integration suite. Normal runtime commands ignore it. Population and cleanup guidance live in
+[AWS Admin Credentials](./aws_admin_credentials.md).
 
 Forbidden storage patterns:
 
@@ -170,7 +184,7 @@ The required checks map to the following concrete obligations:
    `Settings` before an AWS-mutating suite proceeds.
 3. Lifecycle-capability check: Route 53 suites must be able to create and fully own a fresh hosted
    zone lifecycle; Pulumi-backed suites must be able to drive the canonical `prodbox pulumi`
-   command surface for the AWS HA stack.
+   command surface for the AWS EKS and HA stacks.
 
 ### 3.3 No In-Harness Login
 
@@ -191,11 +205,11 @@ document.
 
 It is not sufficient to prove only `sts:GetCallerIdentity` or read-only Route 53 access.
 
-### 3.5 Pulumi HA Stack Capability Proof Rule
+### 3.5 Pulumi-Backed Stack Capability Proof Rule
 
-For `pulumi` and `ha-rke2-aws`, permission sufficiency is proven only when the local host can reach
-its RKE2-backed MinIO backend and `prodbox pulumi test-resources` can select, inspect, or create
-the canonical AWS HA stack using Dhall-configured AWS auth.
+For `aws-eks`, `pulumi`, and `ha-rke2-aws`, permission sufficiency is proven only when the local
+host can reach its RKE2-backed MinIO backend and the relevant named `prodbox pulumi` surface can
+select, inspect, or create the canonical AWS test stack using Dhall-configured AWS auth.
 
 ---
 
@@ -220,19 +234,34 @@ Minimum rule:
 2. Test bodies operate only on fixture-owned identifiers.
 3. Teardown deletes the same identifiers before returning.
 
-### 4.3 Pulumi-Owned AWS HA Stack
+### 4.3 Pulumi-Owned AWS Test Stacks
 
-The `pulumi` and `ha-rke2-aws` suites must not open-code AWS resource creation through ad hoc test
-helpers. They use the canonical Pulumi stack rooted at the local MinIO backend.
+The `aws-eks`, `pulumi`, and `ha-rke2-aws` suites must not open-code AWS resource creation through
+ad hoc test helpers. They use canonical Pulumi stacks rooted at the local MinIO backend.
 
 Minimum rule:
 
 1. `prodbox rke2 install` creates or reconciles the local backend cluster first.
-2. `prodbox pulumi test-resources` is the only supported surface for creating or inspecting the
+2. `prodbox pulumi eks-resources` is the only supported surface for creating or inspecting the AWS
+   EKS test stack.
+3. `prodbox pulumi eks-destroy --yes` is the only supported surface for destroying that stack.
+4. `prodbox pulumi test-resources` is the only supported surface for creating or inspecting the
    multi-resource AWS HA stack.
-3. `prodbox pulumi test-destroy --yes` is the only supported surface for destroying that stack.
-4. `prodbox rke2 delete --yes` must invoke the same destroy semantics before it removes the backend
+5. `prodbox pulumi test-destroy --yes` is the only supported surface for destroying that stack.
+6. `prodbox rke2 delete --yes` must invoke both destroy semantics before it removes the backend
    cluster.
+
+### 4.4 Test-Only Elevated IAM Harness
+
+The AWS IAM lifecycle suite uses the same repository-root Dhall configuration file but a separate
+credential section:
+
+1. `aws.*` remains the normal operational identity.
+2. `aws_admin.*` is the elevated identity used only for `prodbox aws *` and
+   `prodbox test integration aws-iam`.
+3. The test suite must fail fast with an actionable error when `aws_admin.*` is missing or partial.
+
+This keeps administrative IAM lifecycle validation separate from the steady-state runtime identity.
 
 ---
 
@@ -255,13 +284,15 @@ def ephemeral_route53_zone() -> Iterator[Route53HostedZoneContext]:
         delete_ephemeral_hosted_zone(context)
 ```
 
-### 5.2 Pulumi Owns Multi-Resource Stack Lifecycle
+### 5.2 Pulumi Owns Multi-Resource Stack Lifecycles
 
-The same public CLI surfaces used by operators own the AWS HA stack lifecycle during tests:
+The same public CLI surfaces used by operators own the AWS test-stack lifecycles during tests:
 
-1. `prodbox pulumi test-resources`
-2. `prodbox pulumi test-destroy --yes`
-3. `prodbox rke2 delete --yes` as the final automatic destroy path before backend teardown
+1. `prodbox pulumi eks-resources`
+2. `prodbox pulumi eks-destroy --yes`
+3. `prodbox pulumi test-resources`
+4. `prodbox pulumi test-destroy --yes`
+5. `prodbox rke2 delete --yes` as the final automatic destroy path before backend teardown
 
 Tests may inspect Pulumi-owned outputs and snapshots, but they must not bypass the CLI with ad hoc
 AWS deletion logic for stack-owned resources.
@@ -273,7 +304,8 @@ Cleanup must still run when the test body fails an assertion or raises an except
 Required patterns:
 
 1. Yield fixtures and fixture-owned `try/finally` for Route 53 lifecycles.
-2. Final explicit `prodbox pulumi test-destroy --yes` calls in Pulumi-backed integration tests.
+2. Final explicit `prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes`
+   calls in Pulumi-backed integration tests.
 3. Aggregate-suite postflight destroy via `prodbox test all`.
 
 If setup fails before the fixture yields, the helper must roll back every resource it created in
@@ -307,16 +339,19 @@ Route 53 fixture ownership relies on the canonical AWS CLI command set:
 5. `aws route53 get-hosted-zone`
 6. `aws route53 delete-hosted-zone`
 
-### 6.3 Pulumi-Owned AWS HA Stack Surfaces
+### 6.3 Pulumi-Owned AWS Test Stack Surfaces
 
-The multi-resource AWS HA stack relies on the canonical `prodbox` command surface:
+The Pulumi-managed AWS test stacks rely on the canonical `prodbox` command surface:
 
 1. `prodbox rke2 install`
-2. `prodbox pulumi test-resources`
-3. `prodbox test integration pulumi`
-4. `prodbox test integration ha-rke2-aws`
-5. `prodbox pulumi test-destroy --yes`
-6. `prodbox rke2 delete --yes`
+2. `prodbox pulumi eks-resources`
+3. `prodbox test integration aws-eks`
+4. `prodbox pulumi eks-destroy --yes`
+5. `prodbox pulumi test-resources`
+6. `prodbox test integration pulumi`
+7. `prodbox test integration ha-rke2-aws`
+8. `prodbox pulumi test-destroy --yes`
+9. `prodbox rke2 delete --yes`
 
 ---
 
@@ -335,20 +370,26 @@ zone outside the Pulumi-owned HA stack.
 
 ---
 
-## 8. Pulumi-Owned HA Test Stack Contract
+## 8. Pulumi-Owned AWS Test Stack Contract
 
-For `pulumi` and `ha-rke2-aws`, the lifecycle contract is:
+For `aws-eks`, `pulumi`, and `ha-rke2-aws`, the lifecycle contract is:
 
 1. `prodbox rke2 install` must reconcile the local RKE2 cluster, MinIO service, and the dedicated
    bucket `prodbox-test-pulumi-backends` before remote AWS provisioning starts.
-2. `prodbox pulumi test-resources` must be able to create or inspect exactly one canonical AWS HA
+2. `prodbox pulumi eks-resources` must be able to create or inspect exactly one canonical AWS EKS
+   stack composed of an ephemeral EKS cluster, a managed node group, VPC networking, and the IAM
+   resources required by that stack.
+3. `prodbox test integration aws-eks` validates the EKS stack snapshot, node readiness, and
+   command surface.
+4. `prodbox pulumi eks-destroy --yes` must destroy the same EKS stack cleanly.
+5. `prodbox pulumi test-resources` must be able to create or inspect exactly one canonical AWS HA
    stack composed of three Ubuntu 24.04 EC2 instances in separate availability zones plus the VPC,
    subnet, security-group, IAM, and Route 53 resources required by that stack.
-3. `prodbox test integration pulumi` validates the stack snapshot and command surface.
-4. `prodbox test integration ha-rke2-aws` validates SSH-driven HA RKE2 bootstrap against the same
+6. `prodbox test integration pulumi` validates the HA stack snapshot and command surface.
+7. `prodbox test integration ha-rke2-aws` validates SSH-driven HA RKE2 bootstrap against the same
    Pulumi-managed stack.
-5. `prodbox pulumi test-destroy --yes` must destroy the same stack cleanly.
-6. `prodbox rke2 delete --yes` must invoke the same destroy semantics automatically before local
+8. `prodbox pulumi test-destroy --yes` must destroy the same HA stack cleanly.
+9. `prodbox rke2 delete --yes` must invoke both destroy semantics automatically before local
    backend teardown.
 
 No tag-based preflight sweep, janitor CLI, or standalone AWS audit helper is part of the supported
@@ -375,8 +416,9 @@ background sweeps:
 
 1. Route 53 suites use fixture-owned setup rollback and teardown.
 2. Pulumi-backed suites use explicit destroy before and after validation when needed.
-3. Aggregate postflight for `prodbox test all` ends with `prodbox pulumi test-destroy --yes`.
-4. `prodbox rke2 delete --yes` invokes the same destroy path before local backend teardown.
+3. Aggregate postflight for `prodbox test all` ends with `prodbox pulumi eks-destroy --yes` and
+   `prodbox pulumi test-destroy --yes`.
+4. `prodbox rke2 delete --yes` invokes the same destroy paths before local backend teardown.
 
 No session-scoped sweep, standalone `prodbox aws ...` janitor surface, host cron job, or
 `aws_fixture_audit.py`-style final audit helper is part of the supported cleanup model.
@@ -385,6 +427,8 @@ No session-scoped sweep, standalone `prodbox aws ...` janitor surface, host cron
 
 ## Cross-References
 
+- [AWS Admin Credentials](./aws_admin_credentials.md)
+- [AWS Account Setup Guide](./aws_account_setup_guide.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)

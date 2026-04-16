@@ -1,6 +1,6 @@
 """Type stubs for pulumi_aws.iam module."""
 
-from typing import Sequence
+from typing import Mapping, Sequence
 
 from pulumi import InvokeOptions, Output, ResourceOptions
 
@@ -20,15 +20,16 @@ class GetPolicyDocumentResult:
 class AwaitableGetPolicyDocumentResult:
     json: str
 
-
 class Role:
     name: Output[str]
+    arn: Output[str]
 
     def __init__(
         self,
         resource_name: str,
         assume_role_policy: object,
-        name: str,
+        name: str | None = None,
+        tags: Mapping[str, object] | None = None,
         opts: ResourceOptions | None = None,
     ) -> None: ...
 
@@ -57,7 +58,6 @@ def get_policy_document(
     statements: Sequence[GetPolicyDocumentStatementArgs],
     opts: InvokeOptions | None = None,
 ) -> AwaitableGetPolicyDocumentResult: ...
-
 def get_policy_document_output(
     *,
     statements: Sequence[GetPolicyDocumentStatementArgs],

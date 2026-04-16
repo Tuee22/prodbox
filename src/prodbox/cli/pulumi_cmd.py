@@ -8,6 +8,8 @@ import click
 
 from prodbox.cli.command_adt import (
     pulumi_destroy_command,
+    pulumi_eks_destroy_command,
+    pulumi_eks_resources_command,
     pulumi_preview_command,
     pulumi_refresh_command,
     pulumi_stack_init_command,
@@ -17,6 +19,7 @@ from prodbox.cli.command_adt import (
 )
 from prodbox.cli.command_executor import execute_command, render_error_and_return_exit_code
 from prodbox.cli.types import Failure, Success
+from prodbox.lib.aws_admin import ensure_operational_aws_credentials_from_admin_harness
 
 
 @click.group(no_args_is_help=True)
@@ -98,6 +101,15 @@ def resources() -> None:
     """Provision or inspect the canonical AWS HA-RKE2 test stack."""
     match pulumi_test_resources_command():
         case Success(cmd):
+            try:
+                ensure_operational_aws_credentials_from_admin_harness()
+            except RuntimeError as error:
+                sys.exit(
+                    render_error_and_return_exit_code(
+                        str(error),
+                        effect_id="pulumi_test_resources",
+                    )
+                )
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_test_resources"))
@@ -109,6 +121,54 @@ def destroy_test_stack(yes: bool) -> None:
     """Destroy the canonical AWS HA-RKE2 test stack."""
     match pulumi_test_destroy_command(yes=yes):
         case Success(cmd):
+            try:
+                ensure_operational_aws_credentials_from_admin_harness()
+            except RuntimeError as error:
+                sys.exit(
+                    render_error_and_return_exit_code(
+                        str(error),
+                        effect_id="pulumi_test_destroy",
+                    )
+                )
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_test_destroy"))
+
+
+@pulumi.command("eks-resources")
+def eks_resources() -> None:
+    """Provision or inspect the canonical AWS EKS test stack."""
+    match pulumi_eks_resources_command():
+        case Success(cmd):
+            try:
+                ensure_operational_aws_credentials_from_admin_harness()
+            except RuntimeError as error:
+                sys.exit(
+                    render_error_and_return_exit_code(
+                        str(error),
+                        effect_id="pulumi_eks_resources",
+                    )
+                )
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_eks_resources"))
+
+
+@pulumi.command("eks-destroy")
+@click.option("--yes", "-y", is_flag=True, help="Confirm AWS EKS test-stack destruction")
+def destroy_eks_stack(yes: bool) -> None:
+    """Destroy the canonical AWS EKS test stack."""
+    match pulumi_eks_destroy_command(yes=yes):
+        case Success(cmd):
+            try:
+                ensure_operational_aws_credentials_from_admin_harness()
+            except RuntimeError as error:
+                sys.exit(
+                    render_error_and_return_exit_code(
+                        str(error),
+                        effect_id="pulumi_eks_destroy",
+                    )
+                )
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="pulumi_eks_destroy"))

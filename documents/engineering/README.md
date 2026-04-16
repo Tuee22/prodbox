@@ -26,7 +26,10 @@ reports.
 
 | Document | Purpose |
 |----------|---------|
+| [aws_account_setup_guide.md](./aws_account_setup_guide.md) | AWS account creation, hosted-zone preparation, and temporary elevated-key workflow for `prodbox config setup` |
+| [aws_admin_credentials.md](./aws_admin_credentials.md) | Test-only elevated `aws_admin` credential harness and lifecycle guidance |
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
+| [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL vs Let's Encrypt guidance for the interactive onboarding flow |
 | [dependency_management.md](./dependency_management.md) | Poetry dependency standards |
 | [cli_command_surface.md](./cli_command_surface.md) | Explicit Click command matrix and no-passthrough policy |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Host-level AWS CLI auth plus real AWS integration environment creation, tagging, and cleanup doctrine |
@@ -77,6 +80,8 @@ reports.
 - [Version Constraint Standards](./dependency_management.md#2-version-constraint-standards)
 
 ### Unit Testing
+- [AWS Account Setup Guide](./aws_account_setup_guide.md)
+- [AWS Admin Credentials](./aws_admin_credentials.md)
 - [Interpreter-Only Mocking Doctrine](./unit_testing_policy.md#1-the-interpreter-only-mocking-doctrine)
 - [AWS Test Environment](./aws_test_environment.md)
 - [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
@@ -91,6 +96,9 @@ reports.
 - [Pure FP Standards](./pure_fp_standards.md)
 
 ### CLI Surface
+- [AWS Account Setup Guide](./aws_account_setup_guide.md)
+- [ACME Provider Guide](./acme_provider_guide.md)
+- [AWS Admin Credentials](./aws_admin_credentials.md)
 - [CLI Command Surface](./cli_command_surface.md)
 - [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine)
 

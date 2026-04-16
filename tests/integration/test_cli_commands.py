@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import socket
 from pathlib import Path
@@ -252,3 +253,18 @@ class TestMainCLI:
             result = cli_runner.invoke(cli, ["-v", "config", "show"])
 
         assert result.exit_code in (0, 1)
+
+    def test_aws_policy_outputs_parseable_json_without_summary(
+        self,
+        cli_runner: CliRunner,
+    ) -> None:
+        """aws policy should emit JSON only so the result stays machine-parseable."""
+        result = cli_runner.invoke(cli, ["aws", "policy", "--tier", "full"], catch_exceptions=False)
+
+        assert result.exit_code == 0
+        parsed = json.loads(result.output)
+        statements = tuple(statement["Sid"] for statement in parsed["Statement"])
+        assert "Ec2HaTestStackLifecycle" in statements
+        assert "IamEksRoleLifecycle" in statements
+        assert "EksTestStackLifecycle" in statements
+        assert "Route53HostedZoneLifecycle" in statements

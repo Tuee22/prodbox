@@ -3,19 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
 import click
 
-from prodbox.cli.command_executor import _execute_dag_with_values_async, execute_dag
+from prodbox.cli.command_executor import (
+    _execute_dag_with_values_async,
+    execute_dag,
+    render_error_and_return_exit_code,
+)
 from prodbox.cli.effect_dag import EffectDAG, EffectNode
 from prodbox.cli.effects import Custom, Effect, RunSubprocess, Sequence, WriteStdout
 from prodbox.cli.prerequisite_registry import PREREQUISITE_REGISTRY
+from prodbox.lib.aws_admin import (
+    ensure_operational_aws_credentials_from_admin_harness,
+)
+from prodbox.lib.aws_admin import (
+    operational_aws_credentials_are_valid as _current_operational_aws_credentials_are_valid,
+)
+from prodbox.lib.aws_admin import (
+    operational_aws_policy_is_current as _current_operational_aws_policy_is_current,
+)
+from prodbox.lib.aws_admin import (
+    restore_operational_aws_identity_from_admin_harness as _restore_operational_aws_identity_from_admin_harness,
+)
 from prodbox.lib.lint.poetry_entrypoint_guard import ALLOW_NON_ENTRYPOINT_ENV
 
 TEST_TIMEOUT_SECONDS: float = 14400.0
@@ -46,13 +64,15 @@ _TEST_PASSTHROUGH_VARS: Final[tuple[str, ...]] = (
 # Aggregate suites use an explicit order so the external public-host proof runs
 # before cluster-backed suites that intentionally tear down the shared vscode
 # stack, the full-stack chart suite clears the singleton release names before
-# the storage-only suite runs, and the cleanup-heavy lifecycle suite runs last.
+# the storage-only suite runs, and the destructive AWS IAM lifecycle suite runs
+# last because it deletes the canonical operational IAM user in the real account.
 _CANONICAL_INTEGRATION_ALL_PYTEST_ARGS: Final[tuple[str, ...]] = (
     "tests/integration/test_charts_vscode.py",
     "tests/integration/test_public_dns_delegation.py",
     "tests/integration/test_cli_commands.py",
     "tests/integration/test_cli_env.py",
     "tests/integration/test_dns_route53_aws.py",
+    "tests/integration/test_aws_eks.py",
     "tests/integration/test_pulumi_real.py",
     "tests/integration/test_ha_rke2_aws.py",
     "tests/integration/test_gateway_daemon_k8s.py",
@@ -61,6 +81,7 @@ _CANONICAL_INTEGRATION_ALL_PYTEST_ARGS: Final[tuple[str, ...]] = (
     "tests/integration/test_charts_platform.py",
     "tests/integration/test_charts_storage.py",
     "tests/integration/test_prodbox_lifecycle.py",
+    "tests/integration/test_aws_iam_lifecycle.py",
 )
 INTEGRATION_RUNBOOK_EFFECT_ID: str = "pytest_integration_runbook_install"
 AGGREGATE_COVERAGE_ERASE_EFFECT_ID: Final[str] = "pytest_aggregate_coverage_erase"
@@ -74,20 +95,38 @@ PUBLIC_HOST_READINESS_EFFECT_ID: Final[str] = "pytest_public_host_readiness"
 PUBLIC_HOST_HOSTS_OVERRIDE_EFFECT_ID: Final[str] = "pytest_public_host_hosts_override_cleanup"
 PUBLIC_EDGE_CONNECT_HOST_ENV_VAR: Final[str] = "PRODBOX_PUBLIC_EDGE_CONNECT_HOST"
 PRE_PYTEST_RESTORE_HEADER_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_header"
+PRE_PYTEST_AWS_SETUP_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_aws_setup"
 PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID: Final[
     str
 ] = "pytest_supported_runtime_bootstrap_pulumi_refresh"
 PRE_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_pulumi_up"
+PRE_PYTEST_VSCODE_DELETE_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_vscode_delete"
+PRE_PYTEST_GATEWAY_DELETE_EFFECT_ID: Final[
+    str
+] = "pytest_supported_runtime_bootstrap_gateway_delete"
 PRE_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_gateway"
 PRE_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_bootstrap_vscode"
 POST_PYTEST_RESTORE_HEADER_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_header"
 POST_PYTEST_RKE2_INSTALL_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_rke2_install"
+POST_PYTEST_AWS_SETUP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_setup"
 POST_PYTEST_PULUMI_REFRESH_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_refresh"
 POST_PYTEST_PULUMI_UP_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_pulumi_up"
+POST_PYTEST_VSCODE_DELETE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_vscode_delete"
+POST_PYTEST_GATEWAY_DELETE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway_delete"
 POST_PYTEST_GATEWAY_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_gateway"
 POST_PYTEST_VSCODE_DEPLOY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_vscode"
 POST_PYTEST_PUBLIC_EDGE_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_public_edge"
+POST_PYTEST_AWS_EKS_DESTROY_EFFECT_ID: Final[
+    str
+] = "pytest_supported_runtime_restore_aws_eks_destroy"
 POST_PYTEST_AWS_DESTROY_EFFECT_ID: Final[str] = "pytest_supported_runtime_restore_aws_test_destroy"
+TEST_PREFLIGHT_EFFECT_ID: Final[str] = "test_preflight"
+HOME_STACK_AWS_PROVIDER_URN: Final[
+    str
+] = "urn:pulumi:home::prodbox::pulumi:providers:aws::aws-provider"
+HOME_STACK_DEMO_RECORD_URN: Final[
+    str
+] = "urn:pulumi:home::prodbox::aws:route53/record:Record::demo-a-record"
 _PUBLIC_HOST_STACK_PREP_SUITE_IDS: Final[frozenset[str]] = frozenset({"all", "integration-all"})
 _SUPPORTED_RUNTIME_POSTFLIGHT_SUITE_IDS: Final[frozenset[str]] = frozenset(
     {"all", "integration-all"}
@@ -115,16 +154,26 @@ PULUMI_TEST_PREREQUISITES: frozenset[str] = CLUSTER_INTEGRATION_TEST_PREREQUISIT
         "tool_aws",
     }
 )
+AWS_IAM_TEST_PREREQUISITES: frozenset[str] = frozenset(
+    {
+        "tool_aws",
+        "tool_dhall_to_json",
+        "settings_object",
+    }
+)
 AWS_HA_RKE2_TEST_PREREQUISITES: frozenset[str] = PULUMI_TEST_PREREQUISITES | frozenset(
     {
         "tool_ssh",
     }
 )
+AWS_EKS_TEST_PREREQUISITES: frozenset[str] = PULUMI_TEST_PREREQUISITES
 ALL_INTEGRATION_TEST_PREREQUISITES: frozenset[str] = (
     CLUSTER_INTEGRATION_TEST_PREREQUISITES
     | DNS_AWS_TEST_PREREQUISITES
+    | AWS_IAM_TEST_PREREQUISITES
     | PULUMI_TEST_PREREQUISITES
     | AWS_HA_RKE2_TEST_PREREQUISITES
+    | AWS_EKS_TEST_PREREQUISITES
 )
 
 
@@ -205,6 +254,18 @@ INTEGRATION_DNS_AWS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     integration_gate_prerequisites=DNS_AWS_TEST_PREREQUISITES,
     requires_integration_runbook=False,
 )
+INTEGRATION_AWS_IAM_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-aws-iam",
+    pytest_args=("tests/integration/test_aws_iam_lifecycle.py",),
+    integration_gate_prerequisites=AWS_IAM_TEST_PREREQUISITES,
+    requires_integration_runbook=False,
+)
+INTEGRATION_AWS_EKS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
+    suite_id="integration-aws-eks",
+    pytest_args=("tests/integration/test_aws_eks.py",),
+    integration_gate_prerequisites=AWS_EKS_TEST_PREREQUISITES,
+    requires_integration_runbook=True,
+)
 INTEGRATION_HA_RKE2_AWS_TEST_SUITE: Final[TestSuiteSelection] = TestSuiteSelection(
     suite_id="integration-ha-rke2-aws",
     pytest_args=("tests/integration/test_ha_rke2_aws.py",),
@@ -279,6 +340,8 @@ def test() -> None:
       prodbox test integration ha-rke2-aws
       prodbox test integration cli
       prodbox test integration dns-aws
+      prodbox test integration aws-iam
+      prodbox test integration aws-eks
       prodbox test integration env
       prodbox test integration pulumi
       prodbox test integration gateway-daemon
@@ -432,6 +495,46 @@ def integration_dns_aws(coverage: bool, cov_fail_under: int | None) -> None:
     """Run real Route 53 integration tests against ephemeral AWS resources."""
     _exit_for_suite(
         suite=INTEGRATION_DNS_AWS_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("aws-iam")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_aws_iam(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run real IAM lifecycle integration tests using `aws_admin` credentials."""
+    _exit_for_suite(
+        suite=INTEGRATION_AWS_IAM_TEST_SUITE,
+        coverage=coverage,
+        cov_fail_under=cov_fail_under,
+    )
+
+
+@integration.command("aws-eks")
+@click.option(
+    "--coverage",
+    is_flag=True,
+    help="Enable pytest-cov for src/prodbox.",
+)
+@click.option(
+    "--cov-fail-under",
+    type=int,
+    help="Minimum coverage percentage in [0, 100]; requires --coverage.",
+)
+def integration_aws_eks(coverage: bool, cov_fail_under: int | None) -> None:
+    """Run real EKS-backed integration tests against the AWS test stack."""
+    _exit_for_suite(
+        suite=INTEGRATION_AWS_EKS_TEST_SUITE,
         coverage=coverage,
         cov_fail_under=cov_fail_under,
     )
@@ -628,6 +731,16 @@ def _exit_for_suite(
         coverage=coverage,
         cov_fail_under=cov_fail_under,
     )
+    if _suite_requires_loadable_settings(suite):
+        try:
+            ensure_operational_aws_credentials_from_admin_harness()
+        except RuntimeError as error:
+            sys.exit(
+                render_error_and_return_exit_code(
+                    str(error),
+                    effect_id=TEST_PREFLIGHT_EFFECT_ID,
+                )
+            )
     sys.exit(_run_suite(suite=suite, coverage_settings=coverage_settings))
 
 
@@ -644,6 +757,16 @@ def _run_suite(*, suite: TestSuiteSelection, coverage_settings: CoverageSettings
     """Build and execute two-phase pytest workflow for one explicit suite."""
     dag = _build_test_dag(suite=suite, coverage_settings=coverage_settings)
     return execute_dag(dag)
+
+
+def _suite_requires_loadable_settings(suite: TestSuiteSelection) -> bool:
+    """Return whether a suite's prerequisite closure includes validated settings."""
+    if not suite.integration_gate_prerequisites:
+        return False
+    return "settings_object" in _transitive_prerequisite_ids(
+        effect_ids=suite.integration_gate_prerequisites,
+        registry=dict(PREREQUISITE_REGISTRY),
+    )
 
 
 def _build_test_dag(
@@ -884,6 +1007,11 @@ def _runbook_effects_for_suite(
                 description="Remove unsupported /etc/hosts override for the public host",
                 fn=_remove_public_host_hosts_override,
             ),
+            Custom(
+                effect_id=PRE_PYTEST_AWS_SETUP_EFFECT_ID,
+                description="Runbook: restore the operational AWS IAM user from aws_admin config",
+                fn=_ensure_operational_aws_identity_for_supported_runtime,
+            ),
             RunSubprocess(
                 effect_id=PRE_PYTEST_PULUMI_REFRESH_EFFECT_ID,
                 description="Runbook: refresh Pulumi-managed infrastructure state",
@@ -896,6 +1024,38 @@ def _runbook_effects_for_suite(
                 effect_id=PRE_PYTEST_PULUMI_UP_EFFECT_ID,
                 description="Runbook: restore Pulumi-managed infrastructure",
                 command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "up", "--yes"],
+                stream_stdout=True,
+                timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+                env=env,
+            ),
+            RunSubprocess(
+                effect_id=PRE_PYTEST_VSCODE_DELETE_EFFECT_ID,
+                description="Runbook: remove existing vscode chart before redeploy",
+                command=[
+                    sys.executable,
+                    "-m",
+                    "prodbox.cli.main",
+                    "charts",
+                    "delete",
+                    "vscode",
+                    "--yes",
+                ],
+                stream_stdout=True,
+                timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+                env=env,
+            ),
+            RunSubprocess(
+                effect_id=PRE_PYTEST_GATEWAY_DELETE_EFFECT_ID,
+                description="Runbook: remove existing gateway chart before redeploy",
+                command=[
+                    sys.executable,
+                    "-m",
+                    "prodbox.cli.main",
+                    "charts",
+                    "delete",
+                    "gateway",
+                    "--yes",
+                ],
                 stream_stdout=True,
                 timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
                 env=env,
@@ -948,6 +1108,11 @@ def _post_pytest_effects_for_suite(
             timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
             env=env,
         ),
+        Custom(
+            effect_id=POST_PYTEST_AWS_SETUP_EFFECT_ID,
+            description="Postflight: restore the operational AWS IAM user from aws_admin config",
+            fn=_ensure_operational_aws_identity_for_supported_runtime,
+        ),
         RunSubprocess(
             effect_id=POST_PYTEST_PULUMI_REFRESH_EFFECT_ID,
             description="Postflight: refresh Pulumi-managed infrastructure state",
@@ -960,6 +1125,38 @@ def _post_pytest_effects_for_suite(
             effect_id=POST_PYTEST_PULUMI_UP_EFFECT_ID,
             description="Postflight: restore Pulumi-managed infrastructure",
             command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "up", "--yes"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_VSCODE_DELETE_EFFECT_ID,
+            description="Postflight: remove existing vscode chart before redeploy",
+            command=[
+                sys.executable,
+                "-m",
+                "prodbox.cli.main",
+                "charts",
+                "delete",
+                "vscode",
+                "--yes",
+            ],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_GATEWAY_DELETE_EFFECT_ID,
+            description="Postflight: remove existing gateway chart before redeploy",
+            command=[
+                sys.executable,
+                "-m",
+                "prodbox.cli.main",
+                "charts",
+                "delete",
+                "gateway",
+                "--yes",
+            ],
             stream_stdout=True,
             timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
             env=env,
@@ -984,6 +1181,14 @@ def _post_pytest_effects_for_suite(
             effect_id=POST_PYTEST_PUBLIC_EDGE_EFFECT_ID,
             description="Postflight: wait for ready public-host proof surface",
             fn=_wait_for_public_host_ready_for_external_proof,
+        ),
+        RunSubprocess(
+            effect_id=POST_PYTEST_AWS_EKS_DESTROY_EFFECT_ID,
+            description="Postflight: destroy the AWS EKS test stack",
+            command=[sys.executable, "-m", "prodbox.cli.main", "pulumi", "eks-destroy", "--yes"],
+            stream_stdout=True,
+            timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+            env=env,
         ),
         RunSubprocess(
             effect_id=POST_PYTEST_AWS_DESTROY_EFFECT_ID,
@@ -1052,6 +1257,126 @@ def _public_edge_probe_env() -> dict[str, str]:
     except ValueError:
         return {}
     return {PUBLIC_EDGE_CONNECT_HOST_ENV_VAR: lan.ingress_lb_ip}
+
+
+def _supported_runtime_pulumi_env() -> dict[str, str]:
+    """Build the canonical Pulumi CLI environment for supported-runtime repair helpers."""
+    from prodbox.cli.interpreter import EffectInterpreter
+
+    return EffectInterpreter._pulumi_env()
+
+
+def _run_supported_runtime_pulumi_command(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run one raw Pulumi CLI command using the canonical settings-backed environment."""
+    from prodbox.settings import REPOSITORY_ROOT
+
+    return subprocess.run(
+        ["pulumi", *args],
+        cwd=REPOSITORY_ROOT,
+        env=_supported_runtime_pulumi_env(),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=SUPPORTED_RUNTIME_RESTORE_TIMEOUT_SECONDS,
+    )
+
+
+def _repair_delete_pending_aws_pulumi_state() -> str:
+    """Delete stale delete-pending AWS resources from the Pulumi checkpoint."""
+    from prodbox.lib.aws_admin import _json_loads, _mapping_from_object
+
+    exported = _run_supported_runtime_pulumi_command("stack", "export")
+    if exported.returncode != 0:
+        stderr_text = exported.stderr.strip() or exported.stdout.strip()
+        raise RuntimeError(f"pulumi stack export failed: {stderr_text}")
+
+    deployment = _mapping_from_object(_json_loads(exported.stdout), context="pulumi stack export")
+    deployment_body = _mapping_from_object(
+        deployment.get("deployment"), context="pulumi stack export deployment"
+    )
+    resources = deployment_body.get("resources")
+    if not isinstance(resources, list):
+        raise RuntimeError(
+            "pulumi stack export returned deployment resources in an unexpected shape"
+        )
+
+    kept_resources: list[object] = []
+    removed = 0
+    for resource in resources:
+        if not isinstance(resource, dict):
+            kept_resources.append(resource)
+            continue
+        resource_type = resource.get("type")
+        if (
+            resource.get("delete") is True
+            and isinstance(resource_type, str)
+            and (resource_type == "pulumi:providers:aws" or resource_type.startswith("aws:"))
+        ):
+            removed += 1
+            continue
+        kept_resources.append(resource)
+
+    if removed == 0:
+        return "No stale delete-pending AWS Pulumi resources required repair"
+
+    deployment_body["resources"] = kept_resources
+    with tempfile.NamedTemporaryFile("w", delete=False, suffix=".json") as temp_file:
+        json.dump(deployment, temp_file)
+        temp_path = Path(temp_file.name)
+    try:
+        imported = _run_supported_runtime_pulumi_command(
+            "stack", "import", "--file", str(temp_path)
+        )
+        if imported.returncode != 0:
+            stderr_text = imported.stderr.strip() or imported.stdout.strip()
+            raise RuntimeError(f"pulumi stack import failed: {stderr_text}")
+    finally:
+        temp_path.unlink(missing_ok=True)
+    return f"Removed {removed} stale delete-pending AWS Pulumi state resources"
+
+
+def _repair_pulumi_stack_after_operational_aws_rotation() -> str:
+    """Advance the Pulumi stack to the freshly restored AWS credentials."""
+    target_args = (
+        "--target",
+        HOME_STACK_AWS_PROVIDER_URN,
+        "--target",
+        HOME_STACK_DEMO_RECORD_URN,
+    )
+    first_up = _run_supported_runtime_pulumi_command("up", "--yes", *target_args)
+    if first_up.returncode == 0:
+        return "Pulumi stack updated to the current operational AWS credentials"
+
+    first_error = first_up.stderr.strip() or first_up.stdout.strip()
+    if "InvalidClientTokenId" not in first_error:
+        raise RuntimeError(f"pulumi up failed after AWS restore: {first_error}")
+
+    repair_summary = _repair_delete_pending_aws_pulumi_state()
+    second_up = _run_supported_runtime_pulumi_command("up", "--yes", *target_args)
+    if second_up.returncode != 0:
+        second_error = second_up.stderr.strip() or second_up.stdout.strip()
+        raise RuntimeError(
+            "pulumi up still failed after repairing stale AWS provider state: " f"{second_error}"
+        )
+    return f"{repair_summary}; Pulumi stack updated to the current operational AWS credentials"
+
+
+def _supported_runtime_operational_policy_is_current() -> bool:
+    """Return whether the canonical operational IAM inline policy matches the supported full tier."""
+    return _current_operational_aws_policy_is_current()
+
+
+def _ensure_operational_aws_identity_for_supported_runtime() -> str:
+    """Restore AWS identity and Pulumi state when credentials or runtime policy are stale."""
+    if _current_operational_aws_credentials_are_valid() and (
+        _supported_runtime_operational_policy_is_current()
+    ):
+        pulumi_summary = _repair_pulumi_stack_after_operational_aws_rotation()
+        return f"Operational AWS credentials and IAM policy already valid; {pulumi_summary}"
+
+    restore_summary = _restore_operational_aws_identity_from_admin_harness()
+    pulumi_summary = _repair_pulumi_stack_after_operational_aws_rotation()
+    return f"{restore_summary}; {pulumi_summary}"
 
 
 def _hosts_file_subprocess_env() -> dict[str, str]:

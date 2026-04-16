@@ -31,19 +31,23 @@ Usage:
 from __future__ import annotations
 
 import platform
+import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from prodbox.cli.types import Failure, Result, Success
+
+PolicyTier = Literal["core", "full"]
+
+_FQDN_PATTERN: re.Pattern[str] = re.compile(
+    r"^(?=.{1,253}$)(?!-)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$"
+)
+_ROUTE53_ZONE_ID_PATTERN: re.Pattern[str] = re.compile(r"^Z[A-Z0-9]+$")
 
 # =============================================================================
 # Config Commands
 # =============================================================================
-
-
-@dataclass(frozen=True)
-class ConfigInitCommand:
-    """Bootstrap Dhall config from existing .env and system state."""
 
 
 @dataclass(frozen=True)
@@ -65,6 +69,83 @@ class ConfigShowCommand:
 @dataclass(frozen=True)
 class ConfigValidateCommand:
     """Validate compiled JSON configuration."""
+
+
+@dataclass(frozen=True)
+class ConfigSetupCommand:
+    """Interactively generate a complete Dhall config and operational IAM user."""
+
+    admin_access_key_id: str
+    admin_secret_access_key: str
+    admin_session_token: str | None
+    admin_region: str
+    route53_zone_id: str
+    demo_fqdn: str
+    demo_ttl: int
+    vscode_fqdn: str | None
+    acme_email: str
+    acme_server: str
+    acme_eab_key_id: str | None
+    acme_eab_hmac_key: str | None
+    prodbox_dev_mode: bool
+    bootstrap_public_ip_override: str | None
+    pulumi_enable_dns_bootstrap: bool
+    manual_pv_host_root: Path
+    policy_tier: PolicyTier
+
+
+# =============================================================================
+# AWS Commands
+# =============================================================================
+
+
+@dataclass(frozen=True)
+class AWSPolicyCommand:
+    """Render the supported operational IAM inline policy."""
+
+    tier: PolicyTier = "core"
+
+
+@dataclass(frozen=True)
+class AWSSetupCommand:
+    """Create or refresh the supported operational IAM user and quotas."""
+
+    admin_access_key_id: str
+    admin_secret_access_key: str
+    admin_session_token: str | None
+    admin_region: str
+    tier: PolicyTier = "full"
+
+
+@dataclass(frozen=True)
+class AWSTeardownCommand:
+    """Delete the supported operational IAM user and clear Dhall credentials."""
+
+    admin_access_key_id: str
+    admin_secret_access_key: str
+    admin_session_token: str | None
+    admin_region: str
+
+
+@dataclass(frozen=True)
+class AWSCheckQuotasCommand:
+    """Inspect the supported AWS service quotas."""
+
+    admin_access_key_id: str
+    admin_secret_access_key: str
+    admin_session_token: str | None
+    admin_region: str
+
+
+@dataclass(frozen=True)
+class AWSRequestQuotasCommand:
+    """Request supported AWS service quota increases."""
+
+    admin_access_key_id: str
+    admin_secret_access_key: str
+    admin_session_token: str | None
+    admin_region: str
+    tier: PolicyTier = "full"
 
 
 # =============================================================================
@@ -279,6 +360,16 @@ class PulumiTestDestroyCommand:
     """Destroy the canonical Pulumi-managed AWS test stack."""
 
 
+@dataclass(frozen=True)
+class PulumiEksResourcesCommand:
+    """Provision or inspect the canonical Pulumi-managed AWS EKS test stack."""
+
+
+@dataclass(frozen=True)
+class PulumiEksDestroyCommand:
+    """Destroy the canonical Pulumi-managed AWS EKS test stack."""
+
+
 # =============================================================================
 # Gateway Commands
 # =============================================================================
@@ -370,10 +461,16 @@ class ChartDeleteCommand:
 
 Command = (
     # Config
-    ConfigInitCommand
-    | ConfigCompileCommand
+    ConfigCompileCommand
     | ConfigShowCommand
     | ConfigValidateCommand
+    | ConfigSetupCommand
+    # AWS
+    | AWSPolicyCommand
+    | AWSSetupCommand
+    | AWSTeardownCommand
+    | AWSCheckQuotasCommand
+    | AWSRequestQuotasCommand
     # Host
     | HostInfoCommand
     | HostCheckPortsCommand
@@ -402,6 +499,8 @@ Command = (
     | PulumiStackInitCommand
     | PulumiTestResourcesCommand
     | PulumiTestDestroyCommand
+    | PulumiEksResourcesCommand
+    | PulumiEksDestroyCommand
     # Gateway
     | GatewayStartCommand
     | GatewayStatusCommand
@@ -419,11 +518,6 @@ Command = (
 # =============================================================================
 
 
-def config_init_command() -> Result[ConfigInitCommand, str]:
-    """Create a ConfigInitCommand."""
-    return Success(ConfigInitCommand())
-
-
 def config_compile_command() -> Result[ConfigCompileCommand, str]:
     """Create a ConfigCompileCommand."""
     return Success(ConfigCompileCommand())
@@ -437,6 +531,236 @@ def config_show_command(*, show_secrets: bool = False) -> Result[ConfigShowComma
 def config_validate_command() -> Result[ConfigValidateCommand, str]:
     """Create a ConfigValidateCommand."""
     return Success(ConfigValidateCommand())
+
+
+def _normalized_optional_text(value: str | None) -> str | None:
+    """Normalize blank optional text to ``None``."""
+    match value:
+        case str() as text if text.strip() != "":
+            return text.strip()
+        case _:
+            return None
+
+
+def _validate_policy_tier(tier: str) -> Result[PolicyTier, str]:
+    """Validate one supported policy tier."""
+    match tier.strip().lower():
+        case "core":
+            return Success("core")
+        case "full":
+            return Success("full")
+        case _:
+            return Failure("Policy tier must be 'core' or 'full'")
+
+
+def _is_valid_fqdn(value: str) -> bool:
+    """Return whether *value* is a supported FQDN."""
+    return _FQDN_PATTERN.fullmatch(value.rstrip(".")) is not None
+
+
+def _is_valid_route53_zone_id(value: str) -> bool:
+    """Return whether *value* looks like a Route 53 hosted-zone ID."""
+    return _ROUTE53_ZONE_ID_PATTERN.fullmatch(value) is not None
+
+
+def _has_valid_email_shape(value: str) -> bool:
+    """Return whether *value* has a minimally valid email shape."""
+    local, separator, domain = value.partition("@")
+    return separator == "@" and local != "" and "." in domain
+
+
+def config_setup_command(
+    *,
+    admin_access_key_id: str,
+    admin_secret_access_key: str,
+    admin_session_token: str | None,
+    admin_region: str,
+    route53_zone_id: str,
+    demo_fqdn: str,
+    demo_ttl: int,
+    vscode_fqdn: str | None,
+    acme_email: str,
+    acme_server: str,
+    acme_eab_key_id: str | None,
+    acme_eab_hmac_key: str | None,
+    prodbox_dev_mode: bool,
+    bootstrap_public_ip_override: str | None,
+    pulumi_enable_dns_bootstrap: bool,
+    manual_pv_host_root: Path,
+    policy_tier: str = "full",
+) -> Result[ConfigSetupCommand, str]:
+    """Create a ConfigSetupCommand."""
+    match _validate_policy_tier(policy_tier):
+        case Failure(error):
+            return Failure(error)
+        case Success(value=tier):
+            if admin_access_key_id.strip() == "":
+                return Failure("Admin AWS access key ID is required")
+            if admin_secret_access_key.strip() == "":
+                return Failure("Admin AWS secret access key is required")
+            if admin_region.strip() == "":
+                return Failure("Admin AWS region is required")
+            if not _is_valid_route53_zone_id(route53_zone_id.strip()):
+                return Failure(
+                    "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
+                )
+            if not _is_valid_fqdn(demo_fqdn.strip()):
+                return Failure("demo_fqdn must be a valid fully qualified domain name")
+            normalized_vscode_fqdn = _normalized_optional_text(vscode_fqdn)
+            if normalized_vscode_fqdn is not None and not _is_valid_fqdn(normalized_vscode_fqdn):
+                return Failure("vscode_fqdn must be a valid fully qualified domain name")
+            if demo_ttl < 30 or demo_ttl > 86400:
+                return Failure("demo_ttl must be between 30 and 86400 seconds")
+            if not _has_valid_email_shape(acme_email.strip()):
+                return Failure("acme_email must be a valid email address")
+            if not acme_server.strip().startswith("https://"):
+                return Failure("acme_server must be an https:// URL")
+            normalized_eab_key_id = _normalized_optional_text(acme_eab_key_id)
+            normalized_eab_hmac_key = _normalized_optional_text(acme_eab_hmac_key)
+            if (normalized_eab_key_id is None) != (normalized_eab_hmac_key is None):
+                return Failure(
+                    "acme_eab_key_id and acme_eab_hmac_key must either both be set or both be empty"
+                )
+            normalized_override = _normalized_optional_text(bootstrap_public_ip_override)
+            resolved_storage_root = Path(str(manual_pv_host_root))
+            return Success(
+                ConfigSetupCommand(
+                    admin_access_key_id=admin_access_key_id.strip(),
+                    admin_secret_access_key=admin_secret_access_key.strip(),
+                    admin_session_token=_normalized_optional_text(admin_session_token),
+                    admin_region=admin_region.strip(),
+                    route53_zone_id=route53_zone_id.strip(),
+                    demo_fqdn=demo_fqdn.strip().rstrip("."),
+                    demo_ttl=demo_ttl,
+                    vscode_fqdn=normalized_vscode_fqdn,
+                    acme_email=acme_email.strip(),
+                    acme_server=acme_server.strip(),
+                    acme_eab_key_id=normalized_eab_key_id,
+                    acme_eab_hmac_key=normalized_eab_hmac_key,
+                    prodbox_dev_mode=prodbox_dev_mode,
+                    bootstrap_public_ip_override=normalized_override,
+                    pulumi_enable_dns_bootstrap=pulumi_enable_dns_bootstrap,
+                    manual_pv_host_root=resolved_storage_root,
+                    policy_tier=tier,
+                )
+            )
+
+
+def aws_policy_command(*, tier: str = "core") -> Result[AWSPolicyCommand, str]:
+    """Create an AWSPolicyCommand."""
+    match _validate_policy_tier(tier):
+        case Success(value=validated_tier):
+            return Success(AWSPolicyCommand(tier=validated_tier))
+        case Failure(error):
+            return Failure(error)
+
+
+def aws_setup_command(
+    *,
+    admin_access_key_id: str,
+    admin_secret_access_key: str,
+    admin_session_token: str | None,
+    admin_region: str,
+    tier: str = "full",
+) -> Result[AWSSetupCommand, str]:
+    """Create an AWSSetupCommand."""
+    match _validate_policy_tier(tier):
+        case Failure(error):
+            return Failure(error)
+        case Success(value=validated_tier):
+            if admin_access_key_id.strip() == "":
+                return Failure("Admin AWS access key ID is required")
+            if admin_secret_access_key.strip() == "":
+                return Failure("Admin AWS secret access key is required")
+            if admin_region.strip() == "":
+                return Failure("Admin AWS region is required")
+            return Success(
+                AWSSetupCommand(
+                    admin_access_key_id=admin_access_key_id.strip(),
+                    admin_secret_access_key=admin_secret_access_key.strip(),
+                    admin_session_token=_normalized_optional_text(admin_session_token),
+                    admin_region=admin_region.strip(),
+                    tier=validated_tier,
+                )
+            )
+
+
+def aws_teardown_command(
+    *,
+    admin_access_key_id: str,
+    admin_secret_access_key: str,
+    admin_session_token: str | None,
+    admin_region: str,
+) -> Result[AWSTeardownCommand, str]:
+    """Create an AWSTeardownCommand."""
+    if admin_access_key_id.strip() == "":
+        return Failure("Admin AWS access key ID is required")
+    if admin_secret_access_key.strip() == "":
+        return Failure("Admin AWS secret access key is required")
+    if admin_region.strip() == "":
+        return Failure("Admin AWS region is required")
+    return Success(
+        AWSTeardownCommand(
+            admin_access_key_id=admin_access_key_id.strip(),
+            admin_secret_access_key=admin_secret_access_key.strip(),
+            admin_session_token=_normalized_optional_text(admin_session_token),
+            admin_region=admin_region.strip(),
+        )
+    )
+
+
+def aws_check_quotas_command(
+    *,
+    admin_access_key_id: str,
+    admin_secret_access_key: str,
+    admin_session_token: str | None,
+    admin_region: str,
+) -> Result[AWSCheckQuotasCommand, str]:
+    """Create an AWSCheckQuotasCommand."""
+    if admin_access_key_id.strip() == "":
+        return Failure("Admin AWS access key ID is required")
+    if admin_secret_access_key.strip() == "":
+        return Failure("Admin AWS secret access key is required")
+    if admin_region.strip() == "":
+        return Failure("Admin AWS region is required")
+    return Success(
+        AWSCheckQuotasCommand(
+            admin_access_key_id=admin_access_key_id.strip(),
+            admin_secret_access_key=admin_secret_access_key.strip(),
+            admin_session_token=_normalized_optional_text(admin_session_token),
+            admin_region=admin_region.strip(),
+        )
+    )
+
+
+def aws_request_quotas_command(
+    *,
+    admin_access_key_id: str,
+    admin_secret_access_key: str,
+    admin_session_token: str | None,
+    admin_region: str,
+    tier: str = "full",
+) -> Result[AWSRequestQuotasCommand, str]:
+    """Create an AWSRequestQuotasCommand."""
+    match _validate_policy_tier(tier):
+        case Failure(error):
+            return Failure(error)
+        case Success(value=validated_tier):
+            if admin_access_key_id.strip() == "":
+                return Failure("Admin AWS access key ID is required")
+            if admin_secret_access_key.strip() == "":
+                return Failure("Admin AWS secret access key is required")
+            if admin_region.strip() == "":
+                return Failure("Admin AWS region is required")
+            return Success(
+                AWSRequestQuotasCommand(
+                    admin_access_key_id=admin_access_key_id.strip(),
+                    admin_secret_access_key=admin_secret_access_key.strip(),
+                    admin_session_token=_normalized_optional_text(admin_session_token),
+                    admin_region=admin_region.strip(),
+                    tier=validated_tier,
+                )
+            )
 
 
 def host_info_command() -> Result[HostInfoCommand, str]:
@@ -805,6 +1129,41 @@ def pulumi_test_destroy_command(*, yes: bool = False) -> Result[PulumiTestDestro
     return Success(PulumiTestDestroyCommand())
 
 
+def pulumi_eks_resources_command() -> Result[PulumiEksResourcesCommand, str]:
+    """Create a PulumiEksResourcesCommand.
+
+    PLATFORM-AWARE: Returns Failure on non-Linux platforms.
+
+    Returns:
+        Success with PulumiEksResourcesCommand on Linux, Failure otherwise
+    """
+    if platform.system() != "Linux":
+        return Failure("Pulumi AWS EKS test-stack commands require Linux")
+
+    return Success(PulumiEksResourcesCommand())
+
+
+def pulumi_eks_destroy_command(*, yes: bool = False) -> Result[PulumiEksDestroyCommand, str]:
+    """Create a PulumiEksDestroyCommand.
+
+    PLATFORM-AWARE: Returns Failure on non-Linux platforms.
+    SAFETY: Requires explicit --yes acknowledgement because destroy is destructive.
+
+    Args:
+        yes: Confirmation flag from CLI --yes option
+
+    Returns:
+        Success with PulumiEksDestroyCommand on Linux when yes=True, Failure otherwise
+    """
+    if platform.system() != "Linux":
+        return Failure("Pulumi AWS EKS test-stack commands require Linux")
+
+    if not yes:
+        return Failure("pulumi eks-destroy requires --yes confirmation")
+
+    return Success(PulumiEksDestroyCommand())
+
+
 # =============================================================================
 # Utility Functions
 # =============================================================================
@@ -953,10 +1312,15 @@ def requires_linux(command: Command) -> bool:
             return True
         # Config commands - cross-platform
         case (
-            ConfigInitCommand()
-            | ConfigCompileCommand()
+            ConfigCompileCommand()
             | ConfigShowCommand()
             | ConfigValidateCommand()
+            | ConfigSetupCommand()
+            | AWSPolicyCommand()
+            | AWSSetupCommand()
+            | AWSTeardownCommand()
+            | AWSCheckQuotasCommand()
+            | AWSRequestQuotasCommand()
         ):
             return False
         # Host commands - cross-platform (will fail gracefully on non-Linux)
@@ -980,7 +1344,12 @@ def requires_linux(command: Command) -> bool:
             return False
         case PulumiRefreshCommand() | PulumiStackInitCommand():
             return False
-        case PulumiTestResourcesCommand() | PulumiTestDestroyCommand():
+        case (
+            PulumiTestResourcesCommand()
+            | PulumiTestDestroyCommand()
+            | PulumiEksResourcesCommand()
+            | PulumiEksDestroyCommand()
+        ):
             return True
         # Gateway commands - cross-platform
         case GatewayStartCommand() | GatewayStatusCommand() | GatewayConfigGenCommand():
@@ -1016,12 +1385,26 @@ def requires_settings(command: Command) -> bool:
             return True
         case PulumiRefreshCommand() | PulumiStackInitCommand():
             return True
-        case PulumiTestResourcesCommand() | PulumiTestDestroyCommand():
+        case (
+            PulumiTestResourcesCommand()
+            | PulumiTestDestroyCommand()
+            | PulumiEksResourcesCommand()
+            | PulumiEksDestroyCommand()
+        ):
             return True
         # Config commands - show/validate need settings, init/compile do not
         case ConfigShowCommand() | ConfigValidateCommand():
             return True
-        case ConfigInitCommand() | ConfigCompileCommand():
+        case ConfigCompileCommand() | ConfigSetupCommand():
+            return False
+        # AWS commands use explicit admin credentials or pure generation.
+        case (
+            AWSPolicyCommand()
+            | AWSSetupCommand()
+            | AWSTeardownCommand()
+            | AWSCheckQuotasCommand()
+            | AWSRequestQuotasCommand()
+        ):
             return False
         # Host commands don't require settings
         case (
@@ -1053,18 +1436,34 @@ def requires_settings(command: Command) -> bool:
             return True
 
 
+def renders_execution_summary(command: Command) -> bool:
+    """Return whether successful execution should render the aggregate DAG summary."""
+    match command:
+        case AWSPolicyCommand():
+            return False
+        case _:
+            return True
+
+
 # =============================================================================
 # Exports
 # =============================================================================
 
 __all__ = [
+    "PolicyTier",
     # Command types
     "Command",
     # Config
-    "ConfigInitCommand",
     "ConfigCompileCommand",
     "ConfigShowCommand",
     "ConfigValidateCommand",
+    "ConfigSetupCommand",
+    # AWS
+    "AWSPolicyCommand",
+    "AWSSetupCommand",
+    "AWSTeardownCommand",
+    "AWSCheckQuotasCommand",
+    "AWSRequestQuotasCommand",
     # Host
     "HostInfoCommand",
     "HostCheckPortsCommand",
@@ -1093,6 +1492,8 @@ __all__ = [
     "PulumiStackInitCommand",
     "PulumiTestResourcesCommand",
     "PulumiTestDestroyCommand",
+    "PulumiEksResourcesCommand",
+    "PulumiEksDestroyCommand",
     # Gateway
     "GatewayStartCommand",
     "GatewayStatusCommand",
@@ -1103,10 +1504,15 @@ __all__ = [
     "ChartDeployCommand",
     "ChartDeleteCommand",
     # Smart constructors
-    "config_init_command",
     "config_compile_command",
     "config_show_command",
     "config_validate_command",
+    "config_setup_command",
+    "aws_policy_command",
+    "aws_setup_command",
+    "aws_teardown_command",
+    "aws_check_quotas_command",
+    "aws_request_quotas_command",
     "host_info_command",
     "host_check_ports_command",
     "host_ensure_tools_command",
@@ -1130,6 +1536,8 @@ __all__ = [
     "pulumi_stack_init_command",
     "pulumi_test_resources_command",
     "pulumi_test_destroy_command",
+    "pulumi_eks_resources_command",
+    "pulumi_eks_destroy_command",
     "gateway_start_command",
     "gateway_status_command",
     "gateway_config_gen_command",
@@ -1142,4 +1550,5 @@ __all__ = [
     "is_linux",
     "requires_linux",
     "requires_settings",
+    "renders_execution_summary",
 ]

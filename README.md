@@ -20,8 +20,11 @@ Prodbox is a Python-native infrastructure-as-code project for managing a home Ku
 - **MinIO** - In-cluster object storage on retained local PV/PVC storage
 - **MetalLB** - LoadBalancer IP assignment using Layer 2 (ARP)
 - **Traefik** - Ingress controller for HTTP/HTTPS traffic
-- **cert-manager** - Automatic TLS certificates via Let's Encrypt
+- **cert-manager** - Automatic TLS certificates via a configurable public ACME provider
 - **Route 53** - DNS record ownership via Pulumi bootstrap plus gateway writes
+- **Interactive Onboarding** - `prodbox config setup` for account guidance, ACME selection, and config generation
+- **AWS IAM Automation** - `prodbox aws ...` for policy generation, IAM lifecycle, and service quota management
+- **AWS Validation Stacks** - `prodbox pulumi eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` for the EKS and HA RKE2 AWS-backed validation paths
 - **Bespoke Charts** - Namespace-local `keycloak-postgres`, `keycloak`, and `vscode` stacks with retained `.data/` PV storage plus `.prodbox-state/` chart state
 
 Doctrine highlights:
@@ -29,6 +32,7 @@ Doctrine highlights:
 - prodbox-created Kubernetes objects are tagged with `prodbox.io/id=<prodbox-id>`.
 - Storage lifecycle preserves retained host state across delete/reinstall for deterministic rebind.
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
+- The supported onboarding path is `poetry run prodbox config setup`; manual Dhall editing is no longer the primary operator workflow.
 
 Implementation status, remaining work, and legacy-path removal are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under `documents/engineering/`
@@ -87,25 +91,33 @@ addressing (MetalLB pool, ingress LB IP) is always auto-discovered from the host
 Subprocess environments are built from explicit configuration only — no `os.environ` credentials
 are inherited.
 
-### Bootstrap
+### Supported Onboarding
 
 ```bash
-# One-time: bootstrap Dhall config from existing .env (if migrating)
-prodbox config init
+# Supported zero-to-config flow
+poetry run prodbox config setup
+```
 
-# Or manually create prodbox-config.dhall using the schema
-# Then compile to JSON:
-prodbox config compile
+The wizard explains where to create one temporary elevated credential in the AWS console, then
+collects that credential, selects a live AWS region and Route 53 hosted zone, guides ACME
+provider choice, creates the dedicated `prodbox` IAM user, writes `prodbox-config.dhall`,
+compiles it, and validates the result.
+
+### Manual Config Maintenance
+
+```bash
+# Recompile the repository-root Dhall config to JSON explicitly
+poetry run prodbox config compile
 ```
 
 ### Required config fields
 
 | Config Path | Description |
 |-------------|-------------|
-| `aws.access_key_id` | AWS access key ID for Route 53 and AWS integration operations |
-| `aws.secret_access_key` | AWS secret access key for Route 53 and AWS integration operations |
+| `aws.access_key_id` | Operational AWS access key ID, normally written by `prodbox config setup` or `prodbox aws setup` |
+| `aws.secret_access_key` | Operational AWS secret access key, normally written by `prodbox config setup` or `prodbox aws setup` |
 | `route53.zone_id` | Route 53 hosted zone ID |
-| `acme.email` | Email for Let's Encrypt registration |
+| `acme.email` | Email for the selected public ACME provider |
 
 Required when using the chart platform and public `vscode` flow:
 
@@ -123,6 +135,10 @@ Cluster-internal secrets (`KEYCLOAK_ADMIN_PASSWORD`, `KEYCLOAK_POSTGRES_PASSWORD
 |-------------|---------|-------------|
 | `aws.region` | `us-east-1` | AWS region |
 | `aws.session_token` | `None` | Optional AWS session token |
+| `aws_admin.access_key_id` | empty | Test-only elevated admin key for `prodbox aws *` and `prodbox test integration aws-iam` |
+| `aws_admin.secret_access_key` | empty | Test-only elevated admin secret |
+| `aws_admin.session_token` | `None` | Optional test-only elevated session token |
+| `aws_admin.region` | empty | Test-only elevated admin region |
 | `domain.demo_fqdn` | `demo.example.com` | Domain name |
 | `domain.demo_ttl` | `60` | DNS record TTL in seconds |
 | `acme.server` | Let's Encrypt production | ACME server URL |
@@ -176,11 +192,35 @@ prodbox pulumi preview
 prodbox pulumi up
 ```
 
+### AWS Validation Stacks
+
+```bash
+# Provision or inspect the canonical AWS EKS validation stack
+poetry run prodbox pulumi eks-resources
+
+# Provision or inspect the canonical AWS HA RKE2 validation stack
+poetry run prodbox pulumi test-resources
+```
+
 ### Manage DNS
 
 ```bash
 # Check current DNS record
 prodbox dns check
+```
+
+### Interactive Onboarding And AWS IAM
+
+```bash
+# Render the supported inline IAM policy
+poetry run prodbox aws policy --tier full
+
+# Create or refresh the operational IAM user
+poetry run prodbox aws setup --tier full
+
+# Inspect or request supported AWS service quotas
+poetry run prodbox aws check-quotas
+poetry run prodbox aws request-quotas --tier full
 ```
 
 ### Check Health
@@ -215,11 +255,17 @@ prodbox charts delete vscode
 ### Destroy Infrastructure
 
 ```bash
-# Destroy all resources
-prodbox pulumi destroy
+# Destroy the canonical AWS EKS validation stack
+poetry run prodbox pulumi eks-destroy --yes
+
+# Destroy the canonical AWS HA RKE2 validation stack
+poetry run prodbox pulumi test-destroy --yes
+
+# Destroy local Pulumi-managed cluster infrastructure
+poetry run prodbox pulumi destroy
 
 # Destructively remove the supported local RKE2 cluster while preserving retained host state
-prodbox rke2 delete --yes
+poetry run prodbox rke2 delete --yes
 ```
 
 ## CLI Commands
@@ -275,11 +321,10 @@ Testing note:
 - `poetry run prodbox test all` runs unit + integration tests and fails fast when integration prerequisites are missing.
 - Use `poetry run prodbox test unit` for unit-only environments.
 - Cluster-backed integration suites enforce `rke2 install` as a runbook gate before pytest starts.
+- `poetry run prodbox test integration aws-iam` validates the real IAM lifecycle using `aws_admin.*` from the Dhall config.
 - `poetry run prodbox test integration charts-vscode` is an external public-host suite and does not require cluster gates or `rke2 install`.
 - `poetry run prodbox test integration public-dns` is the external authoritative delegation proof for the hosted zone that owns `VSCODE_FQDN`; it does not require cluster gates or `rke2 install`.
 - The phase-two pytest timeout budget is 240 minutes.
-- Real shared-account AWS foundation validation uses `poetry run prodbox test integration aws-foundation` and exercises tagged delegated Route 53 child zones, S3 buckets, EC2/VPC resources, harness-owned preflight sweeping, and expired-resource cleanup.
-- Real EKS validation uses `poetry run prodbox test integration aws-eks` and exercises a tagged fixture-owned EKS control plane plus tagged IAM/VPC dependencies.
 - Real AWS DNS integration uses `poetry run prodbox test integration dns-aws` to validate the canonical gateway Route 53 write client against fixture-owned ephemeral hosted zones.
 - Real public DNS delegation validation uses `poetry run prodbox test integration public-dns` to compare the public NS view with the canonical Route 53 hosted zone named by `ROUTE53_ZONE_ID`.
 - Real Pulumi validation uses `poetry run prodbox test integration pulumi`, a local Pulumi backend, and a fixture-owned Route 53 hosted zone to exercise `stack-init`, `preview`, `up`, and `destroy` against isolated test state.
@@ -336,6 +381,9 @@ Architecture and design documentation lives in `documents/engineering/`:
 |----------|---------|
 | [README.md](documents/engineering/README.md) | Engineering documentation index |
 | [documentation_standards.md](documents/documentation_standards.md) | Documentation writing standards |
+| [aws_account_setup_guide.md](documents/engineering/aws_account_setup_guide.md) | AWS account creation and onboarding path for `prodbox config setup` |
+| [aws_admin_credentials.md](documents/engineering/aws_admin_credentials.md) | Test-only elevated credential harness for `prodbox aws *` and `aws-iam` validation |
+| [acme_provider_guide.md](documents/engineering/acme_provider_guide.md) | ZeroSSL vs Let's Encrypt operator guidance |
 | [effectful_dag_architecture.md](documents/engineering/effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](documents/engineering/effect_interpreter.md) | Interpreter runtime contract |
 | [prerequisite_doctrine.md](documents/engineering/prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |

@@ -24,6 +24,8 @@ from click.testing import CliRunner
 from prodbox.cli.main import cli
 from prodbox.cli.test_cmd import (
     ALL_TEST_SUITE,
+    INTEGRATION_AWS_EKS_TEST_SUITE,
+    INTEGRATION_AWS_IAM_TEST_SUITE,
     INTEGRATION_DNS_AWS_TEST_SUITE,
     INTEGRATION_GATEWAY_PODS_TEST_SUITE,
     INTEGRATION_HA_RKE2_AWS_TEST_SUITE,
@@ -255,6 +257,153 @@ class TestK8sCommands:
 
 
 # =============================================================================
+# Config Command Tests
+# =============================================================================
+
+
+class TestConfigCommands:
+    """Tests for config_cmd.py CLI commands."""
+
+    def test_config_group_help(self, runner: CliRunner) -> None:
+        """config group should display help including the setup flow."""
+        result = runner.invoke(cli, ["config", "--help"])
+
+        assert result.exit_code == 0
+        assert "Configuration management commands" in result.output
+        assert "setup" in result.output
+
+    def test_config_setup_success(self, runner: CliRunner) -> None:
+        """config setup should invoke execute_command with an interactive command result."""
+        from prodbox.cli.command_adt import ConfigSetupCommand
+        from prodbox.cli.types import Success
+
+        command = ConfigSetupCommand(
+            admin_access_key_id="ADMINKEY",
+            admin_secret_access_key="admin-secret",
+            admin_session_token=None,
+            admin_region="us-east-1",
+            route53_zone_id="Z1234567890ABC",
+            demo_fqdn="demo.example.com",
+            demo_ttl=60,
+            vscode_fqdn=None,
+            acme_email="ops@example.com",
+            acme_server="https://acme-v02.api.letsencrypt.org/directory",
+            acme_eab_key_id=None,
+            acme_eab_hmac_key=None,
+            prodbox_dev_mode=True,
+            bootstrap_public_ip_override=None,
+            pulumi_enable_dns_bootstrap=True,
+            manual_pv_host_root=Path(".data"),
+            policy_tier="core",
+        )
+
+        with (
+            patch(
+                "prodbox.cli.config_cmd.interactive_config_setup_command",
+                return_value=Success(command),
+            ),
+            patch("prodbox.cli.config_cmd.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["config", "setup"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once_with(command)
+
+    def test_config_setup_failure(self, runner: CliRunner) -> None:
+        """config setup should render interactive collection failures."""
+        from prodbox.cli.types import Failure
+
+        with patch(
+            "prodbox.cli.config_cmd.interactive_config_setup_command",
+            return_value=Failure("interactive setup failed"),
+        ):
+            result = runner.invoke(cli, ["config", "setup"])
+
+        assert result.exit_code == 1
+        assert "interactive setup failed" in result.output
+
+
+# =============================================================================
+# AWS Command Tests
+# =============================================================================
+
+
+class TestAWSCommands:
+    """Tests for aws_cmd.py CLI commands."""
+
+    def test_aws_group_help(self, runner: CliRunner) -> None:
+        """aws group should display help for the Phase 7 command surface."""
+        result = runner.invoke(cli, ["aws", "--help"])
+
+        assert result.exit_code == 0
+        assert "AWS IAM policy" in result.output
+        assert "check-quotas" in result.output
+        assert "policy" in result.output
+        assert "request-quotas" in result.output
+        assert "setup" in result.output
+        assert "teardown" in result.output
+
+    def test_aws_policy_success(self, runner: CliRunner) -> None:
+        """aws policy should invoke execute_command for a valid tier."""
+        with patch("prodbox.cli.aws_cmd.execute_command", return_value=0) as mock_exec:
+            result = runner.invoke(cli, ["aws", "policy", "--tier", "full"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once()
+
+    def test_aws_policy_failure(self, runner: CliRunner) -> None:
+        """aws policy should render constructor failures."""
+        from prodbox.cli.types import Failure
+
+        with patch(
+            "prodbox.cli.aws_cmd.aws_policy_command",
+            return_value=Failure("policy generation failed"),
+        ):
+            result = runner.invoke(cli, ["aws", "policy", "--tier", "full"])
+
+        assert result.exit_code == 1
+        assert "policy generation failed" in result.output
+
+    def test_aws_setup_success(self, runner: CliRunner) -> None:
+        """aws setup should execute the collected interactive command."""
+        from prodbox.cli.command_adt import AWSSetupCommand
+        from prodbox.cli.types import Success
+
+        command = AWSSetupCommand(
+            admin_access_key_id="ADMINKEY",
+            admin_secret_access_key="admin-secret",
+            admin_session_token=None,
+            admin_region="us-east-1",
+            tier="full",
+        )
+
+        with (
+            patch(
+                "prodbox.cli.aws_cmd.interactive_aws_setup_command",
+                return_value=Success(command),
+            ),
+            patch("prodbox.cli.aws_cmd.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["aws", "setup"])
+
+        assert result.exit_code == 0
+        mock_exec.assert_called_once_with(command)
+
+    def test_aws_teardown_failure(self, runner: CliRunner) -> None:
+        """aws teardown should render interactive collection failures."""
+        from prodbox.cli.types import Failure
+
+        with patch(
+            "prodbox.cli.aws_cmd.interactive_aws_teardown_command",
+            return_value=Failure("missing admin credentials"),
+        ):
+            result = runner.invoke(cli, ["aws", "teardown"])
+
+        assert result.exit_code == 1
+        assert "missing admin credentials" in result.output
+
+
+# =============================================================================
 # Pulumi Command Tests
 # =============================================================================
 
@@ -339,11 +488,15 @@ class TestPulumiCommands:
         """pulumi test-resources should invoke execute_command on Linux."""
         with (
             patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch(
+                "prodbox.cli.pulumi_cmd.ensure_operational_aws_credentials_from_admin_harness"
+            ) as ensure,
             patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0) as mock_exec,
         ):
             result = runner.invoke(cli, ["pulumi", "test-resources"])
 
         assert result.exit_code == 0
+        ensure.assert_called_once_with()
         mock_exec.assert_called_once()
 
     def test_pulumi_test_destroy_requires_yes(self, runner: CliRunner) -> None:
@@ -358,11 +511,53 @@ class TestPulumiCommands:
         """pulumi test-destroy --yes should invoke execute_command on Linux."""
         with (
             patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch(
+                "prodbox.cli.pulumi_cmd.ensure_operational_aws_credentials_from_admin_harness"
+            ) as ensure,
             patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0) as mock_exec,
         ):
             result = runner.invoke(cli, ["pulumi", "test-destroy", "--yes"])
 
         assert result.exit_code == 0
+        ensure.assert_called_once_with()
+        mock_exec.assert_called_once()
+
+    def test_pulumi_eks_resources_success(self, runner: CliRunner) -> None:
+        """pulumi eks-resources should invoke execute_command on Linux."""
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch(
+                "prodbox.cli.pulumi_cmd.ensure_operational_aws_credentials_from_admin_harness"
+            ) as ensure,
+            patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["pulumi", "eks-resources"])
+
+        assert result.exit_code == 0
+        ensure.assert_called_once_with()
+        mock_exec.assert_called_once()
+
+    def test_pulumi_eks_destroy_requires_yes(self, runner: CliRunner) -> None:
+        """pulumi eks-destroy should require explicit confirmation."""
+        with patch("prodbox.cli.command_adt.platform.system", return_value="Linux"):
+            result = runner.invoke(cli, ["pulumi", "eks-destroy"])
+
+        assert result.exit_code == 1
+        assert "--yes" in result.output
+
+    def test_pulumi_eks_destroy_with_yes(self, runner: CliRunner) -> None:
+        """pulumi eks-destroy --yes should invoke execute_command on Linux."""
+        with (
+            patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch(
+                "prodbox.cli.pulumi_cmd.ensure_operational_aws_credentials_from_admin_harness"
+            ) as ensure,
+            patch("prodbox.cli.pulumi_cmd.execute_command", return_value=0) as mock_exec,
+        ):
+            result = runner.invoke(cli, ["pulumi", "eks-destroy", "--yes"])
+
+        assert result.exit_code == 0
+        ensure.assert_called_once_with()
         mock_exec.assert_called_once()
 
 
@@ -505,11 +700,15 @@ class TestRKE2Commands:
         """rke2 delete --yes should invoke execute_command on Linux."""
         with (
             patch("prodbox.cli.command_adt.platform.system", return_value="Linux"),
+            patch(
+                "prodbox.cli.rke2.ensure_operational_aws_credentials_from_admin_harness"
+            ) as ensure,
             patch("prodbox.cli.rke2.execute_command", return_value=0) as mock_exec,
         ):
             result = runner.invoke(cli, ["rke2", "delete", "--yes"])
 
         assert result.exit_code == 0
+        ensure.assert_called_once_with()
         mock_exec.assert_called_once()
 
     def test_rke2_delete_requires_yes(self, runner: CliRunner) -> None:
@@ -826,7 +1025,15 @@ class TestClickDocumentation:
     @pytest.mark.parametrize(
         ("argv", "tokens", "expected_exit_code"),
         [
-            (["--help"], ("check-code", "gateway", "test", "tla-check"), 0),
+            (["--help"], ("aws", "check-code", "config", "gateway", "test", "tla-check"), 0),
+            (["config"], ("compile", "setup", "show", "validate"), 2),
+            (["config", "setup", "--help"], (), 0),
+            (
+                ["aws"],
+                ("check-quotas", "policy", "request-quotas", "setup", "teardown"),
+                2,
+            ),
+            (["aws", "policy", "--help"], ("--tier",), 0),
             (["host"], ("check-ports", "ensure-tools", "firewall", "info"), 2),
             (
                 ["rke2"],
@@ -839,6 +1046,8 @@ class TestClickDocumentation:
                 ["pulumi"],
                 (
                     "destroy",
+                    "eks-destroy",
+                    "eks-resources",
                     "preview",
                     "refresh",
                     "stack-init",
@@ -864,6 +1073,8 @@ class TestClickDocumentation:
                 ["test", "integration"],
                 (
                     "all",
+                    "aws-eks",
+                    "aws-iam",
                     "cli",
                     "dns-aws",
                     "env",
@@ -904,7 +1115,10 @@ class TestTestCommandSurface:
 
     def test_test_all_invokes_named_suite_with_coverage(self, runner: CliRunner) -> None:
         """`prodbox test all` should dispatch the full suite with explicit coverage settings."""
-        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+        with (
+            patch("prodbox.cli.test_cmd.ensure_operational_aws_credentials_from_admin_harness"),
+            patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite,
+        ):
             result = runner.invoke(
                 cli,
                 ["test", "all", "--coverage", "--cov-fail-under", "95"],
@@ -918,7 +1132,10 @@ class TestTestCommandSurface:
 
     def test_test_integration_gateway_pods_invokes_named_suite(self, runner: CliRunner) -> None:
         """Named integration suite commands should dispatch their explicit suite mapping."""
-        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+        with (
+            patch("prodbox.cli.test_cmd.ensure_operational_aws_credentials_from_admin_harness"),
+            patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite,
+        ):
             result = runner.invoke(cli, ["test", "integration", "gateway-pods"])
 
         assert result.exit_code == 0
@@ -938,9 +1155,40 @@ class TestTestCommandSurface:
             coverage_settings=CoverageSettings(enabled=False, fail_under=None),
         )
 
+    def test_test_integration_aws_iam_invokes_named_suite(self, runner: CliRunner) -> None:
+        """aws-iam should dispatch the explicit IAM lifecycle integration suite."""
+        with (
+            patch("prodbox.cli.test_cmd.ensure_operational_aws_credentials_from_admin_harness"),
+            patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite,
+        ):
+            result = runner.invoke(cli, ["test", "integration", "aws-iam"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_AWS_IAM_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
+    def test_test_integration_aws_eks_invokes_named_suite(self, runner: CliRunner) -> None:
+        """aws-eks should dispatch the explicit EKS-backed integration suite."""
+        with (
+            patch("prodbox.cli.test_cmd.ensure_operational_aws_credentials_from_admin_harness"),
+            patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite,
+        ):
+            result = runner.invoke(cli, ["test", "integration", "aws-eks"])
+
+        assert result.exit_code == 0
+        mock_run_suite.assert_called_once_with(
+            suite=INTEGRATION_AWS_EKS_TEST_SUITE,
+            coverage_settings=CoverageSettings(enabled=False, fail_under=None),
+        )
+
     def test_test_integration_ha_rke2_aws_invokes_named_suite(self, runner: CliRunner) -> None:
         """ha-rke2-aws should dispatch the canonical SSH-driven AWS HA RKE2 suite."""
-        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+        with (
+            patch("prodbox.cli.test_cmd.ensure_operational_aws_credentials_from_admin_harness"),
+            patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite,
+        ):
             result = runner.invoke(cli, ["test", "integration", "ha-rke2-aws"])
 
         assert result.exit_code == 0
@@ -951,7 +1199,10 @@ class TestTestCommandSurface:
 
     def test_test_integration_pulumi_invokes_named_suite(self, runner: CliRunner) -> None:
         """pulumi should dispatch the explicit real Pulumi integration suite."""
-        with patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite:
+        with (
+            patch("prodbox.cli.test_cmd.ensure_operational_aws_credentials_from_admin_harness"),
+            patch("prodbox.cli.test_cmd._run_suite", return_value=0) as mock_run_suite,
+        ):
             result = runner.invoke(cli, ["test", "integration", "pulumi"])
 
         assert result.exit_code == 0

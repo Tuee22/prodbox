@@ -32,6 +32,8 @@ from prodbox.cli.command_adt import (
     K8sLogsCommand,
     K8sWaitCommand,
     PulumiDestroyCommand,
+    PulumiEksDestroyCommand,
+    PulumiEksResourcesCommand,
     PulumiPreviewCommand,
     PulumiRefreshCommand,
     PulumiStackInitCommand,
@@ -772,14 +774,16 @@ class TestRKE2CommandPrerequisites:
                 }
                 built_effect = root.build_effect(None, prereq_results)
                 assert isinstance(built_effect, Sequence)
-                assert len(built_effect.effects) == 3
+                assert len(built_effect.effects) == 4
                 assert isinstance(built_effect.effects[0], Custom)
-                assert built_effect.effects[0].effect_id == "rke2_delete_aws_test_stack_destroy"
+                assert built_effect.effects[0].effect_id == "rke2_delete_aws_eks_test_stack_destroy"
                 assert isinstance(built_effect.effects[1], Custom)
-                assert built_effect.effects[1].effect_id == "rke2_delete_cluster_substrate"
-                assert isinstance(built_effect.effects[2], WriteStdout)
-                assert "/tmp/manual-pv" in built_effect.effects[2].text
-                assert ".prodbox-state" in built_effect.effects[2].text
+                assert built_effect.effects[1].effect_id == "rke2_delete_aws_test_stack_destroy"
+                assert isinstance(built_effect.effects[2], Custom)
+                assert built_effect.effects[2].effect_id == "rke2_delete_cluster_substrate"
+                assert isinstance(built_effect.effects[3], WriteStdout)
+                assert "/tmp/manual-pv" in built_effect.effects[3].text
+                assert ".prodbox-state" in built_effect.effects[3].text
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
@@ -1151,6 +1155,46 @@ class TestPulumiCommandPrerequisites:
             case Failure(error):
                 pytest.fail(f"Expected Success, got Failure: {error}")
 
+    def test_pulumi_eks_resources_requires_supported_cluster_aws_and_settings(self) -> None:
+        """PulumiEksResourcesCommand should require the canonical local backend prerequisites."""
+        cmd = PulumiEksResourcesCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("pulumi_eks_resources")
+                assert root is not None
+                assert root.prerequisites == frozenset(
+                    {
+                        "supported_ubuntu_2404",
+                        "tool_pulumi",
+                        "tool_aws",
+                        "k8s_cluster_reachable",
+                        "settings_object",
+                    }
+                )
+                assert isinstance(root.effect, Custom)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
+    def test_pulumi_eks_destroy_requires_supported_cluster_aws_and_settings(self) -> None:
+        """PulumiEksDestroyCommand should require the canonical local backend prerequisites."""
+        cmd = PulumiEksDestroyCommand()
+        match command_to_dag(cmd):
+            case Success(dag):
+                root = dag.get_node("pulumi_eks_destroy")
+                assert root is not None
+                assert root.prerequisites == frozenset(
+                    {
+                        "supported_ubuntu_2404",
+                        "tool_pulumi",
+                        "tool_aws",
+                        "k8s_cluster_reachable",
+                        "settings_object",
+                    }
+                )
+                assert isinstance(root.effect, Custom)
+            case Failure(error):
+                pytest.fail(f"Expected Success, got Failure: {error}")
+
 
 class TestGatewayCommandPrerequisites:
     """Verify prerequisites and renderers for gateway commands."""
@@ -1240,6 +1284,8 @@ class TestUserVisibleCommandBuilderRegressionGuards:
             (PulumiStackInitCommand(stack="dev"), "pulumi_stack_init"),
             (PulumiTestResourcesCommand(), "pulumi_test_resources"),
             (PulumiTestDestroyCommand(), "pulumi_test_destroy"),
+            (PulumiEksResourcesCommand(), "pulumi_eks_resources"),
+            (PulumiEksDestroyCommand(), "pulumi_eks_destroy"),
         ],
     )
     def test_repaired_commands_do_not_regress_to_lone_pure_root(
@@ -1371,6 +1417,8 @@ class TestAllPrerequisitesExistInRegistry:
             PulumiStackInitCommand(stack="test"),
             PulumiTestResourcesCommand(),
             PulumiTestDestroyCommand(),
+            PulumiEksResourcesCommand(),
+            PulumiEksDestroyCommand(),
         ]
         for cmd in commands:
             match command_to_dag(cmd):

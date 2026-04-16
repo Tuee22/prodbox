@@ -265,6 +265,38 @@ class Settings(BaseModel):
             description="Optional AWS session token from config",
         ),
     ]
+    aws_admin_access_key_id: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional elevated AWS access key ID for tests and `prodbox aws` commands",
+        ),
+    ]
+    aws_admin_secret_access_key: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional elevated AWS secret access key for tests and `prodbox aws` commands"
+            ),
+        ),
+    ]
+    aws_admin_session_token: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional elevated AWS session token for tests and `prodbox aws` commands"
+            ),
+        ),
+    ]
+    aws_admin_region: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional elevated AWS region for tests and `prodbox aws` commands",
+        ),
+    ]
     route53_zone_id: Annotated[
         str,
         Field(
@@ -407,6 +439,23 @@ class Settings(BaseModel):
                 "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
             )
         return self
+
+    @model_validator(mode="after")
+    def validate_optional_admin_credentials(self) -> Settings:
+        """Require all non-session admin credential fields when any are configured."""
+        admin_fields = (
+            self.aws_admin_access_key_id,
+            self.aws_admin_secret_access_key,
+            self.aws_admin_region,
+        )
+        if all(value is None for value in admin_fields):
+            return self
+        if all(isinstance(value, str) and value != "" for value in admin_fields):
+            return self
+        raise ValueError(
+            "aws_admin.access_key_id, aws_admin.secret_access_key, and aws_admin.region "
+            "must either all be set or all be empty"
+        )
 
     @model_validator(mode="after")
     def resolve_manual_pv_root(self) -> Settings:
@@ -552,6 +601,37 @@ SETTING_SPECS: tuple[SettingSpec, ...] = (
         sensitive=True,
     ),
     SettingSpec(
+        attribute="aws_admin_access_key_id",
+        config_path="aws_admin.access_key_id",
+        description="Optional elevated AWS access key ID for tests and `prodbox aws` commands",
+        getter=lambda settings: settings.aws_admin_access_key_id,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="aws_admin_secret_access_key",
+        config_path="aws_admin.secret_access_key",
+        description="Optional elevated AWS secret access key for tests and `prodbox aws` commands",
+        getter=lambda settings: settings.aws_admin_secret_access_key,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="aws_admin_session_token",
+        config_path="aws_admin.session_token",
+        description="Optional elevated AWS session token for tests and `prodbox aws` commands",
+        getter=lambda settings: settings.aws_admin_session_token,
+        required=False,
+        sensitive=True,
+    ),
+    SettingSpec(
+        attribute="aws_admin_region",
+        config_path="aws_admin.region",
+        description="Optional elevated AWS region for tests and `prodbox aws` commands",
+        getter=lambda settings: settings.aws_admin_region,
+        required=False,
+    ),
+    SettingSpec(
         attribute="route53_zone_id",
         config_path="route53.zone_id",
         description="Route 53 hosted zone ID",
@@ -676,9 +756,31 @@ def _extract_dict(config: dict[str, object], key: str) -> dict[str, object]:
             raise ValueError(f"config.{key} must be a mapping")
 
 
+def _extract_optional_dict(config: dict[str, object], key: str) -> dict[str, object]:
+    """Extract an optional nested dict from *config* or return an empty mapping."""
+    value = config.get(key)
+    match value:
+        case dict() as section:
+            return {str(k): v for k, v in section.items()}
+        case None:
+            return {}
+        case _:
+            raise ValueError(f"config.{key} must be a mapping")
+
+
+def _optional_non_empty_text(value: object) -> str | None:
+    """Normalize blank or missing text-like values to ``None``."""
+    match value:
+        case str() as text if text.strip() != "":
+            return text
+        case _:
+            return None
+
+
 def _flatten_config_json(config: dict[str, object]) -> dict[str, object]:
     """Map nested Dhall JSON structure to flat Settings field names."""
     aws = _extract_dict(config, "aws")
+    aws_admin = _extract_optional_dict(config, "aws_admin")
     route53 = _extract_dict(config, "route53")
     domain = _extract_dict(config, "domain")
     acme = _extract_dict(config, "acme")
@@ -691,6 +793,10 @@ def _flatten_config_json(config: dict[str, object]) -> dict[str, object]:
         "aws_secret_access_key": aws.get("secret_access_key", ""),
         "aws_session_token": aws.get("session_token"),
         "route53_zone_id": route53.get("zone_id", ""),
+        "aws_admin_access_key_id": _optional_non_empty_text(aws_admin.get("access_key_id")),
+        "aws_admin_secret_access_key": _optional_non_empty_text(aws_admin.get("secret_access_key")),
+        "aws_admin_session_token": _optional_non_empty_text(aws_admin.get("session_token")),
+        "aws_admin_region": _optional_non_empty_text(aws_admin.get("region")),
         "demo_fqdn": domain.get("demo_fqdn", "demo.example.com"),
         "demo_ttl": domain.get("demo_ttl", 60),
         "vscode_fqdn": domain.get("vscode_fqdn"),

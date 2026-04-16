@@ -30,13 +30,18 @@ import time
 from pathlib import Path
 
 from prodbox.cli.command_adt import (
+    AWSCheckQuotasCommand,
+    AWSPolicyCommand,
+    AWSRequestQuotasCommand,
+    AWSSetupCommand,
+    AWSTeardownCommand,
     ChartDeleteCommand,
     ChartDeployCommand,
     ChartListCommand,
     ChartStatusCommand,
     Command,
     ConfigCompileCommand,
-    ConfigInitCommand,
+    ConfigSetupCommand,
     ConfigShowCommand,
     ConfigValidateCommand,
     DNSCheckCommand,
@@ -51,7 +56,10 @@ from prodbox.cli.command_adt import (
     K8sHealthCommand,
     K8sLogsCommand,
     K8sWaitCommand,
+    PolicyTier,
     PulumiDestroyCommand,
+    PulumiEksDestroyCommand,
+    PulumiEksResourcesCommand,
     PulumiPreviewCommand,
     PulumiRefreshCommand,
     PulumiStackInitCommand,
@@ -90,6 +98,7 @@ from prodbox.cli.effects import (
     MachineIdentity,
     Parallel,
     PortAvailability,
+    PrintTable,
     PulumiDestroy,
     PulumiPreview,
     PulumiRefresh,
@@ -103,14 +112,24 @@ from prodbox.cli.effects import (
     RunSystemdCommand,
     Sequence,
     StartGatewayDaemon,
-    ValidateConfigJson,
     ValidateSettings,
     ValidateTool,
-    WriteFile,
     WriteStdout,
 )
 from prodbox.cli.prerequisite_registry import PREREQUISITE_REGISTRY
 from prodbox.cli.types import Failure, PrereqResults, Result, Success
+from prodbox.lib.aws_admin import (
+    build_iam_policy_json,
+    quota_status_rows,
+    render_aws_setup_result,
+    render_aws_teardown_result,
+    render_config_setup_result,
+    run_aws_check_quotas,
+    run_aws_request_quotas,
+    run_aws_setup,
+    run_aws_teardown,
+    run_config_setup,
+)
 from prodbox.lib.prodbox_k8s import (
     HARBOR_GATEWAY_REPOSITORY,
     HARBOR_HELM_RELEASE,
@@ -158,6 +177,11 @@ def _discovered_metallb_pool() -> str:
 def _discovered_ingress_lb_ip() -> str:
     """Return the auto-discovered ingress LB IP from the active LAN."""
     return discover_lan_addressing().ingress_lb_ip
+
+
+def _generate_iam_policy_json(tier: PolicyTier) -> str:
+    """Return the supported operational IAM inline policy as JSON."""
+    return build_iam_policy_json(tier=tier)
 
 
 def _require_machine_identity(prereq_results: PrereqResults) -> MachineIdentity:
@@ -1046,27 +1070,6 @@ def _delete_managed_kubeconfig_if_present() -> str:
                     return f"Left non-RKE2 kubeconfig untouched at {kubeconfig_path}"
 
 
-def _remove_legacy_storage_root_if_needed(
-    *, legacy_storage_root: Path, manual_pv_root: Path
-) -> None:
-    """Delete the legacy storage root only when it is outside the configured PV root."""
-    preserves_legacy_root = (
-        legacy_storage_root == manual_pv_root or legacy_storage_root in manual_pv_root.parents
-    )
-    match (legacy_storage_root.exists(), preserves_legacy_root):
-        case (True, False):
-            delete_result = _run_host_command(
-                ("sudo", "rm", "-rf", str(legacy_storage_root)),
-                timeout_seconds=120.0,
-            )
-            _require_host_command_success(
-                delete_result,
-                failure_prefix=f"Failed to remove legacy storage root {legacy_storage_root}",
-            )
-        case _:
-            return
-
-
 def _remove_calico_endpoint_status_rke2_residue(
     *, endpoint_status_root: Path = Path("/run/calico/endpoint-status")
 ) -> str:
@@ -1130,11 +1133,6 @@ def _delete_rke2_cluster_substrate(*, manual_pv_root: Path) -> str:
 
     calico_endpoint_status_message = _remove_calico_endpoint_status_rke2_residue()
     kubeconfig_message = _delete_managed_kubeconfig_if_present()
-    legacy_storage_root = Path("/var/lib/prodbox/storage")
-    _remove_legacy_storage_root_if_needed(
-        legacy_storage_root=legacy_storage_root,
-        manual_pv_root=manual_pv_root,
-    )
     preserved_chart_state_root = REPOSITORY_ROOT / ".prodbox-state"
     return (
         "Deleted RKE2 cluster substrate; "
@@ -1303,6 +1301,21 @@ def _ensure_aws_test_stack_effect() -> str:
     return "AWS test stack ready"
 
 
+def _destroy_aws_eks_test_stack_effect() -> str:
+    """Destroy the canonical AWS EKS test stack through the shared Pulumi lifecycle."""
+    from prodbox.lib.aws_eks_test_stack import destroy_aws_eks_test_stack
+
+    return destroy_aws_eks_test_stack()
+
+
+def _ensure_aws_eks_test_stack_effect() -> str:
+    """Provision or inspect the canonical AWS EKS test stack through Pulumi."""
+    from prodbox.lib.aws_eks_test_stack import ensure_aws_eks_test_stack_resources
+
+    ensure_aws_eks_test_stack_resources()
+    return "AWS EKS test stack ready"
+
+
 def _build_rke2_delete_effect(prereq_results: PrereqResults) -> Sequence:
     """Build the host-owned RKE2 delete effect from prerequisites."""
     settings = _require_settings(prereq_results)
@@ -1312,6 +1325,13 @@ def _build_rke2_delete_effect(prereq_results: PrereqResults) -> Sequence:
         effect_id="rke2_delete",
         description="Delete the host-owned RKE2 cluster while preserving retained state",
         effects=[
+            Custom(
+                effect_id="rke2_delete_aws_eks_test_stack_destroy",
+                description=(
+                    "Destroy the Pulumi-managed AWS EKS test stack before local backend teardown"
+                ),
+                fn=_destroy_aws_eks_test_stack_effect,
+            ),
             Custom(
                 effect_id="rke2_delete_aws_test_stack_destroy",
                 description=(
@@ -1380,132 +1400,6 @@ def _build_pulumi_up_effect(cmd: PulumiUpCommand, prereq_results: PrereqResults)
     )
 
 
-# =============================================================================
-# Config Command Builders
-# =============================================================================
-
-
-def _parse_dotenv_to_mapping(dotenv_path: Path) -> dict[str, str]:
-    """Parse a ``.env`` file into a plain mapping, skipping blanks and comments."""
-    match dotenv_path.is_file():
-        case False:
-            return {}
-        case True:
-            pass
-    raw_lines = dotenv_path.read_text(encoding="utf-8").splitlines()
-    stripped_lines = tuple(raw.strip() for raw in raw_lines)
-    content_lines = tuple(
-        line for line in stripped_lines if line != "" and not line.startswith("#")
-    )
-    normalized = tuple(line.removeprefix("export ").strip() for line in content_lines)
-    pairs = tuple(line.split("=", 1) for line in normalized if "=" in line)
-    return {name.strip(): value.strip() for name, value in pairs if value.strip() != ""}
-
-
-def _dhall_text(mapping: dict[str, str], key: str, default: str = "") -> str:
-    """Render a Dhall Text literal from a dotenv mapping."""
-    return f'"{mapping.get(key, default)}"'
-
-
-def _dhall_optional_text(mapping: dict[str, str], key: str) -> str:
-    """Render a Dhall ``Optional Text`` from a dotenv mapping."""
-    match mapping.get(key):
-        case str() as v:
-            return f'Some "{v}"'
-        case _:
-            return "None Text"
-
-
-def _dhall_natural(mapping: dict[str, str], key: str, default: str = "60") -> str:
-    """Render a Dhall Natural literal from a dotenv mapping."""
-    return mapping.get(key, default)
-
-
-def _dhall_bool(mapping: dict[str, str], key: str, default: str = "True") -> str:
-    """Render a Dhall Bool literal from a dotenv mapping."""
-    raw = mapping.get(key, default).lower()
-    match raw:
-        case "true" | "1" | "yes":
-            return "True"
-        case _:
-            return "False"
-
-
-def _generate_dhall_config_from_env(dotenv_path: Path) -> str:
-    """Generate a ``prodbox-config.dhall`` body from an existing ``.env`` file."""
-    m = _parse_dotenv_to_mapping(dotenv_path)
-    lines = (
-        "let Config = ./prodbox-config-types.dhall",
-        "",
-        f"in  Config::{'{'}",
-        "    aws = {",
-        f"        access_key_id = {_dhall_text(m, 'AWS_ACCESS_KEY_ID')}",
-        f"      , secret_access_key = {_dhall_text(m, 'AWS_SECRET_ACCESS_KEY')}",
-        f"      , session_token = {_dhall_optional_text(m, 'AWS_SESSION_TOKEN')}",
-        f"      , region = {_dhall_text(m, 'AWS_REGION', 'us-east-1')}",
-        "    }",
-        f"  , route53 = {'{'} zone_id = {_dhall_text(m, 'ROUTE53_ZONE_ID')} {'}'}",
-        "  , domain = {",
-        f"        demo_fqdn = {_dhall_text(m, 'DEMO_FQDN', 'demo.example.com')}",
-        f"      , demo_ttl = {_dhall_natural(m, 'DEMO_TTL', '60')}",
-        f"      , vscode_fqdn = {_dhall_optional_text(m, 'VSCODE_FQDN')}",
-        "    }",
-        "  , acme = {",
-        f"        email = {_dhall_text(m, 'ACME_EMAIL')}",
-        f"      , server = {_dhall_text(m, 'ACME_SERVER', 'https://acme-v02.api.letsencrypt.org/directory')}",
-        "    }",
-        "  , deployment = {",
-        f"        dev_mode = {_dhall_bool(m, 'PRODBOX_DEV_MODE', 'true')}",
-        f"      , bootstrap_public_ip_override = {_dhall_optional_text(m, 'BOOTSTRAP_PUBLIC_IP_OVERRIDE')}",
-        f"      , pulumi_enable_dns_bootstrap = {_dhall_bool(m, 'PULUMI_ENABLE_DNS_BOOTSTRAP', 'true')}",
-        "    }",
-        "  , storage = {",
-        f"        manual_pv_host_root = {_dhall_text(m, 'MANUAL_PV_HOST_ROOT', '.data')}",
-        "    }",
-        "}",
-    )
-    return "\n".join(lines) + "\n"
-
-
-def _build_config_init_dag(_cmd: ConfigInitCommand) -> EffectDAG:
-    """Build DAG for bootstrapping Dhall config from .env."""
-    dotenv_path = REPOSITORY_ROOT / ".env"
-    dhall_path = REPOSITORY_ROOT / "prodbox-config.dhall"
-    json_path = REPOSITORY_ROOT / "prodbox-config.json"
-    dhall_content = _generate_dhall_config_from_env(dotenv_path)
-
-    write_dhall = EffectNode(
-        effect=WriteFile(
-            effect_id="config_init_write_dhall",
-            description="Write prodbox-config.dhall from .env",
-            file_path=dhall_path,
-            content=dhall_content,
-        ),
-        prerequisites=frozenset(["tool_dhall_to_json"]),
-    )
-    compile_dhall = EffectNode(
-        effect=RunDhallCompile(
-            effect_id="config_init_compile",
-            description="Compile prodbox-config.dhall to JSON",
-            input_path=dhall_path,
-            output_path=json_path,
-        ),
-        prerequisites=frozenset(["config_init_write_dhall"]),
-    )
-    validate_json = EffectNode(
-        effect=ValidateConfigJson(
-            effect_id="config_init_validate",
-            description="Validate compiled config JSON",
-            config_path=json_path,
-        ),
-        prerequisites=frozenset(["config_init_compile"]),
-    )
-    return EffectDAG.from_roots(
-        validate_json,
-        registry=_merge_registry(write_dhall, compile_dhall, validate_json),
-    )
-
-
 def _build_config_compile_dag(_cmd: ConfigCompileCommand) -> EffectDAG:
     """Build DAG for compiling Dhall config to JSON."""
     dhall_path = REPOSITORY_ROOT / "prodbox-config.dhall"
@@ -1554,6 +1448,198 @@ def _build_config_validate_dag(_cmd: ConfigValidateCommand) -> EffectDAG:
         prerequisites=frozenset(["settings_loaded"]),
     )
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_config_setup_dag(cmd: ConfigSetupCommand) -> EffectDAG:
+    """Build DAG for the interactive config setup workflow."""
+    apply_setup: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="config_setup_apply",
+            description="Generate config, create operational IAM user, and validate",
+            fn=lambda: run_config_setup(cmd),
+        ),
+        prerequisites=frozenset(["tool_aws", "tool_dhall_to_json"]),
+    )
+    render: EffectNode[None] = EffectNode(
+        effect=WriteStdout(
+            effect_id="config_setup",
+            description="Render config setup summary",
+            text="",
+        ),
+        prerequisites=frozenset(["config_setup_apply"]),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="config_setup",
+            description="Render config setup summary",
+            text=render_config_setup_result(
+                _require_object_result(prereq_results, "config_setup_apply")
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(render, registry=_merge_registry(apply_setup, render))
+
+
+# =============================================================================
+# AWS Command Builders
+# =============================================================================
+
+
+def _build_aws_policy_dag(cmd: AWSPolicyCommand) -> EffectDAG:
+    """Build DAG for the pure IAM policy renderer."""
+    root = EffectNode(
+        effect=WriteStdout(
+            effect_id="aws_policy",
+            description="Render operational IAM policy JSON",
+            text=_generate_iam_policy_json(cmd.tier),
+        ),
+        prerequisites=frozenset(),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_aws_setup_dag(cmd: AWSSetupCommand) -> EffectDAG:
+    """Build DAG for operational IAM-user setup."""
+    apply_setup: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="aws_setup_apply",
+            description="Create or refresh the supported operational IAM user",
+            fn=lambda: run_aws_setup(cmd),
+        ),
+        prerequisites=frozenset(["tool_aws", "tool_dhall_to_json"]),
+    )
+    render: EffectNode[None] = EffectNode(
+        effect=WriteStdout(
+            effect_id="aws_setup",
+            description="Render AWS setup summary",
+            text="",
+        ),
+        prerequisites=frozenset(["aws_setup_apply"]),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="aws_setup",
+            description="Render AWS setup summary",
+            text=render_aws_setup_result(_require_object_result(prereq_results, "aws_setup_apply")),
+        ),
+    )
+    return EffectDAG.from_roots(render, registry=_merge_registry(apply_setup, render))
+
+
+def _build_aws_teardown_dag(cmd: AWSTeardownCommand) -> EffectDAG:
+    """Build DAG for operational IAM-user teardown."""
+    apply_teardown: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="aws_teardown_apply",
+            description="Delete the supported operational IAM user and clear config credentials",
+            fn=lambda: run_aws_teardown(cmd),
+        ),
+        prerequisites=frozenset(["tool_aws", "tool_dhall_to_json"]),
+    )
+    render: EffectNode[None] = EffectNode(
+        effect=WriteStdout(
+            effect_id="aws_teardown",
+            description="Render AWS teardown summary",
+            text="",
+        ),
+        prerequisites=frozenset(["aws_teardown_apply"]),
+        effect_builder=lambda _reduced, prereq_results: WriteStdout(
+            effect_id="aws_teardown",
+            description="Render AWS teardown summary",
+            text=render_aws_teardown_result(
+                _require_object_result(prereq_results, "aws_teardown_apply")
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(render, registry=_merge_registry(apply_teardown, render))
+
+
+def _build_aws_check_quotas_dag(cmd: AWSCheckQuotasCommand) -> EffectDAG:
+    """Build DAG for service quota inspection."""
+    inspect_quotas: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="aws_check_quotas_query",
+            description="Inspect supported AWS service quotas",
+            fn=lambda: run_aws_check_quotas(cmd),
+        ),
+        prerequisites=frozenset(["tool_aws"]),
+    )
+    render: EffectNode[None] = EffectNode(
+        effect=PrintTable(
+            effect_id="aws_check_quotas",
+            description="Render supported AWS quota table",
+            title="Supported AWS Quotas",
+            columns=(
+                ("Quota", "cyan"),
+                ("Current", "green"),
+                ("Target", "green"),
+                ("Meets Target", "yellow"),
+                ("Request Status", "magenta"),
+                ("Note", "white"),
+            ),
+            rows=(),
+        ),
+        prerequisites=frozenset(["aws_check_quotas_query"]),
+        effect_builder=lambda _reduced, prereq_results: PrintTable(
+            effect_id="aws_check_quotas",
+            description="Render supported AWS quota table",
+            title="Supported AWS Quotas",
+            columns=(
+                ("Quota", "cyan"),
+                ("Current", "green"),
+                ("Target", "green"),
+                ("Meets Target", "yellow"),
+                ("Request Status", "magenta"),
+                ("Note", "white"),
+            ),
+            rows=quota_status_rows(
+                _require_object_result(prereq_results, "aws_check_quotas_query")
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(render, registry=_merge_registry(inspect_quotas, render))
+
+
+def _build_aws_request_quotas_dag(cmd: AWSRequestQuotasCommand) -> EffectDAG:
+    """Build DAG for service quota increase requests."""
+    request_quotas: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="aws_request_quotas_query",
+            description="Inspect and request supported AWS service quota increases",
+            fn=lambda: run_aws_request_quotas(cmd),
+        ),
+        prerequisites=frozenset(["tool_aws"]),
+    )
+    render: EffectNode[None] = EffectNode(
+        effect=PrintTable(
+            effect_id="aws_request_quotas",
+            description="Render requested AWS quota results",
+            title="Requested AWS Quotas",
+            columns=(
+                ("Quota", "cyan"),
+                ("Current", "green"),
+                ("Target", "green"),
+                ("Meets Target", "yellow"),
+                ("Request Status", "magenta"),
+                ("Note", "white"),
+            ),
+            rows=(),
+        ),
+        prerequisites=frozenset(["aws_request_quotas_query"]),
+        effect_builder=lambda _reduced, prereq_results: PrintTable(
+            effect_id="aws_request_quotas",
+            description="Render requested AWS quota results",
+            title="Requested AWS Quotas",
+            columns=(
+                ("Quota", "cyan"),
+                ("Current", "green"),
+                ("Target", "green"),
+                ("Meets Target", "yellow"),
+                ("Request Status", "magenta"),
+                ("Note", "white"),
+            ),
+            rows=quota_status_rows(
+                _require_object_result(prereq_results, "aws_request_quotas_query")
+            ),
+        ),
+    )
+    return EffectDAG.from_roots(render, registry=_merge_registry(request_quotas, render))
 
 
 # =============================================================================
@@ -2246,6 +2332,48 @@ def _build_pulumi_test_destroy_dag(_cmd: PulumiTestDestroyCommand) -> EffectDAG:
     return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
 
 
+def _build_pulumi_eks_resources_dag(_cmd: PulumiEksResourcesCommand) -> EffectDAG:
+    """Build DAG for provisioning or inspecting the AWS EKS test stack."""
+    root: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="pulumi_eks_resources",
+            description="Provision or inspect the canonical AWS EKS test stack",
+            fn=_ensure_aws_eks_test_stack_effect,
+        ),
+        prerequisites=frozenset(
+            [
+                "supported_ubuntu_2404",
+                "tool_pulumi",
+                "tool_aws",
+                "k8s_cluster_reachable",
+                "settings_object",
+            ]
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
+def _build_pulumi_eks_destroy_dag(_cmd: PulumiEksDestroyCommand) -> EffectDAG:
+    """Build DAG for destroying the AWS EKS test stack."""
+    root: EffectNode[object] = EffectNode(
+        effect=Custom(
+            effect_id="pulumi_eks_destroy",
+            description="Destroy the canonical AWS EKS test stack",
+            fn=_destroy_aws_eks_test_stack_effect,
+        ),
+        prerequisites=frozenset(
+            [
+                "supported_ubuntu_2404",
+                "tool_pulumi",
+                "tool_aws",
+                "k8s_cluster_reachable",
+                "settings_object",
+            ]
+        ),
+    )
+    return EffectDAG.from_roots(root, registry=PREREQUISITE_REGISTRY)
+
+
 # =============================================================================
 # Main Entry Point
 # =============================================================================
@@ -2264,14 +2392,26 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
     """
     match command:
         # Config commands
-        case ConfigInitCommand():
-            return Success(_build_config_init_dag(command))
         case ConfigCompileCommand():
             return Success(_build_config_compile_dag(command))
         case ConfigShowCommand():
             return Success(_build_config_show_dag(command))
         case ConfigValidateCommand():
             return Success(_build_config_validate_dag(command))
+        case ConfigSetupCommand():
+            return Success(_build_config_setup_dag(command))
+
+        # AWS commands
+        case AWSPolicyCommand():
+            return Success(_build_aws_policy_dag(command))
+        case AWSSetupCommand():
+            return Success(_build_aws_setup_dag(command))
+        case AWSTeardownCommand():
+            return Success(_build_aws_teardown_dag(command))
+        case AWSCheckQuotasCommand():
+            return Success(_build_aws_check_quotas_dag(command))
+        case AWSRequestQuotasCommand():
+            return Success(_build_aws_request_quotas_dag(command))
 
         # Host commands
         case HostInfoCommand():
@@ -2328,6 +2468,10 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
             return Success(_build_pulumi_test_resources_dag(command))
         case PulumiTestDestroyCommand():
             return Success(_build_pulumi_test_destroy_dag(command))
+        case PulumiEksResourcesCommand():
+            return Success(_build_pulumi_eks_resources_dag(command))
+        case PulumiEksDestroyCommand():
+            return Success(_build_pulumi_eks_destroy_dag(command))
 
         # Gateway commands
         case GatewayStartCommand():

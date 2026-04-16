@@ -179,7 +179,9 @@ def command_to_dag(command: Command) -> Result[EffectDAG, str]:
 
 RKE2 cluster lifecycle is modeled as idempotent DAG nodes:
 - `rke2_install`: install or reconcile the supported host-owned RKE2 lifecycle, then reconcile Harbor and retained storage
-- `rke2_delete`: destroy any Pulumi-managed AWS test stack, then remove the local RKE2 substrate while preserving retained host state
+- `rke2_delete`: destroy the Pulumi-managed AWS EKS stack, then the Pulumi-managed AWS HA test stack, then remove the local RKE2 substrate while preserving retained host state
+- `pulumi_eks_resources`: provision or inspect the canonical Pulumi-managed AWS EKS test stack
+- `pulumi_eks_destroy`: destroy the canonical Pulumi-managed AWS EKS test stack
 - `pulumi_test_resources`: provision or inspect the canonical Pulumi-managed AWS HA-RKE2 test stack
 - `pulumi_test_destroy`: destroy the canonical Pulumi-managed AWS HA-RKE2 test stack
 
@@ -188,16 +190,17 @@ expensive effect runs. In practice that means:
 
 1. `rke2_install` requires the supported Ubuntu 24.04 host gate, local toolchain, machine identity, and settings.
 2. `rke2_delete` adds `tool_pulumi`, `tool_aws`, and `k8s_cluster_reachable` so the local MinIO-backed Pulumi state remains reachable before teardown.
-3. `pulumi_test_resources` and `pulumi_test_destroy` require the supported host gate plus the local cluster, Pulumi, AWS CLI, and settings.
+3. `pulumi_eks_resources`, `pulumi_eks_destroy`, `pulumi_test_resources`, and `pulumi_test_destroy` require the supported host gate plus the local cluster, Pulumi, AWS CLI, and settings.
 
 During `rke2_install`, Harbor and retained-storage/MinIO reconciliation execute in parallel:
 
 1. `EnsureHarborRegistry`
 2. `Sequence(EnsureRetainedLocalStorage -> EnsureMinio)`
 
-During `rke2_delete`, the first destructive step is a `Custom` effect that calls the same helper
-used by `prodbox pulumi test-destroy --yes`; only after that destroy path succeeds does the DAG
-remove the local cluster substrate and print the preserved-state boundary.
+During `rke2_delete`, the first destructive steps are `Custom` effects that call the same helpers
+used by `prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes`, in that
+order; only after both destroy paths succeed does the DAG remove the local cluster substrate and
+print the preserved-state boundary.
 
 Machine identity (`/etc/machine-id`) is propagated as prerequisite `Result` data
 and is the only source-of-truth for derived `prodbox-<machine-id>` metadata used

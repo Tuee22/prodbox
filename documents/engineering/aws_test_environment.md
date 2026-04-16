@@ -513,8 +513,10 @@ surface:
    substitute for the project's supported teardown path
 
 For `prodbox`, the supported cleanup model is stricter: Route 53-only tests use per-test hosted
-zone teardown, and the multi-resource AWS HA test stack is created and destroyed only through
-`prodbox pulumi test-resources` and `prodbox pulumi test-destroy --yes`.
+zone teardown, the AWS EKS test stack is created and destroyed only through
+`prodbox pulumi eks-resources` and `prodbox pulumi eks-destroy --yes`, and the multi-resource AWS
+HA test stack is created and destroyed only through `prodbox pulumi test-resources` and
+`prodbox pulumi test-destroy --yes`.
 
 ---
 
@@ -562,7 +564,10 @@ Project-specific documents may add stricter rules for their own harnesses, CLI t
 For `prodbox`:
 
 1. host-side AWS CLI credential-source restrictions and AWS suite ownership are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
-2. the supported remote AWS stack is exactly three Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones, backed by Pulumi state stored in the local-cluster MinIO bucket `prodbox-test-pulumi-backends`
+2. the supported remote AWS stacks are one ephemeral Pulumi-managed EKS cluster plus exactly three
+   Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones for the HA RKE2 path,
+   both backed by Pulumi state stored in the local-cluster MinIO bucket
+   `prodbox-test-pulumi-backends`
 3. general pytest fixture ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 4. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
 

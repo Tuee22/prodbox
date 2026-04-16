@@ -62,9 +62,9 @@ The interpreter is the impurity boundary. Pure code produces effect data structu
 Stateful AWS-mutating integration tests must follow
 [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) instead of
 reusing existing AWS resources. In the supported architecture that means per-test Route 53 hosted
-zone fixtures for `dns-aws`, Pulumi-owned AWS stack lifecycle for `pulumi` and `ha-rke2-aws`,
-setup rollback before yield where fixtures allocate resources directly, and aggregate postflight
-destroy through the supported `prodbox test all` flow.
+zone fixtures for `dns-aws`, Pulumi-owned AWS stack lifecycle for `aws-eks`, `pulumi`, and
+`ha-rke2-aws`, setup rollback before yield where fixtures allocate resources directly, and
+aggregate postflight destroy through the supported `prodbox test all` flow.
 
 ### Integration Execution Policy (Fail-Fast)
 
@@ -104,6 +104,7 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
 4. External public-host suites such as `charts-vscode` and `public-dns` may run with an empty prerequisite gate and no cluster runbook.
 5. Aggregate suites (`prodbox test integration all` and `prodbox test all`) use an explicit
    canonical file order so public-host proof runs before cluster-backed teardown suites,
+   `test_aws_eks.py` runs after Route 53-only AWS validation and before `test_pulumi_real.py`,
    `test_charts_platform.py` runs before `test_charts_storage.py` to clear shared singleton
    release names, and the lifecycle cleanup suite remains last.
 6. Aggregate suites never delete and redeploy the live public host as part of Phase 1.5. They
@@ -111,8 +112,9 @@ If Phase 1 fails, pytest is not started. This is an all-or-nothing gate, not a s
    Phase 2 pytest starts.
 7. Aggregate suites restore the supported runtime after the destructive pytest tail by running
    `prodbox pulumi refresh`, `prodbox pulumi up --yes`, `prodbox charts deploy gateway`,
-   `prodbox charts deploy vscode`, and `prodbox pulumi test-destroy --yes`, then wait for
-   `prodbox host public-edge` to return `CLASSIFICATION=ready-for-external-proof` before exit.
+   `prodbox charts deploy vscode`, `prodbox pulumi eks-destroy --yes`, and
+   `prodbox pulumi test-destroy --yes`, then wait for `prodbox host public-edge` to return
+   `CLASSIFICATION=ready-for-external-proof` before exit.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

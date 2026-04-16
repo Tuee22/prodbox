@@ -20,6 +20,9 @@ end state.
   delivery, then to cleanup, public-host proof, and final rerun.
 - A reader unfamiliar with the repository should be able to follow the plan from top to bottom
   without reconstructing hidden dependencies from multiple documents.
+- If a previously closed phase reopens because the repository end state expands later, the top
+  level docs must say exactly which earlier phase reopened, which later phases remain closed on
+  their owned surfaces, and why the overall handoff is still incomplete.
 
 ### B. Detailed, Implementation-Oriented Content
 
@@ -49,6 +52,9 @@ Status must describe reality, not intent.
 - `Active` requires a `Remaining Work` section.
 - `Blocked` requires a `Blocked by` line.
 - `Planned` means dependencies are already satisfied; it must not list unmet blockers.
+- Status is always scoped to the sprint or phase-owned surface. A later phase may remain `Done`
+  when an earlier phase reopens, but the reopened dependency must be called out explicitly in
+  `README.md` and `00-overview.md`.
 
 ### D. Declarative Plan Language
 
@@ -75,6 +81,7 @@ DEVELOPMENT_PLAN/
 ├── phase-4-lifecycle-canonical-paths.md
 ├── phase-5-public-host-validation.md
 ├── phase-6-clean-room-handoff.md
+├── phase-7-aws-iam-quota-automation.md
 ├── legacy-tracking-for-deletion.md
 └── system-components.md
 ```
@@ -156,6 +163,8 @@ surfaces, and stale tooling residue that still need removal.
   in the ledger.
 - Each ledger item must name its location, why it is slated for removal, and the sprint that owns
   the cleanup.
+- If the supported replacement is done but the old helper still survives as a migration shim, the
+  replacement may stay in `Completed` while the surviving helper remains in `Pending Removal`.
 - When the cleanup lands, move the item from `Pending Removal` to `Completed`.
 - Phase docs should reference the owning sprint, not duplicate the full cleanup ledger.
 

@@ -8,12 +8,12 @@ import click
 
 from prodbox.cli.command_adt import (
     config_compile_command,
-    config_init_command,
     config_show_command,
     config_validate_command,
 )
 from prodbox.cli.command_executor import execute_command, render_error_and_return_exit_code
 from prodbox.cli.types import Failure, Success
+from prodbox.lib.aws_admin import interactive_config_setup_command
 
 
 @click.group(no_args_is_help=True)
@@ -22,20 +22,6 @@ def config() -> None:
 
     Manage the Dhall-sourced prodbox configuration file.
     """
-
-
-@config.command(name="init")
-def init_config() -> None:
-    """Bootstrap prodbox-config.dhall from existing .env and system state.
-
-    Generates a Dhall config file, compiles it to JSON, and validates the result.
-    This is the last time .env values are used.
-    """
-    match config_init_command():
-        case Success(cmd):
-            sys.exit(execute_command(cmd))
-        case Failure(error):
-            sys.exit(render_error_and_return_exit_code(error, effect_id="config_init"))
 
 
 @config.command(name="compile")
@@ -49,6 +35,16 @@ def compile_config() -> None:
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="config_compile"))
+
+
+@config.command(name="setup")
+def setup_config() -> None:
+    """Interactively generate a complete Dhall config and operational IAM user."""
+    match interactive_config_setup_command():
+        case Success(cmd):
+            sys.exit(execute_command(cmd))
+        case Failure(error):
+            sys.exit(render_error_and_return_exit_code(error, effect_id="config_setup"))
 
 
 @config.command()

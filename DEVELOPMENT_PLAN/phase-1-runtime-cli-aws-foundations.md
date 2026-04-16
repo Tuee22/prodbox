@@ -13,8 +13,11 @@
 This phase establishes one explicit CLI surface, one named test-command surface, one
 supported-host gate, one host-owned local RKE2 install/delete lifecycle, one repository-root AWS
 auth and config source, one local-cluster-first MinIO backend for Pulumi test state, and one
-authoritative AWS validation baseline that closes only when `prodbox` can deploy RKE2 in HA mode
-over SSH onto three separate-AZ `Ubuntu 24.04 LTS` EC2 instances.
+authoritative AWS validation baseline that closes only when `prodbox` supports both intended
+AWS-backed cluster validation patterns: an EKS-backed path and an HA RKE2 path over SSH onto
+three separate-AZ `Ubuntu 24.04 LTS` EC2 instances. Both paths are now implemented in the
+worktree and validated on the supported baseline, including the April 15, 2026 destructive rerun
+from `prodbox rke2 delete --yes`, a pruned Docker baseline, and a removed `.data/` root.
 
 ## Sprint 1.1: Runtime, CLI, and Test-Command Foundations ✅
 
@@ -132,16 +135,15 @@ None.
 
 ### Objective
 
-Expand the AWS-backed validation path from local-only or EKS-oriented proof to `prodbox`-owned
-RKE2 HA deployment over SSH against three Pulumi-managed `Ubuntu 24.04 LTS` EC2 instances in
-separate availability zones.
+Add the HA RKE2 AWS deployment and validation path alongside the intended EKS-backed path instead
+of treating it as a replacement.
 
 ### Deliverables
 
 - Pulumi provisions exactly three `Ubuntu 24.04 LTS` EC2 instances in separate AZs, plus the VPC,
   subnet, security-group, IAM, and Route 53 prerequisites needed for the supported test stack.
-- `prodbox` owns the SSH-driven HA RKE2 bootstrap and join sequence across those three nodes;
-  EKS is no longer the supported AWS cluster validation surface.
+- `prodbox` owns the SSH-driven HA RKE2 bootstrap and join sequence across those three nodes as
+  one AWS-backed cluster validation pattern.
 - The host machine running the tests boots the local RKE2 cluster first, runs MinIO there, and
   provides the Pulumi backend before any remote AWS test resources are created.
 - The Pulumi backend uses one dedicated MinIO bucket named `prodbox-test-pulumi-backends` so test
@@ -171,6 +173,73 @@ separate availability zones.
 - The same HA-over-SSH proof executed by `poetry run prodbox test integration ha-rke2-aws` passed inside the canonical `poetry run prodbox test all` rerun on April 14, 2026 as `tests/integration/test_ha_rke2_aws.py::test_ha_rke2_bootstrap_succeeds_on_three_pulumi_managed_nodes`.
 - `poetry run prodbox pulumi test-destroy --yes` passed on April 14, 2026 and verified no AWS residue plus an empty backend bucket `prodbox-test-pulumi-backends`.
 - `poetry run prodbox rke2 delete --yes` passed again on April 14, 2026 and auto-ran the shared Pulumi destroy path before local backend teardown.
+- These validations closed the HA RKE2 branch first; Sprint 1.5 later added the companion
+  EKS-backed `prodbox` command surface and closed the full dual-path posture on April 15, 2026.
+
+### Remaining Work
+
+None.
+
+## Sprint 1.5: EKS-Backed AWS Deployment and Validation Path ✅
+
+**Status**: Done
+**Implementation**: `src/prodbox/cli/pulumi_cmd.py`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/infra/aws_eks_test_stack_program.py`, `src/prodbox/lib/aws_eks_test_stack.py`, `pulumi/aws-eks/`, `src/prodbox/cli/test_cmd.py`, `tests/integration/test_aws_eks.py`, `tests/unit/test_aws_eks_test_stack.py`, `tests/unit/test_aws_eks_test_stack_program.py`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Close the intended EKS-backed AWS deployment and validation path so `prodbox` supports both EKS
+and HA RKE2 for AWS-backed cluster validation.
+
+### Deliverables
+
+- `prodbox` exposes the named EKS-backed AWS cluster lifecycle surfaces
+  `prodbox pulumi eks-resources` and `prodbox pulumi eks-destroy --yes` under the supported CLI.
+- The AWS validation posture becomes explicitly dual-path: one EKS-backed path and one HA RKE2
+  path. Neither path is treated as a replacement for the other.
+- The EKS path uses the same repository-root Dhall auth source, local-cluster-first Pulumi
+  backend, and explicit cleanup doctrine as the HA RKE2 path.
+- A named integration suite, `poetry run prodbox test integration aws-eks`, proves the EKS-backed
+  path end to end and becomes part of the governed test-command surface.
+- `prodbox rke2 delete --yes` now destroys the EKS stack before the HA RKE2 stack so the shared
+  local MinIO backend can be torn down without leaving Pulumi-managed AWS residue behind.
+
+### Validation
+
+1. `poetry run prodbox check-code`
+2. `poetry run prodbox test unit`
+3. `poetry run prodbox test integration aws-eks`
+4. The canonical EKS provision and destroy surfaces under `prodbox` succeed from a clean backend
+   baseline.
+
+### Current Validation State
+
+- `src/prodbox/cli/pulumi_cmd.py` now exposes `prodbox pulumi eks-resources` and
+  `prodbox pulumi eks-destroy --yes`, each guarded by the same operational-credential harness as
+  the existing HA RKE2 stack surfaces.
+- `src/prodbox/infra/aws_eks_test_stack_program.py` now provisions the dedicated Pulumi-managed
+  EKS validation stack: one VPC, two public subnets across two AZs, one EKS control plane, one
+  managed node group, and the required IAM roles and policy attachments.
+- `src/prodbox/lib/aws_eks_test_stack.py` now owns EKS stack snapshot persistence, cluster
+  validation, residue checks, and idempotent destroy semantics against the shared backend bucket
+  `prodbox-test-pulumi-backends`.
+- `src/prodbox/cli/test_cmd.py` now exposes the named `aws-eks` suite and includes
+  `tests/integration/test_aws_eks.py` in the canonical aggregate ordering before the existing HA
+  stack proofs.
+- `src/prodbox/cli/dag_builders.py` now prepends `pulumi eks-destroy --yes` before
+  `pulumi test-destroy --yes` during `prodbox rke2 delete --yes`.
+- `poetry run prodbox check-code` passed on April 15, 2026 after the final
+  status-documentation refresh.
+- `poetry run prodbox test unit` passed on April 15, 2026 (`1075 passed`) with the EKS command
+  ADTs, DAGs, helpers, CLI surface, Pulumi program, and policy-repair flow covered.
+- `poetry run prodbox pulumi eks-resources`, `poetry run prodbox test integration aws-eks`, and
+  `poetry run prodbox pulumi eks-destroy --yes` passed on April 15, 2026; the named EKS suite
+  `tests/integration/test_aws_eks.py` passed (`1 passed` in `22m 03s`).
+- The April 15, 2026 destructive rerun from `poetry run prodbox rke2 delete --yes`,
+  `docker system prune -af --volumes`, `sudo rm -rf .data`, and `poetry run prodbox test all`
+  passed in `1h 49m 7s`, included `tests/integration/test_aws_eks.py`, restored the supported
+  runtime to `CLASSIFICATION=ready-for-external-proof`, and auto-destroyed both `aws-eks-test`
+  and `aws-test` with no residue.
 
 ### Remaining Work
 

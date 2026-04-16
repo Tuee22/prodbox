@@ -1,0 +1,7 @@
+name: prodbox-aws-eks-test
+runtime:
+  name: python
+  options:
+    virtualenv: ../../.venv
+main: .
+description: Pulumi-managed AWS test stack for EKS-backed validation

@@ -3,7 +3,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md), [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md)
+**Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md), [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md), [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
 
 > **Purpose**: Track every known compatibility helper, duplicate surface, deprecated path, and
 > stale tooling residue that still needs removal outside the declarative phase narrative.
@@ -19,8 +19,14 @@ None.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
-| EKS-based AWS integration validation surface | Sprint 1.4 | `tests/integration/test_aws_eks_real.py` is deleted; the supported AWS validation path is now the Pulumi-managed three-node EC2 stack plus `prodbox test integration ha-rke2-aws` |
-| Tag-based AWS fixture cleanup contract | Sprint 4.15 | The supported architecture now uses fixture-owned Route 53 teardown for `dns-aws` plus Pulumi-owned lifecycle for the multi-resource AWS stack; `aws_fixture_audit.py` is deleted |
+| Public `.env` migration shim `prodbox config init` | Sprint 6.5 | Removed from the public CLI and supporting docs; `prodbox config setup` plus `prodbox config compile` are the only supported config-authoring surfaces |
+| Legacy `/var/lib/prodbox/storage` cleanup helper | Sprint 6.5 | Removed from `rke2 delete`; full cluster delete now preserves only the configured manual PV root plus `.prodbox-state/` |
+| Stale `.env` AWS credential fix hint | Sprint 6.5 | Removed from the interpreter; operator guidance now points only to `prodbox config setup` or `prodbox aws setup` |
+| Manual IAM user creation and ad-hoc permission assignment | Sprint 7.3 | The supported operator path is now `prodbox aws setup` with one consolidated inline policy and deterministic Dhall credential injection |
+| Manual AWS credential editing in `prodbox-config.dhall` as the supported credential path | Sprint 7.2 | The supported onboarding and credential-management flows are now `prodbox config setup` and `prodbox aws setup`; manual edits remain possible but are no longer the governed operator path |
+| `.env`-based `prodbox config init` as the primary onboarding path | Sprint 7.2 | `config setup` is now the supported onboarding surface, and the surviving public migration shim was removed in Sprint 6.5 |
+| Janitor-coupled `tests/integration/test_aws_eks_real.py` harness | Sprint 1.4 | The old EKS real-system test harness was removed with the obsolete cleanup model; Sprint 1.5 later closed the supported EKS-backed architecture through named `prodbox` create/destroy surfaces |
+| Tag-based AWS fixture cleanup contract | Sprint 4.15 | The supported architecture now uses fixture-owned Route 53 teardown for `dns-aws` plus Pulumi-owned lifecycle for the multi-resource AWS stack; no standalone final AWS audit helper remains |
 | Pulumi test-state backend that is not the local-cluster MinIO bucket `prodbox-test-pulumi-backends` | Sprint 4.15 | `src/prodbox/lib/aws_test_stack.py` and `src/prodbox/infra/aws_test_stack_program.py` now harden the dedicated local MinIO backend bucket as the only supported AWS test-stack state location |
 | Manual AWS test-stack teardown that is not invoked by `prodbox rke2 delete --yes` | Sprint 4.15 | `src/prodbox/cli/dag_builders.py` prepends the shared `prodbox pulumi test-destroy --yes` path during `rke2 delete --yes` before local backend teardown |
 | Competing implementation-status narratives in doctrine docs | Sprint 0.1 | `documents/` now defer status and blocker tracking to the development plan |
@@ -80,19 +86,20 @@ None.
 | `_render_gateway_systemd_unit()` helper | Sprint 4.12 | Removed from `src/prodbox/cli/dag_builders.py`; no host systemd unit is rendered by prodbox |
 | Host-supervisor and `install-service` language in `documents/engineering/distributed_gateway_architecture.md` and `documents/engineering/cli_command_surface.md` | Sprint 4.12 | Doctrine docs now describe the in-cluster `prodbox charts deploy gateway` workload as the canonical steady state |
 | `prodbox-gateway.service` host systemd unit | Sprint 4.12 | `systemctl disable --now prodbox-gateway.service` and `rm /etc/systemd/system/prodbox-gateway.service` executed on `bathurst` on 2026-04-10 after the in-cluster gateway was observed converging on `node-a` and continuing to keep `vscode.resolvefintech.com` current in Route 53. Before/after evidence captured in `/tmp/prodbox-gateway-before.log`, `/tmp/prodbox-gateway-pre-removal.log`, and `/tmp/prodbox-gateway-after.log`. |
-| Session-scoped AWS pre-test sweep as the only stale-resource preflight | Sprint 4.13 | Per-test cleanup and tagging became explicit; the session sweep and standalone janitor surfaces are now tracked as separate pending-removal items owned by Sprint 4.13 |
-| Fixture setup paths that can create partially tagged or untagged AWS resources before fixture yield | Sprint 4.13 | Shared helpers now tag Route 53, S3, VPC, subnet, security-group, EKS, and IAM resources and roll back partial setup before yield |
-| Expired EKS janitor flow that depends on post-delete cluster metadata | Sprint 4.13 | The shared cleanup contract captures scope metadata before cluster deletion and can clean IAM/VPC resources without rereading deleted cluster state |
+| Session-scoped AWS pre-test sweep as the only stale-resource preflight | Sprint 4.13 | Removed from the supported architecture; AWS cleanup now starts inside the owning Route 53 fixture or Pulumi lifecycle flow instead of a session-level janitor pass |
+| Fixture setup paths that can create partially tagged or untagged AWS resources before fixture yield | Sprint 4.13 | Removed with the tag-based cleanup harness; the surviving Route 53 helper creates and deletes one fresh hosted zone per test, and the EC2-backed AWS stack is owned by Pulumi |
+| Expired EKS janitor flow that depends on post-delete cluster metadata | Sprint 4.13 | Removed with the janitor harness; any future EKS-backed validation path must close through named `prodbox` create/destroy surfaces rather than post-delete metadata coupling |
 | Session-scoped AWS pre-test sweep fixture | Sprint 4.13 | Removed from `tests/integration/conftest.py`; AWS cleanup now starts inside each owning test harness |
 | Scope-scoped AWS preflight cleanup that can leave unrelated tagged test resources behind | Sprint 4.13 | `create_clean_fixture_scope()` now sweeps all tagged fixture-owned AWS resources before setup, not only scope-matching resources |
-| Standalone `prodbox aws sweep-fixtures` CLI and `tests.integration.sweep_runner` | Sprint 4.13 | Deleted; aggregate zero-residue proof now uses `src/prodbox/lib/aws_fixture_audit.py` inside the supported test flow |
+| Standalone `prodbox aws sweep-fixtures` CLI and `tests.integration.sweep_runner` | Sprint 4.13 | Deleted; no standalone AWS janitor surface remains, and aggregate zero-residue closure now relies on the explicit `prodbox pulumi test-destroy --yes` postflight in `src/prodbox/cli/test_cmd.py` |
 | Host cron entry that runs `prodbox aws sweep-fixtures` | Sprint 4.13 | Removed from the supported host crontab on April 12, 2026; no host-side background cleanup worker remains |
 | `prodbox rke2 ensure|cleanup` as the canonical lifecycle surface | Sprint 4.14 | Full `install|delete` semantics are canonical; delete preserves the configured manual PV host root plus `.prodbox-state/` |
 | Surviving non-`manual` StorageClasses after cluster install | Sprint 4.14 | `prodbox rke2 install` recreates the cluster-scoped `manual` StorageClass and deletes every other StorageClass |
 | Aggregate-suite clean-cluster bootstrap that gated on `prodbox host public-edge` before Pulumi-managed edge restore | Sprint 6.2 | `poetry run prodbox test all` now restores the Pulumi-managed edge, redeploys gateway plus `vscode`, and reaches `CLASSIFICATION=ready-for-external-proof` from a cleaned cluster |
 | Stale public-edge residue after clean-cluster teardown | Sprint 6.2 | Verified closed on April 12, 2026 by an empty `crontab -l`, no `/etc/hosts` override for `vscode.resolvefintech.com`, a passing `prodbox host public-edge`, and a passing `prodbox test integration public-dns` |
-| Final handoff claim that lacks a post-aggregate zero-AWS-residue proof through the supported test flow | Sprint 6.2 | Closed by the April 12, 2026 clean-cluster rerun from missing `prodbox-config.json`; `poetry run prodbox test all` now performs the final AWS inventory audit without a standalone janitor |
+| Final handoff claim that lacks a post-aggregate zero-AWS-residue proof through the supported test flow | Sprint 6.2 | Closed by the April 12, 2026 clean-cluster rerun from missing `prodbox-config.json`; `poetry run prodbox test all` now reaches explicit zero-residue closure through the supported-runtime postflight, including `prodbox pulumi test-destroy --yes`, without a standalone janitor |
 
 ## Related Documents
 
 - [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
+- [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)

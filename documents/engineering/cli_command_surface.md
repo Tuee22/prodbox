@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define the explicit, no-passthrough Click command surface for `prodbox`.
 
@@ -36,6 +36,7 @@ Top-level commands:
 
 | Command | Kind | Purpose |
 |---------|------|---------|
+| `aws` | Group | IAM policy, IAM user lifecycle, and service quota management |
 | `config` | Group | Dhall configuration management |
 | `host` | Group | Host prerequisite checks |
 | `rke2` | Group | Local cluster lifecycle |
@@ -56,10 +57,20 @@ Top-level commands:
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox config init` | none | none |
 | `prodbox config compile` | none | none |
+| `prodbox config setup` | none | none |
 | `prodbox config show` | none | `--show-secrets` |
 | `prodbox config validate` | none | none |
+
+### `prodbox aws`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox aws policy` | none | `--tier` |
+| `prodbox aws setup` | none | `--tier` |
+| `prodbox aws teardown` | none | none |
+| `prodbox aws check-quotas` | none | none |
+| `prodbox aws request-quotas` | none | `--tier` |
 
 ### `prodbox host`
 
@@ -92,6 +103,8 @@ Top-level commands:
 | `prodbox pulumi preview` | none | none |
 | `prodbox pulumi refresh` | none | none |
 | `prodbox pulumi stack-init` | `STACK` | none |
+| `prodbox pulumi eks-resources` | none | none |
+| `prodbox pulumi eks-destroy` | none | `--yes`, `-y` |
 | `prodbox pulumi test-resources` | none | none |
 | `prodbox pulumi test-destroy` | none | `--yes`, `-y` |
 
@@ -150,7 +163,9 @@ Named suite commands:
 | `prodbox test unit` | `tests/unit` |
 | `prodbox test integration all` | `tests/integration` |
 | `prodbox test integration cli` | `tests/integration/test_cli_commands.py` |
+| `prodbox test integration aws-iam` | `tests/integration/test_aws_iam_lifecycle.py` |
 | `prodbox test integration dns-aws` | `tests/integration/test_dns_route53_aws.py` |
+| `prodbox test integration aws-eks` | `tests/integration/test_aws_eks.py` |
 | `prodbox test integration env` | `tests/integration/test_cli_env.py` |
 | `prodbox test integration gateway-daemon` | `tests/integration/test_gateway_daemon_k8s.py` |
 | `prodbox test integration gateway-pods` | `tests/integration/test_gateway_k8s_pods.py` |
@@ -167,15 +182,19 @@ Aggregate suite commands use a deterministic file order rather than raw
 directory collection. `prodbox test all` runs `tests/unit` first and then the
 canonical integration list. `prodbox test integration all` runs the external
 public-host proof suites before cluster-backed suites that intentionally tear
-down shared runtime, runs `test_charts_platform.py` before
+down shared runtime, runs the AWS IAM lifecycle suite after Route 53-only AWS
+validation but before Pulumi-backed stack validation because it needs AWS CLI +
+Dhall tooling without the cluster runbook, runs `test_aws_eks.py` before
+`test_pulumi_real.py` so the EKS and HA RKE2 paths are both proven against the
+same restored backend posture, runs `test_charts_platform.py` before
 `test_charts_storage.py` so the full-stack chart suite clears shared singleton
 release names before the storage-only suite, keeps the lifecycle cleanup suite
 last, fails in Phase 1.5 unless `prodbox host public-edge` reports
 `CLASSIFICATION=ready-for-external-proof`, and restores the supported runtime
 with `prodbox pulumi refresh`, `prodbox pulumi up --yes`,
 `prodbox charts deploy gateway`, `prodbox charts deploy vscode`, a final
-public-edge readiness check, and `prodbox pulumi test-destroy --yes` before
-exit.
+public-edge readiness check, `prodbox pulumi eks-destroy --yes`, and
+`prodbox pulumi test-destroy --yes` before exit.
 
 `prodbox test integration charts-vscode` validates public HTTPS/TLS/auth-wall behavior only.
 It does not run cluster prerequisite gates or the `rke2 install` runbook.

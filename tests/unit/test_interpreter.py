@@ -1680,8 +1680,8 @@ class TestEffectInterpreterAWS:
         assert interpreter.environment_errors[0].tool == "aws"
 
     @pytest.mark.asyncio
-    async def test_validate_aws_credentials_uses_dotenv_auth_over_ambient_env(self) -> None:
-        """ValidateAWSCredentials should use explicit `.env` auth, not ambient env."""
+    async def test_validate_aws_credentials_uses_settings_auth_over_ambient_env(self) -> None:
+        """ValidateAWSCredentials should use explicit settings auth, not ambient env."""
         import os
         import sys
 
@@ -3277,6 +3277,56 @@ class TestHarborRegistryEffects:
             "deployment/harbor-registry",
             "deployment/harbor-nginx",
         )
+        login_call = mock_subprocess.await_args_list[3]
+        assert login_call.args[0][:3] == ("docker", "login", "127.0.0.1:30080")
+
+    @pytest.mark.asyncio
+    async def test_vscode_nginx_push_reauthenticates_after_unauthorized(self) -> None:
+        """Harbor image ensure should re-login and retry once when the first push is unauthorized."""
+        interpreter = EffectInterpreter()
+        effect = self._harbor_effect()
+        with (
+            patch(
+                "prodbox.cli.interpreter._run_subprocess",
+                new=AsyncMock(
+                    side_effect=(
+                        ProcessOutput(
+                            returncode=1,
+                            stdout=b"",
+                            stderr=b"manifest unknown",
+                        ),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(
+                            returncode=1,
+                            stdout=b"",
+                            stderr=b"unauthorized: unauthorized to access repository",
+                        ),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                        ProcessOutput(returncode=0, stdout=b"", stderr=b""),
+                    )
+                ),
+            ) as mock_subprocess,
+            patch.object(
+                interpreter,
+                "_ensure_harbor_project",
+                new=AsyncMock(return_value=None),
+            ) as ensure_project,
+            patch("prodbox.cli.interpreter.asyncio.sleep", new=AsyncMock()) as sleep_mock,
+        ):
+            image_ref, error = await interpreter._ensure_vscode_nginx_image(
+                effect=effect,
+                registry_endpoint=effect.registry_endpoint,
+            )
+
+        assert error is None
+        assert image_ref == "127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest"
+        ensure_project.assert_awaited_once_with(
+            registry_endpoint="127.0.0.1:30080",
+            admin_user="admin",
+            admin_password="Harbor12345",
+            project_name="prodbox",
+        )
+        sleep_mock.assert_awaited_once_with(2.0)
         login_call = mock_subprocess.await_args_list[3]
         assert login_call.args[0][:3] == ("docker", "login", "127.0.0.1:30080")
 

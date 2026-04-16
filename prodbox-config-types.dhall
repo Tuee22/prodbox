@@ -13,6 +13,12 @@
         , session_token : Optional Text
         , region : Text
         }
+    , aws_admin :
+        { access_key_id : Text
+        , secret_access_key : Text
+        , session_token : Optional Text
+        , region : Text
+        }
     , route53 : { zone_id : Text }
     , domain :
         { demo_fqdn : Text
@@ -40,6 +46,12 @@
         , secret_access_key = ""
         , session_token = None Text
         , region = "us-east-1"
+        }
+    , aws_admin =
+        { access_key_id = ""
+        , secret_access_key = ""
+        , session_token = None Text
+        , region = ""
         }
     , route53 = { zone_id = "" }
     , domain =

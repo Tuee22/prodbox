@@ -1693,7 +1693,7 @@ class EffectInterpreter:
                 EnvironmentError(
                     tool="aws",
                     message=f"Invalid AWS credentials: {e}",
-                    fix_hint="Define AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY in .env",
+                    fix_hint="Populate aws.* credentials through prodbox config setup or prodbox aws setup",
                     source_effect_id=effect.effect_id,
                 )
             )
@@ -2603,6 +2603,99 @@ class EffectInterpreter:
         except Exception as error:
             return f"Failed Harbor API call for project '{project_name}': {error}"
 
+    async def _docker_login_to_harbor(
+        self,
+        *,
+        registry_endpoint: str,
+        admin_user: str,
+        admin_password: str,
+    ) -> str | None:
+        """Authenticate the local Docker client against Harbor."""
+        login_output = await _run_subprocess(
+            (
+                "docker",
+                "login",
+                registry_endpoint,
+                "--username",
+                admin_user,
+                "--password",
+                admin_password,
+            ),
+            timeout=60.0,
+        )
+        if login_output.returncode != 0:
+            return f"Docker login to Harbor failed: {self._stderr_or_stdout_text(login_output)}"
+        return None
+
+    @staticmethod
+    def _project_name_from_registry_image_ref(
+        *,
+        registry_endpoint: str,
+        image_ref: str,
+    ) -> str | None:
+        """Extract the Harbor project name from one registry image ref."""
+        prefix = f"{registry_endpoint}/"
+        if not image_ref.startswith(prefix):
+            return None
+        remainder = image_ref.removeprefix(prefix)
+        project_name, separator, _ = remainder.partition("/")
+        if separator == "" or project_name == "":
+            return None
+        return project_name
+
+    async def _push_harbor_image_with_retry(
+        self,
+        *,
+        registry_endpoint: str,
+        admin_user: str,
+        admin_password: str,
+        image_ref: str,
+        timeout_seconds: float,
+    ) -> str | None:
+        """Push one Harbor image, retrying once after re-authentication on authorization errors."""
+        push_output = await _run_subprocess(
+            ("docker", "push", image_ref),
+            timeout=timeout_seconds,
+        )
+        if push_output.returncode == 0:
+            return None
+
+        push_error = self._stderr_or_stdout_text(push_output)
+        lowered_error = push_error.lower()
+        if "unauthorized" not in lowered_error and "denied" not in lowered_error:
+            return push_error
+
+        login_error = await self._docker_login_to_harbor(
+            registry_endpoint=registry_endpoint,
+            admin_user=admin_user,
+            admin_password=admin_password,
+        )
+        if login_error is not None:
+            return f"{push_error}; {login_error}"
+
+        project_name = self._project_name_from_registry_image_ref(
+            registry_endpoint=registry_endpoint,
+            image_ref=image_ref,
+        )
+        if project_name is not None:
+            project_error = await self._ensure_harbor_project(
+                registry_endpoint=registry_endpoint,
+                admin_user=admin_user,
+                admin_password=admin_password,
+                project_name=project_name,
+            )
+            if project_error is not None:
+                return f"{push_error}; {project_error}"
+
+        await asyncio.sleep(2.0)
+        retry_output = await _run_subprocess(
+            ("docker", "push", image_ref),
+            timeout=timeout_seconds,
+        )
+        if retry_output.returncode == 0:
+            return None
+        return self._stderr_or_stdout_text(retry_output)
+
     @staticmethod
     def _normalize_dockerhub_image_ref(image: str) -> str | None:
         """Normalize container image ref to docker.io form for mirroring."""
@@ -2672,6 +2765,8 @@ class EffectInterpreter:
         *,
         registry_endpoint: str,
         mirror_project: str,
+        admin_user: str,
+        admin_password: str,
     ) -> tuple[str, ...]:
         """Mirror docker.io images currently referenced by cluster pods into Harbor."""
         images, images_error = await self._collect_cluster_container_images()
@@ -2722,14 +2817,15 @@ class EffectInterpreter:
                 )
                 continue
 
-            push_output = await _run_subprocess(
-                ("docker", "push", target),
-                timeout=300.0,
+            push_error = await self._push_harbor_image_with_retry(
+                registry_endpoint=registry_endpoint,
+                admin_user=admin_user,
+                admin_password=admin_password,
+                image_ref=target,
+                timeout_seconds=300.0,
             )
-            if push_output.returncode != 0:
-                errors.append(
-                    f"docker push {target} failed: {self._stderr_or_stdout_text(push_output)}"
-                )
+            if push_error is not None:
+                errors.append(f"docker push {target} failed: {push_error}")
         return tuple(errors)
 
     async def _ensure_gateway_image(
@@ -2775,12 +2871,15 @@ class EffectInterpreter:
             if build_output.returncode != 0:
                 return None, f"docker build failed: {self._stderr_or_stdout_text(build_output)}"
 
-            push_output = await _run_subprocess(
-                ("docker", "push", gateway_image),
-                timeout=600.0,
+            push_error = await self._push_harbor_image_with_retry(
+                registry_endpoint=registry_endpoint,
+                admin_user=effect.admin_user,
+                admin_password=effect.admin_password,
+                image_ref=gateway_image,
+                timeout_seconds=600.0,
             )
-            if push_output.returncode != 0:
-                return None, f"docker push failed: {self._stderr_or_stdout_text(push_output)}"
+            if push_error is not None:
+                return None, f"docker push failed: {push_error}"
 
         # Always publish/refresh the canonical :latest tag so the gateway chart
         # consumes the same image even when the prodbox-id tag was already in
@@ -2795,21 +2894,22 @@ class EffectInterpreter:
                 f"{self._stderr_or_stdout_text(tag_latest_output)}"
             )
 
-        push_latest_output = await _run_subprocess(
-            ("docker", "push", latest_image),
-            timeout=600.0,
+        push_latest_error = await self._push_harbor_image_with_retry(
+            registry_endpoint=registry_endpoint,
+            admin_user=effect.admin_user,
+            admin_password=effect.admin_password,
+            image_ref=latest_image,
+            timeout_seconds=600.0,
         )
-        if push_latest_output.returncode != 0:
-            return None, (
-                f"docker push {latest_image} failed: "
-                f"{self._stderr_or_stdout_text(push_latest_output)}"
-            )
+        if push_latest_error is not None:
+            return None, f"docker push {latest_image} failed: {push_latest_error}"
 
         return gateway_image, None
 
     async def _ensure_vscode_nginx_image(
         self,
         *,
+        effect: EnsureHarborRegistry,
         registry_endpoint: str,
     ) -> tuple[str | None, str | None]:
         """Ensure the custom vscode-nginx OIDC image exists in Harbor."""
@@ -2843,14 +2943,15 @@ class EffectInterpreter:
                 "vscode-nginx docker build failed: " f"{self._stderr_or_stdout_text(build_output)}"
             )
 
-        push_output = await _run_subprocess(
-            ("docker", "push", image_ref),
-            timeout=600.0,
+        push_error = await self._push_harbor_image_with_retry(
+            registry_endpoint=registry_endpoint,
+            admin_user=effect.admin_user,
+            admin_password=effect.admin_password,
+            image_ref=image_ref,
+            timeout_seconds=600.0,
         )
-        if push_output.returncode != 0:
-            return None, (
-                "vscode-nginx docker push failed: " f"{self._stderr_or_stdout_text(push_output)}"
-            )
+        if push_error is not None:
+            return None, f"vscode-nginx docker push failed: {push_error}"
 
         return image_ref, None
 
@@ -3007,26 +3108,14 @@ class EffectInterpreter:
                     None,
                 )
 
-        login_output = await _run_subprocess(
-            (
-                "docker",
-                "login",
-                registry_endpoint,
-                "--username",
-                effect.admin_user,
-                "--password",
-                effect.admin_password,
-            ),
-            timeout=60.0,
+        login_error = await self._docker_login_to_harbor(
+            registry_endpoint=registry_endpoint,
+            admin_user=effect.admin_user,
+            admin_password=effect.admin_password,
         )
-        if login_output.returncode != 0:
+        if login_error is not None:
             self.failed_effects += 1
-            return (
-                self._create_error_summary(
-                    f"Docker login to Harbor failed: {self._stderr_or_stdout_text(login_output)}"
-                ),
-                None,
-            )
+            return self._create_error_summary(login_error), None
 
         gateway_project = effect.gateway_image_repository.split("/", maxsplit=1)[0]
         harbor_projects = (
@@ -3050,6 +3139,8 @@ class EffectInterpreter:
             mirror_errors = await self._mirror_cluster_images_once(
                 registry_endpoint=registry_endpoint,
                 mirror_project=effect.mirror_project,
+                admin_user=effect.admin_user,
+                admin_password=effect.admin_password,
             )
 
         gateway_image, gateway_error = await self._ensure_gateway_image(
@@ -3066,6 +3157,7 @@ class EffectInterpreter:
             )
 
         vscode_nginx_image, vscode_nginx_error = await self._ensure_vscode_nginx_image(
+            effect=effect,
             registry_endpoint=registry_endpoint,
         )
         if vscode_nginx_error is not None or vscode_nginx_image is None:

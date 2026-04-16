@@ -1,6 +1,7 @@
 """Type stubs for pulumi-aws.
 
-Provides typed interfaces for AWS provider and the EC2/IAM/Route 53 surfaces used in repo code.
+Provides typed interfaces for AWS provider and the EC2/IAM/EKS/Route 53 surfaces used in repo
+code.
 """
 
 from pulumi import InvokeOptions
@@ -32,6 +33,7 @@ def get_availability_zones(
 ) -> GetAvailabilityZonesResult: ...
 
 from pulumi_aws import ec2 as ec2
+from pulumi_aws import eks as eks
 from pulumi_aws import iam as iam
 from pulumi_aws import route53 as route53
 
@@ -39,6 +41,7 @@ __all__ = [
     "GetAvailabilityZonesResult",
     "Provider",
     "ec2",
+    "eks",
     "get_availability_zones",
     "iam",
     "route53",

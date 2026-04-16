@@ -17,6 +17,7 @@ from prodbox.cli.command_adt import (
 )
 from prodbox.cli.command_executor import execute_command, render_error_and_return_exit_code
 from prodbox.cli.types import Failure, Success
+from prodbox.lib.aws_admin import ensure_operational_aws_credentials_from_admin_harness
 
 
 @click.group(no_args_is_help=True)
@@ -110,6 +111,10 @@ def delete_rke2(yes: bool) -> None:
     """
     match rke2_delete_command(yes=yes):
         case Success(cmd):
+            try:
+                ensure_operational_aws_credentials_from_admin_harness()
+            except RuntimeError as error:
+                sys.exit(render_error_and_return_exit_code(str(error), effect_id="rke2_delete"))
             sys.exit(execute_command(cmd))
         case Failure(error):
             sys.exit(render_error_and_return_exit_code(error, effect_id="rke2_delete"))

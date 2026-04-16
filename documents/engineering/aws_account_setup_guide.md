@@ -1,0 +1,124 @@
+# AWS Account Setup Guide
+
+**Status**: Authoritative source
+**Supersedes**: N/A
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md
+
+> **Purpose**: Define the supported operator flow for creating or preparing an AWS account before
+> running `prodbox config setup`.
+
+---
+
+## 1. Supported Onboarding Goal
+
+The supported onboarding path is:
+
+```text
+poetry run prodbox config setup
+```
+
+That flow expects one AWS account, one accessible Route 53 hosted zone, and one temporary elevated
+credential set that exists only long enough for `prodbox` to create the dedicated operational IAM
+user.
+
+---
+
+## 2. Create Or Prepare The AWS Account
+
+If you do not already have an AWS account:
+
+1. Sign up at <https://aws.amazon.com>.
+2. Choose the Free Tier path during account creation.
+3. Add a payment method. AWS requires it even for Free Tier usage.
+4. Complete the identity-verification step.
+5. Keep the Basic support plan unless you intentionally need paid support.
+
+Free Tier context relevant to `prodbox`:
+
+1. EC2 includes up to 750 hours/month of `t2.micro` or `t3.micro` for the first 12 months.
+2. Route 53 is not fully free-tiered; hosted zones and queries are billed separately.
+3. S3 includes a limited free storage allowance, but `prodbox` does not depend on S3 for the
+   supported local-runtime path.
+
+---
+
+## 3. Create One Temporary Elevated Access Key
+
+`prodbox config setup` and `prodbox aws setup` need one elevated AWS credential set so they can:
+
+1. list AWS regions
+2. list Route 53 hosted zones
+3. create or refresh the dedicated `prodbox` IAM user
+4. attach the supported inline policy
+5. request baseline service quota increases when required
+
+The simplest supported operator workflow is:
+
+1. Preferred path: open AWS console -> IAM -> Users -> your temporary admin user ->
+   Security credentials -> Create access key.
+2. Root fallback only when intentionally using a break-glass path: account menu ->
+   Security credentials -> Access keys -> Create access key.
+3. Paste the access key ID and secret access key into the `prodbox` prompts; include the session
+   token too if AWS gave you one.
+4. Keep the key only long enough to finish `prodbox config setup`.
+5. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
+
+If your account or organization forbids root access keys, use a temporary admin IAM user instead.
+The repository contract is the same: the elevated key exists only for setup and teardown
+operations, not for steady-state `prodbox` runtime.
+
+---
+
+## 4. Create Or Confirm A Route 53 Hosted Zone
+
+Before running `prodbox config setup`, the account must already contain at least one public Route 53
+hosted zone.
+
+Minimum supported preparation:
+
+1. Register a domain or delegate an existing domain to Route 53.
+2. Create a public hosted zone for that domain.
+3. Confirm the hosted zone appears in the Route 53 console.
+4. Confirm the domain's authoritative nameservers match the Route 53 zone when public-host proof is
+   part of your target validation path.
+
+`prodbox config setup` selects from the live hosted-zone list returned by the AWS CLI. It does not
+create the hosted zone for you.
+
+---
+
+## 5. Run The Supported Setup Flow
+
+Once the account, hosted zone, and temporary elevated key are ready:
+
+```bash
+poetry run prodbox config setup
+```
+
+The wizard walks through:
+
+1. region selection from live AWS data
+2. hosted-zone selection from live AWS data
+3. FQDN and deployment defaults
+4. ACME provider selection
+5. dedicated IAM user creation
+6. `prodbox-config.dhall` write, compile, and validation
+
+---
+
+## 6. Post-Setup Cleanup
+
+After the wizard succeeds:
+
+1. delete the temporary elevated access key you used for setup
+2. keep the generated `aws.*` operational credentials in `prodbox-config.dhall`
+3. reserve `aws_admin.*` only for test-only or explicit administrative flows
+
+Normal `prodbox` runtime uses only the operational `aws.*` section.
+
+## Related Documents
+
+- [acme_provider_guide.md](./acme_provider_guide.md)
+- [aws_admin_credentials.md](./aws_admin_credentials.md)
+- [cli_command_surface.md](./cli_command_surface.md)
+- [../../DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md](../../DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md)

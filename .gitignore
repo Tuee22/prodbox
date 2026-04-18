@@ -25,6 +25,8 @@ wheels/
 venv/
 ENV/
 env/
+!test/integration/env/
+!test/integration/env/Main.hs
 
 # IDE
 .idea/
@@ -69,7 +71,7 @@ Pulumi.*.yaml.bak
 .env.local
 .env.*.local
 
-# Dhall config (contains secrets; never committed)
+# Dhall config and legacy local config artifacts (contain secrets; never committed)
 prodbox-config.dhall
 prodbox-config.json
 

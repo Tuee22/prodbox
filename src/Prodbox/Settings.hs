@@ -13,7 +13,6 @@ module Prodbox.Settings
       ValidatedSettings (..),
       defaultConfigFile,
       loadConfigFile,
-      materializeConfigJson,
       renderConfigDhall,
       renderSettingsDisplay,
       validateAndLoadSettings,
@@ -25,20 +24,6 @@ import Control.Exception
       displayException,
       try,
     )
-import Data.Aeson
-    ( Options,
-      ToJSON (toJSON),
-      defaultOptions,
-      genericToJSON,
-      omitNothingFields,
-    )
-import Data.Aeson.Encode.Pretty
-    ( Config (confIndent),
-      Indent (Spaces),
-      defConfig,
-      encodePretty',
-    )
-import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import qualified Data.Text as Text
 import Data.Text (Text)
@@ -49,11 +34,7 @@ import Prodbox.Repo
     ( ConfigPaths (..),
       canonicalConfigPaths,
     )
-import System.Directory
-    ( doesFileExist,
-      getModificationTime,
-      makeAbsolute,
-    )
+import System.Directory (makeAbsolute)
 import System.FilePath ((</>))
 
 data Credentials = Credentials
@@ -64,16 +45,10 @@ data Credentials = Credentials
     }
     deriving (Eq, Show, Generic, FromDhall)
 
-instance ToJSON Credentials where
-    toJSON = genericToJSON jsonOptions
-
 data Route53Section = Route53Section
     { zone_id :: Text
     }
     deriving (Eq, Show, Generic, FromDhall)
-
-instance ToJSON Route53Section where
-    toJSON = genericToJSON jsonOptions
 
 data DomainSection = DomainSection
     { demo_fqdn :: Text,
@@ -81,9 +56,6 @@ data DomainSection = DomainSection
       vscode_fqdn :: Maybe Text
     }
     deriving (Eq, Show, Generic, FromDhall)
-
-instance ToJSON DomainSection where
-    toJSON = genericToJSON jsonOptions
 
 data AcmeSection = AcmeSection
     { email :: Text,
@@ -93,9 +65,6 @@ data AcmeSection = AcmeSection
     }
     deriving (Eq, Show, Generic, FromDhall)
 
-instance ToJSON AcmeSection where
-    toJSON = genericToJSON jsonOptions
-
 data DeploymentSection = DeploymentSection
     { dev_mode :: Bool,
       bootstrap_public_ip_override :: Maybe Text,
@@ -103,16 +72,10 @@ data DeploymentSection = DeploymentSection
     }
     deriving (Eq, Show, Generic, FromDhall)
 
-instance ToJSON DeploymentSection where
-    toJSON = genericToJSON jsonOptions
-
 data StorageSection = StorageSection
     { manual_pv_host_root :: Text
     }
     deriving (Eq, Show, Generic, FromDhall)
-
-instance ToJSON StorageSection where
-    toJSON = genericToJSON jsonOptions
 
 data ConfigFile = ConfigFile
     { aws :: Credentials,
@@ -125,9 +88,6 @@ data ConfigFile = ConfigFile
     }
     deriving (Eq, Show, Generic, FromDhall)
 
-instance ToJSON ConfigFile where
-    toJSON = genericToJSON jsonOptions
-
 data ValidatedSettings = ValidatedSettings
     { validatedConfig :: ConfigFile,
       resolvedManualPvHostRoot :: FilePath
@@ -139,22 +99,7 @@ validateAndLoadSettings repoRoot = do
     configResult <- loadConfigFile repoRoot
     case configResult of
         Left err -> pure (Left err)
-        Right config -> do
-            validatedResult <- validateConfig repoRoot config
-            case validatedResult of
-                Left err -> pure (Left err)
-                Right settings -> do
-                    materializeResult <- ensureMaterializedConfigJson repoRoot config
-                    case materializeResult of
-                        Left err -> pure (Left err)
-                        Right () -> pure (Right settings)
-
-materializeConfigJson :: FilePath -> IO (Either String ())
-materializeConfigJson repoRoot = do
-    configResult <- loadConfigFile repoRoot
-    case configResult of
-        Left err -> pure (Left err)
-        Right config -> writeMaterializedConfig repoRoot config
+        Right config -> validateConfig repoRoot config
 
 renderSettingsDisplay :: Bool -> ValidatedSettings -> String
 renderSettingsDisplay showSecrets settings =
@@ -207,40 +152,6 @@ validateConfig repoRoot config = do
                 { validatedConfig = config,
                   resolvedManualPvHostRoot = resolvedManualRoot
                 }
-
-writeMaterializedConfig :: FilePath -> ConfigFile -> IO (Either String ())
-writeMaterializedConfig repoRoot config = do
-    let paths = canonicalConfigPaths repoRoot
-        encoded = encodePretty' jsonPrettyConfig config
-    writeResult <- try (BL.writeFile (configJsonPath paths) encoded) :: IO (Either SomeException ())
-    pure $ case writeResult of
-        Left err -> Left (displayException err)
-        Right () -> Right ()
-
-ensureMaterializedConfigJson :: FilePath -> ConfigFile -> IO (Either String ())
-ensureMaterializedConfigJson repoRoot config = do
-    let paths = canonicalConfigPaths repoRoot
-    shouldWrite <- configJsonNeedsRefresh paths
-    if shouldWrite then writeMaterializedConfig repoRoot config else pure (Right ())
-
-configJsonNeedsRefresh :: ConfigPaths -> IO Bool
-configJsonNeedsRefresh paths = do
-    jsonExists <- doesFileExist (configJsonPath paths)
-    if not jsonExists
-        then pure True
-        else do
-            jsonTime <- getModificationTime (configJsonPath paths)
-            dhallExists <- doesFileExist (configDhallPath paths)
-            schemaExists <- doesFileExist (configSchemaPath paths)
-            dhallIsNewer <-
-                if dhallExists
-                    then (> jsonTime) <$> getModificationTime (configDhallPath paths)
-                    else pure False
-            schemaIsNewer <-
-                if schemaExists
-                    then (> jsonTime) <$> getModificationTime (configSchemaPath paths)
-                    else pure False
-            pure (dhallIsNewer || schemaIsNewer)
 
 requireNonEmpty :: String -> Text -> Either String ()
 requireNonEmpty fieldName value =
@@ -425,9 +336,3 @@ dhallOptionalText maybeValue =
 dhallBool :: Bool -> String
 dhallBool True = "True"
 dhallBool False = "False"
-
-jsonOptions :: Options
-jsonOptions = defaultOptions{omitNothingFields = True}
-
-jsonPrettyConfig :: Config
-jsonPrettyConfig = defConfig{confIndent = Spaces 2}

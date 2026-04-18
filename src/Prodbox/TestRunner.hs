@@ -6,9 +6,11 @@ where
 import Control.Monad (foldM, unless)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
+import Prodbox.BuildSupport
+    ( addBuildSupportEnvironment,
+    )
 import Prodbox.CLI.Command
-    ( CoverageFlags (..),
-      TestCommand (..),
+    ( TestCommand (..),
       validateCoverage,
     )
 import Prodbox.Effect
@@ -38,15 +40,12 @@ import Prodbox.Subprocess
     )
 import Prodbox.TestPlan
     ( NativeSuitePlan (..),
+      NativeValidation,
       TestExecutionMode (..),
       TestExecutionPlan (..),
       testExecutionPlan,
     )
-import System.Directory
-    ( createDirectoryIfMissing,
-      createFileLink,
-      doesFileExist,
-    )
+import Prodbox.TestValidation (runNativeValidation)
 import System.Environment
     ( getEnvironment,
       getExecutablePath,
@@ -54,7 +53,6 @@ import System.Environment
 import System.Exit
     ( ExitCode (..),
     )
-import System.FilePath ((</>))
 import System.IO
     ( hPutStr,
       hPutStrLn,
@@ -91,7 +89,7 @@ runTests repoRoot command =
         Left err -> failWith err
         Right () -> do
             baseEnvironment <- getEnvironment
-            environment <- addBuildSupport repoRoot baseEnvironment
+            environment <- addBuildSupportEnvironment repoRoot baseEnvironment
             let plan = testExecutionPlan (testScope command)
             putStrLn ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
             haskellExit <- runHaskellSuites repoRoot environment (testPlanHaskellSuites plan)
@@ -144,7 +142,7 @@ runNativeWorkflow repoRoot environment suitePlan =
     runSequentially
         ( runbookActions repoRoot environment suitePlan
             ++ supportedRuntimeBootstrapActions repoRoot environment suitePlan
-            ++ [emitLineAction phaseTwoMessage]
+            ++ [emitLineAction phaseTwoMessage, runNativeValidations repoRoot environment suitePlan]
             ++ supportedRuntimePostflightActions repoRoot environment suitePlan
         )
 
@@ -207,6 +205,17 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
               runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
             ]
+
+runNativeValidations :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
+runNativeValidations repoRoot environment suitePlan =
+    case nativeValidations suitePlan of
+        [] -> pure ExitSuccess
+        validations -> foldM runValidation ExitSuccess validations
+
+  where
+    runValidation :: ExitCode -> NativeValidation -> IO ExitCode
+    runValidation failure@(ExitFailure _) _ = pure failure
+    runValidation ExitSuccess validation = runNativeValidation repoRoot environment validation
 
 buildPhaseOneDag :: NativeSuitePlan -> Either String EffectDAG
 buildPhaseOneDag suitePlan = do
@@ -315,37 +324,6 @@ nativeCliCommandSpec repoRoot environment cliArgs = do
 
 orderedPrepend :: String -> [String] -> [String]
 orderedPrepend value existing = value : filter (/= value) existing
-
-addBuildSupport :: FilePath -> [(String, String)] -> IO [(String, String)]
-addBuildSupport repoRoot environment = do
-    let supportDir = repoRoot </> ".build/support"
-        supportLib = supportDir </> "libtinfo.so"
-    createDirectoryIfMissing True supportDir
-    supportExists <- doesFileExist supportLib
-    unless supportExists $ do
-        sourceLib <- firstExistingSystemLib
-        case sourceLib of
-            Nothing -> pure ()
-            Just sourcePath -> createFileLink sourcePath supportLib
-    pure (upsertEnv "LIBRARY_PATH" supportDir environment)
-
-firstExistingSystemLib :: IO (Maybe FilePath)
-firstExistingSystemLib =
-    firstExistingFile
-        [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6",
-          "/lib/x86_64-linux-gnu/libtinfo.so.6"
-        ]
-
-firstExistingFile :: [FilePath] -> IO (Maybe FilePath)
-firstExistingFile paths = go paths
-  where
-    go [] = pure Nothing
-    go (path : remaining) = do
-        exists <- doesFileExist path
-        if exists then pure (Just path) else go remaining
-
-upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
-upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
 
 failWith :: String -> IO ExitCode
 failWith message = do

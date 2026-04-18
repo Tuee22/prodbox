@@ -32,7 +32,7 @@ explicitly converging Haskell-only architecture.
 ## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Lib/`, `test/integration/lifecycle/`
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Lib/`, `src/Prodbox/TestRunner.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -57,6 +57,16 @@ paths.
 4. `prodbox rke2 delete --yes`
 5. `prodbox rke2 install`
 
+### Current Validation State
+
+- The supported local lifecycle paths remain Haskell-only on the runtime surface.
+- The named validation command `prodbox test integration lifecycle` remains modeled as a pending
+  native payload in `src/Prodbox/TestPlan.hs`; it now depends on reopened Sprint `1.2` harness
+  closure and is not counted as part of today's passing local proof.
+- `prodbox check-code` is the canonical doctrine gate, but the current worktree does not yet close
+  it because `CheckCode.hs` builds all targets and `test/integration/cli/Main.hs` still fails to
+  build.
+
 ### Remaining Work
 
 None.
@@ -64,7 +74,7 @@ None.
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
 **Status**: Done
-**Implementation**: `Pulumi.yaml`, `pulumi/`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `test/integration/aws/`
+**Implementation**: `Pulumi.yaml`, `pulumi/`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestPlan.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -89,6 +99,15 @@ Retain Pulumi as the infrastructure engine while removing Python from the suppor
 5. `prodbox test integration aws-eks`
 6. `prodbox test integration ha-rke2-aws`
 
+### Current Validation State
+
+- All supported Pulumi programs are YAML-based, and the public Pulumi runtime surface is
+  Haskell-owned.
+- The named validation commands `prodbox test integration pulumi`, `aws-eks`, and
+  `ha-rke2-aws` remain modeled as pending native payloads in `src/Prodbox/TestPlan.hs`; they now
+  depend on reopened Sprint `1.2` harness closure and are not counted as part of today's passing
+  local proof.
+
 ### Remaining Work
 
 None. All Python Pulumi programs replaced with YAML definitions: `pulumi/home/Main.yaml`,
@@ -97,7 +116,7 @@ None. All Python Pulumi programs replaced with YAML definitions: `pulumi/home/Ma
 ## Sprint 4.3: Repository-Wide Python Toolchain Removal ✅
 
 **Status**: Done
-**Implementation**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `src/`, `tests/`, `typings/`, `pyproject.toml`, `poetry.toml`, `.python-version`
+**Implementation**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `src/`, `test/`, `pulumi/`, `prodbox.cabal`, `cabal.project`, `.gitignore`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/pure_fp_standards.md`, `documents/engineering/refactoring_patterns.md`
 
 ### Objective
@@ -119,6 +138,14 @@ exists.
 2. `prodbox test unit`
 3. Repository text-search proof shows that any remaining Python-era architecture references are intentional and tracked in the legacy ledger.
 4. Repository artifact-search proof shows that no supported-path Python implementation or Python toolchain artifacts remain.
+
+### Current Validation State
+
+- The repository no longer contains `src/prodbox/`, `tests/`, `typings/`, `pyproject.toml`,
+  `poetry.toml`, `.python-version`, or any Python Pulumi program.
+- `prodbox check-code` is the canonical doctrine gate and passes on the April 18, 2026 worktree.
+- Repository text search across the root guidance docs and governed Sprint `1.2` docs is aligned
+  with the Haskell-only repository state.
 
 ### Remaining Work
 

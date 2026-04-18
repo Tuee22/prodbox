@@ -16,8 +16,7 @@ import System.FilePath
 
 data ConfigPaths = ConfigPaths
     { configDhallPath :: FilePath,
-      configSchemaPath :: FilePath,
-      configJsonPath :: FilePath
+      configSchemaPath :: FilePath
     }
     deriving (Eq, Show)
 
@@ -46,6 +45,5 @@ canonicalConfigPaths :: FilePath -> ConfigPaths
 canonicalConfigPaths repoRoot =
     ConfigPaths
         { configDhallPath = repoRoot </> "prodbox-config.dhall",
-          configSchemaPath = repoRoot </> "prodbox-config-types.dhall",
-          configJsonPath = repoRoot </> "prodbox-config.json"
+          configSchemaPath = repoRoot </> "prodbox-config-types.dhall"
         }

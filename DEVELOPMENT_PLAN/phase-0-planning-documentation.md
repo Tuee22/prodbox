@@ -29,7 +29,8 @@ removal of Python from the supported architecture.
 
 - The top-level plan docs describe the Haskell rewrite rather than the closed Python architecture.
 - Phase names `0-7` are retained, but their owned surfaces now target Haskell implementation work.
-- The plan suite defines the build-artifact contract: `.build/` on the host and `/opt/build` in
+- The plan suite defines the build-artifact contract: `.build/prodbox` on the host (runnable as
+  `./.build/prodbox`) and `/opt/build` in
   container builds.
 - The legacy ledger is reopened with Python source, Python toolchain, and Python Pulumi removal
   work.

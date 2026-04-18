@@ -21,8 +21,7 @@ import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
 import Prodbox.Tla (runTlaCheck)
 import Prodbox.Settings
-    ( materializeConfigJson,
-      renderSettingsDisplay,
+    ( renderSettingsDisplay,
       validateAndLoadSettings,
     )
 import Prodbox.TestRunner (runTests)
@@ -50,9 +49,6 @@ runNativeCommand repoRoot command =
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode
 runConfigCommand repoRoot configCommand =
     case configCommand of
-        ConfigCompile -> do
-            result <- materializeConfigJson repoRoot
-            either failWith (const (pure ExitSuccess)) result
         ConfigSetup -> runInteractiveConfigSetup repoRoot
         ConfigShow showSecrets -> do
             result <- validateAndLoadSettings repoRoot

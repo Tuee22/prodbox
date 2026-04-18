@@ -71,8 +71,7 @@ data K8sCommand
     deriving (Eq, Show)
 
 data ConfigCommand
-    = ConfigCompile
-    | ConfigSetup
+    = ConfigSetup
     | ConfigShow Bool
     | ConfigValidate
     deriving (Eq, Show)

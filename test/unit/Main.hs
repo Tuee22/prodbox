@@ -90,7 +90,6 @@ import Prodbox.Settings
       StorageSection (..),
       ValidatedSettings (..),
       defaultConfigFile,
-      materializeConfigJson,
       renderSettingsDisplay,
       validateAndLoadSettings,
     )
@@ -100,9 +99,10 @@ import Prodbox.SupportedRuntime
     )
 import Prodbox.TestPlan
     ( NativeSuitePlan (..),
-      PytestInvocation (..),
+      NativeValidation (..),
       TestExecutionMode (..),
       TestExecutionPlan (..),
+      nativeValidationId,
       testExecutionPlan,
     )
 import System.Directory
@@ -231,10 +231,11 @@ main = hspec $ do
                       "src/Prodbox/Gateway/Daemon.hs",
                       "prodbox.cabal",
                       "cabal.project",
-                      "Dockerfile"
+                      "Dockerfile",
+                      "test/integration/env/Main.hs"
                     ]
 
-            scaffoldExists `shouldBe` replicate 6 True
+            scaffoldExists `shouldBe` replicate 7 True
 
         it "keeps cabal.project minimal for nix-style builds" $ do
             repoRoot <- getCurrentDirectory
@@ -252,7 +253,7 @@ main = hspec $ do
             dockerfile `shouldContain` "cabal list-bin --builddir=.build exe:prodbox"
 
     describe "test planning" $ do
-        it "maps aggregate all to the native ordered pytest workflow" $ do
+        it "maps aggregate all to the native ordered validation workflow" $ do
             case testExecutionPlan TestAll of
                 testPlan -> do
                     testPlanLabel testPlan `shouldBe` "all"
@@ -268,13 +269,12 @@ main = hspec $ do
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
-                            map pytestInvocationId (nativePytestInvocations suitePlan)
+                            map nativeValidationId (nativeValidations suitePlan)
                                 `shouldBe`
-                                    [ "unit",
-                                      "charts-vscode",
+                                    [ "charts-vscode",
                                       "public-dns",
-                                      "cli",
                                       "dns-aws",
+                                      "aws-iam",
                                       "aws-eks",
                                       "pulumi",
                                       "ha-rke2-aws",
@@ -283,8 +283,7 @@ main = hspec $ do
                                       "gateway-partition",
                                       "charts-platform",
                                       "charts-storage",
-                                      "lifecycle",
-                                      "aws-iam"
+                                      "lifecycle"
                                     ]
                         DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
@@ -296,32 +295,18 @@ main = hspec $ do
                             nativeSuiteId suitePlan `shouldBe` "integration-all"
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
-                            take 2 (map pytestInvocationArgs (nativePytestInvocations suitePlan))
-                                `shouldBe`
-                                    [ ["tests/integration/test_charts_vscode.py"],
-                                      ["tests/integration/test_public_dns_delegation.py"]
-                                    ]
-                            last (nativePytestInvocations suitePlan)
-                                `shouldBe`
-                                    PytestInvocation
-                                        { pytestInvocationId = "aws-iam",
-                                          pytestInvocationArgs = ["tests/integration/test_aws_iam_lifecycle.py"]
-                                        }
+                            take 2 (map nativeValidationId (nativeValidations suitePlan))
+                                `shouldBe` ["charts-vscode", "public-dns"]
+                            last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
                         DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
-        it "maps cluster-backed named suites to native pytest plus prerequisites" $ do
+        it "maps cluster-backed named suites to native validations plus prerequisites" $ do
             case testExecutionPlan (TestIntegration IntegrationAwsEks) of
                 testPlan ->
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
-                            nativePytestInvocations suitePlan
-                                `shouldBe`
-                                    [ PytestInvocation
-                                        { pytestInvocationId = "integration-aws-eks",
-                                          pytestInvocationArgs = ["tests/integration/test_aws_eks.py"]
-                                        }
-                                    ]
+                            nativeValidations suitePlan `shouldBe` [ValidationAwsEks]
                             nativeIntegrationGatePrerequisites suitePlan
                                 `shouldBe`
                                     [ "supported_ubuntu_2404",
@@ -338,6 +323,18 @@ main = hspec $ do
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
+        it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
+            case testExecutionPlan (TestIntegration IntegrationCli) of
+                testPlan -> do
+                    testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration-cli"]
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan -> do
+                            nativeSuiteId suitePlan `shouldBe` "integration-cli"
+                            nativeValidations suitePlan `shouldBe` []
+                            nativeIntegrationGatePrerequisites suitePlan `shouldBe` []
+                            nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
+                        DelegatedSuite _ -> expectationFailure "expected native integration-cli plan"
+
         it "keeps integration-env fully on the Haskell-owned env suite" $ do
             case testExecutionPlan (TestIntegration IntegrationEnv) of
                 testPlan -> do
@@ -345,7 +342,7 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-env"
-                            nativePytestInvocations suitePlan `shouldBe` []
+                            nativeValidations suitePlan `shouldBe` []
                             nativeIntegrationGatePrerequisites suitePlan `shouldBe` []
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
                         DelegatedSuite _ -> expectationFailure "expected native integration-env plan"
@@ -362,6 +359,8 @@ main = hspec $ do
                       "systemd_available",
                       "supported_ubuntu_2404",
                       "machine_identity",
+                      "tool_curl",
+                      "tool_dig",
                       "tool_kubectl",
                       "tool_docker",
                       "tool_ctr",
@@ -373,7 +372,6 @@ main = hspec $ do
                       "tool_rke2",
                       "tool_systemctl",
                       "tool_dhall",
-                      "tool_dhall_to_json",
                       "settings_loaded",
                       "settings_object",
                       "kubeconfig_exists",
@@ -431,10 +429,11 @@ main = hspec $ do
             lookupPrerequisiteEffect "systemd_available" `shouldBe` Validate RequireSystemd
             lookupPrerequisiteEffect "supported_ubuntu_2404" `shouldBe` Validate RequireUbuntu2404
             lookupPrerequisiteEffect "machine_identity" `shouldBe` Validate RequireMachineIdentity
+            lookupPrerequisiteEffect "tool_curl" `shouldBe` Validate (RequireTool "curl" ["--version"])
+            lookupPrerequisiteEffect "tool_dig" `shouldBe` Validate (RequireTool "dig" ["-v"])
             lookupPrerequisiteEffect "tool_kubectl" `shouldBe` Validate (RequireTool "kubectl" ["version", "--client=true"])
             lookupPrerequisiteEffect "tool_rke2" `shouldBe` Validate (RequireTool "/usr/local/bin/rke2" ["--version"])
             lookupPrerequisiteEffect "tool_dhall" `shouldBe` Validate (RequireTool "dhall" ["version"])
-            lookupPrerequisiteEffect "tool_dhall_to_json" `shouldBe` Validate (RequireTool "dhall-to-json" ["--version"])
             lookupPrerequisiteEffect "settings_loaded" `shouldBe` Validate RequireSettings
             lookupPrerequisiteEffect "settings_object" `shouldBe` Validate RequireSettings
             lookupPrerequisiteEffect "kubeconfig_exists" `shouldBe` Validate (RequireFileExists "/etc/rancher/rke2/rke2.yaml")
@@ -698,7 +697,7 @@ main = hspec $ do
                         _ -> expectationFailure "expected exported object"
 
     describe "settings" $ do
-        it "validates Dhall config, materializes JSON, and renders masked output" $
+        it "validates Dhall config and renders masked output without materializing JSON" $
             withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
                 writeFile (tmpDir </> "prodbox-config.dhall") validConfig
 
@@ -711,7 +710,7 @@ main = hspec $ do
                         renderSettingsDisplay False settings `shouldContain` "acme.email=****.com"
                         renderSettingsDisplay True settings `shouldContain` "aws.access_key_id=test-access-key"
                         renderSettingsDisplay False settings `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
-                        doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` True
+                        doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
 
         it "fails fast on invalid ZeroSSL EAB configuration" $
             withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -722,15 +721,6 @@ main = hspec $ do
                 case result of
                     Left err -> err `shouldContain` "required for ZeroSSL ACME"
                     Right _ -> expectationFailure "expected validation failure"
-
-        it "can materialize config JSON without loading the Python settings stack" $
-            withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-
-                result <- materializeConfigJson tmpDir
-
-                result `shouldBe` Right ()
-                doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` True
 
 parseArgs :: [String] -> Either String Options
 parseArgs argv =

@@ -4,268 +4,99 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md
 
-> **Purpose**: Define current dependency-management doctrine for the mixed Haskell frontend and retained Python backend.
-
----
+> **Purpose**: Define current dependency-management doctrine for the Haskell `prodbox` repository.
 
 ## 0. Planning Ownership
 
 This document defines dependency-management doctrine only.
 
-Clean-room sequencing, completion status, remaining work, and legacy-path
-removal are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
-
----
+Clean-room sequencing, completion status, remaining work, and cleanup ownership are owned by
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ## 1. Current Toolchain Split
 
-- `prodbox.cabal` now defines the Haskell frontend library, the `prodbox` executable, and the
-  current Haskell test suites under `test/`.
-- `pyproject.toml` still defines the retained Python backend, the broader pytest payload, and the
-  current guard/lint/type-check toolchain that the Haskell frontend invokes.
-- Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract
-  is intentionally command-line owned because Cabal accepts `--builddir` only as a command-line
-  option for nix-style builds.
-- The root `Dockerfile` builds the Haskell frontend under `/opt/build` and copies the resulting
-  binary into the runtime stage.
+- `prodbox.cabal` defines the Haskell library, the `prodbox` executable, and the Haskell test
+  suites under `test/`.
+- `cabal.project` defines the repository Cabal package set.
+- Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
+  intentionally command-line owned.
+- The root `Dockerfile` builds the Haskell frontend under `/opt/build` and the gateway image builds
+  separately under `docker/gateway.Dockerfile`.
+- Pulumi programs are YAML-based under `pulumi/` and do not introduce a Python runtime dependency.
 
 ## 2. Lock File Policy
 
-### poetry.lock is NOT Version Controlled
+The repository does not rely on Poetry or a Python lockfile on the supported path.
 
-The `poetry.lock` file is excluded from version control via `.gitignore`:
+Haskell dependency reproducibility is governed by:
 
-```gitignore
-# File: .gitignore
-poetry.lock
-```
+1. `prodbox.cabal`
+2. `cabal.project`
+3. The checked-in YAML Pulumi definitions
 
-### Rationale
-
-1. **Local reproducibility**: Each developer generates `poetry.lock` locally via `poetry install`
-2. **Environment flexibility**: Different platforms (Linux/macOS) may resolve dependencies differently
-3. **Reduced merge conflicts**: Lock files cause frequent, noisy merge conflicts
-4. **Explicit bounds suffice**: With proper version constraints in `pyproject.toml`, builds remain reproducible within acceptable bounds
-
-### Developer Workflow
+Developers should build and test through Cabal:
 
 ```bash
-# Fresh clone - generates poetry.lock locally
-git clone <repo>
-cd prodbox
-poetry install
-
-# After pulling changes to pyproject.toml
-poetry lock --no-update  # Regenerate lock without upgrading
-poetry install
+cabal build --builddir=.build exe:prodbox
+./.build/prodbox check-code
 ```
-
----
 
 ## 3. Version Constraint Standards
 
-### Required: Explicit Upper Bounds
+### Haskell Packages
 
-Every dependency in `pyproject.toml` MUST have an explicit upper bound using one of two forms:
+- Add explicit package bounds in `prodbox.cabal` where the repository already pins them.
+- Prefer stable library additions over ad-hoc shell dependencies.
+- Keep the executable and test-suite dependency lists minimal and scoped to the modules that need
+  them.
 
-#### Option 1: Caret Bounds (Preferred)
+### External Tools
 
-```toml
-# Allows compatible updates within major version
-click = "^8.1.0"      # >=8.1.0, <9.0.0
-pydantic = "^2.0.0"   # >=2.0.0, <3.0.0
-```
-
-#### Option 2: Explicit Upper Bound
-
-```toml
-# For packages where caret semantics don't fit
-python = "3.12.*"           # Only Python 3.12.x
-some-package = ">=1.0,<2.0" # Explicit range
-```
-
-### Why Caret Bounds
-
-The caret (`^`) operator follows SemVer:
-- `^X.Y.Z` allows updates that don't modify the left-most non-zero digit
-- `^8.1.0` means `>=8.1.0, <9.0.0`
-- `^0.27.0` means `>=0.27.0, <0.28.0` (for 0.x versions)
-
-This provides:
-- **Automatic patch updates**: Security fixes applied automatically
-- **Compatible minor updates**: New features without breaking changes
-- **Protected major versions**: Breaking changes require explicit upgrade
-
-### Forbidden Patterns
-
-```toml
-# BAD: Unbounded - allows any version
-click = "*"
-
-# BAD: No upper bound - could pull breaking changes
-click = ">=8.0"
-
-# BAD: Pinned exactly - misses security patches
-click = "8.1.7"
-```
-
----
+- The supported operator toolchain must be documented in `README.md` and in the relevant doctrine
+  docs.
+- Tool prerequisites that gate command execution belong in `src/Prodbox/Prerequisite.hs`.
+- Do not add new required host tools without updating the prerequisite inventory and the affected
+  validation docs.
 
 ## 4. Current Dependencies
 
-### Haskell Frontend And Test Dependencies
+### Haskell Repository Surface
 
-```cabal
--- File: prodbox.cabal
-library
-  aeson
-  aeson-pretty
-  base
-  bytestring
-  dhall
-  directory
-  filepath
-  optparse-applicative
-  process
-  text
+- Core CLI and runtime: `base`, `text`, `bytestring`, `aeson`, `dhall`, `optparse-applicative`,
+  `process`, `directory`, `filepath`
+- Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
+  `src/Prodbox/Gateway/`
+- Test suites: `hspec`, `temporary`, and the same core runtime packages needed to exercise the
+  built frontend
 
-test-suite prodbox-unit
-  base
-  directory
-  filepath
-  hspec
-  optparse-applicative
-  process
-  prodbox
-  temporary
-  text
+### External Command Dependencies
 
-test-suite prodbox-integration-cli
-test-suite prodbox-integration-env
-  base
-  bytestring
-  directory
-  filepath
-  hspec
-  process
-  prodbox
-  temporary
-```
-
-### Retained Python Backend Runtime Dependencies
-
-```toml
-# File: pyproject.toml
-[tool.poetry.dependencies]
-python = "3.12.*"
-click = "^8.1.0"
-pydantic = "^2.0.0"
-pulumi = "^3.0.0"
-pulumi-kubernetes = "^4.0.0"
-pulumi-aws = "^6.0.0"
-boto3 = "^1.28.0"
-httpx = "^0.27.0"
-rich = "^13.0.0"
-```
-
-### Retained Python Backend Development Dependencies
-
-```toml
-# File: pyproject.toml
-[tool.poetry.group.dev.dependencies]
-pytest = "^8.0.0"
-pytest-asyncio = "^0.23.0"
-pytest-cov = "^4.0.0"
-pytest-mock = "^3.12"
-pytest-timeout = "^2.3"
-pytest-subprocess = "^1.5"
-mypy = "^1.7.0"
-ruff = "^0.2.0"
-```
-
----
+- Host/runtime tools: `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `systemctl`
+- Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
+- Infrastructure tooling: `pulumi`
+- Formal verification tooling: Docker plus the TLA+ runtime documented in `documents/engineering/tla/`
 
 ## 5. Adding New Dependencies
 
-### Entrypoint-Only Command Policy
+Checklist:
 
-All automation must run through Poetry entrypoints defined in `pyproject.toml`.
-Direct tool invocation via `poetry run <tool>` is forbidden.
-
-Use the CLI entrypoints instead:
-
-```bash
-poetry run prodbox test all   # Run full test suite
-poetry run prodbox check-code  # Policy guard + ruff + mypy
-poetry run prodbox tla-check  # TLA+ model checks
-poetry run prodbox gateway start <path>  # Gateway daemon
-```
-
-For the full supported `prodbox` command matrix, see [CLI Command Surface](./cli_command_surface.md).
-
-`PRODBOX_ALLOW_NON_ENTRYPOINT=1` is reserved for internal CLI subprocesses
-and should not be set manually in development workflows.
-
-`poetry run prodbox check-code` installs the enforcement shim in the Poetry
-virtualenv (`prodbox_entrypoint_guard.pth`) to block non-entrypoint tools.
-
-### Checklist
-
-1. **Check existing dependencies**: Avoid duplicates or conflicts
-2. **Use caret bounds**: `poetry add "package^X.Y.0"`
-3. **Verify type stubs**: Add to `typings/` if needed (see [Type Safety](../../CLAUDE.md#type-safety))
-4. **Run tests**: `poetry run prodbox test all`
-5. **Run code quality checks**: `poetry run prodbox check-code`
-
-### Example
-
-```bash
-# Add runtime dependency
-poetry add "aiofiles^23.0.0"
-
-# Add dev dependency
-poetry add --group dev "hypothesis^6.0.0"
-```
-
----
+1. Check whether an existing module or external tool already solves the need.
+2. Add Haskell library dependencies to `prodbox.cabal`, not to an unsupported sidecar toolchain.
+3. Update prerequisite doctrine when a new host tool becomes mandatory.
+4. Update the relevant engineering docs when the command surface or validation contract changes.
+5. Run `./.build/prodbox check-code` and the affected test suites.
 
 ## 6. Upgrading Dependencies
 
-### Safe Upgrade Process
-
-```bash
-# 1. See what's outdated
-poetry show --outdated
-
-# 2. Update within bounds (safe)
-poetry update
-
-# 3. Run full test suite
-poetry run prodbox test all
-poetry run prodbox check-code
-
-# 4. For major version upgrades, update pyproject.toml explicitly
-# Then regenerate lock
-poetry lock
-poetry install
-```
-
-### Major Version Upgrades
-
-Major version upgrades require:
-1. Review changelog for breaking changes
-2. Update `pyproject.toml` with new caret bound
-3. Update any affected code
-4. Update type stubs if needed
-5. Full test suite pass
-
----
+- Keep Cabal changes small and isolated.
+- Re-run `./.build/prodbox check-code` after dependency upgrades.
+- Re-run the affected named validation suites when an upgrade touches AWS, gateway, chart, Pulumi,
+  or public-edge behavior.
+- Update doctrine when an upgrade changes the supported external tool version expectations.
 
 ## Cross-References
 
-- [Development Plan](../../DEVELOPMENT_PLAN/README.md) - Clean-room sequencing and legacy removal
-- [CLAUDE.md](../../CLAUDE.md) - Project overview and type safety requirements
-- [Pure FP Standards](./pure_fp_standards.md) - Code patterns that affect dependency choices
-- [prodbox.cabal](../../prodbox.cabal) - Haskell frontend dependency definition
-- [cabal.project](../../cabal.project) - Haskell project package-set definition
-- [pyproject.toml](../../pyproject.toml) - Retained Python backend dependency definitions
+- [CLI Command Surface](./cli_command_surface.md)
+- [Code Quality Doctrine](./code_quality.md)
+- [Unit Testing Policy](./unit_testing_policy.md)
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md)

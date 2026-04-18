@@ -6,30 +6,16 @@
 
 > **Purpose**: Index of engineering and architecture documentation.
 
-SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
-
----
+SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal
+content.
 
 ## Roadmap
 
-Clean-room build order, current sprint status, blockers, validation closure,
-and legacy-path removal are tracked only in
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+Clean-room build order, sprint status, blockers, validation closure, and cleanup ownership are
+tracked only in [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
-The documents in this directory are stable doctrine and architecture references. They
-should describe the canonical rules and contracts, not carry competing sprint-status
-reports.
-
-Read this directory with the rewrite split in mind:
-
-- `DEVELOPMENT_PLAN/README.md` owns the live Haskell handoff target, sprint status, and cleanup
-  sequencing.
-- Until an owning sprint closes, a governed doc here may still describe the current Python
-  baseline or mixed migration constraints rather than the final Haskell-only handoff.
-- When a document and the development plan differ, the development plan controls the target
-  architecture and cleanup ownership.
-
----
+The documents in this directory are stable doctrine and architecture references. They describe the
+current Haskell-only repository contract rather than a mixed migration baseline.
 
 ## Documents
 
@@ -39,31 +25,30 @@ Read this directory with the rewrite split in mind:
 | [aws_admin_credentials.md](./aws_admin_credentials.md) | Test-only elevated `aws_admin` credential harness and lifecycle guidance |
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
 | [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL vs Let's Encrypt guidance for the interactive onboarding flow |
-| [dependency_management.md](./dependency_management.md) | Build and dependency doctrine, including rewrite-owned Python-toolchain removal |
-| [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix and rewrite-owned surface constraints |
-| [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Host-level AWS CLI auth plus real AWS integration environment creation, tagging, and cleanup doctrine |
+| [dependency_management.md](./dependency_management.md) | Cabal- and toolchain-level dependency doctrine |
+| [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
+| [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
-| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup/teardown doctrine for the current harness and rewrite transition |
-| [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor installation + local image mirror pipeline |
-| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage + deterministic PVC/PV rebinding doctrine |
-| [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
-| [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and runtime reference |
+| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
+| [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor installation plus local image mirror pipeline |
+| [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage and deterministic PVC/PV rebinding doctrine |
+| [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |
+| [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and reduction reference |
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
-| [unit_testing_policy.md](./unit_testing_policy.md) | Test-runner doctrine and rewrite-owned validation contract |
+| [unit_testing_policy.md](./unit_testing_policy.md) | Test-runner doctrine and validation contract |
 | [pure_fp_standards.md](./pure_fp_standards.md) | Pure FP coding standards |
-| [code_quality.md](./code_quality.md) | Policy guardrails and check-code gate |
+| [code_quality.md](./code_quality.md) | Policy guardrails and the `check-code` gate |
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for `prodbox charts` |
-
----
 
 ## Quick Navigation
 
 ### Effect DAG System
+
 - [Effect Types](./effectful_dag_architecture.md#3-effect-types)
 - [DAG Construction](./effectful_dag_architecture.md#4-dag-construction)
 - [Interpreter Pattern](./effectful_dag_architecture.md#5-interpreter-pattern)
@@ -72,6 +57,7 @@ Read this directory with the rewrite split in mind:
 - [Terminal Record Contract](./streaming_doctrine.md#5-terminal-record-contract)
 
 ### Distributed Gateway
+
 - [Architecture](./distributed_gateway_architecture.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Gateway Container Build Doctrine](./local_registry_pipeline.md#6-gateway-container-build-doctrine)
@@ -80,15 +66,18 @@ Read this directory with the rewrite split in mind:
 - [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md)
 
 ### Prerequisites
+
 - [Fail-Fast Philosophy](./prerequisite_doctrine.md#1-philosophy)
 - [Prerequisite Registry](./prerequisite_doctrine.md#3-registry)
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
 
 ### Dependency Management
+
 - [Lock File Policy](./dependency_management.md#2-lock-file-policy)
 - [Version Constraint Standards](./dependency_management.md#3-version-constraint-standards)
 
 ### Unit Testing
+
 - [AWS Account Setup Guide](./aws_account_setup_guide.md)
 - [AWS Admin Credentials](./aws_admin_credentials.md)
 - [Interpreter-Only Mocking Doctrine](./unit_testing_policy.md#1-the-interpreter-only-mocking-doctrine)
@@ -101,10 +90,12 @@ Read this directory with the rewrite split in mind:
 - [Phase Banner Rendering Contract](./unit_testing_policy.md#phase-banner-rendering-contract)
 
 ### Code Quality
+
 - [Code Quality Doctrine](./code_quality.md)
 - [Pure FP Standards](./pure_fp_standards.md)
 
 ### CLI Surface
+
 - [AWS Account Setup Guide](./aws_account_setup_guide.md)
 - [ACME Provider Guide](./acme_provider_guide.md)
 - [AWS Admin Credentials](./aws_admin_credentials.md)
@@ -112,22 +103,20 @@ Read this directory with the rewrite split in mind:
 - [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine)
 
 ### Chart Platform
+
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Chart Storage Contract](./helm_chart_platform_doctrine.md#7-datanamespacereleaseworkloadordinalclaim-host-path-contract)
 - [Delete Semantics](./helm_chart_platform_doctrine.md#8-delete-semantics)
 - [Repo-Local Storage](./storage_lifecycle_doctrine.md#7-repo-local-retained-state-layout)
 - Supported `vscode` path: cluster-backed `prodbox charts` only
 
----
-
 ## Intent Ownership
 
 This index co-owns documentation-topology doctrine intention.
 
-- Owned statement: SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
+- Owned statement: SSoT ownership, bidirectional links, and non-duplication rules are mandatory
+  for all new doctrinal content.
 - Linked dependents: [Documentation Standards](../documentation_standards.md), [Code Quality Doctrine](./code_quality.md).
-
----
 
 ## Cross-References
 

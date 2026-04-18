@@ -17,7 +17,7 @@ The `aws_admin` section exists only for elevated administrative flows:
 2. `prodbox aws teardown`
 3. `prodbox aws check-quotas`
 4. `prodbox aws request-quotas`
-5. `poetry run prodbox test integration aws-iam`
+5. `./.build/prodbox test integration aws-iam`
 
 Normal runtime commands ignore `aws_admin.*`. The supported steady-state AWS credentials for normal
 `prodbox` operation live only in `aws.*`.
@@ -60,7 +60,7 @@ Use one temporary elevated credential set from the AWS account:
 3. open `prodbox-config.dhall`
 4. place the elevated key in `aws_admin.*`
 5. keep the normal operational key in `aws.*`
-6. run `poetry run prodbox config validate`
+6. run `./.build/prodbox config validate`
 
 This split is deliberate:
 

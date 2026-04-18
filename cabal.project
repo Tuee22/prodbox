@@ -1,1 +1,4 @@
 packages: .
+
+package prodbox
+    extra-lib-dirs: /home/matthewnowak/prodbox/.build/support

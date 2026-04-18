@@ -27,6 +27,8 @@ allPrerequisites =
       systemdAvailable,
       supportedUbuntu2404,
       machineIdentity,
+      toolCurl,
+      toolDig,
       toolKubectl,
       toolDocker,
       toolCtr,
@@ -38,7 +40,6 @@ allPrerequisites =
       toolRke2,
       toolSystemctl,
       toolDhall,
-      toolDhallToJson,
       settingsLoaded,
       settingsObject,
       kubeconfigExists,
@@ -94,6 +95,12 @@ machineIdentity =
 toolKubectl :: EffectNode
 toolKubectl = toolNode "tool_kubectl" "Validate kubectl is installed" "kubectl" ["version", "--client=true"] []
 
+toolCurl :: EffectNode
+toolCurl = toolNode "tool_curl" "Validate curl is installed" "curl" ["--version"] []
+
+toolDig :: EffectNode
+toolDig = toolNode "tool_dig" "Validate dig is installed" "dig" ["-v"] []
+
 toolDocker :: EffectNode
 toolDocker = toolNode "tool_docker" "Validate docker is installed" "docker" ["--version"] []
 
@@ -123,9 +130,6 @@ toolSystemctl = toolNode "tool_systemctl" "Validate systemctl is available" "sys
 
 toolDhall :: EffectNode
 toolDhall = toolNode "tool_dhall" "Validate dhall is installed" "dhall" ["version"] []
-
-toolDhallToJson :: EffectNode
-toolDhallToJson = toolNode "tool_dhall_to_json" "Validate dhall-to-json is installed" "dhall-to-json" ["--version"] []
 
 settingsLoaded :: EffectNode
 settingsLoaded =

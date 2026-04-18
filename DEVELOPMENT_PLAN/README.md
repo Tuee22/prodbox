@@ -5,21 +5,33 @@
 **Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md), [../documents/engineering/README.md](../documents/engineering/README.md)
 
 > **Purpose**: Provide the single execution-ordered development plan for the Haskell rewrite of
-> `prodbox`, including phase status, validation gates, and Python-removal ownership.
+> `prodbox`, including phase status, validation gates, and cleanup ownership.
 
 ## Standards
 
 See [development_plan_standards.md](development_plan_standards.md) for the maintenance rules that
 govern this plan suite.
 
-## Completed Rewrite
+## Closure Status
 
-As of April 17, 2026, the Haskell rewrite is complete. The repository now contains:
+As of April 18, 2026, the repository is closed again on the Haskell-only handoff target. The
+repository now contains:
 
 - one compiled Haskell `prodbox` binary owning the full supported command surface
-- one Haskell-owned CLI, test, lifecycle, config, and AWS administration surface
-- one Pulumi integration path using YAML Pulumi definitions (no Python dependency)
-- zero Python implementation or Python toolchain artifacts
+- one Haskell-owned CLI, config, lifecycle, Pulumi, gateway, chart, AWS, and test surface
+- one direct `Dhall -> Haskell types` config contract rooted at `prodbox-config.dhall`
+- one native validation harness for the named real-world proof surfaces behind
+  `prodbox test integration ...`
+- one YAML-Pulumi infrastructure path with no Python runtime dependency
+- zero Python implementation, Python toolchain, or Python bridge artifacts in the repository
+
+Phase `1` reopened on April 18, 2026 after a documentation and harness audit. That reopened work
+is now closed: the operator-facing host artifact contract is enforced at `./.build/prodbox`,
+`test/integration/cli/Main.hs` and `test/integration/env/Main.hs` pass, the named validation
+payloads behind `prodbox test integration ...` are executable native Haskell validation flows,
+`prodbox config compile` is removed, `prodbox-config.json` is no longer part of the supported
+repository contract, and the governed docs plus root guidance docs listed in Sprint `1.2` are
+aligned with the Haskell-only repository state.
 
 The rewrite followed the seed rationale in
 [../HASKELL_REWRITE_PLAN.md](../HASKELL_REWRITE_PLAN.md) and the canonical phase model required by
@@ -77,43 +89,51 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: All phases are now closed. The Haskell rewrite is complete: all Python
-source, Python toolchain, Python bridge modules, and Python Pulumi programs have been removed
-from the repository. The codebase is Haskell-only with YAML Pulumi definitions.
+**Status interpretation**: all phases are closed again. The repository is Haskell-only, the
+reopened Phase `1` validation and documentation work is complete, and later phases `2-7` remain
+done on their owned runtime or zero-Python removal surfaces.
 
 **Canonical target architecture**: one Haskell `prodbox` CLI, one repository-root
-`prodbox-config.dhall`, one supported host runtime (`Ubuntu 24.04 LTS` with systemd), one host
-build root `.build/` owned by the canonical `cabal build --builddir=.build exe:prodbox`
-invocation, one container build root
+`prodbox-config.dhall` decoded directly into Haskell types with `prodbox-config-types.dhall` as
+the shared schema and no supported `prodbox-config.json` artifact, one supported host runtime
+(`Ubuntu 24.04 LTS` with systemd), one host build root `.build/` with the operator-facing binary
+at `.build/prodbox` (runnable as `./.build/prodbox`), produced by the canonical
+`cabal build --builddir=.build exe:prodbox` invocation plus a copy step, one container build root
 `/opt/build` configured explicitly in the Dockerfile, one local RKE2 lifecycle owned by Haskell,
 one Pulumi integration path retained without Python Pulumi programs, one in-cluster gateway
-runtime, one Haskell chart platform, one explicit Python-removal ledger, and one destructive
+runtime, one Haskell chart platform, one explicit cleanup/removal ledger, and one destructive
 clean-room rerun that closes with no supported-path Python artifacts left in the repository.
 
 ## Current Plan Status
 
-As of April 17, 2026, the Haskell rewrite is complete:
+As of April 18, 2026, the development plan is fully closed again:
 
-- All phases (0 through 7) are closed. Every sprint across all phases has reached Done status.
-- The Python toolchain has been completely removed from the repository. All Python source under
-  `src/prodbox/`, `tests/`, and `typings/`, plus Python packaging (`pyproject.toml`, `poetry.toml`,
-  `.python-version`), and Python bridge modules (`Backend/Python.hs`, `PythonEnv.hs`) are deleted.
-- All Pulumi programs are now YAML-based: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`,
-  and `pulumi/aws-test/Main.yaml`. The root `Pulumi.yaml` uses `runtime: yaml`. No Python Pulumi
-  dependency remains.
-- The gateway Dockerfile (`docker/gateway.Dockerfile`) now builds a Haskell binary using a
-  multi-stage build with `haskell:9.6.7` builder and `debian:bookworm-slim` runtime.
-- `CheckCode.hs` no longer calls Python guards, ruff, or mypy. It runs
-  `cabal build --builddir=.build all`.
-- `TestRunner.hs` no longer uses PythonEnv or pytest. It runs Haskell test suites via `cabal test`
-  and native CLI orchestration for integration flows.
-- `Main.hs` no longer imports `Backend.Python`. The `DelegateToPython` case returns an error
-  message.
-- All 48 unit tests and 14 CLI integration tests pass on the post-Python-removal codebase.
-- The repository is now a Haskell-only codebase with one compiled `prodbox` binary owning the
-  entire supported command surface.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) has an empty `Pending Removal`
-  section.
+- The repository is Haskell-only. All Python source under `src/prodbox/`, `tests/`, and
+  `typings/`, plus Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`) and
+  bridge modules (`Backend/Python.hs`, `PythonEnv.hs`), remain removed.
+- All Pulumi programs are YAML-based: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, and
+  `pulumi/aws-test/Main.yaml`. The root `Pulumi.yaml` uses `runtime: yaml`.
+- `CheckCode.hs` owns `prodbox check-code` and runs `cabal build --builddir=.build all`, then
+  syncs the operator-facing binary to `.build/prodbox`.
+- `TestRunner.hs` owns `prodbox test ...`, runs the Haskell suites via `cabal test`, and executes
+  the named real-world validation flows through `src/Prodbox/TestValidation.hs`.
+- The supported config contract is direct `Dhall -> Haskell types`: `src/Prodbox/Settings.hs`
+  decodes and validates `prodbox-config.dhall` without materializing `prodbox-config.json`, and
+  the public `prodbox config` surface is `setup|show|validate`.
+- The local closure proofs for the reopened Sprint `1.2` work pass on the April 18, 2026 worktree:
+  `cabal build --builddir=.build exe:prodbox`,
+  `cabal test --builddir=.build test:prodbox-unit test:prodbox-integration-cli test:prodbox-integration-env`,
+  `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`,
+  `./.build/prodbox test integration env`,
+  and `./.build/prodbox check-code`.
+- The named integration suites `aws-iam`, `dns-aws`, `aws-eks`, `pulumi`, `ha-rke2-aws`,
+  `gateway-daemon`, `gateway-pods`, `gateway-partition`, `charts-platform`, `charts-storage`,
+  `charts-vscode`, `public-dns`, and `lifecycle` now run executable native Haskell validation
+  flows instead of pending-placeholder failures.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is empty in `Pending Removal`.
+- Root guidance docs and the governed docs listed in Sprint `1.2` now describe the Haskell-only
+  repository and current validation harness.
 
 ## Exit Definition
 
@@ -123,13 +143,17 @@ This plan is complete only when all of the following are true:
    Python architecture.
 2. The supported operator flow is `prodbox`, implemented in Haskell, across config, lifecycle,
    Pulumi orchestration, gateway, chart delivery, validation, and AWS administration.
-3. Host-side build artifacts live under `.build/`, enforced explicitly by the canonical
-   `cabal build --builddir=.build exe:prodbox` invocation.
-4. Container-side build artifacts live under `/opt/build`, enforced explicitly by the Dockerfile.
-5. Pulumi remains part of the supported architecture, but no supported Pulumi program depends on
+3. The supported config contract is direct `Dhall -> Haskell types` from
+   `prodbox-config.dhall`, with `prodbox-config-types.dhall` aligned to the decoder and no
+   generated `prodbox-config.json` artifact or supported `prodbox config compile` path.
+4. The operator-facing binary lives at `.build/prodbox` (runnable as `./.build/prodbox`),
+   produced by the canonical `cabal build --builddir=.build exe:prodbox` invocation plus a copy
+   step.
+5. Container-side build artifacts live under `/opt/build`, enforced explicitly by the Dockerfile.
+6. Pulumi remains part of the supported architecture, but no supported Pulumi program depends on
    Python.
-6. The strongest clean-room rerun passes from full local delete through final AWS teardown using
+7. The strongest clean-room rerun passes from full local delete through final AWS teardown using
    the Haskell stack.
-7. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is empty in `Pending Removal`.
-8. The repository has no supported-path Python implementation or Python toolchain ownership
+8. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is empty in `Pending Removal`.
+9. The repository has no supported-path Python implementation or Python toolchain ownership
    artifacts left.

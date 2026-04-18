@@ -568,7 +568,7 @@ For `prodbox`:
    Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones for the HA RKE2 path,
    both backed by Pulumi state stored in the local-cluster MinIO bucket
    `prodbox-test-pulumi-backends`
-3. general pytest fixture ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
+3. general integration setup and cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 4. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
 
 ---

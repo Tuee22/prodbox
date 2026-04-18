@@ -1,95 +1,75 @@
-# Effect Interpreter Runtime
+# Effect Interpreter Runtime Contract
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/unit_testing_policy.md
 
-> **Purpose**: Define the runtime execution contract for the prodbox effect interpreter.
-
----
+> **Purpose**: Define the runtime execution contract for the Haskell effect interpreter.
 
 ## 1. Runtime Parity Statement
 
-DAG execution semantics must match BBY parity matrix: pending/ready loop, reduction handling, root-cause/skip outcomes, unexecuted reporting.
-
-This document is the canonical owner of interpreter-runtime semantics.
-
-Current mixed baseline:
-- Public `prodbox test`, `prodbox host ensure-tools|check-ports|info|firewall`, and
-  `prodbox k8s health|wait|logs` execute through `src/Prodbox/EffectInterpreter.hs`.
-- Broader delegated command surfaces still execute through retained `src/prodbox/cli/interpreter.py`.
-
----
+`src/Prodbox/EffectInterpreter.hs` is the supported interpreter boundary for prerequisite DAG
+execution in the Haskell repository. It is responsible for executing effect nodes produced by the
+native prerequisite registry and for returning structured success or failure to command runners such
+as `src/Prodbox/TestRunner.hs`.
 
 ## 2. Execution Loop Contract
 
-Interpreter DAG execution must:
+The interpreter executes effect DAGs in dependency order:
 
-1. Maintain explicit `pending`, `completed`, and `unexecuted` sets.
-2. Execute only nodes whose prerequisites are fully completed.
-3. Emit deterministic execution order (sorted node IDs for ready groups).
-4. Mark remaining `pending` nodes as `unexecuted` if no further progress is possible.
+1. resolve the dependency closure for the selected root IDs
+2. execute each ready node once
+3. stop on the first hard failure
+4. return a structured success or error result to the caller
 
----
+The interpreter is allowed to perform subprocesses, environment reads, and user-facing output. Pure
+planning logic is not.
 
 ## 3. Prerequisite Reduction Contract
 
-For prerequisites with multiple callers:
+Prerequisite execution must be deterministic for a fixed registry and selected root set.
 
-1. Inputs are collected by prerequisite ID.
-2. Inputs are reduced in deterministic caller-ID order.
-3. Reduction and effect-builder failures are recorded as root-cause failures.
-4. Nodes receive prerequisite `Result` values and apply explicit node policy (`PROPAGATE` or `IGNORE`).
-
----
+- Nodes are keyed by stable IDs.
+- Dependency expansion is owned by the DAG layer, not by ad-hoc command logic.
+- A satisfied prerequisite should not be re-run within the same DAG execution.
 
 ## 3A. Prerequisite Result Propagation Contract
 
-Railway semantics for prerequisite results are:
+Failures propagate from the root-cause prerequisite upward without inventing duplicate remediation
+text at each dependent node.
 
-1. A prerequisite `Failure` is data, not an implicit interpreter cancellation signal.
-2. Nodes with `PrerequisiteFailurePolicy.PROPAGATE` return propagated prerequisite failures without executing side effects.
-3. Nodes with `PrerequisiteFailurePolicy.IGNORE` execute with full prerequisite `Result` inputs and may aggregate/recover explicitly.
-4. Propagated prerequisite failures are reported as deterministic node failures (`Prerequisite failure propagated: ...`), not as runtime skips.
-
----
+- The root-cause prerequisite owns the actionable error.
+- Dependent nodes may add context, but should not overwrite the root-cause signal.
+- Command runners decide how to render interpreter failures to the operator.
 
 ## 4. Effect Outcome ADT Contract
 
-Per-effect outcomes are represented as:
+The interpreter works in terms of explicit result values rather than implicit shell exceptions.
 
-- `EffectSuccess`
-- `EffectRootCauseFailure`
-- `EffectPrerequisiteSkipped`
-
-`DAGExecutionSummary` must carry outcome maps, skipped counts, unexecuted counts, and a deterministic execution report.
-
----
+- success carries no additional error payload
+- failure carries a human-readable explanation
+- callers such as `src/Prodbox/TestRunner.hs` translate those results into CLI exit behavior
 
 ## 5. Command Boundary Contract
 
-Interpreter results flow through command execution boundaries that:
+Command modules do not inline prerequisite traversal.
 
-1. Render summary output for all commands.
-2. Route failure detail reports to stderr only on failure.
-3. Preserve root-cause-only failure reporting to avoid repeated downstream noise.
-
-See [Effectful DAG Architecture](./effectful_dag_architecture.md#53-output-contract-ssot).
-
----
+- `src/Prodbox/TestRunner.hs` builds the phase-one DAG and delegates execution to the interpreter.
+- Host, k8s, and related command families share the same effect/runtime doctrine.
+- Named validation payloads in `src/Prodbox/TestValidation.hs` run after prerequisite closure, not
+  instead of it.
 
 ## 6. Intent Ownership
 
-This SSoT owns interpreter-runtime parity intention.
+This SSoT co-owns interpreter-boundary execution doctrine.
 
-- Owned statement: DAG execution semantics must match BBY parity matrix: pending/ready loop, reduction handling, root-cause/skip outcomes, unexecuted reporting.
-- Linked dependents: `src/Prodbox/EffectInterpreter.hs`, `src/prodbox/cli/interpreter.py`, `tests/unit/test_interpreter.py`, `test/unit/Main.hs`.
-
----
+- Owned statement: `src/Prodbox/EffectInterpreter.hs` is the supported runtime boundary for native
+  effect execution.
+- Linked dependents: `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`,
+  `src/Prodbox/Prerequisite.hs`, `test/unit/Main.hs`.
 
 ## Cross-References
 
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
-- [Prerequisite Doctrine](./prerequisite_doctrine.md)
-- [Streaming Doctrine](./streaming_doctrine.md)
-- [Pure FP Standards](./pure_fp_standards.md)
+- [Prerequisite DAG System](./prerequisite_dag_system.md)
+- [Unit Testing Policy](./unit_testing_policy.md)

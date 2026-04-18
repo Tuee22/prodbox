@@ -4,55 +4,38 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 
-> **Purpose**: Guide for Claude Code development on the current prodbox worktree baseline.
-
----
+> **Purpose**: Guide for Claude Code development on the current `prodbox` worktree baseline.
 
 ## Rewrite Posture
 
 - `DEVELOPMENT_PLAN/README.md` is the authoritative live tracker for target architecture, status,
   blockers, and cleanup ownership.
-- The current worktree implementation is mixed: a compiled Haskell frontend now lives
-  under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`, `cabal.project`, and `Dockerfile`;
-  Haskell owns `config compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`,
-  `dns check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`,
-  and the public `test` entrypoint, including named-suite and aggregate-suite orchestration, while
-  most product runtime still lives under `src/prodbox/` and `tests/`.
-- The supported handoff target is a Haskell-only `prodbox` binary; do not describe the Python
-  baseline as the final architecture.
-
----
+- The repository is Haskell-only on the supported path. The public CLI, lifecycle runtime, Pulumi
+  orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
+  and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
+  `cabal.project`, and `Dockerfile`.
+- Do not describe removed Python directories or Poetry workflows as the current supported
+  architecture.
 
 ## Current Worktree Baseline
 
-Prodbox currently ships a mixed rewrite baseline for managing a home Kubernetes cluster. The
-compiled Haskell frontend owns the explicit command parser plus `config compile|show|validate`,
-`host ensure-tools|check-ports|info|firewall|public-edge`, `dns check`, `gateway status|config-gen`,
-`k8s health|wait|logs`, `check-code`, `tla-check`, and the public `test` entrypoint, while the
-retained Python backend still provides most runtime behavior behind that surface. The repository
-still provides
-declarative, idempotent CLI commands for deploying and managing:
+Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 
-- **RKE2**: Lightweight Kubernetes distribution
-- **MetalLB**: Bare-metal load balancer
-- **Traefik**: Ingress controller
-- **cert-manager**: Automatic TLS certificate management
-- **Route 53**: AWS DNS with dynamic DNS updates
-
-**Current stack**: Haskell frontend (`optparse-applicative` + Cabal + native settings/dns/gateway/host/k8s/test/check-code modules) with delegated access into a retained Python 3.12 + Click + Pydantic + Pulumi backend
-
----
+- `app/prodbox/Main.hs` is the executable entrypoint.
+- `src/Prodbox/` owns the command parser, runtime modules, infra orchestration, gateway runtime,
+  chart platform, AWS administration flows, and test harness.
+- `test/` contains the Haskell unit and integration suites.
+- `prodbox-config.dhall` is decoded directly into Haskell types; `prodbox-config.json` is not part
+  of the supported interface.
+- `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, and `pulumi/aws-test/Main.yaml` are the
+  supported Pulumi programs.
 
 ## Git Workflow Policy
 
 **CRITICAL: Claude Code is NOT authorized to commit or push changes.**
 
-- NEVER run `git commit`, `git push`, `git add`, or any git commands that modify repository state
-- Leave ALL changes as uncommitted working directory changes
-- User reviews and commits manually
-- This policy ensures human oversight of all code changes
-
----
+- Never run `git commit`, `git push`, `git add`, or any git command that modifies repository state.
+- Leave all changes as uncommitted working directory changes.
 
 ## Pure FP Doctrine
 
@@ -62,333 +45,51 @@ declarative, idempotent CLI commands for deploying and managing:
 
 | Code Location | Purity | Allowed |
 |---------------|--------|---------|
-| DAG builders, smart constructors, utilities | 100% pure | Nothing impure |
-| Interpreter `_interpret_*` methods | Impure | Mutation, I/O, try/except |
-| Command entry points | Impure | `sys.exit()` only |
+| DAG builders, renderers, validation helpers | Pure | No I/O |
+| Interpreter and command runners | Effectful | Subprocesses, files, network |
+| Main command entrypoints | Effectful | Exit orchestration and user-facing rendering |
 
 ### Key Rules
 
-1. **No mutation outside interpreter** - Use `@dataclass(frozen=True)`, `tuple`, `frozenset`
-2. **No if/else** - Use `match/case` with exhaustive patterns
-3. **No for loops in pure code** - Use comprehensions or `reduce`
-4. **No exceptions for control flow** - Return `Result[T, E]`
-5. **No default case handlers** - Handle all ADT variants explicitly
-
-### Quick Example
-
-```python
-# ✅ CORRECT - Pure DAG builder
-def dns_check_dag(settings: Settings) -> EffectDAG:
-    return EffectDAG.from_roots(
-        EffectNode(
-            effect=QueryRoute53Record(...),
-            prerequisites=frozenset(["aws_credentials_valid"])
-        ),
-        registry=PREREQUISITE_REGISTRY
-    )
-
-# ❌ WRONG - Impure code with side effects
-def check_dns(settings: Settings) -> None:
-    try:
-        ip = get_public_ip()  # I/O!
-        print(f"IP: {ip}")    # Side effect!
-    except Exception as e:
-        sys.exit(1)           # Scattered exit!
-```
-
-See [Refactoring Patterns](documents/engineering/refactoring_patterns.md) for migration guides.
-
----
-
-## Current Worktree Architecture
-
-### Directory Structure
-
-```
-prodbox/
-├── app/prodbox/Main.hs       # Haskell frontend entry point
-├── src/Prodbox/
-│   ├── CLI/                  # Haskell explicit command-surface parser
-│   └── Backend/              # Haskell bridge to retained Python backend
-├── prodbox.cabal             # Haskell frontend package definition
-├── cabal.project             # Haskell project package set
-├── Dockerfile                # Root Haskell container build under /opt/build
-├── src/prodbox/
-│   ├── cli/                  # Click CLI commands
-│   │   ├── main.py           # Entry point
-│   │   ├── context.py        # Settings context
-│   │   ├── types.py          # Result ADT, subprocess types
-│   │   ├── effects.py        # Effect ADT hierarchy (50+ effect types)
-│   │   ├── effect_dag.py     # DAG types and prerequisite expansion
-│   │   ├── interpreter.py    # Effect interpreter (impurity boundary)
-│   │   ├── dag_builders.py   # Pure Command -> DAG transformations
-│   │   ├── command_adt.py    # Command ADTs with smart constructors
-│   │   ├── command_executor.py # Single entry point for execution
-│   │   ├── prerequisite_registry.py # Prerequisite definitions
-│   │   ├── config_cmd.py      # Configuration commands (Dhall workflow)
-│   │   ├── host.py           # Host prerequisite commands
-│   │   ├── rke2.py           # RKE2 management commands
-│   │   ├── pulumi_cmd.py     # Pulumi commands
-│   │   ├── dns.py            # Route 53 DNS commands
-│   │   ├── k8s.py            # Kubernetes health commands
-│   │   └── gateway.py        # Gateway daemon management commands
-│   ├── infra/                # Pulumi infrastructure definitions
-│   │   ├── __main__.py       # Pulumi program orchestrator
-│   │   ├── providers.py      # K8s and AWS providers
-│   │   ├── metallb.py        # MetalLB deployment
-│   │   ├── ingress.py        # Traefik ingress
-│   │   ├── cert_manager.py   # cert-manager installation
-│   │   ├── cluster_issuer.py # ACME ClusterIssuer
-│   │   └── dns.py            # Route 53 DNS records
-│   ├── lib/                  # Shared utilities
-│   │   ├── subprocess.py     # Async subprocess runner
-│   │   ├── async_runner.py   # Click-asyncio bridge
-│   │   ├── logging.py        # Rich logging setup
-│   │   ├── concurrency.py    # Semaphore-based concurrency utilities
-│   │   └── exceptions.py     # Custom exceptions
-│   ├── gateway_daemon.py     # Distributed gateway daemon (1387 lines)
-│   ├── tla_check.py          # TLA+ model checker (Docker-based)
-│   └── settings.py           # Pydantic BaseModel configuration (loaded from compiled Dhall JSON)
-├── tests/                    # Unit and integration tests
-├── typings/                  # Custom type stubs
-├── documents/                # Engineering documentation
-├── CLAUDE.md                 # This file
-└── AGENTS.md                 # Agent guidelines
-```
-
-### Design Patterns
-
-1. **Pure Effectful DAG System** (implemented):
-   - Effects describe side effects declaratively (50+ effect types)
-   - DAG prerequisite system ensures dependencies
-   - Railway pattern (`Result[T, E]`) for error handling
-   - Single entry point for command execution (`execute_command()`)
-   - CLI commands are thin wrappers that call the effect system
-
-2. **Dhall Configuration**:
-   - Configuration authored in `prodbox-config.dhall` with typed schema (`prodbox-config-types.dhall`)
-   - Compiled to `prodbox-config.json` via `prodbox config compile` (requires `dhall-to-json`)
-   - Loaded into a Pydantic `BaseModel` (`Settings`) for runtime validation
-   - LAN addressing is auto-discovered at runtime, not stored in config
-   - Interactive bootstrap and validation via `prodbox config setup`, `prodbox config compile`, and `prodbox config validate`
-
-3. **CLI Command Pattern**:
-   - Commands use smart constructors returning `Result[Command, str]`
-   - DAG builders transform Commands to Effect DAGs (pure)
-   - Interpreter executes effects (impurity boundary)
-   - Rich library for colored terminal output
-
----
+1. Keep side effects at command or interpreter boundaries.
+2. Prefer explicit ADTs over ad-hoc strings.
+3. Use exhaustive pattern matching.
+4. Return structured errors for ordinary control flow.
+5. Keep configuration decoding and validation explicit.
 
 ## Current Worktree CLI Tool
 
-Until Sprint `4.3` closes, repository-local runtime behavior still mixes native Haskell
-command ownership with the retained Python backend:
+Canonical developer entrypoints:
 
 ```bash
-# Install backend dependencies
-poetry install
-
-# Build the current Haskell frontend
 cabal build --builddir=.build exe:prodbox
-
-# Run CLI through the retained backend
-poetry run prodbox --help
-poetry run prodbox config setup      # Interactive Dhall authoring and IAM bootstrap
-poetry run prodbox config compile    # Compile Dhall to prodbox-config.json
-poetry run prodbox config show       # Display current configuration
-poetry run prodbox config validate   # Validate configuration
-poetry run prodbox host ensure-tools # Check required tools
-poetry run prodbox pulumi preview    # Preview infrastructure changes
-poetry run prodbox pulumi up --yes   # Deploy infrastructure
-poetry run prodbox dns check         # Check DNS status
-poetry run prodbox k8s health        # Check cluster health
-poetry run prodbox gateway start <config>  # Start gateway daemon
-poetry run prodbox gateway status <config> # Query gateway daemon status
-poetry run prodbox gateway config-gen <path> --node-id <id>  # Generate config template
+./.build/prodbox --help
+./.build/prodbox check-code
+./.build/prodbox test unit
+./.build/prodbox test integration cli
+./.build/prodbox test integration env
 ```
 
----
-
-## Type Safety
-
-**Zero tolerance for `Any` types in prodbox code.**
-
-The project uses ultra-strict mypy configuration:
-- `disallow_any_expr = true`
-- `disallow_any_explicit = true`
-- `disallow_any_generics = true`
-- `disallow_any_unimported = true`
-
-Custom type stubs in `typings/` provide full typing for external libraries:
-- Click, Pulumi, boto3, botocore, rich
-
-**Exception**: Pulumi and boto3 libraries have unavoidable `Any` from their dynamic APIs. These are isolated behind typed wrapper interfaces.
-
----
-
-## Infrastructure Patterns
-
-### Pulumi Resources
-
-- Use explicit providers (k8s_provider, aws_provider)
-- Export meaningful outputs for debugging
-- Follow dependency ordering in `__main__.py`
-- Pin chart versions for reproducibility
-
-### Kubernetes
-
-- Namespace isolation for each component
-- Helm for complex deployments (MetalLB, Traefik, cert-manager)
-- Raw K8s manifests for ClusterIssuer, IPAddressPool
-
-### AWS
-
-- Route 53 for DNS management
-- AWS credentials sourced from Dhall config (`prodbox-config.dhall`); ambient or profile-based AWS auth is forbidden
-- IAM least-privilege (Route 53 + STS only)
-- DNS-01 ACME validation for Let's Encrypt
-
----
+Named infrastructure-backed validation commands such as
+`./.build/prodbox test integration aws-iam` and
+`./.build/prodbox test integration public-dns`
+run real native Haskell validation flows and require the environment named by their prerequisite
+contracts.
 
 ## Testing Philosophy
 
 > **SSoT**: [Unit Testing Policy](documents/engineering/unit_testing_policy.md)
 
-### Interpreter-Only Mocking Doctrine
+- Pure code should be testable without mocks.
+- Built-frontend CLI and env proof lives in `test/integration/cli/Main.hs` and
+  `test/integration/env/Main.hs`.
+- Named `prodbox test integration ...` commands execute native validation flows through
+  `src/Prodbox/TestValidation.hs`.
+- Missing prerequisites must fail fast with actionable errors.
 
-**Pure code never touches mocks. All mocking happens in the interpreter.**
+## Documentation
 
-| Test Type | External System Mocking | What Gets Tested |
-|-----------|-------------------------|------------------|
-| **Unit tests** | Via interpreter (mocked effects) | Full pipeline with mocked external systems |
-| **Integration tests** | None (real effects) | Full pipeline with real external systems |
-| **Pure function tests** | None needed | Effect types, DAG builders, smart constructors |
-
-### Key Rules
-
-1. **Mocks live in interpreter only** - Use pytest-subprocess for subprocess mocking
-2. **Pure code produces data** - Never import or reference mocks in pure modules
-3. **Test data vs mocks** - Frozen dataclass instances are test data, not mocks
-4. **Integration tests** - Marked with `@pytest.mark.integration`
-5. **Skip/xfail prohibited** - Missing prerequisites must fail fast (no pytest skip/xfail)
-
-### Coverage Targets
-
-| Module | Target |
-|--------|--------|
-| Pure code (`effects.py`, `dag_builders.py`, etc.) | 100% |
-| `interpreter.py` | 90%+ |
-| CLI modules | 90%+ |
-| Overall (excluding `infra/`) | 95%+ |
-
-```bash
-poetry run prodbox test all                        # Run all tests
-poetry run prodbox test unit                       # Unit tests only
-poetry run prodbox test all --coverage --cov-fail-under 100  # With coverage
-```
-
-See [CLI Command Surface](documents/engineering/cli_command_surface.md) for the full supported command matrix.
-
----
-
-## Quality Checks
-
-```bash
-poetry run prodbox check-code        # Policy guard + lint + format check + type check
-poetry run prodbox tla-check         # TLA+ model verification (requires Docker)
-```
-
-poetry run prodbox check-code is the required single entrypoint for doctrine enforcement in local development.
-
----
-
-## Development Tooling Policy
-
-This repository is in active development and does not use CI automation.
-
-- Do not use `.github/` workflows for validation.
-- Do not use git hooks (including pre-commit).
-- Run validation locally through CLI entrypoints only:
-- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy).
-
-```bash
-poetry run prodbox check-code
-poetry run prodbox test all
-```
-
-### Container Build
-
-```bash
-docker build -f docker/gateway.Dockerfile -t prodbox-gateway .
-```
-
-Gateway image doctrine: explicit Poetry bootstrap (`python -m pip install --upgrade pip setuptools
-wheel poetry`), full-repo `COPY . /app`, and container-local `poetry.toml` override with
-`virtualenvs.create = false`. Entrypoint:
-`tini -- python -m prodbox.cli.main gateway start`.
-
----
-
-## Common Development Tasks
-
-### Adding a New CLI Command
-
-1. Add Command ADT to `src/prodbox/cli/command_adt.py` with smart constructor
-2. Add DAG builder to `src/prodbox/cli/dag_builders.py`
-3. Update `command_to_dag()` pattern matching in `dag_builders.py`
-4. Create thin wrapper in appropriate CLI module (e.g., `dns.py`)
-5. Register command group in `main.py` (if new group)
-6. Add tests in `tests/unit/` and/or `tests/integration/`
-7. Run `poetry run prodbox check-code` to verify policy/lint/types
-8. Leave changes uncommitted for review
-
-### Modifying Infrastructure
-
-1. Edit modules in `src/prodbox/infra/`
-2. Run `poetry run prodbox pulumi preview` to verify
-3. Test with `poetry run prodbox pulumi up --yes`
-4. Leave changes uncommitted for review
-
----
-
-## Dependency Management
-
-> **SSoT**: [Dependency Management Standards](documents/engineering/dependency_management.md)
-
-### Key Rules
-
-1. **`poetry.lock` is NOT version controlled** - Each developer generates locally via `poetry install`
-2. **All dependencies use caret bounds** - `package = "^X.Y.0"` for SemVer-compatible updates
-3. **No unbounded dependencies** - Every package must have an explicit upper bound
-
-### Adding Dependencies
-
-```bash
-# Runtime dependency with caret bound
-poetry add "package^X.Y.0"
-
-# Dev dependency
-poetry add --group dev "package^X.Y.0"
-```
-
----
-
-## Engineering Documentation
-
-See `documents/engineering/` for detailed architecture docs:
-- `cli_command_surface.md` - Canonical command matrix and rewrite-owned compatibility constraints
-- `dependency_management.md` - Build and dependency doctrine for the current baseline and rewrite
-- `effectful_dag_architecture.md` - DAG system design
-- `prerequisite_doctrine.md` - Fail-fast vs auto-rebuild philosophy
-- `unit_testing_policy.md` - Interpreter-Only Mocking Doctrine
-
----
-
-## Contributing Checklist
-
-- [ ] Code changes implemented
-- [ ] Tests written and passing (`poetry run prodbox test all`)
-- [ ] Type checking passes (`poetry run prodbox check-code`)
-- [ ] Linting passes (`poetry run prodbox check-code`)
-- [ ] **Changes left uncommitted** (user commits manually)
+- [Development Plan](./DEVELOPMENT_PLAN/README.md)
+- [Engineering Docs Index](./documents/engineering/README.md)
+- [CLI Command Surface](./documents/engineering/cli_command_surface.md)
+- [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)

@@ -4,83 +4,56 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
 
-> **Purpose**: Define how prodbox provisions Harbor, builds/pushes custom images via Docker CLI, and enforces local image pull behavior for RKE2.
-
----
+> **Purpose**: Define how `prodbox` provisions Harbor, builds and pushes custom images via Docker
+> CLI, and enforces local image-pull behavior for RKE2.
 
 ## 1. Scope
 
 This document is the SSoT for the local image-registry doctrine:
 
-1. Harbor is installed/reconciled during `prodbox rke2 install`.
-2. Custom prodbox images are built outside the cluster via Docker CLI and pushed to Harbor.
+1. Harbor is installed or reconciled during `prodbox rke2 install`.
+2. Custom `prodbox` images are built outside the cluster via Docker CLI and pushed to Harbor.
 3. RKE2 is configured to mirror `docker.io` pulls through local Harbor.
-4. Missing mirrored images are populated on demand (once) from currently referenced cluster images.
+4. Missing mirrored images are populated on demand from currently referenced cluster images.
 
-Retained storage and MinIO persistence doctrine are intentionally out-of-scope here and defined in
+Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
-
----
 
 ## 2. Current Runtime Contract
 
-On the current mixed baseline, the supported `prodbox rke2 install` path is owned by
-`src/Prodbox/CLI/Rke2.hs`. The native Haskell lifecycle runtime reconciles Harbor registry state in
-railway-order sequence:
+The supported `prodbox rke2 install` path is owned by `src/Prodbox/CLI/Rke2.hs`.
 
-1. Helm repository reconcile.
-2. Harbor chart `upgrade --install`.
-3. Prodbox-owned Harbor nginx readiness-contract reconcile.
-4. Harbor readiness wait.
-5. Harbor project reconcile for `prodbox` image/mirror namespace.
-6. Docker login + mirror/build/push operations.
-7. Import gateway image into RKE2 containerd cache.
-8. `registries.yaml` reconcile and conditional RKE2 restart.
+The native Haskell lifecycle runtime reconciles Harbor state in order:
 
-`src/prodbox/cli/rke2.py`, `src/prodbox/cli/effects.py`, and Harbor-specific runtime in
-`src/prodbox/cli/interpreter.py` now survive only as compatibility or cleanup residue; they are not
-the supported local-cluster lifecycle path.
+1. Helm repository reconcile
+2. Harbor chart upgrade or install
+3. Harbor readiness-contract reconcile
+4. Harbor readiness wait
+5. Harbor project reconcile for `prodbox`
+6. Docker login plus mirror, build, and push operations
+7. Gateway image import into the RKE2 containerd cache
+8. `registries.yaml` reconcile and conditional RKE2 restart
 
 ### 2.1 Harbor Readiness Contract
 
-`prodbox` owns the bootstrap readiness contract for Harbor's external-serving `nginx`
-Deployment.
+`prodbox` owns the bootstrap readiness contract for Harbor's external-serving `nginx` deployment.
 
 Policy:
 
-1. `prodbox` MUST NOT treat the Harbor chart's default `harbor-nginx` `/` probe as the
-   canonical readiness event for `rke2 install`.
-2. `prodbox` MUST patch the `harbor-nginx` ConfigMap to publish a local `GET /readyz`
-   response from nginx itself.
-3. `prodbox` MUST patch the `harbor-nginx` Deployment so readiness and liveness use
-   `/readyz`.
-4. Harbor bootstrap MUST remain event-driven: `harbor-core` and `harbor-registry`
-   availability are waited independently, and `harbor-nginx` availability is consumed
-   only after the local `/readyz` contract is applied.
-5. Docker login, Harbor API project reconcile, and image push operations remain the
-   capability checks for the external NodePort path (`127.0.0.1:30080`).
-
-Rationale:
-
-- The chart-default `harbor-nginx` `/` probe traverses the proxied UI path and can report
-  false-not-ready during cold bootstrap even when nginx itself is healthy enough to serve
-  Harbor API and registry traffic once backend components are available.
-- Publishing a local `/readyz` endpoint makes the Kubernetes readiness event represent
-  nginx serve capability instead of upstream UI timing.
-- This doctrine forbids sleep-based retry compensation in `prodbox`; readiness must come
-  from component events and direct capability checks.
-
----
+1. `prodbox` does not treat the chart-default `/` probe as the canonical readiness event.
+2. `prodbox` patches `harbor-nginx` to publish a local `GET /readyz` response.
+3. Readiness and liveness use `/readyz`.
+4. Harbor bootstrap remains event-driven.
+5. Docker login, Harbor API project reconcile, and image push operations are the final capability
+   checks for the external NodePort path.
 
 ## 3. Runtime Outputs
 
 `prodbox rke2 install` derives Harbor image targets deterministically from machine identity:
 
-- `prodbox-id` source: `/etc/machine-id` prerequisite pipeline
+- `prodbox-id` source: `/etc/machine-id`
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
 - additional custom image ref: `127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest`
-
----
 
 ## 4. RKE2 Mirror Behavior
 
@@ -88,79 +61,46 @@ Rationale:
 
 - file: `/etc/rancher/rke2/registries.yaml`
 - mirror target: local Harbor endpoint (`127.0.0.1:30080`)
-- rewrite policy: `docker.io` paths are rewritten into Harbor `prodbox/` project path
+- rewrite policy: `docker.io` paths are rewritten into the Harbor `prodbox/` project path
 
-If `registries.yaml` content changes, RKE2 is restarted once, then cluster access is re-verified before the effect succeeds.
-
----
+If `registries.yaml` content changes, RKE2 is restarted once and cluster access is re-verified
+before the effect succeeds.
 
 ## 5. Docker Hub Population
 
 Population is idempotent and demand-driven:
 
-1. Enumerate currently referenced pod container images.
-2. Normalize docker-hub references.
-3. For each image:
-   1. Check Harbor manifest existence.
-   2. Pull from Docker Hub only when missing.
-   3. Tag/push once into Harbor.
-
-This keeps mirror state convergent without repeatedly re-pulling/pushing already mirrored images.
-
----
+1. enumerate currently referenced pod container images
+2. normalize Docker Hub references
+3. for each image:
+   check Harbor manifest existence, pull only when missing, then tag and push once
 
 ## 6. Gateway Container Build Doctrine
 
-Gateway image builds MUST use `docker/gateway.Dockerfile` with full-repository build context.
+Gateway image builds use `docker/gateway.Dockerfile` with full-repository build context.
 
 Container build requirements:
 
-1. Install Poetry explicitly via pip:
-
-```bash
-python -m pip install --upgrade pip setuptools wheel poetry
-```
-
-2. Copy repository root into container image:
-
-```dockerfile
-# File: docker/gateway.Dockerfile
-COPY . /app
-```
-
-3. Keep `.dockerignore` synchronized with `.gitignore` (mirrored patterns).
-4. Override `poetry.toml` inside container build so Poetry does not create virtualenvs:
-
-```toml
-# File: poetry.toml
-[virtualenvs]
-create = false
-```
-
-5. Do not set `PYTHONDONTWRITEBYTECODE` or `PYTHONUNBUFFERED` in this image.
-6. Use `tini` as PID 1 and invoke the canonical CLI startup path through it:
-
-```dockerfile
-# File: docker/gateway.Dockerfile
-ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "prodbox.cli.main", "gateway", "start"]
-```
+1. build the Haskell gateway binary in the builder stage
+2. copy the repository content needed by the build into the image context
+3. keep `.dockerignore` synchronized with the intended build inputs
+4. use `tini` as PID 1 in the runtime image
+5. invoke the canonical CLI startup path through the Haskell gateway entrypoint
 
 ## 7. Operator Runbook
 
 Recommended flow before gateway pod integration tests:
 
 ```bash
-poetry run prodbox rke2 install
-poetry run prodbox test integration gateway-pods
+./.build/prodbox rke2 install
+./.build/prodbox test integration gateway-pods
 ```
 
 Image override remains available for explicit testing:
 
 ```bash
-PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> poetry run prodbox test integration gateway-pods
+PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> ./.build/prodbox test integration gateway-pods
 ```
-
----
 
 ## Cross-References
 

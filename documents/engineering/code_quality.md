@@ -6,41 +6,37 @@
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox check-code`.
 
----
-
 ## 1. Guardrail Statement
 
-Side effects are interpreter-boundary only; policy guards in check-code are mandatory and blocking.
-
----
+Side effects are interpreter-boundary only; policy guards in `check-code` are mandatory and
+blocking.
 
 ## 2. Canonical Enforcement Entry Point
 
-All policy, lint, formatting, type checks, and the host-side Haskell build proof close through the
-canonical operator entrypoint:
+All policy, formatting, build, and host-side executable-proof closure flow through the canonical
+operator entrypoint:
 
 ```bash
-poetry run prodbox check-code
+./.build/prodbox check-code
 ```
 
-On the current mixed baseline, that command resolves into the Haskell frontend entrypoint in
-`src/Prodbox/CheckCode.hs`. The Haskell-owned wrapper still executes retained Python guard modules
-plus `ruff` and `mypy`, then finishes with `cabal build --builddir=.build all`; removal of that
-Python-owned quality toolchain remains later cleanup work.
+`src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs a fail-fast
+sequence:
 
-The command runs a fail-fast sequence:
+1. `cabal build --builddir=.build all`
+2. Sync the built operator binary to `.build/prodbox`
 
-1. Policy guards (`no_direct_poetry_run_guard`, `no_test_skip_guard`, purity/no-statements/shell/threading/type/collision/click-passthrough/timeout, docs lint)
-2. `ruff check src/ tests/`
-3. `ruff format --check src/ tests/`
-4. `mypy src/`
-5. `cabal build --builddir=.build all`
+Local closure on the April 18, 2026 worktree also includes:
 
----
+```bash
+cabal build --builddir=.build exe:prodbox
+cabal test --builddir=.build test:prodbox-unit test:prodbox-integration-cli test:prodbox-integration-env
+```
 
 ## 2A. Development Tooling Policy
 
-Project is in active development; CI pipelines, `.github` workflows, and git hooks (including pre-commit) are not part of the supported workflow.
+Project is in active development; CI pipelines, `.github` workflows, and git hooks (including
+pre-commit) are not part of the supported workflow.
 
 Do not add or rely on:
 
@@ -50,45 +46,33 @@ Do not add or rely on:
 Use local CLI entrypoints only:
 
 ```bash
-poetry run prodbox check-code
-poetry run prodbox test all
+./.build/prodbox check-code
+./.build/prodbox test all
 ```
-
----
 
 ## 3. Guard Coverage
 
-Current guard set:
+Current enforced quality surfaces:
 
-- `purity_guard`
-- `no_statements_guard` (default `enforce` mode; set `PRODBOX_NO_STATEMENTS_MODE=informational` for non-blocking migration diagnostics)
-- `no_shell_guard`
-- `no_threading_guard`
-- `type_escape_guard`
-- `command_name_collision_guard`
-- `click_passthrough_guard`
-- `timeout_guard`
-- `no_test_skip_guard`
-- `doc_lint_guard`
+- Haskell buildability through `cabal build --builddir=.build all`
+- Operator-binary sync to `./.build/prodbox`
+- Test-suite compilation through the Cabal build
+- Doctrine alignment described by the governed docs in this directory
 
-Doctrine violations must fail with non-zero exit unless an individual guard is explicitly configured for informational output.
-
----
+Doctrine violations must fail with a non-zero exit code.
 
 ## 4. Testing Policy Link
 
-Skip/xfail enforcement and timeout doctrine for test execution are part of quality enforcement and are validated in `check-code`.
-
----
+Skip/xfail enforcement, phase-banner doctrine, prerequisite gates, and named validation-harness
+behavior are defined in [Unit Testing Policy](./unit_testing_policy.md).
 
 ## 5. Intent Ownership
 
 This SSoT co-owns purity and guardrail doctrine intention.
 
-- Owned statement: Side effects are interpreter-boundary only; policy guards in check-code are mandatory and blocking.
-- Linked dependents: `src/Prodbox/CheckCode.hs`, `src/prodbox/cli/check_code.py`, `src/prodbox/lib/lint/*.py`, `tests/unit/test_check_code_command.py`.
-
----
+- Owned statement: Side effects are interpreter-boundary only; policy guards in `check-code` are
+  mandatory and blocking.
+- Linked dependents: `src/Prodbox/CheckCode.hs`, `prodbox.cabal`, `test/unit/Main.hs`.
 
 ## Cross-References
 

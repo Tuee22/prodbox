@@ -2,128 +2,66 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/aws_test_environment.md
 
-> **Purpose**: Define pytest fixture doctrine for cluster-backed integration test setup, teardown, and cleanup failure handling.
-
----
+> **Purpose**: Define integration setup, teardown, and cleanup ownership for real-system
+> validation.
 
 ## 0. Canonical Doctrine Statements
 
-Cluster-backed integration tests must establish the conditions required to pass through pytest fixtures; tests must not rely on residual cluster state from prior tests.
-
-Test outcomes are pass/fail only; pytest warnings are prohibited in the suite.
-
-Fixture teardown must always attempt cleanup after the test, including failing tests, using pytest yield-fixture or finalizer semantics.
-
-Any teardown cleanup failure must abort the entire pytest session immediately.
-
----
+- Real-system validation must own its setup and cleanup behavior explicitly.
+- Cleanup obligations must be visible in the validation flow, not hidden behind ambient machine
+  state.
+- Named `prodbox test integration ...` commands may depend on real infrastructure, but their setup
+  and cleanup ownership must remain explicit and auditable.
 
 ## 1. Scope
 
-This doctrine applies to integration tests that mutate real cluster state:
+This doctrine applies to:
 
-1. Namespace-scoped gateway pod tests.
-2. Shared-runtime lifecycle tests that exercise canonical `prodbox` resources.
-3. Any future cluster-backed pytest integration that creates or mutates Kubernetes resources.
-
-It does not restate `prodbox test` prerequisite/runbook gating. That operator-facing contract remains owned by [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine).
-
-It does not own AWS environment creation/cleanup doctrine for stateful AWS tests. That is
-defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
-
-For `prodbox`, AWS-backed tests split into two ownership modes that follow equivalent invariants:
-per-test Route 53 hosted-zone fixtures for `dns-aws`, and Pulumi-owned AWS stack lifecycle for
-`pulumi` plus `ha-rke2-aws`. In both cases setup rollback before yield and teardown abort on
-cleanup failure remain mandatory, as defined in
-[AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
-
----
+- built-frontend integration suites under `test/integration/`
+- native real-world validation flows in `src/Prodbox/TestValidation.hs`
+- AWS- and Route-53-backed lifecycle checks
+- cluster-backed validation flows that modify shared runtime state
 
 ## 2. Fixture Ownership Rules
 
-### 2.1 Setup Ownership
+Ownership rules:
 
-The fixture, not the test body, owns cluster preconditions.
-
-Examples:
-
-1. Create a unique namespace and certificates before yielding a gateway mesh fixture.
-2. Reconcile shared baseline runtime before yielding a lifecycle fixture.
-3. Wait for required readiness/convergence signals before yielding when those signals are baseline preconditions for the assertions.
-
-### 2.2 Teardown Ownership
-
-The same fixture that established cluster state owns teardown.
-
-Idiomatic pattern:
-
-```python
-# Example: tests/integration/conftest.py
-@pytest_asyncio.fixture
-async def cluster_fixture() -> AsyncIterator[ClusterContext]:
-    context = await build_cluster_context()
-    yield context
-    await cleanup_cluster_context(context)
-```
-
-Cluster cleanup must not be open-coded in each test body via repeated `try/finally` blocks when a fixture can own that lifecycle once.
-
----
+1. The code that allocates real resources owns the primary cleanup path.
+2. Command-level postflight repair in `src/Prodbox/TestRunner.hs` owns aggregate supported-runtime
+   restoration for destructive suites.
+3. AWS-mutating validation flows must clean up resources they create before reporting success.
+4. Cleanup failures must be surfaced explicitly to the operator.
 
 ## 3. Isolation Modes
 
-### 3.1 Isolated Namespace Fixtures
+Supported isolation patterns include:
 
-Default mode for ephemeral integration resources:
-
-1. Allocate a unique namespace per test.
-2. Create only the resources needed for that test.
-3. Delete the namespace during fixture teardown.
-
-### 3.2 Shared Runtime Baseline Fixtures
-
-Some lifecycle tests intentionally target canonical shared runtime objects in `prodbox`.
-
-For those tests, the fixture contract is:
-
-1. Reconcile the canonical post-deploy baseline runtime before yield.
-2. Remove all test-created resources after yield, including any temporary storage artifacts owned by the fixture.
-3. Reconcile the same post-deploy baseline runtime again before fixture teardown returns.
-
-This is the only allowed alternative to unique-namespace isolation.
-
----
+- fake-tool built-frontend proof in `test/integration/cli/Main.hs`
+- repository-local config proof in `test/integration/env/Main.hs`
+- ephemeral AWS hosted zones or stacks created and destroyed by the named validation flow
+- aggregate runtime repair through the public `prodbox` surface after destructive integration work
 
 ## 4. Cleanup Failure Handling
 
-Cleanup must always be attempted, but warning-only cleanup outcomes are prohibited.
+Cleanup failures are real failures.
 
-Required behavior:
-
-1. Pytest warnings are treated as errors so the suite remains pass/fail only.
-2. Teardown catches cleanup exceptions only long enough to convert them into an immediate session abort with explicit target and error text.
-3. Shared-runtime baseline restore failure is a teardown cleanup failure and must stop the suite.
-4. Observational runtime objects such as Kubernetes `Event` resources are not fixture-owned pass conditions and must not be treated as teardown blockers.
-
-Rationale: a teardown cleanup failure can invalidate the baseline needed for every later cluster-backed test, so the suite must stop instead of continuing on ambiguous state.
-
----
+- do not silently swallow cleanup errors
+- prefer reporting the validation failure first if both validation and cleanup fail
+- still attempt cleanup when safe to do so after a mid-validation failure
 
 ## 5. Relationship To Other Doctrine
 
-1. Test command prerequisite/runbook gating is defined in [Unit Testing Policy](./unit_testing_policy.md#two-phase-test-command-doctrine).
-2. Shared runtime retention/rebinding expectations and the definition of post-deploy baseline are defined in [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md#6-test-expectations).
-3. Runtime-managed prodbox namespace ownership is defined in [Prerequisite Doctrine](./prerequisite_doctrine.md#0-canonical-doctrine-statements).
-4. Stateful AWS integration environment ownership is defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md).
+This document works with:
 
----
+- [Unit Testing Policy](./unit_testing_policy.md) for test-runner and phase-banner doctrine
+- [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) for real AWS
+  auth and isolation rules
+- [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) for retained local data behavior
 
 ## Cross-References
 
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
-- [Prerequisite Doctrine](./prerequisite_doctrine.md)
-- [Documentation Standards](../documentation_standards.md)

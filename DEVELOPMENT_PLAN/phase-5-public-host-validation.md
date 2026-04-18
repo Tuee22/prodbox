@@ -25,7 +25,7 @@ unsupported.
 ## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Host.hs`, `test/unit/Main.hs`, `test/integration/public_host/`
+**Implementation**: `src/Prodbox/Host.hs`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -59,6 +59,9 @@ owns it.
   supported-runtime bootstrap and postflight checks instead of bouncing through the Python backend.
 - `test/unit/Main.hs` proves parser routing for native `host public-edge`, and
   `prodbox test unit` passes after the Haskell port lands.
+- The named validation commands `prodbox test integration charts-vscode` and
+  `prodbox test integration public-dns` now run executable native Haskell validation flows via
+  `src/Prodbox/TestValidation.hs`.
 
 ### Remaining Work
 

@@ -60,7 +60,6 @@ import Prodbox.Settings
       StorageSection (..),
       defaultConfigFile,
       loadConfigFile,
-      materializeConfigJson,
       renderConfigDhall,
       validateAndLoadSettings,
     )
@@ -784,17 +783,13 @@ applyAwsTeardown repoRoot input = do
                 }
         paths = canonicalConfigPaths repoRoot
     writeConfigFile (configDhallPath paths) updatedConfig
-    materializeResult <- materializeConfigJson repoRoot
-    case materializeResult of
-        Left err -> throwAws err
-        Right () ->
-            pure
-                IamTeardownResult
-                    { iamTeardownUserName = prodboxIamUserName,
-                      iamTeardownDeletedAccessKeys = deletedAccessKeys,
-                      iamTeardownUserDeleted = userDeleted,
-                      iamTeardownDhallPath = configDhallPath paths
-                    }
+    pure
+        IamTeardownResult
+            { iamTeardownUserName = prodboxIamUserName,
+              iamTeardownDeletedAccessKeys = deletedAccessKeys,
+              iamTeardownUserDeleted = userDeleted,
+              iamTeardownDhallPath = configDhallPath paths
+            }
 
 applyAwsCheckQuotas :: FilePath -> AwsCheckQuotasInput -> IO [QuotaStatus]
 applyAwsCheckQuotas repoRoot input =

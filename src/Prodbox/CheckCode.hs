@@ -3,17 +3,14 @@ module Prodbox.CheckCode
     )
 where
 
-import Control.Monad (unless)
-import System.Directory
-    ( createDirectoryIfMissing,
-      createFileLink,
-      doesFileExist,
+import Prodbox.BuildSupport
+    ( addBuildSupportEnvironment,
+      syncBuiltOperatorBinary,
     )
 import System.Environment (getEnvironment)
 import System.Exit
     ( ExitCode (..),
     )
-import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr)
 import System.Process
     ( CreateProcess
@@ -33,10 +30,16 @@ import System.Process
 runCheckCode :: FilePath -> IO ExitCode
 runCheckCode repoRoot = do
     baseEnvironment <- getEnvironment
-    environment <- addBuildSupport repoRoot baseEnvironment
+    environment <- addBuildSupportEnvironment repoRoot baseEnvironment
     putStrLn "Running prodbox check-code (Haskell entrypoint: cabal build + cabal test compilation)"
     buildExit <- runStreaming repoRoot environment "cabal" ["build", "--builddir=.build", "all"]
-    pure buildExit
+    case buildExit of
+        ExitFailure _ -> pure buildExit
+        ExitSuccess -> do
+            syncResult <- syncBuiltOperatorBinary repoRoot environment
+            case syncResult of
+                Left err -> failWith err
+                Right _ -> pure ExitSuccess
 
 runStreaming :: FilePath -> [(String, String)] -> FilePath -> [String] -> IO ExitCode
 runStreaming repoRoot environment commandPath arguments = do
@@ -52,33 +55,7 @@ runStreaming repoRoot environment commandPath arguments = do
                 }
     waitForProcess handle
 
-addBuildSupport :: FilePath -> [(String, String)] -> IO [(String, String)]
-addBuildSupport repoRoot environment = do
-    let supportDir = repoRoot </> ".build/support"
-        supportLib = supportDir </> "libtinfo.so"
-    createDirectoryIfMissing True supportDir
-    supportExists <- doesFileExist supportLib
-    unless supportExists $ do
-        sourceLib <- firstExistingSystemLib
-        case sourceLib of
-            Nothing -> pure ()
-            Just sourcePath -> createFileLink sourcePath supportLib
-    pure (upsertEnv "LIBRARY_PATH" supportDir environment)
-
-firstExistingSystemLib :: IO (Maybe FilePath)
-firstExistingSystemLib =
-    firstExistingFile
-        [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6",
-          "/lib/x86_64-linux-gnu/libtinfo.so.6"
-        ]
-
-firstExistingFile :: [FilePath] -> IO (Maybe FilePath)
-firstExistingFile paths = go paths
-  where
-    go [] = pure Nothing
-    go (path : remaining) = do
-        exists <- doesFileExist path
-        if exists then pure (Just path) else go remaining
-
-upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
-upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
+failWith :: String -> IO ExitCode
+failWith message = do
+    hPutStrLn stderr message
+    pure (ExitFailure 1)

@@ -42,13 +42,10 @@ removal for gateway delivery are owned by
 
 Canonical repository facts referenced by this doctrine:
 
-1. The current mixed gateway implementation is split between native `src/Prodbox/Gateway.hs`
-   for `prodbox gateway status|config-gen` and retained `src/prodbox/gateway_daemon.py` plus
-   `src/prodbox/cli/gateway.py` for the running daemon and `prodbox gateway start`.
-2. The managed CLI surface remains `prodbox gateway start|status|config-gen`.
-3. Verification artifacts include `tests/unit/test_gateway_daemon.py`,
-   `tests/integration/test_gateway_daemon_k8s.py`,
-   `tests/integration/test_gateway_k8s_pods.py`, and
+1. `src/Prodbox/Gateway.hs` owns `prodbox gateway start|status|config-gen`.
+2. `src/Prodbox/Gateway/Daemon.hs` owns the running gateway daemon runtime.
+3. Verification artifacts include `test/unit/Main.hs`, native named validation flows behind
+   `prodbox test integration gateway-daemon` and `prodbox test integration gateway-pods`, and
    `documents/engineering/tla/gateway_orders_rule.tla`.
 
 ---
@@ -202,7 +199,7 @@ Model files:
 Execution requirement:
 
 - TLA+ checks must run via Docker using `maxdiefenbach/tlaplus`.
-- On the current mixed baseline, `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` entrypoint.
+- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` entrypoint.
 - Use the CLI command `prodbox tla-check`.
 - The command runs a self-deleting container (`docker run --rm ...`) and writes the latest result to `documents/engineering/tla/tlc_last_run.txt`.
 
@@ -234,14 +231,12 @@ This prevents stale writes from lagging nodes that haven't yet learned about own
 
 ### DnsWriteGate Configuration
 
-```python
-@dataclass(frozen=True)
-class DnsWriteGate:
-    zone_id: str        # Route 53 hosted zone ID
-    fqdn: str           # Gateway FQDN to update
-    ttl: int            # DNS record TTL (seconds)
-    aws_region: str
-```
+`DnsWriteGate` carries:
+
+- `zone_id`
+- `fqdn`
+- `ttl`
+- `aws_region`
 
 When `dns_write_gate` is `None`, the daemon leaves Route 53 writes disabled.
 
@@ -252,8 +247,8 @@ Implements the `DnsWriteClient` protocol:
 - `update_route53_record()` — boto3 UPSERT A record wrapped with `asyncio.to_thread()`
 - Auto-wired in daemon startup when gate config is present and no mock injected
 
-AWS auth for gateway DNS writes is loaded from `Settings` via the repo-root
-`prodbox-config.json` compiled from `prodbox-config.dhall`.
+AWS auth for gateway DNS writes is derived from the repository-root Dhall configuration and the
+runtime environment selected for the gateway workload.
 `dns_write_gate` must not contain AWS access key, secret key, session token, or similar
 credential fields.
 
@@ -299,17 +294,13 @@ The canonical steady state for the gateway daemon is the in-cluster
 `prodbox charts deploy gateway` workload. The chart at `charts/gateway/` renders
 one Deployment per ranked node id, each backed by a per-node `gateway-<id>`
 Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
-TLS material set, and a Kubernetes Secret carrying the prodbox-config.json that
-the daemon's Route 53 client reads at runtime.
+TLS material set, and the secret or config inputs required by the daemon at runtime.
 
-On the current mixed baseline, `prodbox gateway start <config.json>` is still
-served by the retained Python daemon path and remains the in-pod entrypoint
-invoked by the gateway chart's container. Native Haskell `prodbox gateway
-status <config.json>` and `prodbox gateway config-gen <path> --node-id <id>`
-now cover operator status inspection and config-template generation. The
-`gateway start` path is also the dev-only mode used when running the daemon
-directly against a host process for local iteration; that mode is not a
-supported public-host steady state and no host-side supervisor is installed.
+`prodbox gateway start <config.json>` is the Haskell daemon entrypoint and remains the in-pod
+startup path invoked by the gateway chart's container. `prodbox gateway status <config.json>` and
+`prodbox gateway config-gen <path> --node-id <id>` provide operator inspection and template
+generation. Direct host-process invocation remains a development mode, not the supported steady
+state.
 
 Containerization is first-class for integration/runtime image publishing:
 
@@ -337,9 +328,9 @@ prodbox charts status gateway                 # Inspect installed gateway releas
 
 Gateway verification lives in four canonical places:
 
-1. `tests/unit/test_gateway_daemon.py` for daemon logic and DNS-write gating.
-2. `tests/integration/test_gateway_daemon_k8s.py` for process-mode mesh behavior.
-3. `tests/integration/test_gateway_k8s_pods.py` for pod-backed mesh behavior.
+1. `test/unit/Main.hs` for daemon logic, rendering, and DNS-write gating support behavior.
+2. `prodbox test integration gateway-daemon` for daemon-oriented validation.
+3. `prodbox test integration gateway-pods` for pod-backed mesh validation.
 4. `prodbox tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
    for formal safety checks.
 

@@ -2,78 +2,64 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/unit_testing_policy.md
 
-> **Purpose**: Define streaming behavior and serialization guarantees for CLI subprocess effects.
-
----
+> **Purpose**: Define streaming and terminal-record invariants for supported `prodbox` command
+> flows.
 
 ## 1. Streaming Contract Statement
 
-Streaming is observational only and must follow at-most-one-stream output serialization invariants.
+Operator-facing progress output is part of the supported command contract.
 
----
+- phase banners must appear in a stable order
+- command output must be line-oriented and readable in a normal terminal
+- prerequisite and validation phases must not hide major control-flow transitions
 
 ## 2. Invariant
 
-The interpreter enforces an at-most-one-stream invariant:
+Streaming output should preserve the causal story of what the command is doing.
 
-1. Only one stream-capable effect may actively broadcast at a time.
-2. Additional stream requests are queued FIFO.
-3. Releasing the active stream wakes exactly one queued request.
-
-This behavior is implemented by `StreamControl` and consumed in interpreter subprocess handlers.
-
----
+- emit phase boundaries before the work they describe
+- do not collapse multiple major phases into one ambiguous line
+- preserve stderr for underlying tool failures when that context is operator-relevant
 
 ## 3. Scope and Orthogonality
 
-Stream control is an output-layer concern only. It does not replace DAG prerequisites or resource locking.
+This doctrine applies to user-facing command output. It does not replace:
 
-- Use DAG prerequisites to constrain execution ordering or exclusivity.
-- Use stream control to keep user-visible output coherent.
-
----
+- prerequisite doctrine
+- DAG construction doctrine
+- validation ownership doctrine
 
 ## 4. Runtime Expectations
 
-1. `RunSubprocess(..., stream_stdout=True)` participates in stream control.
-2. Non-streaming subprocess effects remain independent of stream queue state.
-3. Stream control state is inspectable for deterministic tests.
+`src/Prodbox/TestRunner.hs` is the most visible implementation of this doctrine.
 
----
+It emits:
+
+- `Phase 1/2` prerequisite banners
+- optional `Phase 1.5/2` runbook banners
+- `Phase 1.6/2` or post-test runtime restoration banners when the selected suite requires them
+- `Phase 2/2` before Haskell suites or named validation payloads run
 
 ## 5. Terminal Record Contract
 
-CLI terminal records are newline-terminated standalone writes and must flush before streamed subprocess output begins.
+Terminal records must remain legible and attributable.
 
-This contract applies to `WriteStdout` and `WriteStderr` effects used for phase banners, headers, summaries, and failure reports.
-
-1. The interpreter appends one trailing newline when a terminal record omits it.
-2. A terminal record that announces a stream-capable subprocess is emitted and flushed before that subprocess begins streaming.
-3. Terminal records must not share a rendered terminal line with streamed subprocess output.
-
-`prodbox test` owns the specific phase banner order in [Unit Testing Policy](./unit_testing_policy.md#phase-banner-rendering-contract).
-
-On the current mixed baseline, the full public `prodbox test` surface satisfies this
-contract through `src/Prodbox/EffectInterpreter.hs` and `src/Prodbox/TestRunner.hs`; retained
-Python `test_cmd.py` code now survives only as the legacy direct-backend implementation under
-`PRODBOX_PYTHON_BACKEND=1`.
-
----
+- each phase banner is its own stdout line
+- user-facing summaries should be emitted before a command exits successfully
+- hard failures should preserve the underlying error context where possible
 
 ## 6. Intent Ownership
 
-This SSoT owns streaming behavior contract intention.
+This SSoT co-owns streaming doctrine intention.
 
-- Owned statement: Streaming is observational only and must follow at-most-one-stream output serialization invariants.
-- Owned statement: CLI terminal records are newline-terminated standalone writes and must flush before streamed subprocess output begins.
-- Linked dependents: `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `src/prodbox/cli/stream_control.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_stream_control.py`, `tests/unit/test_interpreter.py`, `tests/unit/test_test_cmd.py`, `test/unit/Main.hs`.
-
----
+- Owned statement: operator-facing phase and validation output is part of the supported command
+  contract.
+- Linked dependents: `src/Prodbox/TestRunner.hs`, `src/Prodbox/Subprocess.hs`,
+  `src/Prodbox/EffectInterpreter.hs`, `test/unit/Main.hs`.
 
 ## Cross-References
 
-- [Effect Interpreter Runtime](./effect_interpreter.md)
-- [Effectful DAG Architecture](./effectful_dag_architecture.md#53-output-contract-ssot)
-- [Unit Testing Policy](./unit_testing_policy.md#phase-banner-rendering-contract)
+- [Unit Testing Policy](./unit_testing_policy.md)
+- [Effect Interpreter Runtime Contract](./effect_interpreter.md)

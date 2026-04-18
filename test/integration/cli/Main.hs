@@ -4,7 +4,6 @@ import System.Directory
     ( Permissions (..),
       copyFile,
       createDirectoryIfMissing,
-      createFileLink,
       doesFileExist,
       getCurrentDirectory,
       getPermissions,
@@ -20,6 +19,11 @@ import System.Process
       readCreateProcessWithExitCode,
     )
 import Test.Hspec
+import Prodbox.BuildSupport
+    ( addBuildSupportEnvironment,
+      canonicalOperatorBinaryPath,
+      syncBuiltOperatorBinary,
+    )
 
 main :: IO ()
 main = hspec $ do
@@ -432,7 +436,7 @@ main = hspec $ do
                 configText `shouldContain` "route53 = { zone_id = \"Z1234567890ABC\" }"
                 configText `shouldContain` "demo_fqdn = \"demo.example.com\""
                 jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
-                jsonExists `shouldBe` True
+                jsonExists `shouldBe` False
 
         it "runs native aws setup and teardown through the built frontend with a fake AWS CLI" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -505,7 +509,8 @@ main = hspec $ do
 resolveBinaryPath :: IO FilePath
 resolveBinaryPath = do
     repoRoot <- getCurrentDirectory
-    buildEnvironment <- buildSupportEnvironment repoRoot
+    currentEnvironment <- getEnvironment
+    buildEnvironment <- addBuildSupportEnvironment repoRoot currentEnvironment
     (buildExitCode, _, buildStderr) <-
         readCreateProcessWithExitCode
             (proc "cabal" ["build", "--builddir=.build", "exe:prodbox"]){cwd = Just repoRoot, env = Just buildEnvironment}
@@ -513,57 +518,12 @@ resolveBinaryPath = do
     case buildExitCode of
         ExitSuccess -> pure ()
         _ -> expectationFailure buildStderr
-    (exitCode, stdoutText, stderrText) <-
-        readCreateProcessWithExitCode
-            (proc "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"]){cwd = Just repoRoot, env = Just buildEnvironment}
-            ""
-    case exitCode of
-        ExitSuccess -> copyBinaryForSuite repoRoot "prodbox-integration-cli" (trim stdoutText)
-        _ -> expectationFailure stderrText >> pure ""
-
-copyBinaryForSuite :: FilePath -> String -> FilePath -> IO FilePath
-copyBinaryForSuite repoRoot suiteId binaryPath = do
-    let copiedBinary = repoRoot </> ".build" </> "test-bin" </> suiteId </> "prodbox"
-    createDirectoryIfMissing True (repoRoot </> ".build" </> "test-bin" </> suiteId)
-    copyFile binaryPath copiedBinary
-    sourcePermissions <- getPermissions binaryPath
-    setPermissions copiedBinary sourcePermissions
-    pure copiedBinary
-
-buildSupportEnvironment :: FilePath -> IO [(String, String)]
-buildSupportEnvironment repoRoot = do
-    currentEnvironment <- getEnvironment
-    supportDir <- ensureBuildSupportDirectory repoRoot
-    let existingLibraryPath = maybe "" id (lookup "LIBRARY_PATH" currentEnvironment)
-        updatedLibraryPath =
-            if existingLibraryPath == ""
-                then supportDir
-                else supportDir ++ ":" ++ existingLibraryPath
-    pure (("LIBRARY_PATH", updatedLibraryPath) : filter ((/= "LIBRARY_PATH") . fst) currentEnvironment)
-
-ensureBuildSupportDirectory :: FilePath -> IO FilePath
-ensureBuildSupportDirectory repoRoot = do
-    let supportDir = repoRoot </> ".build" </> "support"
-        supportLink = supportDir </> "libtinfo.so"
-        supportSources =
-            [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6",
-              "/lib/x86_64-linux-gnu/libtinfo.so.6"
-            ]
-    createDirectoryIfMissing True supportDir
-    linkExists <- doesFileExist supportLink
-    if linkExists
-        then pure supportDir
-        else do
-            createSupportLink supportLink supportSources
-            pure supportDir
-
-createSupportLink :: FilePath -> [FilePath] -> IO ()
-createSupportLink _ [] = expectationFailure "Unable to locate a libtinfo support library for Haskell binary tests."
-createSupportLink supportLink (candidate : remaining) = do
-    candidateExists <- doesFileExist candidate
-    if candidateExists
-        then createFileLink candidate supportLink
-        else createSupportLink supportLink remaining
+    syncResult <- syncBuiltOperatorBinary repoRoot buildEnvironment
+    case syncResult of
+        Left err -> expectationFailure err >> pure ""
+        Right binaryPath -> do
+            binaryPath `shouldBe` canonicalOperatorBinaryPath repoRoot
+            pure binaryPath
 
 writeRepoMarkers :: FilePath -> IO ()
 writeRepoMarkers repoRoot = do
@@ -741,11 +701,9 @@ fakeKubectlScript =
 fakeRke2Environment :: FilePath -> IO [(String, String)]
 fakeRke2Environment repoRoot = do
     fakeBin <- writeFakeRke2Scripts repoRoot
-    _ <- writeFakeBackendPythonScript repoRoot
     let recordDir = repoRoot </> "fake-rke2-state"
         socketPath = repoRoot </> "fake-rke2-containerd.sock"
         endpointStatusRoot = repoRoot </> "fake-endpoint-status"
-        backendRecord = recordDir </> "backend.txt"
     createDirectoryIfMissing True recordDir
     writeFile socketPath ""
     createDirectoryIfMissing True endpointStatusRoot
@@ -762,7 +720,6 @@ fakeRke2Environment repoRoot = do
                               "PRODBOX_FAKE_RKE2_RECORD_DIR",
                               "PRODBOX_RKE2_CONTAINERD_SOCKET",
                               "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT",
-                              "PRODBOX_FAKE_BACKEND_RECORD",
                               "HOME"
                             ]
                         )
@@ -773,7 +730,6 @@ fakeRke2Environment repoRoot = do
             ("PRODBOX_FAKE_RKE2_RECORD_DIR", recordDir),
             ("PRODBOX_RKE2_CONTAINERD_SOCKET", socketPath),
             ("PRODBOX_RKE2_ENDPOINT_STATUS_ROOT", endpointStatusRoot),
-            ("PRODBOX_FAKE_BACKEND_RECORD", backendRecord),
             ("HOME", repoRoot)
           ]
             ++ baseEnvironment
@@ -1330,45 +1286,6 @@ fakePulumiKubectlScript =
         , "esac"
         ]
 
-fakeBackendCaptureEnvironment :: FilePath -> IO [(String, String)]
-fakeBackendCaptureEnvironment repoRoot = do
-    fakeBin <- writeFakeBackendPythonScript repoRoot
-    currentEnvironment <- getEnvironment
-    let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
-        updatedPath = fakeBin ++ ":" ++ existingPath
-    pure
-        ( ("PATH", updatedPath)
-            : filter (\(key, _) -> key /= "PATH" && key /= "PRODBOX_FAKE_BACKEND_RECORD") currentEnvironment
-        )
-
-writeFakeBackendPythonScript :: FilePath -> IO FilePath
-writeFakeBackendPythonScript repoRoot = do
-    let binDir = repoRoot </> ".venv" </> "bin"
-        scriptPath = binDir </> "python"
-    createDirectoryIfMissing True binDir
-    writeFile scriptPath fakeBackendPythonScript
-    permissions <- getPermissions scriptPath
-    setPermissions scriptPath permissions{executable = True}
-    pure binDir
-
-fakeBackendPythonScript :: String
-fakeBackendPythonScript =
-    unlines
-        [ "#!/usr/bin/env bash",
-          "set -euo pipefail",
-          "record_path=${PRODBOX_FAKE_BACKEND_RECORD:?}",
-          "printf 'ARGV=' >> \"$record_path\"",
-          "first=1",
-          "for arg in \"$@\"; do",
-          "  if [[ $first -eq 0 ]]; then",
-          "    printf '|' >> \"$record_path\"",
-          "  fi",
-          "  first=0",
-          "  printf '%s' \"$arg\" >> \"$record_path\"",
-          "done",
-          "printf '\\nPRODBOX_PYTHON_BACKEND=%s\\n\\n' \"${PRODBOX_PYTHON_BACKEND:-}\" >> \"$record_path\""
-        ]
-
 fakeAwsScript :: FilePath -> String
 fakeAwsScript stateDir =
     unlines
@@ -1494,39 +1411,6 @@ gatewayOrders =
           "  }",
           "}"
         ]
-
-trim :: String -> String
-trim = reverse . dropWhile (== '\n') . reverse
-
-assertDelegatedInvocation ::
-    FilePath ->
-    FilePath ->
-    [(String, String)] ->
-    FilePath ->
-    [String] ->
-    [String] ->
-    IO ()
-assertDelegatedInvocation binary repoRoot envVars recordName cliArgs expectedArgv = do
-    let recordPath = repoRoot </> recordName
-        invocationEnv =
-            ("PRODBOX_FAKE_BACKEND_RECORD", recordPath)
-                : filter ((/= "PRODBOX_FAKE_BACKEND_RECORD") . fst) envVars
-    (exitCode, stdoutText, stderrText) <-
-        readCreateProcessWithExitCode
-            (proc binary cliArgs){cwd = Just repoRoot, env = Just invocationEnv}
-            ""
-
-    exitCode `shouldBe` ExitSuccess
-    stdoutText `shouldBe` ""
-    stderrText `shouldBe` ""
-
-    recordText <- readFile recordPath
-    recordText `shouldContain` ("ARGV=" ++ joinWithPipe expectedArgv)
-    recordText `shouldContain` "PRODBOX_PYTHON_BACKEND=1"
-
-joinWithPipe :: [String] -> String
-joinWithPipe [] = ""
-joinWithPipe values = foldr1 (\left right -> left ++ "|" ++ right) values
 
 validConfig :: String
 validConfig =

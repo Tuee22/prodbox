@@ -7,253 +7,103 @@
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
 `DEVELOPMENT_PLAN/README.md` is the authoritative source for target architecture, sprint status,
-and cleanup ownership. The current worktree is now a mixed Phase 1.2 baseline: Haskell owns
-`config compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`,
-`dns check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`, and
-the public `test` entrypoint plus native named-suite and aggregate-suite orchestration, while
-most product runtime behavior still routes through the retained Python backend until later phases
-close.
-
----
+and cleanup ownership. The repository is Haskell-only on the supported path.
 
 ## Current Worktree Structure
 
-```
+```text
 prodbox/
-├── app/prodbox/Main.hs   # Haskell Phase 1.1 frontend entrypoint
-├── src/Prodbox/          # Haskell frontend modules (current scaffold)
-│   ├── CLI/              # Explicit command-surface parser
-│   └── Backend/          # Python-backend delegation bridge
-├── src/prodbox/          # Retained Python runtime and command backend
-│   ├── cli/              # Click CLI commands and DAG system
-│   ├── infra/            # Pulumi infrastructure definitions
-│   ├── lib/              # Shared utilities
-│   └── settings.py       # Pydantic configuration
-├── tests/                # Current Python unit and integration tests
-├── typings/              # Custom type stubs for external libs
+├── app/prodbox/Main.hs   # Haskell executable entrypoint
+├── src/Prodbox/          # Haskell runtime, CLI, infra, and library modules
+├── test/                 # Haskell unit and integration test suites
 ├── documents/            # Engineering documentation
-├── prodbox.cabal         # Haskell frontend package definition
-├── cabal.project         # Haskell project config
-├── Dockerfile            # Root Haskell container build under /opt/build
-└── pyproject.toml        # Retained Poetry configuration for the Python backend
+├── DEVELOPMENT_PLAN/     # Plan, phase status, and cleanup ownership
+├── prodbox.cabal         # Cabal package definition
+├── cabal.project         # Cabal project config
+└── Dockerfile            # Root Haskell container build under /opt/build
 ```
 
-The planned Haskell target topology lives in `DEVELOPMENT_PLAN/00-overview.md` and
-`HASKELL_REWRITE_PLAN.md`; do not describe the current Python tree as the final handoff
-architecture.
-
----
+Do not describe removed Python directories as the current or target architecture.
 
 ## Current Worktree Commands
 
-Until Sprint `4.3` closes, much of the repository-local runtime still goes through the
-retained Python backend even though the Haskell `prodbox` frontend now owns `config
-compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`, `dns
-check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`, and
-`test`:
-
 ```bash
-# Install dependencies
-poetry install
-
-# Run CLI through the retained backend
-poetry run prodbox <command>
-
-# Build the current Haskell frontend
+# Build the operator binary
 cabal build --builddir=.build exe:prodbox
 
-# Run tests
-poetry run prodbox test all                        # All tests
-poetry run prodbox test unit                       # Unit only
-poetry run prodbox test all --coverage --cov-fail-under 100  # With coverage
+# Run the canonical quality gate
+./.build/prodbox check-code
 
-# Code quality checks (canonical entrypoint)
-poetry run prodbox check-code        # Policy guard + ruff + mypy
+# Run tests
+./.build/prodbox test unit
+./.build/prodbox test integration cli
+./.build/prodbox test integration env
+./.build/prodbox test all
 ```
 
-`poetry run prodbox check-code` is the required single entrypoint for doctrine
-enforcement in local development.
-The authoritative CLI command matrix lives in [documents/engineering/cli_command_surface.md](documents/engineering/cli_command_surface.md).
-
----
+`prodbox check-code` is the required single entrypoint for doctrine enforcement in local
+development.
 
 ## Coding Style
 
-### Python Baseline
+### Haskell Baseline
 
-- **Indentation**: 4 spaces (no tabs)
-- **Line length**: 100 characters max
-- **Type hints**: Required everywhere, no `Any` types
-- **Docstrings**: Google style
-- **Imports**: isort ordering (stdlib, third-party, first-party)
+- Use explicit data types and pattern matches.
+- Keep side effects at command or interpreter boundaries.
+- Prefer small pure helpers around subprocess or rendering logic.
+- Add brief comments only when the control flow is non-obvious.
 
-### Data Structures
+### Data And Control-Flow Doctrine
 
 > **SSoT**: [Pure FP Standards](documents/engineering/pure_fp_standards.md)
 
-#### Immutability Requirements
-
-ALL dataclasses MUST be frozen:
-
-```python
-# ✅ CORRECT
-@dataclass(frozen=True)
-class CommandResult:
-    returncode: int
-    stdout: str
-    args: tuple[str, ...]
-
-# ❌ WRONG
-@dataclass
-class CommandResult:
-    returncode: int
-    stdout: str
-    args: list[str]
-```
-
-Use immutable collections:
-
-| Instead of | Use |
-|------------|-----|
-| `list[T]` | `tuple[T, ...]` |
-| `set[T]` | `frozenset[T]` |
-| `dict[K, V]` (mutable) | `Mapping[K, V]` (parameter) |
-
-#### Smart Constructor Pattern
-
-Validate at construction time and return `Result`:
-
-```python
-def port_command(port: int) -> Result[PortCommand, str]:
-    match port:
-        case p if 1 <= p <= 65535:
-            return Success(PortCommand(port=p))
-        case _:
-            return Failure(f"Invalid port: {port}")
-```
-
-#### ADT Exhaustiveness
-
-Handle ALL cases explicitly - no catch-all defaults:
-
-```python
-from typing import Never
-
-def _assert_never(value: object) -> Never:
-    raise AssertionError(f"Unhandled case: {type(value).__name__}")
-
-match command:
-    case DNSCheckCommand():
-        return handle_dns_check(command)
-    case K8sHealthCommand():
-        return handle_k8s_health(command)
-    case _ as unreachable:
-        _assert_never(unreachable)  # Type-safe unreachable
-```
-
-#### Result Types for Error Handling (No Exceptions)
-
-```python
-def parse(s: str) -> Result[int, str]:
-    match s.isdigit():
-        case True:
-            return Success(int(s))
-        case False:
-            return Failure(f"Invalid: {s}")
-```
-
-#### Exhaustive Pattern Matching (No Else Clauses)
-
-```python
-match result:
-    case Success(value):
-        return value
-    case Failure(error):
-        return handle_error(error)
-```
-
----
+- Favor explicit ADTs over stringly-typed control flow.
+- Handle all known cases explicitly in pattern matches.
+- Return structured errors instead of relying on exceptions for ordinary control flow.
+- Keep configuration decoding and validation separate from command execution.
 
 ## Testing Guidelines
 
 ### Unit Tests
 
-- Test pure functions in isolation
-- Use pytest-subprocess for subprocess mocking
-- Block unregistered subprocess calls (defense-in-depth)
-
-```python
-def test_parse_success(fp: FakeProcess) -> None:
-    fp.register(["kubectl", "version"], stdout="v1.28.0")
-    result = parse_kubectl_version()
-    assert result == "1.28.0"
-```
+- Test pure helpers in isolation.
+- Keep mocks at the subprocess or interpreter boundary.
+- Prefer table-shaped assertions over incidental output snapshots.
 
 ### Integration Tests
 
-- Mark with `@pytest.mark.integration`
-- Require real infrastructure (kubectl, RKE2, etc.)
-- AWS-mutating integration tests must use credentials loaded from the Dhall-compiled configuration (`prodbox-config.json`) plus brand-new ephemeral AWS CLI-created resources with fixture-owned cleanup; see [AWS Integration Environment Doctrine](documents/engineering/aws_integration_environment_doctrine.md)
-- Missing prerequisites must fail fast with actionable errors (no skip/xfail policy)
-- Use `poetry run prodbox test unit` when integration prerequisites are unavailable
+- `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` are built-frontend Haskell
+  suites.
+- Named `prodbox test integration ...` commands run real native Haskell validation flows through
+  `src/Prodbox/TestValidation.hs`.
+- Missing prerequisites must fail fast with actionable errors.
+- Use `./.build/prodbox test unit` when integration prerequisites are unavailable.
 
 ### Development Tooling Policy
 
-- Do not use `.github/` workflows or CI automation for this repository during active development
-- Do not use git hooks (including pre-commit); run CLI entrypoints directly
-- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy)
-
-### Coverage
-
-- Target: 100% for prodbox code
-- Exclude: test files, `if __name__ == "__main__"` blocks
-
----
+- Do not use `.github/` workflows or CI automation for this repository during active development.
+- Do not use git hooks (including pre-commit); run CLI entrypoints directly.
+- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy).
 
 ## Commit Guidelines
 
 **CRITICAL: Agents NEVER commit or push.**
 
-- Leave ALL changes as uncommitted working directory changes
-- Do NOT run `git commit`, `git push`, `git add`
-- Do NOT run any git commands that modify repository state
-- User reviews and commits manually
-
-This policy ensures human oversight of all code changes.
-
----
+- Leave all changes as uncommitted working directory changes.
+- Do not run `git commit`, `git push`, or `git add`.
+- Do not run git commands that modify repository state.
 
 ## Security
 
-- **Store AWS auth only in the repository Dhall config** (`prodbox-config.dhall`) - do not create alternate credential files under the repo tree
-- **AWS auth must come only from Dhall config** - ambient AWS auth env vars, shared-profile discovery, and system `aws` CLI host auth state are not valid auth sources for `prodbox`
-- **Validate all external input** - especially FQDN, IP addresses
-- **Least privilege IAM** - Route 53 + STS only
-
----
-
-## Type Safety
-
-Ultra-strict mypy configuration:
-Use `poetry run prodbox check-code` as the only supported entrypoint for type checks.
-
-```toml
-[tool.mypy]
-strict = true
-disallow_any_unimported = true
-disallow_any_expr = true
-disallow_any_explicit = true
-disallow_any_generics = true
-```
-
-Custom stubs in `typings/` for:
-- Click, Pulumi, boto3, botocore, rich, pytest
-
----
+- Store AWS auth only in the repository Dhall config (`prodbox-config.dhall`).
+- AWS auth must come only from Dhall config; ambient AWS auth env vars, shared-profile discovery,
+  and system `aws` CLI host auth state are not valid auth sources for supported `prodbox` flows.
+- Validate all external input, especially FQDN and IP address values.
+- Keep IAM scopes least-privilege.
 
 ## Cross-References
 
 - **CLAUDE.md**: Detailed AI assistant guidelines
 - **documents/documentation_standards.md**: Documentation rules
-- **documents/engineering/**: Architecture documentation
-- **[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md)**: Development plan, sprint status, and legacy-removal tracking
+- **documents/engineering/**: Architecture and doctrine documentation
+- **[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md)**: Development plan, sprint status, and cleanup ownership

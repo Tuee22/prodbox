@@ -31,7 +31,7 @@ Kubernetes workload rather than a host daemon.
 ## Sprint 2.1: Haskell Gateway Runtime and Command Surface ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `charts/gateway/`, `docker/gateway.Dockerfile`, `test/unit/Main.hs`, `test/integration/cli/`, `test/integration/gateway/`
+**Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `charts/gateway/`, `docker/gateway.Dockerfile`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -75,9 +75,13 @@ with Haskell while preserving runtime behavior.
   `test/integration/cli/Main.hs` now proves the built frontend for native `gateway status` and
   `gateway config-gen` plus native error handling (graceful failure on missing config) for
   `gateway start`.
-- `prodbox test unit` and `prodbox test integration cli` pass after the native gateway daemon
-  lands.
+- `prodbox test unit` passes after the native gateway daemon lands, and
+  `test/integration/cli/Main.hs` now provides the built-frontend CLI proof for the gateway command
+  family.
 - All Python gateway code has been removed. The gateway Dockerfile now builds a Haskell binary.
+- The named validation commands in this sprint (`prodbox test integration gateway-daemon` and
+  `prodbox test integration gateway-pods`) now run executable native Haskell validation flows via
+  `src/Prodbox/TestValidation.hs`.
 
 ### Remaining Work
 
@@ -86,7 +90,7 @@ None.
 ## Sprint 2.2: Formal Verification and DNS-Write Ownership Parity ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `test/integration/gateway/`
+**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
@@ -115,6 +119,9 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
 - Native Haskell `gateway config-gen` preserves `dns_write_gate` emission. All Python TLA+ and
   gateway wrappers have been removed. The Haskell gateway daemon runtime now owns partition-heal
   and failover behavior.
+- The named validation command `prodbox test integration gateway-partition` remains modeled as a
+  pending native payload in `src/Prodbox/TestPlan.hs`; it now depends on reopened Sprint `1.2`
+  harness closure and is not counted as part of today's passing local proof.
 
 ### Remaining Work
 

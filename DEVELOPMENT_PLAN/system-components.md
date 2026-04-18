@@ -7,14 +7,15 @@
 > **Purpose**: Document the authoritative target component inventory for infrastructure, runtime
 > control surfaces, validation surfaces, and state or authority boundaries in the Haskell rewrite.
 
-The inventory documents the completed Haskell-only architecture.
+The inventory documents the Haskell-only architecture. All phases are now closed on their owned
+runtime or zero-Python removal surfaces.
 
 ## Haskell-Only Architecture
 
 | Surface | Owner | Paths |
 |---------|-------|-------|
 | CLI frontend and command surface | Haskell parser plus native command entrypoints for the full supported command matrix | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `Dockerfile` |
-| Configuration and settings | Haskell Dhall decoder with materialization, display, and validation | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall`, `prodbox-config.json` |
+| Configuration and settings | Haskell Dhall decoder, typed settings model, masked display, and validation | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` |
 | Settings and command runtime | Haskell effect, DAG, interpreter, prerequisite, result, subprocess, and domain modules | `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
 | Host and Kubernetes helpers | Haskell host and k8s modules | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` |
 | Local lifecycle and registry pipeline | Haskell `rke2` lifecycle including Harbor/local-registry and MinIO baseline | `src/Prodbox/CLI/Rke2.hs` |
@@ -25,14 +26,14 @@ The inventory documents the completed Haskell-only architecture.
 | Chart platform and retained state | Haskell chart registry, retained-storage reconciler, and CLI runtime | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `charts/`, `.prodbox-state/` |
 | Public-edge diagnostics | Haskell host diagnostic | `src/Prodbox/Host.hs` |
 | Onboarding and AWS administration | Haskell interactive onboarding plus AWS CLI subprocess orchestration | `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` |
-| Test harness and quality gate | Haskell test runner and check-code entrypoints | `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `test/` |
+| Test harness and quality gate | Haskell test runner, named real-world validation harness, and check-code entrypoints | `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/` |
 
 ## Infrastructure Layer
 
 | Component | Technology | Deployment | Authority | Durable State |
 |-----------|------------|------------|-----------|---------------|
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | Bare metal | `prodbox` supported-host gate | Host filesystem |
-| Host build root | `.build/` | Repository worktree | Canonical `cabal build --builddir=.build exe:prodbox` contract | Host filesystem |
+| Host build root | `.build/` | Repository worktree | Canonical `cabal build --builddir=.build exe:prodbox` plus copy to `.build/prodbox`; operator runs `./.build/prodbox` | Host filesystem |
 | Container build root | `/opt/build` | Docker build stage | Dockerfile | Container filesystem |
 | Local Kubernetes substrate | RKE2 | Local host | `prodbox rke2 install|delete|status|start|stop|restart|logs` | RKE2 data dirs and systemd units |
 | AWS-backed EKS validation cluster | Amazon EKS | AWS | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | EKS resources in AWS |
@@ -56,7 +57,7 @@ The inventory documents the completed Haskell-only architecture.
 
 | Surface | Command | Purpose |
 |---------|---------|---------|
-| Config management | `prodbox config compile|setup|show|validate` | Compile, materialize, display, validate, and interactively author configuration |
+| Config management | `prodbox config setup|show|validate` | Interactively author, display, and validate repository-root Dhall configuration decoded directly into Haskell types |
 | Host prerequisites and diagnostics | `prodbox host ensure-tools|info|check-ports|firewall` | Verify local tools and diagnose host-networking prerequisites |
 | RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Install, inspect, control, and remove the local cluster |
 | Pulumi lifecycle | `prodbox pulumi up|destroy|preview|refresh|stack-init|eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` | Manage local-cluster infrastructure and AWS validation stacks |
@@ -75,8 +76,9 @@ The inventory documents the completed Haskell-only architecture.
 
 | Surface | Canonical Validation |
 |---------|----------------------|
-| Build artifact contract | Host build proof shows artifacts under `.build/`; Dockerfile build proof shows artifacts under `/opt/build` |
-| CLI and env contract | `prodbox test integration cli`, `prodbox test integration env` |
+| Build artifact contract | Runnable `./.build/prodbox`, produced by the canonical build-plus-copy flow; Dockerfile build proof still shows artifacts under `/opt/build` |
+| CLI and env contract | `prodbox test integration cli` and `prodbox test integration env` run built-frontend Haskell suites against the direct-Dhall config contract without recreating `prodbox-config.json` |
+| Named validation harness | `prodbox test integration public-dns`, `aws-iam`, `gateway-daemon`, `gateway-pods`, `gateway-partition`, `lifecycle`, `pulumi`, `aws-eks`, `ha-rke2-aws`, `charts-platform`, `charts-storage`, and `charts-vscode` run executable native Haskell validation flows through `src/Prodbox/TestValidation.hs` |
 | Supported host gate and local cluster lifecycle | `prodbox test integration lifecycle`, fresh-host `prodbox rke2 install`, and destructive `prodbox rke2 delete --yes` proof |
 | Local registry pipeline | `prodbox rke2 install`, `prodbox test integration gateway-pods` |
 | AWS Route 53 validation | `prodbox test integration dns-aws` |
@@ -86,7 +88,7 @@ The inventory documents the completed Haskell-only architecture.
 | Gateway runtime | `prodbox test integration gateway-daemon`, `prodbox test integration gateway-pods`, `prodbox test integration gateway-partition`, `prodbox tla-check` |
 | Chart platform | `prodbox test integration charts-storage`, `prodbox test integration charts-platform`, `prodbox test integration charts-vscode` |
 | Public-host proof | `prodbox host public-edge`, `prodbox test integration public-dns` |
-| Clean-room handoff | `prodbox rke2 delete --yes`, deletion of the materialized `prodbox-config.json` artifact, `prodbox rke2 install`, `prodbox config show`, `prodbox config validate`, AWS-backed validation, `prodbox test all`, `prodbox host public-edge`, and a zero-Python repository file-search proof |
+| Clean-room handoff | `prodbox rke2 delete --yes`, a rerun that starts and finishes with no supported-path `prodbox-config.json` artifact, `prodbox rke2 install`, `prodbox config show`, `prodbox config validate`, AWS-backed validation, `prodbox test all`, `prodbox host public-edge`, and a zero-Python repository file-search proof |
 | AWS IAM lifecycle | `prodbox test integration aws-iam` |
 | Static and doctrine gate | `prodbox check-code` |
 
@@ -94,8 +96,8 @@ The inventory documents the completed Haskell-only architecture.
 
 | State Class | Authority | Durable Home | Notes |
 |-------------|-----------|--------------|-------|
-| Repository configuration | Repository root | `prodbox-config.dhall` | Single configuration source; materialized JSON may exist when required by downstream tools |
-| Host build artifacts | Canonical `cabal build --builddir=.build exe:prodbox` contract | `.build/` | Canonical host build root |
+| Repository configuration | Repository root | `prodbox-config.dhall` | Single configuration source decoded directly into Haskell types |
+| Host build artifacts | Canonical `cabal build --builddir=.build exe:prodbox` plus copy to `.build/prodbox` | `.build/prodbox` | Operator-facing binary; run as `./.build/prodbox` |
 | Container build artifacts | Dockerfile | `/opt/build` | Canonical container build root |
 | CLI and doctrine source | Repository worktree | `app/`, `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Version-controlled source of truth |
 | Manual PV content root | Host filesystem | Configured path, default `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | PV contents only |
@@ -116,15 +118,15 @@ The inventory documents the completed Haskell-only architecture.
 |------|----------|---------|
 | Haskell application entrypoint | `app/prodbox/Main.hs` | Main CLI binary entrypoint |
 | Haskell source modules | `src/Prodbox/` | CLI, infra, gateway, settings, and library implementation |
-| Haskell tests | `test/` | Unit and integration validation (48 unit tests, 14 CLI integration tests) |
-| Repository config artifacts | `prodbox-config.dhall`, `prodbox-config-types.dhall`, optional `prodbox-config.json` | Haskell-owned config source, shared schema, and downstream materialization when required |
+| Haskell tests | `test/` | Unit plus native CLI/env integration validation suites |
+| Repository config artifacts | `prodbox-config.dhall`, `prodbox-config-types.dhall` | Haskell-owned config source and shared schema |
 | Cabal package definition | `prodbox.cabal` | Build, test, and dependency definition |
 | Cabal project definition | `cabal.project` | Repository-wide Cabal package-set definition |
-| Host build root | `.build/` | Canonical host-side Haskell build artifacts |
+| Host build root | `.build/` | Canonical host-side Haskell build artifacts; operator binary at `.build/prodbox` |
 | Container build root | `/opt/build` | Canonical container-side Haskell build artifacts |
 | Root Haskell container build | `Dockerfile` | `/opt/build` Haskell container build path |
-| Pulumi definitions | `Pulumi.yaml`, `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (runtime: yaml) |
-| Gateway container build | `docker/gateway.Dockerfile` | Multi-stage Haskell gateway image build (haskell:9.6.7 builder, debian:bookworm-slim runtime) |
+| Pulumi definitions | `Pulumi.yaml`, `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (`runtime: yaml`) |
+| Gateway container build | `docker/gateway.Dockerfile` | Multi-stage Haskell gateway image build (`haskell:9.6.7` builder, `debian:bookworm-slim` runtime) |
 | VS Code auth-proxy image build | `docker/nginx-oidc.Dockerfile` | Custom auth-proxy image build |
 | Engineering doctrine | `documents/engineering/` | Architecture and operator docs |
 | Development plan | `DEVELOPMENT_PLAN/` | Status, sequencing, and cleanup ownership |

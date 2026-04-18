@@ -108,7 +108,7 @@ coverageFlagsParser =
     CoverageFlags
         <$> switch
             ( long "coverage"
-                <> help "Add pytest-cov for src/prodbox"
+                <> help "Enable coverage reporting for the selected test scope"
             )
         <*> optional
             ( option auto
@@ -125,8 +125,7 @@ withCoverage scope =
 configParser :: Parser CommandRequest
 configParser =
     hsubparser
-        ( command "compile" (info (native (NativeConfig ConfigCompile)) (progDesc "Compile Dhall config to JSON"))
-            <> command "setup" (info (native (NativeConfig ConfigSetup)) (progDesc "Interactively author config"))
+        ( command "setup" (info (native (NativeConfig ConfigSetup)) (progDesc "Interactively author config"))
             <> command "show" (info configShowParser (progDesc "Display current config"))
             <> command "validate" (info (native (NativeConfig ConfigValidate)) (progDesc "Validate current config"))
         )

@@ -11,20 +11,21 @@
 
 This phase ported the highest-friction operator flows to Haskell: interactive config authoring,
 policy generation, IAM user management, service-quota automation, and the test-only elevated
-credential harness. All onboarding and AWS administration surfaces are now Haskell-owned, and
-Sprint `6.2` closed after the Python dependency was fully removed.
+credential harness. All onboarding and AWS administration surfaces are now Haskell-owned, Sprint
+`6.2` closed after the Python dependency was fully removed, and the reopened real-IAM proof now
+also closes through the native validation harness.
 
 ## Current Baseline In Worktree
 
 - The public onboarding and standalone AWS administration surfaces are Haskell-owned in
   `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs`. All Python
   command wrappers and IAM helpers have been removed.
-- The settings and config-materialization path is fully Haskell-owned in `src/Prodbox/Settings.hs`
-  for Dhall decode, materialization, display, and validation.
-- Haskell proof exists in `test/unit/Main.hs` and `test/integration/cli/Main.hs`, including
-  fake-AWS end-to-end coverage for `config setup` and
-  `aws setup|teardown|check-quotas|request-quotas`, plus real IAM lifecycle proof on the Haskell
-  stack.
+- The settings path is fully Haskell-owned in `src/Prodbox/Settings.hs` for direct Dhall decode,
+  display, and validation with no supported JSON materialization path.
+- Haskell proof exists in `test/unit/Main.hs`, and the intended built-frontend fake-AWS proof
+  lives in `test/integration/cli/Main.hs`; that suite now passes on the April 18, 2026 worktree.
+  The real IAM lifecycle named proof now runs through the native validation harness in
+  `src/Prodbox/TestValidation.hs`.
 
 ## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
 
@@ -56,8 +57,8 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `prodbox aws policy [--tier ...]` rendering path.
 - `test/unit/Main.hs` now proves parser routing for `config setup` plus the native `aws *` command
   family.
-- `test/integration/cli/Main.hs` now builds the frontend and exercises `config setup` and
-  `aws policy --tier full` without the retained Python backend.
+- `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
+  `config setup` and `aws policy --tier full`, and that automated proof now passes.
 
 ### Remaining Work
 
@@ -96,8 +97,8 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   quota requests, and Dhall updates.
 - `src/Prodbox/CLI/Parser.hs` now routes the full public `prodbox aws ...` surface through
   `RunNative`.
-- `test/integration/cli/Main.hs` now proves setup/teardown and quota flows against a fake AWS CLI
-  from the built frontend.
+- `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
+  setup/teardown and quota flows, and that automated proof now passes.
 
 ### Remaining Work
 
@@ -106,7 +107,7 @@ None.
 ## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `test/integration/aws_iam/`
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -127,6 +128,15 @@ credential harness.
 1. `prodbox test integration aws-iam`
 2. `prodbox test all`
 
+### Current Validation State
+
+- The isolated `aws_admin` config contract and the Haskell IAM runtime surface are implemented in
+  `src/Prodbox/Settings.hs` and `src/Prodbox/Aws.hs`.
+- `src/Prodbox/TestPlan.hs` maps `prodbox test integration aws-iam` to an executable native
+  validation flow in `src/Prodbox/TestValidation.hs`.
+- `prodbox test all` now includes that native IAM payload as part of the aggregate validation
+  harness instead of a pending placeholder failure.
+
 ### Remaining Work
 
 None.
@@ -143,7 +153,8 @@ None.
 - `documents/engineering/cli_command_surface.md` - `config setup` and `aws *` command matrix.
 - `documents/engineering/aws_integration_environment_doctrine.md` - retained AWS admin rules after
   the rewrite.
-- `documents/engineering/unit_testing_policy.md` - real IAM lifecycle proof on the Haskell stack.
+- `documents/engineering/unit_testing_policy.md` - reopened IAM lifecycle proof ownership on the
+  Haskell stack.
 
 **Product docs to create/update:**
 

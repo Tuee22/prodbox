@@ -12,6 +12,7 @@ library
         Paths_prodbox
     exposed-modules:
         Prodbox.Aws
+        Prodbox.BuildSupport
         Prodbox.CheckCode
         Prodbox.CLI.Charts
         Prodbox.CLI.Command
@@ -41,6 +42,7 @@ library
         Prodbox.SupportedRuntime
         Prodbox.TestPlan
         Prodbox.TestRunner
+        Prodbox.TestValidation
         Prodbox.Tla
     build-depends:
         aeson ^>=2.2.3.0,

@@ -1,0 +1,27 @@
+cradle:
+  multi:
+    - path: "./src"
+      config:
+        cradle:
+          cabal:
+            component: "lib:prodbox"
+    - path: "./app/prodbox"
+      config:
+        cradle:
+          cabal:
+            component: "exe:prodbox"
+    - path: "./test/unit"
+      config:
+        cradle:
+          cabal:
+            component: "prodbox:test:prodbox-unit"
+    - path: "./test/integration/cli"
+      config:
+        cradle:
+          cabal:
+            component: "prodbox:test:prodbox-integration-cli"
+    - path: "./test/integration/env"
+      config:
+        cradle:
+          cabal:
+            component: "prodbox:test:prodbox-integration-env"

@@ -175,7 +175,9 @@ The design contract:
 prodbox tla-check
 ```
 
-On the current mixed baseline, `src/Prodbox/Tla.hs` owns this public entrypoint. It runs TLC 2.18 in a Docker container (`maxdiefenbach/tlaplus`) with 8 workers and writes results to `documents/engineering/tla/tlc_last_run.txt`.
+`src/Prodbox/Tla.hs` owns this public entrypoint. It runs TLC 2.18 in a Docker container
+(`maxdiefenbach/tlaplus`) with 8 workers and writes results to
+`documents/engineering/tla/tlc_last_run.txt`.
 
 ---
 

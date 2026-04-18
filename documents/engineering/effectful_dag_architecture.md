@@ -2,395 +2,95 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effect_interpreter.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/streaming_doctrine.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: documents/engineering/README.md, documents/engineering/effect_interpreter.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/unit_testing_policy.md
 
-> **Purpose**: Design documentation for the pure effectful DAG system in prodbox CLI.
-
----
+> **Purpose**: Describe the Haskell effect DAG architecture used by prerequisite-aware command
+> flows.
 
 ## 1. Overview
 
-The prodbox CLI uses a pure effectful DAG (Directed Acyclic Graph) system for command execution. This architecture separates:
+The repository uses an explicit effect DAG model for prerequisite-aware command execution.
 
-1. **Command Definition** - What the user wants to do (Command ADTs)
-2. **Effect Specification** - What side effects are needed (Effect types)
-3. **DAG Construction** - How effects relate to each other (prerequisites)
-4. **Effect Execution** - Actually performing the side effects (Interpreter)
-
-Current mixed baseline:
-- `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`,
-  `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/Subprocess.hs` now own the public
-  `prodbox test`, `prodbox host ensure-tools|check-ports|info|firewall`, and `prodbox k8s
-  health|wait|logs` surfaces.
-- `src/Prodbox/Prerequisite.hs` now mirrors the shared 30-node prerequisite inventory used by the
-  retained Python runtime.
-- Broader delegated command families still use the retained Python effect/DAG runtime until later
-  phases port those surfaces.
-
----
+- `src/Prodbox/Effect.hs` defines the effect vocabulary.
+- `src/Prodbox/EffectDAG.hs` defines the node and graph model.
+- `src/Prodbox/Prerequisite.hs` defines the canonical prerequisite registry.
+- `src/Prodbox/EffectInterpreter.hs` executes the graph.
+- `src/Prodbox/TestRunner.hs` uses this stack for the public `prodbox test` surface.
 
 ## 2. Architecture Layers
 
-```mermaid
-flowchart TB
-    CLI[CLI Command] --> ADT[Command ADT]
-    ADT --> DAG[Effect DAG]
-    DAG --> Interpreter[Effect Interpreter]
-    Interpreter --> Effects[Side Effects]
-    Effects --> Result[Execution Summary + Exit Code]
-```
-
-### 2.1 Command ADTs
-
-Commands are immutable frozen dataclasses that represent user intent:
-
-```python
-# File: src/prodbox/cli/command_adt.py
-@dataclass(frozen=True)
-class DNSCheckCommand:
-    pass
-```
-
-Smart constructors validate commands at construction time:
-
-```python
-# File: src/prodbox/cli/command_adt.py
-def dns_check_command() -> Result[DNSCheckCommand, str]:
-    return Success(DNSCheckCommand())
-```
-
-### 2.2 Effect Types
-
-Effects are declarative specifications of side effects:
-
-```python
-# File: src/prodbox/cli/effects.py
-@dataclass(frozen=True)
-class FetchPublicIP(Effect[str]):
-    """Fetch current public IP address."""
-```
-
-Effects do NOT execute anything - they only describe what should happen.
-
-### 2.3 Effect DAG
-
-EffectNodes wrap Effects with prerequisite declarations:
-
-```python
-# File: src/prodbox/cli/effect_dag.py
-@dataclass(frozen=True)
-class EffectNode(Generic[T]):
-    effect: Effect[T]
-    prerequisites: frozenset[str] = frozenset()
-```
-
-The DAG auto-expands prerequisites transitively:
-
-```python
-# File: src/prodbox/cli/dag_builders.py
-dag = EffectDAG.from_roots(
-    dns_update_node,
-    registry=PREREQUISITE_REGISTRY
-)
-# Expands: settings_loaded -> aws_credentials_valid -> route53_accessible
-```
-
----
+| Layer | Responsibility | Modules |
+|-------|----------------|---------|
+| Command selection | Choose the public command and test scope | `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/TestPlan.hs` |
+| Pure effect planning | Describe prerequisite nodes and dependencies | `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/Prerequisite.hs` |
+| Effect execution | Run side effects and collect structured results | `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Subprocess.hs` |
+| Command orchestration | Render banners, runbooks, and named validations | `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs` |
 
 ## 3. Effect Types
 
-### 3.1 Platform Effects
+Effect types are explicit ADTs rather than free-form shell steps.
 
-| Effect | Description |
-|--------|-------------|
-| `RequireLinux` | Require Linux platform |
-| `RequireSystemd` | Require systemd availability |
+Typical effect categories include:
 
-### 3.2 Tool Validation Effects
+- emit a phase banner or informational line
+- check for required tools
+- validate supported-host properties
+- validate settings availability or integrity
+- validate cloud or cluster readiness
 
-| Effect | Description |
-|--------|-------------|
-| `ValidateTool` | Check external tool is available |
-| `ValidateEnvironment` | Check multiple tools |
-
-### 3.3 Subprocess Effects
-
-| Effect | Description |
-|--------|-------------|
-| `RunSubprocess` | Execute command, return exit code |
-| `CaptureSubprocessOutput` | Execute and capture stdout/stderr |
-| `RunSystemdCommand` | Execute systemctl command |
-| `RunKubectlCommand` | Execute kubectl command |
-| `RunPulumiCommand` | Execute Pulumi CLI command |
-
-### 3.4 AWS/Route53 Effects
-
-| Effect | Description |
-|--------|-------------|
-| `FetchPublicIP` | Get current public IP |
-| `QueryRoute53Record` | Query DNS A record |
-| `ValidateAWSCredentials` | Check AWS credentials |
-
-### 3.5 Composite Effects
-
-| Effect | Description |
-|--------|-------------|
-| `Sequence` | Execute effects sequentially (short-circuit on failure) |
-| `Parallel` | Execute effects concurrently |
-| `Try` | Execute with fallback on failure |
-| `Pure` | Return value without side effects |
-
----
+Effects describe what must happen. They do not encode ad-hoc execution order outside the DAG.
 
 ## 4. DAG Construction
 
-### 4.1 Prerequisite Registry
+DAG construction is data-driven:
 
-All prerequisites are defined in a central registry:
+1. choose the root prerequisite IDs for a command or test scope
+2. resolve transitive prerequisites from the canonical registry
+3. build a deterministic graph with no missing nodes and no cycles
+4. hand the graph to the interpreter
 
-```python
-# File: src/prodbox/cli/prerequisite_registry.py
-PREREQUISITE_REGISTRY: PrerequisiteRegistry = {
-    "platform_linux": PLATFORM_LINUX,
-    "tool_kubectl": TOOL_KUBECTL,
-    "aws_credentials_valid": AWS_CREDENTIALS_VALID,
-    # ...
-}
-```
-
-### 4.2 Transitive Expansion
-
-Prerequisites expand transitively:
-
-```
-k8s_cluster_reachable
-    -> tool_kubectl
-    -> kubeconfig_exists
-```
-
-When you depend on `k8s_cluster_reachable`, you automatically get both `tool_kubectl` and `kubeconfig_exists`.
-
-### 4.3 Command to DAG
-
-The `command_to_dag()` function uses exhaustive pattern matching:
-
-```python
-# File: src/prodbox/cli/dag_builders.py
-def command_to_dag(command: Command) -> Result[EffectDAG, str]:
-    match command:
-        case DNSCheckCommand():
-            return Success(_build_dns_check_dag(command))
-        case RKE2StatusCommand():
-            return Success(_build_rke2_status_dag(command))
-        # ... all cases handled
-```
-
-### 4.4 RKE2 Lifecycle via eDAG
-
-RKE2 cluster lifecycle is modeled as idempotent DAG nodes:
-- `rke2_install`: install or reconcile the supported host-owned RKE2 lifecycle, then reconcile Harbor and retained storage
-- `rke2_delete`: destroy the Pulumi-managed AWS EKS stack, then the Pulumi-managed AWS HA test stack, then remove the local RKE2 substrate while preserving retained host state
-- `pulumi_eks_resources`: provision or inspect the canonical Pulumi-managed AWS EKS test stack
-- `pulumi_eks_destroy`: destroy the canonical Pulumi-managed AWS EKS test stack
-- `pulumi_test_resources`: provision or inspect the canonical Pulumi-managed AWS HA-RKE2 test stack
-- `pulumi_test_destroy`: destroy the canonical Pulumi-managed AWS HA-RKE2 test stack
-
-These lifecycle roots use fail-fast prerequisites from the registry before any destructive or
-expensive effect runs. In practice that means:
-
-1. `rke2_install` requires the supported Ubuntu 24.04 host gate, local toolchain, machine identity, and settings.
-2. `rke2_delete` adds `tool_pulumi`, `tool_aws`, and `k8s_cluster_reachable` so the local MinIO-backed Pulumi state remains reachable before teardown.
-3. `pulumi_eks_resources`, `pulumi_eks_destroy`, `pulumi_test_resources`, and `pulumi_test_destroy` require the supported host gate plus the local cluster, Pulumi, AWS CLI, and settings.
-
-During `rke2_install`, Harbor and retained-storage/MinIO reconciliation execute in parallel:
-
-1. `EnsureHarborRegistry`
-2. `Sequence(EnsureRetainedLocalStorage -> EnsureMinio)`
-
-During `rke2_delete`, the first destructive steps are `Custom` effects that call the same helpers
-used by `prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes`, in that
-order; only after both destroy paths succeed does the DAG remove the local cluster substrate and
-print the preserved-state boundary.
-
-Machine identity (`/etc/machine-id`) is propagated as prerequisite `Result` data
-and is the only source-of-truth for derived `prodbox-<machine-id>` metadata used
-by downstream lifecycle effects.
-
-Harbor-specific sequence details are defined in
-[Local Registry Pipeline](./local_registry_pipeline.md).
-
-Retained storage and deterministic rebinding details are defined in
-[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
-
----
+The canonical registry is the only supported source of truth for prerequisite dependencies.
 
 ## 5. Interpreter Pattern
 
-### 5.1 Single Entry Point
+The interpreter is the impurity boundary.
 
-All commands execute through `execute_command()`:
+- planning modules produce effect data only
+- interpreter modules run subprocesses and I/O
+- command runners translate interpreter results into CLI exit behavior
 
-```python
-# File: src/prodbox/cli/command_executor.py
-def execute_command(cmd: Command) -> int:
-    async def _run() -> int:
-        match command_to_dag(cmd):
-            case Success(dag):
-                interpreter = create_interpreter()
-                dag_summary = await interpreter.interpret_dag(dag)
-                await interpreter.interpret(display_dag_summary(dag_summary))
-                failure_report = display_dag_failure_report(dag_summary)
-                if failure_report is not None:
-                    await interpreter.interpret(failure_report)
-                return dag_summary.exit_code
-            case Failure(error):
-                return render_error_and_return_exit_code(error)
-    return asyncio.run(_run())
-```
-
-### 5.2 Effect Interpretation
-
-The interpreter pattern-matches on Effect types:
-
-```python
-# File: src/prodbox/cli/interpreter.py (to be implemented)
-async def interpret(self, effect: Effect[T]) -> Result[T, str]:
-    match effect:
-        case FetchPublicIP():
-            return await self._interpret_fetch_public_ip(effect)
-        case RunSubprocess():
-            return await self._interpret_run_subprocess(effect)
-        # ... all cases handled
-```
-
-### 5.3 Output Contract (SSoT)
-
-Output behavior at command boundary is deterministic:
-
-Every CLI command must emit a deterministic execution summary; exit code alone is insufficient user output.
-
-1. Every command emits a summary to stdout (via `WriteStdout` effect).
-2. Exit code alone is never considered sufficient user output.
-3. On failure, additional DAG failure details are routed to stderr (via `WriteStderr` effect).
-
-The summary contract is represented by:
-
-- `ExecutionSummary` for single-effect execution
-- `DAGExecutionSummary` for DAG execution
-- `src/prodbox/cli/summary.py` formatters and output effects
-
-### 5.4 Prerequisite Result Propagation (SSoT)
-
-Interpreter DAG semantics follow prerequisite result propagation:
-
-1. Dependents receive prerequisite `Result` values (`Success`/`Failure`) as input data.
-2. A prerequisite failure is not treated as implicit runtime cancellation.
-3. Node policy decides behavior:
-   - `PROPAGATE`: node returns propagated prerequisite failure without executing side effects.
-   - `IGNORE`: node executes and can aggregate or recover from prerequisite failures.
-4. Command failure is determined by root node outcomes, not by prerequisite failure presence alone.
-
-### 5.5 Output No-Repetition Rule (SSoT)
-
-Failure output must be deterministic and non-duplicative:
-
-1. Root-cause failures and propagated prerequisite failures are rendered in distinct sections.
-2. Manual fix hints are deduplicated by hint text.
-3. Manual environment fixes are emitted once under `Manual env changes needed`.
-4. Per-error entries should not repeat the same fix payload inline.
-
----
+This separation keeps prerequisite logic reviewable and testable.
 
 ## 6. Railway-Oriented Programming
 
-### 6.1 Result Type
+The Haskell runtime uses explicit success or failure values to move command execution forward.
 
-All fallible operations return `Result[T, E]`:
-
-```python
-# File: src/prodbox/cli/types.py
-Result = Union[Success[T], Failure[E]]
-```
-
-### 6.2 Short-Circuit Behavior
-
-`Sequence` short-circuits on first failure:
-
-```python
-# If FetchPublicIP fails, QueryRoute53Record never runs
-Sequence([
-    FetchPublicIP(...),
-    QueryRoute53Record(...),
-])
-```
-
-### 6.2A Railway Semantics for eDAG Prerequisites
-
-Railway-oriented behavior for prerequisite-driven DAG execution is:
-
-1. Failure propagates as data (`Failure[E]`), not as hidden control flow.
-2. Nodes become ready when prerequisite execution is complete (success or failure).
-3. Node-level policy defines whether failures propagate, aggregate, or recover.
-
-### 6.3 Pattern Matching
-
-Always use exhaustive pattern matching:
-
-```python
-match result:
-    case Success(value):
-        return process(value)
-    case Failure(error):
-        return handle_error(error)
-# No else clause - mypy enforces exhaustiveness
-```
-
----
+- prerequisite planning returns structured success or error values
+- interpreter execution returns structured success or error values
+- command runners stop on the first failure and preserve the root-cause message
 
 ## 7. Testing
 
-### 7.1 DAG Structure Tests
+Testing splits along the architecture boundary:
 
-Test DAG construction without execution:
-
-```python
-def test_dns_check_dag_includes_aws_prereqs() -> None:
-    cmd = DNSCheckCommand()
-    match command_to_dag(cmd):
-        case Success(dag):
-            assert "aws_credentials_valid" in dag
-            assert "route53_accessible" in dag
-        case Failure(_):
-            pytest.fail("DAG construction should succeed")
-```
-
-### 7.2 Effect Mock Tests
-
-Test effects with mock interpreter:
-
-```python
-def test_fetch_public_ip_effect(fp: FakeProcess) -> None:
-    fp.register(["curl", "https://api.ipify.org"], stdout="1.2.3.4")
-    # Test effect interpretation
-```
-
----
+- pure helpers and graph behavior are covered in `test/unit/Main.hs`
+- built-frontend command behavior is covered in `test/integration/cli/Main.hs` and
+  `test/integration/env/Main.hs`
+- real infrastructure-backed validations are covered through the named
+  `prodbox test integration ...` commands implemented in `src/Prodbox/TestValidation.hs`
 
 ## 8. Intent Ownership
 
-This SSoT owns the command output contract intention.
+This SSoT co-owns the effect DAG architecture doctrine.
 
-- Owned statement: Every CLI command must emit a deterministic execution summary; exit code alone is insufficient user output.
-- Linked dependents: `documents/engineering/effect_interpreter.md`, `src/prodbox/cli/summary.py`, `src/prodbox/cli/command_executor.py`.
-
----
+- Owned statement: prerequisite-aware command execution is modeled as explicit effect data plus a
+  separate interpreter boundary.
+- Linked dependents: `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`,
+  `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/TestRunner.hs`.
 
 ## Cross-References
 
-- [Prerequisite Doctrine](./prerequisite_doctrine.md)
+- [Effect Interpreter Runtime Contract](./effect_interpreter.md)
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
-- [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
-- [Effect Interpreter Runtime](./effect_interpreter.md)
-- [Types Module](../../src/prodbox/cli/types.py)
-- [Effects Module](../../src/prodbox/cli/effects.py)
-- [DAG Module](../../src/prodbox/cli/effect_dag.py)
+- [Pure FP Standards](./pure_fp_standards.md)
+- [Unit Testing Policy](./unit_testing_policy.md)

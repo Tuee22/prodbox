@@ -155,7 +155,7 @@ def _assert_never(value: object) -> Never:
 
     Use at the end of exhaustive match statements to ensure
     all cases are handled. If a new variant is added to the ADT,
-    mypy will error until the new case is handled.
+    the type checker will error until the new case is handled.
     """
     raise AssertionError(f"Unhandled case: {type(value).__name__}")
 ```

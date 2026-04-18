@@ -1,8 +1,9 @@
 module Prodbox.TestPlan
     ( NativeSuitePlan (..),
-      PytestInvocation (..),
+      NativeValidation (..),
       TestExecutionMode (..),
       TestExecutionPlan (..),
+      nativeValidationId,
       testExecutionPlan,
     )
 where
@@ -15,15 +16,25 @@ import Prodbox.CLI.Command
       TestScope (..),
     )
 
-data PytestInvocation = PytestInvocation
-    { pytestInvocationId :: String,
-      pytestInvocationArgs :: [String]
-    }
+data NativeValidation
+    = ValidationChartsVscode
+    | ValidationPublicDns
+    | ValidationDnsAws
+    | ValidationAwsIam
+    | ValidationAwsEks
+    | ValidationPulumi
+    | ValidationHaRke2Aws
+    | ValidationGatewayDaemon
+    | ValidationGatewayPods
+    | ValidationGatewayPartition
+    | ValidationChartsPlatform
+    | ValidationChartsStorage
+    | ValidationLifecycle
     deriving (Eq, Show)
 
 data NativeSuitePlan = NativeSuitePlan
     { nativeSuiteId :: String,
-      nativePytestInvocations :: [PytestInvocation],
+      nativeValidations :: [NativeValidation],
       nativeIntegrationGatePrerequisites :: [String],
       nativeRequiresIntegrationRunbook :: Bool,
       nativeRequiresSupportedRuntimeBootstrap :: Bool,
@@ -55,7 +66,7 @@ testExecutionPlan scope =
                 ]
                 NativeSuitePlan
                     { nativeSuiteId = "all",
-                      nativePytestInvocations = unitPytestInvocation : canonicalIntegrationAllPytestInvocations,
+                      nativeValidations = canonicalNativeValidations,
                       nativeIntegrationGatePrerequisites = allIntegrationPrerequisites,
                       nativeRequiresIntegrationRunbook = True,
                       nativeRequiresSupportedRuntimeBootstrap = True,
@@ -67,7 +78,7 @@ testExecutionPlan scope =
                 ["test:prodbox-unit"]
                 NativeSuitePlan
                     { nativeSuiteId = "unit",
-                      nativePytestInvocations = [unitPytestInvocation],
+                      nativeValidations = [],
                       nativeIntegrationGatePrerequisites = [],
                       nativeRequiresIntegrationRunbook = False,
                       nativeRequiresSupportedRuntimeBootstrap = False,
@@ -83,7 +94,7 @@ testExecutionPlan scope =
                         ]
                         NativeSuitePlan
                             { nativeSuiteId = "integration-all",
-                              nativePytestInvocations = canonicalIntegrationAllPytestInvocations,
+                              nativeValidations = canonicalNativeValidations,
                               nativeIntegrationGatePrerequisites = allIntegrationPrerequisites,
                               nativeRequiresIntegrationRunbook = True,
                               nativeRequiresSupportedRuntimeBootstrap = True,
@@ -94,28 +105,28 @@ testExecutionPlan scope =
                         "integration cli"
                         ["test:prodbox-integration-cli"]
                         "integration-cli"
-                        [pytestInvocation "integration-cli" ["tests/integration/test_cli_commands.py"]]
+                        []
                         []
                         False
                 IntegrationAwsIam ->
                     nativeNamedSuite
                         "integration aws-iam"
                         "integration-aws-iam"
-                        [pytestInvocation "integration-aws-iam" ["tests/integration/test_aws_iam_lifecycle.py"]]
+                        [ValidationAwsIam]
                         awsIamPrerequisites
                         False
                 IntegrationDnsAws ->
                     nativeNamedSuite
                         "integration dns-aws"
                         "integration-dns-aws"
-                        [pytestInvocation "integration-dns-aws" ["tests/integration/test_dns_route53_aws.py"]]
+                        [ValidationDnsAws]
                         dnsAwsPrerequisites
                         False
                 IntegrationAwsEks ->
                     nativeNamedSuite
                         "integration aws-eks"
                         "integration-aws-eks"
-                        [pytestInvocation "integration-aws-eks" ["tests/integration/test_aws_eks.py"]]
+                        [ValidationAwsEks]
                         awsEksPrerequisites
                         True
                 IntegrationEnv ->
@@ -130,119 +141,122 @@ testExecutionPlan scope =
                     nativeNamedSuite
                         "integration gateway-daemon"
                         "integration-gateway-daemon"
-                        [pytestInvocation "integration-gateway-daemon" ["tests/integration/test_gateway_daemon_k8s.py"]]
-                        clusterPrerequisites
+                        [ValidationGatewayDaemon]
+                        gatewayDaemonPrerequisites
                         True
                 IntegrationGatewayPods ->
                     nativeNamedSuite
                         "integration gateway-pods"
                         "integration-gateway-pods"
-                        [pytestInvocation "integration-gateway-pods" ["tests/integration/test_gateway_k8s_pods.py"]]
-                        clusterPrerequisites
+                        [ValidationGatewayPods]
+                        gatewayPodsPrerequisites
                         True
                 IntegrationGatewayPartition ->
                     nativeNamedSuite
                         "integration gateway-partition"
                         "integration-gateway-partition"
-                        [pytestInvocation "integration-gateway-partition" ["tests/integration/test_gateway_partition.py"]]
-                        clusterPrerequisites
-                        True
+                        [ValidationGatewayPartition]
+                        gatewayPartitionPrerequisites
+                        False
                 IntegrationHaRke2Aws ->
                     nativeNamedSuite
                         "integration ha-rke2-aws"
                         "integration-ha-rke2-aws"
-                        [pytestInvocation "integration-ha-rke2-aws" ["tests/integration/test_ha_rke2_aws.py"]]
+                        [ValidationHaRke2Aws]
                         awsHaRke2Prerequisites
                         True
                 IntegrationLifecycle ->
                     nativeNamedSuite
                         "integration lifecycle"
                         "integration-lifecycle"
-                        [pytestInvocation "integration-lifecycle" ["tests/integration/test_prodbox_lifecycle.py"]]
-                        clusterPrerequisites
+                        [ValidationLifecycle]
+                        lifecyclePrerequisites
                         True
                 IntegrationPulumi ->
                     nativeNamedSuite
                         "integration pulumi"
                         "integration-pulumi"
-                        [pytestInvocation "integration-pulumi" ["tests/integration/test_pulumi_real.py"]]
+                        [ValidationPulumi]
                         pulumiPrerequisites
                         True
                 IntegrationChartsStorage ->
                     nativeNamedSuite
                         "integration charts-storage"
                         "integration-charts-storage"
-                        [pytestInvocation "integration-charts-storage" ["tests/integration/test_charts_storage.py"]]
-                        clusterPrerequisites
+                        [ValidationChartsStorage]
+                        chartsStoragePrerequisites
                         True
                 IntegrationChartsPlatform ->
                     nativeNamedSuite
                         "integration charts-platform"
                         "integration-charts-platform"
-                        [pytestInvocation "integration-charts-platform" ["tests/integration/test_charts_platform.py"]]
-                        clusterPrerequisites
+                        [ValidationChartsPlatform]
+                        chartsPlatformPrerequisites
                         True
                 IntegrationChartsVscode ->
                     nativeNamedSuite
                         "integration charts-vscode"
                         "integration-charts-vscode"
-                        [pytestInvocation "integration-charts-vscode" ["tests/integration/test_charts_vscode.py"]]
-                        []
+                        [ValidationChartsVscode]
+                        chartsVscodePrerequisites
                         False
                 IntegrationPublicDns ->
                     nativeNamedSuite
                         "integration public-dns"
                         "integration-public-dns"
-                        [pytestInvocation "integration-public-dns" ["tests/integration/test_public_dns_delegation.py"]]
-                        []
+                        [ValidationPublicDns]
+                        publicDnsPrerequisites
                         False
   where
-    nativeIntegrationPlan label haskellSuites suiteId pytestInvocations prerequisites requiresRunbook =
+    nativeIntegrationPlan label haskellSuites suiteId validations prerequisites requiresRunbook =
         nativeExecutionPlan
             label
             haskellSuites
             NativeSuitePlan
                 { nativeSuiteId = suiteId,
-                  nativePytestInvocations = pytestInvocations,
+                  nativeValidations = validations,
                   nativeIntegrationGatePrerequisites = prerequisites,
                   nativeRequiresIntegrationRunbook = requiresRunbook,
                   nativeRequiresSupportedRuntimeBootstrap = False,
                   nativeRequiresSupportedRuntimePostflight = False
                 }
 
-    nativeNamedSuite label suiteId pytestInvocations prerequisites requiresRunbook =
-        nativeIntegrationPlan label [] suiteId pytestInvocations prerequisites requiresRunbook
+    nativeNamedSuite label suiteId validations prerequisites requiresRunbook =
+        nativeIntegrationPlan label [] suiteId validations prerequisites requiresRunbook
 
-unitPytestInvocation :: PytestInvocation
-unitPytestInvocation = pytestInvocation "unit" ["tests/unit"]
-
-canonicalIntegrationAllPytestInvocations :: [PytestInvocation]
-canonicalIntegrationAllPytestInvocations =
-    [ pytestInvocation "charts-vscode" ["tests/integration/test_charts_vscode.py"],
-      pytestInvocation "public-dns" ["tests/integration/test_public_dns_delegation.py"],
-      pytestInvocation "cli" ["tests/integration/test_cli_commands.py"],
-      pytestInvocation "dns-aws" ["tests/integration/test_dns_route53_aws.py"],
-      pytestInvocation "aws-eks" ["tests/integration/test_aws_eks.py"],
-      pytestInvocation "pulumi" ["tests/integration/test_pulumi_real.py"],
-      pytestInvocation "ha-rke2-aws" ["tests/integration/test_ha_rke2_aws.py"],
-      pytestInvocation "gateway-daemon" ["tests/integration/test_gateway_daemon_k8s.py"],
-      pytestInvocation "gateway-pods" ["tests/integration/test_gateway_k8s_pods.py"],
-      pytestInvocation "gateway-partition" ["tests/integration/test_gateway_partition.py"],
-      pytestInvocation "charts-platform" ["tests/integration/test_charts_platform.py"],
-      pytestInvocation "charts-storage" ["tests/integration/test_charts_storage.py"],
-      pytestInvocation "lifecycle" ["tests/integration/test_prodbox_lifecycle.py"],
-      pytestInvocation "aws-iam" ["tests/integration/test_aws_iam_lifecycle.py"]
+canonicalNativeValidations :: [NativeValidation]
+canonicalNativeValidations =
+    [ ValidationChartsVscode,
+      ValidationPublicDns,
+      ValidationDnsAws,
+      ValidationAwsIam,
+      ValidationAwsEks,
+      ValidationPulumi,
+      ValidationHaRke2Aws,
+      ValidationGatewayDaemon,
+      ValidationGatewayPods,
+      ValidationGatewayPartition,
+      ValidationChartsPlatform,
+      ValidationChartsStorage,
+      ValidationLifecycle
     ]
 
 allIntegrationPrerequisites :: [String]
 allIntegrationPrerequisites =
     orderedUnion
-        [ clusterPrerequisites,
+        [ chartsVscodePrerequisites,
+          publicDnsPrerequisites,
           dnsAwsPrerequisites,
           awsIamPrerequisites,
+          awsEksPrerequisites,
           pulumiPrerequisites,
           awsHaRke2Prerequisites,
-          awsEksPrerequisites
+          gatewayDaemonPrerequisites,
+          gatewayPodsPrerequisites,
+          chartsPlatformPrerequisites,
+          chartsStoragePrerequisites,
+          lifecyclePrerequisites,
+          gatewayPartitionPrerequisites
         ]
 
 clusterPrerequisites :: [String]
@@ -257,20 +271,44 @@ clusterPrerequisites =
       "settings_object"
     ]
 
+chartsVscodePrerequisites :: [String]
+chartsVscodePrerequisites = ["settings_object", "tool_curl"]
+
+publicDnsPrerequisites :: [String]
+publicDnsPrerequisites = ["settings_object", "tool_aws", "tool_dig"]
+
 dnsAwsPrerequisites :: [String]
-dnsAwsPrerequisites = ["tool_aws"]
+dnsAwsPrerequisites = ["settings_object", "tool_aws"]
 
 pulumiPrerequisites :: [String]
 pulumiPrerequisites = orderedUnion [clusterPrerequisites, ["tool_pulumi", "tool_aws"]]
 
 awsIamPrerequisites :: [String]
-awsIamPrerequisites = ["tool_aws", "tool_dhall_to_json", "settings_object"]
+awsIamPrerequisites = ["tool_aws", "settings_object"]
 
 awsEksPrerequisites :: [String]
 awsEksPrerequisites = pulumiPrerequisites
 
 awsHaRke2Prerequisites :: [String]
 awsHaRke2Prerequisites = orderedUnion [pulumiPrerequisites, ["tool_ssh"]]
+
+gatewayDaemonPrerequisites :: [String]
+gatewayDaemonPrerequisites = clusterPrerequisites
+
+gatewayPodsPrerequisites :: [String]
+gatewayPodsPrerequisites = clusterPrerequisites
+
+gatewayPartitionPrerequisites :: [String]
+gatewayPartitionPrerequisites = []
+
+chartsPlatformPrerequisites :: [String]
+chartsPlatformPrerequisites = clusterPrerequisites
+
+chartsStoragePrerequisites :: [String]
+chartsStoragePrerequisites = clusterPrerequisites
+
+lifecyclePrerequisites :: [String]
+lifecyclePrerequisites = clusterPrerequisites
 
 nativeExecutionPlan :: String -> [String] -> NativeSuitePlan -> TestExecutionPlan
 nativeExecutionPlan label haskellSuites suitePlan =
@@ -280,12 +318,22 @@ nativeExecutionPlan label haskellSuites suitePlan =
           testPlanExecutionMode = NativeSuite suitePlan
         }
 
-pytestInvocation :: String -> [String] -> PytestInvocation
-pytestInvocation invocationId invocationArgs =
-    PytestInvocation
-        { pytestInvocationId = invocationId,
-          pytestInvocationArgs = invocationArgs
-        }
+nativeValidationId :: NativeValidation -> String
+nativeValidationId validation =
+    case validation of
+        ValidationChartsVscode -> "charts-vscode"
+        ValidationPublicDns -> "public-dns"
+        ValidationDnsAws -> "dns-aws"
+        ValidationAwsIam -> "aws-iam"
+        ValidationAwsEks -> "aws-eks"
+        ValidationPulumi -> "pulumi"
+        ValidationHaRke2Aws -> "ha-rke2-aws"
+        ValidationGatewayDaemon -> "gateway-daemon"
+        ValidationGatewayPods -> "gateway-pods"
+        ValidationGatewayPartition -> "gateway-partition"
+        ValidationChartsPlatform -> "charts-platform"
+        ValidationChartsStorage -> "charts-storage"
+        ValidationLifecycle -> "lifecycle"
 
 orderedUnion :: [[String]] -> [String]
 orderedUnion = nub . concat

@@ -1,18 +1,17 @@
 # prodbox Haskell Rewrite Plan
 
-**Status**: Authoritative source
+**Status**: Reference only
 **Supersedes**: N/A
 **Referenced by**: N/A
 
-> **Purpose**: Define the phase-by-phase refactor of `DEVELOPMENT_PLAN/` required to rewrite
-> `prodbox` in Haskell, remove Python from the supported architecture, and retain Pulumi as an
-> external infrastructure engine.
+> **Purpose**: Record the seed rationale and target topology that reopened `DEVELOPMENT_PLAN/`
+> around the Haskell rewrite.
 
 ## Rewrite Intent
 
-As of April 16, 2026, the canonical `DEVELOPMENT_PLAN/` suite closes phases `0-7` against the
-current Python implementation. This document intentionally reopens phases `0-7` against a new end
-state:
+As of April 16, 2026, the canonical `DEVELOPMENT_PLAN/` suite has already been rewritten around
+the Haskell end state defined here. Phase `0` is closed there; Phases `1-7` remain open. This
+document stays as the seed rationale for that reopened suite:
 
 - `prodbox` is a compiled Haskell executable rather than a Python package.
 - Python is not part of the supported runtime, test harness, build chain, or infrastructure
@@ -24,14 +23,18 @@ state:
 This is not a "port enough to coexist" plan. The final handoff is a Haskell-only repository with
 zero Python implementation residue on the supported path.
 
+Canonical live status, blockers, and cleanup ownership now live in
+`DEVELOPMENT_PLAN/README.md` and its phase documents.
+
 ## Non-Negotiable End State
 
 - The only supported public CLI remains `prodbox`.
 - The repository-root `prodbox-config.dhall` remains the single configuration source unless a
   later explicit plan change replaces it.
 - Host-side Haskell builds write all build artifacts, including the `prodbox` binary, under the
-  repository-local `.build/` root. `cabal.project` explicitly sets this location; the default
-  Cabal output path is not part of the supported architecture.
+  repository-local `.build/` root. The canonical host build invocation
+  `cabal build --builddir=.build exe:prodbox` sets this location explicitly; the default Cabal
+  output path is not part of the supported architecture.
 - Container-side Haskell builds write build artifacts under `/opt/build`. The Dockerfile declares
   this location explicitly; container builds do not infer or silently vary their output root.
 - The product scope remains intact: local RKE2 lifecycle, Pulumi-backed AWS validation, in-cluster
@@ -71,7 +74,7 @@ prodbox/
 Recommended implementation choices for the rewrite:
 
 - `cabal` as the canonical Haskell build entrypoint
-- `cabal.project` explicitly routes host build outputs to `.build/`
+- `cabal build --builddir=.build exe:prodbox` as the canonical host build contract
 - `optparse-applicative` for CLI parsing
 - `dhall` for native config decoding
 - `aeson` for JSON interchange with Pulumi, Kubernetes, and AWS CLI subprocesses
@@ -84,8 +87,8 @@ Phase 1 may revise these choices only if it records a concrete blocker and an ex
 ## Build Artifact Contract
 
 - The supported host build root is `.build/`.
-- `cabal.project` explicitly points all host builds to `.build/`; `dist-newstyle/` is not a
-  supported artifact location.
+- The canonical host build invocation `cabal build --builddir=.build exe:prodbox` points all
+  supported host builds to `.build/`; `dist-newstyle/` is not a supported artifact location.
 - The supported container build root is `/opt/build`.
 - The Dockerfile build declares `/opt/build` explicitly and copies or promotes the built `prodbox`
   artifact from that path.
@@ -109,18 +112,18 @@ Pulumi stays, but Python does not.
 
 | Phase | Refactored Name | Status | Closure Result |
 |-------|-----------------|--------|----------------|
-| 0 | Planning and Documentation Topology for Haskell Rewrite | 📋 Planned | `DEVELOPMENT_PLAN/` describes the Haskell end state rather than the Python closure state |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 📋 Planned | One supported Haskell binary owns local lifecycle, settings, tests, and AWS validation foundations |
-| 2 | Haskell Gateway Runtime and DNS Ownership | 📋 Planned | Gateway runtime, leader election, and Route 53 ownership move to Haskell |
-| 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | 📋 Planned | Chart deployment and retained-storage orchestration move to Haskell |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 📋 Planned | Remaining lifecycle helpers are rewritten, Pulumi is Python-free, and repository-level Python residue is deleted |
-| 5 | Public Hostname Closure and External Proof on the Haskell Stack | 📋 Planned | Public DNS, TLS, ingress, and external proof rerun through Haskell surfaces only |
-| 6 | Final Clean-Room Rerun and Zero-Python Handoff | 📋 Planned | A full destructive rerun passes without Poetry, pytest, or Python implementation dependencies |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | 📋 Planned | All interactive and administrative AWS flows close through Haskell-only command paths |
+| 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done | `DEVELOPMENT_PLAN/` describes the Haskell end state rather than the Python closure state |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active | One supported Haskell binary owns local lifecycle, settings, tests, and AWS validation foundations |
+| 2 | Haskell Gateway Runtime and DNS Ownership | ⏸️ Blocked | Gateway runtime, leader election, and Route 53 ownership move to Haskell |
+| 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ⏸️ Blocked | Chart deployment and retained-storage orchestration move to Haskell |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ⏸️ Blocked | Remaining lifecycle helpers are rewritten, Pulumi is Python-free, and repository-level Python residue is deleted |
+| 5 | Public Hostname Closure and External Proof on the Haskell Stack | ⏸️ Blocked | Public DNS, TLS, ingress, and external proof rerun through Haskell surfaces only |
+| 6 | Final Clean-Room Rerun and Zero-Python Handoff | ⏸️ Blocked | A full destructive rerun passes without Poetry, pytest, or Python implementation dependencies |
+| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ⏸️ Blocked | All interactive and administrative AWS flows close through Haskell-only command paths |
 
 ## Phase 0: Planning and Documentation Topology for Haskell Rewrite
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`
 
@@ -148,7 +151,7 @@ Python system.
 
 ## Phase 1: Haskell Runtime, CLI, Config, and Pulumi Foundations
 
-**Status**: Planned
+**Status**: Active
 **Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Settings.hs`, `src/Prodbox/Lib/`, `src/Prodbox/Infra/`, `test/unit/`, `test/integration/`, `prodbox.cabal`, `cabal.project`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`
 
@@ -161,8 +164,8 @@ Pulumi bridge needed to replace the Python foundations without shrinking product
 
 - One compiled Haskell `prodbox` executable replaces Click entrypoints and preserves the supported
   command matrix.
-- Host builds are configured by `cabal.project` to emit all build outputs into `.build/`, and the
-  supported local binary artifact lives under that root.
+- Host builds use the canonical `cabal build --builddir=.build exe:prodbox` invocation so the
+  supported local binary artifact lives under `.build/`.
 - Container builds are configured by the Dockerfile to compile under `/opt/build`, with that path
   treated as part of the supported container build contract rather than an implementation detail.
 - Native Haskell settings loading decodes `prodbox-config.dhall`, preserves current config
@@ -188,7 +191,7 @@ Pulumi bridge needed to replace the Python foundations without shrinking product
 7. `prodbox pulumi test-destroy --yes`
 8. `prodbox pulumi eks-resources`
 9. `prodbox pulumi eks-destroy --yes`
-10. Host build proof: `cabal build` places the binary under `.build/`
+10. Host build proof: `cabal build --builddir=.build exe:prodbox` places the binary under `.build/`
 11. Container build proof: the Dockerfile build places build artifacts under `/opt/build`
 
 ## Phase 2: Haskell Gateway Runtime and DNS Ownership
@@ -271,7 +274,7 @@ supported without Python.
 - Repository docs stop presenting Python, Poetry, pytest, Click, or Pydantic as supported
   architecture.
 - The repository no longer has ambiguous Haskell artifact locations: host builds remain under
-  `.build/` by explicit `cabal.project` policy, and container builds remain under `/opt/build` by
+  `.build/` by the canonical `cabal build --builddir=.build exe:prodbox` contract, and container builds remain under `/opt/build` by
   explicit Dockerfile policy.
 
 ### Validation

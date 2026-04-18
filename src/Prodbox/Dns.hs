@@ -1,0 +1,203 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Prodbox.Dns
+    ( fetchPublicIp,
+      preferredPublicHostFqdn,
+      queryRoute53Record,
+      renderDnsStatusReport,
+      runDnsCommand,
+    )
+where
+
+import Data.Aeson
+    ( Value (..),
+      eitherDecode,
+    )
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.ByteString.Lazy.Char8 as BL8
+import qualified Data.Text as Text
+import qualified Data.Vector as Vector
+import Prodbox.CLI.Command (DnsCommand (..))
+import Prodbox.Result (Result (..))
+import Prodbox.Settings
+    ( Credentials (..),
+      DomainSection (..),
+      Route53Section (..),
+      ValidatedSettings (..),
+      aws,
+      domain,
+      route53,
+      validateAndLoadSettings,
+    )
+import Prodbox.Subprocess
+    ( CommandSpec (..),
+      ProcessOutput (..),
+      captureCommand,
+    )
+import System.Directory (findExecutable)
+import System.Exit
+    ( ExitCode (..),
+    )
+import System.IO (hPutStrLn, stderr)
+
+runDnsCommand :: FilePath -> DnsCommand -> IO ExitCode
+runDnsCommand repoRoot command =
+    case command of
+        DnsCheck -> do
+            settingsResult <- validateAndLoadSettings repoRoot
+            case settingsResult of
+                Left err -> failWith err
+                Right settings -> do
+                    publicIpResult <- fetchPublicIp
+                    case publicIpResult of
+                        Left err -> failWith err
+                        Right publicIp -> do
+                            recordResult <- queryRoute53Record repoRoot settings (Text.unpack (demo_fqdn (domain (validatedConfig settings))))
+                            case recordResult of
+                                Left err -> failWith err
+                                Right currentRecordIp -> do
+                                    putStr (renderDnsStatusReport settings publicIp currentRecordIp)
+                                    pure ExitSuccess
+
+renderDnsStatusReport :: ValidatedSettings -> String -> Maybe String -> String
+renderDnsStatusReport settings publicIp currentRecordIp =
+    unlines
+        [ "DNS status",
+          "FQDN=" ++ Text.unpack (demo_fqdn (domain config)),
+          "PUBLIC_IP=" ++ publicIp,
+          "ROUTE53_A_RECORD=" ++ maybe "<missing>" id currentRecordIp,
+          "STATUS=" ++ status
+        ]
+  where
+    config = validatedConfig settings
+    status
+        | currentRecordIp == Just publicIp = "in-sync"
+        | currentRecordIp == Nothing = "record-missing"
+        | otherwise = "mismatch"
+
+preferredPublicHostFqdn :: ValidatedSettings -> String
+preferredPublicHostFqdn settings =
+    case vscode_fqdn (domain config) of
+        Just value -> Text.unpack value
+        Nothing -> Text.unpack (demo_fqdn (domain config))
+  where
+    config = validatedConfig settings
+
+fetchPublicIp :: IO (Either String String)
+fetchPublicIp = do
+    curlExists <- findExecutable "curl"
+    case curlExists of
+        Nothing -> pure (Left "`dns check` requires `curl` to resolve the current public IP.")
+        Just _ -> do
+            outputResult <-
+                captureCommand
+                    CommandSpec
+                        { commandPath = "curl",
+                          commandArguments = ["-fsSL", "https://api.ipify.org"],
+                          commandEnvironment = Nothing,
+                          commandWorkingDirectory = Nothing
+                        }
+            pure $
+                case outputResult of
+                    Failure err -> Left ("failed to start `curl -fsSL https://api.ipify.org`: " ++ err)
+                    Success output ->
+                        case processExitCode output of
+                            ExitSuccess ->
+                                case words (processStdout output) of
+                                    (value : _) -> Right value
+                                    [] -> Left "public IP lookup returned an empty response"
+                            ExitFailure _ ->
+                                Left ("public IP lookup failed: " ++ outputDetail output)
+
+queryRoute53Record :: FilePath -> ValidatedSettings -> String -> IO (Either String (Maybe String))
+queryRoute53Record repoRoot settings fqdn = do
+    outputResult <-
+        captureCommand
+            CommandSpec
+                { commandPath = "aws",
+                  commandArguments = ["route53", "list-resource-record-sets", "--hosted-zone-id", Text.unpack (zone_id (route53 config)), "--output", "json"],
+                  commandEnvironment = Just (awsCliEnvironment (aws config)),
+                  commandWorkingDirectory = Just repoRoot
+                }
+    pure $
+        case outputResult of
+            Failure err -> Left ("failed to start `aws route53 list-resource-record-sets`: " ++ err)
+            Success output ->
+                case processExitCode output of
+                    ExitSuccess -> parseRoute53Record fqdn (processStdout output)
+                    ExitFailure _ -> Left ("aws route53 list-resource-record-sets failed: " ++ outputDetail output)
+  where
+    config = validatedConfig settings
+
+parseRoute53Record :: String -> String -> Either String (Maybe String)
+parseRoute53Record fqdn stdoutText = do
+    payload <- eitherDecode (BL8.pack stdoutText) :: Either String Value
+    pure (recordIpForFqdn (ensureTrailingDot fqdn) payload)
+
+recordIpForFqdn :: String -> Value -> Maybe String
+recordIpForFqdn fqdn payload =
+    case payload of
+        Object obj -> do
+            Array records <- KeyMap.lookup "ResourceRecordSets" obj
+            findRecordIp fqdn (Vector.toList records)
+        _ -> Nothing
+
+findRecordIp :: String -> [Value] -> Maybe String
+findRecordIp _ [] = Nothing
+findRecordIp fqdn (value : remaining) =
+    case value of
+        Object obj ->
+            let nameMatches = KeyMap.lookup "Name" obj == Just (String (Text.pack fqdn))
+                typeMatches = KeyMap.lookup "Type" obj == Just (String "A")
+             in if nameMatches && typeMatches
+                    then firstRecordIp obj
+                    else findRecordIp fqdn remaining
+        _ -> findRecordIp fqdn remaining
+
+firstRecordIp :: KeyMap.KeyMap Value -> Maybe String
+firstRecordIp obj = do
+    Array records <- KeyMap.lookup "ResourceRecords" obj
+    firstValue <- case Vector.toList records of
+        [] -> Nothing
+        (record : _) -> Just record
+    case firstValue of
+        Object recordObj ->
+            case KeyMap.lookup "Value" recordObj of
+                Just (String value) -> Just (Text.unpack value)
+                _ -> Nothing
+        _ -> Nothing
+
+ensureTrailingDot :: String -> String
+ensureTrailingDot value = if null value || last value == '.' then value else value ++ "."
+
+awsCliEnvironment :: Credentials -> [(String, String)]
+awsCliEnvironment credentials =
+    addSessionToken (session_token credentials)
+        [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials)),
+          ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials)),
+          ("AWS_REGION", Text.unpack (region credentials)),
+          ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
+        ]
+
+addSessionToken :: Maybe Text.Text -> [(String, String)] -> [(String, String)]
+addSessionToken maybeToken environment =
+    case maybeToken of
+        Nothing -> environment
+        Just token -> ("AWS_SESSION_TOKEN", Text.unpack token) : environment
+
+outputDetail :: ProcessOutput -> String
+outputDetail output =
+    case (trim (processStderr output), trim (processStdout output)) of
+        (stderrText, _) | stderrText /= "" -> stderrText
+        ("", stdoutText) | stdoutText /= "" -> stdoutText
+        _ -> "subprocess exited without output"
+
+trim :: String -> String
+trim = f . f
+  where
+    f = reverse . dropWhile (`elem` [' ', '\n', '\r', '\t'])
+
+failWith :: String -> IO ExitCode
+failWith message = do
+    hPutStrLn stderr message
+    pure (ExitFailure 1)

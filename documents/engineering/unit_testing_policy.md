@@ -22,6 +22,26 @@ This document defines testing doctrine only. Clean-room sequencing, completion
 status, remaining work, and legacy-path removal are owned by
 [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
+Current implementation split:
+- `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint and runs the Haskell
+  suites under `test/`.
+- `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`,
+  `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`,
+  and `src/Prodbox/TestPlan.hs` now own phase banners, prerequisite closure, runbook gating,
+  canonical aggregate ordering, supported-runtime bootstrap/postflight sequencing,
+  multi-invocation coverage handling, and direct pytest invocation across the public suite surface.
+- Retained `src/prodbox/cli/test_cmd.py` now survives only as the legacy direct-backend `test`
+  implementation under `PRODBOX_PYTHON_BACKEND=1`.
+- `test/integration/cli/Main.hs` now exercises the built frontend directly, including fake-AWS
+  end-to-end proof for the native `config setup` and `aws ...` command family, fake-curl proof
+  for native `gateway status` and `gateway config-gen`, native fake-`helm` or `kubectl` proof for
+  `prodbox charts list|status|deploy|delete`, fake host / `kubectl` / `helm` / `docker` / `ctr`
+  proof for native `prodbox rke2 install|delete`, and fake-backend delegation proof that remains
+  only for the unfinished Pulumi AWS-validation and `gateway start` shim surfaces.
+- `test/integration/env/Main.hs` now owns direct built-frontend proof for native `config show`
+  and `config validate` masking, failure, and JSON materialization behavior, so `prodbox test
+  integration env` no longer delegates to a retained Python env pytest suite.
+
 ---
 
 ## 1. The Interpreter-Only Mocking Doctrine
@@ -350,7 +370,7 @@ The `infra/` module is excluded from unit test coverage because it requires a re
 This SSoT owns test skip doctrine intention.
 
 - Owned statement: Skip/xfail is prohibited by default; any allowed exception requires explicit doctrinal criteria and automated enforcement.
-- Linked dependents: `src/prodbox/lib/lint/no_test_skip_guard.py`, `src/prodbox/cli/test_cmd.py`.
+- Linked dependents: `src/prodbox/lib/lint/no_test_skip_guard.py`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, `src/prodbox/cli/test_cmd.py`.
 
 ---
 

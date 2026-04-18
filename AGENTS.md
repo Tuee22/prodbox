@@ -6,37 +6,61 @@
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
+`DEVELOPMENT_PLAN/README.md` is the authoritative source for target architecture, sprint status,
+and cleanup ownership. The current worktree is now a mixed Phase 1.2 baseline: Haskell owns
+`config compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`,
+`dns check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`, and
+the public `test` entrypoint plus native named-suite and aggregate-suite orchestration, while
+most product runtime behavior still routes through the retained Python backend until later phases
+close.
+
 ---
 
-## Project Structure
+## Current Worktree Structure
 
 ```
 prodbox/
-├── src/prodbox/          # Main source package
+├── app/prodbox/Main.hs   # Haskell Phase 1.1 frontend entrypoint
+├── src/Prodbox/          # Haskell frontend modules (current scaffold)
+│   ├── CLI/              # Explicit command-surface parser
+│   └── Backend/          # Python-backend delegation bridge
+├── src/prodbox/          # Retained Python runtime and command backend
 │   ├── cli/              # Click CLI commands and DAG system
 │   ├── infra/            # Pulumi infrastructure definitions
 │   ├── lib/              # Shared utilities
 │   └── settings.py       # Pydantic configuration
-├── tests/                # Unit and integration tests
-│   ├── unit/             # Pure function tests
-│   └── integration/      # Real infrastructure tests
+├── tests/                # Current Python unit and integration tests
 ├── typings/              # Custom type stubs for external libs
 ├── documents/            # Engineering documentation
-└── pyproject.toml        # Poetry configuration
+├── prodbox.cabal         # Haskell frontend package definition
+├── cabal.project         # Haskell project config
+├── Dockerfile            # Root Haskell container build under /opt/build
+└── pyproject.toml        # Retained Poetry configuration for the Python backend
 ```
+
+The planned Haskell target topology lives in `DEVELOPMENT_PLAN/00-overview.md` and
+`HASKELL_REWRITE_PLAN.md`; do not describe the current Python tree as the final handoff
+architecture.
 
 ---
 
-## Build, Test, and Development Commands
+## Current Worktree Commands
 
-All commands through Poetry:
+Until Sprint `4.3` closes, much of the repository-local runtime still goes through the
+retained Python backend even though the Haskell `prodbox` frontend now owns `config
+compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`, `dns
+check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`, and
+`test`:
 
 ```bash
 # Install dependencies
 poetry install
 
-# Run CLI
+# Run CLI through the retained backend
 poetry run prodbox <command>
+
+# Build the current Haskell frontend
+cabal build --builddir=.build exe:prodbox
 
 # Run tests
 poetry run prodbox test all                        # All tests
@@ -47,14 +71,15 @@ poetry run prodbox test all --coverage --cov-fail-under 100  # With coverage
 poetry run prodbox check-code        # Policy guard + ruff + mypy
 ```
 
-poetry run prodbox check-code is the required single entrypoint for doctrine enforcement in local development.
+`poetry run prodbox check-code` is the required single entrypoint for doctrine
+enforcement in local development.
 The authoritative CLI command matrix lives in [documents/engineering/cli_command_surface.md](documents/engineering/cli_command_surface.md).
 
 ---
 
 ## Coding Style
 
-### Python
+### Python Baseline
 
 - **Indentation**: 4 spaces (no tabs)
 - **Line length**: 100 characters max

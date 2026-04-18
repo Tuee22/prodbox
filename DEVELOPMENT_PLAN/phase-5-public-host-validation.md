@@ -14,11 +14,19 @@ surfaces. It preserves the existing public-host doctrine: external proof remains
 explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based closure remains
 unsupported.
 
-## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack 📋
+## Current Baseline In Worktree
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/CLI/Host.hs`, `src/Prodbox/Infra/Ingress.hs`, `src/Prodbox/Infra/CertManager.hs`, `test/integration/public_host/`
-**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+- `src/Prodbox/Host.hs` owns the public `prodbox host public-edge` surface. All Python host
+  wrappers and duplicate report logic have been removed.
+- Public-edge proof lives in the Haskell test suites under `test/`.
+- Ingress and TLS bootstrap are handled through YAML Pulumi definitions and the Haskell chart
+  runtime.
+
+## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Host.hs`, `test/unit/Main.hs`, `test/integration/public_host/`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
@@ -43,9 +51,18 @@ owns it.
 4. `prodbox test integration charts-vscode`
 5. `prodbox test integration public-dns`
 
+### Current Validation State
+
+- `src/Prodbox/Host.hs` now owns the public `prodbox host public-edge` surface and preserves the
+  supported readiness-report fields and classification contract.
+- `src/Prodbox/TestRunner.hs` now uses the native Haskell `host public-edge` command inside the
+  supported-runtime bootstrap and postflight checks instead of bouncing through the Python backend.
+- `test/unit/Main.hs` proves parser routing for native `host public-edge`, and
+  `prodbox test unit` passes after the Haskell port lands.
+
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
 ## Documentation Requirements
 
@@ -53,6 +70,8 @@ owns it.
 
 - `documents/engineering/aws_integration_environment_doctrine.md` - external proof and AWS access
   doctrine after the Haskell rewrite.
+- `documents/engineering/aws_test_environment.md` - shared AWS validation-environment doctrine for
+  the Haskell public-host proof path.
 - `documents/engineering/cli_command_surface.md` - supported public-host validation commands.
 - `documents/engineering/helm_chart_platform_doctrine.md` - public-host behavior of the rewritten
   `vscode` stack.

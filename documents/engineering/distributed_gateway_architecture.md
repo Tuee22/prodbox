@@ -42,8 +42,10 @@ removal for gateway delivery are owned by
 
 Canonical repository facts referenced by this doctrine:
 
-1. The gateway daemon implementation lives in `src/prodbox/gateway_daemon.py`.
-2. The managed CLI surface is `prodbox gateway start|status|config-gen`.
+1. The current mixed gateway implementation is split between native `src/Prodbox/Gateway.hs`
+   for `prodbox gateway status|config-gen` and retained `src/prodbox/gateway_daemon.py` plus
+   `src/prodbox/cli/gateway.py` for the running daemon and `prodbox gateway start`.
+2. The managed CLI surface remains `prodbox gateway start|status|config-gen`.
 3. Verification artifacts include `tests/unit/test_gateway_daemon.py`,
    `tests/integration/test_gateway_daemon_k8s.py`,
    `tests/integration/test_gateway_k8s_pods.py`, and
@@ -199,8 +201,9 @@ Model files:
 
 Execution requirement:
 
-- TLA+ checks must run via Docker using `tlaplatform/tlaplus`.
-- Use the CLI command `poetry run prodbox tla-check`.
+- TLA+ checks must run via Docker using `maxdiefenbach/tlaplus`.
+- On the current mixed baseline, `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` entrypoint.
+- Use the CLI command `prodbox tla-check`.
 - The command runs a self-deleting container (`docker run --rm ...`) and writes the latest result to `documents/engineering/tla/tlc_last_run.txt`.
 
 For modelling assumptions, variable correspondence, known divergences, and verification status, see [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
@@ -299,9 +302,13 @@ Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
 TLS material set, and a Kubernetes Secret carrying the prodbox-config.json that
 the daemon's Route 53 client reads at runtime.
 
-`prodbox gateway start <config.json>` is the in-pod entrypoint invoked by the
-gateway chart's container. It is also the dev-only path used when running the
-daemon directly against a host process for local iteration; that mode is not a
+On the current mixed baseline, `prodbox gateway start <config.json>` is still
+served by the retained Python daemon path and remains the in-pod entrypoint
+invoked by the gateway chart's container. Native Haskell `prodbox gateway
+status <config.json>` and `prodbox gateway config-gen <path> --node-id <id>`
+now cover operator status inspection and config-template generation. The
+`gateway start` path is also the dev-only mode used when running the daemon
+directly against a host process for local iteration; that mode is not a
 supported public-host steady state and no host-side supervisor is installed.
 
 Containerization is first-class for integration/runtime image publishing:

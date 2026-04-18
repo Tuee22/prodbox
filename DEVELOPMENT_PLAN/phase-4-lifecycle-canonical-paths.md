@@ -14,9 +14,24 @@ paths to Haskell, removes Python Pulumi programs, and deletes Python-specific to
 from the repository. It is the phase that turns the rewrite from a hybrid codebase into an
 explicitly converging Haskell-only architecture.
 
-## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack 📋
+## Current Baseline In Worktree
 
-**Status**: Planned
+- Native Haskell runtime ownership covers the full lifecycle and Pulumi surface. All Python
+  lifecycle, Pulumi, and quality-gate code has been removed from the repository.
+- `src/Prodbox/CLI/Rke2.hs` owns `prodbox rke2 install|delete|status|start|stop|restart|logs`
+  including the supported local Harbor/local-registry and MinIO baseline.
+- `src/Prodbox/CLI/Pulumi.hs` owns `prodbox pulumi up|preview|destroy|refresh|stack-init` and
+  routes `eks-resources|eks-destroy|test-resources|test-destroy` through native Haskell infra
+  modules.
+- All Pulumi programs are now YAML-based: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`,
+  and `pulumi/aws-test/Main.yaml`. The root `Pulumi.yaml` uses `runtime: yaml`.
+- `CheckCode.hs` runs `cabal build --builddir=.build all` without Python tooling.
+- All Python source (`src/prodbox/`), Python tests (`tests/`), Python type stubs (`typings/`),
+  and Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`) have been deleted.
+
+## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
+
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Lib/`, `test/integration/lifecycle/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -44,12 +59,12 @@ paths.
 
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
-## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions 📋
+## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
-**Status**: Planned
-**Implementation**: `pulumi/`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `test/integration/aws/`
+**Status**: Done
+**Implementation**: `Pulumi.yaml`, `pulumi/`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `test/integration/aws/`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -58,7 +73,8 @@ Retain Pulumi as the infrastructure engine while removing Python from the suppor
 
 ### Deliverables
 
-- Existing Python Pulumi stack programs are replaced with non-Python Pulumi definitions.
+- Existing Python Pulumi stack programs and runtime declarations are replaced with non-Python
+  Pulumi definitions.
 - Haskell owns Pulumi stack selection, config rendering, output parsing, and failure reporting.
 - Both the local-cluster infrastructure path and the AWS validation-stack paths continue to close
   through `prodbox pulumi ...`.
@@ -75,13 +91,14 @@ Retain Pulumi as the infrastructure engine while removing Python from the suppor
 
 ### Remaining Work
 
-- All deliverables remain open.
+None. All Python Pulumi programs replaced with YAML definitions: `pulumi/home/Main.yaml`,
+`pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml`. Root `Pulumi.yaml` uses `runtime: yaml`.
 
-## Sprint 4.3: Repository-Wide Python Toolchain Removal 📋
+## Sprint 4.3: Repository-Wide Python Toolchain Removal ✅
 
-**Status**: Planned
-**Implementation**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `src/`, `test/`, `typings/`, `pyproject.toml`, `poetry.lock`, `.python-version`
-**Docs to update**: `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/cli_command_surface.md`
+**Status**: Done
+**Implementation**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `src/`, `tests/`, `typings/`, `pyproject.toml`, `poetry.toml`, `.python-version`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/pure_fp_standards.md`, `documents/engineering/refactoring_patterns.md`
 
 ### Objective
 
@@ -105,7 +122,9 @@ exists.
 
 ### Remaining Work
 
-- All deliverables remain open.
+None. All Python source (`src/prodbox/`, `tests/`, `typings/`), Python packaging (`pyproject.toml`,
+`poetry.toml`, `.python-version`), and Python bridge modules have been deleted. `CheckCode.hs` runs
+`cabal build --builddir=.build all` without Python tooling.
 
 ## Documentation Requirements
 
@@ -119,6 +138,12 @@ exists.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell lifecycle and Pulumi surface.
 - `documents/engineering/code_quality.md` - Haskell-owned quality gate.
 - `documents/engineering/dependency_management.md` - Cabal ownership and Python toolchain removal.
+- `documents/engineering/integration_fixture_doctrine.md` - cluster-backed integration doctrine
+  after pytest-specific ownership is removed.
+- `documents/engineering/pure_fp_standards.md` - repository coding standards once Python-specific
+  examples and tooling assumptions are gone.
+- `documents/engineering/refactoring_patterns.md` - retire or rewrite Python-specific migration
+  guidance that no longer matches the supported architecture.
 
 **Product docs to create/update:**
 

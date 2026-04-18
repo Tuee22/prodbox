@@ -15,29 +15,29 @@ prodbox command execution uses prerequisite-declared DAG nodes:
 
 1. `EffectNode` declares prerequisites by `effect_id`.
 2. `EffectDAG.from_roots(...)` expands prerequisites transitively from the registry.
-3. Interpreter runtime executes ready nodes concurrently once prerequisites are completed.
+3. Interpreter runtime executes ready nodes in deterministic sorted order once prerequisites are completed.
+
+Current mixed baseline:
+- Public `prodbox test` suites plus native `prodbox host` and `prodbox k8s` command ownership use
+  `src/Prodbox/EffectDAG.hs` plus `src/Prodbox/Prerequisite.hs`.
+- The Haskell registry now mirrors the full shared 30-node prerequisite inventory.
+- Broader delegated command families still use the retained Python DAG builders and interpreter
+  until their phase-owned ports land.
 
 ---
 
 ## 2. Prerequisite Result Propagation
 
-Prerequisite outcomes propagate as `Result` values to dependent nodes.
+Current mixed baseline:
+- The Phase 1 Haskell runtime propagates prerequisite success or failure deterministically across
+  public `test`, `host`, and `k8s` surfaces.
+- Retained Python DAG builders and interpreters still carry typed prerequisite payloads such as
+  `MachineIdentity`, `HarborRuntime`, `StorageRuntime`, and `MinioRuntime` for later lifecycle,
+  storage, and chart command families.
 
-- Default node policy is `PrerequisiteFailurePolicy.PROPAGATE`.
-- `PROPAGATE` returns a deterministic propagated prerequisite failure.
-- `IGNORE` executes the node and allows explicit aggregate/recover behavior in effect builders.
-
-Machine identity is propagated as typed prerequisite data:
-- prerequisite `machine_identity` returns `MachineIdentity(machine_id, prodbox_id)`.
-- downstream lifecycle nodes must derive prodbox annotation selectors from this value only.
-
-Registry runtime also returns typed effect outputs for downstream consumers:
-- `EnsureHarborRegistry` returns `HarborRuntime(registry_endpoint, gateway_image)`.
-- `EnsureRetainedLocalStorage` returns `StorageRuntime(storage_class_name, pv, pvc, host_path)`.
-- `EnsureMinio` returns `MinioRuntime(namespace, release_name, persistent_volume_claim_name)`.
-- gateway integration tests can consume the canonical Harbor image path when explicit overrides are absent.
-
-This preserves Railway semantics while keeping node behavior explicit.
+That split preserves Railway semantics while keeping the current command boundary honest: public
+Haskell-owned Phase 1 surfaces use prerequisite pass or fail gates today, and later phases still
+own the typed downstream consumers that remain on the Python DAG runtime.
 
 ---
 

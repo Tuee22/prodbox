@@ -75,6 +75,11 @@ Current expected users:
    the test-only `aws_admin.*` credential section to drive `prodbox aws` lifecycle logic against
    real AWS.
 
+The public `prodbox config setup` and `prodbox aws ...` surfaces now route through the native
+Haskell frontend and explicit AWS CLI subprocess environments. The retained Python `aws_admin`
+helper survives only for the still-open real IAM lifecycle proof and the legacy direct-backend
+compatibility path.
+
 It does not own the general multi-project AWS test-account topology, shared parent-domain strategy,
 or shared-account authentication posture. Those are defined in
 [AWS Test Environment](./aws_test_environment.md).

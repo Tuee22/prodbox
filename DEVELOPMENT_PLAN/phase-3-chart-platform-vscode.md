@@ -13,11 +13,21 @@ This phase ports the chart platform and retained-storage orchestration to Haskel
 namespace-local stack composition, deterministic PV or PVC rebinding, and the supported cluster-
 backed `vscode` delivery model.
 
-## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage 📋
+## Current Baseline In Worktree
 
-**Status**: Planned
+- The public `prodbox charts ...` runtime lives in `src/Prodbox/CLI/Charts.hs`,
+  `src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/Lib/Storage.hs`. All Python chart code
+  has been removed from the repository.
+- Retained roots remain the configured manual PV root (default `.data/`) and `.prodbox-state/`;
+  chart secret resolution and gateway event-key handling are Haskell-owned.
+- The custom `vscode-nginx` image build lives in `docker/nginx-oidc.Dockerfile` and uses the
+  Harbor local-registry pipeline.
+
+## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage ✅
+
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `test/unit/charts/`, `test/integration/charts/`
-**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
@@ -38,15 +48,32 @@ platform doctrine.
 3. `prodbox test integration charts-storage`
 4. `prodbox test integration charts-platform`
 
+### Current Validation State
+
+- `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
+  `src/Prodbox/Lib/Storage.hs` now own the default public Haskell runtime for
+  `prodbox charts list|status|deploy|delete`, including deterministic retained storage,
+  repo-local secret or event-key retention, Helm deploy or delete orchestration, and chart status
+  rendering.
+- `src/Prodbox/TestRunner.hs` supported-runtime bootstrap and postflight now invoke native Haskell
+  `prodbox charts ...` surfaces instead of calling retained backend chart commands directly.
+- `test/unit/Main.hs` now proves deterministic Haskell chart-plan and storage-binding behavior,
+  and `test/integration/cli/Main.hs` now proves native built-frontend `prodbox charts
+  list|status|deploy|delete` behavior against fake `helm` and `kubectl`; the April 17, 2026
+  worktree passes `cabal test --builddir=.build prodbox-unit prodbox-integration-cli` and
+  `prodbox test integration cli` after the native chart runtime lands.
+- All Python chart code has been removed. The Haskell chart runtime is the sole owner of
+  `prodbox charts list|status|deploy|delete`.
+
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
-## Sprint 3.2: Haskell `vscode` Stack Delivery and Auth Path 📋
+## Sprint 3.2: Haskell `vscode` Stack Delivery and Auth Path ✅
 
-**Status**: Planned
-**Implementation**: `charts/`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/integration/charts/`
-**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+**Status**: Done
+**Implementation**: `charts/`, `docker/nginx-oidc.Dockerfile`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/integration/charts/`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
@@ -69,7 +96,7 @@ Haskell.
 
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
 ## Documentation Requirements
 

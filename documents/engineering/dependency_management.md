@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md
 
-> **Purpose**: Define standards for Python dependency management in prodbox using Poetry.
+> **Purpose**: Define current dependency-management doctrine for the mixed Haskell frontend and retained Python backend.
 
 ---
 
@@ -17,7 +17,19 @@ removal are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.
 
 ---
 
-## 1. Lock File Policy
+## 1. Current Toolchain Split
+
+- `prodbox.cabal` now defines the Haskell frontend library, the `prodbox` executable, and the
+  current Haskell test suites under `test/`.
+- `pyproject.toml` still defines the retained Python backend, the broader pytest payload, and the
+  current guard/lint/type-check toolchain that the Haskell frontend invokes.
+- Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract
+  is intentionally command-line owned because Cabal accepts `--builddir` only as a command-line
+  option for nix-style builds.
+- The root `Dockerfile` builds the Haskell frontend under `/opt/build` and copies the resulting
+  binary into the runtime stage.
+
+## 2. Lock File Policy
 
 ### poetry.lock is NOT Version Controlled
 
@@ -50,7 +62,7 @@ poetry install
 
 ---
 
-## 2. Version Constraint Standards
+## 3. Version Constraint Standards
 
 ### Required: Explicit Upper Bounds
 
@@ -99,9 +111,48 @@ click = "8.1.7"
 
 ---
 
-## 3. Current Dependencies
+## 4. Current Dependencies
 
-### Runtime Dependencies
+### Haskell Frontend And Test Dependencies
+
+```cabal
+-- File: prodbox.cabal
+library
+  aeson
+  aeson-pretty
+  base
+  bytestring
+  dhall
+  directory
+  filepath
+  optparse-applicative
+  process
+  text
+
+test-suite prodbox-unit
+  base
+  directory
+  filepath
+  hspec
+  optparse-applicative
+  process
+  prodbox
+  temporary
+  text
+
+test-suite prodbox-integration-cli
+test-suite prodbox-integration-env
+  base
+  bytestring
+  directory
+  filepath
+  hspec
+  process
+  prodbox
+  temporary
+```
+
+### Retained Python Backend Runtime Dependencies
 
 ```toml
 # File: pyproject.toml
@@ -117,7 +168,7 @@ httpx = "^0.27.0"
 rich = "^13.0.0"
 ```
 
-### Development Dependencies
+### Retained Python Backend Development Dependencies
 
 ```toml
 # File: pyproject.toml
@@ -134,7 +185,7 @@ ruff = "^0.2.0"
 
 ---
 
-## 4. Adding New Dependencies
+## 5. Adding New Dependencies
 
 ### Entrypoint-Only Command Policy
 
@@ -178,7 +229,7 @@ poetry add --group dev "hypothesis^6.0.0"
 
 ---
 
-## 5. Upgrading Dependencies
+## 6. Upgrading Dependencies
 
 ### Safe Upgrade Process
 
@@ -215,4 +266,6 @@ Major version upgrades require:
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md) - Clean-room sequencing and legacy removal
 - [CLAUDE.md](../../CLAUDE.md) - Project overview and type safety requirements
 - [Pure FP Standards](./pure_fp_standards.md) - Code patterns that affect dependency choices
-- [pyproject.toml](../../pyproject.toml) - Canonical dependency definitions
+- [prodbox.cabal](../../prodbox.cabal) - Haskell frontend dependency definition
+- [cabal.project](../../cabal.project) - Haskell project package-set definition
+- [pyproject.toml](../../pyproject.toml) - Retained Python backend dependency definitions

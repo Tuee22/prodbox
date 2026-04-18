@@ -1,7 +1,3 @@
 name: prodbox-aws-test
-runtime:
-  name: python
-  options:
-    virtualenv: ../../.venv
-main: .
+runtime: yaml
 description: Pulumi-managed AWS test stack for SSH-driven HA RKE2 validation

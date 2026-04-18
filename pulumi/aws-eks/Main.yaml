@@ -1,0 +1,191 @@
+config:
+  aws:region:
+    type: string
+    default: us-east-1
+
+variables:
+  operatorCidr:
+    fn::invoke:
+      function: std:getenv
+      arguments:
+        name: PRODBOX_AWS_EKS_TEST_OPERATOR_CIDR
+      return: result
+  stackName: ${pulumi.stack}
+  clusterName: ${stackName}-cluster
+  nodeGroupName: ${stackName}-node-group
+  availabilityZones:
+    fn::invoke:
+      function: aws:getAvailabilityZones
+      arguments:
+        state: available
+      return: names
+
+resources:
+  vpc:
+    type: aws:ec2:Vpc
+    properties:
+      cidrBlock: "10.91.0.0/16"
+      enableDnsHostnames: true
+      enableDnsSupport: true
+      tags:
+        Name: ${stackName}-vpc
+
+  igw:
+    type: aws:ec2:InternetGateway
+    properties:
+      vpcId: ${vpc.id}
+      tags:
+        Name: ${stackName}-igw
+
+  publicRouteTable:
+    type: aws:ec2:RouteTable
+    properties:
+      vpcId: ${vpc.id}
+      routes:
+        - cidrBlock: "0.0.0.0/0"
+          gatewayId: ${igw.id}
+      tags:
+        Name: ${stackName}-public-rt
+
+  publicSubnet0:
+    type: aws:ec2:Subnet
+    properties:
+      vpcId: ${vpc.id}
+      cidrBlock: "10.91.0.0/24"
+      availabilityZone: ${availabilityZones[0]}
+      mapPublicIpOnLaunch: true
+      tags:
+        Name: ${stackName}-public-subnet-0
+
+  publicSubnet1:
+    type: aws:ec2:Subnet
+    properties:
+      vpcId: ${vpc.id}
+      cidrBlock: "10.91.1.0/24"
+      availabilityZone: ${availabilityZones[1]}
+      mapPublicIpOnLaunch: true
+      tags:
+        Name: ${stackName}-public-subnet-1
+
+  rta0:
+    type: aws:ec2:RouteTableAssociation
+    properties:
+      subnetId: ${publicSubnet0.id}
+      routeTableId: ${publicRouteTable.id}
+
+  rta1:
+    type: aws:ec2:RouteTableAssociation
+    properties:
+      subnetId: ${publicSubnet1.id}
+      routeTableId: ${publicRouteTable.id}
+
+  clusterRole:
+    type: aws:iam:Role
+    properties:
+      assumeRolePolicy:
+        fn::toJSON:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: eks.amazonaws.com
+              Action: sts:AssumeRole
+      tags:
+        Name: ${stackName}-cluster-role
+
+  clusterPolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${clusterRole.name}
+      policyArn: "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+
+  nodeRole:
+    type: aws:iam:Role
+    properties:
+      assumeRolePolicy:
+        fn::toJSON:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: ec2.amazonaws.com
+              Action: sts:AssumeRole
+      tags:
+        Name: ${stackName}-node-role
+
+  nodeWorkerPolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${nodeRole.name}
+      policyArn: "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+
+  nodeCniPolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${nodeRole.name}
+      policyArn: "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+
+  nodeEcrPolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${nodeRole.name}
+      policyArn: "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+
+  cluster:
+    type: aws:eks:Cluster
+    properties:
+      name: ${clusterName}
+      roleArn: ${clusterRole.arn}
+      accessConfig:
+        authenticationMode: API_AND_CONFIG_MAP
+        bootstrapClusterCreatorAdminPermissions: true
+      vpcConfig:
+        subnetIds:
+          - ${publicSubnet0.id}
+          - ${publicSubnet1.id}
+        endpointPrivateAccess: true
+        endpointPublicAccess: true
+        publicAccessCidrs:
+          - ${operatorCidr}
+      tags:
+        Name: ${clusterName}
+    options:
+      dependsOn:
+        - ${clusterPolicyAttachment}
+
+  nodeGroup:
+    type: aws:eks:NodeGroup
+    properties:
+      clusterName: ${cluster.name}
+      nodeGroupName: ${nodeGroupName}
+      nodeRoleArn: ${nodeRole.arn}
+      subnetIds:
+        - ${publicSubnet0.id}
+        - ${publicSubnet1.id}
+      instanceTypes:
+        - t3.medium
+      diskSize: 20
+      scalingConfig:
+        desiredSize: 2
+        minSize: 2
+        maxSize: 2
+      tags:
+        Name: ${nodeGroupName}
+    options:
+      dependsOn:
+        - ${cluster}
+        - ${nodeWorkerPolicyAttachment}
+        - ${nodeCniPolicyAttachment}
+        - ${nodeEcrPolicyAttachment}
+
+outputs:
+  backend_bucket: prodbox-test-pulumi-backends
+  cluster_name: ${cluster.name}
+  cluster_role_name: ${clusterRole.name}
+  node_group_name: ${nodeGroup.nodeGroupName}
+  node_role_name: ${nodeRole.name}
+  vpc_id: ${vpc.id}
+  subnet_ids:
+    - ${publicSubnet0.id}
+    - ${publicSubnet1.id}
+  cluster_security_group_id: ${cluster.vpcConfig.clusterSecurityGroupId}

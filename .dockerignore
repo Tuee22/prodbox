@@ -54,6 +54,11 @@ dmypy.json
 # Ruff
 .ruff_cache/
 
+# Cabal
+.build/
+dist-newstyle/
+cabal.project.local
+
 # Pulumi
 .pulumi/
 Pulumi.*.yaml.bak

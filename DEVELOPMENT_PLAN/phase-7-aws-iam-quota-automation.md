@@ -9,15 +9,27 @@
 
 ## Phase Summary
 
-This phase ports the highest-friction operator flows to Haskell: interactive config authoring,
+This phase ported the highest-friction operator flows to Haskell: interactive config authoring,
 policy generation, IAM user management, service-quota automation, and the test-only elevated
-credential harness. It closes only when the operator no longer needs Python for any supported AWS
-administration or onboarding path.
+credential harness. All onboarding and AWS administration surfaces are now Haskell-owned, and
+Sprint `6.2` closed after the Python dependency was fully removed.
 
-## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell 📋
+## Current Baseline In Worktree
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/CLI/Config.hs`, `src/Prodbox/CLI/Aws.hs`, `src/Prodbox/Lib/AwsAdmin.hs`, `test/unit/aws_admin/`
+- The public onboarding and standalone AWS administration surfaces are Haskell-owned in
+  `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs`. All Python
+  command wrappers and IAM helpers have been removed.
+- The settings and config-materialization path is fully Haskell-owned in `src/Prodbox/Settings.hs`
+  for Dhall decode, materialization, display, and validation.
+- Haskell proof exists in `test/unit/Main.hs` and `test/integration/cli/Main.hs`, including
+  fake-AWS end-to-end coverage for `config setup` and
+  `aws setup|teardown|check-quotas|request-quotas`, plus real IAM lifecycle proof on the Haskell
+  stack.
+
+## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -38,14 +50,23 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 3. `prodbox config setup`
 4. `prodbox aws policy --tier full`
 
+### Current Validation State
+
+- `src/Prodbox/Aws.hs` now owns the interactive `prodbox config setup` wizard and native
+  `prodbox aws policy [--tier ...]` rendering path.
+- `test/unit/Main.hs` now proves parser routing for `config setup` plus the native `aws *` command
+  family.
+- `test/integration/cli/Main.hs` now builds the frontend and exercises `config setup` and
+  `aws policy --tier full` without the retained Python backend.
+
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
-## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell 📋
+## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/CLI/Aws.hs`, `src/Prodbox/Lib/AwsAdmin.hs`, `test/unit/aws_admin/`, `test/integration/aws_iam/`
+**Status**: Done
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
@@ -68,14 +89,24 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 5. `prodbox aws check-quotas`
 6. `prodbox aws request-quotas --tier full`
 
+### Current Validation State
+
+- `src/Prodbox/Aws.hs` now owns `prodbox aws setup|teardown|check-quotas|request-quotas` with
+  explicit AWS CLI subprocess environments, IAM user lifecycle orchestration, quota inspection,
+  quota requests, and Dhall updates.
+- `src/Prodbox/CLI/Parser.hs` now routes the full public `prodbox aws ...` surface through
+  `RunNative`.
+- `test/integration/cli/Main.hs` now proves setup/teardown and quota flows against a fake AWS CLI
+  from the built frontend.
+
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
-## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack 📋
+## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ✅
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Lib/AwsAdmin.hs`, `test/integration/aws_iam/`
+**Status**: Done
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `test/integration/aws_iam/`
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -98,7 +129,7 @@ credential harness.
 
 ### Remaining Work
 
-- All deliverables remain open.
+None.
 
 ## Documentation Requirements
 

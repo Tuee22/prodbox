@@ -14,7 +14,7 @@
 The supported onboarding path is:
 
 ```text
-poetry run prodbox config setup
+prodbox config setup
 ```
 
 That flow expects one AWS account, one accessible Route 53 hosted zone, and one temporary elevated
@@ -92,7 +92,7 @@ create the hosted zone for you.
 Once the account, hosted zone, and temporary elevated key are ready:
 
 ```bash
-poetry run prodbox config setup
+prodbox config setup
 ```
 
 The wizard walks through:

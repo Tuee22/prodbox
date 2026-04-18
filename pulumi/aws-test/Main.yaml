@@ -1,0 +1,231 @@
+config:
+  aws:region:
+    type: string
+    default: us-east-1
+
+variables:
+  operatorCidr:
+    fn::invoke:
+      function: std:getenv
+      arguments:
+        name: PRODBOX_AWS_TEST_OPERATOR_CIDR
+      return: result
+  publicKey:
+    fn::invoke:
+      function: std:getenv
+      arguments:
+        name: PRODBOX_AWS_TEST_PUBLIC_KEY
+      return: result
+  stackName: ${pulumi.stack}
+  availabilityZones:
+    fn::invoke:
+      function: aws:getAvailabilityZones
+      arguments:
+        state: available
+      return: names
+  ubuntuAmi:
+    fn::invoke:
+      function: aws:ec2:getAmi
+      arguments:
+        mostRecent: true
+        owners:
+          - "099720109477"
+        filters:
+          - name: name
+            values:
+              - "ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"
+          - name: virtualization-type
+            values:
+              - hvm
+          - name: architecture
+            values:
+              - x86_64
+      return: id
+  userData: |
+    #cloud-config
+    users:
+      - default
+    ssh_authorized_keys:
+      - ${publicKey}
+    package_update: true
+    packages:
+      - curl
+      - jq
+
+resources:
+  vpc:
+    type: aws:ec2:Vpc
+    properties:
+      cidrBlock: "10.90.0.0/16"
+      tags:
+        Name: ${stackName}-vpc
+
+  igw:
+    type: aws:ec2:InternetGateway
+    properties:
+      vpcId: ${vpc.id}
+      tags:
+        Name: ${stackName}-igw
+
+  publicRouteTable:
+    type: aws:ec2:RouteTable
+    properties:
+      vpcId: ${vpc.id}
+      routes:
+        - cidrBlock: "0.0.0.0/0"
+          gatewayId: ${igw.id}
+      tags:
+        Name: ${stackName}-public-rt
+
+  publicSubnet0:
+    type: aws:ec2:Subnet
+    properties:
+      vpcId: ${vpc.id}
+      cidrBlock: "10.90.0.0/24"
+      availabilityZone: ${availabilityZones[0]}
+      mapPublicIpOnLaunch: true
+      tags:
+        Name: ${stackName}-public-subnet-0
+
+  publicSubnet1:
+    type: aws:ec2:Subnet
+    properties:
+      vpcId: ${vpc.id}
+      cidrBlock: "10.90.1.0/24"
+      availabilityZone: ${availabilityZones[1]}
+      mapPublicIpOnLaunch: true
+      tags:
+        Name: ${stackName}-public-subnet-1
+
+  publicSubnet2:
+    type: aws:ec2:Subnet
+    properties:
+      vpcId: ${vpc.id}
+      cidrBlock: "10.90.2.0/24"
+      availabilityZone: ${availabilityZones[2]}
+      mapPublicIpOnLaunch: true
+      tags:
+        Name: ${stackName}-public-subnet-2
+
+  rta0:
+    type: aws:ec2:RouteTableAssociation
+    properties:
+      subnetId: ${publicSubnet0.id}
+      routeTableId: ${publicRouteTable.id}
+
+  rta1:
+    type: aws:ec2:RouteTableAssociation
+    properties:
+      subnetId: ${publicSubnet1.id}
+      routeTableId: ${publicRouteTable.id}
+
+  rta2:
+    type: aws:ec2:RouteTableAssociation
+    properties:
+      subnetId: ${publicSubnet2.id}
+      routeTableId: ${publicRouteTable.id}
+
+  securityGroup:
+    type: aws:ec2:SecurityGroup
+    properties:
+      vpcId: ${vpc.id}
+      description: Security group for the prodbox AWS HA-RKE2 test stack
+      ingress:
+        - protocol: tcp
+          fromPort: 22
+          toPort: 22
+          cidrBlocks:
+            - ${operatorCidr}
+        - protocol: tcp
+          fromPort: 6443
+          toPort: 6443
+          cidrBlocks:
+            - ${operatorCidr}
+        - protocol: "-1"
+          fromPort: 0
+          toPort: 0
+          self: true
+      egress:
+        - protocol: "-1"
+          fromPort: 0
+          toPort: 0
+          cidrBlocks:
+            - "0.0.0.0/0"
+      tags:
+        Name: ${stackName}-sg
+
+  node0:
+    type: aws:ec2:Instance
+    properties:
+      ami: ${ubuntuAmi}
+      instanceType: t3.large
+      subnetId: ${publicSubnet0.id}
+      vpcSecurityGroupIds:
+        - ${securityGroup.id}
+      associatePublicIpAddress: true
+      userData: ${userData}
+      rootBlockDevice:
+        volumeType: gp3
+        volumeSize: 30
+        deleteOnTermination: true
+      tags:
+        Name: ${stackName}-node-0
+
+  node1:
+    type: aws:ec2:Instance
+    properties:
+      ami: ${ubuntuAmi}
+      instanceType: t3.large
+      subnetId: ${publicSubnet1.id}
+      vpcSecurityGroupIds:
+        - ${securityGroup.id}
+      associatePublicIpAddress: true
+      userData: ${userData}
+      rootBlockDevice:
+        volumeType: gp3
+        volumeSize: 30
+        deleteOnTermination: true
+      tags:
+        Name: ${stackName}-node-1
+
+  node2:
+    type: aws:ec2:Instance
+    properties:
+      ami: ${ubuntuAmi}
+      instanceType: t3.large
+      subnetId: ${publicSubnet2.id}
+      vpcSecurityGroupIds:
+        - ${securityGroup.id}
+      associatePublicIpAddress: true
+      userData: ${userData}
+      rootBlockDevice:
+        volumeType: gp3
+        volumeSize: 30
+        deleteOnTermination: true
+      tags:
+        Name: ${stackName}-node-2
+
+outputs:
+  backend_bucket: prodbox-test-pulumi-backends
+  vpc_id: ${vpc.id}
+  subnet_ids:
+    - ${publicSubnet0.id}
+    - ${publicSubnet1.id}
+    - ${publicSubnet2.id}
+  security_group_id: ${securityGroup.id}
+  nodes:
+    - name: ${stackName}-node-0
+      instance_id: ${node0.id}
+      private_ip: ${node0.privateIp}
+      public_ip: ${node0.publicIp}
+      availability_zone: ${availabilityZones[0]}
+    - name: ${stackName}-node-1
+      instance_id: ${node1.id}
+      private_ip: ${node1.privateIp}
+      public_ip: ${node1.publicIp}
+      availability_zone: ${availabilityZones[1]}
+    - name: ${stackName}-node-2
+      instance_id: ${node2.id}
+      private_ip: ${node2.privateIp}
+      public_ip: ${node2.publicIp}
+      availability_zone: ${availabilityZones[2]}

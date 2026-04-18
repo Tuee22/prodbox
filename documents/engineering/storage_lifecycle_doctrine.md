@@ -18,6 +18,11 @@ The configured manual PV host root (default repository `.data/`) stores PV conte
 
 Retained non-PV chart state lives under the repo-local `.prodbox-state/<namespace>/` root.
 
+On the current mixed rewrite baseline, the public retained-storage and chart-state reconciliation
+path now lives in `src/Prodbox/Lib/Storage.hs` and `src/Prodbox/Lib/ChartPlatform.hs`; retained
+Python chart-platform helpers survive only for the legacy direct-backend path and still-open
+Python integration suites.
+
 For lifecycle integration tests, prodbox baseline state is the canonical post-install runtime produced by `prodbox rke2 install`.
 
 Because `prodbox rke2 install` and `prodbox rke2 delete` preserve retained host state, test fixtures must explicitly delete any temporary MinIO or other storage artifacts they create.

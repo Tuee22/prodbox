@@ -22,19 +22,11 @@ Retained storage and MinIO persistence doctrine are intentionally out-of-scope h
 
 ---
 
-## 2. eDAG Contract
+## 2. Current Runtime Contract
 
-`rke2_install` includes a dedicated effect node:
-
-```python
-# File: src/prodbox/cli/effects.py
-@dataclass(frozen=True)
-class EnsureHarborRegistry(Effect[HarborRuntime]):
-    machine_identity: MachineIdentity
-    ...
-```
-
-The node returns `HarborRuntime` and executes in railway-order sequence:
+On the current mixed baseline, the supported `prodbox rke2 install` path is owned by
+`src/Prodbox/CLI/Rke2.hs`. The native Haskell lifecycle runtime reconciles Harbor registry state in
+railway-order sequence:
 
 1. Helm repository reconcile.
 2. Harbor chart `upgrade --install`.
@@ -44,6 +36,10 @@ The node returns `HarborRuntime` and executes in railway-order sequence:
 6. Docker login + mirror/build/push operations.
 7. Import gateway image into RKE2 containerd cache.
 8. `registries.yaml` reconcile and conditional RKE2 restart.
+
+`src/prodbox/cli/rke2.py`, `src/prodbox/cli/effects.py`, and Harbor-specific runtime in
+`src/prodbox/cli/interpreter.py` now survive only as compatibility or cleanup residue; they are not
+the supported local-cluster lifecycle path.
 
 ### 2.1 Harbor Readiness Contract
 
@@ -78,20 +74,11 @@ Rationale:
 
 ## 3. Runtime Outputs
 
-`EnsureHarborRegistry` returns:
-
-```python
-# File: src/prodbox/cli/effects.py
-@dataclass(frozen=True)
-class HarborRuntime:
-    registry_endpoint: str
-    gateway_image: str
-```
-
-`gateway_image` is derived deterministically from machine identity:
+`prodbox rke2 install` derives Harbor image targets deterministically from machine identity:
 
 - `prodbox-id` source: `/etc/machine-id` prerequisite pipeline
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
+- additional custom image ref: `127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest`
 
 ---
 

@@ -55,8 +55,8 @@ None.
 
 **Cross-references to add:**
 
-- Keep root guidance docs pointed at [README.md](README.md) when the broader documentation refresh
-  lands.
+- Root guidance docs already point at [README.md](README.md) as the canonical development-plan
+  entrypoint.
 
 ## Related Documents
 

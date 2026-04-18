@@ -20,6 +20,15 @@ The documents in this directory are stable doctrine and architecture references.
 should describe the canonical rules and contracts, not carry competing sprint-status
 reports.
 
+Read this directory with the rewrite split in mind:
+
+- `DEVELOPMENT_PLAN/README.md` owns the live Haskell handoff target, sprint status, and cleanup
+  sequencing.
+- Until an owning sprint closes, a governed doc here may still describe the current Python
+  baseline or mixed migration constraints rather than the final Haskell-only handoff.
+- When a document and the development plan differ, the development plan controls the target
+  architecture and cleanup ownership.
+
 ---
 
 ## Documents
@@ -30,13 +39,13 @@ reports.
 | [aws_admin_credentials.md](./aws_admin_credentials.md) | Test-only elevated `aws_admin` credential harness and lifecycle guidance |
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
 | [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL vs Let's Encrypt guidance for the interactive onboarding flow |
-| [dependency_management.md](./dependency_management.md) | Poetry dependency standards |
-| [cli_command_surface.md](./cli_command_surface.md) | Explicit Click command matrix and no-passthrough policy |
+| [dependency_management.md](./dependency_management.md) | Build and dependency doctrine, including rewrite-owned Python-toolchain removal |
+| [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix and rewrite-owned surface constraints |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Host-level AWS CLI auth plus real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
-| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed pytest setup/teardown doctrine |
+| [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup/teardown doctrine for the current harness and rewrite transition |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor installation + local image mirror pipeline |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage + deterministic PVC/PV rebinding doctrine |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy |
@@ -44,7 +53,7 @@ reports.
 | [streaming_doctrine.md](./streaming_doctrine.md) | Streaming and terminal-record serialization invariants |
 | [tla/README.md](./tla/README.md) | TLA+ model index for formal safety properties |
 | [tla_modelling_assumptions.md](./tla_modelling_assumptions.md) | TLA+ formal model correspondence, divergences, and verification status |
-| [unit_testing_policy.md](./unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
+| [unit_testing_policy.md](./unit_testing_policy.md) | Test-runner doctrine and rewrite-owned validation contract |
 | [pure_fp_standards.md](./pure_fp_standards.md) | Pure FP coding standards |
 | [code_quality.md](./code_quality.md) | Policy guardrails and check-code gate |
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
@@ -76,8 +85,8 @@ reports.
 - [Prerequisite DAG System](./prerequisite_dag_system.md)
 
 ### Dependency Management
-- [Lock File Policy](./dependency_management.md#1-lock-file-policy)
-- [Version Constraint Standards](./dependency_management.md#2-version-constraint-standards)
+- [Lock File Policy](./dependency_management.md#2-lock-file-policy)
+- [Version Constraint Standards](./dependency_management.md#3-version-constraint-standards)
 
 ### Unit Testing
 - [AWS Account Setup Guide](./aws_account_setup_guide.md)

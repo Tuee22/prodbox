@@ -55,6 +55,11 @@ This contract applies to `WriteStdout` and `WriteStderr` effects used for phase 
 
 `prodbox test` owns the specific phase banner order in [Unit Testing Policy](./unit_testing_policy.md#phase-banner-rendering-contract).
 
+On the current mixed baseline, the full public `prodbox test` surface satisfies this
+contract through `src/Prodbox/EffectInterpreter.hs` and `src/Prodbox/TestRunner.hs`; retained
+Python `test_cmd.py` code now survives only as the legacy direct-backend implementation under
+`PRODBOX_PYTHON_BACKEND=1`.
+
 ---
 
 ## 6. Intent Ownership
@@ -63,7 +68,7 @@ This SSoT owns streaming behavior contract intention.
 
 - Owned statement: Streaming is observational only and must follow at-most-one-stream output serialization invariants.
 - Owned statement: CLI terminal records are newline-terminated standalone writes and must flush before streamed subprocess output begins.
-- Linked dependents: `src/prodbox/cli/stream_control.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_stream_control.py`, `tests/unit/test_interpreter.py`, `tests/unit/test_test_cmd.py`.
+- Linked dependents: `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `src/prodbox/cli/stream_control.py`, `src/prodbox/cli/interpreter.py`, `src/prodbox/cli/test_cmd.py`, `tests/unit/test_stream_control.py`, `tests/unit/test_interpreter.py`, `tests/unit/test_test_cmd.py`, `test/unit/Main.hs`.
 
 ---
 

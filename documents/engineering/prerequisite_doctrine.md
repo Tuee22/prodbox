@@ -154,7 +154,18 @@ Suite-specific AWS auth source, Dhall-config storage rules, and fixture capabili
 
 ### 3.1 Central Definition
 
-All prerequisites are defined in `prerequisite_registry.py`:
+Current mixed baseline:
+- Public `prodbox test` suites plus native `prodbox host ensure-tools|check-ports|info|firewall`,
+  `prodbox k8s health|wait|logs`, native `prodbox rke2 ...`, and native home-stack
+  `prodbox pulumi ...` flows use the Haskell registry in `src/Prodbox/Prerequisite.hs`.
+- That Haskell registry now mirrors the shared 30-node prerequisite inventory, including machine
+  identity, AWS or Route 53 access, Pulumi login, kubeconfig-home, composite readiness roots, and
+  the prerequisite closure consumed by native lifecycle install or delete.
+- Remaining backend-bridged public command families are limited to
+  `prodbox pulumi eks-resources|eks-destroy|test-resources|test-destroy`, `prodbox gateway start`,
+  and direct-backend compatibility under `PRODBOX_PYTHON_BACKEND=1`.
+
+Retained broader-runtime example:
 
 ```python
 # File: src/prodbox/cli/prerequisite_registry.py
@@ -199,18 +210,18 @@ When you depend on lifecycle roots (`rke2_install`, `rke2_delete`, `pulumi_up`),
 
 ### 4.1 Pure Check Pattern
 
-Prerequisites use `Pure` effects for composed checks:
+Composed readiness prerequisites use an explicit no-op aggregation effect on the Haskell runtime
+and `Pure` on the retained Python runtime.
 
-```python
-# File: src/prodbox/cli/prerequisite_registry.py
-K8S_READY = EffectNode(
-    effect=Pure(
-        effect_id="k8s_ready",
-        description="Validate Kubernetes cluster is fully ready",
-        value=True,
-    ),
-    prerequisites=frozenset(["k8s_cluster_reachable", "rke2_service_active"]),
-)
+```haskell
+-- File: src/Prodbox/Prerequisite.hs
+k8sReady =
+    EffectNode
+        { effectNodeId = "k8s_ready"
+        , effectNodeDescription = "Validate Kubernetes cluster is fully ready"
+        , effectNodePrerequisites = ["k8s_cluster_reachable", "rke2_service_active"]
+        , effectNodeEffect = Noop
+        }
 ```
 
 ### 4.2 Tool Validation Pattern
@@ -259,52 +270,28 @@ Chain prerequisites for complex validation:
 
 ### 4.5 RKE2 Lifecycle Nodes
 
-RKE2 lifecycle is managed by eDAG nodes:
-- `rke2_install`: supported-host install/reconcile of the cluster substrate plus Harbor/storage reconciliation
-- `rke2_delete`: destructive cluster-removal flow that preserves retained host state roots
+On the supported path, RKE2 lifecycle is managed by native Haskell orchestration in
+`src/Prodbox/CLI/Rke2.hs`:
+- `rke2_install`: supported-host install or reconcile of the cluster substrate plus Harbor or
+  storage reconciliation
+- `rke2_delete`: destructive cluster-removal flow that preserves retained host-state roots
 
-Both nodes fail fast on prerequisites and consume machine identity plus settings as source-of-truth:
+Both flows fail fast on prerequisites and consume machine identity plus validated settings as
+source-of-truth.
 
-```python
-# File: src/prodbox/cli/dag_builders.py
-_build_rke2_install_dag(...):
-    prerequisites=frozenset([
-        "supported_ubuntu_2404",
-        "systemd_available",
-        "tool_kubectl",
-        "tool_helm",
-        "tool_docker",
-        "tool_ctr",
-        "tool_sudo",
-        "tool_systemctl",
-        "machine_identity",
-        "settings_object",
-    ])
+`rke2_install` installs the RKE2 server binary when missing, ensures the host-owned
+ingress-disable config, enables and restarts the systemd service, refreshes the canonical
+kubeconfig path, confirms cluster access (`kubectl cluster-info`), waits for node readiness,
+resets cluster-scoped StorageClass state to `manual` only, ensures the
+`prodbox/prodbox-identity` ConfigMap, reconciles retained local storage plus MinIO, reconciles
+Harbor registry state, mirrors currently referenced Docker Hub images when needed, builds or pushes
+the gateway and `vscode-nginx` images, and finally reconciles prodbox ownership annotations.
 
-_build_rke2_delete_dag(...):
-    prerequisites=frozenset([
-        "supported_ubuntu_2404",
-        "systemd_available",
-        "tool_sudo",
-        "tool_systemctl",
-        "tool_pulumi",
-        "tool_aws",
-        "k8s_cluster_reachable",
-        "settings_object",
-    ])
-```
-
-`rke2_install` installs the RKE2 server binary when missing, ensures the host-owned ingress-disable config, enables and restarts the systemd service, refreshes the canonical kubeconfig path, confirms cluster access (`kubectl cluster-info`), resets cluster-scoped StorageClass state to `manual` only, ensures the `prodbox/prodbox-identity` ConfigMap, then reconciles in parallel:
-
-1. Harbor registry runtime (`EnsureHarborRegistry`)
-2. Retained local storage + MinIO (`EnsureRetainedLocalStorage` -> `EnsureMinio`)
-
-Finally, it reconciles prodbox annotations.
-
-`rke2_delete` first invokes the same Pulumi-owned AWS test-stack destroy path exposed by
-`prodbox pulumi test-destroy --yes`, then removes the RKE2 substrate, deletes managed
-kubeconfig residue that still targets the local RKE2 API, removes the legacy storage root when
-safe, and preserves the configured manual PV host root plus `.prodbox-state/`.
+`rke2_delete` first invokes the same Pulumi-owned AWS destroy paths exposed by
+`prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes`, then removes the
+RKE2 substrate, deletes managed kubeconfig residue that still targets the local RKE2 API, removes
+managed endpoint-status residue, and preserves the configured manual PV host root plus
+`.prodbox-state/`.
 
 Harbor install/mirror/build details are defined in
 [Local Registry Pipeline](./local_registry_pipeline.md).
@@ -314,12 +301,14 @@ Retained storage and rebinding guarantees are defined in
 
 ### 4.6 Machine Identity Result Contract
 
-`machine_identity` prerequisite returns `Result[MachineIdentity, E]` where:
-- `MachineIdentity.machine_id` is the canonical Linux machine-id.
-- `MachineIdentity.prodbox_id` is `prodbox-<machine_id>`.
+Current mixed baseline:
+- The Phase 1 Haskell runtime validates `machine_identity` presence and readiness in
+  `src/Prodbox/EffectInterpreter.hs` and `src/Prodbox/Prerequisite.hs`.
+- Retained AWS-validation and direct-backend compatibility paths still consume typed
+  `MachineIdentity(machine_id, prodbox_id)` results through the Python runtime.
 
-Downstream DAG nodes must derive annotation values, namespace ownership markers,
-and cleanup selectors from this propagated result only.
+Downstream lifecycle and cleanup nodes must continue deriving annotation values, namespace
+ownership markers, and cleanup selectors from the canonical machine-id contract only.
 
 ### 4.7 Kubernetes Ownership Markers
 
@@ -433,7 +422,7 @@ This SSoT owns RKE2 lifecycle prerequisite doctrine statements:
 - Prerequisite nodes validate existence/readiness and fail fast with actionable fix hints; no silent auto-install in checks.
 - Cleanup must idempotently remove prodbox-annotated Kubernetes objects without deleting host storage paths used for persistent data.
 
-Linked dependents: `documents/engineering/effectful_dag_architecture.md`, `src/prodbox/cli/dag_builders.py`, `src/prodbox/cli/prerequisite_registry.py`.
+Linked dependents: `documents/engineering/effectful_dag_architecture.md`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Prerequisite.hs`, `src/prodbox/cli/prerequisite_registry.py`.
 
 ---
 
@@ -443,5 +432,6 @@ Linked dependents: `documents/engineering/effectful_dag_architecture.md`, `src/p
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Code Quality Doctrine](./code_quality.md)
-- [Prerequisite Registry](../../src/prodbox/cli/prerequisite_registry.py)
-- [Effect Types](../../src/prodbox/cli/effects.py)
+- [Native Prerequisite Registry](../../src/Prodbox/Prerequisite.hs)
+- [Native RKE2 Lifecycle Runtime](../../src/Prodbox/CLI/Rke2.hs)
+- [Retained Python Prerequisite Registry](../../src/prodbox/cli/prerequisite_registry.py)

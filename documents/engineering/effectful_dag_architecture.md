@@ -17,6 +17,16 @@ The prodbox CLI uses a pure effectful DAG (Directed Acyclic Graph) system for co
 3. **DAG Construction** - How effects relate to each other (prerequisites)
 4. **Effect Execution** - Actually performing the side effects (Interpreter)
 
+Current mixed baseline:
+- `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`,
+  `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/Subprocess.hs` now own the public
+  `prodbox test`, `prodbox host ensure-tools|check-ports|info|firewall`, and `prodbox k8s
+  health|wait|logs` surfaces.
+- `src/Prodbox/Prerequisite.hs` now mirrors the shared 30-node prerequisite inventory used by the
+  retained Python runtime.
+- Broader delegated command families still use the retained Python effect/DAG runtime until later
+  phases port those surfaces.
+
 ---
 
 ## 2. Architecture Layers

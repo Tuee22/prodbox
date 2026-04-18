@@ -14,6 +14,11 @@ DAG execution semantics must match BBY parity matrix: pending/ready loop, reduct
 
 This document is the canonical owner of interpreter-runtime semantics.
 
+Current mixed baseline:
+- Public `prodbox test`, `prodbox host ensure-tools|check-ports|info|firewall`, and
+  `prodbox k8s health|wait|logs` execute through `src/Prodbox/EffectInterpreter.hs`.
+- Broader delegated command surfaces still execute through retained `src/prodbox/cli/interpreter.py`.
+
 ---
 
 ## 2. Execution Loop Contract
@@ -78,7 +83,7 @@ See [Effectful DAG Architecture](./effectful_dag_architecture.md#53-output-contr
 This SSoT owns interpreter-runtime parity intention.
 
 - Owned statement: DAG execution semantics must match BBY parity matrix: pending/ready loop, reduction handling, root-cause/skip outcomes, unexecuted reporting.
-- Linked dependents: `src/prodbox/cli/interpreter.py`, `tests/unit/test_interpreter.py`.
+- Linked dependents: `src/Prodbox/EffectInterpreter.hs`, `src/prodbox/cli/interpreter.py`, `tests/unit/test_interpreter.py`, `test/unit/Main.hs`.
 
 ---
 

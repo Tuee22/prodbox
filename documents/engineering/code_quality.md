@@ -16,18 +16,25 @@ Side effects are interpreter-boundary only; policy guards in check-code are mand
 
 ## 2. Canonical Enforcement Entry Point
 
-All policy, lint, formatting, and type checks run through:
+All policy, lint, formatting, type checks, and the host-side Haskell build proof close through the
+canonical operator entrypoint:
 
 ```bash
 poetry run prodbox check-code
 ```
 
+On the current mixed baseline, that command resolves into the Haskell frontend entrypoint in
+`src/Prodbox/CheckCode.hs`. The Haskell-owned wrapper still executes retained Python guard modules
+plus `ruff` and `mypy`, then finishes with `cabal build --builddir=.build all`; removal of that
+Python-owned quality toolchain remains later cleanup work.
+
 The command runs a fail-fast sequence:
 
 1. Policy guards (`no_direct_poetry_run_guard`, `no_test_skip_guard`, purity/no-statements/shell/threading/type/collision/click-passthrough/timeout, docs lint)
-2. `ruff check`
-3. `ruff format --check`
-4. `mypy`
+2. `ruff check src/ tests/`
+3. `ruff format --check src/ tests/`
+4. `mypy src/`
+5. `cabal build --builddir=.build all`
 
 ---
 
@@ -79,7 +86,7 @@ Skip/xfail enforcement and timeout doctrine for test execution are part of quali
 This SSoT co-owns purity and guardrail doctrine intention.
 
 - Owned statement: Side effects are interpreter-boundary only; policy guards in check-code are mandatory and blocking.
-- Linked dependents: `src/prodbox/cli/check_code.py`, `src/prodbox/lib/lint/*.py`, `tests/unit/test_check_code_command.py`.
+- Linked dependents: `src/Prodbox/CheckCode.hs`, `src/prodbox/cli/check_code.py`, `src/prodbox/lib/lint/*.py`, `tests/unit/test_check_code_command.py`.
 
 ---
 

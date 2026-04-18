@@ -4,13 +4,34 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 
-> **Purpose**: Guide for Claude Code development on prodbox - home Kubernetes infrastructure management with Pulumi.
+> **Purpose**: Guide for Claude Code development on the current prodbox worktree baseline.
 
 ---
 
-## Project Overview
+## Rewrite Posture
 
-Prodbox is a Python-native infrastructure-as-code project for managing a home Kubernetes cluster. It provides declarative, idempotent CLI commands for deploying and managing:
+- `DEVELOPMENT_PLAN/README.md` is the authoritative live tracker for target architecture, status,
+  blockers, and cleanup ownership.
+- The current worktree implementation is mixed: a compiled Haskell frontend now lives
+  under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`, `cabal.project`, and `Dockerfile`;
+  Haskell owns `config compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`,
+  `dns check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`,
+  and the public `test` entrypoint, including named-suite and aggregate-suite orchestration, while
+  most product runtime still lives under `src/prodbox/` and `tests/`.
+- The supported handoff target is a Haskell-only `prodbox` binary; do not describe the Python
+  baseline as the final architecture.
+
+---
+
+## Current Worktree Baseline
+
+Prodbox currently ships a mixed rewrite baseline for managing a home Kubernetes cluster. The
+compiled Haskell frontend owns the explicit command parser plus `config compile|show|validate`,
+`host ensure-tools|check-ports|info|firewall|public-edge`, `dns check`, `gateway status|config-gen`,
+`k8s health|wait|logs`, `check-code`, `tla-check`, and the public `test` entrypoint, while the
+retained Python backend still provides most runtime behavior behind that surface. The repository
+still provides
+declarative, idempotent CLI commands for deploying and managing:
 
 - **RKE2**: Lightweight Kubernetes distribution
 - **MetalLB**: Bare-metal load balancer
@@ -18,7 +39,7 @@ Prodbox is a Python-native infrastructure-as-code project for managing a home Ku
 - **cert-manager**: Automatic TLS certificate management
 - **Route 53**: AWS DNS with dynamic DNS updates
 
-**Stack**: Python 3.12 + Click CLI + Dhall + Pydantic + Pulumi IaC
+**Current stack**: Haskell frontend (`optparse-applicative` + Cabal + native settings/dns/gateway/host/k8s/test/check-code modules) with delegated access into a retained Python 3.12 + Click + Pydantic + Pulumi backend
 
 ---
 
@@ -79,12 +100,19 @@ See [Refactoring Patterns](documents/engineering/refactoring_patterns.md) for mi
 
 ---
 
-## Architecture
+## Current Worktree Architecture
 
 ### Directory Structure
 
 ```
 prodbox/
+├── app/prodbox/Main.hs       # Haskell frontend entry point
+├── src/Prodbox/
+│   ├── CLI/                  # Haskell explicit command-surface parser
+│   └── Backend/              # Haskell bridge to retained Python backend
+├── prodbox.cabal             # Haskell frontend package definition
+├── cabal.project             # Haskell project package set
+├── Dockerfile                # Root Haskell container build under /opt/build
 ├── src/prodbox/
 │   ├── cli/                  # Click CLI commands
 │   │   ├── main.py           # Entry point
@@ -142,7 +170,7 @@ prodbox/
    - Compiled to `prodbox-config.json` via `prodbox config compile` (requires `dhall-to-json`)
    - Loaded into a Pydantic `BaseModel` (`Settings`) for runtime validation
    - LAN addressing is auto-discovered at runtime, not stored in config
-   - One-time bootstrap from legacy `.env` via `prodbox config init`
+   - Interactive bootstrap and validation via `prodbox config setup`, `prodbox config compile`, and `prodbox config validate`
 
 3. **CLI Command Pattern**:
    - Commands use smart constructors returning `Result[Command, str]`
@@ -152,17 +180,21 @@ prodbox/
 
 ---
 
-## Python CLI Tool (prodbox)
+## Current Worktree CLI Tool
 
-All operations via Poetry:
+Until Sprint `4.3` closes, repository-local runtime behavior still mixes native Haskell
+command ownership with the retained Python backend:
 
 ```bash
-# Install
+# Install backend dependencies
 poetry install
 
-# Run CLI
+# Build the current Haskell frontend
+cabal build --builddir=.build exe:prodbox
+
+# Run CLI through the retained backend
 poetry run prodbox --help
-poetry run prodbox config init       # Bootstrap prodbox-config.dhall from .env (one-time)
+poetry run prodbox config setup      # Interactive Dhall authoring and IAM bootstrap
 poetry run prodbox config compile    # Compile Dhall to prodbox-config.json
 poetry run prodbox config show       # Display current configuration
 poetry run prodbox config validate   # Validate configuration
@@ -345,8 +377,8 @@ poetry add --group dev "package^X.Y.0"
 ## Engineering Documentation
 
 See `documents/engineering/` for detailed architecture docs:
-- `cli_command_surface.md` - Explicit Click command matrix
-- `dependency_management.md` - Poetry dependency standards
+- `cli_command_surface.md` - Canonical command matrix and rewrite-owned compatibility constraints
+- `dependency_management.md` - Build and dependency doctrine for the current baseline and rewrite
 - `effectful_dag_architecture.md` - DAG system design
 - `prerequisite_doctrine.md` - Fail-fast vs auto-rebuild philosophy
 - `unit_testing_policy.md` - Interpreter-Only Mocking Doctrine

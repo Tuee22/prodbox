@@ -10,7 +10,10 @@
 
 ## 1. Canonical Doctrine Statements
 
-The chart platform deploys bespoke Helm charts through the standard Click → ADT → eDAG → interpreter pipeline. Each root chart owns a namespace equal to its name and manages all prerequisite charts within that namespace.
+The chart platform deploys bespoke Helm charts through the native Haskell `prodbox charts`
+surface implemented in `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
+`src/Prodbox/Lib/Storage.hs`. Each root chart owns a namespace equal to its name and manages all
+prerequisite charts within that namespace.
 
 ---
 
@@ -105,7 +108,7 @@ This means a subsequent `prodbox charts deploy <chart>` will rebind to the same 
 
 ## 9. Supported Charts
 
-The chart registry is defined in `src/prodbox/lib/chart_platform.py`. Current charts:
+The chart registry is defined in `src/Prodbox/Lib/ChartPlatform.hs`. Current charts:
 
 | Chart | Dependencies | Storage | Public Host Required |
 |-------|-------------|---------|---------------------|
@@ -137,7 +140,8 @@ Unsupported legacy paths:
 
 ## 11. Required Settings and Auto-Generated Secrets
 
-The following setting from `src/prodbox/settings.py` is required for chart deployment:
+The following repository configuration value decoded by `src/Prodbox/Settings.hs` is required for
+chart deployment:
 
 | Setting | Purpose |
 |---------|---------|

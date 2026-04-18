@@ -1,0 +1,1446 @@
+{-# LANGUAGE OverloadedStrings #-}
+
+module Prodbox.Aws
+    ( buildIamPolicyDocument,
+      buildIamPolicyJson,
+      runAwsCommand,
+      runInteractiveConfigSetup,
+    )
+where
+
+import Control.Concurrent (threadDelay)
+import Control.Exception
+    ( Exception,
+      SomeException,
+      bracket_,
+      displayException,
+      throwIO,
+      try,
+    )
+import Control.Monad (forM, unless, when)
+import Data.Aeson
+    ( Array,
+      Object,
+      Value (..),
+      eitherDecode,
+      object,
+      (.=),
+    )
+import qualified Data.Aeson.Encode.Pretty as AesonPretty
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.Char (isAlphaNum, isSpace, toLower)
+import Data.List
+    ( findIndex,
+      intercalate,
+      isPrefixOf,
+      transpose,
+    )
+import qualified Data.Text as Text
+import Data.Text (Text)
+import qualified Data.Vector as Vector
+import Numeric.Natural (Natural)
+import Prodbox.CLI.Command
+    ( AwsCommand (..),
+      PolicyTier (..),
+    )
+import Prodbox.Repo
+    ( ConfigPaths (..),
+      canonicalConfigPaths,
+    )
+import Prodbox.Result (Result (..))
+import Prodbox.Settings
+    ( AcmeSection (..),
+      ConfigFile (..),
+      Credentials (..),
+      DeploymentSection (..),
+      DomainSection (..),
+      Route53Section (..),
+      StorageSection (..),
+      defaultConfigFile,
+      loadConfigFile,
+      materializeConfigJson,
+      renderConfigDhall,
+      validateAndLoadSettings,
+    )
+import Prodbox.Subprocess
+    ( CommandSpec (..),
+      ProcessOutput (..),
+      captureCommand,
+    )
+import System.Directory
+    ( doesFileExist,
+      findExecutable,
+    )
+import System.Environment (getEnvironment)
+import System.Exit
+    ( ExitCode (ExitFailure, ExitSuccess),
+    )
+import System.IO
+    ( hFlush,
+      hGetEcho,
+      hIsTerminalDevice,
+      hPutStrLn,
+      hSetEcho,
+      stderr,
+      stdin,
+      stdout,
+    )
+
+newtype AwsError = AwsError String
+    deriving (Show)
+
+instance Exception AwsError where
+    displayException (AwsError message) = message
+
+data RegionChoice = RegionChoice
+    { regionChoiceName :: Text,
+      regionChoiceOptInStatus :: Text
+    }
+    deriving (Eq, Show)
+
+data HostedZoneChoice = HostedZoneChoice
+    { hostedZoneChoiceId :: Text,
+      hostedZoneChoiceName :: Text
+    }
+    deriving (Eq, Show)
+
+data QuotaSpec = QuotaSpec
+    { quotaDisplayName :: Text,
+      quotaServiceCode :: Text,
+      quotaCode :: Text,
+      quotaTargetValue :: Double
+    }
+    deriving (Eq, Show)
+
+data QuotaStatus = QuotaStatus
+    { quotaStatusDisplayName :: Text,
+      quotaStatusServiceCode :: Text,
+      quotaStatusQuotaCode :: Text,
+      quotaStatusCurrentValue :: Double,
+      quotaStatusTargetValue :: Double,
+      quotaStatusSource :: Text,
+      quotaStatusMeetsTarget :: Bool,
+      quotaStatusRequestStatus :: Maybe Text,
+      quotaStatusNote :: Maybe Text
+    }
+    deriving (Eq, Show)
+
+data IamSetupResult = IamSetupResult
+    { iamSetupUserName :: Text,
+      iamSetupPolicyTier :: PolicyTier,
+      iamSetupAccessKeyId :: Text,
+      iamSetupQuotaStatuses :: [QuotaStatus],
+      iamSetupDhallPath :: FilePath
+    }
+    deriving (Eq, Show)
+
+data IamTeardownResult = IamTeardownResult
+    { iamTeardownUserName :: Text,
+      iamTeardownDeletedAccessKeys :: [Text],
+      iamTeardownUserDeleted :: Bool,
+      iamTeardownDhallPath :: FilePath
+    }
+    deriving (Eq, Show)
+
+data ConfigSetupResult = ConfigSetupResult
+    { configSetupRegion :: Text,
+      configSetupRoute53ZoneId :: Text,
+      configSetupDemoFqdn :: Text,
+      configSetupVscodeFqdn :: Maybe Text,
+      configSetupPolicyTier :: PolicyTier,
+      configSetupAccessKeyId :: Text,
+      configSetupQuotaStatuses :: [QuotaStatus],
+      configSetupDhallPath :: FilePath
+    }
+    deriving (Eq, Show)
+
+data AwsSetupInput = AwsSetupInput
+    { awsSetupAdminCredentials :: Credentials,
+      awsSetupPolicyTierInput :: PolicyTier
+    }
+    deriving (Eq, Show)
+
+data AwsTeardownInput = AwsTeardownInput
+    { awsTeardownAdminCredentials :: Credentials
+    }
+    deriving (Eq, Show)
+
+data AwsCheckQuotasInput = AwsCheckQuotasInput
+    { awsCheckQuotasAdminCredentials :: Credentials
+    }
+    deriving (Eq, Show)
+
+data AwsRequestQuotasInput = AwsRequestQuotasInput
+    { awsRequestQuotasAdminCredentials :: Credentials,
+      awsRequestQuotasPolicyTierInput :: PolicyTier
+    }
+    deriving (Eq, Show)
+
+data ConfigSetupInput = ConfigSetupInput
+    { configSetupAdminCredentialsInput :: Credentials,
+      configSetupRoute53ZoneIdInput :: Text,
+      configSetupDemoFqdnInput :: Text,
+      configSetupDemoTtlInput :: Natural,
+      configSetupVscodeFqdnInput :: Maybe Text,
+      configSetupAcmeEmailInput :: Text,
+      configSetupAcmeServerInput :: Text,
+      configSetupAcmeEabKeyIdInput :: Maybe Text,
+      configSetupAcmeEabHmacKeyInput :: Maybe Text,
+      configSetupDevModeInput :: Bool,
+      configSetupBootstrapPublicIpOverrideInput :: Maybe Text,
+      configSetupPulumiEnableDnsBootstrapInput :: Bool,
+      configSetupManualPvHostRootInput :: Text,
+      configSetupPolicyTierInput :: PolicyTier
+    }
+    deriving (Eq, Show)
+
+defaultAwsRegion :: Text
+defaultAwsRegion = "us-east-1"
+
+zeroSslAcmeServer :: Text
+zeroSslAcmeServer = "https://acme.zerossl.com/v2/DV90"
+
+letsEncryptAcmeServer :: Text
+letsEncryptAcmeServer = "https://acme-v02.api.letsencrypt.org/directory"
+
+prodboxIamUserName :: Text
+prodboxIamUserName = "prodbox"
+
+prodboxIamInlinePolicyName :: Text
+prodboxIamInlinePolicyName = "prodbox-inline"
+
+operationalCredentialReadyAttempts :: Int
+operationalCredentialReadyAttempts = 30
+
+operationalCredentialRetryDelayMicros :: Int
+operationalCredentialRetryDelayMicros = 2000000
+
+baselineQuotaSpecs :: [QuotaSpec]
+baselineQuotaSpecs =
+    [ QuotaSpec "Running On-Demand Standard vCPU" "ec2" "L-1216C47A" 32.0,
+      QuotaSpec "VPCs per Region" "vpc" "L-F678F1CE" 10.0,
+      QuotaSpec "Internet gateways per Region" "vpc" "L-A4707A72" 10.0
+    ]
+
+fullQuotaSpecs :: [QuotaSpec]
+fullQuotaSpecs =
+    baselineQuotaSpecs
+        ++ [ QuotaSpec "Elastic IP addresses" "ec2" "L-0263D0A3" 10.0,
+             QuotaSpec "Security groups per Region" "vpc" "L-E79EC296" 300.0,
+             QuotaSpec "Hosted zones per account" "route53" "L-4EA4796A" 500.0,
+             QuotaSpec "Subnets per VPC" "vpc" "L-407747CB" 200.0
+           ]
+
+buildIamPolicyDocument :: PolicyTier -> Value
+buildIamPolicyDocument policyTier =
+    object
+        [ "Version" .= ("2012-10-17" :: String),
+          "Statement" .= (corePolicyStatements ++ extraPolicyStatements policyTier)
+        ]
+
+buildIamPolicyJson :: PolicyTier -> String
+buildIamPolicyJson policyTier =
+    BL8.unpack (AesonPretty.encodePretty' prettyConfig (buildIamPolicyDocument policyTier)) ++ "\n"
+
+runAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
+runAwsCommand repoRoot command = do
+    result <- try (executeAwsCommand repoRoot command) :: IO (Either SomeException ExitCode)
+    case result of
+        Left err -> do
+            hPutStrLn stderr (displayException err)
+            pure (ExitFailure 1)
+        Right exitCode -> pure exitCode
+
+runInteractiveConfigSetup :: FilePath -> IO ExitCode
+runInteractiveConfigSetup repoRoot = do
+    result <- try (executeConfigSetup repoRoot) :: IO (Either SomeException ExitCode)
+    case result of
+        Left err -> do
+            hPutStrLn stderr (displayException err)
+            pure (ExitFailure 1)
+        Right exitCode -> pure exitCode
+
+executeAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
+executeAwsCommand repoRoot command =
+    case command of
+        AwsPolicy policyTier -> do
+            putStr (buildIamPolicyJson policyTier)
+            pure ExitSuccess
+        AwsSetup policyTier -> do
+            input <- interactiveAwsSetupInput repoRoot policyTier
+            result <- applyAwsSetup repoRoot input
+            putStr (renderAwsSetupResult result)
+            pure ExitSuccess
+        AwsTeardown -> do
+            input <- interactiveAwsTeardownInput repoRoot
+            result <- applyAwsTeardown repoRoot input
+            putStr (renderAwsTeardownResult result)
+            pure ExitSuccess
+        AwsCheckQuotas -> do
+            input <- interactiveAwsCheckQuotasInput repoRoot
+            statuses <- applyAwsCheckQuotas repoRoot input
+            putStr (renderQuotaTable "Supported AWS Quotas" statuses)
+            pure ExitSuccess
+        AwsRequestQuotas policyTier -> do
+            input <- interactiveAwsRequestQuotasInput repoRoot policyTier
+            statuses <- applyAwsRequestQuotas repoRoot input
+            putStr (renderQuotaTable "Requested AWS Quotas" statuses)
+            pure ExitSuccess
+
+executeConfigSetup :: FilePath -> IO ExitCode
+executeConfigSetup repoRoot = do
+    input <- interactiveConfigSetupInput repoRoot
+    result <- applyConfigSetup repoRoot input
+    putStr (renderConfigSetupResult result)
+    pure ExitSuccess
+
+corePolicyStatements :: [Value]
+corePolicyStatements =
+    [ statement "StsIdentity" ["sts:GetCallerIdentity"] "*",
+      statement
+        "Route53RecordManagement"
+        [ "route53:ChangeResourceRecordSets",
+          "route53:GetHostedZone",
+          "route53:ListResourceRecordSets"
+        ]
+        "arn:aws:route53:::hostedzone/*",
+      statement "Route53ChangePolling" ["route53:GetChange"] "arn:aws:route53:::change/*"
+    ]
+
+extraPolicyStatements :: PolicyTier -> [Value]
+extraPolicyStatements policyTier =
+    case policyTier of
+        PolicyCore -> []
+        PolicyFull ->
+            [ statement
+                "Route53HostedZoneLifecycle"
+                [ "route53:CreateHostedZone",
+                  "route53:DeleteHostedZone",
+                  "route53:ListHostedZones"
+                ]
+                "*",
+              statement
+                "Ec2HaTestStackLifecycle"
+                [ "ec2:AssociateRouteTable",
+                  "ec2:AttachInternetGateway",
+                  "ec2:AuthorizeSecurityGroupEgress",
+                  "ec2:AuthorizeSecurityGroupIngress",
+                  "ec2:CreateInternetGateway",
+                  "ec2:CreateRoute",
+                  "ec2:CreateRouteTable",
+                  "ec2:CreateSecurityGroup",
+                  "ec2:CreateSubnet",
+                  "ec2:CreateTags",
+                  "ec2:CreateVpc",
+                  "ec2:DeleteInternetGateway",
+                  "ec2:DeleteRoute",
+                  "ec2:DeleteRouteTable",
+                  "ec2:DeleteSecurityGroup",
+                  "ec2:DeleteSubnet",
+                  "ec2:DeleteTags",
+                  "ec2:DeleteVpc",
+                  "ec2:Describe*",
+                  "ec2:DetachInternetGateway",
+                  "ec2:DisassociateRouteTable",
+                  "ec2:ModifySubnetAttribute",
+                  "ec2:ModifyVpcAttribute",
+                  "ec2:RunInstances",
+                  "ec2:RevokeSecurityGroupEgress",
+                  "ec2:RevokeSecurityGroupIngress",
+                  "ec2:TerminateInstances"
+                ]
+                "*",
+              statement
+                "IamEksRoleLifecycle"
+                [ "iam:AttachRolePolicy",
+                  "iam:CreateRole",
+                  "iam:CreateServiceLinkedRole",
+                  "iam:DeleteRole",
+                  "iam:DetachRolePolicy",
+                  "iam:GetRole",
+                  "iam:GetRolePolicy",
+                  "iam:ListAttachedRolePolicies",
+                  "iam:ListInstanceProfilesForRole",
+                  "iam:ListRolePolicies",
+                  "iam:ListRoleTags",
+                  "iam:PassRole",
+                  "iam:TagRole",
+                  "iam:UntagRole"
+                ]
+                "*",
+              statement
+                "EksTestStackLifecycle"
+                [ "eks:CreateCluster",
+                  "eks:CreateNodegroup",
+                  "eks:DeleteCluster",
+                  "eks:DeleteNodegroup",
+                  "eks:Describe*",
+                  "eks:List*",
+                  "eks:TagResource",
+                  "eks:UntagResource"
+                ]
+                "*"
+            ]
+
+statement :: String -> [String] -> String -> Value
+statement sid actions resourceArn =
+    object
+        [ "Sid" .= sid,
+          "Effect" .= ("Allow" :: String),
+          "Action" .= actions,
+          "Resource" .= resourceArn
+        ]
+
+prettyConfig :: AesonPretty.Config
+prettyConfig = AesonPretty.defConfig{AesonPretty.confIndent = AesonPretty.Spaces 2}
+
+throwAws :: String -> IO a
+throwAws = throwIO . AwsError
+
+ensureAwsCliAvailable :: IO ()
+ensureAwsCliAvailable = do
+    maybeAws <- findExecutable "aws"
+    case maybeAws of
+        Nothing -> throwAws "The AWS CLI is required for interactive setup flows"
+        Just _ -> pure ()
+
+interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
+interactiveConfigSetupInput repoRoot = do
+    putStrLn "Config setup writes `prodbox-config.dhall`, creates the operational IAM user,"
+    putStrLn "and validates the result. The elevated credential entered below is not persisted."
+    putStrLn ""
+    accountReady <- promptConfirm "Do you already have an AWS account?" True
+    unless accountReady showAwsAccountGuidance
+    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+    selectedRegion <- promptRegionChoice repoRoot initialCredentials
+    let credentials = initialCredentials{region = selectedRegion}
+    zone <- promptHostedZoneChoice repoRoot credentials
+    let zoneName = hostedZoneChoiceName zone
+    demoFqdnRaw <- promptText "Demo public FQDN (for example demo.example.com)" (Just ("demo." ++ Text.unpack zoneName))
+    demoTtl <- promptInt "Demo DNS TTL seconds" 60
+    vscodeFqdnRaw <- promptText "VS Code public FQDN (blank uses the demo FQDN; for example vscode.example.com)" Nothing
+    showAcmeProviderGuidance
+    providerIndex <- promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 0
+    acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
+    (acmeServerValue, eabKeyIdRaw, eabHmacKeyRaw) <-
+        case providerIndex of
+            0 -> do
+                keyId <- promptText "ZeroSSL EAB key ID (from ZeroSSL Developer settings)" Nothing
+                hmacKey <- promptSecret "ZeroSSL EAB HMAC key (hidden input)"
+                pure (zeroSslAcmeServer, keyId, hmacKey)
+            _ -> pure (letsEncryptAcmeServer, "", "")
+    showPolicyTierGuidance
+    policyIndex <- promptNumberedChoice "Choose the operational IAM policy tier number" ["full", "core"] 0
+    devMode <- promptConfirm "Enable dev mode? (recommended for local or single-node work)" True
+    bootstrapOverrideRaw <- promptText "Bootstrap public IP override (optional; leave blank unless public-edge auto-detection is wrong)" Nothing
+    pulumiEnableDnsBootstrap <- promptConfirm "Enable Pulumi DNS bootstrap? (recommended; creates or reconciles the initial demo Route 53 record)" True
+    manualPvHostRootRaw <- promptText "Manual PV host root (host path reserved for retained PV contents)" (Just ".data")
+    validateConfigSetupInput
+        credentials
+        (hostedZoneChoiceId zone)
+        demoFqdnRaw
+        demoTtl
+        vscodeFqdnRaw
+        acmeEmailRaw
+        acmeServerValue
+        eabKeyIdRaw
+        eabHmacKeyRaw
+        devMode
+        bootstrapOverrideRaw
+        pulumiEnableDnsBootstrap
+        manualPvHostRootRaw
+        (if policyIndex == 0 then PolicyFull else PolicyCore)
+
+interactiveAwsSetupInput :: FilePath -> PolicyTier -> IO AwsSetupInput
+interactiveAwsSetupInput repoRoot policyTier = do
+    putStrLn "AWS setup creates or refreshes the dedicated `prodbox` IAM user, writes"
+    putStrLn "operational `aws.*` credentials, and can request baseline service quotas."
+    putStrLn ""
+    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+    selectedRegion <- promptRegionChoice repoRoot initialCredentials
+    AwsSetupInput <$> validateAdminCredentialsInput initialCredentials{region = selectedRegion} <*> pure policyTier
+
+interactiveAwsTeardownInput :: FilePath -> IO AwsTeardownInput
+interactiveAwsTeardownInput repoRoot = do
+    putStrLn "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
+    putStrLn "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
+    putStrLn ""
+    defaultRegion <- currentRegionDefault repoRoot
+    credentials <- promptAdminCredentials defaultRegion >>= validateAdminCredentialsInput
+    pure (AwsTeardownInput credentials)
+
+interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
+interactiveAwsCheckQuotasInput repoRoot = do
+    putStrLn "AWS quota inspection reads the supported Service Quotas targets without changing"
+    putStrLn "the Dhall config or creating IAM users."
+    putStrLn ""
+    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+    selectedRegion <- promptRegionChoice repoRoot initialCredentials
+    AwsCheckQuotasInput <$> validateAdminCredentialsInput initialCredentials{region = selectedRegion}
+
+interactiveAwsRequestQuotasInput :: FilePath -> PolicyTier -> IO AwsRequestQuotasInput
+interactiveAwsRequestQuotasInput repoRoot policyTier = do
+    putStrLn "AWS quota requests submit increases only for supported targets that are still"
+    putStrLn "below the required threshold."
+    putStrLn ""
+    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+    selectedRegion <- promptRegionChoice repoRoot initialCredentials
+    AwsRequestQuotasInput <$> validateAdminCredentialsInput initialCredentials{region = selectedRegion} <*> pure policyTier
+
+showAwsAccountGuidance :: IO ()
+showAwsAccountGuidance = do
+    putStrLn "AWS account guidance:"
+    putStrLn "1. Sign up at https://aws.amazon.com and choose the Free Tier."
+    putStrLn "2. Add a payment method; AWS requires it even for Free Tier usage."
+    putStrLn "3. Complete identity verification and keep the Basic (free) support plan."
+    putStrLn "4. Create one temporary elevated access key from IAM or root security credentials."
+    putStrLn "5. Use that key only for onboarding, then delete it after `prodbox config setup`."
+    putStrLn "Free Tier notes: 750 hours/month of t2.micro or t3.micro for 12 months,"
+    putStrLn "5 GiB of S3 standard storage, and Route 53 usage billed separately."
+    putStrLn ""
+
+showAdminCredentialsGuidance :: IO ()
+showAdminCredentialsGuidance = do
+    putStrLn "Temporary elevated AWS credential guidance:"
+    putStrLn "1. Sign in to the AWS console with an identity that can manage IAM users, access keys,"
+    putStrLn "   Route 53 hosted zones, and Service Quotas."
+    putStrLn "2. Preferred path: IAM -> Users -> <temporary admin user> -> Security credentials ->"
+    putStrLn "   Create access key."
+    putStrLn "3. Root fallback only when intentional: account menu -> Security credentials ->"
+    putStrLn "   Access keys -> Create access key."
+    putStrLn "4. Paste the access key ID and secret below. If AWS gave you temporary STS"
+    putStrLn "   credentials, also paste the session token; otherwise leave it blank."
+    putStrLn "5. `prodbox` never persists this elevated key. Delete it in the AWS console after"
+    putStrLn "   the command completes."
+    putStrLn ""
+
+showRegionChoiceGuidance :: IO ()
+showRegionChoiceGuidance = do
+    putStrLn "AWS region guidance:"
+    putStrLn "Choose the region that should own EC2-based validation and quota targets."
+    putStrLn "Route 53 hosted zones are selected separately in the next step."
+    putStrLn ""
+
+showHostedZoneChoiceGuidance :: IO ()
+showHostedZoneChoiceGuidance = do
+    putStrLn "Route 53 hosted zone guidance:"
+    putStrLn "Choose the public hosted zone that should own the demo and vscode records."
+    putStrLn "If the desired zone is missing, open AWS console -> Route 53 -> Hosted zones,"
+    putStrLn "create or delegate the zone, then rerun this command."
+    putStrLn ""
+
+showAcmeProviderGuidance :: IO ()
+showAcmeProviderGuidance = do
+    putStrLn "ACME provider guidance:"
+    putStrLn "1. ZeroSSL (recommended): open https://app.zerossl.com -> Developer -> EAB"
+    putStrLn "   Credentials, then copy the EAB Key ID and HMAC key."
+    putStrLn "2. Let's Encrypt: no account or EAB credentials are required; you only need"
+    putStrLn "   the notification email below."
+    putStrLn ""
+
+showPolicyTierGuidance :: IO ()
+showPolicyTierGuidance = do
+    putStrLn "Operational IAM policy tier guidance:"
+    putStrLn "1. full (recommended): Route 53, EC2 HA validation, and quota-management permissions."
+    putStrLn "2. core: Route 53 runtime permissions only."
+    putStrLn ""
+
+promptAdminCredentials :: Text -> IO Credentials
+promptAdminCredentials defaultRegion = do
+    ensureAwsCliAvailable
+    showAdminCredentialsGuidance
+    accessKeyId <- Text.pack . trim <$> promptText "Elevated AWS access key ID (from the AWS console)" Nothing
+    secretAccessKey <- Text.pack . trim <$> promptSecret "Elevated AWS secret access key (hidden input)"
+    sessionTokenRaw <- promptText "Elevated AWS session token (optional; STS/session credentials only)" Nothing
+    regionRaw <- promptText "AWS region for elevated operations (you can change it after regions are listed)" (Just (Text.unpack defaultRegion))
+    validateAdminCredentialsInput
+        Credentials
+            { access_key_id = accessKeyId,
+              secret_access_key = secretAccessKey,
+              session_token = normalizeOptionalText (Text.pack sessionTokenRaw),
+              region = Text.pack (trim regionRaw)
+            }
+
+promptRegionChoice :: FilePath -> Credentials -> IO Text
+promptRegionChoice repoRoot credentials = do
+    regions <- listAwsRegions repoRoot credentials
+    when (null regions) (throwAws "No AWS regions were returned by `aws ec2 describe-regions`")
+    showRegionChoiceGuidance
+    putStrLn "Available AWS regions:"
+    mapM_ printRegionChoice (zip [1 :: Int ..] regions)
+    let defaultIndex = maybe 0 id (findIndex ((== region credentials) . regionChoiceName) regions)
+    selectedIndex <- promptNumberedChoice "Choose the AWS region number for prodbox operations" (map (Text.unpack . regionChoiceName) regions) defaultIndex
+    pure (regionChoiceName (regions !! selectedIndex))
+  where
+    printRegionChoice (index, choice) =
+        putStrLn (show index ++ ". " ++ Text.unpack (regionChoiceName choice) ++ " (" ++ Text.unpack (regionChoiceOptInStatus choice) ++ ")")
+
+promptHostedZoneChoice :: FilePath -> Credentials -> IO HostedZoneChoice
+promptHostedZoneChoice repoRoot credentials = do
+    zones <- listHostedZones repoRoot credentials
+    when (null zones) $ do
+        putStrLn "No hosted zones were found in Route 53."
+        putStrLn "Create one in the Route 53 console or delegate an existing domain, then rerun."
+        throwAws "No Route 53 hosted zones are available"
+    showHostedZoneChoiceGuidance
+    putStrLn "Available Route 53 hosted zones:"
+    mapM_ printZoneChoice (zip [1 :: Int ..] zones)
+    selectedIndex <- promptNumberedChoice "Choose the public hosted zone number for prodbox DNS" (map (Text.unpack . hostedZoneChoiceName) zones) 0
+    pure (zones !! selectedIndex)
+  where
+    printZoneChoice (index, choice) =
+        putStrLn (show index ++ ". " ++ Text.unpack (hostedZoneChoiceName choice) ++ " (" ++ Text.unpack (hostedZoneChoiceId choice) ++ ")")
+
+promptText :: String -> Maybe String -> IO String
+promptText message maybeDefault = do
+    putStr (message ++ defaultSuffix maybeDefault ++ ": ")
+    hFlush stdout
+    input <- getLine
+    pure $
+        case (trim input, maybeDefault) of
+            ("", Just defaultValue) -> defaultValue
+            (value, _) -> value
+  where
+    defaultSuffix = maybe "" (\defaultValue -> " [" ++ defaultValue ++ "]")
+
+promptSecret :: String -> IO String
+promptSecret message = do
+    terminal <- hIsTerminalDevice stdin
+    putStr (message ++ ": ")
+    hFlush stdout
+    if terminal
+        then do
+            originalEcho <- hGetEcho stdin
+            value <- bracket_ (hSetEcho stdin False) (hSetEcho stdin originalEcho) getLine
+            putStrLn ""
+            pure (trim value)
+        else trim <$> getLine
+
+promptInt :: String -> Int -> IO Int
+promptInt message defaultValue = do
+    rawValue <- promptText message (Just (show defaultValue))
+    case reads rawValue of
+        [(parsed, "")] -> pure parsed
+        _ -> do
+            putStrLn "Enter a whole number."
+            promptInt message defaultValue
+
+promptConfirm :: String -> Bool -> IO Bool
+promptConfirm message defaultValue = do
+    let suffix = if defaultValue then " [Y/n]" else " [y/N]"
+    putStr (message ++ suffix ++ ": ")
+    hFlush stdout
+    response <- fmap (map toLower . trim) getLine
+    case response of
+        "" -> pure defaultValue
+        "y" -> pure True
+        "yes" -> pure True
+        "n" -> pure False
+        "no" -> pure False
+        _ -> do
+            putStrLn "Enter yes or no."
+            promptConfirm message defaultValue
+
+promptNumberedChoice :: String -> [String] -> Int -> IO Int
+promptNumberedChoice promptMessage options defaultIndex = do
+    rawChoice <- promptText promptMessage (Just (show (defaultIndex + 1)))
+    case reads rawChoice of
+        [(selectedNumber, "")] ->
+            let selectedIndex = selectedNumber - 1
+             in if selectedIndex >= 0 && selectedIndex < length options
+                    then pure selectedIndex
+                    else do
+                        putStrLn "Selected option is out of range."
+                        promptNumberedChoice promptMessage options defaultIndex
+        _ -> do
+            putStrLn "Enter the number shown beside the option."
+            promptNumberedChoice promptMessage options defaultIndex
+
+validateAdminCredentialsInput :: Credentials -> IO Credentials
+validateAdminCredentialsInput credentials = do
+    let normalized =
+            Credentials
+                { access_key_id = Text.strip (access_key_id credentials),
+                  secret_access_key = Text.strip (secret_access_key credentials),
+                  session_token = normalizeOptionalText =<< session_token credentials,
+                  region = Text.strip (region credentials)
+                }
+    when (Text.null (access_key_id normalized)) (throwAws "Admin AWS access key ID is required")
+    when (Text.null (secret_access_key normalized)) (throwAws "Admin AWS secret access key is required")
+    when (Text.null (region normalized)) (throwAws "Admin AWS region is required")
+    pure normalized
+
+validateConfigSetupInput ::
+    Credentials ->
+    Text ->
+    String ->
+    Int ->
+    String ->
+    String ->
+    Text ->
+    String ->
+    String ->
+    Bool ->
+    String ->
+    Bool ->
+    String ->
+    PolicyTier ->
+    IO ConfigSetupInput
+validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnRaw acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap manualPvHostRootRaw policyTier = do
+    normalizedAdminCredentials <- validateAdminCredentialsInput adminCredentials
+    let normalizedZoneId = Text.strip zoneId
+        normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
+        normalizedVscodeFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack vscodeFqdnRaw))
+        normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
+        normalizedEabKeyId = normalizeOptionalText (Text.pack eabKeyIdRaw)
+        normalizedEabHmacKey = normalizeOptionalText (Text.pack eabHmacKeyRaw)
+        normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
+        normalizedManualPvHostRoot = Text.strip (Text.pack manualPvHostRootRaw)
+    unless (isValidRoute53ZoneId normalizedZoneId) $ throwAws "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
+    unless (isValidFqdn normalizedDemoFqdn) $ throwAws "demo_fqdn must be a valid fully qualified domain name"
+    case normalizedVscodeFqdn of
+        Nothing -> pure ()
+        Just value -> unless (isValidFqdn value) (throwAws "vscode_fqdn must be a valid fully qualified domain name")
+    when (demoTtl < 30 || demoTtl > 86400) (throwAws "demo_ttl must be between 30 and 86400 seconds")
+    unless (hasValidEmailShape normalizedAcmeEmail) (throwAws "acme_email must be a valid email address")
+    unless ("https://" `Text.isPrefixOf` Text.toLower acmeServer) (throwAws "acme_server must be an https:// URL")
+    when ((normalizedEabKeyId == Nothing) /= (normalizedEabHmacKey == Nothing)) $ throwAws "acme_eab_key_id and acme_eab_hmac_key must either both be set or both be empty"
+    pure
+        ConfigSetupInput
+            { configSetupAdminCredentialsInput = normalizedAdminCredentials,
+              configSetupRoute53ZoneIdInput = normalizedZoneId,
+              configSetupDemoFqdnInput = normalizedDemoFqdn,
+              configSetupDemoTtlInput = fromIntegral demoTtl,
+              configSetupVscodeFqdnInput = normalizedVscodeFqdn,
+              configSetupAcmeEmailInput = normalizedAcmeEmail,
+              configSetupAcmeServerInput = Text.strip acmeServer,
+              configSetupAcmeEabKeyIdInput = normalizedEabKeyId,
+              configSetupAcmeEabHmacKeyInput = normalizedEabHmacKey,
+              configSetupDevModeInput = devMode,
+              configSetupBootstrapPublicIpOverrideInput = normalizedBootstrapOverride,
+              configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap,
+              configSetupManualPvHostRootInput = normalizedManualPvHostRoot,
+              configSetupPolicyTierInput = policyTier
+            }
+
+applyAwsSetup :: FilePath -> AwsSetupInput -> IO IamSetupResult
+applyAwsSetup repoRoot input = do
+    (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
+        ensureOperationalIamUser repoRoot (awsSetupAdminCredentials input) (awsSetupPolicyTierInput input)
+    waitForOperationalCredentialsReady repoRoot (awsSetupAdminCredentials input) newAccessKeyId newSecretAccessKey
+    currentConfig <- loadConfigForWrite repoRoot
+    let updatedConfig =
+            currentConfig
+                { aws =
+                    Credentials
+                        { access_key_id = newAccessKeyId,
+                          secret_access_key = newSecretAccessKey,
+                          session_token = Nothing,
+                          region = region (awsSetupAdminCredentials input)
+                        }
+                }
+        paths = canonicalConfigPaths repoRoot
+    writeConfigFile (configDhallPath paths) updatedConfig
+    validationResult <- validateAndLoadSettings repoRoot
+    case validationResult of
+        Left err ->
+            throwAws
+                ( "Operational IAM user was created, but the updated config did not validate. "
+                    ++ "Complete the remaining config fields with `prodbox config setup` and rerun. "
+                    ++ "Detail: "
+                    ++ err
+                )
+        Right _ ->
+            pure
+                IamSetupResult
+                    { iamSetupUserName = prodboxIamUserName,
+                      iamSetupPolicyTier = awsSetupPolicyTierInput input,
+                      iamSetupAccessKeyId = newAccessKeyId,
+                      iamSetupQuotaStatuses = quotaStatuses,
+                      iamSetupDhallPath = configDhallPath paths
+                    }
+
+applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO IamTeardownResult
+applyAwsTeardown repoRoot input = do
+    deletedAccessKeys <- deleteExistingOperationalKeys repoRoot (awsTeardownAdminCredentials input)
+    deleteUserPolicyIfPresent repoRoot (awsTeardownAdminCredentials input)
+    userDeleted <- deleteOperationalUserIfPresent repoRoot (awsTeardownAdminCredentials input)
+    currentConfig <- loadConfigForWrite repoRoot
+    let currentRegion =
+            if Text.null (Text.strip (region (aws currentConfig)))
+                then region (awsTeardownAdminCredentials input)
+                else region (aws currentConfig)
+        updatedConfig =
+            currentConfig
+                { aws =
+                    Credentials
+                        { access_key_id = "",
+                          secret_access_key = "",
+                          session_token = Nothing,
+                          region = currentRegion
+                        }
+                }
+        paths = canonicalConfigPaths repoRoot
+    writeConfigFile (configDhallPath paths) updatedConfig
+    materializeResult <- materializeConfigJson repoRoot
+    case materializeResult of
+        Left err -> throwAws err
+        Right () ->
+            pure
+                IamTeardownResult
+                    { iamTeardownUserName = prodboxIamUserName,
+                      iamTeardownDeletedAccessKeys = deletedAccessKeys,
+                      iamTeardownUserDeleted = userDeleted,
+                      iamTeardownDhallPath = configDhallPath paths
+                    }
+
+applyAwsCheckQuotas :: FilePath -> AwsCheckQuotasInput -> IO [QuotaStatus]
+applyAwsCheckQuotas repoRoot input =
+    mapM (\spec -> ensureServiceQuota repoRoot (awsCheckQuotasAdminCredentials input) spec False) fullQuotaSpecs
+
+applyAwsRequestQuotas :: FilePath -> AwsRequestQuotasInput -> IO [QuotaStatus]
+applyAwsRequestQuotas repoRoot input =
+    mapM (\spec -> ensureServiceQuota repoRoot (awsRequestQuotasAdminCredentials input) spec True) (quotaSpecsForTier (awsRequestQuotasPolicyTierInput input))
+
+applyConfigSetup :: FilePath -> ConfigSetupInput -> IO ConfigSetupResult
+applyConfigSetup repoRoot input = do
+    let adminCredentials = configSetupAdminCredentialsInput input
+    (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
+        ensureOperationalIamUser repoRoot adminCredentials (configSetupPolicyTierInput input)
+    waitForOperationalCredentialsReady repoRoot adminCredentials newAccessKeyId newSecretAccessKey
+    currentConfig <- loadConfigForWrite repoRoot
+    let updatedConfig =
+            currentConfig
+                { aws =
+                    Credentials
+                        { access_key_id = newAccessKeyId,
+                          secret_access_key = newSecretAccessKey,
+                          session_token = Nothing,
+                          region = region adminCredentials
+                        },
+                  route53 = Route53Section{zone_id = configSetupRoute53ZoneIdInput input},
+                  domain =
+                    DomainSection
+                        { demo_fqdn = configSetupDemoFqdnInput input,
+                          demo_ttl = configSetupDemoTtlInput input,
+                          vscode_fqdn = configSetupVscodeFqdnInput input
+                        },
+                  acme =
+                    AcmeSection
+                        { email = configSetupAcmeEmailInput input,
+                          server = configSetupAcmeServerInput input,
+                          eab_key_id = configSetupAcmeEabKeyIdInput input,
+                          eab_hmac_key = configSetupAcmeEabHmacKeyInput input
+                        },
+                  deployment =
+                    DeploymentSection
+                        { dev_mode = configSetupDevModeInput input,
+                          bootstrap_public_ip_override = configSetupBootstrapPublicIpOverrideInput input,
+                          pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
+                        },
+                  storage = StorageSection{manual_pv_host_root = configSetupManualPvHostRootInput input}
+                }
+        paths = canonicalConfigPaths repoRoot
+    writeConfigFile (configDhallPath paths) updatedConfig
+    validationResult <- validateAndLoadSettings repoRoot
+    case validationResult of
+        Left err -> throwAws err
+        Right _ ->
+            pure
+                ConfigSetupResult
+                    { configSetupRegion = region adminCredentials,
+                      configSetupRoute53ZoneId = configSetupRoute53ZoneIdInput input,
+                      configSetupDemoFqdn = configSetupDemoFqdnInput input,
+                      configSetupVscodeFqdn = configSetupVscodeFqdnInput input,
+                      configSetupPolicyTier = configSetupPolicyTierInput input,
+                      configSetupAccessKeyId = newAccessKeyId,
+                      configSetupQuotaStatuses = quotaStatuses,
+                      configSetupDhallPath = configDhallPath paths
+                    }
+
+ensureOperationalIamUser :: FilePath -> Credentials -> PolicyTier -> IO (Text, Text, [QuotaStatus])
+ensureOperationalIamUser repoRoot adminCredentials policyTier = do
+    createUserOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "create-user",
+              "--user-name",
+              Text.unpack prodboxIamUserName
+            ]
+    when (processExitCode createUserOutput /= ExitSuccess && awsErrorCode (errorDetail createUserOutput) /= Just "EntityAlreadyExists") $
+        throwAws ("aws iam create-user failed: " ++ errorDetail createUserOutput)
+
+    accessKeys <- listOperationalAccessKeys repoRoot adminCredentials
+    mapM_ (deleteOperationalAccessKey repoRoot adminCredentials) accessKeys
+
+    putUserPolicyOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "put-user-policy",
+              "--user-name",
+              Text.unpack prodboxIamUserName,
+              "--policy-name",
+              Text.unpack prodboxIamInlinePolicyName,
+              "--policy-document",
+              buildIamPolicyJson policyTier
+            ]
+    _ <- requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput
+
+    createAccessKeyOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "create-access-key",
+              "--user-name",
+              Text.unpack prodboxIamUserName
+            ]
+    accessKeyValue <- decodeJsonPayload "aws iam create-access-key" =<< requireCommandSuccess "aws iam create-access-key" createAccessKeyOutput
+    accessKeyObject <- requireObject "create-access-key" accessKeyValue
+    nestedAccessKey <- requireObjectField "create-access-key" "AccessKey" accessKeyObject
+    newAccessKeyId <- requireTextField "AccessKey" "AccessKeyId" nestedAccessKey
+    newSecretKey <- requireTextField "AccessKey" "SecretAccessKey" nestedAccessKey
+    quotaStatuses <- mapM (\spec -> ensureServiceQuota repoRoot adminCredentials spec True) baselineQuotaSpecs
+    pure (newAccessKeyId, newSecretKey, quotaStatuses)
+
+waitForOperationalCredentialsReady :: FilePath -> Credentials -> Text -> Text -> IO ()
+waitForOperationalCredentialsReady repoRoot adminCredentials newAccessKeyId newSecretAccessKey =
+    go operationalCredentialReadyAttempts "STS validation did not return a result"
+  where
+    operationalCredentials =
+        Credentials
+            { access_key_id = newAccessKeyId,
+              secret_access_key = newSecretAccessKey,
+              session_token = Nothing,
+              region = region adminCredentials
+            }
+    go attemptsRemaining lastError = do
+        environment <- operationalAwsEnvironment operationalCredentials
+        stsOutput <-
+            runAwsCliCompletedWithEnvironment
+                repoRoot
+                environment
+                ["sts", "get-caller-identity"]
+        case processExitCode stsOutput of
+            ExitSuccess -> pure ()
+            ExitFailure _ ->
+                let nextError =
+                        if errorDetail stsOutput == "command failed"
+                            then lastError
+                            else errorDetail stsOutput
+                 in if attemptsRemaining <= 1
+                        then
+                            throwAws
+                                ( "Generated operational AWS credentials failed validation via "
+                                    ++ "`aws sts get-caller-identity`: "
+                                    ++ nextError
+                                )
+                        else do
+                            threadDelay operationalCredentialRetryDelayMicros
+                            go (attemptsRemaining - 1) nextError
+
+ensureServiceQuota :: FilePath -> Credentials -> QuotaSpec -> Bool -> IO QuotaStatus
+ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
+    primaryOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "service-quotas",
+              "get-service-quota",
+              "--service-code",
+              Text.unpack (quotaServiceCode spec),
+              "--quota-code",
+              Text.unpack (quotaCode spec)
+            ]
+    (quotaObject, sourceLabel) <-
+        if processExitCode primaryOutput == ExitSuccess
+            then do
+                value <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout primaryOutput)
+                payload <- requireObject (Text.unpack (quotaDisplayName spec)) value
+                quotaPayload <- requireObjectField (Text.unpack (quotaDisplayName spec)) "Quota" payload
+                pure (quotaPayload, "current")
+            else do
+                fallbackOutput <-
+                    runAwsCliCompleted
+                        repoRoot
+                        adminCredentials
+                        [ "service-quotas",
+                          "get-aws-default-service-quota",
+                          "--service-code",
+                          Text.unpack (quotaServiceCode spec),
+                          "--quota-code",
+                          Text.unpack (quotaCode spec)
+                        ]
+                fallbackPayloadText <- requireCommandSuccess (Text.unpack (quotaDisplayName spec)) fallbackOutput
+                value <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) fallbackPayloadText
+                payload <- requireObject (Text.unpack (quotaDisplayName spec)) value
+                quotaPayload <- requireObjectField (Text.unpack (quotaDisplayName spec)) "Quota" payload
+                pure (quotaPayload, "default")
+    currentValue <- requireNumberField (Text.unpack (quotaDisplayName spec)) "Value" quotaObject
+    let meetsTarget = currentValue >= quotaTargetValue spec
+        baseStatus =
+            QuotaStatus
+                { quotaStatusDisplayName = quotaDisplayName spec,
+                  quotaStatusServiceCode = quotaServiceCode spec,
+                  quotaStatusQuotaCode = quotaCode spec,
+                  quotaStatusCurrentValue = currentValue,
+                  quotaStatusTargetValue = quotaTargetValue spec,
+                  quotaStatusSource = sourceLabel,
+                  quotaStatusMeetsTarget = meetsTarget,
+                  quotaStatusRequestStatus = Nothing,
+                  quotaStatusNote = Nothing
+                }
+    if meetsTarget || not requestIfNeeded
+        then pure baseStatus
+        else do
+            requestOutput <-
+                runAwsCliCompleted
+                    repoRoot
+                    adminCredentials
+                    [ "service-quotas",
+                      "request-service-quota-increase",
+                      "--service-code",
+                      Text.unpack (quotaServiceCode spec),
+                      "--quota-code",
+                      Text.unpack (quotaCode spec),
+                      "--desired-value",
+                      formatDouble (quotaTargetValue spec)
+                    ]
+            if processExitCode requestOutput /= ExitSuccess
+                then
+                    pure
+                        baseStatus
+                            { quotaStatusRequestStatus = Just "error",
+                              quotaStatusNote = Just (Text.pack (errorDetail requestOutput))
+                            }
+                else do
+                    requestValue <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout requestOutput)
+                    requestPayload <- requireObject (Text.unpack (quotaDisplayName spec)) requestValue
+                    requestedQuota <- requireObjectField (Text.unpack (quotaDisplayName spec)) "RequestedQuota" requestPayload
+                    requestStatus <- requireTextField (Text.unpack (quotaDisplayName spec)) "Status" requestedQuota
+                    pure baseStatus{quotaStatusRequestStatus = Just requestStatus}
+
+listAwsRegions :: FilePath -> Credentials -> IO [RegionChoice]
+listAwsRegions repoRoot adminCredentials = do
+    payload <-
+        decodeJsonCommand
+            repoRoot
+            adminCredentials
+            ["ec2", "describe-regions"]
+            "aws ec2 describe-regions"
+    rootObject <- requireObject "describe-regions" payload
+    regionsArray <- requireArrayField "describe-regions" "Regions" rootObject
+    mapM parseRegionChoice (Vector.toList regionsArray)
+
+listHostedZones :: FilePath -> Credentials -> IO [HostedZoneChoice]
+listHostedZones repoRoot adminCredentials = do
+    payload <-
+        decodeJsonCommand
+            repoRoot
+            adminCredentials
+            ["route53", "list-hosted-zones"]
+            "aws route53 list-hosted-zones"
+    rootObject <- requireObject "list-hosted-zones" payload
+    zonesArray <- requireArrayField "list-hosted-zones" "HostedZones" rootObject
+    mapM parseHostedZoneChoice (Vector.toList zonesArray)
+
+parseRegionChoice :: Value -> IO RegionChoice
+parseRegionChoice value = do
+    regionObject <- requireObject "describe-regions" value
+    regionNameValue <- requireTextField "describe-regions" "RegionName" regionObject
+    pure
+        RegionChoice
+            { regionChoiceName = regionNameValue,
+              regionChoiceOptInStatus = maybe "opt-in-not-required" id (optionalTextField "OptInStatus" regionObject)
+            }
+
+parseHostedZoneChoice :: Value -> IO HostedZoneChoice
+parseHostedZoneChoice value = do
+    zoneObject <- requireObject "list-hosted-zones" value
+    zoneIdValue <- requireTextField "list-hosted-zones" "Id" zoneObject
+    zoneNameValue <- requireTextField "list-hosted-zones" "Name" zoneObject
+    pure
+        HostedZoneChoice
+            { hostedZoneChoiceId = Text.replace "/hostedzone/" "" zoneIdValue,
+              hostedZoneChoiceName = Text.dropWhileEnd (== '.') zoneNameValue
+            }
+
+listOperationalAccessKeys :: FilePath -> Credentials -> IO [Text]
+listOperationalAccessKeys repoRoot adminCredentials = do
+    listKeysOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "list-access-keys",
+              "--user-name",
+              Text.unpack prodboxIamUserName
+            ]
+    listPayloadText <- requireCommandSuccess "aws iam list-access-keys" listKeysOutput
+    listPayloadValue <- decodeJsonPayload "list-access-keys" listPayloadText
+    listPayloadObject <- requireObject "list-access-keys" listPayloadValue
+    accessKeysArray <- requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject
+    forM (Vector.toList accessKeysArray) $ \item -> do
+        metadataObject <- requireObject "AccessKeyMetadata" item
+        requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
+
+deleteExistingOperationalKeys :: FilePath -> Credentials -> IO [Text]
+deleteExistingOperationalKeys repoRoot adminCredentials = do
+    listKeysOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "list-access-keys",
+              "--user-name",
+              Text.unpack prodboxIamUserName
+            ]
+    if processExitCode listKeysOutput == ExitSuccess
+        then do
+            listPayloadValue <- decodeJsonPayload "list-access-keys" (processStdout listKeysOutput)
+            listPayloadObject <- requireObject "list-access-keys" listPayloadValue
+            accessKeysArray <- requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject
+            deleted <- forM (Vector.toList accessKeysArray) $ \item -> do
+                metadataObject <- requireObject "AccessKeyMetadata" item
+                accessKeyIdValue <- requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
+                deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue
+                pure accessKeyIdValue
+            pure deleted
+        else
+            case awsErrorCode (errorDetail listKeysOutput) of
+                Just "NoSuchEntity" -> pure []
+                _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
+
+deleteOperationalAccessKey :: FilePath -> Credentials -> Text -> IO ()
+deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue = do
+    deleteKeyOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "delete-access-key",
+              "--user-name",
+              Text.unpack prodboxIamUserName,
+              "--access-key-id",
+              Text.unpack accessKeyIdValue
+            ]
+    _ <- requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput
+    pure ()
+
+deleteUserPolicyIfPresent :: FilePath -> Credentials -> IO ()
+deleteUserPolicyIfPresent repoRoot adminCredentials = do
+    deletePolicyOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "delete-user-policy",
+              "--user-name",
+              Text.unpack prodboxIamUserName,
+              "--policy-name",
+              Text.unpack prodboxIamInlinePolicyName
+            ]
+    when (processExitCode deletePolicyOutput /= ExitSuccess && awsErrorCode (errorDetail deletePolicyOutput) /= Just "NoSuchEntity") $
+        throwAws ("aws iam delete-user-policy failed: " ++ errorDetail deletePolicyOutput)
+
+deleteOperationalUserIfPresent :: FilePath -> Credentials -> IO Bool
+deleteOperationalUserIfPresent repoRoot adminCredentials = do
+    deleteUserOutput <-
+        runAwsCliCompleted
+            repoRoot
+            adminCredentials
+            [ "iam",
+              "delete-user",
+              "--user-name",
+              Text.unpack prodboxIamUserName
+            ]
+    case processExitCode deleteUserOutput of
+        ExitSuccess -> pure True
+        ExitFailure _ ->
+            case awsErrorCode (errorDetail deleteUserOutput) of
+                Just "NoSuchEntity" -> pure False
+                _ -> throwAws ("aws iam delete-user failed: " ++ errorDetail deleteUserOutput)
+
+quotaSpecsForTier :: PolicyTier -> [QuotaSpec]
+quotaSpecsForTier policyTier =
+    case policyTier of
+        PolicyCore -> baselineQuotaSpecs
+        PolicyFull -> fullQuotaSpecs
+
+renderAwsSetupResult :: IamSetupResult -> String
+renderAwsSetupResult result =
+    unlines
+        [ "IAM_USER=" ++ Text.unpack (iamSetupUserName result),
+          "POLICY_TIER=" ++ renderPolicyTier (iamSetupPolicyTier result),
+          "AWS_ACCESS_KEY_ID=" ++ Text.unpack (iamSetupAccessKeyId result),
+          "CONFIG_PATH=" ++ iamSetupDhallPath result,
+          "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (iamSetupQuotaStatuses result)))
+        ]
+
+renderAwsTeardownResult :: IamTeardownResult -> String
+renderAwsTeardownResult result =
+    unlines
+        [ "IAM_USER=" ++ Text.unpack (iamTeardownUserName result),
+          "USER_DELETED=" ++ map toLower (show (iamTeardownUserDeleted result)),
+          "DELETED_ACCESS_KEYS=" ++ show (length (iamTeardownDeletedAccessKeys result)),
+          "CONFIG_PATH=" ++ iamTeardownDhallPath result
+        ]
+
+renderConfigSetupResult :: ConfigSetupResult -> String
+renderConfigSetupResult result =
+    unlines
+        [ "AWS_REGION=" ++ Text.unpack (configSetupRegion result),
+          "ROUTE53_ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneId result),
+          "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result),
+          "VSCODE_FQDN=" ++ maybe "" Text.unpack (configSetupVscodeFqdn result),
+          "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result),
+          "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result),
+          "CONFIG_PATH=" ++ configSetupDhallPath result,
+          "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (configSetupQuotaStatuses result))),
+          "POST_SETUP_GUIDANCE=Delete the temporary elevated/root access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
+        ]
+
+renderQuotaTable :: String -> [QuotaStatus] -> String
+renderQuotaTable title statuses =
+    unlines ([title, renderRow widths headerRow, renderSeparator widths] ++ map (renderRow widths) bodyRows)
+  where
+    headerRow = ["Quota", "Current", "Target", "Meets Target", "Request Status", "Note"]
+    bodyRows = map quotaStatusRow statuses
+    widths = map maximum (transpose (map (map length) (headerRow : bodyRows)))
+    renderRow columnWidths columns = intercalate " | " (zipWith padRight columnWidths columns)
+    renderSeparator columnWidths = intercalate "-+-" (map (`replicate` '-') columnWidths)
+    padRight width value = value ++ replicate (width - length value) ' '
+
+quotaStatusRow :: QuotaStatus -> [String]
+quotaStatusRow status =
+    [ Text.unpack (quotaStatusDisplayName status),
+      formatDouble (quotaStatusCurrentValue status),
+      formatDouble (quotaStatusTargetValue status),
+      if quotaStatusMeetsTarget status then "yes" else "no",
+      maybe "" Text.unpack (quotaStatusRequestStatus status),
+      maybe "" Text.unpack (quotaStatusNote status)
+    ]
+
+quotaRequested :: QuotaStatus -> Bool
+quotaRequested status =
+    case quotaStatusRequestStatus status of
+        Nothing -> False
+        Just value -> Text.strip value /= ""
+
+renderPolicyTier :: PolicyTier -> String
+renderPolicyTier policyTier =
+    case policyTier of
+        PolicyCore -> "core"
+        PolicyFull -> "full"
+
+currentRegionDefault :: FilePath -> IO Text
+currentRegionDefault repoRoot = do
+    config <- loadConfigForWrite repoRoot
+    let configuredRegion = Text.strip (region (aws config))
+    pure (if Text.null configuredRegion then defaultAwsRegion else configuredRegion)
+
+loadConfigForWrite :: FilePath -> IO ConfigFile
+loadConfigForWrite repoRoot = do
+    let paths = canonicalConfigPaths repoRoot
+    dhallExists <- doesFileExist (configDhallPath paths)
+    if dhallExists
+        then do
+            configResult <- loadConfigFile repoRoot
+            case configResult of
+                Left err -> throwAws err
+                Right config -> pure config
+        else pure defaultConfigFile
+
+writeConfigFile :: FilePath -> ConfigFile -> IO ()
+writeConfigFile path config = writeFile path (renderConfigDhall config)
+
+subprocessBaseEnvironment :: IO [(String, String)]
+subprocessBaseEnvironment = do
+    environment <- getEnvironment
+    let keep key = maybe [] (\value -> [(key, value)]) (lookup key environment)
+        base = concatMap keep ["PATH", "HOME", "LANG", "TERM", "USER"]
+    pure (upsertEnv "AWS_EC2_METADATA_DISABLED" "true" (upsertEnv "AWS_PAGER" "" base))
+
+adminAwsEnvironment :: Credentials -> IO [(String, String)]
+adminAwsEnvironment credentials = do
+    base <- subprocessBaseEnvironment
+    pure
+        ( upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region credentials))
+            ( upsertEnv "AWS_REGION" (Text.unpack (region credentials))
+                ( maybe id (upsertEnv "AWS_SESSION_TOKEN" . Text.unpack) (session_token credentials)
+                    ( upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key credentials))
+                        (upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id credentials)) base)
+                    )
+                )
+            )
+        )
+
+operationalAwsEnvironment :: Credentials -> IO [(String, String)]
+operationalAwsEnvironment = adminAwsEnvironment
+
+upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
+upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
+
+runAwsCliCompleted :: FilePath -> Credentials -> [String] -> IO ProcessOutput
+runAwsCliCompleted repoRoot adminCredentials arguments = do
+    environment <- adminAwsEnvironment adminCredentials
+    runAwsCliCompletedWithEnvironment repoRoot environment arguments
+
+runAwsCliCompletedWithEnvironment :: FilePath -> [(String, String)] -> [String] -> IO ProcessOutput
+runAwsCliCompletedWithEnvironment repoRoot environment arguments = do
+    outputResult <-
+        captureCommand
+            CommandSpec
+                { commandPath = "aws",
+                  commandArguments = arguments ++ ["--output", "json"],
+                  commandEnvironment = Just environment,
+                  commandWorkingDirectory = Just repoRoot
+                }
+    case outputResult of
+        Failure err -> throwAws err
+        Success output -> pure output
+
+decodeJsonCommand :: FilePath -> Credentials -> [String] -> String -> IO Value
+decodeJsonCommand repoRoot adminCredentials arguments commandLabel = do
+    output <- runAwsCliCompleted repoRoot adminCredentials arguments
+    payloadText <- requireCommandSuccess commandLabel output
+    decodeJsonPayload commandLabel payloadText
+
+requireCommandSuccess :: String -> ProcessOutput -> IO String
+requireCommandSuccess commandLabel output =
+    case processExitCode output of
+        ExitSuccess -> pure (processStdout output)
+        ExitFailure _ -> throwAws (commandLabel ++ " failed: " ++ errorDetail output)
+
+decodeJsonPayload :: String -> String -> IO Value
+decodeJsonPayload context payloadText =
+    case eitherDecode (BL8.pack payloadText) of
+        Left err -> throwAws (context ++ " returned invalid JSON: " ++ err)
+        Right value -> pure value
+
+requireObject :: String -> Value -> IO Object
+requireObject context value =
+    case value of
+        Object objectValue -> pure objectValue
+        _ -> throwAws (context ++ " must be a JSON object")
+
+requireArrayField :: String -> String -> Object -> IO Array
+requireArrayField context fieldName objectValue =
+    case KeyMap.lookup (Key.fromString fieldName) objectValue of
+        Just (Array arrayValue) -> pure arrayValue
+        _ -> throwAws (context ++ " missing required array field " ++ fieldName)
+
+requireObjectField :: String -> String -> Object -> IO Object
+requireObjectField context fieldName objectValue =
+    case KeyMap.lookup (Key.fromString fieldName) objectValue of
+        Just (Object nestedObject) -> pure nestedObject
+        _ -> throwAws (context ++ " missing required object field " ++ fieldName)
+
+requireTextField :: String -> String -> Object -> IO Text
+requireTextField context fieldName objectValue =
+    case KeyMap.lookup (Key.fromString fieldName) objectValue of
+        Just (String textValue) | Text.strip textValue /= "" -> pure textValue
+        _ -> throwAws (context ++ " missing required string field " ++ fieldName)
+
+optionalTextField :: String -> Object -> Maybe Text
+optionalTextField fieldName objectValue =
+    case KeyMap.lookup (Key.fromString fieldName) objectValue of
+        Just (String textValue) | Text.strip textValue /= "" -> Just textValue
+        _ -> Nothing
+
+requireNumberField :: String -> String -> Object -> IO Double
+requireNumberField context fieldName objectValue =
+    case KeyMap.lookup (Key.fromString fieldName) objectValue of
+        Just (Number numericValue) -> pure (realToFrac numericValue)
+        _ -> throwAws (context ++ " missing required numeric field " ++ fieldName)
+
+normalizeOptionalText :: Text -> Maybe Text
+normalizeOptionalText value =
+    let trimmed = Text.strip value
+     in if Text.null trimmed then Nothing else Just trimmed
+
+normalizeFqdn :: Text -> Text
+normalizeFqdn = Text.dropWhileEnd (== '.') . Text.strip
+
+isValidRoute53ZoneId :: Text -> Bool
+isValidRoute53ZoneId value =
+    case Text.uncons value of
+        Just ('Z', rest) -> not (Text.null rest) && Text.all isUpperAlphaNum rest
+        _ -> False
+  where
+    isUpperAlphaNum character = isAlphaNum character && (not (character >= 'a' && character <= 'z'))
+
+isValidFqdn :: Text -> Bool
+isValidFqdn value =
+    let labels = Text.splitOn "." value
+     in Text.length value >= 1
+            && Text.length value <= 253
+            && length labels >= 2
+            && all validLabel labels
+            && validTopLevel (last labels)
+  where
+    validLabel label =
+        let size = Text.length label
+         in size >= 1
+                && size <= 63
+                && Text.head label /= '-'
+                && Text.last label /= '-'
+                && Text.all validFqdnChar label
+    validTopLevel label =
+        let size = Text.length label
+         in size >= 2 && size <= 63 && Text.all isAsciiLetter label
+    validFqdnChar character = isAsciiLetter character || isDigit character || character == '-'
+    isAsciiLetter character = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
+    isDigit character = character >= '0' && character <= '9'
+
+hasValidEmailShape :: Text -> Bool
+hasValidEmailShape value =
+    let (localPart, remainder) = Text.breakOn "@" value
+     in case Text.uncons remainder of
+            Just ('@', domainPart) -> not (Text.null localPart) && Text.any (== '.') domainPart
+            _ -> False
+
+trim :: String -> String
+trim = dropWhileEnd isSpace . dropWhile isSpace
+  where
+    dropWhileEnd predicate = reverse . dropWhile predicate . reverse
+
+formatDouble :: Double -> String
+formatDouble value =
+    if fromInteger (round value) == value
+        then show (round value :: Integer)
+        else show value
+
+errorDetail :: ProcessOutput -> String
+errorDetail output =
+    let stderrText = trim (processStderr output)
+        stdoutText = trim (processStdout output)
+     in if stderrText /= "" then stderrText else if stdoutText /= "" then stdoutText else "command failed"
+
+awsErrorCode :: String -> Maybe String
+awsErrorCode message = do
+    suffix <- stripPrefix "An error occurred (" =<< findSubstring "An error occurred (" message
+    let code = takeWhile (/= ')') suffix
+    if code == "" then Nothing else Just code
+  where
+    findSubstring needle haystack =
+        case breakOn needle haystack of
+            Just (_, rest) -> Just rest
+            Nothing -> Nothing
+    stripPrefix prefix textValue =
+        if prefix `isPrefixOf` textValue
+            then Just (drop (length prefix) textValue)
+            else Nothing
+    breakOn needle haystack =
+        search "" haystack
+      where
+        search _ [] = Nothing
+        search prefixRemaining remaining@(character : rest)
+            | needle `isPrefixOf` remaining = Just (reverse prefixRemaining, remaining)
+            | otherwise = search (character : prefixRemaining) rest

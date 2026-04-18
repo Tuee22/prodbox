@@ -8,12 +8,24 @@
 
 Home Kubernetes cluster management with Pulumi.
 
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Overview
 
-Prodbox is a Python-native infrastructure-as-code project for managing a home Kubernetes cluster. It deploys and manages:
+Prodbox is in an explicit rewrite state.
+
+- The authoritative target architecture, sprint status, and cleanup ownership live in
+  [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+- The current worktree implementation is mixed: a compiled Haskell frontend now lives
+  under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`, `cabal.project`, and `Dockerfile`;
+  Haskell owns `config compile|show|validate`, `host ensure-tools|check-ports|info|firewall|public-edge`,
+  `dns check`, `gateway status|config-gen`, `k8s health|wait|logs`, `check-code`, `tla-check`,
+  and the public `test` entrypoint, including named-suite and aggregate-suite orchestration, while
+  most product behavior still lives under `src/prodbox/` and `tests/`.
+- The supported handoff target is a Haskell-owned `prodbox` binary with no supported-path Python
+  implementation or Python toolchain ownership.
+
+The current repository baseline deploys and manages:
 
 - **RKE2** - Kubernetes distribution lifecycle managed via eDAG (`install`/`delete`)
 - **Harbor** - In-cluster local registry + Docker Hub mirror pipeline
@@ -32,11 +44,16 @@ Doctrine highlights:
 - prodbox-created Kubernetes objects are tagged with `prodbox.io/id=<prodbox-id>`.
 - Storage lifecycle preserves retained host state across delete/reinstall for deterministic rebind.
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.
-- The supported onboarding path is `poetry run prodbox config setup`; manual Dhall editing is no longer the primary operator workflow.
+- The current worktree onboarding path remains `poetry run prodbox config setup`, but the
+  public Phase 7 onboarding and standalone AWS administration surfaces are now owned by the
+  Haskell frontend; the retained Python helpers survive only for the legacy direct backend and the
+  still-open real IAM lifecycle harness.
 
 Implementation status, remaining work, and legacy-path removal are tracked in
-[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under `documents/engineering/`
-define stable doctrine and command contracts.
+[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under
+`documents/engineering/` define doctrine and command contracts. Where a governed doc still
+describes the Python baseline, the owning rewrite phase in `DEVELOPMENT_PLAN/` is authoritative
+for the final handoff target.
 
 ## Architecture
 
@@ -58,11 +75,13 @@ Router port forwarding:
 - WAN:443 → MetalLB IP:443
 - WAN:44444 → Node IP:22 (SSH)
 
-## Installation
+## Current Worktree Bootstrap
 
 ### Prerequisites
 
-- Python 3.12+
+- Current repository baseline: Python 3.12+ plus Poetry for the retained backend and dev tooling
+- Haskell frontend build proof: GHC 9.6.x, `cabal-install` 3.14.x, and a linkable GMP
+  development package such as `libgmp-dev`
 - Ubuntu 24.04 LTS host with systemd
 - kubectl, helm, docker, ctr, sudo, pulumi CLI tools
 - AWS account with Route 53 hosted zone
@@ -77,19 +96,23 @@ cd prodbox
 # Install project and dev dependencies
 poetry install
 
-# Verify installation
+# Verify the retained Python-backed entrypoint
 poetry run prodbox --version
+
+# Build the current Haskell frontend
+cabal build --builddir=.build exe:prodbox
 ```
 
 ## Configuration
 
 All configuration is authored in the repository-root `prodbox-config.dhall` (Dhall schema with
-typed defaults), compiled to `prodbox-config.json` by `prodbox config compile`, and loaded into
-a Pydantic `BaseModel` at runtime. Both files are gitignored. Cluster-internal secrets are
-auto-generated at chart deploy time and stored in `.prodbox-state/<namespace>/.secrets.json`. IP
-addressing (MetalLB pool, ingress LB IP) is always auto-discovered from the host LAN.
-Subprocess environments are built from explicit configuration only — no `os.environ` credentials
-are inherited.
+typed defaults) and compiled to `prodbox-config.json` by `prodbox config compile`. On the current
+mixed baseline, `config compile|show|validate` are Haskell-owned while downstream Python runtime
+consumers still read the materialized JSON via a Pydantic `BaseModel`. Both files are gitignored.
+Cluster-internal secrets are auto-generated at chart deploy time and stored in
+`.prodbox-state/<namespace>/.secrets.json`. IP addressing (MetalLB pool, ingress LB IP) is always
+auto-discovered from the host LAN. Subprocess environments are built from explicit configuration
+only; no `os.environ` credentials are inherited.
 
 ### Supported Onboarding
 
@@ -161,6 +184,13 @@ prodbox config validate
 ```
 
 ## Usage
+
+Examples below show the canonical `prodbox` command surface. On the current mixed
+baseline, either run them through `poetry run prodbox <command>` or build the Haskell
+frontend with `cabal build --builddir=.build exe:prodbox` and invoke the resulting
+`.build/.../prodbox` binary, which currently owns config, dns, gateway status/config generation, host,
+k8s, check-code, tla-check, and test while delegating the remaining unported commands to the Python
+backend.
 
 ### Check Prerequisites
 
@@ -329,7 +359,7 @@ Testing note:
 - Real public DNS delegation validation uses `poetry run prodbox test integration public-dns` to compare the public NS view with the canonical Route 53 hosted zone named by `ROUTE53_ZONE_ID`.
 - Real Pulumi validation uses `poetry run prodbox test integration pulumi`, a local Pulumi backend, and a fixture-owned Route 53 hosted zone to exercise `stack-init`, `preview`, `up`, and `destroy` against isolated test state.
 
-### Project Structure
+### Current Worktree Structure
 
 ```
 prodbox/
@@ -390,7 +420,7 @@ Architecture and design documentation lives in `documents/engineering/`:
 | [prerequisite_dag_system.md](documents/engineering/prerequisite_dag_system.md) | Prerequisite DAG expansion and runtime |
 | [streaming_doctrine.md](documents/engineering/streaming_doctrine.md) | Streaming serialization doctrine |
 | [unit_testing_policy.md](documents/engineering/unit_testing_policy.md) | Interpreter-Only Mocking Doctrine |
-| [dependency_management.md](documents/engineering/dependency_management.md) | Poetry dependency standards |
+| [dependency_management.md](documents/engineering/dependency_management.md) | Build and dependency doctrine, including rewrite-owned Python-toolchain removal |
 | [pure_fp_standards.md](documents/engineering/pure_fp_standards.md) | Pure FP coding standards |
 | [code_quality.md](documents/engineering/code_quality.md) | Guardrail and check-code doctrine |
 | [refactoring_patterns.md](documents/engineering/refactoring_patterns.md) | Imperative to pure FP migration patterns |

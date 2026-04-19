@@ -93,7 +93,7 @@ data PulumiCommand
     = PulumiUp Bool
     | PulumiDestroy Bool
     | PulumiPreview
-    | PulumiRefresh
+    | PulumiRefresh Bool
     | PulumiStackInit String
     | PulumiEksResources
     | PulumiEksDestroy Bool

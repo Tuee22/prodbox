@@ -194,12 +194,17 @@ testExecutionPlan scope =
                         chartsPlatformPrerequisites
                         True
                 IntegrationChartsVscode ->
-                    nativeNamedSuite
+                    nativeExecutionPlan
                         "integration charts-vscode"
-                        "integration-charts-vscode"
-                        [ValidationChartsVscode]
-                        chartsVscodePrerequisites
-                        False
+                        []
+                        NativeSuitePlan
+                            { nativeSuiteId = "integration-charts-vscode",
+                              nativeValidations = [ValidationChartsVscode],
+                              nativeIntegrationGatePrerequisites = chartsVscodePrerequisites,
+                              nativeRequiresIntegrationRunbook = True,
+                              nativeRequiresSupportedRuntimeBootstrap = True,
+                              nativeRequiresSupportedRuntimePostflight = False
+                            }
                 IntegrationPublicDns ->
                     nativeNamedSuite
                         "integration public-dns"
@@ -272,7 +277,7 @@ clusterPrerequisites =
     ]
 
 chartsVscodePrerequisites :: [String]
-chartsVscodePrerequisites = ["settings_object", "tool_curl"]
+chartsVscodePrerequisites = orderedUnion [pulumiPrerequisites, ["tool_curl"]]
 
 publicDnsPrerequisites :: [String]
 publicDnsPrerequisites = ["settings_object", "tool_aws", "tool_dig"]

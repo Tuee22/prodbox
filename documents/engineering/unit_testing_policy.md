@@ -68,6 +68,10 @@ Integration-selected `prodbox test` commands execute in two phases:
 4. **Phase 2 - test execution**: run Haskell suites and named validation payloads only after the
    earlier phases succeed.
 
+When Phase `1.6/2` restores a cluster-backed supported runtime for external proof, it may wait for
+`prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before the payload
+starts.
+
 If Phase 1 fails, Phase 2 is not started. This is an all-or-nothing gate, not a skip.
 
 ### Phase Banner Rendering Contract
@@ -88,8 +92,11 @@ the command contract.
 
 1. The selected suite determines the root prerequisite set.
 2. Unit-only scope bypasses integration gates.
-3. External public-host suites such as `charts-vscode` and `public-dns` can avoid the cluster
-   runbook while still requiring their own tool or settings prerequisites.
+3. `charts-vscode` is a supported-runtime cluster-backed suite and therefore enforces the cluster
+   runbook plus supported-runtime bootstrap before its external proof, and that bootstrap waits
+   for `prodbox host public-edge` readiness rather than using a one-shot assertion. Public-host
+   suites such as `public-dns` may avoid the cluster runbook only when their test plan does not
+   require it.
 4. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
 ### Session Fixtures vs Test DAG (SSoT)

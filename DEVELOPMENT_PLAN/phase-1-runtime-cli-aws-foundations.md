@@ -11,11 +11,14 @@
 
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the
 repository-root Dhall config loader, the Haskell command runtime and test harness, and the Pulumi
-foundations for local infrastructure plus AWS validation. The reopened Sprint `1.2` audit work is
-closed: the named validation payloads behind `prodbox test ...` are executable native Haskell
-validation flows, the config contract is direct `Dhall -> Haskell types` with no generated
-`prodbox-config.json` artifact, the native CLI and env integration suites pass, and the governed
-docs plus root guidance docs listed below are aligned with the Haskell-only repository state.
+foundations for local infrastructure plus AWS validation. Sprint `1.2` remains closed on the
+direct-Dhall config contract, native validation harness, and doc harmony. Sprint `1.1` is now
+closed on this host as well: the canonical frontend image build lives at
+`docker/prodbox.Dockerfile`, the custom-image doctrine is aligned on single-stage `ubuntu:24.04`
+under `docker/`, the Haskell toolchain is mounted from the official `haskell:9.6.7-slim` image
+at build time while keeping the final image single-stage, the owning docs are updated, and the
+canonical host-side validation commands pass again after restoring the ncurses development linker
+dependency.
 
 ## Current Baseline In Worktree
 
@@ -30,35 +33,45 @@ docs plus root guidance docs listed below are aligned with the Haskell-only repo
 - Repository-root config artifacts are `prodbox-config.dhall` and `prodbox-config-types.dhall`;
   `src/Prodbox/Settings.hs` owns decoding, display, and validation without materializing
   `prodbox-config.json`.
-- The host build contract copies the operator-facing binary to `.build/prodbox` after the canonical
-  `cabal build --builddir=.build exe:prodbox` invocation.
+- The host build contract copies the operator-facing binary to `.build/prodbox` after the
+  canonical `cabal build --builddir=.build exe:prodbox` invocation.
+- The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
+- `docker/prodbox.Dockerfile` is a single-stage `ubuntu:24.04` build that preserves the
+  `/opt/build` artifact contract and mounts the official `haskell:9.6.7-slim` image as a
+  BuildKit toolchain context during publication.
 - `test/integration/env/Main.hs` proves built-frontend config masking and validation directly
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
   Haskell validation flows through `src/Prodbox/TestValidation.hs`.
 - All Pulumi programs are YAML-based under `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`,
   and `pulumi/aws-test/Main.yaml`.
-- `cabal build --builddir=.build exe:prodbox`,
-  `cabal test --builddir=.build test:prodbox-unit test:prodbox-integration-cli test:prodbox-integration-env`,
-  and `./.build/prodbox check-code` pass on the April 18, 2026 worktree.
+- The canonical host-side validation reruns now pass on this host:
+  `cabal build --builddir=.build exe:prodbox`,
+  `cabal run --builddir=.build exe:prodbox -- check-code`,
+  `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`,
+  and `./.build/prodbox test integration env`.
 
 ## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
 
 **Status**: Done
-**Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `Dockerfile`
-**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`
+**Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `docker/prodbox.Dockerfile`, `docker/`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`
 
 ### Objective
 
 Replace the Python entrypoints with one compiled Haskell `prodbox` binary and one explicit build
-artifact contract.
+artifact plus container-build topology contract.
 
 ### Deliverables
 
 - `app/prodbox/Main.hs` exists as the Haskell CLI entrypoint.
 - The canonical host build invocation routes host build artifacts to `.build/` and copies the
   binary to `.build/prodbox` so operators run `./.build/prodbox`.
-- The Dockerfile explicitly builds under `/opt/build` for containerized builds.
+- The only supported home for repository-owned Dockerfiles is `docker/`.
+- The custom Haskell frontend image is single-stage from `ubuntu:24.04` and still emits artifacts
+  under `/opt/build`.
 - The public command surface remains `prodbox` and preserves the full supported command matrix from
   [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md).
 
@@ -68,16 +81,25 @@ artifact contract.
 2. `prodbox test integration cli`
 3. Host build proof: the canonical Cabal build emits the binary at `.build/prodbox`, runnable as
    `./.build/prodbox`
-4. Container build proof: the Dockerfile build emits artifacts under `/opt/build`
+4. Container build proof: the canonical frontend Dockerfile under `docker/` emits artifacts under
+   `/opt/build`
+5. Repository path proof: no supported root-level `Dockerfile` remains
 
 ### Current Validation State
 
 - The host build contract is implemented through `cabal build --builddir=.build exe:prodbox` plus
   the `.build/prodbox` copy step in `src/Prodbox/BuildSupport.hs`.
-- `cabal build --builddir=.build exe:prodbox` passes on the April 18, 2026 worktree.
-- `test/integration/cli/Main.hs` provides the built-frontend proof for the command surface and now
-  passes on the April 18, 2026 worktree.
-- The root Dockerfile continues to build under `/opt/build`.
+- `docker/prodbox.Dockerfile` is the canonical frontend image definition, lives under `docker/`,
+  and is single-stage `ubuntu:24.04` while preserving `/opt/build` through the mounted
+  `haskell:9.6.7-slim` toolchain context.
+- `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
+  location and the updated container-build doctrine.
+- Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
+  canonical Dockerfile location.
+- `cabal build --builddir=.build exe:prodbox`,
+  `cabal run --builddir=.build exe:prodbox -- check-code`,
+  `./.build/prodbox check-code`,
+  and `./.build/prodbox test integration cli` now pass on this host.
 
 ### Remaining Work
 
@@ -136,17 +158,12 @@ modules.
 - `src/Prodbox/Prerequisite.hs` owns the native prerequisite inventory used by the supported test
   harness, including `tool_curl`, `tool_dig`, AWS access, Pulumi login, kubeconfig-home, and the
   cluster-backed readiness roots used by the named validation flows.
-- `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` both pass and prove the built
-  frontend directly against the Haskell-owned command surface.
-- The local closure proofs for this sprint pass on the April 18, 2026 worktree:
-  `cabal build --builddir=.build exe:prodbox`,
-  `cabal test --builddir=.build test:prodbox-unit test:prodbox-integration-cli test:prodbox-integration-env`,
-  `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`,
-  and `./.build/prodbox check-code`.
+- `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
+  proof surfaces for the Haskell-owned command surface.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
   repository and current validation harness.
+- The direct-Dhall settings contract, native harness, and doc-harmony surfaces owned by this
+  sprint remain intact, and the canonical host-side reruns now pass on this host.
 
 ### Remaining Work
 
@@ -160,16 +177,17 @@ None.
 
 ### Objective
 
-Move the local lifecycle surface and both AWS-backed validation paths to Haskell while retaining the
-same supported product scope.
+Move the local lifecycle surface and both AWS-backed validation paths to Haskell while retaining
+the same supported product scope.
 
 ### Deliverables
 
 - `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` are implemented in Haskell.
-- `prodbox pulumi test-resources|test-destroy --yes` and `prodbox pulumi eks-resources|eks-destroy --yes` are implemented in Haskell.
+- `prodbox pulumi test-resources|test-destroy --yes` and
+  `prodbox pulumi eks-resources|eks-destroy --yes` are implemented in Haskell.
 - The local-cluster-first MinIO backend doctrine is preserved.
-- The current Harbor/local-registry pipeline remains part of the lifecycle baseline unless a later
-  plan change removes it explicitly.
+- The Harbor bootstrap and registry baseline exist in Haskell and carry forward into the later
+  Harbor-only dual-arch doctrine.
 - Both intended AWS-backed validation branches survive the rewrite: EKS-backed and HA RKE2 over
   SSH.
 
@@ -192,7 +210,7 @@ same supported product scope.
   `prodbox rke2`, `prodbox pulumi`, and `prodbox charts` surfaces.
 - `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, and
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
-- `src/Prodbox/TestValidation.hs` now provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
+- `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
 
 ### Remaining Work
@@ -206,10 +224,13 @@ None.
 - `documents/engineering/README.md` - Haskell-only doctrine index.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell command matrix.
 - `documents/engineering/code_quality.md` - Haskell `check-code` contract.
-- `documents/engineering/dependency_management.md` - non-Python build and dependency posture.
+- `documents/engineering/dependency_management.md` - non-Python build and dependency posture,
+  including the canonical Dockerfile location and base-image doctrine.
 - `documents/engineering/effect_interpreter.md` - Haskell interpreter contract.
 - `documents/engineering/effectful_dag_architecture.md` - Haskell DAG model and layering.
 - `documents/engineering/integration_fixture_doctrine.md` - integration setup and cleanup doctrine.
+- `documents/engineering/local_registry_pipeline.md` - frontend-image location and Harbor-first
+  registry expectations.
 - `documents/engineering/prerequisite_dag_system.md` - prerequisite DAG construction and reduction.
 - `documents/engineering/prerequisite_doctrine.md` - prerequisite registry doctrine.
 - `documents/engineering/streaming_doctrine.md` - terminal streaming invariants.

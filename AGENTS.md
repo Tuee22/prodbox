@@ -18,9 +18,9 @@ prodbox/
 ├── test/                 # Haskell unit and integration test suites
 ├── documents/            # Engineering documentation
 ├── DEVELOPMENT_PLAN/     # Plan, phase status, and cleanup ownership
+├── docker/               # Canonical container builds under /opt/build
 ├── prodbox.cabal         # Cabal package definition
 ├── cabal.project         # Cabal project config
-└── Dockerfile            # Root Haskell container build under /opt/build
 ```
 
 Do not describe removed Python directories as the current or target architecture.

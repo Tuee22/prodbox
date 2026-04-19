@@ -282,6 +282,8 @@ main = hspec $ do
                 kubectlRecord `shouldContain` "patch|deployment|harbor-nginx|-n|harbor|--type|strategic|--patch|"
                 kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
+                kubectlRecord `shouldContain` "annotate|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
+                kubectlRecord `shouldContain` "label|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
 
                 applyIdentity <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-1.json")
                 applyIdentity `shouldContain` "prodbox-identity"
@@ -295,17 +297,31 @@ main = hspec $ do
                 helmRecord <- readFile (tmpDir </> "fake-rke2-state" </> "helm.txt")
                 helmRecord `shouldContain` "repo|add|minio|https://charts.min.io/"
                 helmRecord `shouldContain` "upgrade|--install|minio|minio/minio"
+                helmRecord `shouldContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
+                helmRecord `shouldContain` "mcImage.repository=127.0.0.1:30080/prodbox/minio-mc-mirror"
                 helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
                 helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
 
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
-                dockerRecord `shouldContain` "build|-f|docker/gateway.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-gateway:prodbox-"
-                dockerRecord `shouldContain` "build|-f|docker/nginx-oidc.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest|."
+                dockerRecord `shouldContain` "buildx|create|--name|prodbox-multiarch-hostnet|--driver|docker-container|--driver-opt|network=host|--use"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|public.ecr.aws/docker/library/postgres:16.4-bullseye"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/library/postgres:16.4-bullseye"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye|docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2|ghcr.io/coder/code-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|ghcr.io/coder/code-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64|--build-context|haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim"
+                dockerRecord `shouldContain` "|--push|-f|docker/gateway.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-gateway:prodbox-"
+                dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-amd64|."
+                dockerRecord `shouldContain` "buildx|build|--platform|linux/arm64|--build-context|haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim"
+                dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-arm64|."
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/prodbox-gateway:latest|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-amd64|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-arm64"
+                dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64,linux/arm64|--push|-f|docker/nginx-oidc.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest|."
                 dockerRecord `shouldContain` "save|-o|"
 
                 curlRecord <- readFile (tmpDir </> "fake-rke2-state" </> "curl.txt")
                 curlRecord `shouldContain` "https://get.rke2.io"
+                curlRecord `shouldContain` "http://127.0.0.1:30080/readyz"
+                curlRecord `shouldContain` "http://127.0.0.1:30080/v2/"
                 curlRecord `shouldContain` "/api/v2.0/projects"
 
         it "runs native pulumi preview, up, refresh, and stack-init through the built frontend with fake pulumi and kubectl" $
@@ -335,7 +351,7 @@ main = hspec $ do
 
                 (refreshExitCode, refreshStdout, refreshStderr) <-
                     readCreateProcessWithExitCode
-                        (proc binary ["pulumi", "refresh"]){cwd = Just tmpDir, env = Just envVars}
+                        (proc binary ["pulumi", "refresh", "--yes"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
                 refreshExitCode `shouldBe` ExitSuccess
@@ -354,10 +370,17 @@ main = hspec $ do
                 pulumiRecord <- readFile (tmpDir </> "fake-pulumi-state" </> "calls.txt")
                 pulumiRecord `shouldContain` "ARGV=whoami"
                 pulumiRecord `shouldContain` "ARGV=stack|select|home"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|prodboxId|prodbox-"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|awsRegion|us-east-1"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|--secret|awsAccessKeyId|test-access-key"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|--secret|awsSecretAccessKey|test-secret-key"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|metallbPool|192.168.50.240-192.168.50.250"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|ingressLbIp|192.168.50.240"
+                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|dnsBootstrapIp|198.51.100.24"
                 pulumiRecord `shouldContain` "ARGV=preview|--stack|home"
                 pulumiRecord `shouldContain` "ARGV=stack|select|home|--create"
                 pulumiRecord `shouldContain` "ARGV=up|--yes|--stack|home"
-                pulumiRecord `shouldContain` "ARGV=refresh|--stack|home"
+                pulumiRecord `shouldContain` "ARGV=refresh|--yes|--stack|home"
                 pulumiRecord `shouldContain` "ARGV=stack|init|dev"
                 pulumiRecord `shouldContain` ("PULUMI_BACKEND_URL=file://" ++ (tmpDir </> ".pulumi-backend"))
                 pulumiRecord `shouldContain` "PULUMI_CONFIG_PASSPHRASE="
@@ -372,12 +395,40 @@ main = hspec $ do
                 kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldContain` "annotate|deployments.apps|--all|prodbox.io/id=prodbox-"
-                kubectlRecord `shouldContain` "annotate|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|--all|prodbox.io/id=prodbox-"
+                kubectlRecord `shouldContain` "label|deployments.apps|--all|prodbox.io/id=prodbox-"
+                kubectlRecord `shouldContain` "annotate|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
+                kubectlRecord `shouldContain` "label|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
 
-                applyManifest <- readFile (tmpDir </> "fake-pulumi-state" </> "kubectl-apply.json")
+                applyManifest <- readFile (tmpDir </> "fake-pulumi-state" </> "kubectl-applies.txt")
                 applyManifest `shouldContain` "\"ConfigMap\""
+                applyManifest `shouldContain` "\"ClusterIssuer\""
                 applyManifest `shouldContain` "\"prodbox-identity\""
                 applyManifest `shouldContain` "\"machine_id\""
+
+        it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") zeroSslConfig
+                envVars <- fakePulumiEnvironment tmpDir
+
+                (upExitCode, upStdout, upStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["pulumi", "up", "--yes"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                upExitCode `shouldBe` ExitSuccess
+                upStderr `shouldBe` ""
+                upStdout `shouldContain` "PULUMI_UP"
+
+                applyManifest <- readFile (tmpDir </> "fake-pulumi-state" </> "kubectl-applies.txt")
+                applyManifest `shouldContain` "\"ClusterIssuer\""
+                applyManifest `shouldContain` "\"Secret\""
+                applyManifest `shouldContain` "\"externalAccountBinding\""
+                applyManifest `shouldContain` "\"keyID\":\"test-eab-key-id\""
+                applyManifest `shouldContain` "\"name\":\"acme-eab-credentials\""
+                applyManifest `shouldContain` "\"namespace\":\"cert-manager\""
+                applyManifest `shouldContain` "\"stringData\":{\"secret\":\"test-eab-hmac-key\"}"
 
         it "runs native gateway start and fails gracefully with a missing config" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -392,6 +443,20 @@ main = hspec $ do
 
                 exitCode `shouldBe` ExitFailure 1
                 stderrText `shouldContain` "gateway daemon config"
+
+        it "runs native gateway start without requiring repo markers" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                let configPath = tmpDir </> "nonexistent-gateway.json"
+
+                (exitCode, _, stderrText) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["gateway", "start", configPath]){cwd = Just tmpDir}
+                        ""
+
+                exitCode `shouldBe` ExitFailure 1
+                stderrText `shouldContain` "gateway daemon config"
+                stderrText `shouldNotContain` "Could not locate the repository root"
 
         it "runs native config setup through the built frontend with a fake AWS CLI" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -867,6 +932,18 @@ fakeRke2CurlScript =
         , "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$out\""
         , "  exit 0"
         , "fi"
+        , "if [[ \"$*\" == *'/api/v2.0/projects/'* && \"$*\" == *'-X DELETE'* ]]; then"
+        , "  printf '200'"
+        , "  exit 0"
+        , "fi"
+        , "if [[ \"$*\" == *'http://127.0.0.1:30080/readyz'* ]]; then"
+        , "  printf '200'"
+        , "  exit 0"
+        , "fi"
+        , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/'* ]]; then"
+        , "  printf '401'"
+        , "  exit 0"
+        , "fi"
         , "if [[ \"$*\" == *'/api/v2.0/projects'* ]]; then"
         , "  printf '201'"
         , "  exit 0"
@@ -1023,8 +1100,34 @@ fakeRke2DockerScript =
         , "done"
         , "printf '\\n' >> \"$record_dir/docker.txt\""
         , "case \"${1:-}\" in"
-        , "  manifest)"
-        , "    exit 1"
+        , "  buildx)"
+        , "    case \"${2:-}\" in"
+        , "      imagetools)"
+        , "        case \"${3:-}\" in"
+        , "          inspect)"
+        , "            ref=${!#}"
+        , "            if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
+        , "              exit 1"
+        , "            fi"
+        , "            if [[ \"$ref\" == public.ecr.aws/docker/library/postgres:16.4-bullseye ]]; then"
+        , "              echo '429 Too Many Requests' >&2"
+        , "              exit 1"
+        , "            fi"
+        , "            /bin/cat <<'EOF'"
+        , "{\"manifests\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
+        , "EOF"
+        , "            ;;"
+        , "          create)"
+        , "            ;;"
+        , "          *)"
+        , "            ;;"
+        , "        esac"
+        , "        ;;"
+        , "      build)"
+        , "        ;;"
+        , "      *)"
+        , "        ;;"
+        , "    esac"
         , "    ;;"
         , "  save)"
         , "    out=''"
@@ -1137,14 +1240,23 @@ fakePulumiEnvironment repoRoot = do
                               "AWS_SESSION_TOKEN",
                               "AWS_REGION",
                               "AWS_DEFAULT_REGION",
-                              "PRODBOX_ID"
+                              "PRODBOX_ID",
+                              "PRODBOX_AWS_ACCESS_KEY_ID",
+                              "PRODBOX_AWS_SECRET_ACCESS_KEY",
+                              "PRODBOX_AWS_SESSION_TOKEN",
+                              "PRODBOX_PULUMI_METALLB_POOL",
+                              "PRODBOX_PULUMI_INGRESS_LB_IP",
+                              "PRODBOX_PULUMI_DNS_BOOTSTRAP_IP"
                             ]
                         )
                 )
                 currentEnvironment
     pure
         ( [ ("PATH", updatedPath),
-            ("PRODBOX_FAKE_PULUMI_RECORD_DIR", recordDir)
+            ("PRODBOX_FAKE_PULUMI_RECORD_DIR", recordDir),
+            ("PRODBOX_PULUMI_METALLB_POOL", "192.168.50.240-192.168.50.250"),
+            ("PRODBOX_PULUMI_INGRESS_LB_IP", "192.168.50.240"),
+            ("PRODBOX_PULUMI_DNS_BOOTSTRAP_IP", "198.51.100.24")
           ]
             ++ baseEnvironment
         )
@@ -1200,6 +1312,17 @@ fakePulumiScript =
         , "        ;;"
         , "      *)"
         , "        printf 'unsupported fake pulumi stack command: %s\\n' \"$*\" >&2"
+        , "        exit 1"
+        , "        ;;"
+        , "    esac"
+        , "    ;;"
+        , "  config)"
+        , "    case \"${2:-}\" in"
+        , "      set)"
+        , "        :"
+        , "        ;;"
+        , "      *)"
+        , "        printf 'unsupported fake pulumi config command: %s\\n' \"$*\" >&2"
         , "        exit 1"
         , "        ;;"
         , "    esac"
@@ -1275,7 +1398,10 @@ fakePulumiKubectlScript =
         , "    esac"
         , "    ;;"
         , "  apply)"
-        , "    cp \"${3:?}\" \"$record_dir/kubectl-apply.json\""
+        , "    cat \"${3:?}\" >> \"$record_dir/kubectl-applies.txt\""
+        , "    printf '\\n---\\n' >> \"$record_dir/kubectl-applies.txt\""
+        , "    ;;"
+        , "  wait)"
         , "    ;;"
         , "  annotate|label)"
         , "    ;;"
@@ -1420,14 +1546,34 @@ validConfigWithBlankOperationalAws :: String
 validConfigWithBlankOperationalAws =
     configWithAws "" "" "None Text"
 
+zeroSslConfig :: String
+zeroSslConfig =
+    configWithAwsAndAcme
+        "test-access-key"
+        "test-secret-key"
+        "Some \"test-session-token\""
+        "https://acme.zerossl.com/v2/DV90"
+        "Some \"test-eab-key-id\""
+        "Some \"test-eab-hmac-key\""
+
 configWithAws :: String -> String -> String -> String
 configWithAws accessKeyId secretAccessKey sessionTokenValue =
+    configWithAwsAndAcme
+        accessKeyId
+        secretAccessKey
+        sessionTokenValue
+        "https://acme-staging-v02.api.letsencrypt.org/directory"
+        "None Text"
+        "None Text"
+
+configWithAwsAndAcme :: String -> String -> String -> String -> String -> String -> String
+configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer eabKeyIdValue eabHmacKeyValue =
     unlines
         [ "{ aws = { access_key_id = \"" ++ accessKeyId ++ "\", secret_access_key = \"" ++ secretAccessKey ++ "\", session_token = " ++ sessionTokenValue ++ ", region = \"us-east-1\" }",
           ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }",
           ", route53 = { zone_id = \"Z1234567890ABC\" }",
           ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }",
-          ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }",
+          ", acme = { email = \"test@example.com\", server = \"" ++ acmeServer ++ "\", eab_key_id = " ++ eabKeyIdValue ++ ", eab_hmac_key = " ++ eabHmacKeyValue ++ " }",
           ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }",
           ", storage = { manual_pv_host_root = \".data\" }",
           "}"

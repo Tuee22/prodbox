@@ -13,7 +13,7 @@
 - The repository is Haskell-only on the supported path. The public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
-  `cabal.project`, and `Dockerfile`.
+  `cabal.project`, and `docker/`.
 - Do not describe removed Python directories or Poetry workflows as the current supported
   architecture.
 

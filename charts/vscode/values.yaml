@@ -22,5 +22,5 @@ nginx:
   dnsResolver: "10.43.0.10"
 
 vscode:
-  image: codercom/code-server:4.98.2
+  image: 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2
   existingClaim: vscode-data-0

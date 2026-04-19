@@ -112,7 +112,7 @@ Top-level commands:
 | `prodbox pulumi up` | none | `--yes`, `-y` |
 | `prodbox pulumi destroy` | none | `--yes`, `-y` |
 | `prodbox pulumi preview` | none | none |
-| `prodbox pulumi refresh` | none | none |
+| `prodbox pulumi refresh` | none | `--yes`, `-y` |
 | `prodbox pulumi stack-init` | `STACK` | none |
 | `prodbox pulumi eks-resources` | none | none |
 | `prodbox pulumi eks-destroy` | none | `--yes`, `-y` |
@@ -203,6 +203,8 @@ Named suite commands:
 - enforces prerequisite gates and runbook steps
 - applies the canonical aggregate ordering
 - performs supported-runtime bootstrap and postflight when required
+- waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
+  external `charts-vscode` proof continues on the supported-runtime path
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`
 
 ### `prodbox check-code`

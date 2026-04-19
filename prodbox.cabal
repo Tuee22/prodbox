@@ -19,6 +19,7 @@ library
         Prodbox.CLI.Pulumi
         Prodbox.CLI.Parser
         Prodbox.CLI.Rke2
+        Prodbox.ContainerImage
         Prodbox.Dns
         Prodbox.Effect
         Prodbox.EffectDAG

@@ -242,10 +242,14 @@ When `dns_write_gate` is `None`, the daemon leaves Route 53 writes disabled.
 
 ### Route53DnsWriteClient
 
-Implements the `DnsWriteClient` protocol:
-- `fetch_public_ip()` — via `checkip.amazonaws.com`
-- `update_route53_record()` — boto3 UPSERT A record wrapped with `asyncio.to_thread()`
-- Auto-wired in daemon startup when gate config is present and no mock injected
+The Haskell daemon wires DNS writes through native subprocess helpers:
+- `fetchPublicIp()` invokes `curl -s --max-time 10 https://api.ipify.org`
+- `writeDnsRecord()` invokes `aws route53 change-resource-record-sets` with an UPSERT batch
+- The helpers are auto-wired during daemon startup when gate config is present and no mock is injected
+- `docker/gateway.Dockerfile` installs the official AWS CLI bundle per target architecture so the
+  Route 53 subprocess path remains available inside the runtime image
+- `charts/gateway/` injects AWS credentials through the `gateway-aws-credentials` secret as
+  environment variables rather than writing credentials into the daemon config
 
 AWS auth for gateway DNS writes is derived from the repository-root Dhall configuration and the
 runtime environment selected for the gateway workload.
@@ -295,6 +299,8 @@ The canonical steady state for the gateway daemon is the in-cluster
 one Deployment per ranked node id, each backed by a per-node `gateway-<id>`
 Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
 TLS material set, and the secret or config inputs required by the daemon at runtime.
+The chart's liveness and readiness probes query `GET /v1/state` over HTTP on the in-pod REST
+port.
 
 `prodbox gateway start <config.json>` is the Haskell daemon entrypoint and remains the in-pod
 startup path invoked by the gateway chart's container. `prodbox gateway status <config.json>` and
@@ -305,12 +311,17 @@ state.
 Containerization is first-class for integration/runtime image publishing:
 
 - `prodbox rke2 install` builds the gateway image from `docker/gateway.Dockerfile`
-- the image is pushed to local Harbor and imported into local RKE2 containerd cache
-- Kubernetes pod integration tests run against that image by default
+- the publish path runs separate `docker buildx build --platform linux/amd64 --push` and
+  `docker buildx build --platform linux/arm64 --push` commands while mounting
+  `haskell:9.6.7-slim` as the named BuildKit toolchain context
+- the final multi-arch Harbor tag is composed with `docker buildx imagetools create`
+- Harbor is the supported source for the gateway workload image, and the host-arch variant is
+  pulled back into local Docker before import into the RKE2 containerd cache
+- Kubernetes pod integration tests run against that Harbor-published image by default
 - `PRODBOX_GATEWAY_IMAGE` remains an override for explicit image pinning/testing
 
 See [Local Registry Pipeline](./local_registry_pipeline.md) for Harbor install,
-Docker build/push flow, and RKE2 mirror behavior.
+dual-arch publish flow, explicit public-image reconcile, and RKE2 registry behavior.
 
 ### CLI Management
 

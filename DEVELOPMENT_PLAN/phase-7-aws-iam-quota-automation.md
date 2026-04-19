@@ -23,9 +23,9 @@ also closes through the native validation harness.
 - The settings path is fully Haskell-owned in `src/Prodbox/Settings.hs` for direct Dhall decode,
   display, and validation with no supported JSON materialization path.
 - Haskell proof exists in `test/unit/Main.hs`, and the intended built-frontend fake-AWS proof
-  lives in `test/integration/cli/Main.hs`; that suite now passes on the April 18, 2026 worktree.
-  The real IAM lifecycle named proof now runs through the native validation harness in
-  `src/Prodbox/TestValidation.hs`.
+  lives in `test/integration/cli/Main.hs`. The real IAM lifecycle named proof runs through the
+  native validation harness in `src/Prodbox/TestValidation.hs`. Current host reruns of the
+  aggregate build-plus-test gate now pass again on this host.
 
 ## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
 
@@ -58,7 +58,8 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `test/unit/Main.hs` now proves parser routing for `config setup` plus the native `aws *` command
   family.
 - `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
-  `config setup` and `aws policy --tier full`, and that automated proof now passes.
+  `config setup` and `aws policy --tier full`, and the aggregate build-plus-test gate now passes
+  again on this host.
 
 ### Remaining Work
 
@@ -98,7 +99,8 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 - `src/Prodbox/CLI/Parser.hs` now routes the full public `prodbox aws ...` surface through
   `RunNative`.
 - `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
-  setup/teardown and quota flows, and that automated proof now passes.
+  setup/teardown and quota flows, and the aggregate build-plus-test gate now passes again on this
+  host.
 
 ### Remaining Work
 
@@ -134,8 +136,8 @@ credential harness.
   `src/Prodbox/Settings.hs` and `src/Prodbox/Aws.hs`.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration aws-iam` to an executable native
   validation flow in `src/Prodbox/TestValidation.hs`.
-- `prodbox test all` now includes that native IAM payload as part of the aggregate validation
-  harness instead of a pending placeholder failure.
+- `prodbox test all` includes that native IAM payload as part of the aggregate validation harness,
+  and the aggregate build-plus-test gate now passes again on this host.
 
 ### Remaining Work
 

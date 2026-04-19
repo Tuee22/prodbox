@@ -21,7 +21,8 @@ prerequisite charts within that namespace.
 
 One Helm release per chart name exists cluster-wide at any time.
 
-- Before any deployment, `deploy_chart_plan()` calls `helm list --all-namespaces` and asserts no release in the plan is already installed.
+- Before any deployment, `deployChartPlan` inspects `helm list --all-namespaces` through the
+  Haskell chart runtime and asserts no release in the plan is already installed.
 - If any duplicate release is detected, the entire deploy is rejected before any Helm action.
 - Reinstalling a chart requires an explicit `prodbox charts delete <chart>` first.
 
@@ -121,6 +122,9 @@ Root charts:
 
 - `gateway` — deploys the in-cluster distributed gateway stack into the `gateway` namespace.
 - `vscode` — deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
+- The `gateway` chart renders the `gateway-aws-credentials` secret from repository settings,
+  passes those credentials via environment variables, and probes `/v1/state` over HTTP on the
+  in-pod REST port for pod health.
 
 ## 10. Supported Auth Model For `vscode`
 
@@ -129,12 +133,20 @@ The `vscode` chart stack supports one auth model only:
 1. nginx handles the OIDC authorization-code flow.
 2. Keycloak uses its local user database and serves the login page under `/auth`.
 3. code-server is reachable only behind the nginx auth wall.
+4. Supported image refs are Harbor-only: `keycloak-postgres`, `keycloak`, `vscode-nginx`, and
+   `code-server` all resolve from the local Harbor `prodbox` project rather than direct upstream
+   registries.
 
 Unsupported legacy paths:
 
 - `oauth2-proxy`
 - Google OAuth as the supported identity-provider path
 - Standalone local `docker-compose` delivery paths outside `prodbox charts`
+
+TLS for the supported `vscode` ingress is cluster-managed through cert-manager. When the selected
+ACME provider is ZeroSSL, the Haskell Pulumi custom-resource reconcile materializes the EAB HMAC
+key in the `cert-manager` namespace as `acme-eab-credentials` and points the supported
+`ClusterIssuer` at that secret via `spec.acme.externalAccountBinding`.
 
 ---
 

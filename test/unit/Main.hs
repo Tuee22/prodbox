@@ -21,6 +21,7 @@ import Options.Applicative
       execParserPure,
       renderFailure,
     )
+import qualified Prodbox.ContainerImage as ContainerImage
 import Prodbox.Aws
     ( buildIamPolicyDocument,
     )
@@ -180,6 +181,9 @@ main = hspec $ do
             parseArgs ["pulumi", "up", "--yes"]
                 `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiUp True))))
 
+            parseArgs ["pulumi", "refresh", "--yes"]
+                `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiRefresh True))))
+
         it "routes charts commands through the native Haskell runtime" $ do
             parseArgs ["charts", "delete", "gateway", "--yes"]
                 `shouldBe` Right
@@ -231,7 +235,7 @@ main = hspec $ do
                       "src/Prodbox/Gateway/Daemon.hs",
                       "prodbox.cabal",
                       "cabal.project",
-                      "Dockerfile",
+                      "docker/prodbox.Dockerfile",
                       "test/integration/env/Main.hs"
                     ]
 
@@ -246,11 +250,38 @@ main = hspec $ do
 
         it "builds the container frontend under /opt/build" $ do
             repoRoot <- getCurrentDirectory
-            dockerfile <- readFile (repoRoot </> "Dockerfile")
+            dockerfile <- readFile (repoRoot </> "docker" </> "prodbox.Dockerfile")
 
+            dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
+            dockerfile `shouldContain` "FROM ubuntu:24.04"
             dockerfile `shouldContain` "WORKDIR /opt/build"
+            dockerfile `shouldContain` "--mount=type=bind,from=haskell-toolchain"
             dockerfile `shouldContain` "cabal build --builddir=.build exe:prodbox"
             dockerfile `shouldContain` "cabal list-bin --builddir=.build exe:prodbox"
+
+        it "keeps the gateway chart on repo-rootless startup with env-based AWS auth" $ do
+            repoRoot <- getCurrentDirectory
+            deploymentTemplate <- readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "deployments.yaml")
+            awsSecretTemplate <- readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "secret-aws-credentials.yaml")
+
+            deploymentTemplate `shouldContain` "name: AWS_ACCESS_KEY_ID"
+            deploymentTemplate `shouldContain` "name: gateway-aws-credentials"
+            deploymentTemplate `shouldContain` "scheme: HTTP"
+            deploymentTemplate `shouldNotContain` "scheme: HTTPS"
+            deploymentTemplate `shouldNotContain` "/app/prodbox-config.json"
+            awsSecretTemplate `shouldContain` "name: gateway-aws-credentials"
+            awsSecretTemplate `shouldNotContain` "prodbox-config.json"
+
+        it "keeps the gateway image on the single-stage ubuntu doctrine" $ do
+            repoRoot <- getCurrentDirectory
+            dockerfile <- readFile (repoRoot </> "docker" </> "gateway.Dockerfile")
+
+            dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
+            dockerfile `shouldContain` "FROM ubuntu:24.04"
+            dockerfile `shouldContain` "awscli.amazonaws.com"
+            dockerfile `shouldContain` "TARGETARCH"
+            dockerfile `shouldContain` "--mount=type=bind,from=haskell-toolchain"
+            dockerfile `shouldContain` "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/prodbox\", \"gateway\", \"start\"]"
 
     describe "test planning" $ do
         it "maps aggregate all to the native ordered validation workflow" $ do
@@ -322,6 +353,47 @@ main = hspec $ do
                                     ]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
+
+        it "keeps charts-vscode on the supported runtime bootstrap path" $ do
+            case testExecutionPlan (TestIntegration IntegrationChartsVscode) of
+                testPlan ->
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan -> do
+                            nativeSuiteId suitePlan `shouldBe` "integration-charts-vscode"
+                            nativeValidations suitePlan `shouldBe` [ValidationChartsVscode]
+                            nativeIntegrationGatePrerequisites suitePlan
+                                `shouldBe`
+                                    [ "supported_ubuntu_2404",
+                                      "tool_docker",
+                                      "tool_ctr",
+                                      "tool_helm",
+                                      "tool_kubectl",
+                                      "tool_sudo",
+                                      "tool_systemctl",
+                                      "settings_object",
+                                      "tool_pulumi",
+                                      "tool_aws",
+                                      "tool_curl"
+                                    ]
+                            nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
+                            nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+                        DelegatedSuite _ -> expectationFailure "expected native charts-vscode plan"
+
+        it "waits for public-edge readiness during supported runtime restore actions" $ do
+            repoRoot <- getCurrentDirectory
+            runnerSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestRunner.hs")
+
+            runnerSource `shouldContain` "runWaitForNativeCommandOutputContains"
+            runnerSource `shouldContain` "publicEdgeReadyAttempts = 30"
+            runnerSource `shouldContain` "publicEdgeReadyDelayMicroseconds = 10000000"
+
+        it "waits for stable Harbor endpoints before lifecycle image reconcile begins" $ do
+            repoRoot <- getCurrentDirectory
+            rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+
+            rke2Source `shouldContain` "waitForHarborStableEndpoints repoRoot"
+            rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
+            rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
 
         it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
             case testExecutionPlan (TestIntegration IntegrationCli) of
@@ -432,6 +504,7 @@ main = hspec $ do
             lookupPrerequisiteEffect "tool_curl" `shouldBe` Validate (RequireTool "curl" ["--version"])
             lookupPrerequisiteEffect "tool_dig" `shouldBe` Validate (RequireTool "dig" ["-v"])
             lookupPrerequisiteEffect "tool_kubectl" `shouldBe` Validate (RequireTool "kubectl" ["version", "--client=true"])
+            lookupPrerequisiteEffect "tool_ctr" `shouldBe` Validate (RequireTool "ctr" ["--help"])
             lookupPrerequisiteEffect "tool_rke2" `shouldBe` Validate (RequireTool "/usr/local/bin/rke2" ["--version"])
             lookupPrerequisiteEffect "tool_dhall" `shouldBe` Validate (RequireTool "dhall" ["version"])
             lookupPrerequisiteEffect "settings_loaded" `shouldBe` Validate RequireSettings
@@ -539,16 +612,34 @@ main = hspec $ do
                                 ]
 
                     case Map.lookup "keycloak-postgres" releaseValues of
-                        Just (Right (Object payload)) ->
+                        Just (Right (Object payload)) -> do
                             KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 1)
+                            case KeyMap.lookup (Key.fromString "image") payload of
+                                Just (Object imagePayload) -> do
+                                    KeyMap.lookup (Key.fromString "repository") imagePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/postgres-mirror")
+                                    KeyMap.lookup (Key.fromString "tag") imagePayload `shouldBe` Just (String "16.4-bullseye")
+                                _ -> expectationFailure "expected keycloak-postgres image payload"
                         _ -> expectationFailure "expected keycloak-postgres values payload"
                     case Map.lookup "keycloak" releaseValues of
-                        Just (Right (Object payload)) ->
+                        Just (Right (Object payload)) -> do
                             KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 2)
+                            case KeyMap.lookup (Key.fromString "image") payload of
+                                Just (Object imagePayload) -> do
+                                    KeyMap.lookup (Key.fromString "repository") imagePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/keycloak-mirror")
+                                    KeyMap.lookup (Key.fromString "tag") imagePayload `shouldBe` Just (String "26.0.0")
+                                _ -> expectationFailure "expected keycloak image payload"
                         _ -> expectationFailure "expected keycloak values payload"
                     case Map.lookup "vscode" releaseValues of
-                        Just (Right (Object payload)) ->
+                        Just (Right (Object payload)) -> do
                             KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 1)
+                            case KeyMap.lookup (Key.fromString "nginx") payload of
+                                Just (Object nginxPayload) ->
+                                    KeyMap.lookup (Key.fromString "image") nginxPayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest")
+                                _ -> expectationFailure "expected vscode nginx payload"
+                            case KeyMap.lookup (Key.fromString "vscode") payload of
+                                Just (Object vscodePayload) ->
+                                    KeyMap.lookup (Key.fromString "image") vscodePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2")
+                                _ -> expectationFailure "expected vscode image payload"
                         _ -> expectationFailure "expected vscode values payload"
 
                     case chartDeploymentPlanReleases plan of
@@ -638,6 +729,39 @@ main = hspec $ do
         it "parses kubectl object names into a deterministic list" $ do
             parseKubectlObjectNames "pod/alpha\n\npod/bravo\n"
                 `shouldBe` ["pod/alpha", "pod/bravo"]
+
+    describe "container image mapping" $ do
+        it "prefers non-Docker-Hub upstream mirrors for rate-limited public images" $ do
+            mapM_
+                (\expectedPair -> ContainerImage.requiredPublicImagePairs `shouldContain` [expectedPair])
+                [ ("public.ecr.aws/docker/library/postgres:16.4-bullseye", "127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye"),
+                  ("ghcr.io/coder/code-server:4.98.2", "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"),
+                  ("ghcr.io/traefik/traefik:v3.1.4", "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4")
+                ]
+
+        it "maps legacy public-image aliases to stable Harbor targets" $ do
+            ContainerImage.harborMirrorTargetForSource "postgres:16.4-bullseye"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye"
+            ContainerImage.harborMirrorTargetForSource "docker.io/codercom/code-server:4.98.2"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+            ContainerImage.harborMirrorTargetForSource "docker.io/library/traefik:v3.1.4"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4"
+
+        it "orders public-image mirror candidates with the discovered source first" $ do
+            ContainerImage.harborMirrorSourceCandidates "postgres:16.4-bullseye"
+                `shouldBe` Just ["docker.io/library/postgres:16.4-bullseye", "public.ecr.aws/docker/library/postgres:16.4-bullseye"]
+            ContainerImage.harborMirrorSourceCandidates "ghcr.io/coder/code-server:4.98.2"
+                `shouldBe` Just ["ghcr.io/coder/code-server:4.98.2", "docker.io/codercom/code-server:4.98.2"]
+
+        it "tracks candidate upstream sets for required public images" $ do
+            ContainerImage.requiredPublicImageCandidatePairs
+                `shouldContain`
+                    [ ( [ "public.ecr.aws/docker/library/postgres:16.4-bullseye",
+                            "docker.io/library/postgres:16.4-bullseye"
+                          ],
+                          "127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye"
+                        )
+                    ]
 
     describe "supported runtime helpers" $ do
         it "removes only the target FQDN from hosts text" $ do

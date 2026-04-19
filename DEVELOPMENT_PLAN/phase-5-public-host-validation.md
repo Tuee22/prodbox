@@ -57,8 +57,7 @@ owns it.
   supported readiness-report fields and classification contract.
 - `src/Prodbox/TestRunner.hs` now uses the native Haskell `host public-edge` command inside the
   supported-runtime bootstrap and postflight checks instead of bouncing through the Python backend.
-- `test/unit/Main.hs` proves parser routing for native `host public-edge`, and
-  `prodbox test unit` passes after the Haskell port lands.
+- `test/unit/Main.hs` proves parser routing for native `host public-edge`.
 - The named validation commands `prodbox test integration charts-vscode` and
   `prodbox test integration public-dns` now run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.

@@ -20,8 +20,15 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - `cabal.project` defines the repository Cabal package set.
 - Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
   intentionally command-line owned.
-- The root `Dockerfile` builds the Haskell frontend under `/opt/build` and the gateway image builds
-  separately under `docker/gateway.Dockerfile`.
+- Repository-owned container builds live under `docker/`. `docker/prodbox.Dockerfile` builds the
+  Haskell frontend under `/opt/build`, `docker/gateway.Dockerfile` builds the gateway image under
+  the same root, and both custom Haskell images follow the single-stage `ubuntu:24.04` doctrine
+  while mounting the official `haskell:9.6.7-slim` image as a BuildKit toolchain context during
+  publication. `docker/gateway.Dockerfile` also installs the official AWS CLI bundle per
+  `TARGETARCH` because the in-cluster gateway daemon shells out to `aws route53 ...` for DNS
+  writes. The supported custom-image publish path uses a host-network `docker-container` buildx
+  builder so pushes to the canonical Harbor endpoint `127.0.0.1:30080` work from inside the
+  builder.
 - Pulumi programs are YAML-based under `pulumi/` and do not introduce a Python runtime dependency.
 
 ## 2. Lock File Policy

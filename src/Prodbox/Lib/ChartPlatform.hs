@@ -60,6 +60,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Text as Text
 import Data.Word (Word8)
 import Numeric (showHex)
+import qualified Prodbox.ContainerImage as ContainerImage
 import Prodbox.Lib.Storage
     ( ChartStorageBinding (..),
       ChartStorageSpec (..),
@@ -600,6 +601,11 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets binding = do
                     [ "namespace" .= namespace,
                       "rootChart" .= rootChart
                     ],
+              "image"
+                .= object
+                    [ "repository" .= (ContainerImage.imageRegistry ContainerImage.harborPostgresImage ++ "/" ++ ContainerImage.imageRepository ContainerImage.harborPostgresImage),
+                      "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresImage
+                    ],
               "postgres"
                 .= object
                     [ "database" .= ("keycloak" :: String),
@@ -633,6 +639,11 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn = do
                 .= object
                     [ "namespace" .= namespace,
                       "rootChart" .= rootChart
+                    ],
+              "image"
+                .= object
+                    [ "repository" .= (ContainerImage.imageRegistry ContainerImage.harborKeycloakImage ++ "/" ++ ContainerImage.imageRepository ContainerImage.harborKeycloakImage),
+                      "tag" .= ContainerImage.imageTag ContainerImage.harborKeycloakImage
                     ],
               "keycloak"
                 .= object
@@ -769,12 +780,12 @@ valuesForVscode namespace rootChart settings chartSecrets binding publicFqdn = d
                       "clientSecret" .= nginxSecret,
                       "realm" .= keycloakRealmName,
                       "keycloakInternalUrl" .= ("http://keycloak:8080" :: String),
-                      "image" .= ("127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest" :: String)
+                      "image" .= ContainerImage.renderImageRef ContainerImage.harborVscodeNginxImage
                     ],
               "vscode"
                 .= object
                     [ "existingClaim" .= chartStorageBindingPersistentVolumeClaimName binding,
-                      "image" .= ("codercom/code-server:4.98.2" :: String)
+                      "image" .= ContainerImage.renderImageRef ContainerImage.harborCodeServerImage
                     ]
             ]
         )
@@ -796,7 +807,7 @@ resolveGatewayChartImage = do
             pure
                 ( if length machineId /= 32 || any (not . isHexDigit) machineId
                     then Left ("Unexpected machine-id format in " ++ machineIdPath ++ ": " ++ show machineId)
-                    else Right (Just ("127.0.0.1:30080/prodbox/prodbox-gateway", take 63 ("prodbox-" ++ machineId)))
+                    else Right (Just (ContainerImage.harborGatewayImageRepository, take 63 ("prodbox-" ++ machineId)))
                 )
 
 renderStatusRelease ::

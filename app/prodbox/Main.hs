@@ -6,7 +6,11 @@ import Options.Applicative
       showHelpOnEmpty,
       showHelpOnError,
     )
-import Prodbox.CLI.Command (CommandRequest (..))
+import Prodbox.CLI.Command
+    ( CommandRequest (..),
+      GatewayCommand (..),
+      NativeCommand (..),
+    )
 import Prodbox.CLI.Parser
     ( Options (..),
       parserInfo,
@@ -19,17 +23,27 @@ import System.IO (hPutStrLn, stderr)
 main :: IO ()
 main = do
     options <- customExecParser parserPrefs parserInfo
-    repoRootResult <- findRepoRoot
-    case repoRootResult of
-        Left err -> failWith err
-        Right repoRoot ->
-            case optRequest options of
-                DelegateToPython _ -> failWith "Python backend delegation is no longer supported"
-                RunNative command -> do
-                    exitCode <- runNativeCommand repoRoot command
-                    exitWith exitCode
+    case optRequest options of
+        DelegateToPython _ -> failWith "Python backend delegation is no longer supported"
+        RunNative command -> do
+            repoRootResult <- findRepoRoot
+            case repoRootResult of
+                Right repoRoot -> dispatch repoRoot command
+                Left err ->
+                    if canRunWithoutRepoRoot command
+                        then dispatch "." command
+                        else failWith err
   where
     parserPrefs = prefs (showHelpOnEmpty <> showHelpOnError)
+
+    dispatch repoRoot command = do
+        exitCode <- runNativeCommand repoRoot command
+        exitWith exitCode
+
+canRunWithoutRepoRoot :: NativeCommand -> Bool
+canRunWithoutRepoRoot (NativeGateway (GatewayStart _)) = True
+canRunWithoutRepoRoot (NativeGateway (GatewayStatus _)) = True
+canRunWithoutRepoRoot _ = False
 
 failWith :: String -> IO ()
 failWith message = do

@@ -105,7 +105,7 @@ toolDocker :: EffectNode
 toolDocker = toolNode "tool_docker" "Validate docker is installed" "docker" ["--version"] []
 
 toolCtr :: EffectNode
-toolCtr = toolNode "tool_ctr" "Validate ctr is installed" "ctr" ["version"] []
+toolCtr = toolNode "tool_ctr" "Validate ctr is installed" "ctr" ["--help"] []
 
 toolHelm :: EffectNode
 toolHelm = toolNode "tool_helm" "Validate helm is installed" "helm" ["version", "--short"] []

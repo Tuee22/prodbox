@@ -9,24 +9,28 @@
 
 ## Phase Summary
 
-This phase reran the authoritative validation set from the supported destructive operator flow
-after the Haskell runtime, gateway, chart, Pulumi, and public-host phases closed. Sprint `6.1`
-re-proved the destructive operator flow on Haskell command paths. Sprint `6.2` closed after
-Phase `7` onboarding and AWS administration surfaces landed on Haskell-only paths and all Python
-artifacts were removed from the repository. Final plan exit now still depends on reopened Sprint
-`1.2` config-contract, native-harness, and doc-harmony cleanup, but that does not reopen the
-zero-Python repository surfaces owned here.
+This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
+repository. Sprint `6.1` keeps the destructive operator flow closed on Haskell command paths.
+Sprint `6.2` keeps the repository handoff closed after Phase `7` onboarding and AWS
+administration surfaces land on Haskell-only paths and all Python artifacts leave the repository.
+The non-Python container packaging, Harbor, dual-arch, and mixed-arch implementation owned by
+reopened Phases `1-4` is now present in the worktree, the legacy ledger is empty again, and the
+temporary host linker blocker is cleared on this host. The clean-room and zero-Python repository
+surfaces remain done while the earlier phase-owned reruns stay closed on their own validation
+surfaces.
 
 ## Current Baseline In Worktree
 
 - The destructive rerun proof runs entirely through Haskell command paths. All Python source,
   Python tests, and Python toolchain have been removed from the repository.
 - The `prodbox test` orchestration path runs Haskell test suites via `cabal test` and native CLI
-  orchestration. `test:prodbox-unit`, `test:prodbox-integration-cli`, and
-  `test:prodbox-integration-env` pass on the April 18, 2026 worktree.
+  orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
-- The legacy tracking ledger is now empty in `Pending Removal`; Python removal and the reopened
-  Sprint `1.2` compatibility or doc-harmony cleanup are complete.
+- The legacy tracking ledger is empty in `Pending Removal` again.
+- The temporary host linker blocker that interrupted the April 18, 2026 rerun is cleared on this
+  host after installing `libncurses-dev`.
+- The earlier Phase `1-4` container and registry reruns are closed again on this host without
+  reopening the zero-Python repository surfaces owned by this phase.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
 
@@ -73,6 +77,8 @@ that lives only in repository-root Dhall on the Haskell stack.
 - Validation steps `7`, `9`, and `12` close honestly on the native validation harness because the
   named integration payloads in `src/Prodbox/TestPlan.hs` map to executable native Haskell
   validation flows.
+- The April 18, 2026 host rerun no longer carries the earlier `-ltinfo` blocker, so this phase
+  does not list an active host prerequisite on the clean-room surface.
 
 ### Remaining Work
 
@@ -86,7 +92,9 @@ None.
 
 ### Objective
 
-Close the rewrite with an empty Python-removal ledger and no supported-path Python artifacts left in the repository after the Phase `7` onboarding and AWS administration surfaces close on Haskell-only paths.
+Close the rewrite with an empty Python-removal ledger and no supported-path Python artifacts left
+in the repository after the Phase `7` onboarding and AWS administration surfaces close on
+Haskell-only paths.
 
 ### Deliverables
 
@@ -103,17 +111,21 @@ Close the rewrite with an empty Python-removal ledger and no supported-path Pyth
 1. `prodbox check-code`
 2. `prodbox test unit`
 3. `prodbox test all`
-4. Repository artifact-search proof shows that no supported-path Python files or Python toolchain ownership artifacts remain.
-5. Repository text-search proof shows that no surviving Python-era architecture statements remain on the supported path.
+4. Repository artifact-search proof shows that no supported-path Python files or Python toolchain
+   ownership artifacts remain.
+5. Repository text-search proof shows that no surviving Python-era architecture statements remain
+   on the supported path.
 
 ### Current Validation State
 
 - The repository filesystem remains Haskell-only. No supported-path Python implementation or
   Python toolchain artifact survives.
-- `prodbox check-code` is part of today's passing local proof, and `prodbox test all` now owns a
-  fully native validation harness for the named real-world proof surfaces.
+- `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
+  `prodbox check-code` now passes again on this host after restoring the ncurses development
+  linker dependency.
 - Repository text search across the root guidance docs and governed Sprint `1.2` docs is aligned
   with the Haskell-only repository and no longer depends on mixed-baseline wording.
+- The legacy ledger is empty again.
 
 ### Remaining Work
 

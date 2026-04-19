@@ -11,6 +11,8 @@
 - Prerequisite nodes validate existence or readiness and fail fast with actionable fix hints.
 - Manual environment repair belongs in prerequisite failures, not in hidden setup behavior.
 - The canonical prerequisite registry lives in `src/Prodbox/Prerequisite.hs`.
+- Runtime-stability waits that follow prerequisite success belong in explicit runbook or lifecycle
+  steps, not in hidden prerequisite side effects.
 
 ## 1. Philosophy
 
@@ -69,6 +71,8 @@ Recommended patterns:
 - separate prerequisite validation from the real validation payload
 - model cluster-backed runbooks separately from the prerequisite DAG when the operator-facing flow
   needs a visible intermediate step
+- use explicit runtime-stability gates after prerequisite success when a long-running command needs
+  a proven steady state, such as Harbor endpoint stability before image reconcile
 
 ## 5. Anti-Patterns
 

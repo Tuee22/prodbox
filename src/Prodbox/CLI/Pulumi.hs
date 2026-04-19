@@ -13,7 +13,8 @@ import Control.Exception
     )
 import Control.Monad (foldM)
 import Data.Aeson
-    ( encode,
+    ( Value,
+      encode,
       object,
       (.=),
     )
@@ -22,14 +23,23 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Char (toLower)
 import Data.List (isInfixOf)
 import qualified Data.Text as Text
+import Prodbox.Dns (fetchPublicIp)
 import Prodbox.CLI.Command (PulumiCommand (..))
+import Prodbox.Host
+    ( LanAddressing (..),
+      detectLanAddressing,
+    )
 import qualified Prodbox.Infra.AwsEksTestStack as EksStack
 import qualified Prodbox.Infra.AwsTestStack as TestStack
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-    ( Credentials (..),
+    ( AcmeSection (..),
+      ConfigFile (..),
+      Credentials (..),
+      DeploymentSection (..),
+      DomainSection (..),
+      Route53Section (..),
       ValidatedSettings (..),
-      aws,
       validateAndLoadSettings,
     )
 import Prodbox.Subprocess
@@ -57,6 +67,9 @@ import System.IO
 
 prodboxNamespace :: String
 prodboxNamespace = "prodbox"
+
+certManagerNamespace :: String
+certManagerNamespace = "cert-manager"
 
 prodboxIdentityConfigMap :: String
 prodboxIdentityConfigMap = "prodbox-identity"
@@ -102,13 +115,38 @@ prodboxDoctrineCrdSuffixes =
       ".containo.us"
     ]
 
+acmeEabSecretName :: String
+acmeEabSecretName = "acme-eab-credentials"
+
+acmeEabSecretKey :: String
+acmeEabSecretKey = "secret"
+
+data HomeStackConfig = HomeStackConfig
+    { homeStackProdboxId :: String,
+      homeStackAwsRegion :: String,
+      homeStackAwsAccessKeyId :: String,
+      homeStackAwsSecretAccessKey :: String,
+      homeStackMetallbPool :: String,
+      homeStackIngressLbIp :: String,
+      homeStackDemoFqdn :: String,
+      homeStackDemoTtl :: String,
+      homeStackRoute53ZoneId :: String,
+      homeStackAcmeServer :: String,
+      homeStackAcmeEmail :: String,
+      homeStackAcmeEabKeyId :: Maybe String,
+      homeStackAcmeEabHmacKey :: Maybe String,
+      homeStackDnsBootstrapEnabled :: String,
+      homeStackDnsBootstrapIp :: String
+    }
+    deriving (Eq, Show)
+
 runPulumiCommand :: FilePath -> PulumiCommand -> IO ExitCode
 runPulumiCommand repoRoot command =
     case command of
         PulumiUp confirmed -> runHomeStackApply repoRoot confirmed
         PulumiDestroy confirmed -> runHomeStackCommand repoRoot False (pulumiDestroyArgs confirmed)
         PulumiPreview -> runHomeStackCommand repoRoot False pulumiPreviewArgs
-        PulumiRefresh -> runHomeStackCommand repoRoot True pulumiRefreshArgs
+        PulumiRefresh confirmed -> runHomeStackCommand repoRoot True (pulumiRefreshArgs confirmed)
         PulumiStackInit stackName -> runStackInitCommand repoRoot stackName
         PulumiEksResources -> EksStack.ensureAwsEksTestStackResources repoRoot
         PulumiEksDestroy _ -> EksStack.destroyAwsEksTestStack repoRoot
@@ -134,7 +172,11 @@ runHomeStackApply repoRoot confirmed =
                     }
         case applyExit of
             ExitFailure _ -> pure applyExit
-            ExitSuccess -> reconcilePulumiApplyMetadata repoRoot
+            ExitSuccess -> do
+                customResourcesExit <- reconcileHomeStackCustomResources repoRoot
+                case customResourcesExit of
+                    ExitFailure _ -> pure customResourcesExit
+                    ExitSuccess -> reconcilePulumiApplyMetadata repoRoot
 
 runHomeStackCommand :: FilePath -> Bool -> [String] -> IO ExitCode
 runHomeStackCommand repoRoot createIfMissing commandArguments =
@@ -153,18 +195,27 @@ withHomeStackEnvironment repoRoot createIfMissing action = do
     case settingsResult of
         Left err -> failWith err
         Right settings -> do
-            environmentResult <- pulumiEnvironment repoRoot settings
-            case environmentResult of
+            currentEnvironment <- getEnvironment
+            homeStackConfigResult <- resolveHomeStackConfig currentEnvironment settings
+            case homeStackConfigResult of
                 Left err -> failWith err
-                Right environment -> do
-                    loginExit <- ensurePulumiLogin repoRoot environment
-                    case loginExit of
-                        ExitFailure _ -> pure loginExit
-                        _ -> do
-                            stackExit <- selectPulumiStack repoRoot environment createIfMissing homeStackName
-                            case stackExit of
-                                ExitFailure _ -> pure stackExit
-                                _ -> action environment
+                Right homeStackConfig -> do
+                    environmentResult <- pulumiEnvironment currentEnvironment repoRoot settings
+                    case environmentResult of
+                        Left err -> failWith err
+                        Right environment -> do
+                            loginExit <- ensurePulumiLogin repoRoot environment
+                            case loginExit of
+                                ExitFailure _ -> pure loginExit
+                                _ -> do
+                                    stackExit <- selectPulumiStack repoRoot environment createIfMissing homeStackName
+                                    case stackExit of
+                                        ExitFailure _ -> pure stackExit
+                                        _ -> do
+                                            syncExit <- syncHomeStackConfig repoRoot environment homeStackConfig
+                                            case syncExit of
+                                                ExitFailure _ -> pure syncExit
+                                                ExitSuccess -> action environment
 
 runStackInitCommand :: FilePath -> String -> IO ExitCode
 runStackInitCommand repoRoot stackName = do
@@ -172,7 +223,8 @@ runStackInitCommand repoRoot stackName = do
     case settingsResult of
         Left err -> failWith err
         Right settings -> do
-            environmentResult <- pulumiEnvironment repoRoot settings
+            currentEnvironment <- getEnvironment
+            environmentResult <- pulumiEnvironment currentEnvironment repoRoot settings
             case environmentResult of
                 Left err -> failWith err
                 Right environment -> do
@@ -199,8 +251,304 @@ pulumiDestroyArgs :: Bool -> [String]
 pulumiDestroyArgs confirmed =
     ["destroy"] ++ yesArgs confirmed ++ ["--stack", homeStackName]
 
-pulumiRefreshArgs :: [String]
-pulumiRefreshArgs = ["refresh", "--stack", homeStackName]
+pulumiRefreshArgs :: Bool -> [String]
+pulumiRefreshArgs confirmed =
+    ["refresh"] ++ yesArgs confirmed ++ ["--stack", homeStackName]
+
+resolveHomeStackConfig :: [(String, String)] -> ValidatedSettings -> IO (Either String HomeStackConfig)
+resolveHomeStackConfig currentEnvironment settings = do
+    lanDefaultsResult <- resolveHomeStackLanDefaults currentEnvironment
+    dnsBootstrapIpResult <- resolveDnsBootstrapIp currentEnvironment settings
+    prodboxIdResult <- resolveProdboxId
+    pure $ do
+        (metallbPool, ingressLbIp) <- lanDefaultsResult
+        dnsBootstrapIp <- dnsBootstrapIpResult
+        prodboxId <- prodboxIdResult
+        let config = validatedConfig settings
+        Right
+            HomeStackConfig
+                { homeStackProdboxId = prodboxId,
+                  homeStackAwsRegion = Text.unpack (region (aws config)),
+                  homeStackAwsAccessKeyId = Text.unpack (access_key_id (aws config)),
+                  homeStackAwsSecretAccessKey = Text.unpack (secret_access_key (aws config)),
+                  homeStackMetallbPool = metallbPool,
+                  homeStackIngressLbIp = ingressLbIp,
+                  homeStackDemoFqdn = Text.unpack (demo_fqdn (domain config)),
+                  homeStackDemoTtl = show (demo_ttl (domain config)),
+                  homeStackRoute53ZoneId = Text.unpack (zone_id (route53 config)),
+                  homeStackAcmeServer = Text.unpack (server (acme config)),
+                  homeStackAcmeEmail = Text.unpack (email (acme config)),
+                  homeStackAcmeEabKeyId = Text.unpack <$> eab_key_id (acme config),
+                  homeStackAcmeEabHmacKey = Text.unpack <$> eab_hmac_key (acme config),
+                  homeStackDnsBootstrapEnabled =
+                    map toLower (show (pulumi_enable_dns_bootstrap (deployment config))),
+                  homeStackDnsBootstrapIp = dnsBootstrapIp
+                }
+
+resolveHomeStackLanDefaults :: [(String, String)] -> IO (Either String (String, String))
+resolveHomeStackLanDefaults currentEnvironment =
+    case
+        ( lookupNonEmptyEnv "PRODBOX_PULUMI_METALLB_POOL" currentEnvironment,
+          lookupNonEmptyEnv "PRODBOX_PULUMI_INGRESS_LB_IP" currentEnvironment
+        ) of
+        (Just metallbPool, Just ingressLbIp) ->
+            pure (Right (metallbPool, ingressLbIp))
+        (Just _, Nothing) ->
+            pure
+                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP, or set neither")
+        (Nothing, Just _) ->
+            pure
+                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP, or set neither")
+        (Nothing, Nothing) -> do
+            lanResult <- detectLanAddressing
+            pure $
+                case lanResult of
+                    Left err ->
+                        Left ("failed to derive MetalLB defaults from host networking: " ++ err)
+                    Right lan
+                        | lanMetallbPool lan == "<unknown>" || lanIngressLbIp lan == "<unknown>" ->
+                            Left
+                                ( "failed to derive MetalLB defaults from host networking; "
+                                    ++ "set PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP explicitly"
+                                )
+                        | otherwise -> Right (lanMetallbPool lan, lanIngressLbIp lan)
+
+resolveDnsBootstrapIp :: [(String, String)] -> ValidatedSettings -> IO (Either String String)
+resolveDnsBootstrapIp currentEnvironment settings =
+    case lookupNonEmptyEnv "PRODBOX_PULUMI_DNS_BOOTSTRAP_IP" currentEnvironment of
+        Just value -> pure (Right value)
+        Nothing ->
+            case deploymentOverride of
+                Just value -> pure (Right value)
+                Nothing -> fetchPublicIp
+  where
+    deploymentOverride =
+        nonEmptyTextValue
+            =<< bootstrap_public_ip_override (deployment (validatedConfig settings))
+
+syncHomeStackConfig :: FilePath -> [(String, String)] -> HomeStackConfig -> IO ExitCode
+syncHomeStackConfig repoRoot environment homeStackConfig =
+    foldM runConfigSet ExitSuccess configEntries
+  where
+    configEntries =
+        [ (False, "prodboxId", homeStackProdboxId homeStackConfig),
+          (False, "awsRegion", homeStackAwsRegion homeStackConfig),
+          (True, "awsAccessKeyId", homeStackAwsAccessKeyId homeStackConfig),
+          (True, "awsSecretAccessKey", homeStackAwsSecretAccessKey homeStackConfig),
+          (False, "metallbPool", homeStackMetallbPool homeStackConfig),
+          (False, "ingressLbIp", homeStackIngressLbIp homeStackConfig),
+          (False, "demoFqdn", homeStackDemoFqdn homeStackConfig),
+          (False, "demoTtl", homeStackDemoTtl homeStackConfig),
+          (False, "route53ZoneId", homeStackRoute53ZoneId homeStackConfig),
+          (False, "acmeServer", homeStackAcmeServer homeStackConfig),
+          (False, "acmeEmail", homeStackAcmeEmail homeStackConfig),
+          (False, "enableDnsBootstrap", homeStackDnsBootstrapEnabled homeStackConfig),
+          (False, "dnsBootstrapIp", homeStackDnsBootstrapIp homeStackConfig)
+        ]
+
+    runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
+    runConfigSet failure@(ExitFailure _) _ = pure failure
+    runConfigSet ExitSuccess (secretValue, key, value) =
+        captureAndRequireSuccess
+            repoRoot
+            environment
+            ("pulumi config set " ++ key)
+            ( ["config", "set", "--stack", homeStackName]
+                ++ ["--secret" | secretValue]
+                ++ [key, value]
+            )
+
+reconcileHomeStackCustomResources :: FilePath -> IO ExitCode
+reconcileHomeStackCustomResources repoRoot = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left err -> failWith err
+        Right settings -> do
+            currentEnvironment <- getEnvironment
+            homeStackConfigResult <- resolveHomeStackConfig currentEnvironment settings
+            case homeStackConfigResult of
+                Left err -> failWith err
+                Right homeStackConfig -> do
+                    waitExit <-
+                        runCommand
+                            CommandSpec
+                                { commandPath = "kubectl",
+                                  commandArguments =
+                                    [ "wait",
+                                      "--for=condition=Established",
+                                      "--timeout=120s",
+                                      "crd/ipaddresspools.metallb.io",
+                                      "crd/l2advertisements.metallb.io",
+                                      "crd/clusterissuers.cert-manager.io"
+                                    ],
+                                  commandEnvironment = Nothing,
+                                  commandWorkingDirectory = Just repoRoot
+                                }
+                    case waitExit of
+                        ExitFailure _ -> pure waitExit
+                        ExitSuccess ->
+                            withTemporaryJsonFile
+                                "prodbox-home-custom-resources.json"
+                                (encode (homeStackCustomResourcesManifest homeStackConfig))
+                                (\path ->
+                                    runCommand
+                                        CommandSpec
+                                            { commandPath = "kubectl",
+                                              commandArguments = ["apply", "-f", path],
+                                              commandEnvironment = Nothing,
+                                              commandWorkingDirectory = Just repoRoot
+                                            }
+                                )
+
+homeStackCustomResourcesManifest :: HomeStackConfig -> Value
+homeStackCustomResourcesManifest homeStackConfig =
+    object
+        [ "apiVersion" .= ("v1" :: String),
+          "kind" .= ("List" :: String),
+          "items" .=
+            ( [homeStackMetallbIpPool homeStackConfig, homeStackMetallbL2Advertisement homeStackConfig]
+                ++ maybe [] pure (homeStackAcmeEabSecret homeStackConfig)
+                ++ [homeStackClusterIssuer homeStackConfig]
+            )
+        ]
+
+homeStackMetallbIpPool :: HomeStackConfig -> Value
+homeStackMetallbIpPool homeStackConfig =
+    object
+        [ "apiVersion" .= ("metallb.io/v1beta1" :: String),
+          "kind" .= ("IPAddressPool" :: String),
+          "metadata" .=
+            object
+                [ "name" .= ("default-pool" :: String),
+                  "namespace" .= ("metallb-system" :: String),
+                  "annotations" .= homeStackAnnotations homeStackConfig,
+                  "labels" .= homeStackLabels homeStackConfig
+                ],
+          "spec" .=
+            object
+                [ "addresses" .= [homeStackMetallbPool homeStackConfig]
+                ]
+        ]
+
+homeStackMetallbL2Advertisement :: HomeStackConfig -> Value
+homeStackMetallbL2Advertisement homeStackConfig =
+    object
+        [ "apiVersion" .= ("metallb.io/v1beta1" :: String),
+          "kind" .= ("L2Advertisement" :: String),
+          "metadata" .=
+            object
+                [ "name" .= ("default-advertisement" :: String),
+                  "namespace" .= ("metallb-system" :: String),
+                  "annotations" .= homeStackAnnotations homeStackConfig,
+                  "labels" .= homeStackLabels homeStackConfig
+                ],
+          "spec" .=
+            object
+                [ "ipAddressPools" .= ["default-pool" :: String]
+                ]
+        ]
+
+homeStackClusterIssuer :: HomeStackConfig -> Value
+homeStackClusterIssuer homeStackConfig =
+    object
+        [ "apiVersion" .= ("cert-manager.io/v1" :: String),
+          "kind" .= ("ClusterIssuer" :: String),
+          "metadata" .=
+            object
+                [ "name" .= ("letsencrypt-http01" :: String),
+                  "annotations" .= homeStackAnnotations homeStackConfig,
+                  "labels" .= homeStackLabels homeStackConfig
+                ],
+          "spec" .=
+            object
+                [ "acme" .=
+                    homeStackClusterIssuerAcmeSpec homeStackConfig
+                ]
+        ]
+
+homeStackAcmeEabSecret :: HomeStackConfig -> Maybe Value
+homeStackAcmeEabSecret homeStackConfig =
+    case (homeStackAcmeEabKeyId homeStackConfig, homeStackAcmeEabHmacKey homeStackConfig) of
+        (Just _, Just hmacKey) ->
+            Just $
+                object
+                    [ "apiVersion" .= ("v1" :: String),
+                      "kind" .= ("Secret" :: String),
+                      "metadata" .=
+                        object
+                            [ "name" .= acmeEabSecretName,
+                              "namespace" .= certManagerNamespace,
+                              "annotations" .= homeStackAnnotations homeStackConfig,
+                              "labels" .= homeStackLabels homeStackConfig
+                            ],
+                      "type" .= ("Opaque" :: String),
+                      "stringData" .=
+                        object
+                            [ Key.fromString acmeEabSecretKey .= hmacKey
+                            ]
+                    ]
+        _ -> Nothing
+
+homeStackClusterIssuerAcmeSpec :: HomeStackConfig -> Value
+homeStackClusterIssuerAcmeSpec homeStackConfig =
+    object $
+        [ "server" .= homeStackAcmeServer homeStackConfig,
+          "email" .= homeStackAcmeEmail homeStackConfig,
+          "privateKeySecretRef" .=
+            object
+                [ "name" .= ("letsencrypt-account-key" :: String)
+                ],
+          "solvers" .=
+            [ object
+                [ "dns01" .=
+                    object
+                        [ "route53" .=
+                            object
+                                [ "region" .= homeStackAwsRegion homeStackConfig,
+                                  "hostedZoneID" .= homeStackRoute53ZoneId homeStackConfig,
+                                  "accessKeyIDSecretRef" .=
+                                    object
+                                        [ "name" .= ("route53-credentials" :: String),
+                                          "key" .= ("access-key-id" :: String)
+                                        ],
+                                  "secretAccessKeySecretRef" .=
+                                    object
+                                        [ "name" .= ("route53-credentials" :: String),
+                                          "key" .= ("secret-access-key" :: String)
+                                        ]
+                                ]
+                        ]
+                ]
+            ]
+        ]
+            ++ maybe [] (\binding -> ["externalAccountBinding" .= binding]) (homeStackAcmeExternalAccountBinding homeStackConfig)
+
+homeStackAcmeExternalAccountBinding :: HomeStackConfig -> Maybe Value
+homeStackAcmeExternalAccountBinding homeStackConfig =
+    case (homeStackAcmeEabKeyId homeStackConfig, homeStackAcmeEabHmacKey homeStackConfig) of
+        (Just keyId, Just _) ->
+            Just $
+                object
+                    [ "keyID" .= keyId,
+                      "keySecretRef" .=
+                        object
+                            [ "name" .= acmeEabSecretName,
+                              "key" .= acmeEabSecretKey
+                            ]
+                    ]
+        _ -> Nothing
+
+homeStackAnnotations :: HomeStackConfig -> Value
+homeStackAnnotations homeStackConfig =
+    object
+        [ "prodbox.io/id" .= homeStackProdboxId homeStackConfig
+        ]
+
+homeStackLabels :: HomeStackConfig -> Value
+homeStackLabels homeStackConfig =
+    object
+        [ "prodbox.io/id" .= prodboxIdToLabelValue (homeStackProdboxId homeStackConfig)
+        ]
 
 ensurePulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 ensurePulumiLogin repoRoot environment = do
@@ -500,8 +848,8 @@ annotateResourceSet repoRoot maybeNamespace resource maybeSelector prodboxId lab
             repoRoot
             ( appendNamespaceArgs maybeNamespace
                 ( ["annotate", resource]
-                    ++ selectorArgs maybeSelector
-                    ++ ["--all", prodboxAnnotationKey ++ "=" ++ prodboxId, "--overwrite"]
+                    ++ resourceSelectionArgs maybeSelector
+                    ++ [prodboxAnnotationKey ++ "=" ++ prodboxId, "--overwrite"]
                 )
             )
     case annotateResult of
@@ -518,8 +866,8 @@ annotateResourceSet repoRoot maybeNamespace resource maybeSelector prodboxId lab
                                     repoRoot
                                     ( appendNamespaceArgs maybeNamespace
                                         ( ["label", resource]
-                                            ++ selectorArgs maybeSelector
-                                            ++ ["--all", prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
+                                            ++ resourceSelectionArgs maybeSelector
+                                            ++ [prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
                                         )
                                     )
                             case labelResult of
@@ -536,9 +884,9 @@ appendNamespaceArgs :: Maybe String -> [String] -> [String]
 appendNamespaceArgs Nothing args = args
 appendNamespaceArgs (Just namespace) args = args ++ ["-n", namespace]
 
-selectorArgs :: Maybe String -> [String]
-selectorArgs Nothing = []
-selectorArgs (Just selector) = ["-l", selector]
+resourceSelectionArgs :: Maybe String -> [String]
+resourceSelectionArgs Nothing = ["--all"]
+resourceSelectionArgs (Just selector) = ["-l", selector]
 
 runEitherActions :: [IO (Either String ())] -> IO (Either String ())
 runEitherActions =
@@ -627,11 +975,15 @@ withTemporaryJsonFile prefix contents action = do
         )
         action
 
-pulumiEnvironment :: FilePath -> ValidatedSettings -> IO (Either String [(String, String)])
-pulumiEnvironment repoRoot settings = do
-    currentEnvironment <- getEnvironment
+pulumiEnvironment :: [(String, String)] -> FilePath -> ValidatedSettings -> IO (Either String [(String, String)])
+pulumiEnvironment currentEnvironment repoRoot settings = do
     let backendDir = repoRoot </> ".pulumi-backend"
-        baseEnvironment = awsCliEnvironment currentEnvironment (aws (validatedConfig settings))
+        credentials = aws (validatedConfig settings)
+        baseEnvironment =
+            upsertEnv "PRODBOX_AWS_SESSION_TOKEN" (maybe "" Text.unpack (session_token credentials))
+                $ upsertEnv "PRODBOX_AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key credentials))
+                $ upsertEnv "PRODBOX_AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id credentials))
+                $ awsCliEnvironment currentEnvironment credentials
         withBackend =
             case lookup "PULUMI_BACKEND_URL" baseEnvironment of
                 Nothing -> upsertEnv "PULUMI_BACKEND_URL" ("file://" ++ backendDir) baseEnvironment
@@ -646,6 +998,35 @@ pulumiEnvironment repoRoot settings = do
     createDirectoryIfMissing True backendDir
     prodboxIdResult <- resolveProdboxId
     pure (fmap (\prodboxId -> upsertEnv "PRODBOX_ID" prodboxId withPassphrase) prodboxIdResult)
+
+captureAndRequireSuccess :: FilePath -> [(String, String)] -> String -> [String] -> IO ExitCode
+captureAndRequireSuccess repoRoot environment label arguments = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "pulumi",
+                  commandArguments = arguments,
+                  commandEnvironment = Just environment,
+                  commandWorkingDirectory = Just repoRoot
+                }
+    case result of
+        Failure err -> failWith err
+        Success output ->
+            case processExitCode output of
+                ExitFailure _ -> failWith (label ++ " failed: " ++ outputDetail output)
+                ExitSuccess -> pure ExitSuccess
+
+lookupNonEmptyEnv :: String -> [(String, String)] -> Maybe String
+lookupNonEmptyEnv key environment =
+    case lookup key environment of
+        Just value | value /= "" -> Just value
+        _ -> Nothing
+
+nonEmptyTextValue :: Text.Text -> Maybe String
+nonEmptyTextValue value =
+    case Text.strip value of
+        "" -> Nothing
+        trimmed -> Just (Text.unpack trimmed)
 
 resolveProdboxId :: IO (Either String String)
 resolveProdboxId = fmap (fmap snd) resolveMachineIdentity

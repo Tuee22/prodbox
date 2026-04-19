@@ -3,6 +3,7 @@ module Prodbox.TestRunner
     )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (foldM, unless)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
@@ -82,6 +83,12 @@ phaseOneHeaderId = "test_phase_one_header"
 
 publicEdgeReadyClassification :: String
 publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
+
+publicEdgeReadyAttempts :: Int
+publicEdgeReadyAttempts = 30
+
+publicEdgeReadyDelayMicroseconds :: Int
+publicEdgeReadyDelayMicroseconds = 10000000
 
 runTests :: FilePath -> TestCommand -> IO ExitCode
 runTests repoRoot command =
@@ -171,17 +178,19 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
         False -> []
         True ->
             [ emitLineAction phaseOnePointSixMessage,
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "refresh"],
+              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "refresh", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["pulumi", "up", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"],
-              runAssertNativeCommandOutputContains
+              runWaitForNativeCommandOutputContains
                 repoRoot
                 environment
                 ["host", "public-edge"]
                 publicEdgeReadyClassification
+                publicEdgeReadyAttempts
+                publicEdgeReadyDelayMicroseconds
             ]
 
 supportedRuntimePostflightActions :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
@@ -191,17 +200,19 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
         True ->
             [ emitLineAction postTestRestoreMessage,
               runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"],
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "refresh"],
+              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "refresh", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["pulumi", "up", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"],
               runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"],
-              runAssertNativeCommandOutputContains
+              runWaitForNativeCommandOutputContains
                 repoRoot
                 environment
                 ["host", "public-edge"]
-                publicEdgeReadyClassification,
+                publicEdgeReadyClassification
+                publicEdgeReadyAttempts
+                publicEdgeReadyDelayMicroseconds,
               runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"],
               runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
             ]
@@ -273,12 +284,13 @@ runCommandForExitCode spec = do
         Failure err -> failWith err
         Success exitCode -> pure exitCode
 
-runAssertCommandOutputContains :: CommandSpec -> String -> IO ExitCode
-runAssertCommandOutputContains spec expectedText = do
+runWaitForCommandOutputContains :: CommandSpec -> String -> Int -> Int -> IO ExitCode
+runWaitForCommandOutputContains spec expectedText attemptsLeft delayMicroseconds = do
     outputResult <- captureCommand spec
     case outputResult of
         Failure err -> failWith ("failed to start `" ++ unwords (commandPath spec : commandArguments spec) ++ "`: " ++ err)
         Success output -> do
+            let combinedOutput = processStdout output ++ processStderr output
             putStr (processStdout output)
             hPutStr stderr (processStderr output)
             case processExitCode output of
@@ -289,22 +301,25 @@ runAssertCommandOutputContains spec expectedText = do
                             ++ "` exited with code "
                             ++ show code
                         )
-                ExitSuccess ->
-                    if expectedText `isInfixOf` processStdout output
-                        then pure ExitSuccess
-                        else
-                            failWith
-                                ( "`"
-                                    ++ unwords (commandPath spec : commandArguments spec)
-                                    ++ "` did not report required output `"
-                                    ++ expectedText
-                                    ++ "`."
-                                )
+                ExitSuccess
+                    | expectedText `isInfixOf` combinedOutput -> pure ExitSuccess
+                    | attemptsLeft <= 1 ->
+                        failWith
+                            ( "`"
+                                ++ unwords (commandPath spec : commandArguments spec)
+                                ++ "` did not report required output `"
+                                ++ expectedText
+                                ++ "` before timeout."
+                            )
+                    | otherwise -> do
+                        hPutStrLn stderr "Waiting for required native command output before retry."
+                        threadDelay delayMicroseconds
+                        runWaitForCommandOutputContains spec expectedText (attemptsLeft - 1) delayMicroseconds
 
-runAssertNativeCommandOutputContains :: FilePath -> [(String, String)] -> [String] -> String -> IO ExitCode
-runAssertNativeCommandOutputContains repoRoot environment cliArgs expectedText = do
+runWaitForNativeCommandOutputContains :: FilePath -> [(String, String)] -> [String] -> String -> Int -> Int -> IO ExitCode
+runWaitForNativeCommandOutputContains repoRoot environment cliArgs expectedText attempts delayMicroseconds = do
     spec <- nativeCliCommandSpec repoRoot environment cliArgs
-    runAssertCommandOutputContains spec expectedText
+    runWaitForCommandOutputContains spec expectedText attempts delayMicroseconds
 
 runNativeCliCommandForExitCode :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runNativeCliCommandForExitCode repoRoot environment cliArgs = do

@@ -43,6 +43,16 @@ Use ZeroSSL when:
 2. you already operate ZeroSSL credentials
 3. you are comfortable storing EAB values in the Dhall config
 
+Supported cluster projection:
+
+1. `acme.eab_key_id` is rendered into the supported `ClusterIssuer` as
+   `spec.acme.externalAccountBinding.keyID`.
+2. `acme.eab_hmac_key` is rendered into the `cert-manager` namespace as the
+   `acme-eab-credentials` secret and referenced from
+   `spec.acme.externalAccountBinding.keySecretRef`.
+3. The Haskell Pulumi custom-resource reconcile omits `externalAccountBinding` entirely when the
+   selected provider does not use EAB.
+
 ---
 
 ## 3. Let's Encrypt

@@ -3,4 +3,4 @@ name: keycloak-postgres
 description: Namespace-local PostgreSQL backing store for the prodbox Keycloak stack
 type: application
 version: 0.1.0
-appVersion: "16.4"
+appVersion: "16.4-bullseye"

@@ -1,57 +1,38 @@
 config:
-  prodbox:metallbPool:
+  prodboxId:
     type: string
-    description: MetalLB IP address pool range
-  prodbox:ingressLbIp:
-    type: string
-    description: Traefik LoadBalancer IP address
-  prodbox:demoFqdn:
-    type: string
-    description: Demo FQDN for DNS record
-  prodbox:demoTtl:
-    type: number
-    default: 60
-  prodbox:route53ZoneId:
-    type: string
-  prodbox:awsRegion:
+  awsRegion:
     type: string
     default: us-east-1
-  prodbox:awsAccessKeyId:
+  awsAccessKeyId:
     type: string
     secret: true
-  prodbox:awsSecretAccessKey:
+  awsSecretAccessKey:
     type: string
     secret: true
-  prodbox:awsSessionToken:
+  metallbPool:
     type: string
-    secret: true
-    default: ""
-  prodbox:acmeServer:
+  ingressLbIp:
+    type: string
+  demoFqdn:
+    type: string
+  demoTtl:
+    type: number
+    default: 60
+  route53ZoneId:
+    type: string
+  acmeServer:
     type: string
     default: "https://acme-staging-v02.api.letsencrypt.org/directory"
-  prodbox:acmeEmail:
+  acmeEmail:
     type: string
-  prodbox:acmeEabKeyId:
-    type: string
-    default: ""
-  prodbox:acmeEabHmacKey:
-    type: string
-    secret: true
-    default: ""
-  prodbox:enableDnsBootstrap:
+  enableDnsBootstrap:
     type: boolean
     default: true
-  prodbox:bootstrapPublicIpOverride:
+  dnsBootstrapIp:
     type: string
-    default: ""
 
 variables:
-  prodboxId:
-    fn::invoke:
-      function: std:getenv
-      arguments:
-        name: PRODBOX_ID
-      return: result
   prodboxLabelValue:
     fn::invoke:
       function: std:substr
@@ -60,26 +41,12 @@ variables:
         offset: 0
         length: 63
       return: result
-  publicIp:
-    fn::invoke:
-      function: http:http:get
-      arguments:
-        url: https://api.ipify.org
-      return: body
-  dnsBootstrapIp:
-    fn::if:
-      - ${config.prodbox:bootstrapPublicIpOverride} != ""
-      - ${config.prodbox:bootstrapPublicIpOverride}
-      - ${publicIp}
 
 resources:
   awsProvider:
     type: pulumi:providers:aws
     properties:
-      region: ${config.prodbox:awsRegion}
-      accessKey: ${config.prodbox:awsAccessKeyId}
-      secretKey: ${config.prodbox:awsSecretAccessKey}
-      token: ${config.prodbox:awsSessionToken}
+      region: ${awsRegion}
 
   # Phase 1: MetalLB - LoadBalancer IP assignment
   metallbNamespace:
@@ -95,6 +62,7 @@ resources:
   metallbRelease:
     type: kubernetes:helm.sh/v3:Release
     properties:
+      name: metallb
       chart: metallb
       version: "0.14.9"
       namespace: metallb-system
@@ -102,6 +70,18 @@ resources:
         repo: https://metallb.github.io/metallb
       skipAwait: false
       values:
+        controller:
+          image:
+            repository: 127.0.0.1:30080/prodbox/metallb-controller-mirror
+            tag: v0.14.9
+        speaker:
+          image:
+            repository: 127.0.0.1:30080/prodbox/metallb-speaker-mirror
+            tag: v0.14.9
+          frr:
+            image:
+              repository: 127.0.0.1:30080/prodbox/frr-mirror
+              tag: 9.1.0
         commonLabels:
           prodbox.io/id: ${prodboxLabelValue}
         commonAnnotations:
@@ -109,44 +89,6 @@ resources:
     options:
       dependsOn:
         - ${metallbNamespace}
-
-  metallbIpPool:
-    type: kubernetes:apiextensions.k8s.io/v1:CustomResource
-    properties:
-      apiVersion: metallb.io/v1beta1
-      kind: IPAddressPool
-      metadata:
-        name: default-pool
-        namespace: metallb-system
-        annotations:
-          prodbox.io/id: ${prodboxId}
-        labels:
-          prodbox.io/id: ${prodboxLabelValue}
-      spec:
-        addresses:
-          - ${config.prodbox:metallbPool}
-    options:
-      dependsOn:
-        - ${metallbRelease}
-
-  metallbL2Advertisement:
-    type: kubernetes:apiextensions.k8s.io/v1:CustomResource
-    properties:
-      apiVersion: metallb.io/v1beta1
-      kind: L2Advertisement
-      metadata:
-        name: default-advertisement
-        namespace: metallb-system
-        annotations:
-          prodbox.io/id: ${prodboxId}
-        labels:
-          prodbox.io/id: ${prodboxLabelValue}
-      spec:
-        ipAddressPools:
-          - default-pool
-    options:
-      dependsOn:
-        - ${metallbIpPool}
 
   # Phase 2: Traefik Ingress Controller
   traefikNamespace:
@@ -162,17 +104,22 @@ resources:
   traefikRelease:
     type: kubernetes:helm.sh/v3:Release
     properties:
+      name: traefik
       chart: traefik
       version: "32.0.0"
       namespace: traefik-system
       repositoryOpts:
         repo: https://traefik.github.io/charts
-      skipAwait: false
+      skipAwait: true
       values:
+        image:
+          registry: 127.0.0.1:30080
+          repository: prodbox/traefik-mirror
+          tag: v3.1.4
         service:
           type: LoadBalancer
           spec:
-            loadBalancerIP: ${config.prodbox:ingressLbIp}
+            loadBalancerIP: ${ingressLbIp}
         ports:
           web:
             expose:
@@ -196,7 +143,7 @@ resources:
     options:
       dependsOn:
         - ${traefikNamespace}
-        - ${metallbL2Advertisement}
+        - ${metallbRelease}
 
   # Phase 3: cert-manager
   certManagerNamespace:
@@ -212,6 +159,7 @@ resources:
   certManagerRelease:
     type: kubernetes:helm.sh/v3:Release
     properties:
+      name: cert-manager
       chart: cert-manager
       version: "v1.16.2"
       namespace: cert-manager
@@ -221,6 +169,25 @@ resources:
       values:
         crds:
           enabled: true
+        image:
+          repository: 127.0.0.1:30080/prodbox/cert-manager-controller-mirror
+          tag: v1.16.2
+        webhook:
+          image:
+            repository: 127.0.0.1:30080/prodbox/cert-manager-webhook-mirror
+            tag: v1.16.2
+        cainjector:
+          image:
+            repository: 127.0.0.1:30080/prodbox/cert-manager-cainjector-mirror
+            tag: v1.16.2
+        acmesolver:
+          image:
+            repository: 127.0.0.1:30080/prodbox/cert-manager-acmesolver-mirror
+            tag: v1.16.2
+        startupapicheck:
+          image:
+            repository: 127.0.0.1:30080/prodbox/cert-manager-startupapicheck-mirror
+            tag: v1.16.2
         global:
           leaderElection:
             namespace: cert-manager
@@ -246,55 +213,20 @@ resources:
         labels:
           prodbox.io/id: ${prodboxLabelValue}
       stringData:
-        access-key-id: ${config.prodbox:awsAccessKeyId}
-        secret-access-key: ${config.prodbox:awsSecretAccessKey}
+        access-key-id: ${awsAccessKeyId}
+        secret-access-key: ${awsSecretAccessKey}
     options:
       dependsOn:
         - ${certManagerNamespace}
-
-  # Phase 5: ClusterIssuer with DNS-01 validation
-  clusterIssuer:
-    type: kubernetes:apiextensions.k8s.io/v1:CustomResource
-    properties:
-      apiVersion: cert-manager.io/v1
-      kind: ClusterIssuer
-      metadata:
-        name: letsencrypt-http01
-        annotations:
-          prodbox.io/id: ${prodboxId}
-        labels:
-          prodbox.io/id: ${prodboxLabelValue}
-      spec:
-        acme:
-          server: ${config.prodbox:acmeServer}
-          email: ${config.prodbox:acmeEmail}
-          privateKeySecretRef:
-            name: letsencrypt-account-key
-          solvers:
-            - dns01:
-                route53:
-                  region: ${config.prodbox:awsRegion}
-                  hostedZoneID: ${config.prodbox:route53ZoneId}
-                  accessKeyIDSecretRef:
-                    name: route53-credentials
-                    key: access-key-id
-                  secretAccessKeySecretRef:
-                    name: route53-credentials
-                    key: secret-access-key
-    options:
-      dependsOn:
-        - ${certManagerRelease}
-        - ${traefikRelease}
-        - ${route53CredentialsSecret}
 
   # Phase 6: DNS bootstrap A record (optional)
   demoARecord:
     type: aws:route53:Record
     properties:
-      zoneId: ${config.prodbox:route53ZoneId}
-      name: ${config.prodbox:demoFqdn}
+      zoneId: ${route53ZoneId}
+      name: ${demoFqdn}
       type: A
-      ttl: ${config.prodbox:demoTtl}
+      ttl: ${demoTtl}
       records:
         - ${dnsBootstrapIp}
       allowOverwrite: true
@@ -305,13 +237,13 @@ resources:
 
 outputs:
   metallb_chart_version: "0.14.9"
-  metallb_ip_pool: ${config.prodbox:metallbPool}
+  metallb_ip_pool: ${metallbPool}
   traefik_chart_version: "32.0.0"
-  traefik_lb_ip: ${config.prodbox:ingressLbIp}
+  traefik_lb_ip: ${ingressLbIp}
   cert_manager_chart_version: "v1.16.2"
   cluster_issuer_name: letsencrypt-http01
-  acme_server: ${config.prodbox:acmeServer}
-  demo_fqdn: ${config.prodbox:demoFqdn}
-  demo_ttl: ${config.prodbox:demoTtl}
-  dns_bootstrap_enabled: ${config.prodbox:enableDnsBootstrap}
+  acme_server: ${acmeServer}
+  demo_fqdn: ${demoFqdn}
+  demo_ttl: ${demoTtl}
+  dns_bootstrap_enabled: ${enableDnsBootstrap}
   prodbox_id: ${prodboxId}

@@ -4,17 +4,19 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
 
-> **Purpose**: Define how `prodbox` provisions Harbor, builds and pushes custom images via Docker
-> CLI, and enforces local image-pull behavior for RKE2.
+> **Purpose**: Define how `prodbox` provisions Harbor, publishes dual-arch custom images, mirrors
+> required public images, and keeps supported workloads on Harbor-only image refs.
 
 ## 1. Scope
 
 This document is the SSoT for the local image-registry doctrine:
 
 1. Harbor is installed or reconciled during `prodbox rke2 install`.
-2. Custom `prodbox` images are built outside the cluster via Docker CLI and pushed to Harbor.
-3. RKE2 is configured to mirror `docker.io` pulls through local Harbor.
-4. Missing mirrored images are populated on demand from currently referenced cluster images.
+2. Custom `prodbox` images are built outside the cluster via Docker CLI and published to Harbor as
+   `linux/amd64` plus `linux/arm64` manifests.
+3. Supported cluster workloads use Harbor-only image refs on the canonical path.
+4. Required public images are mirrored into Harbor idempotently before the workloads that need them
+   are deployed.
 
 Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
@@ -29,10 +31,17 @@ The native Haskell lifecycle runtime reconciles Harbor state in order:
 2. Harbor chart upgrade or install
 3. Harbor readiness-contract reconcile
 4. Harbor readiness wait
-5. Harbor project reconcile for `prodbox`
-6. Docker login plus mirror, build, and push operations
-7. Gateway image import into the RKE2 containerd cache
+5. Stable Harbor external-endpoint wait
+6. Harbor project reconcile for `prodbox`
+7. Docker login plus public-image mirror, per-platform custom-image publish, and manifest compose
 8. `registries.yaml` reconcile and conditional RKE2 restart
+9. MinIO install from Harbor-backed image refs
+10. Gateway and `vscode-nginx` host-arch image import into the RKE2 containerd cache
+
+Custom-image publication uses a `docker-container` buildx builder created with host networking.
+That builder contract is required because the canonical Harbor push target remains the local
+NodePort endpoint `127.0.0.1:30080`, and buildx export or push traffic must resolve that address
+from inside the builder container as well as from the host.
 
 ### 2.1 Harbor Readiness Contract
 
@@ -46,6 +55,11 @@ Policy:
 4. Harbor bootstrap remains event-driven.
 5. Docker login, Harbor API project reconcile, and image push operations are the final capability
    checks for the external NodePort path.
+6. Before Docker login, `prodbox` requires `GET /readyz` to return `200` and `GET /v2/` to return
+   `200` or `401` on `127.0.0.1:30080`.
+7. Before any Harbor image write continues on a fresh cluster, `prodbox` requires six consecutive
+   successful probe rounds, spaced five seconds apart, where `/readyz` returns `200` and `/v2/`
+   returns `200` or `401`.
 
 ## 3. Runtime Outputs
 
@@ -54,6 +68,9 @@ Policy:
 - `prodbox-id` source: `/etc/machine-id`
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
 - additional custom image ref: `127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest`
+- supported mirrored public refs include Harbor-backed `postgres`, `code-server`, `keycloak`,
+  `minio`, `traefik`, `metallb`, `frr`, and `cert-manager` images under the Harbor `prodbox`
+  project
 
 ## 4. RKE2 Mirror Behavior
 
@@ -66,14 +83,17 @@ Policy:
 If `registries.yaml` content changes, RKE2 is restarted once and cluster access is re-verified
 before the effect succeeds.
 
-## 5. Docker Hub Population
+## 5. Public Image Population
 
-Population is idempotent and demand-driven:
+Population is idempotent and dual-arch:
 
-1. enumerate currently referenced pod container images
-2. normalize Docker Hub references
-3. for each image:
-   check Harbor manifest existence, pull only when missing, then tag and push once
+1. enumerate the required supported-workload public images plus any already-referenced non-Harbor
+   cluster images
+2. normalize upstream refs into canonical registry-qualified image refs
+3. map those refs into the Harbor `prodbox` project
+4. verify the source ref publishes both `linux/amd64` and `linux/arm64`
+5. create the Harbor target manifest only when the Harbor target is missing one of those
+   architectures
 
 ## 6. Gateway Container Build Doctrine
 
@@ -81,11 +101,20 @@ Gateway image builds use `docker/gateway.Dockerfile` with full-repository build 
 
 Container build requirements:
 
-1. build the Haskell gateway binary in the builder stage
-2. copy the repository content needed by the build into the image context
-3. keep `.dockerignore` synchronized with the intended build inputs
-4. use `tini` as PID 1 in the runtime image
-5. invoke the canonical CLI startup path through the Haskell gateway entrypoint
+1. use single-stage `ubuntu:24.04` for repository-owned Haskell images
+2. build the Haskell gateway binary under `/opt/build`
+3. keep the final Haskell images single-stage by mounting `haskell:9.6.7-slim` as the named
+   BuildKit toolchain context during publication
+4. publish `linux/amd64` plus `linux/arm64` variants separately through
+   `docker buildx build --platform ... --push`
+5. compose the final multi-arch Harbor tag with `docker buildx imagetools create`
+6. create or reuse the `docker-container` buildx builder with host networking so Harbor pushes to
+   `127.0.0.1:30080` succeed from inside the builder
+7. keep `.dockerignore` synchronized with the intended build inputs
+8. use `tini` as PID 1 in the runtime image
+9. invoke the canonical CLI startup path through the Haskell gateway entrypoint
+10. install the official AWS CLI bundle per `TARGETARCH` so the in-pod Route 53 subprocess path
+    remains available inside the single-stage gateway image
 
 ## 7. Operator Runbook
 

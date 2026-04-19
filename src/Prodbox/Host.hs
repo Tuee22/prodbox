@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Host
-    ( PortStatus (..),
+    ( LanAddressing (..),
+      PortStatus (..),
+      detectLanAddressing,
       renderPortAvailabilityReport,
       runHostCommand,
     )

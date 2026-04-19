@@ -48,6 +48,22 @@ spec:
           env:
             - name: GATEWAY_NODE_ID
               value: {{ $nodeId | quote }}
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-aws-credentials
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-aws-credentials
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_SESSION_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-aws-credentials
+                  key: AWS_SESSION_TOKEN
+                  optional: true
           volumeMounts:
             - name: tls
               mountPath: /tls
@@ -63,22 +79,18 @@ spec:
               mountPath: /etc/gateway/config.json
               subPath: config.json
               readOnly: true
-            - name: prodbox-config
-              mountPath: /app/prodbox-config.json
-              subPath: prodbox-config.json
-              readOnly: true
           livenessProbe:
             httpGet:
               path: /v1/state
               port: rest
-              scheme: HTTPS
+              scheme: HTTP
             initialDelaySeconds: 10
             periodSeconds: 15
           readinessProbe:
             httpGet:
               path: /v1/state
               port: rest
-              scheme: HTTPS
+              scheme: HTTP
             initialDelaySeconds: 5
             periodSeconds: 10
       volumes:
@@ -102,7 +114,4 @@ spec:
         - name: config
           configMap:
             name: gateway-config-{{ $nodeId }}
-        - name: prodbox-config
-          secret:
-            secretName: gateway-prodbox-config
 {{- end }}

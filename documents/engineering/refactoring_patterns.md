@@ -1,446 +1,251 @@
-# Refactoring to Pure FP
+# Refactoring Patterns
 
 **Status**: Reference only
 **Supersedes**: N/A
 **Referenced by**: README.md, CLAUDE.md, documents/engineering/README.md
 
-> **Purpose**: Before/after patterns for migrating imperative code to pure functional programming.
+> **Purpose**: Show repository-safe before or after patterns for moving imperative or stringly
+> logic toward the Haskell functional style used by `prodbox`.
 
----
+## 1. Raw String Command Routing -> ADT Routing
 
-## 1. Exception → Result
+### Before
 
-### Before (Violation)
-
-```python
-async def update_dns(settings: Settings) -> None:
-    try:
-        public_ip = await get_public_ip()
-        print_info(f"Current public IP: {public_ip}")
-    except Exception as e:
-        print_error(f"Failed to get public IP: {e}")
-        raise SystemExit(1)
+```haskell
+runAction :: String -> IO ExitCode
+runAction action =
+    case action of
+        "install" -> runInstall
+        "delete" -> runDelete
+        "status" -> runStatus
+        _ -> failWith "unknown action"
 ```
 
-### After (Pure)
+### After
 
-```python
-def dns_update_dag(settings: Settings) -> EffectDAG:
-    """Pure DAG builder - no I/O, no exceptions."""
-    return EffectDAG.from_roots(
-        EffectNode(
-            effect=Sequence(
-                effect_id="dns_update_workflow",
-                description="Update DNS record",
-                effects=[
-                    FetchPublicIP(
-                        effect_id="fetch_ip",
-                        description="Get current public IP"
-                    ),
-                    QueryRoute53Record(
-                        effect_id="query_dns",
-                        description="Query current DNS",
-                        zone_id=settings.route53_zone_id,
-                        fqdn=settings.fqdn
-                    ),
-                    # ... more effects
-                ]
-            ),
-            prerequisites=frozenset(["aws_credentials_valid"])
-        ),
-        registry=PREREQUISITE_REGISTRY
-    )
+```haskell
+data Action
+    = ActionInstall
+    | ActionDelete ConfirmedDelete
+    | ActionStatus
+    deriving (Eq, Show)
+
+runAction :: Action -> IO ExitCode
+runAction action =
+    case action of
+        ActionInstall -> runInstall
+        ActionDelete confirmed -> runDelete confirmed
+        ActionStatus -> runStatus
 ```
 
----
+Parse external text once. Do not keep the rest of the runtime on raw command strings.
 
-## 2. If/Else → Match
+## 2. Mixed Planning and Execution -> Pure Planner Plus Boundary Runner
 
-### Before (Violation)
+### Before
 
-```python
-def get_health_status(status: str) -> str:
-    if "Ready" in status:
-        return "healthy"
-    elif "NotReady" in status:
-        return "unhealthy"
-    else:
-        return "unknown"
+```haskell
+ensureNamespace :: FilePath -> String -> IO ExitCode
+ensureNamespace repoRoot namespace = do
+    let args = ["create", "namespace", namespace]
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl",
+              commandArguments = args,
+              commandEnvironment = Nothing,
+              commandWorkingDirectory = Just repoRoot
+            }
 ```
 
-### After (Pure)
+### After
 
-```python
-def get_health_status(status: str) -> str:
-    match status:
-        case s if "Ready" in s:
-            return "healthy"
-        case s if "NotReady" in s:
-            return "unhealthy"
-        case _:
-            return "unknown"
+```haskell
+renderCreateNamespaceArgs :: String -> [String]
+renderCreateNamespaceArgs namespace =
+    ["create", "namespace", namespace]
+
+ensureNamespace :: FilePath -> String -> IO ExitCode
+ensureNamespace repoRoot namespace =
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl",
+              commandArguments = renderCreateNamespaceArgs namespace,
+              commandEnvironment = Nothing,
+              commandWorkingDirectory = Just repoRoot
+            }
 ```
 
-### ADT Version (Even Better)
+The effectful function becomes smaller, and the planner can be unit tested independently.
 
-```python
-@dataclass(frozen=True)
-class Healthy:
-    """Node is ready."""
+## 3. Ad-Hoc Validation -> Decode Then Execute
 
-@dataclass(frozen=True)
-class Unhealthy:
-    reason: str
+### Before
 
-@dataclass(frozen=True)
-class Unknown:
-    raw_status: str
-
-NodeHealth = Healthy | Unhealthy | Unknown
-
-def parse_health(status: str) -> NodeHealth:
-    match status:
-        case s if "Ready" in s:
-            return Healthy()
-        case s if "NotReady" in s:
-            return Unhealthy(reason="NotReady condition")
-        case _:
-            return Unknown(raw_status=status)
+```haskell
+runDnsCheck :: String -> IO ExitCode
+runDnsCheck fqdn =
+    if '.' `elem` fqdn
+        then performDnsCheck fqdn
+        else failWith "invalid fqdn"
 ```
 
----
+### After
 
-## 3. For Loop → Comprehension
+```haskell
+newtype Fqdn = Fqdn { unFqdn :: String }
 
-### Before (Violation)
+parseFqdn :: String -> Either String Fqdn
+parseFqdn raw =
+    case splitOn "." raw of
+        labels | length labels >= 2 && all (/= "") labels -> Right (Fqdn raw)
+        _ -> Left ("invalid fqdn: " ++ raw)
 
-```python
-def find_conflicts(ports: list[int]) -> list[int]:
-    conflicts = []
-    for port in ports:
-        if is_port_in_use(port):
-            conflicts.append(port)
-    return conflicts
+runDnsCheck :: String -> IO ExitCode
+runDnsCheck raw =
+    case parseFqdn raw of
+        Left err -> failWith err
+        Right fqdn -> performDnsCheck fqdn
 ```
 
-### After (Pure)
+Decode once at the boundary. Keep the rest of the path on typed values.
 
-```python
-def find_conflicts(ports: tuple[int, ...]) -> tuple[int, ...]:
-    return tuple(port for port in ports if is_port_in_use(port))
+## 4. Partial Functions -> Total Parsing
+
+### Before
+
+```haskell
+parsePort :: String -> Int
+parsePort = read
 ```
 
-### Multiple Transformations
+### After
 
-```python
-# Before
-def process_items(items: list[Item]) -> list[str]:
-    results = []
-    for item in items:
-        if item.is_valid:
-            processed = transform(item)
-            results.append(processed.name)
-    return results
-
-# After
-def process_items(items: tuple[Item, ...]) -> tuple[str, ...]:
-    return tuple(
-        transform(item).name
-        for item in items
-        if item.is_valid
-    )
+```haskell
+parsePort :: String -> Either String Int
+parsePort raw =
+    case readMaybe raw of
+        Just port | port >= 1 && port <= 65535 -> Right port
+        _ -> Left ("invalid port: " ++ raw)
 ```
 
----
+Supported-path logic should not depend on `read`, `head`, `tail`, `fromJust`, or unchecked list
+indexing.
 
-## 4. Mutable Accumulator → Reduce
+## 5. Nested Conditionals -> Exhaustive Pattern Matching
 
-### Before (Violation)
+### Before
 
-```python
-def group_by_status(pods: list[Pod]) -> dict[str, list[Pod]]:
-    result = {}
-    for pod in pods:
-        status = pod.status
-        if status not in result:
-            result[status] = []
-        result[status].append(pod)
-    return result
+```haskell
+renderHealth :: Bool -> Bool -> String
+renderHealth ready degraded =
+    if ready
+        then "healthy"
+        else if degraded
+            then "degraded"
+            else "unhealthy"
 ```
 
-### After (Pure)
+### After
 
-```python
-from functools import reduce
+```haskell
+data Health
+    = Healthy
+    | Degraded
+    | Unhealthy
+    deriving (Eq, Show)
 
-def group_by_status(pods: tuple[Pod, ...]) -> dict[str, tuple[Pod, ...]]:
-    def reducer(
-        acc: dict[str, tuple[Pod, ...]],
-        pod: Pod
-    ) -> dict[str, tuple[Pod, ...]]:
-        status = pod.status
-        existing = acc.get(status, ())
-        return {**acc, status: (*existing, pod)}
-
-    return reduce(reducer, pods, {})
+renderHealth :: Health -> String
+renderHealth health =
+    case health of
+        Healthy -> "healthy"
+        Degraded -> "degraded"
+        Unhealthy -> "unhealthy"
 ```
 
----
+Closed states should become ADTs, not parallel flags.
 
-## 5. Default Case → Exhaustive Match
+## 6. Manual Accumulation -> Fold
 
-### Before (Violation)
+### Before
 
-```python
-def handle_action(action: str) -> int:
-    match action:
-        case "start":
-            return start_service()
-        case "stop":
-            return stop_service()
-        case _:
-            return 1  # Silent failure for unknown actions!
+```haskell
+collectReadyPods :: [Pod] -> [Pod]
+collectReadyPods pods = go pods []
+  where
+    go [] acc = reverse acc
+    go (pod:rest) acc
+        | podReady pod = go rest (pod : acc)
+        | otherwise = go rest acc
 ```
 
-### After (Pure)
+### After
 
-```python
-from typing import Literal, Never
-
-Action = Literal["start", "stop", "restart", "status"]
-
-def _assert_never(value: object) -> Never:
-    raise AssertionError(f"Unhandled case: {value}")
-
-def handle_action(action: Action) -> int:
-    match action:
-        case "start":
-            return start_service()
-        case "stop":
-            return stop_service()
-        case "restart":
-            return restart_service()
-        case "status":
-            return get_status()
-        case _ as unreachable:
-            _assert_never(unreachable)
+```haskell
+collectReadyPods :: [Pod] -> [Pod]
+collectReadyPods =
+    foldr
+        (\pod acc ->
+            if podReady pod
+                then pod : acc
+                else acc
+        )
+        []
 ```
 
----
+Use `foldr`, `foldl'`, `mapMaybe`, `traverse`, or list comprehensions when they better expose the
+real data flow.
 
-## 6. Mutable Dataclass → Frozen
+## 7. Exception-Led Ordinary Failures -> Explicit Results
 
-### Before (Violation)
+### Before
 
-```python
-@dataclass
-class Config:
-    name: str
-    items: list[str]
-    settings: dict[str, int]
-
-# Allows mutation
-config = Config(name="test", items=[], settings={})
-config.items.append("item")  # Mutation!
-config.settings["key"] = 42  # Mutation!
+```haskell
+loadZoneId :: Value -> String
+loadZoneId payload =
+    case parseMaybe parser payload of
+        Nothing -> error "missing hosted zone id"
+        Just zoneId -> zoneId
 ```
 
-### After (Pure)
+### After
 
-```python
-@dataclass(frozen=True)
-class Config:
-    name: str
-    items: tuple[str, ...]
-    settings: Mapping[str, int]
-
-# Immutable - create new instances
-config = Config(name="test", items=(), settings={})
-new_config = Config(
-    name=config.name,
-    items=(*config.items, "item"),
-    settings={**config.settings, "key": 42}
-)
+```haskell
+loadZoneId :: Value -> Either String String
+loadZoneId payload =
+    case parseMaybe parser payload of
+        Nothing -> Left "missing hosted zone id"
+        Just zoneId -> Right zoneId
 ```
 
----
+Reserve exceptions for exceptional library or runtime failures, then translate them at the
+boundary if the failure is part of supported behavior.
 
-## 7. List/Set → Tuple/Frozenset
+## 8. Hidden Boundary Work -> Explicit Boundary Modules
 
-### Before (Violation)
+When refactoring a mixed function, split it this way:
 
-```python
-def get_prerequisites() -> set[str]:
-    return {"tool_kubectl", "kubeconfig_exists"}
+1. pure parser or normalizer
+2. pure renderer or planner
+3. boundary executor in `IO`
+4. typed success or failure value returned to the caller
 
-def get_required_tools() -> list[str]:
-    return ["kubectl", "helm", "pulumi"]
-```
+In this repository that usually means:
 
-### After (Pure)
+- planning in modules such as `Settings`, `ContainerImage`, `EffectDAG`, or chart helpers
+- execution in `CLI`, `Native`, `Subprocess`, or `EffectInterpreter`
 
-```python
-def get_prerequisites() -> frozenset[str]:
-    return frozenset({"tool_kubectl", "kubeconfig_exists"})
+## 9. Review Heuristics
 
-def get_required_tools() -> tuple[str, ...]:
-    return ("kubectl", "helm", "pulumi")
-```
+When deciding whether a refactor is complete, ask:
 
----
-
-## 8. Print Statements → Effect Data
-
-### Before (Violation)
-
-```python
-def check_cluster_health() -> bool:
-    print("Checking cluster health...")  # Side effect!
-    status = get_cluster_status()
-    if status.healthy:
-        print("✓ Cluster is healthy")  # Side effect!
-        return True
-    else:
-        print(f"✗ Cluster unhealthy: {status.error}")  # Side effect!
-        return False
-```
-
-### After (Pure)
-
-```python
-@dataclass(frozen=True)
-class HealthCheckResult:
-    healthy: bool
-    message: str
-
-def check_cluster_health_effect() -> Sequence:
-    """Build pure effect sequence - interpreter handles output."""
-    return Sequence(
-        effect_id="cluster_health_check",
-        description="Check cluster health",
-        effects=[
-            PrintInfo(
-                effect_id="health_start",
-                description="Print check starting",
-                message="Checking cluster health..."
-            ),
-            CaptureKubectlOutput(
-                effect_id="get_nodes",
-                description="Get node status",
-                args=["get", "nodes", "-o", "json"]
-            ),
-            # Custom effect to process and display result
-            Custom(
-                effect_id="display_result",
-                description="Display health result",
-                fn=format_health_result  # Pure function
-            )
-        ]
-    )
-```
-
----
-
-## 9. Global State → Explicit Parameters
-
-### Before (Violation)
-
-```python
-_settings: Settings | None = None
-
-def get_settings() -> Settings:
-    global _settings
-    if _settings is None:
-        _settings = load_settings_from_env()
-    return _settings
-
-def update_dns() -> None:
-    settings = get_settings()  # Hidden dependency!
-    # ...
-```
-
-### After (Pure)
-
-```python
-def dns_check_dag(settings: Settings) -> EffectDAG:
-    """Settings passed explicitly - no hidden state."""
-    return EffectDAG.from_roots(
-        EffectNode(
-            effect=QueryRoute53Record(
-                effect_id="query_dns",
-                description="Query DNS record",
-                zone_id=settings.route53_zone_id,
-                fqdn=settings.fqdn,
-            ),
-            prerequisites=frozenset(["aws_credentials_valid"])
-        ),
-        registry=PREREQUISITE_REGISTRY
-    )
-```
-
----
-
-## 10. try/except → Result Pattern
-
-### Before (Violation)
-
-```python
-def parse_yaml_config(path: Path) -> Config:
-    try:
-        content = path.read_text()
-        data = yaml.safe_load(content)
-        return Config(**data)
-    except FileNotFoundError:
-        raise ConfigError(f"Config file not found: {path}")
-    except yaml.YAMLError as e:
-        raise ConfigError(f"Invalid YAML: {e}")
-    except TypeError as e:
-        raise ConfigError(f"Invalid config structure: {e}")
-```
-
-### After (Pure)
-
-```python
-def parse_yaml_config(content: str) -> Result[Config, str]:
-    """Pure parser - takes content, returns Result. No I/O."""
-    try:
-        data = yaml.safe_load(content)
-    except yaml.YAMLError as e:
-        return Failure(f"Invalid YAML: {e}")
-
-    match validate_config_data(data):
-        case Success(config_data):
-            return Success(Config(**config_data))
-        case Failure(error):
-            return Failure(f"Invalid config structure: {error}")
-
-# I/O happens in Effect
-@dataclass(frozen=True)
-class LoadConfig(Effect[Config]):
-    """Effect to load config - interpreter handles I/O."""
-    path: Path
-```
-
----
-
-## Summary Table
-
-| Pattern | Imperative (Wrong) | Functional (Correct) |
-|---------|-------------------|---------------------|
-| Error handling | `try/except` + `raise` | `Result[T, E]` + `match` |
-| Branching | `if/elif/else` | `match/case` |
-| Iteration | `for` loop | Comprehension |
-| Accumulation | Mutable loop variable | `reduce()` |
-| Default case | `case _: ...` | Exhaustive + `_assert_never` |
-| Data class | `@dataclass` | `@dataclass(frozen=True)` |
-| Lists | `list[T]` | `tuple[T, ...]` |
-| Sets | `set[T]` | `frozenset[T]` |
-| Output | `print()` | `WriteStdout` effect |
-| Global state | Module-level variables | Explicit parameters |
-
----
+- can the decision logic be tested without mocking subprocesses
+- are external strings converted to ADTs or validated newtypes early
+- does the function still hide more than one responsibility
+- would adding a new variant force a compiler-guided pattern-match update
+- are ordinary failures represented explicitly
 
 ## Cross-References
 
-- [Pure FP Standards (SSoT)](./pure_fp_standards.md)
+- [Pure FP Standards](./pure_fp_standards.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [Unit Testing Policy](./unit_testing_policy.md)

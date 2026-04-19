@@ -3,7 +3,22 @@
 
 config:
   # AWS region for Route 53
-  aws:region: us-east-1
+  aws:region: us-west-2
+  prodbox:metallbPool: 192.168.2.240-192.168.2.250
+  prodbox:ingressLbIp: 192.168.2.240
+  prodbox:demoFqdn: demo.resolvefintech.com
+  prodbox:demoTtl: "60"
+  prodbox:route53ZoneId: Z07495372G135SKEMQJZU
+  prodbox:acmeServer: https://acme.zerossl.com/v2/DV90
+  prodbox:acmeEmail: matt@resolvefintech.com
+  prodbox:enableDnsBootstrap: "true"
+  prodbox:dnsBootstrapIp: 142.115.123.42
+  prodbox:prodboxId: prodbox-3349a232b3454fb3be77b2f68919904f
+  prodbox:awsRegion: us-west-2
+  prodbox:awsAccessKeyId:
+    secure: v1:gIaISU8F7oq/UDr4:Gb1Y/wQtGTsHN1pu7+R3WOOMfOv8vnJ2NfsDWlWHV/ENRpKG
+  prodbox:awsSecretAccessKey:
+    secure: v1:e7OirobO8BfZRw+B:fbahzoB/IzihGuB+vB5vMZDrkKFR1OwHeCSQAo0i2U6SuzXk+f2VrfXvEUBvSkAnaFm00skUiVo=
 encryptionsalt: v1:LEfIPxd/BFc=:v1:GABlTeZECqe7L/a+:8rLutU0awQF9Z46ygyjNGNdMu9dvGg==
 
 # Stack-specific settings (can be overridden per-stack)

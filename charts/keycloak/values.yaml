@@ -7,6 +7,10 @@ replicaCount: 2
 podAntiAffinity:
   enabled: true
 
+image:
+  repository: 127.0.0.1:30080/prodbox/keycloak-mirror
+  tag: "26.0.0"
+
 keycloak:
   adminUser: admin
   adminPassword: change-me

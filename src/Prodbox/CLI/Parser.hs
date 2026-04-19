@@ -208,7 +208,7 @@ pulumiParser =
         ( command "up" (info pulumiYesParserUp (progDesc "Apply infrastructure changes"))
             <> command "destroy" (info pulumiYesParserDestroy (progDesc "Destroy infrastructure"))
             <> command "preview" (info (native (NativePulumi PulumiPreview)) (progDesc "Preview infrastructure changes"))
-            <> command "refresh" (info (native (NativePulumi PulumiRefresh)) (progDesc "Refresh Pulumi state"))
+            <> command "refresh" (info pulumiYesParserRefresh (progDesc "Refresh Pulumi state"))
             <> command "stack-init" (info pulumiStackInitParser (progDesc "Initialize a Pulumi stack"))
             <> command "eks-resources" (info (native (NativePulumi PulumiEksResources)) (progDesc "Provision or inspect EKS test stack"))
             <> command "eks-destroy" (info pulumiYesParserEksDestroy (progDesc "Destroy EKS test stack"))
@@ -222,6 +222,10 @@ pulumiYesParserUp = fmap (RunNative . NativePulumi . PulumiUp) (yesSwitchParser 
 pulumiYesParserDestroy :: Parser CommandRequest
 pulumiYesParserDestroy =
     fmap (RunNative . NativePulumi . PulumiDestroy) (yesSwitchParser "Skip confirmation prompts")
+
+pulumiYesParserRefresh :: Parser CommandRequest
+pulumiYesParserRefresh =
+    fmap (RunNative . NativePulumi . PulumiRefresh) (yesSwitchParser "Skip confirmation prompts")
 
 pulumiYesParserEksDestroy :: Parser CommandRequest
 pulumiYesParserEksDestroy =

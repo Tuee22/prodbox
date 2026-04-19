@@ -1,0 +1,291 @@
+module Prodbox.ContainerImage
+    ( ImageRef (..),
+      canonicalImagePlatforms,
+      harborMirrorSourceCandidates,
+      harborCertManagerAcmesolverImage,
+      harborCertManagerCainjectorImage,
+      harborCertManagerControllerImage,
+      harborCertManagerStartupApiCheckImage,
+      harborCertManagerWebhookImage,
+      harborCodeServerImage,
+      harborFrrImage,
+      harborGatewayImageRepository,
+      harborGatewayRepository,
+      harborImageRefFromSource,
+      harborKubeRbacProxyImage,
+      harborKeycloakImage,
+      harborMetallbControllerImage,
+      harborMetallbSpeakerImage,
+      harborMinioImage,
+      harborMinioMcImage,
+      harborMirrorProject,
+      harborMirrorTargetForSource,
+      harborPostgresImage,
+      harborRegistryEndpoint,
+      harborTraefikImage,
+      harborVscodeNginxImage,
+      normalizeImageRefText,
+      parseImageRef,
+      renderImageRef,
+      requiredPublicImageCandidatePairs,
+      requiredPublicImagePairs,
+    )
+where
+
+import Data.Char (isSpace)
+import Data.List (find, nub)
+
+data ImageRef = ImageRef
+    { imageRegistry :: String,
+      imageRepository :: String,
+      imageTag :: String
+    }
+    deriving (Eq, Show)
+
+harborRegistryEndpoint :: String
+harborRegistryEndpoint = "127.0.0.1:30080"
+
+harborMirrorProject :: String
+harborMirrorProject = "prodbox"
+
+harborGatewayRepository :: String
+harborGatewayRepository = harborMirrorProject ++ "/prodbox-gateway"
+
+harborGatewayImageRepository :: String
+harborGatewayImageRepository = harborRegistryEndpoint ++ "/" ++ harborGatewayRepository
+
+harborVscodeNginxImage :: ImageRef
+harborVscodeNginxImage =
+    ImageRef harborRegistryEndpoint (harborMirrorProject ++ "/prodbox-nginx-oidc") "latest"
+
+harborPostgresImage :: ImageRef
+harborPostgresImage = harborImageRefFromRepository "postgres-mirror" "16.4-bullseye"
+
+harborCodeServerImage :: ImageRef
+harborCodeServerImage = harborImageRefFromRepository "code-server-mirror" "4.98.2"
+
+harborKeycloakImage :: ImageRef
+harborKeycloakImage = harborImageRefFromRepository "keycloak-mirror" "26.0.0"
+
+harborMinioImage :: ImageRef
+harborMinioImage = harborImageRefFromRepository "minio-mirror" "RELEASE.2024-12-18T13-15-44Z"
+
+harborMinioMcImage :: ImageRef
+harborMinioMcImage = harborImageRefFromRepository "minio-mc-mirror" "RELEASE.2024-11-21T17-21-54Z"
+
+harborTraefikImage :: ImageRef
+harborTraefikImage = harborImageRefFromRepository "traefik-mirror" "v3.1.4"
+
+harborMetallbControllerImage :: ImageRef
+harborMetallbControllerImage = harborImageRefFromRepository "metallb-controller-mirror" "v0.14.9"
+
+harborMetallbSpeakerImage :: ImageRef
+harborMetallbSpeakerImage = harborImageRefFromRepository "metallb-speaker-mirror" "v0.14.9"
+
+harborFrrImage :: ImageRef
+harborFrrImage = harborImageRefFromRepository "frr-mirror" "9.1.0"
+
+harborKubeRbacProxyImage :: ImageRef
+harborKubeRbacProxyImage = harborImageRefFromRepository "kube-rbac-proxy-mirror" "v0.12.0"
+
+harborCertManagerControllerImage :: ImageRef
+harborCertManagerControllerImage = harborImageRefFromRepository "cert-manager-controller-mirror" "v1.16.2"
+
+harborCertManagerWebhookImage :: ImageRef
+harborCertManagerWebhookImage = harborImageRefFromRepository "cert-manager-webhook-mirror" "v1.16.2"
+
+harborCertManagerCainjectorImage :: ImageRef
+harborCertManagerCainjectorImage = harborImageRefFromRepository "cert-manager-cainjector-mirror" "v1.16.2"
+
+harborCertManagerAcmesolverImage :: ImageRef
+harborCertManagerAcmesolverImage = harborImageRefFromRepository "cert-manager-acmesolver-mirror" "v1.16.2"
+
+harborCertManagerStartupApiCheckImage :: ImageRef
+harborCertManagerStartupApiCheckImage = harborImageRefFromRepository "cert-manager-startupapicheck-mirror" "v1.16.2"
+
+canonicalImagePlatforms :: [(String, String)]
+canonicalImagePlatforms =
+    [ ("linux", "amd64"),
+      ("linux", "arm64")
+    ]
+
+data PublicImageMirror = PublicImageMirror
+    { publicImagePrimarySource :: ImageRef,
+      publicImageSourceAliases :: [ImageRef],
+      publicImageTarget :: ImageRef
+    }
+
+requiredPublicImagePairs :: [(String, String)]
+requiredPublicImagePairs =
+    [ renderedPair mirror
+    | mirror <- requiredPublicImageMirrors
+    ]
+  where
+    renderedPair mirror =
+        (renderImageRef (publicImagePrimarySource mirror), renderImageRef (publicImageTarget mirror))
+
+requiredPublicImageCandidatePairs :: [([String], String)]
+requiredPublicImageCandidatePairs =
+    [ (renderedSources mirror, renderImageRef (publicImageTarget mirror))
+    | mirror <- requiredPublicImageMirrors
+    ]
+  where
+    renderedSources mirror =
+        map renderImageRef (publicImagePrimarySource mirror : publicImageSourceAliases mirror)
+
+requiredPublicImageMirrors :: [PublicImageMirror]
+requiredPublicImageMirrors =
+    [ mirroredPublicImage
+        (ImageRef "public.ecr.aws" "docker/library/postgres" "16.4-bullseye")
+        [ImageRef "docker.io" "library/postgres" "16.4-bullseye"]
+        harborPostgresImage,
+      mirroredPublicImage
+        (ImageRef "ghcr.io" "coder/code-server" "4.98.2")
+        [ImageRef "docker.io" "codercom/code-server" "4.98.2"]
+        harborCodeServerImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "keycloak/keycloak" "26.0.0")
+        []
+        harborKeycloakImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "minio/minio" "RELEASE.2024-12-18T13-15-44Z")
+        []
+        harborMinioImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "minio/mc" "RELEASE.2024-11-21T17-21-54Z")
+        []
+        harborMinioMcImage,
+      mirroredPublicImage
+        (ImageRef "ghcr.io" "traefik/traefik" "v3.1.4")
+        [ImageRef "docker.io" "library/traefik" "v3.1.4"]
+        harborTraefikImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "metallb/controller" "v0.14.9")
+        []
+        harborMetallbControllerImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "metallb/speaker" "v0.14.9")
+        []
+        harborMetallbSpeakerImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "frrouting/frr" "9.1.0")
+        []
+        harborFrrImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "brancz/kube-rbac-proxy" "v0.12.0")
+        [ImageRef "gcr.io" "kubebuilder/kube-rbac-proxy" "v0.12.0"]
+        harborKubeRbacProxyImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "jetstack/cert-manager-controller" "v1.16.2")
+        []
+        harborCertManagerControllerImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "jetstack/cert-manager-webhook" "v1.16.2")
+        []
+        harborCertManagerWebhookImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "jetstack/cert-manager-cainjector" "v1.16.2")
+        []
+        harborCertManagerCainjectorImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "jetstack/cert-manager-acmesolver" "v1.16.2")
+        []
+        harborCertManagerAcmesolverImage,
+      mirroredPublicImage
+        (ImageRef "quay.io" "jetstack/cert-manager-startupapicheck" "v1.16.2")
+        []
+        harborCertManagerStartupApiCheckImage
+    ]
+
+mirroredPublicImage :: ImageRef -> [ImageRef] -> ImageRef -> PublicImageMirror
+mirroredPublicImage source aliases target =
+    PublicImageMirror
+        { publicImagePrimarySource = source,
+          publicImageSourceAliases = aliases,
+          publicImageTarget = target
+        }
+
+renderImageRef :: ImageRef -> String
+renderImageRef imageRef =
+    imageRegistry imageRef ++ "/" ++ imageRepository imageRef ++ ":" ++ imageTag imageRef
+
+normalizeImageRefText :: String -> Maybe String
+normalizeImageRefText rawRef =
+    either (const Nothing) (Just . renderImageRef) (parseImageRef rawRef)
+
+parseImageRef :: String -> Either String ImageRef
+parseImageRef rawRef =
+    let trimmed = trimWhitespace rawRef
+     in if trimmed == ""
+            then Left "image reference is empty"
+            else
+                if '@' `elem` trimmed
+                    then Left ("digested image references are not supported: " ++ trimmed)
+                    else
+                        let (registry, remainder) = splitRegistry trimmed
+                            normalizedRepository = normalizeRepository registry remainder
+                            (repository, tag) = splitTag normalizedRepository
+                         in if repository == "" || tag == ""
+                                then Left ("invalid image reference: " ++ trimmed)
+                                else Right (ImageRef registry repository tag)
+
+harborMirrorTargetForSource :: String -> Maybe String
+harborMirrorTargetForSource sourceRef =
+    either (const Nothing) resolveTarget (parseImageRef sourceRef)
+  where
+    resolveTarget source =
+        renderImageRef . publicImageTarget <$> find (matchesSource source) requiredPublicImageMirrors
+
+    matchesSource source mirror =
+        any ((== renderImageRef source) . renderImageRef) (publicImagePrimarySource mirror : publicImageSourceAliases mirror)
+
+harborMirrorSourceCandidates :: String -> Maybe [String]
+harborMirrorSourceCandidates sourceRef =
+    either (const Nothing) resolveCandidates (parseImageRef sourceRef)
+  where
+    resolveCandidates source =
+        orderedCandidateSources source <$> find (matchesSource source) requiredPublicImageMirrors
+
+    orderedCandidateSources source mirror =
+        nub (map renderImageRef (source : filter (/= source) (publicImagePrimarySource mirror : publicImageSourceAliases mirror)))
+
+    matchesSource source mirror =
+        any ((== renderImageRef source) . renderImageRef) (publicImagePrimarySource mirror : publicImageSourceAliases mirror)
+
+harborImageRefFromSource :: ImageRef -> ImageRef
+harborImageRefFromSource source =
+    ImageRef harborRegistryEndpoint (harborMirrorProject ++ "/" ++ mirroredRepository source) (imageTag source)
+
+harborImageRefFromRepository :: String -> String -> ImageRef
+harborImageRefFromRepository repository tag =
+    ImageRef harborRegistryEndpoint (harborMirrorProject ++ "/" ++ repository) tag
+
+mirroredRepository :: ImageRef -> String
+mirroredRepository source
+    | imageRegistry source == "docker.io" = imageRepository source
+    | otherwise = imageRegistry source ++ "/" ++ imageRepository source
+
+splitRegistry :: String -> (String, String)
+splitRegistry imageRef =
+    let (firstSegment, remainderWithSlash) = break (== '/') imageRef
+        hasPathSeparator = not (null remainderWithSlash)
+        hasRegistryPrefix = '.' `elem` firstSegment || ':' `elem` firstSegment || firstSegment == "localhost"
+     in if hasPathSeparator && hasRegistryPrefix
+            then (firstSegment, drop 1 remainderWithSlash)
+            else ("docker.io", imageRef)
+
+normalizeRepository :: String -> String -> String
+normalizeRepository registry remainder
+    | registry == "docker.io" && '/' `notElem` remainder = "library/" ++ remainder
+    | otherwise = remainder
+
+splitTag :: String -> (String, String)
+splitTag repositoryWithTag =
+    case break (== ':') (reverse repositoryWithTag) of
+        (reversedTag, ':' : reversedRepository)
+            | '/' `notElem` reversedTag ->
+                (reverse reversedRepository, reverse reversedTag)
+        _ -> (repositoryWithTag, "latest")
+
+trimWhitespace :: String -> String
+trimWhitespace = reverse . dropWhile isSpace . reverse . dropWhile isSpace

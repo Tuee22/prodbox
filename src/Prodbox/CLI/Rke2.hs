@@ -14,9 +14,14 @@ import Control.Exception
     )
 import Control.Monad (foldM)
 import Data.Aeson
-    ( Value,
+    ( FromJSON (parseJSON),
+      Value,
+      eitherDecode,
       encode,
       object,
+      withObject,
+      (.:),
+      (.:?),
       (.=),
     )
 import qualified Data.Aeson.Key as Key
@@ -28,7 +33,9 @@ import Data.Char
       toLower,
     )
 import Data.List
-    ( isInfixOf,
+    ( intercalate,
+      isInfixOf,
+      isPrefixOf,
       nub,
     )
 import Prodbox.CLI.Command
@@ -36,6 +43,7 @@ import Prodbox.CLI.Command
       Rke2Command (..),
     )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
+import qualified Prodbox.ContainerImage as ContainerImage
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
     ( ValidatedSettings (..),
@@ -48,8 +56,7 @@ import Prodbox.Subprocess
       runStreamingCommand,
     )
 import System.Directory
-    ( createDirectoryIfMissing,
-      doesDirectoryExist,
+    ( doesDirectoryExist,
       doesFileExist,
       getHomeDirectory,
       getTemporaryDirectory,
@@ -118,13 +125,13 @@ harborRepositoryUrl :: String
 harborRepositoryUrl = "https://helm.goharbor.io"
 
 harborRegistryEndpoint :: String
-harborRegistryEndpoint = "127.0.0.1:30080"
+harborRegistryEndpoint = ContainerImage.harborRegistryEndpoint
 
 harborMirrorProject :: String
-harborMirrorProject = "prodbox"
+harborMirrorProject = ContainerImage.harborMirrorProject
 
 harborGatewayRepository :: String
-harborGatewayRepository = "prodbox/prodbox-gateway"
+harborGatewayRepository = ContainerImage.harborGatewayRepository
 
 harborAdminUser :: String
 harborAdminUser = "admin"
@@ -158,6 +165,26 @@ minioChartRef = "minio/minio"
 
 minioChartVersion :: String
 minioChartVersion = "5.4.0"
+
+buildxBuilderName :: String
+buildxBuilderName = "prodbox-multiarch-hostnet"
+
+data CustomImageBuildMode
+    = CustomImageBuildDirect
+    | CustomImageBuildWithHaskellToolchain
+    deriving (Eq, Show)
+
+data CustomImageBuildPlan = CustomImageBuildPlan
+    { customImageDockerfile :: FilePath,
+      customImageBuildMode :: CustomImageBuildMode
+    }
+    deriving (Eq, Show)
+
+haskellToolchainBuildContextName :: String
+haskellToolchainBuildContextName = "haskell-toolchain"
+
+haskellToolchainImageRef :: String
+haskellToolchainImageRef = "haskell:9.6.7-slim"
 
 minioPersistentVolume :: String
 minioPersistentVolume = "prodbox-minio-pv-0"
@@ -301,8 +328,8 @@ runNativeInstall repoRoot = do
                               deleteNonManualStorageClasses repoRoot,
                               ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue,
                               ensureRetainedLocalStorage repoRoot settings prodboxId labelValue,
-                              ensureMinioRuntime repoRoot,
                               ensureHarborRegistryRuntime repoRoot prodboxId,
+                              ensureMinioRuntime repoRoot,
                               reconcileManagedAnnotations repoRoot prodboxId labelValue
                             ]
 
@@ -586,6 +613,14 @@ ensureMinioRuntime repoRoot = do
                           "--set",
                           "persistence.existingClaim=minio",
                           "--set",
+                          "image.repository=" ++ renderImageRefWithoutTag ContainerImage.harborMinioImage,
+                          "--set",
+                          "image.tag=" ++ ContainerImage.imageTag ContainerImage.harborMinioImage,
+                          "--set",
+                          "mcImage.repository=" ++ renderImageRefWithoutTag ContainerImage.harborMinioMcImage,
+                          "--set",
+                          "mcImage.tag=" ++ ContainerImage.imageTag ContainerImage.harborMinioMcImage,
+                          "--set",
                           "persistence.size=200Gi",
                           "--set",
                           "service.type=ClusterIP",
@@ -634,6 +669,13 @@ ensureHarborRegistryRuntime repoRoot prodboxId = do
             runSequentially
                 [ runCommand
                     CommandSpec
+                        { commandPath = "kubectl",
+                          commandArguments = ["delete", "namespace", harborNamespace, "--ignore-not-found=true", "--wait=true", "--timeout=300s"],
+                          commandEnvironment = Nothing,
+                          commandWorkingDirectory = Just repoRoot
+                        },
+                  runCommand
+                    CommandSpec
                         { commandPath = "helm",
                           commandArguments = ["repo", "update"],
                           commandEnvironment = Nothing,
@@ -657,7 +699,7 @@ ensureHarborRegistryRuntime repoRoot prodboxId = do
                               "--set",
                               "expose.nodePort.ports.http.nodePort=30080",
                               "--set",
-                              "externalURL=http://127.0.0.1:30080",
+                              "externalURL=http://" ++ harborRegistryEndpoint,
                               "--set",
                               "harborAdminPassword=Harbor12345",
                               "--set",
@@ -682,37 +724,46 @@ ensureHarborRegistryRuntime repoRoot prodboxId = do
                         case waitExit of
                             ExitFailure _ -> pure waitExit
                             ExitSuccess -> do
-                                loginExit <-
-                                    runCommand
-                                        CommandSpec
-                                            { commandPath = "docker",
-                                              commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword],
-                                              commandEnvironment = Nothing,
-                                              commandWorkingDirectory = Just repoRoot
-                                            }
-                                case loginExit of
-                                    ExitFailure _ -> pure loginExit
+                                harborEndpointExit <-
+                                    runSequentially
+                                        [ waitForHarborReadyEndpoint repoRoot,
+                                          waitForHarborRegistryEndpoint repoRoot,
+                                          waitForHarborStableEndpoints repoRoot
+                                        ]
+                                case harborEndpointExit of
+                                    ExitFailure _ -> pure harborEndpointExit
                                     ExitSuccess -> do
-                                        projectExit <-
-                                            runSequentially
-                                                [ ensureHarborProject repoRoot projectName
-                                                | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
-                                                ]
-                                        case projectExit of
-                                            ExitFailure _ -> pure projectExit
+                                        loginExit <-
+                                            runCommand
+                                                CommandSpec
+                                                    { commandPath = "docker",
+                                                      commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword],
+                                                      commandEnvironment = Nothing,
+                                                      commandWorkingDirectory = Just repoRoot
+                                                    }
+                                        case loginExit of
+                                            ExitFailure _ -> pure loginExit
                                             ExitSuccess -> do
-                                                mirrorExit <- mirrorClusterImagesOnce repoRoot
-                                                case mirrorExit of
-                                                    ExitFailure _ -> pure mirrorExit
+                                                projectExit <-
+                                                    runSequentially
+                                                        [ ensureHarborProject repoRoot projectName
+                                                        | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
+                                                        ]
+                                                case projectExit of
+                                                    ExitFailure _ -> pure projectExit
                                                     ExitSuccess -> do
-                                                        gatewayExit <- ensureGatewayImages repoRoot prodboxId
-                                                        case gatewayExit of
-                                                            ExitFailure _ -> pure gatewayExit
+                                                        mirrorExit <- mirrorClusterImagesOnce repoRoot
+                                                        case mirrorExit of
+                                                            ExitFailure _ -> pure mirrorExit
                                                             ExitSuccess -> do
-                                                                vscodeExit <- ensureVscodeNginxImage repoRoot
-                                                                case vscodeExit of
-                                                                    ExitFailure _ -> pure vscodeExit
-                                                                    ExitSuccess -> ensureRke2RegistriesConfig repoRoot
+                                                                gatewayExit <- ensureGatewayImages repoRoot prodboxId
+                                                                case gatewayExit of
+                                                                    ExitFailure _ -> pure gatewayExit
+                                                                    ExitSuccess -> do
+                                                                        vscodeExit <- ensureVscodeNginxImage repoRoot
+                                                                        case vscodeExit of
+                                                                            ExitFailure _ -> pure vscodeExit
+                                                                            ExitSuccess -> ensureRke2RegistriesConfig repoRoot
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -730,6 +781,98 @@ waitForDeployment repoRoot namespace deploymentName =
               commandEnvironment = Nothing,
               commandWorkingDirectory = Just repoRoot
             }
+
+waitForHarborReadyEndpoint :: FilePath -> IO ExitCode
+waitForHarborReadyEndpoint repoRoot =
+    waitForHarborHttpStatus repoRoot harborReadyPath ["200"] "Harbor nginx readiness endpoint"
+
+waitForHarborRegistryEndpoint :: FilePath -> IO ExitCode
+waitForHarborRegistryEndpoint repoRoot =
+    waitForHarborHttpStatus repoRoot "/v2/" ["200", "401"] "Harbor registry endpoint"
+
+waitForHarborStableEndpoints :: FilePath -> IO ExitCode
+waitForHarborStableEndpoints repoRoot =
+    go harborEndpointStabilityAttempts 0 "Harbor endpoints not yet checked"
+  where
+    go :: Int -> Int -> String -> IO ExitCode
+    go attemptsRemaining consecutiveSuccesses lastDetail
+        | consecutiveSuccesses >= harborEndpointStabilitySuccesses = pure ExitSuccess
+        | attemptsRemaining <= 0 =
+            failWith
+                ( "Failed to observe stable Harbor endpoints before continuing: "
+                    ++ lastDetail
+                )
+        | otherwise = do
+            readyStatusResult <- probeHarborHttpStatus repoRoot harborReadyPath
+            registryStatusResult <- probeHarborHttpStatus repoRoot "/v2/"
+            case (readyStatusResult, registryStatusResult) of
+                (Right "200", Right registryStatus)
+                    | registryStatus `elem` ["200", "401"] ->
+                        let nextSuccesses = consecutiveSuccesses + 1
+                         in if nextSuccesses >= harborEndpointStabilitySuccesses
+                                then pure ExitSuccess
+                                else retry attemptsRemaining nextSuccesses "Harbor endpoints are stable"
+                (Left err, _) -> retry attemptsRemaining 0 err
+                (_, Left err) -> retry attemptsRemaining 0 err
+                (Right readyStatus, Right registryStatus) ->
+                    retry
+                        attemptsRemaining
+                        0
+                        ( "unexpected Harbor statuses: /readyz="
+                            ++ readyStatus
+                            ++ ", /v2/="
+                            ++ registryStatus
+                        )
+
+    retry :: Int -> Int -> String -> IO ExitCode
+    retry attemptsRemaining consecutiveSuccesses detail = do
+        threadDelay harborEndpointStabilityDelayMicroseconds
+        go (attemptsRemaining - 1) consecutiveSuccesses detail
+
+waitForHarborHttpStatus :: FilePath -> String -> [String] -> String -> IO ExitCode
+waitForHarborHttpStatus repoRoot path expectedStatuses description =
+    go harborEndpointReadinessAttempts "HTTP endpoint not yet checked"
+  where
+    go :: Int -> String -> IO ExitCode
+    go attemptsRemaining lastDetail
+        | attemptsRemaining <= 0 =
+            failWith ("Failed to observe " ++ description ++ " before continuing: " ++ lastDetail)
+        | otherwise = do
+            statusResult <- probeHarborHttpStatus repoRoot path
+            case statusResult of
+                Left err -> retry attemptsRemaining err
+                Right statusCode ->
+                    if statusCode `elem` expectedStatuses
+                        then pure ExitSuccess
+                        else retry attemptsRemaining ("HTTP " ++ statusCode)
+
+    retry :: Int -> String -> IO ExitCode
+    retry attemptsRemaining detail = do
+        threadDelay harborEndpointReadinessDelayMicroseconds
+        go (attemptsRemaining - 1) detail
+
+probeHarborHttpStatus :: FilePath -> String -> IO (Either String String)
+probeHarborHttpStatus repoRoot path = do
+    outputResult <-
+        captureToolOutput
+            repoRoot
+            "curl"
+            [ "-sS",
+              "--max-time",
+              "5",
+              "-o",
+              "/dev/null",
+              "-w",
+              "%{http_code}",
+              "http://" ++ harborRegistryEndpoint ++ path
+            ]
+    pure $
+        case outputResult of
+            Left err -> Left err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess -> Right (trimWhitespace (processStdout output))
+                    ExitFailure _ -> Left (outputDetail output)
 
 ensureHarborNginxReadinessContract :: FilePath -> IO ExitCode
 ensureHarborNginxReadinessContract repoRoot = do
@@ -873,20 +1016,65 @@ ensureHarborProject repoRoot projectName = do
                             ++ statusCode
                         )
 
+data ManifestPlatform = ManifestPlatform
+    { manifestPlatformOs :: String,
+      manifestPlatformArchitecture :: String
+    }
+
+instance FromJSON ManifestPlatform where
+    parseJSON =
+        withObject "ManifestPlatform" $ \payload ->
+            ManifestPlatform
+                <$> payload .: "os"
+                <*> payload .: "architecture"
+
+data ManifestDescriptor = ManifestDescriptor
+    { manifestDescriptorDigest :: Maybe String,
+      manifestDescriptorPlatform :: Maybe ManifestPlatform
+    }
+
+instance FromJSON ManifestDescriptor where
+    parseJSON =
+        withObject "ManifestDescriptor" $ \payload ->
+            ManifestDescriptor
+                <$> payload .:? "digest"
+                <*> payload .:? "platform"
+
+data RawImageManifest = RawImageManifest
+    { rawImageManifestManifests :: Maybe [ManifestDescriptor],
+      rawImageManifestOs :: Maybe String,
+      rawImageManifestArchitecture :: Maybe String
+    }
+
+instance FromJSON RawImageManifest where
+    parseJSON =
+        withObject "RawImageManifest" $ \payload ->
+            RawImageManifest
+                <$> payload .:? "manifests"
+                <*> payload .:? "os"
+                <*> payload .:? "architecture"
+
 mirrorClusterImagesOnce :: FilePath -> IO ExitCode
 mirrorClusterImagesOnce repoRoot = do
     imagesResult <- collectClusterImages repoRoot
     case imagesResult of
         Left err -> failWith err
         Right images ->
-            runSequentially
-                [ ensureMirroredClusterImage repoRoot source target
-                | image <- images,
-                  Just source <- [normalizeDockerhubImageRef image],
-                  Just sourcePath <- [stripPrefix "docker.io/" source],
-                  not ("goharbor/" `isInfixOf` sourcePath),
-                  Just target <- [mirrorTargetForSource source]
-                ]
+            let requiredPairs = ContainerImage.requiredPublicImageCandidatePairs
+                discoveredPairs =
+                    [ (sources, target)
+                    | image <- images,
+                      Just source <- [ContainerImage.normalizeImageRefText image],
+                      not (isHarborBootstrapImage source),
+                      not (isHarborHostedImage source),
+                      Just target <- [ContainerImage.harborMirrorTargetForSource source],
+                      Just sources <- [ContainerImage.harborMirrorSourceCandidates source]
+                    ]
+                imagePairs = mergeMirrorCandidatePairs (discoveredPairs ++ requiredPairs)
+             in runSequentially
+                    [ ensureMirroredClusterImage repoRoot sources target
+                    | (sources, target) <- imagePairs
+                    ]
 
 collectClusterImages :: FilePath -> IO (Either String [String])
 collectClusterImages repoRoot = do
@@ -897,7 +1085,7 @@ collectClusterImages repoRoot = do
               "pods",
               "-A",
               "-o",
-              "jsonpath={range .items[*]}{range .spec.containers[*]}{.image}{\\n}{end}{end}"
+              "jsonpath={range .items[*]}{range .spec.initContainers[*]}{.image}{\"\\n\"}{end}{range .spec.containers[*]}{.image}{\"\\n\"}{end}{end}"
             ]
     pure $ do
         output <- outputResult
@@ -905,151 +1093,444 @@ collectClusterImages repoRoot = do
             ExitFailure _ -> Left ("Failed to list cluster container images: " ++ outputDetail output)
             ExitSuccess -> Right (nub (filter (/= "") (lines (processStdout output))))
 
-ensureMirroredClusterImage :: FilePath -> String -> String -> IO ExitCode
-ensureMirroredClusterImage repoRoot source target = do
-    inspectResult <- captureToolOutput repoRoot "docker" ["manifest", "inspect", target]
-    case inspectResult of
+ensureMirroredClusterImage :: FilePath -> [String] -> String -> IO ExitCode
+ensureMirroredClusterImage repoRoot sourceCandidates target = do
+    targetPlatformsResult <- inspectImagePlatforms repoRoot target
+    case targetPlatformsResult of
         Left err -> failWith err
-        Right inspectOutput ->
-            case processExitCode inspectOutput of
-                ExitSuccess -> pure ExitSuccess
-                ExitFailure _ -> do
-                    pullExit <-
-                        runCommand
-                            CommandSpec
-                                { commandPath = "docker",
-                                  commandArguments = ["pull", source],
-                                  commandEnvironment = Nothing,
-                                  commandWorkingDirectory = Just repoRoot
-                                }
-                    case pullExit of
-                        ExitFailure _ -> pure pullExit
-                        ExitSuccess -> do
-                            tagExit <-
-                                runCommand
-                                    CommandSpec
-                                        { commandPath = "docker",
-                                          commandArguments = ["tag", source, target],
-                                          commandEnvironment = Nothing,
-                                          commandWorkingDirectory = Just repoRoot
-                                        }
-                            case tagExit of
-                                ExitFailure _ -> pure tagExit
-                                ExitSuccess -> pushDockerImageWithRetry repoRoot target
+        Right (Just targetPlatforms)
+            | supportsCanonicalImagePlatforms targetPlatforms -> pure ExitSuccess
+        Right _ -> do
+            sourceManifestResult <- selectCanonicalMirrorSource repoRoot sourceCandidates target
+            case sourceManifestResult of
+                Left err -> failWith err
+                Right (source, sourceManifest) -> do
+                    purgeExit <- purgeHarborMirrorTarget repoRoot target
+                    case purgeExit of
+                        ExitFailure _ -> pure purgeExit
+                        ExitSuccess -> pushCanonicalMirrorTarget repoRoot source sourceManifest target
 
 ensureGatewayImages :: FilePath -> String -> IO ExitCode
 ensureGatewayImages repoRoot prodboxId = do
     let gatewayTag = prodboxIdToLabelValue prodboxId
-        gatewayImage = harborRegistryEndpoint ++ "/" ++ harborGatewayRepository ++ ":" ++ gatewayTag
-        latestImage = harborRegistryEndpoint ++ "/" ++ harborGatewayRepository ++ ":latest"
-    inspectResult <- captureToolOutput repoRoot "docker" ["manifest", "inspect", gatewayImage]
-    case inspectResult of
+        gatewayImage = ContainerImage.harborGatewayImageRepository ++ ":" ++ gatewayTag
+        latestImage = ContainerImage.harborGatewayImageRepository ++ ":latest"
+    ensureCustomImageVariants
+        repoRoot
+        CustomImageBuildPlan
+            { customImageDockerfile = "docker/gateway.Dockerfile",
+              customImageBuildMode = CustomImageBuildWithHaskellToolchain
+            }
+        [gatewayImage, latestImage]
+        gatewayImage
+
+ensureVscodeNginxImage :: FilePath -> IO ExitCode
+ensureVscodeNginxImage repoRoot = do
+    let imageRef = ContainerImage.renderImageRef ContainerImage.harborVscodeNginxImage
+    ensureCustomImageVariants
+        repoRoot
+        CustomImageBuildPlan
+            { customImageDockerfile = "docker/nginx-oidc.Dockerfile",
+              customImageBuildMode = CustomImageBuildDirect
+            }
+        [imageRef]
+        imageRef
+
+ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
+ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
+    readinessResult <- mapM (inspectImagePlatforms repoRoot) taggedRefs
+    case sequence readinessResult of
         Left err -> failWith err
-        Right inspectOutput -> do
-            ensureImageExit <-
-                case processExitCode inspectOutput of
-                    ExitSuccess ->
-                        runCommand
-                            CommandSpec
-                                { commandPath = "docker",
-                                  commandArguments = ["pull", gatewayImage],
-                                  commandEnvironment = Nothing,
-                                  commandWorkingDirectory = Just repoRoot
-                                }
-                    ExitFailure _ ->
-                        runSequentially
-                            [ runCommand
-                                CommandSpec
-                                    { commandPath = "docker",
-                                      commandArguments = ["build", "-f", "docker/gateway.Dockerfile", "-t", gatewayImage, "."],
-                                      commandEnvironment = Nothing,
-                                      commandWorkingDirectory = Just repoRoot
-                                    },
-                              pushDockerImageWithRetry repoRoot gatewayImage
-                            ]
-            case ensureImageExit of
-                ExitFailure _ -> pure ensureImageExit
+        Right maybePlatforms -> do
+            let allTargetsReady = all (maybe False supportsCanonicalImagePlatforms) maybePlatforms
+            buildExit <-
+                if allTargetsReady
+                    then pure ExitSuccess
+                    else do
+                        builderExit <- ensureDockerBuildxBuilder repoRoot
+                        case builderExit of
+                            ExitFailure _ -> pure builderExit
+                            ExitSuccess ->
+                                buildMissingCustomImageVariants repoRoot buildPlan taggedRefs
+            case buildExit of
+                ExitFailure _ -> pure buildExit
                 ExitSuccess ->
                     runSequentially
                         [ runCommand
                             CommandSpec
                                 { commandPath = "docker",
-                                  commandArguments = ["tag", gatewayImage, latestImage],
+                                  commandArguments = ["pull", importRef],
                                   commandEnvironment = Nothing,
                                   commandWorkingDirectory = Just repoRoot
                                 },
-                          pushDockerImageWithRetry repoRoot latestImage,
-                          importImageIntoRke2Containerd repoRoot gatewayImage
+                          importImageIntoRke2Containerd repoRoot importRef
                         ]
 
-ensureVscodeNginxImage :: FilePath -> IO ExitCode
-ensureVscodeNginxImage repoRoot = do
-    let imageRef = harborRegistryEndpoint ++ "/prodbox/prodbox-nginx-oidc:latest"
-    inspectResult <- captureToolOutput repoRoot "docker" ["manifest", "inspect", imageRef]
-    case inspectResult of
-        Left err -> failWith err
-        Right inspectOutput -> do
-            ensureImageExit <-
-                case processExitCode inspectOutput of
+buildMissingCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
+buildMissingCustomImageVariants repoRoot buildPlan taggedRefs =
+    case customImageBuildMode buildPlan of
+        CustomImageBuildDirect ->
+            runCommand
+                CommandSpec
+                    { commandPath = "docker",
+                      commandArguments =
+                        [ "buildx",
+                          "build",
+                          "--platform",
+                          canonicalPlatformArgument,
+                          "--push",
+                          "-f",
+                          customImageDockerfile buildPlan
+                        ]
+                            ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
+                            ++ ["."],
+                      commandEnvironment = Nothing,
+                      commandWorkingDirectory = Just repoRoot
+                    }
+        CustomImageBuildWithHaskellToolchain ->
+            buildCustomImageVariantsWithHaskellToolchain repoRoot buildPlan taggedRefs
+
+buildCustomImageVariantsWithHaskellToolchain :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
+buildCustomImageVariantsWithHaskellToolchain repoRoot buildPlan taggedRefs =
+    let manifestSourcesResult =
+            sequence
+                [ do
+                    platformRefs <- traverse (`stagedImageRefForPlatform` tagRef) ContainerImage.canonicalImagePlatforms
+                    pure (tagRef, platformRefs)
+                | tagRef <- taggedRefs
+                ]
+     in case manifestSourcesResult of
+            Left err -> failWith err
+            Right manifestSources -> do
+                buildExit <-
+                    runSequentially
+                        [ buildSinglePlatformCustomImage repoRoot buildPlan platform taggedRefs
+                        | platform <- ContainerImage.canonicalImagePlatforms
+                        ]
+                case buildExit of
+                    ExitFailure _ -> pure buildExit
                     ExitSuccess ->
-                        runCommand
-                            CommandSpec
-                                { commandPath = "docker",
-                                  commandArguments = ["pull", imageRef],
-                                  commandEnvironment = Nothing,
-                                  commandWorkingDirectory = Just repoRoot
-                                }
-                    ExitFailure _ ->
                         runSequentially
                             [ runCommand
                                 CommandSpec
                                     { commandPath = "docker",
-                                      commandArguments = ["build", "-f", "docker/nginx-oidc.Dockerfile", "-t", imageRef, "."],
+                                      commandArguments = ["buildx", "imagetools", "create", "--tag", targetRef] ++ platformRefs,
                                       commandEnvironment = Nothing,
                                       commandWorkingDirectory = Just repoRoot
-                                    },
-                              pushDockerImageWithRetry repoRoot imageRef
+                                    }
+                            | (targetRef, platformRefs) <- manifestSources
                             ]
-            case ensureImageExit of
-                ExitFailure _ -> pure ensureImageExit
-                ExitSuccess -> importImageIntoRke2Containerd repoRoot imageRef
 
-pushDockerImageWithRetry :: FilePath -> String -> IO ExitCode
-pushDockerImageWithRetry repoRoot imageRef = do
-    firstResult <- captureToolOutput repoRoot "docker" ["push", imageRef]
-    case firstResult of
+buildSinglePlatformCustomImage :: FilePath -> CustomImageBuildPlan -> (String, String) -> [String] -> IO ExitCode
+buildSinglePlatformCustomImage repoRoot buildPlan platform taggedRefs =
+    case traverse (stagedImageRefForPlatform platform) taggedRefs of
         Left err -> failWith err
-        Right firstOutput ->
-            case processExitCode firstOutput of
-                ExitSuccess -> pure ExitSuccess
-                ExitFailure _ ->
-                    let detail = map toLower (outputDetail firstOutput)
-                     in if not ("unauthorized" `isInfixOf` detail || "denied" `isInfixOf` detail)
-                            then failWith ("docker push " ++ imageRef ++ " failed: " ++ outputDetail firstOutput)
-                            else do
-                                loginExit <-
-                                    runCommand
-                                        CommandSpec
-                                            { commandPath = "docker",
-                                              commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword],
-                                              commandEnvironment = Nothing,
-                                              commandWorkingDirectory = Just repoRoot
-                                            }
-                                case loginExit of
-                                    ExitFailure _ -> pure loginExit
-                                    ExitSuccess -> do
-                                        projectExit <- ensureHarborProject repoRoot (harborProjectFromImageRef imageRef)
-                                        case projectExit of
-                                            ExitFailure _ -> pure projectExit
-                                            ExitSuccess -> do
-                                                threadDelay 2000000
-                                                runCommand
-                                                    CommandSpec
-                                                        { commandPath = "docker",
-                                                          commandArguments = ["push", imageRef],
-                                                          commandEnvironment = Nothing,
-                                                          commandWorkingDirectory = Just repoRoot
-                                                        }
+        Right stagedRefs ->
+            runCommand
+                CommandSpec
+                    { commandPath = "docker",
+                      commandArguments =
+                        [ "buildx",
+                          "build",
+                          "--platform",
+                          renderPlatformArgument platform,
+                          "--build-context",
+                          haskellToolchainBuildContextName ++ "=docker-image://docker.io/library/" ++ haskellToolchainImageRef,
+                          "--push",
+                          "-f",
+                          customImageDockerfile buildPlan
+                        ]
+                            ++ concat [["-t", tagRef] | tagRef <- stagedRefs]
+                            ++ ["."],
+                      commandEnvironment = Nothing,
+                      commandWorkingDirectory = Just repoRoot
+                    }
+
+stagedImageRefForPlatform :: (String, String) -> String -> Either String String
+stagedImageRefForPlatform platform targetRef = do
+    imageRef <- ContainerImage.parseImageRef targetRef
+    pure
+        ( ContainerImage.renderImageRef
+            imageRef
+                { ContainerImage.imageTag =
+                    ContainerImage.imageTag imageRef ++ renderPlatformTagSuffix platform
+                }
+        )
+
+renderPlatformArgument :: (String, String) -> String
+renderPlatformArgument (osName, architecture) = osName ++ "/" ++ architecture
+
+renderPlatformLabel :: (String, String) -> String
+renderPlatformLabel (osName, architecture) = osName ++ "-" ++ architecture
+
+renderPlatformTagSuffix :: (String, String) -> String
+renderPlatformTagSuffix platform = "-" ++ renderPlatformLabel platform
+
+inspectImagePlatforms :: FilePath -> String -> IO (Either String (Maybe [(String, String)]))
+inspectImagePlatforms repoRoot imageRef = do
+    manifestResult <- inspectRawImageManifest repoRoot imageRef
+    pure (fmap (fmap manifestPlatforms) manifestResult)
+
+inspectRawImageManifest :: FilePath -> String -> IO (Either String (Maybe RawImageManifest))
+inspectRawImageManifest repoRoot imageRef = do
+    inspectResult <- captureToolOutput repoRoot "docker" ["buildx", "imagetools", "inspect", "--raw", imageRef]
+    pure $
+        case inspectResult of
+            Left err -> Left err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess ->
+                        case eitherDecode (BL8.pack (processStdout output)) of
+                            Left decodeErr ->
+                                Left
+                                    ( "Failed to decode raw image manifest for "
+                                        ++ imageRef
+                                        ++ ": "
+                                        ++ decodeErr
+                                    )
+                            Right manifest -> Right (Just manifest)
+                    ExitFailure _ ->
+                        if isBuildxUnavailable (outputDetail output)
+                            then Left "docker buildx imagetools support is required for the Harbor multi-arch reconcile path"
+                            else Right Nothing
+
+purgeHarborMirrorTarget :: FilePath -> String -> IO ExitCode
+purgeHarborMirrorTarget repoRoot target =
+    case parseHarborTargetRepository target of
+        Left err -> failWith err
+        Right Nothing -> pure ExitSuccess
+        Right (Just (projectName, repositoryName)) -> do
+            outputResult <-
+                captureToolOutput
+                    repoRoot
+                    "curl"
+                    [ "-sS",
+                      "-u",
+                      harborAdminUser ++ ":" ++ harborAdminPassword,
+                      "-X",
+                      "DELETE",
+                      "-o",
+                      "/dev/null",
+                      "-w",
+                      "%{http_code}",
+                      "http://" ++ harborRegistryEndpoint ++ "/api/v2.0/projects/" ++ projectName ++ "/repositories/" ++ encodeHarborRepositoryName repositoryName
+                    ]
+            case outputResult of
+                Left err -> failWith err
+                Right output ->
+                    case trimWhitespace (processStdout output) of
+                        "200" -> pure ExitSuccess
+                        "201" -> pure ExitSuccess
+                        "202" -> pure ExitSuccess
+                        "204" -> pure ExitSuccess
+                        "404" -> pure ExitSuccess
+                        statusCode ->
+                            failWith
+                                ( "Failed to reset Harbor mirror target '"
+                                    ++ target
+                                    ++ "': HTTP "
+                                    ++ statusCode
+                                )
+
+parseHarborTargetRepository :: String -> Either String (Maybe (String, String))
+parseHarborTargetRepository target = do
+    imageRef <- ContainerImage.parseImageRef target
+    if ContainerImage.imageRegistry imageRef /= harborRegistryEndpoint
+        then Right Nothing
+        else
+            case break (== '/') (ContainerImage.imageRepository imageRef) of
+                (projectName, '/' : repositoryName)
+                    | projectName /= "" && repositoryName /= "" ->
+                        Right (Just (projectName, repositoryName))
+                _ ->
+                    Left ("invalid Harbor image repository path: " ++ ContainerImage.imageRepository imageRef)
+
+encodeHarborRepositoryName :: String -> String
+encodeHarborRepositoryName =
+    concatMap encodeCharacter
+  where
+    encodeCharacter '/' = "%252F"
+    encodeCharacter character = [character]
+
+pushCanonicalMirrorTarget :: FilePath -> String -> RawImageManifest -> String -> IO ExitCode
+pushCanonicalMirrorTarget repoRoot source sourceManifest target =
+    case buildCanonicalMirrorSourceRefs source sourceManifest of
+        Left err -> failWith err
+        Right sourceRefs ->
+            runCommand
+                CommandSpec
+                    { commandPath = "docker",
+                      commandArguments = ["buildx", "imagetools", "create", "--tag", target] ++ sourceRefs,
+                      commandEnvironment = Nothing,
+                      commandWorkingDirectory = Just repoRoot
+                    }
+
+buildCanonicalMirrorSourceRefs :: String -> RawImageManifest -> Either String [String]
+buildCanonicalMirrorSourceRefs source sourceManifest = do
+    imageRef <- ContainerImage.parseImageRef source
+    descriptors <-
+        case rawImageManifestManifests sourceManifest of
+            Just manifestDescriptors -> Right manifestDescriptors
+            Nothing -> Left ("Source image is missing manifest descriptors for Harbor mirroring: " ++ source)
+    traverse (buildPlatformSourceRef imageRef descriptors) ContainerImage.canonicalImagePlatforms
+  where
+    buildPlatformSourceRef imageRef descriptors (osName, architecture) =
+        case
+            [ digest
+            | descriptor <- descriptors,
+              Just platform <- [manifestDescriptorPlatform descriptor],
+              manifestPlatformOs platform == osName,
+              manifestPlatformArchitecture platform == architecture,
+              Just digest <- [manifestDescriptorDigest descriptor]
+            ] of
+            digest : _ ->
+                Right (renderDigestedImageRef imageRef digest)
+            [] ->
+                Left
+                    ( "Source image is missing a published digest for "
+                        ++ osName
+                        ++ "/"
+                        ++ architecture
+                        ++ ": "
+                        ++ source
+                    )
+
+selectCanonicalMirrorSource :: FilePath -> [String] -> String -> IO (Either String (String, RawImageManifest))
+selectCanonicalMirrorSource repoRoot sourceCandidates target = go [] sourceCandidates
+  where
+    go diagnostics [] =
+        let detail =
+                if null diagnostics
+                    then "Tried: " ++ intercalate ", " sourceCandidates
+                    else intercalate " | " (reverse diagnostics)
+         in pure
+                ( Left
+                    ( "Unable to select a canonical upstream mirror source for "
+                        ++ target
+                        ++ ". "
+                        ++ detail
+                    )
+                )
+    go diagnostics (source : remainingSources) = do
+        sourceManifestResult <- inspectRawImageManifest repoRoot source
+        case sourceManifestResult of
+            Left err -> pure (Left err)
+            Right (Just sourceManifest)
+                | supportsCanonicalImagePlatforms (manifestPlatforms sourceManifest) ->
+                    pure (Right (source, sourceManifest))
+                | otherwise ->
+                    go
+                        ( ( "Image "
+                                ++ source
+                                ++ " does not publish both linux/amd64 and linux/arm64 variants"
+                          )
+                            : diagnostics
+                        )
+                        remainingSources
+            Right Nothing ->
+                go
+                    (("Source image is unavailable for Harbor mirroring: " ++ source) : diagnostics)
+                    remainingSources
+
+mergeMirrorCandidatePairs :: [([String], String)] -> [([String], String)]
+mergeMirrorCandidatePairs = foldl mergePair []
+  where
+    mergePair [] (sources, target) = [(nub sources, target)]
+    mergePair ((existingSources, existingTarget) : rest) (sources, target)
+        | target == existingTarget = (nub (existingSources ++ sources), target) : rest
+        | otherwise = (existingSources, existingTarget) : mergePair rest (sources, target)
+
+renderDigestedImageRef :: ContainerImage.ImageRef -> String -> String
+renderDigestedImageRef imageRef digest =
+    ContainerImage.imageRegistry imageRef ++ "/" ++ ContainerImage.imageRepository imageRef ++ "@" ++ digest
+
+ensureDockerBuildxBuilder :: FilePath -> IO ExitCode
+ensureDockerBuildxBuilder repoRoot = do
+    createResult <-
+        captureToolOutput
+            repoRoot
+            "docker"
+            [ "buildx",
+              "create",
+              "--name",
+              buildxBuilderName,
+              "--driver",
+              "docker-container",
+              "--driver-opt",
+              "network=host",
+              "--use"
+            ]
+    case createResult of
+        Left err -> failWith err
+        Right output ->
+            case processExitCode output of
+                ExitSuccess -> bootstrapBuilder
+                ExitFailure _
+                    | buildxBuilderAlreadyExists (outputDetail output) -> useAndBootstrapBuilder
+                    | isBuildxUnavailable (outputDetail output) ->
+                        failWith "docker buildx support is required for multi-platform custom image builds"
+                    | otherwise ->
+                        failWith ("Failed to create Docker buildx builder: " ++ outputDetail output)
+  where
+    useAndBootstrapBuilder =
+        runSequentially
+            [ runCommand
+                CommandSpec
+                    { commandPath = "docker",
+                      commandArguments = ["buildx", "use", buildxBuilderName],
+                      commandEnvironment = Nothing,
+                      commandWorkingDirectory = Just repoRoot
+                    },
+              bootstrapBuilder
+            ]
+
+    bootstrapBuilder =
+        runCommand
+            CommandSpec
+                { commandPath = "docker",
+                  commandArguments = ["buildx", "inspect", "--bootstrap", buildxBuilderName],
+                  commandEnvironment = Nothing,
+                  commandWorkingDirectory = Just repoRoot
+                }
+
+buildxBuilderAlreadyExists :: String -> Bool
+buildxBuilderAlreadyExists detail =
+    let lowered = map toLower detail
+     in "existing instance" `isInfixOf` lowered || "already exists" `isInfixOf` lowered
+
+manifestPlatforms :: RawImageManifest -> [(String, String)]
+manifestPlatforms manifest =
+    nub $
+        case rawImageManifestManifests manifest of
+            Just descriptors ->
+                [ (manifestPlatformOs platform, manifestPlatformArchitecture platform)
+                | descriptor <- descriptors,
+                  Just platform <- [manifestDescriptorPlatform descriptor]
+                ]
+            Nothing ->
+                case (rawImageManifestOs manifest, rawImageManifestArchitecture manifest) of
+                    (Just osName, Just architecture) -> [(osName, architecture)]
+                    _ -> []
+
+supportsCanonicalImagePlatforms :: [(String, String)] -> Bool
+supportsCanonicalImagePlatforms platforms =
+    all (`elem` platforms) ContainerImage.canonicalImagePlatforms
+
+canonicalPlatformArgument :: String
+canonicalPlatformArgument = "linux/amd64,linux/arm64"
+
+isBuildxUnavailable :: String -> Bool
+isBuildxUnavailable detail =
+    let lowered = map toLower detail
+     in "buildx" `isInfixOf` lowered
+            && ("not a docker command" `isInfixOf` lowered || "unknown command" `isInfixOf` lowered)
+
+isHarborHostedImage :: String -> Bool
+isHarborHostedImage imageRef =
+    (harborRegistryEndpoint ++ "/") `isPrefixOf` imageRef
+
+isHarborBootstrapImage :: String -> Bool
+isHarborBootstrapImage imageRef = "goharbor/" `isInfixOf` imageRef
 
 importImageIntoRke2Containerd :: FilePath -> String -> IO ExitCode
 importImageIntoRke2Containerd repoRoot imageRef = do
@@ -1554,8 +2035,8 @@ annotateResourceSet repoRoot maybeNamespace resource maybeSelector prodboxId lab
             repoRoot
             ( appendNamespaceArgs maybeNamespace
                 ( ["annotate", resource]
-                    ++ selectorArgs maybeSelector
-                    ++ ["--all", prodboxAnnotationKey ++ "=" ++ prodboxId, "--overwrite"]
+                    ++ resourceSelectionArgs maybeSelector
+                    ++ [prodboxAnnotationKey ++ "=" ++ prodboxId, "--overwrite"]
                 )
             )
     case annotateResult of
@@ -1572,8 +2053,8 @@ annotateResourceSet repoRoot maybeNamespace resource maybeSelector prodboxId lab
                                     repoRoot
                                     ( appendNamespaceArgs maybeNamespace
                                         ( ["label", resource]
-                                            ++ selectorArgs maybeSelector
-                                            ++ ["--all", prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
+                                            ++ resourceSelectionArgs maybeSelector
+                                            ++ [prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
                                         )
                                     )
                             case labelResult of
@@ -1590,9 +2071,9 @@ appendNamespaceArgs :: Maybe String -> [String] -> [String]
 appendNamespaceArgs Nothing args = args
 appendNamespaceArgs (Just namespace) args = args ++ ["-n", namespace]
 
-selectorArgs :: Maybe String -> [String]
-selectorArgs Nothing = []
-selectorArgs (Just selector) = ["-l", selector]
+resourceSelectionArgs :: Maybe String -> [String]
+resourceSelectionArgs Nothing = ["--all"]
+resourceSelectionArgs (Just selector) = ["-l", selector]
 
 runEitherActions :: [IO (Either String ())] -> IO (Either String ())
 runEitherActions =
@@ -1766,11 +2247,11 @@ renderRke2RegistriesYaml =
         [ "mirrors:",
           "  docker.io:",
           "    endpoint:",
-          "      - \"http://127.0.0.1:30080\"",
+          "      - \"http://" ++ harborRegistryEndpoint ++ "\"",
           "    rewrite:",
           "      \"^(.*)$\": \"prodbox/$1\"",
           "configs:",
-          "  \"127.0.0.1:30080\":",
+          "  \"" ++ harborRegistryEndpoint ++ "\":",
           "    tls:",
           "      insecure_skip_verify: true"
         ]
@@ -1803,43 +2284,9 @@ harborProjectFromRepository repository =
         (projectName, '/' : _) | projectName /= "" -> projectName
         _ -> harborMirrorProject
 
-harborProjectFromImageRef :: String -> String
-harborProjectFromImageRef imageRef =
-    case stripPrefix (harborRegistryEndpoint ++ "/") imageRef of
-        Just remainder -> harborProjectFromRepository remainder
-        Nothing -> harborMirrorProject
-
-normalizeDockerhubImageRef :: String -> Maybe String
-normalizeDockerhubImageRef image =
-    let trimmed = trimWhitespace image
-     in if trimmed == "" || '@' `elem` trimmed
-            then Nothing
-            else
-                let (firstSegment, remainderWithSlash) = break (== '/') trimmed
-                    hasRegistryPrefix = '.' `elem` firstSegment || ':' `elem` firstSegment || firstSegment == "localhost"
-                 in if hasRegistryPrefix
-                        then case firstSegment of
-                            "docker.io" -> normalizeRemainder (drop 1 remainderWithSlash)
-                            "index.docker.io" -> normalizeRemainder (drop 1 remainderWithSlash)
-                            "registry-1.docker.io" -> normalizeRemainder (drop 1 remainderWithSlash)
-                            _ -> Nothing
-                        else normalizeRemainder trimmed
-  where
-    normalizeRemainder remainder =
-        case remainder of
-            "" -> Nothing
-            _ ->
-                let normalized =
-                        if '/' `elem` remainder
-                            then remainder
-                            else "library/" ++ remainder
-                 in Just ("docker.io/" ++ normalized)
-
-mirrorTargetForSource :: String -> Maybe String
-mirrorTargetForSource source =
-    case stripPrefix "docker.io/" source of
-        Just sourcePath | sourcePath /= "" -> Just (harborRegistryEndpoint ++ "/" ++ harborMirrorProject ++ "/" ++ sourcePath)
-        _ -> Nothing
+renderImageRefWithoutTag :: ContainerImage.ImageRef -> String
+renderImageRefWithoutTag imageRef =
+    ContainerImage.imageRegistry imageRef ++ "/" ++ ContainerImage.imageRepository imageRef
 
 stripPrefix :: String -> String -> Maybe String
 stripPrefix prefix value =
@@ -1909,6 +2356,21 @@ rke2NodeDiscoveryAttempts = 150
 
 rke2NodeDiscoveryDelayMicroseconds :: Int
 rke2NodeDiscoveryDelayMicroseconds = 2000000
+
+harborEndpointReadinessAttempts :: Int
+harborEndpointReadinessAttempts = 60
+
+harborEndpointReadinessDelayMicroseconds :: Int
+harborEndpointReadinessDelayMicroseconds = 2000000
+
+harborEndpointStabilityAttempts :: Int
+harborEndpointStabilityAttempts = 36
+
+harborEndpointStabilitySuccesses :: Int
+harborEndpointStabilitySuccesses = 6
+
+harborEndpointStabilityDelayMicroseconds :: Int
+harborEndpointStabilityDelayMicroseconds = 5000000
 
 runCommand :: CommandSpec -> IO ExitCode
 runCommand spec = do

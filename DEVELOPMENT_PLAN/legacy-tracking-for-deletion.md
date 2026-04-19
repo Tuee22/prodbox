@@ -12,12 +12,11 @@
 
 ## Ledger Status
 
-As of April 18, 2026, the repository-backed legacy-removal ledger is complete. The Python toolchain
-has been completely removed from the repository: all Python source (`src/prodbox/`, `tests/`,
-`typings/`), Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`), Python bridge
-modules (`Backend/Python.hs`, `PythonEnv.hs`), and Python Pulumi programs have been deleted. All
-Pulumi programs are YAML-based. The reopened Sprint `1.2` compatibility and documentation residue
-has also been removed from the supported repository contract.
+As of April 19, 2026, the Python-removal cleanup remains complete and the non-Python container
+packaging plus registry residue identified by the April 18, 2026 Docker and Harbor audit is now
+removed. All Python source (`src/prodbox/`, `tests/`, `typings/`), Python packaging
+(`pyproject.toml`, `poetry.toml`, `.python-version`), Python bridge modules (`Backend/Python.hs`,
+`PythonEnv.hs`), and Python Pulumi programs remain deleted. `Pending Removal` is empty again.
 
 ## Pending Removal
 
@@ -37,7 +36,7 @@ None.
 | Python CLI entrypoint and command-group ownership (`src/prodbox/cli/main.py`, `src/prodbox/cli/*.py`) | Sprint 4.3 | Haskell frontend owns the full command surface |
 | Python settings, ADT, DAG, interpreter, and subprocess ownership | Sprint 4.3 | Replaced by Haskell modules under `src/Prodbox/` |
 | Python local lifecycle and Harbor/local-registry helpers | Sprint 4.1 | `src/Prodbox/CLI/Rke2.hs` owns all lifecycle paths |
-| Python gateway runtime and container entrypoint (`gateway_daemon.py`, `gateway.py`, Python Dockerfile entrypoint) | Sprint 2.1 | `docker/gateway.Dockerfile` now builds a Haskell binary with a multi-stage build |
+| Python gateway runtime and container entrypoint (`gateway_daemon.py`, `gateway.py`, Python Dockerfile entrypoint) | Sprint 2.1 | `docker/gateway.Dockerfile` now builds a Haskell binary; the remaining gateway cleanup is non-Python container doctrine work |
 | Python DNS inspection command (`dns.py`) | Sprint 2.1 | `src/Prodbox/Dns.hs` owns the surface |
 | Python TLA+ CLI wrapper and proof-check helper (`tla.py`, `tla_check.py`) | Sprint 2.2 | `src/Prodbox/Tla.hs` owns the surface |
 | Python chart orchestration and retained-state helpers (`charts.py`, `chart_platform.py`, Python chart test suites) | Sprint 3.1 | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/Lib/Storage.hs` own the runtime |
@@ -50,6 +49,12 @@ None.
 | Surviving Python-era architecture references in supported-path docs | Sprint 6.2 | Final cleanup sweep completed |
 | `prodbox-config.json` compatibility path and public `prodbox config compile` surface | Sprint 1.2 runtime closure on April 18, 2026 | `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/Repo.hs`, `src/Prodbox/Aws.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, and `test/integration/env/Main.hs` now close on direct `Dhall -> Haskell types`; no supported command materializes the JSON artifact |
 | Stale mixed-baseline or removed-tooling wording in root guidance and governed docs such as `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, and `documents/engineering/unit_testing_policy.md` | Sprint 1.2 doc-harmony closure on April 18, 2026 | Root guidance and the governed docs listed by Sprint `1.2` now describe the Haskell-only repository, direct-Dhall config contract, and native validation harness |
+| Repository-root `Dockerfile` and root-level references that treated it as canonical | Sprint 1.1 closure on April 18, 2026 | The canonical frontend image now lives at `docker/prodbox.Dockerfile`, and supported references point to `docker/` only |
+| Multi-stage frontend image build in the former root `Dockerfile` (`haskell:9.6.7 -> debian:bookworm-slim`) | Sprint 1.1 closure on April 18, 2026 | Replaced with a single-stage `ubuntu:24.04` frontend image while preserving `/opt/build` |
+| Multi-stage gateway image build in `docker/gateway.Dockerfile` (`haskell:9.6.7 -> debian:bookworm-slim`) | Sprint 2.1 closure on April 18, 2026 | Replaced with a single-stage `ubuntu:24.04` gateway image |
+| `vscode-nginx` delivery gap for Harbor-only dual-arch image publication | Sprint 3.2 closure on April 18, 2026 | `docker/nginx-oidc.Dockerfile` remains the permitted Alpine-based exception, but the supported stack now publishes it to Harbor and references Harbor only |
+| Supported doctrine that framed Harbor as a local mirror or allowed non-Harbor workload pulls | Sprint 4.1 closure on April 18, 2026 | Supported charts, MinIO, and Pulumi home-stack workloads now reference Harbor-backed images, with Harbor as the sole supported workload image source except for Harbor bootstrap itself |
+| Arch-implicit container population doctrine without explicit `amd64` plus `arm64` and mixed-arch closure | Sprint 4.1 closure on April 18, 2026 | The lifecycle now reconciles required public images and custom images for both `amd64` and `arm64` irrespective of local host architecture |
 
 ## Related Documents
 

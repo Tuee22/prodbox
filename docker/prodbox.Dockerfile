@@ -1,12 +1,11 @@
 # syntax=docker/dockerfile:1.7
 FROM ubuntu:24.04
 
-WORKDIR /opt/build
-
 ARG GHC_VERSION=9.6.7
-ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/opt/ghc/${GHC_VERSION}/bin:/usr/local/bin:$PATH
+
+WORKDIR /opt/build
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -21,21 +20,9 @@ RUN apt-get update \
         libnuma-dev \
         libssl-dev \
         pkg-config \
-        tini \
-        unzip \
         xz-utils \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
-
-RUN case "${TARGETARCH}" in \
-        amd64) aws_arch=x86_64 ;; \
-        arm64) aws_arch=aarch64 ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
-    esac \
-    && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${aws_arch}.zip" -o /tmp/awscliv2.zip \
-    && unzip -q /tmp/awscliv2.zip -d /tmp \
-    && /tmp/aws/install \
-    && rm -rf /tmp/aws /tmp/awscliv2.zip
 
 RUN --mount=type=bind,from=haskell-toolchain,src=/opt/ghc,target=/mnt/ghc,ro \
     --mount=type=bind,from=haskell-toolchain,src=/usr/local/bin/cabal,target=/mnt/cabal,ro \
@@ -62,4 +49,4 @@ RUN --mount=type=cache,target=/root/.cabal \
     && cabal build --builddir=.build exe:prodbox \
     && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox
 
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/prodbox", "gateway", "start"]
+ENTRYPOINT ["/usr/local/bin/prodbox"]

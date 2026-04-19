@@ -27,7 +27,7 @@ spec:
       {{- end }}
       containers:
         - name: keycloak
-          image: quay.io/keycloak/keycloak:26.0.0
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: IfNotPresent
           args:
             - start

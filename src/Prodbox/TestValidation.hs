@@ -5,6 +5,7 @@ module Prodbox.TestValidation
     )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception
     ( IOException,
       try,
@@ -61,6 +62,15 @@ import System.IO
       openTempFile,
       stderr,
     )
+
+publicEdgeReadyClassification :: String
+publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
+
+publicEdgeReadyAttempts :: Int
+publicEdgeReadyAttempts = 30
+
+publicEdgeReadyDelayMicroseconds :: Int
+publicEdgeReadyDelayMicroseconds = 10000000
 
 runNativeValidation :: FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
 runNativeValidation repoRoot environment validation = do
@@ -161,15 +171,63 @@ runChartsVscodeValidation repoRoot = do
     case settingsResult of
         Left err -> failWith err
         Right settings -> do
-            let fqdn = preferredPublicHostFqdn settings
-            assertCommandOutputContainsAll
-                CommandSpec
-                    { commandPath = "curl",
-                      commandArguments = ["-sSIL", "--max-time", "20", "https://" ++ fqdn],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    }
-                ["HTTP/"]
+            readyExit <- waitForPublicEdgeReady repoRoot
+            case readyExit of
+                ExitFailure _ -> pure readyExit
+                ExitSuccess -> do
+                    let fqdn = preferredPublicHostFqdn settings
+                    assertCommandOutputContainsAll
+                        CommandSpec
+                            { commandPath = "curl",
+                              commandArguments = ["-sSIL", "--max-time", "20", "https://" ++ fqdn],
+                              commandEnvironment = Nothing,
+                              commandWorkingDirectory = Just repoRoot
+                            }
+                        ["HTTP/"]
+
+waitForPublicEdgeReady :: FilePath -> IO ExitCode
+waitForPublicEdgeReady repoRoot = do
+    executablePath <- getExecutablePath
+    let spec =
+            CommandSpec
+                { commandPath = executablePath,
+                  commandArguments = ["host", "public-edge"],
+                  commandEnvironment = Nothing,
+                  commandWorkingDirectory = Just repoRoot
+                }
+    waitForClassification spec publicEdgeReadyAttempts
+  where
+    waitForClassification :: CommandSpec -> Int -> IO ExitCode
+    waitForClassification spec attemptsLeft = do
+        outputResult <- captureCommand spec
+        case outputResult of
+            Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
+            Success output -> do
+                let combinedOutput = processStdout output ++ processStderr output
+                putStr (processStdout output)
+                hPutStr stderr (processStderr output)
+                case processExitCode output of
+                    ExitFailure code ->
+                        failWith
+                            ( "`"
+                                ++ commandDisplay spec
+                                ++ "` exited with code "
+                                ++ show code
+                            )
+                    ExitSuccess
+                        | publicEdgeReadyClassification `isInfixOf` combinedOutput -> pure ExitSuccess
+                        | attemptsLeft <= 1 ->
+                            failWith
+                                ( "`"
+                                    ++ commandDisplay spec
+                                    ++ "` did not report required output `"
+                                    ++ publicEdgeReadyClassification
+                                    ++ "` before timeout."
+                                )
+                        | otherwise -> do
+                            hPutStrLn stderr "Waiting for public edge readiness before external curl validation."
+                            threadDelay publicEdgeReadyDelayMicroseconds
+                            waitForClassification spec (attemptsLeft - 1)
 
 runPublicDnsValidation :: FilePath -> IO ExitCode
 runPublicDnsValidation repoRoot = do

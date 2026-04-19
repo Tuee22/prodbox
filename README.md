@@ -20,7 +20,7 @@ validation environments.
 - The repository is Haskell-only on the supported path: the public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
-  `cabal.project`, and `Dockerfile`.
+  `cabal.project`, and `docker/`.
 - The supported configuration contract is repository-root `prodbox-config.dhall` decoded directly
   into Haskell types. `prodbox-config.json` and `prodbox config compile` are not part of the
   supported interface.
@@ -28,7 +28,7 @@ validation environments.
 The current repository baseline deploys and manages:
 
 - **RKE2** for the local Kubernetes lifecycle
-- **Harbor** for the local registry and Docker Hub mirror pipeline
+- **Harbor** for the local registry, Harbor-only workload sourcing, and dual-arch image pipeline
 - **MinIO** for the local-cluster-first Pulumi backend
 - **MetalLB**, **Traefik**, and **cert-manager** for the cluster edge
 - **Route 53** for explicit per-subdomain DNS ownership
@@ -221,9 +221,9 @@ prodbox/
 ├── test/                 # Haskell unit and integration suites
 ├── documents/engineering/# Engineering doctrine and architecture docs
 ├── DEVELOPMENT_PLAN/     # Canonical plan, phase status, and cleanup ownership
+├── docker/               # Canonical container builds under /opt/build
 ├── prodbox.cabal         # Cabal package definition
 ├── cabal.project         # Cabal project definition
-└── Dockerfile            # Root Haskell container build under /opt/build
 ```
 
 ## Documentation

@@ -4,467 +4,231 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md
 
-> **Purpose**: Definitive standards for pure functional programming in prodbox. All code must be pure EXCEPT the interpreter, which is the designated impurity boundary.
+> **Purpose**: Define the Haskell coding standards for `prodbox` so pure planning logic,
+> structured domain modeling, and explicit impurity boundaries stay consistent across the
+> repository.
 
----
+## 1. Boundary Model
 
-## 1. Purity Boundaries
+### 1.1 Pure by Default
 
-### 1.1 The Interpreter Boundary
+Ordinary repository code is pure by default.
 
-The key insight: **purity has boundaries**. All code must be pure EXCEPT the interpreter, which is where side effects are executed.
+- Parsing, normalization, rendering, validation, and planning helpers return values.
+- Domain modules describe what should happen; they do not perform effects while deciding it.
+- Effectful work belongs at command or interpreter boundaries only.
 
-| Code Location | Purity | Mutation Allowed | I/O Allowed |
-|---------------|--------|------------------|-------------|
-| Effect DAG builders (`*_dag()`) | 100% pure | No | No |
-| Smart constructors | 100% pure | No | No |
-| Custom effect functions (`fn=...`) | 100% pure | No | No |
-| Utility functions | 100% pure | No | No |
-| `output.py` formatters | Pure | No | Return strings only |
-| **`interpreter.py` `_interpret_*`** | **Impure** | **Yes** | **Yes** |
-| Command entry points | Impure | No | `sys.exit()` only |
+Typical pure surfaces in this repository include:
 
-### 1.2 Why This Matters
+- `src/Prodbox/Settings.hs` validation helpers
+- `src/Prodbox/ContainerImage.hs` image-reference normalization and mapping
+- `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, and `src/Prodbox/Prerequisite.hs`
+- chart-plan, storage-path, and output-rendering helpers
 
-- **Testability**: Pure code is trivially testable - no mocks needed for pure functions
-- **Reasoning**: No hidden state changes makes code predictable
-- **Concurrency**: No race conditions in pure code
-- **Debugging**: Effects are just data - you can inspect the DAG before execution
+Typical impure surfaces include:
 
-### 1.3 Why the Interpreter is the Impurity Boundary
+- `src/Prodbox/Native.hs`
+- `src/Prodbox/CLI/*`
+- `src/Prodbox/Subprocess.hs`
+- `src/Prodbox/EffectInterpreter.hs`
+- runtime loops such as `src/Prodbox/Gateway/Daemon.hs`
 
-Effects are just data. The interpreter schedules them; thin effect implementations wrap side-effecting libraries but always return `Result[T, E]` from pure signatures. No hidden mutation or side effects live outside the interpreter.
+### 1.2 Boundary Rule
 
-The interpreter is where:
-- Subprocess calls happen (`asyncio.create_subprocess_exec`)
-- File I/O occurs (`Path.read_text()`, `Path.write_text()`)
-- Network requests execute (`httpx`, `boto3`)
-- Metrics counters increment (`self.total_effects += 1`)
-- Error lists accumulate (`self.environment_errors.append()`)
+Pure code computes arguments, plans, or typed values first. The boundary layer executes them
+afterward.
 
-This is acceptable because the interpreter's **sole purpose** is to execute side effects.
-
----
-
-## 2. No Mutation
-
-### 2.1 Frozen Dataclasses (REQUIRED)
-
-All dataclasses MUST use `frozen=True`:
-
-```python
-# ✅ CORRECT
-@dataclass(frozen=True)
-class Command:
-    name: str
-    args: tuple[str, ...]
-
-# ❌ WRONG
-@dataclass
-class Command:
-    name: str
-    args: list[str]
+```haskell
+renderKubectlWaitArgs :: String -> [String]
+renderKubectlWaitArgs namespace =
+    ["wait", "--namespace", namespace, "--for=condition=Ready", "pod", "--all", "--timeout=300s"]
 ```
 
-### 2.2 Immutable Collections
-
-Use immutable collection types:
-
-```python
-# ✅ CORRECT
-prerequisites: frozenset[str] = frozenset()
-items: tuple[str, ...] = ()
-mapping: Mapping[str, int] = {}
-
-# ❌ WRONG
-prerequisites: set[str] = set()
-items: list[str] = []
-mapping: dict[str, int] = {}
+```haskell
+runKubectlWait :: FilePath -> String -> IO ExitCode
+runKubectlWait repoRoot namespace =
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl",
+              commandArguments = renderKubectlWaitArgs namespace,
+              commandEnvironment = Nothing,
+              commandWorkingDirectory = Just repoRoot
+            }
 ```
 
-### 2.3 Creating New Values (Not Mutating)
+## 2. Domain Modeling
 
-Always create new values instead of mutating:
+### 2.1 Prefer ADTs Over Strings
 
-```python
-# ✅ CORRECT
-new_items = (*existing, new_item)
-new_dict = {**existing, key: value}
-new_set = existing_set | frozenset({new_item})
+Closed control-flow sets must be represented as explicit algebraic data types.
 
-# ❌ WRONG
-items.append(new_item)
-dict[key] = value
-set.add(new_item)
+```haskell
+data LifecycleAction
+    = LifecycleInstall
+    | LifecycleDelete ConfirmedDelete
+    | LifecycleStatus
+    deriving (Eq, Show)
 ```
 
----
+- Do not route major control flow through free-form `String` flags.
+- Parse external text once, then operate on typed values.
+- Use records when named fields improve clarity.
 
-## 3. No If/Else Statements
+### 2.2 Pattern Match Exhaustively
 
-### 3.1 Pattern Matching (REQUIRED)
+Handle every supported constructor explicitly.
 
-Use `match/case` instead of if/else:
-
-```python
-# ✅ CORRECT
-match result:
-    case Success(value):
-        return process(value)
-    case Failure(error):
-        return handle_error(error)
-
-# ❌ WRONG
-if result.is_success:
-    return process(result.value)
-else:
-    return handle_error(result.error)
+```haskell
+renderLifecycleAction :: LifecycleAction -> String
+renderLifecycleAction action =
+    case action of
+        LifecycleInstall -> "install"
+        LifecycleDelete _ -> "delete"
+        LifecycleStatus -> "status"
 ```
 
-### 3.2 Exhaustive Matching (No Default Cases)
+- Avoid catch-all branches for closed ADTs when an explicit match is practical.
+- When a match must remain open-ended, document why the fallback is acceptable.
 
-Handle ALL cases explicitly - no catch-all defaults that hide bugs:
+### 2.3 Validate at Decode Boundaries
 
-```python
-# ✅ CORRECT
-match action:
-    case Action.START:
-        return start()
-    case Action.STOP:
-        return stop()
-    case Action.RESTART:
-        return restart()
-    case _ as unreachable:
-        _assert_never(unreachable)
+Decode and validation happen before execution.
 
-# ❌ WRONG
-match action:
-    case Action.START:
-        return start()
-    case _:
-        return default_handler()  # Hides unhandled cases!
+- Dhall decoding produces typed settings.
+- Text parsing for image references, hostnames, IP addresses, and command arguments should fail
+  early with structured error text.
+- Execution layers should receive already-validated inputs whenever possible.
+
+## 3. State and Mutation
+
+### 3.1 No Hidden Mutable Control Flow
+
+Ordinary planning logic should not depend on hidden mutable state.
+
+- Prefer immutable values, record updates, recursion, and folds.
+- Pass required inputs explicitly.
+- Keep state transitions visible in function arguments and return values.
+
+### 3.2 Mutable Cells Are Boundary-Only
+
+Mutable references, handles, sockets, or background loops are allowed only where the repository
+must coordinate real effects.
+
+- Keep them local to the boundary module that owns the effect.
+- Do not leak mutable implementation details into pure helper APIs.
+- Convert mutable or callback-driven libraries back into typed values as soon as possible.
+
+## 4. Error Handling
+
+### 4.1 Ordinary Failures Use Explicit Results
+
+Expected failures should return structured results rather than relying on exceptions for control
+flow.
+
+- Prefer `Either String a`, `Maybe a`, or repository result types for ordinary validation and
+  planning failures.
+- Convert library exceptions at the boundary into explicit failure values when they are part of
+  supported behavior.
+
+```haskell
+parseRequiredPort :: String -> Either String Int
+parseRequiredPort raw =
+    case readMaybe raw of
+        Just port | port >= 1 && port <= 65535 -> Right port
+        _ -> Left ("invalid port: " ++ raw)
 ```
 
-### 3.3 Assert Never Helper
+### 4.2 Avoid Partial Functions
 
-```python
-from typing import Never
+Do not rely on partial functions in supported-path logic.
 
-def _assert_never(value: object) -> Never:
-    """Type-safe assertion that code path is unreachable.
+- Avoid `head`, `tail`, `init`, `(!!)`, `fromJust`, and unchecked `read`.
+- Prefer total parsing, `NonEmpty`, explicit pattern matches, or safe helpers.
 
-    Use at the end of exhaustive match statements to ensure
-    all cases are handled. If a new variant is added to the ADT,
-    the type checker will error until the new case is handled.
-    """
-    raise AssertionError(f"Unhandled case: {type(value).__name__}")
+## 5. Collection and Control-Flow Style
+
+### 5.1 Prefer Combinators and Folds
+
+Use standard functional combinators to make data flow explicit.
+
+- `map` or `fmap` for transformation
+- `filter` for selection
+- `foldl'` or `foldr` for accumulation
+- `traverse` for effectful iteration with explicit result collection
+- list comprehensions when they are clearer than nested combinators
+
+```haskell
+renderImageTags :: [ImageRef] -> [String]
+renderImageTags refs =
+    [renderImageRef ref | ref <- refs, imageTag ref /= ""]
 ```
 
----
-
-## 4. No For Loops
-
-### 4.1 List Comprehensions (Transforms)
-
-Use comprehensions for transformations:
-
-```python
-# ✅ CORRECT
-valid_ports = tuple(p for p in ports if 1 <= p <= 65535)
-names = tuple(item.name for item in items)
-
-# ❌ WRONG
-valid_ports = []
-for p in ports:
-    if 1 <= p <= 65535:
-        valid_ports.append(p)
-```
-
-### 4.2 functools.reduce (Accumulation)
-
-Use reduce for accumulating state:
-
-```python
-# ✅ CORRECT
-from functools import reduce
-
-def group_by(items: Sequence[T], key_fn: Callable[[T], K]) -> dict[K, tuple[T, ...]]:
-    def reducer(acc: dict[K, tuple[T, ...]], item: T) -> dict[K, tuple[T, ...]]:
-        key = key_fn(item)
-        existing = acc.get(key, ())
-        return {**acc, key: (*existing, item)}  # New dict, no mutation
-    return reduce(reducer, items, {})
+### 5.2 Separate Selection From Execution Order
 
-# ❌ WRONG
-def group_by(items, key_fn):
-    result = {}
-    for item in items:
-        key = key_fn(item)
-        if key not in result:
-            result[key] = []
-        result[key].append(item)  # Mutation!
-    return result
-```
+When a command has prerequisite or staged work:
 
-### 4.3 When For Loops ARE Allowed
+1. derive the ordered or grouped plan in pure code
+2. execute that plan in the boundary layer
+3. stop on explicit failure, preserving the root cause
 
-For loops are permitted ONLY in interpreter `_interpret_*` methods:
-
-```python
-# OK in interpreter (impurity boundary)
-async def _interpret_sequence(self, effect: Sequence) -> ExecutionSummary:
-    for sub_effect in effect.effects:
-        summary = await self.interpret(sub_effect)
-        if summary.exit_code != 0:
-            return summary
-    return self._create_success_summary("Sequence completed")
-```
+This is the same doctrine used by the effect DAG and test-validation runtimes.
 
----
+## 6. Subprocess and External-System Boundaries
 
-## 5. ADT Exhaustiveness
+### 6.1 Render Commands as Data
 
-### 5.1 Union Types for Closed Sets
-
-Define commands as explicit unions:
+Subprocess helpers should assemble commands as structured values instead of concatenated shell
+strings.
 
-```python
-Command = (
-    DNSCheckCommand
-    | RKE2StatusCommand
-    | K8sHealthCommand
-    | HostInfoCommand
-    # ... all variants listed explicitly
-)
-```
-
-### 5.2 Smart Constructors
-
-Validate at construction time and return `Result`:
-
-```python
-def dns_check_command() -> Result[DNSCheckCommand, str]:
-    # Validation at construction time
-    return Success(DNSCheckCommand())
-
-def port_command(port: int) -> Result[PortCommand, str]:
-    match port:
-        case p if 1 <= p <= 65535:
-            return Success(PortCommand(port=p))
-        case _:
-            return Failure(f"Invalid port: {port}. Must be 1-65535")
-```
-
-### 5.3 Result Type for Fallible Operations
-
-```python
-# ✅ CORRECT
-def parse_config(content: str) -> Result[Config, str]:
-    match validate_yaml(content):
-        case Success(data):
-            return build_config(data)
-        case Failure(error):
-            return Failure(f"Invalid YAML: {error}")
-
-# ❌ WRONG
-def parse_config(path: Path) -> Config:
-    try:
-        content = path.read_text()  # I/O in pure code!
-        return yaml.safe_load(content)
-    except Exception as e:
-        raise ConfigError(str(e))  # Exceptions for control flow!
-```
-
----
-
-## 6. Type Safety
-
-### 6.1 Zero Tolerance for Any
-
-The following are FORBIDDEN in prodbox code:
-
-- `Any` type annotations
-- `cast()` calls
-- `# type: ignore` comments
-
-Exception: External libraries (Pulumi, boto3) may require `Any` at their boundaries. These must be isolated behind typed wrapper interfaces.
-
-### 6.2 TypeGuard for Runtime Narrowing
-
-```python
-from typing import TypeGuard
-
-def is_config_dict(obj: object) -> TypeGuard[dict[str, object]]:
-    return isinstance(obj, dict)
-
-# Usage
-if is_config_dict(data):
-    # data is now typed as dict[str, object]
-    return data.get("key")
-```
-
-### 6.3 Literal Types for Restricted Values
-
-```python
-Platform: TypeAlias = Literal["linux", "darwin", "windows"]
-Action: TypeAlias = Literal["start", "stop", "restart"]
-LogLevel: TypeAlias = Literal["debug", "info", "warning", "error"]
-```
-
----
-
-## 7. Interpreter Patterns
-
-### 7.1 Mutable Counters (OK in Interpreter)
-
-```python
-class EffectInterpreter:
-    def __init__(self) -> None:
-        # These mutations are OK - interpreter is impurity boundary
-        self.total_effects: int = 0
-        self.successful_effects: int = 0
-        self.failed_effects: int = 0
-        self.environment_errors: list[str] = []
-```
-
-### 7.2 Try/Except (OK in Interpreter)
-
-```python
-async def _interpret_run_subprocess(self, effect: RunSubprocess) -> ExecutionSummary:
-    try:
-        result = await asyncio.create_subprocess_exec(...)
-        stdout, stderr = await result.communicate()
-        self.successful_effects += 1
-        return self._create_success_summary("Subprocess completed")
-    except asyncio.TimeoutError:
-        self.failed_effects += 1
-        return self._create_error_summary("Timeout")
-```
-
-### 7.3 Pattern Matching for Dispatch
-
-```python
-async def _dispatch_effect(self, effect: Effect[T]) -> ExecutionSummary:
-    match effect:
-        case RequireLinux():
-            return await self._interpret_require_linux(effect)
-        case RunSubprocess():
-            return await self._interpret_run_subprocess(effect)
-        case WriteStdout():
-            return await self._interpret_write_stdout(effect)
-        # ... all effect types
-        case _ as unreachable:
-            return _assert_never(unreachable)
-```
-
----
-
-## 8. Forbidden Patterns
-
-### 8.1 Print in Pure Code
-
-```python
-# ❌ FORBIDDEN
-def validate_tools(tools: list[str]) -> bool:
-    print("Checking tools...")  # Side effect in pure code!
-    return all(shutil.which(t) for t in tools)
-
-# ✅ CORRECT
-def validate_tools(tools: tuple[str, ...]) -> Result[ToolReport, str]:
-    # Return data, let interpreter handle output
-    missing = tuple(t for t in tools if not shutil.which(t))
-    match missing:
-        case ():
-            return Success(ToolReport(valid=True, tools=tools))
-        case _:
-            return Failure(f"Missing tools: {', '.join(missing)}")
-```
-
-### 8.2 sys.exit() Scattered
-
-```python
-# ❌ FORBIDDEN
-def require_tools(tools: list) -> None:
-    if not validate_tools(tools):
-        print_error("Tools not available")
-        sys.exit(1)  # Exit scattered across codebase!
-
-# ✅ CORRECT - Only at command entry point
-@cli.command()
-def my_command() -> None:
-    match my_command_constructor():
-        case Success(cmd):
-            sys.exit(execute_command(cmd))  # Single exit point
-        case Failure(error):
-            sys.exit(render_error_and_return_exit_code(error, effect_id="my_command"))
-```
-
-### 8.3 Global Mutable State
-
-```python
-# ❌ FORBIDDEN
-_cached_config = None
-
-def get_config():
-    global _cached_config
-    if _cached_config is None:
-        _cached_config = load_config()
-    return _cached_config
-
-# ✅ CORRECT - Pass config explicitly
-def process_command(config: Config, cmd: Command) -> Result[Output, str]:
-    ...
-```
-
-### 8.4 I/O in Pure Functions
-
-```python
-# ❌ FORBIDDEN
-def load_settings() -> Settings:
-    with open("config.yaml") as f:  # I/O!
-        return yaml.safe_load(f)
-
-# ✅ CORRECT - Define as Effect, interpreter handles I/O
-@dataclass(frozen=True)
-class LoadSettings(Effect[Settings]):
-    """Load settings from file - interpreter executes I/O."""
-    config_path: Path
-```
-
----
-
-## 9. Quick Reference Checklist
-
-### PR Review Checklist
-
-**Purity Checks**:
-- [ ] All dataclasses use `@dataclass(frozen=True)`
-- [ ] No `list` or `set` fields (use `tuple`/`frozenset`)
-- [ ] No `if`/`elif`/`else` statements outside interpreter
-- [ ] No `for` loops outside interpreter (use comprehensions)
-- [ ] No `try`/`except` outside interpreter (use `Result[T, E]`)
-- [ ] No `case _:` default handlers (exhaustive matching)
-- [ ] All smart constructors return `Result[T, E]`
-
-**Type Safety Checks**:
-- [ ] No `Any` type annotations
-- [ ] No `cast()` calls
-- [ ] No `# type: ignore` comments
-- [ ] All functions have explicit return types
-- [ ] All generics fully parameterized (`list[str]` not `list`)
-
-**Architecture Checks**:
-- [ ] No `print()` in pure code (only in interpreter)
-- [ ] No `sys.exit()` scattered (only at command entry points)
-- [ ] No global mutable state
-- [ ] No I/O in pure functions (only in interpreter)
-
----
+- Use `CommandSpec` and explicit argument vectors.
+- Keep environment overlays explicit.
+- Parse stdout or stderr into typed results instead of spreading ad-hoc string checks across the
+  codebase.
+
+### 6.2 Keep External I/O Local
+
+Filesystem reads, environment reads, network calls, Kubernetes calls, Docker calls, and AWS CLI
+calls belong in the narrowest boundary that can own them.
+
+- A planner may decide that Harbor reconciliation is required.
+- The boundary layer performs `docker`, `kubectl`, `helm`, `aws`, or `curl`.
+- Output is translated back into typed success or failure for the caller.
+
+## 7. Testing Implications
+
+Pure-functional structure is not stylistic only; it determines how code is tested.
+
+- Pure helpers are tested directly in `test/unit/Main.hs`.
+- Built-frontend command behavior is tested in `test/integration/cli/Main.hs` and
+  `test/integration/env/Main.hs`.
+- Real infrastructure-backed behavior is tested through named `prodbox test integration ...`
+  validations.
+- Mocks belong at subprocess or interpreter boundaries, not inside pure planners.
+
+## 8. Review Checklist
+
+Before closing a change, confirm:
+
+- control flow is driven by explicit ADTs rather than ad-hoc strings when the set is closed
+- parsing and validation happen before execution
+- ordinary failures return explicit values rather than using exceptions for flow control
+- partial functions are absent from supported-path logic
+- subprocess and I/O work stay in command, interpreter, or runtime-boundary modules
+- pure helpers are small enough to unit test without boundary mocks
+
+## Intent Ownership
+
+This SSoT co-owns repository coding-style doctrine.
+
+- Owned statement: ordinary `prodbox` logic is pure by default, and real effects execute only at
+  explicit command or interpreter boundaries.
+- Linked dependents: `src/Prodbox/Settings.hs`, `src/Prodbox/ContainerImage.hs`,
+  `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestRunner.hs`,
+  `test/unit/Main.hs`.
 
 ## Cross-References
 
+- [Effect Interpreter Runtime Contract](./effect_interpreter.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
-- [Prerequisite Doctrine](./prerequisite_doctrine.md)
-- [Code Quality Doctrine](./code_quality.md)
-- [CLAUDE.md](../../CLAUDE.md) - Project overview
-- [AGENTS.md](../../AGENTS.md) - Agent guidelines
+- [Unit Testing Policy](./unit_testing_policy.md)
+- [Refactoring Patterns](./refactoring_patterns.md)

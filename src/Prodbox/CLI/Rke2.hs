@@ -10,6 +10,7 @@ import Control.Exception
     ( IOException,
       bracket,
       displayException,
+      finally,
       try,
     )
 import Control.Monad (foldM)
@@ -1146,12 +1147,7 @@ ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
             buildExit <-
                 if allTargetsReady
                     then pure ExitSuccess
-                    else do
-                        builderExit <- ensureDockerBuildxBuilder repoRoot
-                        case builderExit of
-                            ExitFailure _ -> pure builderExit
-                            ExitSuccess ->
-                                buildMissingCustomImageVariants repoRoot buildPlan taggedRefs
+                    else withDockerBuildxBuilder repoRoot (buildMissingCustomImageVariants repoRoot buildPlan taggedRefs)
             case buildExit of
                 ExitFailure _ -> pure buildExit
                 ExitSuccess ->
@@ -1497,6 +1493,32 @@ buildxBuilderAlreadyExists :: String -> Bool
 buildxBuilderAlreadyExists detail =
     let lowered = map toLower detail
      in "existing instance" `isInfixOf` lowered || "already exists" `isInfixOf` lowered
+
+withDockerBuildxBuilder :: FilePath -> IO ExitCode -> IO ExitCode
+withDockerBuildxBuilder repoRoot action = do
+    builderExit <- ensureDockerBuildxBuilder repoRoot
+    case builderExit of
+        ExitFailure _ -> pure builderExit
+        ExitSuccess ->
+            action `finally` stopDockerBuildxBuilder repoRoot
+
+stopDockerBuildxBuilder :: FilePath -> IO ()
+stopDockerBuildxBuilder repoRoot = do
+    stopResult <- captureToolOutput repoRoot "docker" ["buildx", "stop", buildxBuilderName]
+    case stopResult of
+        Left err ->
+            hPutStrLn stderr ("Warning: failed to stop Docker buildx builder " ++ buildxBuilderName ++ ": " ++ err)
+        Right output ->
+            case processExitCode output of
+                ExitSuccess -> pure ()
+                ExitFailure _ ->
+                    hPutStrLn
+                        stderr
+                        ( "Warning: failed to stop Docker buildx builder "
+                            ++ buildxBuilderName
+                            ++ ": "
+                            ++ outputDetail output
+                        )
 
 manifestPlatforms :: RawImageManifest -> [(String, String)]
 manifestPlatforms manifest =

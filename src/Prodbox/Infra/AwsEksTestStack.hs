@@ -14,6 +14,8 @@ module Prodbox.Infra.AwsEksTestStack
 where
 
 import Control.Monad (forM)
+import Data.List (isInfixOf)
+import Data.Char (toLower)
 import Data.Aeson
     ( Value (..),
       eitherDecode,
@@ -249,41 +251,79 @@ fetchPublicIpv4 = do
                             else pure (Left ("unexpected public IP response: " ++ ip))
                 ExitFailure _ -> pure (Left ("curl failed: " ++ trim (processStderr output)))
 
+pulumiEksBaseEnv :: Int -> String -> String -> IO [(String, String)]
+pulumiEksBaseEnv localPort minioAccessKey minioSecretKey = do
+    currentEnv <- getEnvironment
+    let path = maybe "" id (lookup "PATH" currentEnv)
+        home = maybe "" id (lookup "HOME" currentEnv)
+    pure
+        [ ("AWS_ACCESS_KEY_ID", minioAccessKey),
+          ("AWS_SECRET_ACCESS_KEY", minioSecretKey),
+          ("AWS_REGION", "us-east-1"),
+          ("AWS_DEFAULT_REGION", "us-east-1"),
+          ("AWS_EC2_METADATA_DISABLED", "true"),
+          ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort),
+          ("PULUMI_CONFIG_PASSPHRASE", ""),
+          ("PATH", path),
+          ("HOME", home),
+          ("LANG", "C.UTF-8")
+        ]
+
 pulumiEksEnv :: Int -> String -> String -> IO (Either String [(String, String)])
 pulumiEksEnv localPort minioAccessKey minioSecretKey = do
     publicIpResult <- fetchPublicIpv4
     case publicIpResult of
         Left err -> pure (Left err)
         Right publicIp -> do
-            currentEnv <- getEnvironment
-            let path = maybe "" id (lookup "PATH" currentEnv)
-                home = maybe "" id (lookup "HOME" currentEnv)
+            baseEnvironment <- pulumiEksBaseEnv localPort minioAccessKey minioSecretKey
             pure
                 ( Right
-                    [ ("AWS_ACCESS_KEY_ID", minioAccessKey),
-                      ("AWS_SECRET_ACCESS_KEY", minioSecretKey),
-                      ("AWS_REGION", "us-east-1"),
-                      ("AWS_DEFAULT_REGION", "us-east-1"),
-                      ("AWS_EC2_METADATA_DISABLED", "true"),
-                      ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort),
-                      ("PULUMI_CONFIG_PASSPHRASE", ""),
-                      ("PRODBOX_AWS_EKS_TEST_OPERATOR_CIDR", publicIp ++ "/32"),
-                      ("PATH", path),
-                      ("HOME", home),
-                      ("LANG", "C.UTF-8")
-                    ]
+                    ( upsertEnv
+                        "PRODBOX_AWS_EKS_TEST_OPERATOR_CIDR"
+                        (publicIp ++ "/32")
+                        baseEnvironment
+                    )
                 )
 
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiLogin projectDir environment =
     runPulumiCommand projectDir environment ["login", maybe "" id (lookup "PULUMI_BACKEND_URL" environment)]
 
-pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO ExitCode
+data PulumiStackSelectResult
+    = PulumiStackSelected
+    | PulumiStackMissing
+    | PulumiStackSelectFailed String
+
+pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO PulumiStackSelectResult
 pulumiStackSelect projectDir environment createIfMissing =
-    runPulumiCommand
-        projectDir
-        environment
-        (["stack", "select", awsEksTestStackName] ++ ["--create" | createIfMissing])
+    let arguments = ["stack", "select", awsEksTestStackName] ++ ["--create" | createIfMissing]
+     in if createIfMissing
+            then do
+                exitCode <- runPulumiCommand projectDir environment arguments
+                pure $
+                    case exitCode of
+                        ExitSuccess -> PulumiStackSelected
+                        ExitFailure _ -> PulumiStackSelectFailed "pulumi stack select failed"
+            else do
+                result <-
+                    captureCommand
+                        CommandSpec
+                            { commandPath = "pulumi",
+                              commandArguments = arguments,
+                              commandEnvironment = Just environment,
+                              commandWorkingDirectory = Just projectDir
+                            }
+                pure $
+                    case result of
+                        Failure err -> PulumiStackSelectFailed err
+                        Success output ->
+                            case processExitCode output of
+                                ExitSuccess -> PulumiStackSelected
+                                ExitFailure _
+                                    | isMissingPulumiStackError awsEksTestStackName (renderProcessDetail output) ->
+                                        PulumiStackMissing
+                                    | otherwise ->
+                                        PulumiStackSelectFailed (renderProcessDetail output)
 
 pulumiUp :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiUp projectDir environment =
@@ -462,8 +502,7 @@ ensureAwsEksTestStackResources repoRoot = do
                                             ExitSuccess -> do
                                                 selectExit <- pulumiStackSelect projectDir environment True
                                                 case selectExit of
-                                                    ExitFailure _ -> pure (Left "pulumi stack select failed")
-                                                    ExitSuccess -> do
+                                                    PulumiStackSelected -> do
                                                         upExit <- pulumiUp projectDir environment
                                                         case upExit of
                                                             ExitFailure _ -> pure (Left "pulumi up failed")
@@ -482,6 +521,10 @@ ensureAwsEksTestStackResources repoRoot = do
                                                                                     Right objectCount -> do
                                                                                         putStr (renderAwsEksTestStackReport snapshot objectCount)
                                                                                         pure (Right ())
+                                                    PulumiStackMissing ->
+                                                        pure (Left "pulumi stack select reported a missing stack after --create")
+                                                    PulumiStackSelectFailed detail ->
+                                                        pure (Left ("pulumi stack select failed: " ++ detail))
             case portForwardResult of
                 Left err -> failWith err
                 Right (Left err) -> failWith err
@@ -500,18 +543,18 @@ destroyAwsEksTestStack repoRoot = do
                 case bucketResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                        envResult <- pulumiEksEnv localPort accessKey secretKey
-                        case envResult of
-                            Left err -> pure (Left err)
-                            Right environment -> do
-                                loginExit <- pulumiLogin projectDir environment
-                                case loginExit of
-                                    ExitFailure _ -> pure (Left "pulumi login failed")
-                                    ExitSuccess -> do
-                                        selectExit <- pulumiStackSelect projectDir environment False
-                                        case selectExit of
-                                            ExitFailure _ -> pure (Right "no stack to destroy")
-                                            ExitSuccess -> do
+                        baseEnvironment <- pulumiEksBaseEnv localPort accessKey secretKey
+                        loginExit <- pulumiLogin projectDir baseEnvironment
+                        case loginExit of
+                            ExitFailure _ -> pure (Left "pulumi login failed")
+                            ExitSuccess -> do
+                                selectExit <- pulumiStackSelect projectDir baseEnvironment False
+                                case selectExit of
+                                    PulumiStackSelected -> do
+                                        envResult <- pulumiEksEnv localPort accessKey secretKey
+                                        case envResult of
+                                            Left err -> pure (Left err)
+                                            Right environment -> do
                                                 destroyExit <- pulumiDestroy projectDir environment
                                                 case destroyExit of
                                                     ExitFailure _ -> do
@@ -519,9 +562,18 @@ destroyAwsEksTestStack repoRoot = do
                                                         retryExit <- pulumiDestroy projectDir environment
                                                         case retryExit of
                                                             ExitFailure _ -> pure (Left "pulumi destroy failed after refresh")
-                                                            ExitSuccess -> completeDestroy repoRoot projectDir environment currentSnapshot
+                                                            ExitSuccess -> completeDestroy repoRoot projectDir baseEnvironment currentSnapshot
                                                     ExitSuccess ->
-                                                        completeDestroy repoRoot projectDir environment currentSnapshot
+                                                        completeDestroy repoRoot projectDir baseEnvironment currentSnapshot
+                                    PulumiStackMissing -> do
+                                        putStrLn
+                                            ( "Skipped AWS EKS test stack destroy because no stack named '"
+                                                ++ awsEksTestStackName
+                                                ++ "' exists in the local Pulumi backend"
+                                            )
+                                        pure (Right "no stack to destroy")
+                                    PulumiStackSelectFailed detail ->
+                                        pure (Left ("pulumi stack select failed: " ++ detail))
     case portForwardResult of
         Left err ->
             case currentSnapshot of
@@ -557,3 +609,17 @@ upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environ
 
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
+
+renderProcessDetail :: ProcessOutput -> String
+renderProcessDetail output =
+    case filter (not . null) [trim (processStderr output), trim (processStdout output)] of
+        [] -> "subprocess exited without output"
+        rendered -> foldr1 (\left right -> left ++ " | " ++ right) rendered
+
+isMissingPulumiStackError :: String -> String -> Bool
+isMissingPulumiStackError stackName detail =
+    let lowered = map toLower detail
+        loweredStackName = map toLower stackName
+     in "no stack named" `isInfixOf` lowered
+            && loweredStackName `isInfixOf` lowered
+            && "found" `isInfixOf` lowered

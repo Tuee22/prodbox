@@ -1,5 +1,6 @@
 module Main (main) where
 
+import Control.Monad (when)
 import System.Directory
     ( Permissions (..),
       copyFile,
@@ -244,6 +245,14 @@ main = hspec $ do
                         (proc binary ["rke2", "install"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
+                let installOutput =
+                        unlines
+                            [ "install stdout:"
+                            , installStdout
+                            , "install stderr:"
+                            , installStderr
+                            ]
+                when (installExitCode /= ExitSuccess) (expectationFailure installOutput)
                 installExitCode `shouldBe` ExitSuccess
                 installStdout `shouldContain` "Kubernetes control plane is running"
                 installStderr `shouldBe` ""
@@ -256,8 +265,18 @@ main = hspec $ do
                         (proc binary ["rke2", "delete", "--yes"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
+                let deleteOutput =
+                        unlines
+                            [ "delete stdout:"
+                            , deleteStdout
+                            , "delete stderr:"
+                            , deleteStderr
+                            ]
+                when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
                 deleteExitCode `shouldBe` ExitSuccess
                 deleteStderr `shouldBe` ""
+                deleteStdout `shouldContain` "Skipped AWS EKS test stack destroy because no stack named 'aws-eks-test' exists in the local Pulumi backend"
+                deleteStdout `shouldContain` "Skipped AWS test stack destroy because no stack named 'aws-test' exists in the local Pulumi backend"
                 deleteStdout `shouldContain` "Preserved host state:"
                 kubeconfigExists <- doesFileExist (tmpDir </> ".kube" </> "config")
                 kubeconfigExists `shouldBe` False
@@ -305,6 +324,7 @@ main = hspec $ do
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
                 dockerRecord `shouldContain` "buildx|create|--name|prodbox-multiarch-hostnet|--driver|docker-container|--driver-opt|network=host|--use"
+                dockerRecord `shouldContain` "buildx|stop|prodbox-multiarch-hostnet"
                 dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|public.ecr.aws/docker/library/postgres:16.4-bullseye"
                 dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/library/postgres:16.4-bullseye"
                 dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye|docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -323,6 +343,11 @@ main = hspec $ do
                 curlRecord `shouldContain` "http://127.0.0.1:30080/readyz"
                 curlRecord `shouldContain` "http://127.0.0.1:30080/v2/"
                 curlRecord `shouldContain` "/api/v2.0/projects"
+
+                pulumiRecord <- readFile (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
+                pulumiRecord `shouldContain` "login|s3://prodbox-test-pulumi-backends?region=us-east-1&endpoint=127.0.0.1:39000&disableSSL=true&s3ForcePathStyle=true"
+                pulumiRecord `shouldContain` "stack|select|aws-eks-test"
+                pulumiRecord `shouldContain` "stack|select|aws-test"
 
         it "runs native pulumi preview, up, refresh, and stack-init through the built frontend with fake pulumi and kubectl" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -595,6 +620,10 @@ writeRepoMarkers repoRoot = do
     writeFile (repoRoot </> "prodbox.cabal") "name: temp\n"
     createDirectoryIfMissing True (repoRoot </> "DEVELOPMENT_PLAN")
     writeFile (repoRoot </> "DEVELOPMENT_PLAN/README.md") "# temp\n"
+    createDirectoryIfMissing True (repoRoot </> "pulumi" </> "aws-test")
+    writeFile (repoRoot </> "pulumi" </> "aws-test" </> "Pulumi.yaml") "name: aws-test\nruntime: yaml\n"
+    createDirectoryIfMissing True (repoRoot </> "pulumi" </> "aws-eks")
+    writeFile (repoRoot </> "pulumi" </> "aws-eks" </> "Pulumi.yaml") "name: aws-eks-test\nruntime: yaml\n"
 
 copySchema :: FilePath -> FilePath -> IO ()
 copySchema sourceRoot targetRoot =
@@ -688,7 +717,7 @@ fakeHelmScript =
         [ "#!/usr/bin/env bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_CHART_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "record_args() {"
         , "  local target=$1"
         , "  shift"
@@ -726,7 +755,7 @@ fakeKubectlScript =
         [ "#!/usr/bin/env bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_CHART_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "append_args() {"
         , "  local target=$1"
         , "  shift"
@@ -819,15 +848,18 @@ writeFakeRke2Scripts repoRoot = do
     writeExecutable (binDir </> "chmod") fakeRke2ChmodScript
     writeExecutable (binDir </> "rm") fakeRke2RmScript
     writeExecutable (binDir </> "cat") fakeRke2CatScript
+    writeExecutable (binDir </> "pulumi") fakeRke2PulumiScript
+    writeExecutable (binDir </> "aws") fakeRke2AwsScript
+    writeExecutable (binDir </> "bash") fakeRke2BashScript
     pure binDir
 
 fakeSystemctlScript :: String
 fakeSystemctlScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "append_args() {"
         , "  local target=$1"
         , "  shift"
@@ -858,10 +890,10 @@ fakeSystemctlScript =
 fakeJournalctlScript :: String
 fakeJournalctlScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "first=1"
         , ": > \"$record_dir/journalctl.txt\""
         , "for arg in \"$@\"; do"
@@ -878,10 +910,10 @@ fakeJournalctlScript =
 fakeSudoScript :: String
 fakeSudoScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "first=1"
         , "for arg in \"$@\"; do"
         , "  if [[ $first -eq 0 ]]; then"
@@ -897,10 +929,10 @@ fakeSudoScript =
 fakeRke2TestScript :: String
 fakeRke2TestScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "printf '%s\\n' \"$*\" >> \"$record_dir/test.txt\""
         , "case \"$*\" in"
         , "  '-x /usr/local/bin/rke2'|'-x /usr/local/bin/rke2-uninstall.sh')"
@@ -915,10 +947,10 @@ fakeRke2TestScript =
 fakeRke2CurlScript :: String
 fakeRke2CurlScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "printf '%s\\n' \"$*\" >> \"$record_dir/curl.txt\""
         , "if [[ \"$*\" == *'https://get.rke2.io'* ]]; then"
         , "  out=''"
@@ -955,10 +987,10 @@ fakeRke2CurlScript =
 fakeRke2KubectlScript :: String
 fakeRke2KubectlScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
-        , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:-${HOME:?}/fake-rke2-state}"
+        , "/bin/mkdir -p \"$record_dir\""
         , "append_args() {"
         , "  local target=$1"
         , "  shift"
@@ -1021,6 +1053,16 @@ fakeRke2KubectlScript =
         , "}"
         , "EOF"
         , "        ;;"
+        , "      secret)"
+        , "        if [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootUser'* ]]; then"
+        , "          printf 'minioadmin'"
+        , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootPassword'* ]]; then"
+        , "          printf 'minioadmin123'"
+        , "        else"
+        , "          printf 'unsupported fake secret lookup: %s\\n' \"$*\" >&2"
+        , "          exit 1"
+        , "        fi"
+        , "        ;;"
         , "      deployments.apps)"
         , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
         , "          printf 'deployment.apps/prodbox-api\\n'"
@@ -1048,6 +1090,12 @@ fakeRke2KubectlScript =
         , "    ;;"
         , "  wait)"
         , "    ;;"
+        , "  port-forward)"
+        , "    trap 'exit 0' TERM INT"
+        , "    while true; do"
+        , "      sleep 1"
+        , "    done"
+        , "    ;;"
         , "  apply)"
         , "    target=$(next_apply_target)"
         , "    /bin/cp \"${3:?}\" \"$target\""
@@ -1067,10 +1115,10 @@ fakeRke2KubectlScript =
 fakeRke2HelmScript :: String
 fakeRke2HelmScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "first=1"
         , "for arg in \"$@\"; do"
         , "  if [[ $first -eq 0 ]]; then"
@@ -1086,10 +1134,10 @@ fakeRke2HelmScript =
 fakeRke2DockerScript :: String
 fakeRke2DockerScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "first=1"
         , "for arg in \"$@\"; do"
         , "  if [[ $first -eq 0 ]]; then"
@@ -1148,10 +1196,10 @@ fakeRke2DockerScript =
 fakeRke2CtrScript :: String
 fakeRke2CtrScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "printf '%s\\n' \"$*\" >> \"$record_dir/ctr.txt\""
         , "exit 0"
         ]
@@ -1159,7 +1207,7 @@ fakeRke2CtrScript =
 fakeRke2MkdirScript :: String
 fakeRke2MkdirScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
         , "printf '%s\\n' \"$*\" >> \"$record_dir/mkdir.txt\""
@@ -1169,7 +1217,7 @@ fakeRke2MkdirScript =
 fakeRke2CpScript :: String
 fakeRke2CpScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
         , "printf '%s\\n' \"$*\" >> \"$record_dir/cp.txt\""
@@ -1179,7 +1227,7 @@ fakeRke2CpScript =
 fakeRke2ChownScript :: String
 fakeRke2ChownScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
         , "printf '%s\\n' \"$*\" >> \"$record_dir/chown.txt\""
@@ -1189,7 +1237,7 @@ fakeRke2ChownScript =
 fakeRke2ChmodScript :: String
 fakeRke2ChmodScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
         , "printf '%s\\n' \"$*\" >> \"$record_dir/chmod.txt\""
@@ -1199,7 +1247,7 @@ fakeRke2ChmodScript =
 fakeRke2RmScript :: String
 fakeRke2RmScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
         , "printf '%s\\n' \"$*\" >> \"$record_dir/rm.txt\""
@@ -1209,12 +1257,89 @@ fakeRke2RmScript =
 fakeRke2CatScript :: String
 fakeRke2CatScript =
     unlines
-        [ "#!/usr/bin/env bash"
+        [ "#!/bin/bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
         , "printf '%s\\n' \"$*\" >> \"$record_dir/cat.txt\""
         , "printf 'cat: %s: No such file or directory\\n' \"${1:-file}\" >&2"
         , "exit 1"
+        ]
+
+fakeRke2PulumiScript :: String
+fakeRke2PulumiScript =
+    unlines
+        [ "#!/bin/bash"
+        , "set -euo pipefail"
+        , "record_dir=${HOME:?}/fake-rke2-state"
+        , "/bin/mkdir -p \"$record_dir\""
+        , "first=1"
+        , "for arg in \"$@\"; do"
+        , "  if [[ $first -eq 0 ]]; then"
+        , "    printf '|' >> \"$record_dir/pulumi.txt\""
+        , "  fi"
+        , "  first=0"
+        , "  printf '%s' \"$arg\" >> \"$record_dir/pulumi.txt\""
+        , "done"
+        , "printf '\\n' >> \"$record_dir/pulumi.txt\""
+        , "case \"${1:-}\" in"
+        , "  login)"
+        , "    printf 'Logged in to fake-rke2 as matthewnowak (%s)\\n' \"${2:-}\""
+        , "    ;;"
+        , "  stack)"
+        , "    case \"${2:-}\" in"
+        , "      select)"
+        , "        if [[ \"$*\" != *'--create'* && ( \"${3:-}\" == 'aws-eks-test' || \"${3:-}\" == 'aws-test' ) ]]; then"
+        , "          printf \"error: no stack named '%s' found\\n\" \"${3:-}\" >&2"
+        , "          exit 1"
+        , "        fi"
+        , "        printf 'STACK_SELECTED=%s\\n' \"${3:-}\""
+        , "        ;;"
+        , "      rm)"
+        , "        ;;"
+        , "      *)"
+        , "        printf 'unsupported fake pulumi stack command: %s\\n' \"$*\" >&2"
+        , "        exit 1"
+        , "        ;;"
+        , "    esac"
+        , "    ;;"
+        , "  destroy|refresh)"
+        , "    printf 'PULUMI_%s\\n' \"${1^^}\""
+        , "    ;;"
+        , "  *)"
+        , "    printf 'unsupported fake pulumi command: %s\\n' \"$*\" >&2"
+        , "    exit 1"
+        , "    ;;"
+        , "esac"
+        ]
+
+fakeRke2AwsScript :: String
+fakeRke2AwsScript =
+    unlines
+        [ "#!/bin/bash"
+        , "set -euo pipefail"
+        , "case \"$*\" in"
+        , "  *'s3api head-bucket'*|*'s3api create-bucket'*)"
+        , "    exit 0"
+        , "    ;;"
+        , "  *)"
+        , "    printf 'unsupported fake aws command: %s\\n' \"$*\" >&2"
+        , "    exit 1"
+        , "    ;;"
+        , "esac"
+        ]
+
+fakeRke2BashScript :: String
+fakeRke2BashScript =
+    unlines
+        [ "#!/bin/bash"
+        , "set -euo pipefail"
+        , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
+        , "/bin/mkdir -p \"$record_dir\""
+        , "printf '%s\\n' \"$*\" >> \"$record_dir/bash.txt\""
+        , "if [[ \"${1:-}\" == '-c' && \"${2:-}\" == *'/dev/tcp/127.0.0.1/39000'* ]]; then"
+        , "  exit 0"
+        , "fi"
+        , "exec /bin/bash \"$@\""
         ]
 
 fakePulumiEnvironment :: FilePath -> IO [(String, String)]
@@ -1275,7 +1400,7 @@ fakePulumiScript =
         [ "#!/usr/bin/env bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_PULUMI_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "record_call() {"
         , "  {"
         , "    printf 'ARGV='"
@@ -1352,7 +1477,7 @@ fakePulumiKubectlScript =
         [ "#!/usr/bin/env bash"
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_PULUMI_RECORD_DIR:?}"
-        , "mkdir -p \"$record_dir\""
+        , "/bin/mkdir -p \"$record_dir\""
         , "append_args() {"
         , "  local first=1"
         , "  for arg in \"$@\"; do"
@@ -1418,7 +1543,7 @@ fakeAwsScript stateDir =
         [ "#!/usr/bin/env bash",
           "set -euo pipefail",
           "STATE_DIR=\"" ++ stateDir ++ "\"",
-          "mkdir -p \"$STATE_DIR\"",
+          "/bin/mkdir -p \"$STATE_DIR\"",
           "if [[ $# -ge 2 && \"${@: -2:1}\" == \"--output\" ]]; then",
           "  set -- \"${@:1:$#-2}\"",
           "fi",

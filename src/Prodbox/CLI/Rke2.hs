@@ -339,7 +339,8 @@ runNativeDelete repoRoot = do
     settingsResult <- validateAndLoadSettings repoRoot
     case settingsResult of
         Left err -> failWith err
-        Right settings ->
+        Right settings -> do
+            putStrLn "Deleting local RKE2 environment..."
             runSequentially
                 [ runPulumiCommand repoRoot (PulumiEksDestroy True),
                   runPulumiCommand repoRoot (PulumiTestDestroy True),
@@ -1610,27 +1611,35 @@ deleteRke2ClusterSubstrate repoRoot = do
         Left err -> failWith err
         Right output ->
             case processExitCode output of
-                ExitSuccess ->
-                    runCommand
-                        CommandSpec
-                            { commandPath = "sudo",
-                              commandArguments = [rke2UninstallPath],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
-                            }
+                ExitSuccess -> do
+                    uninstallResult <- captureToolOutput repoRoot "sudo" [rke2UninstallPath]
+                    case uninstallResult of
+                        Left err -> failWith err
+                        Right uninstallOutput ->
+                            case processExitCode uninstallOutput of
+                                ExitSuccess -> reportDeleteStep "Local RKE2 substrate" "cleanup complete"
+                                ExitFailure _ ->
+                                    failWith
+                                        ( "failed to clean the local RKE2 substrate: "
+                                            ++ summarizeRke2DeleteFailure uninstallOutput
+                                        )
                 ExitFailure _ -> do
                     _ <-
                         captureToolOutput
                             repoRoot
                             "sudo"
                             ["systemctl", "disable", "--now", rke2ServiceName]
-                    runCommand
+                    cleanupExit <-
+                        runCommand
                         CommandSpec
                             { commandPath = "sudo",
                               commandArguments = ["rm", "-rf", "/var/lib/rancher/rke2", "/var/lib/rancher", "/etc/rancher/rke2", "/usr/local/bin/rke2", "/usr/local/bin/rke2-killall.sh", "/usr/local/bin/rke2-uninstall.sh"],
                               commandEnvironment = Nothing,
                               commandWorkingDirectory = Just repoRoot
                             }
+                    case cleanupExit of
+                        ExitFailure _ -> pure cleanupExit
+                        ExitSuccess -> reportDeleteStep "Local RKE2 substrate" "cleanup complete"
 
 removeCalicoEndpointStatusResidue :: IO ExitCode
 removeCalicoEndpointStatusResidue = do
@@ -1667,7 +1676,7 @@ removeManagedKubeconfig = do
     let kubeconfigPath = homeDirectory </> ".kube" </> "config"
     exists <- doesFileExist kubeconfigPath
     if not exists
-        then pure ExitSuccess
+        then reportDeleteStep "Managed kubeconfig" "already absent"
         else do
             readResult <- try (readFile kubeconfigPath) :: IO (Either IOException String)
             case readResult of
@@ -1678,8 +1687,11 @@ removeManagedKubeconfig = do
                             removeResult <- try (removeFile kubeconfigPath) :: IO (Either IOException ())
                             case removeResult of
                                 Left err -> failWith ("failed to remove " ++ kubeconfigPath ++ ": " ++ displayException err)
-                                Right () -> pure ExitSuccess
-                        else pure ExitSuccess
+                                Right () -> reportDeleteStep "Managed kubeconfig" "removed"
+                        else
+                            reportDeleteStep
+                                "Managed kubeconfig"
+                                "left in place because it does not target the local RKE2 API"
 
 renderRetainedStateNotice :: FilePath -> ValidatedSettings -> IO ExitCode
 renderRetainedStateNotice repoRoot settings = do
@@ -1687,6 +1699,31 @@ renderRetainedStateNotice repoRoot settings = do
     putStrLn ("  - manual PV root: " ++ resolvedManualPvHostRoot settings)
     putStrLn ("  - retained chart state root: " ++ repoRoot </> ".prodbox-state")
     pure ExitSuccess
+
+reportDeleteStep :: String -> String -> IO ExitCode
+reportDeleteStep label status = do
+    putStrLn (label ++ ": " ++ status)
+    pure ExitSuccess
+
+summarizeRke2DeleteFailure :: ProcessOutput -> String
+summarizeRke2DeleteFailure output =
+    case reverse . take 3 . reverse $
+        filter (not . isIgnorableRke2DeleteNoiseLine) (nonEmptyLines (processStderr output ++ "\n" ++ processStdout output)) of
+        [] -> outputDetail output
+        actionableLines -> intercalate " | " actionableLines
+
+isIgnorableRke2DeleteNoiseLine :: String -> Bool
+isIgnorableRke2DeleteNoiseLine line =
+    let trimmed = trimWhitespace line
+        lowered = map toLower trimmed
+     in trimmed == ""
+            || "+" `isPrefixOf` trimmed
+            || "[20" `isPrefixOf` trimmed
+            || "cannot find device" `isInfixOf` lowered
+            || "failed to reset failed state of unit" `isInfixOf` lowered
+            || "semodule: not found" `isInfixOf` lowered
+            || "if this cluster was upgraded from an older release of the canal cni" `isPrefixOf` lowered
+            || "-e      " `isPrefixOf` trimmed
 
 normalizeLogLines :: Maybe Int -> Either String Int
 normalizeLogLines maybeLines =

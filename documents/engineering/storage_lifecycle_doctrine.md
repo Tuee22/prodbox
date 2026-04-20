@@ -71,7 +71,9 @@ Deterministic rebinding is guaranteed only when all of these hold:
 2. removes the RKE2 substrate and managed kubeconfig residue
 3. preserves the configured manual PV host root
 4. preserves `.prodbox-state/`
-5. prints the preserved-state boundary explicitly
+5. reports expected-absence cleanup as normal delete disposition rather than failure-looking trace
+   noise
+6. prints the preserved-state boundary explicitly
 
 ## 6. Test Expectations
 

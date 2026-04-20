@@ -68,6 +68,11 @@ This split is deliberate:
 2. `aws_admin.*` is the elevated identity used only when an admin lifecycle command or the IAM
    lifecycle integration suite needs it
 
+When `aws_admin.*` is populated, `prodbox aws setup|teardown|check-quotas|request-quotas` and
+`./.build/prodbox test integration aws-iam` consume that config-backed harness directly.
+Interactive credential prompts are a fallback only when the admin harness is empty and the command
+is being driven with stdin available.
+
 ---
 
 ## 4. Cleanup Rule

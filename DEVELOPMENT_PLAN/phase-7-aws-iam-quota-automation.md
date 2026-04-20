@@ -134,8 +134,13 @@ credential harness.
 
 - The isolated `aws_admin` config contract and the Haskell IAM runtime surface are implemented in
   `src/Prodbox/Settings.hs` and `src/Prodbox/Aws.hs`.
+- `src/Prodbox/Aws.hs` now consumes populated `aws_admin.*` credentials directly for elevated
+  admin flows and the real IAM validation harness, with interactive prompts retained only as a
+  fallback when the harness is empty.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration aws-iam` to an executable native
   validation flow in `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestValidation.hs` now re-establishes the operational IAM user after teardown proof
+  so the aggregate validation harness can continue on supported `aws.*` credentials.
 - `prodbox test all` includes that native IAM payload as part of the aggregate validation harness,
   and the aggregate build-plus-test gate now passes again on this host.
 

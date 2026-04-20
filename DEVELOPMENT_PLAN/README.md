@@ -14,7 +14,7 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 19, 2026, the repository is re-closed on the Haskell-only rewrite, including the
+As of April 20, 2026, the repository is re-closed on the Haskell-only rewrite, including the
 container packaging and registry surfaces reopened by the April 18 Docker and Harbor audit. The
 repository-root `Dockerfile` is removed,
 `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` now follow the single-stage
@@ -37,6 +37,10 @@ repo-rootless in-cluster `gateway start|status`, `charts/gateway/` supplies AWS 
 projects configured ZeroSSL EAB credentials into cert-manager via `externalAccountBinding`, and
 the lifecycle image-reconcile path now requires a stable Harbor `/readyz` plus `/v2/` window
 before Docker login or image publication begins.
+The destructive delete path is also re-closed on a quieter operator contract: `prodbox rke2 delete
+--yes` now reports AWS destroy disposition, local substrate cleanup, managed kubeconfig handling,
+and preserved roots without streaming raw Pulumi login chatter or successful uninstall-script
+trace noise.
 
 The repository now contains:
 
@@ -142,18 +146,29 @@ artifacts left in the repository.
 
 ## Current Plan Status
 
-As of April 19, 2026, the development plan is fully re-closed on the reopened
+As of April 20, 2026, the development plan is fully re-closed on the reopened
 container-and-registry surfaces:
 
 - The repository is Haskell-only. All Python source under `src/prodbox/`, `tests/`, and
   `typings/`, plus Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`) and
   bridge modules (`Backend/Python.hs`, `PythonEnv.hs`), remain removed.
+- The frontend request path and supported-runtime helpers no longer carry Python-era compatibility
+  scaffolding: `src/Prodbox/CLI/Command.hs`, `app/prodbox/Main.hs`, and
+  `src/Prodbox/SupportedRuntime.hs` now close on direct native Haskell dispatch plus
+  Haskell-named context fields only.
 - All Pulumi programs are YAML-based: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, and
   `pulumi/aws-test/Main.yaml`. The root `Pulumi.yaml` uses `runtime: yaml`.
+- The AWS validation Pulumi programs now take operator-CIDR and SSH-public-key inputs through
+  explicit Pulumi stack config synchronized by `src/Prodbox/Infra/AwsEksTestStack.hs` and
+  `src/Prodbox/Infra/AwsTestStack.hs`, not via `std:getenv` provider lookups inside the YAML
+  runtime.
 - `CheckCode.hs` owns `prodbox check-code` and runs `cabal build --builddir=.build all`, then
   syncs the operator-facing binary to `.build/prodbox`.
 - `TestRunner.hs` owns `prodbox test ...`, runs the Haskell suites via `cabal test`, and executes
   the named real-world validation flows through `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke the native CLI
+  through the canonical `./.build/prodbox` path during aggregate and validation workflows, so
+  nested suite-side binary syncs do not strand later phases on a deleted executable inode.
 - The supported config contract is direct `Dhall -> Haskell types`: `src/Prodbox/Settings.hs`
   decodes and validates `prodbox-config.dhall` without materializing `prodbox-config.json`, and
   the public `prodbox config` surface is `setup|show|validate`.
@@ -170,6 +185,9 @@ container-and-registry surfaces:
   flows in `src/Prodbox/TestValidation.hs`.
 - The supported container topology now lives entirely under `docker/`:
   `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `docker/nginx-oidc.Dockerfile`.
+- `prodbox rke2 delete --yes` now emits a summary-oriented cleanup narrative that reports AWS test
+  stack disposition, local substrate cleanup, managed kubeconfig handling, and preserved host
+  roots without replaying successful uninstall-script traces or expected missing-resource noise.
 - `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` are single-stage
   `ubuntu:24.04` builds that preserve the `/opt/build` artifact contract and mount the official
   `haskell:9.6.7-slim` toolchain image as a BuildKit context during publication.

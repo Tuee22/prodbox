@@ -9,6 +9,8 @@ import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Prodbox.BuildSupport
     ( addBuildSupportEnvironment,
+      canonicalOperatorBinaryPath,
+      syncBuiltOperatorBinary,
     )
 import Prodbox.CLI.Command
     ( TestCommand (..),
@@ -49,7 +51,6 @@ import Prodbox.TestPlan
 import Prodbox.TestValidation (runNativeValidation)
 import System.Environment
     ( getEnvironment,
-      getExecutablePath,
     )
 import System.Exit
     ( ExitCode (..),
@@ -105,8 +106,11 @@ runTests repoRoot command =
                     case testPlanExecutionMode plan of
                         DelegatedSuite _ ->
                             pure ExitSuccess
-                        NativeSuite suitePlan ->
-                            runNativeSuite repoRoot environment suitePlan
+                        NativeSuite suitePlan -> do
+                            prepareExit <- ensureCanonicalOperatorBinary repoRoot environment
+                            case prepareExit of
+                                ExitSuccess -> runNativeSuite repoRoot environment suitePlan
+                                failure@(ExitFailure _) -> pure failure
                 failure@(ExitFailure _) -> pure failure
 
 runHaskellSuites :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
@@ -318,24 +322,37 @@ runWaitForCommandOutputContains spec expectedText attemptsLeft delayMicroseconds
 
 runWaitForNativeCommandOutputContains :: FilePath -> [(String, String)] -> [String] -> String -> Int -> Int -> IO ExitCode
 runWaitForNativeCommandOutputContains repoRoot environment cliArgs expectedText attempts delayMicroseconds = do
-    spec <- nativeCliCommandSpec repoRoot environment cliArgs
-    runWaitForCommandOutputContains spec expectedText attempts delayMicroseconds
+    runWaitForCommandOutputContains
+        (nativeCliCommandSpec repoRoot environment cliArgs)
+        expectedText
+        attempts
+        delayMicroseconds
 
 runNativeCliCommandForExitCode :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runNativeCliCommandForExitCode repoRoot environment cliArgs = do
-    spec <- nativeCliCommandSpec repoRoot environment cliArgs
-    runCommandForExitCode spec
+    runCommandForExitCode (nativeCliCommandSpec repoRoot environment cliArgs)
 
-nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> IO CommandSpec
-nativeCliCommandSpec repoRoot environment cliArgs = do
-    executablePath <- getExecutablePath
-    pure
-        CommandSpec
-            { commandPath = executablePath,
-              commandArguments = cliArgs,
-              commandEnvironment = Just environment,
-              commandWorkingDirectory = Just repoRoot
-            }
+nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> CommandSpec
+nativeCliCommandSpec repoRoot environment cliArgs =
+    CommandSpec
+        { commandPath = canonicalOperatorBinaryPath repoRoot,
+          commandArguments = cliArgs,
+          commandEnvironment = Just environment,
+          commandWorkingDirectory = Just repoRoot
+        }
+
+ensureCanonicalOperatorBinary :: FilePath -> [(String, String)] -> IO ExitCode
+ensureCanonicalOperatorBinary repoRoot environment = do
+    syncResult <- syncBuiltOperatorBinary repoRoot environment
+    case syncResult of
+        Left err -> failWith err
+        Right binaryPath
+            | binaryPath == canonicalOperatorBinaryPath repoRoot -> pure ExitSuccess
+            | otherwise ->
+                failWith
+                    ( "canonical operator binary synced to unexpected path: "
+                        ++ binaryPath
+                    )
 
 orderedPrepend :: String -> [String] -> [String]
 orderedPrepend value existing = value : filter (/= value) existing

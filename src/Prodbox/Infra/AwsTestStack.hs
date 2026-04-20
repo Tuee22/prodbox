@@ -15,7 +15,7 @@ module Prodbox.Infra.AwsTestStack
     )
 where
 
-import Control.Monad (forM, void)
+import Control.Monad (foldM, forM, void)
 import Data.List (isInfixOf)
 import Data.Char (toLower)
 import Data.Aeson
@@ -95,6 +95,12 @@ data AwsTestStackSnapshot = AwsTestStackSnapshot
       testSnapshotSubnetIds :: [String],
       testSnapshotSecurityGroupId :: String,
       testSnapshotNodes :: [AwsTestNode]
+    }
+    deriving (Eq, Show)
+
+data AwsTestStackConfig = AwsTestStackConfig
+    { testStackOperatorCidr :: String,
+      testStackPublicKey :: String
     }
     deriving (Eq, Show)
 
@@ -317,28 +323,71 @@ pulumiTestBaseEnv localPort minioAccessKey minioSecretKey = do
           ("LANG", "C.UTF-8")
         ]
 
-pulumiTestEnv ::
-    FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
-pulumiTestEnv repoRoot localPort minioAccessKey minioSecretKey = do
+resolveAwsTestStackConfig :: FilePath -> IO (Either String AwsTestStackConfig)
+resolveAwsTestStackConfig repoRoot = do
     publicKeyResult <- readSshPublicKey repoRoot
     publicIpResult <- fetchPublicIpv4
     case (publicKeyResult, publicIpResult) of
         (Left err, _) -> pure (Left err)
         (_, Left err) -> pure (Left err)
-        (Right publicKey, Right publicIp) -> do
-            baseEnvironment <- pulumiTestBaseEnv localPort minioAccessKey minioSecretKey
+        (Right publicKey, Right publicIp) ->
             pure
                 ( Right
-                    ( upsertEnv
-                        "PRODBOX_AWS_TEST_PUBLIC_KEY"
-                        publicKey
-                        ( upsertEnv
-                            "PRODBOX_AWS_TEST_OPERATOR_CIDR"
-                            (publicIp ++ "/32")
-                            baseEnvironment
-                        )
-                    )
+                    AwsTestStackConfig
+                        { testStackOperatorCidr = publicIp ++ "/32",
+                          testStackPublicKey = publicKey
+                        }
                 )
+
+syncAwsTestStackConfig :: FilePath -> [(String, String)] -> AwsTestStackConfig -> IO ExitCode
+syncAwsTestStackConfig projectDir environment stackConfig =
+    foldM runConfigSet ExitSuccess configEntries
+  where
+    configEntries =
+        [ (False, "operatorCidr", testStackOperatorCidr stackConfig),
+          (False, "publicKey", testStackPublicKey stackConfig)
+        ]
+
+    runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
+    runConfigSet failure@(ExitFailure _) _ = pure failure
+    runConfigSet ExitSuccess (secretValue, key, value) =
+        runPulumiCommand
+            projectDir
+            environment
+            ( ["config", "set", "--stack", awsTestStackName]
+                ++ ["--secret" | secretValue]
+                ++ [key, value]
+            )
+
+syncAwsProviderConfig :: FilePath -> FilePath -> [(String, String)] -> IO ExitCode
+syncAwsProviderConfig repoRoot projectDir environment = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left _ -> pure (ExitFailure 1)
+        Right settings ->
+            foldM runConfigSet ExitSuccess (providerConfigEntries (aws (validatedConfig settings)))
+  where
+    providerConfigEntries creds =
+        [ (False, "aws:region", Text.unpack (region creds)),
+          (True, "aws:accessKey", Text.unpack (access_key_id creds)),
+          (True, "aws:secretKey", Text.unpack (secret_access_key creds)),
+          (True, "aws:token", maybe "" Text.unpack (session_token creds)),
+          (False, "awsRegion", Text.unpack (region creds)),
+          (True, "awsAccessKeyId", Text.unpack (access_key_id creds)),
+          (True, "awsSecretAccessKey", Text.unpack (secret_access_key creds)),
+          (True, "awsSessionToken", maybe "" Text.unpack (session_token creds))
+        ]
+
+    runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
+    runConfigSet failure@(ExitFailure _) _ = pure failure
+    runConfigSet ExitSuccess (secretValue, key, value) =
+        runPulumiCommand
+            projectDir
+            environment
+            ( ["config", "set", "--stack", awsTestStackName]
+                ++ ["--secret" | secretValue]
+                ++ [key, value]
+            )
 
 readSshPublicKey :: FilePath -> IO (Either String String)
 readSshPublicKey repoRoot = do
@@ -353,6 +402,10 @@ readSshPublicKey repoRoot = do
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiLogin projectDir environment =
     runPulumiCommand projectDir environment ["login", maybe "" id (lookup "PULUMI_BACKEND_URL" environment)]
+
+pulumiLoginQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
+pulumiLoginQuiet projectDir environment =
+    runPulumiCommandQuiet projectDir environment ["login", maybe "" id (lookup "PULUMI_BACKEND_URL" environment)]
 
 data PulumiStackSelectResult
     = PulumiStackSelected
@@ -394,13 +447,13 @@ pulumiUp :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiUp projectDir environment =
     runPulumiCommand projectDir environment ["up", "--yes", "--stack", awsTestStackName]
 
-pulumiDestroy :: FilePath -> [(String, String)] -> IO ExitCode
-pulumiDestroy projectDir environment =
-    runPulumiCommand projectDir environment ["destroy", "--yes", "--stack", awsTestStackName]
+pulumiDestroyQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
+pulumiDestroyQuiet projectDir environment =
+    runPulumiCommandQuiet projectDir environment ["destroy", "--yes", "--stack", awsTestStackName]
 
-pulumiStackRemove :: FilePath -> [(String, String)] -> Bool -> IO ExitCode
-pulumiStackRemove projectDir environment force =
-    runPulumiCommand
+pulumiStackRemoveQuiet :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
+pulumiStackRemoveQuiet projectDir environment force =
+    runPulumiCommandQuiet
         projectDir
         environment
         (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsTestStackName])
@@ -441,6 +494,24 @@ runPulumiCommand projectDir environment arguments = do
             hPutStrLn stderr err
             pure (ExitFailure 1)
         Success exitCode -> pure exitCode
+
+runPulumiCommandQuiet :: FilePath -> [(String, String)] -> [String] -> IO (Either String ())
+runPulumiCommandQuiet projectDir environment arguments = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "pulumi",
+                  commandArguments = arguments,
+                  commandEnvironment = Just environment,
+                  commandWorkingDirectory = Just projectDir
+                }
+    pure $
+        case result of
+            Failure err -> Left err
+            Success output ->
+                case processExitCode output of
+                    ExitSuccess -> Right ()
+                    ExitFailure _ -> Left (renderProcessDetail output)
 
 snapshotFromOutputs :: Value -> Either String AwsTestStackSnapshot
 snapshotFromOutputs (Object obj) = do
@@ -488,6 +559,34 @@ resourceStillExists repoRoot command = do
                              in if isResourceMissing detail
                                     then pure (Right False)
                                     else pure (Left (unwords command ++ " failed: " ++ detail))
+
+instanceStillExists :: FilePath -> String -> IO (Either String Bool)
+instanceStillExists repoRoot instanceId = do
+    envResult <- settingsAwsEnv repoRoot
+    case envResult of
+        Left err -> pure (Left err)
+        Right environment -> do
+            result <-
+                captureCommand
+                    CommandSpec
+                        { commandPath = "aws",
+                          commandArguments = ["ec2", "describe-instances", "--instance-ids", instanceId, "--output", "json"],
+                          commandEnvironment = Just environment,
+                          commandWorkingDirectory = Nothing
+                        }
+            case result of
+                Failure err -> pure (Left err)
+                Success output ->
+                    case processExitCode output of
+                        ExitFailure _ ->
+                            let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
+                             in if isResourceMissing detail
+                                    then pure (Right False)
+                                    else pure (Left ("aws ec2 describe-instances --instance-ids " ++ instanceId ++ " failed: " ++ detail))
+                        ExitSuccess ->
+                            case eitherDecode (BL8.pack (processStdout output)) of
+                                Left err -> pure (Left ("failed to parse EC2 instance JSON: " ++ err))
+                                Right payload -> pure (instanceDescribeShowsActiveInstance payload)
 
 isResourceMissing :: String -> Bool
 isResourceMissing detail =
@@ -539,7 +638,7 @@ checkResidueItems repoRoot snapshot = do
                 resourceStillExists repoRoot ["aws", "ec2", "describe-subnets", "--subnet-ids", subnetId]
             sgResult <- resourceStillExists repoRoot ["aws", "ec2", "describe-security-groups", "--group-ids", testSnapshotSecurityGroupId snapshot]
             instanceResults <- forM (testSnapshotNodes snapshot) $ \node ->
-                resourceStillExists repoRoot ["aws", "ec2", "describe-instances", "--instance-ids", testNodeInstanceId node]
+                instanceStillExists repoRoot (testNodeInstanceId node)
             let allResults = [("vpc=" ++ testSnapshotVpcId snapshot, vpcResult)]
                     ++ zipWith (\sid r -> ("subnet=" ++ sid, r)) (testSnapshotSubnetIds snapshot) subnetResults
                     ++ [("security-group=" ++ testSnapshotSecurityGroupId snapshot, sgResult)]
@@ -548,6 +647,33 @@ checkResidueItems repoRoot snapshot = do
                 Left err -> pure (Left err)
                 Right existsList ->
                     pure (Right [label | (label, True) <- zip (map fst allResults) existsList])
+
+instanceDescribeShowsActiveInstance :: Value -> Either String Bool
+instanceDescribeShowsActiveInstance (Object obj) =
+    case KeyMap.lookup (Key.fromString "Reservations") obj of
+        Just (Array reservations) ->
+            fmap or (mapM reservationHasActiveInstance (Vector.toList reservations))
+        _ -> Left "describe-instances response missing Reservations array"
+  where
+    reservationHasActiveInstance :: Value -> Either String Bool
+    reservationHasActiveInstance (Object reservationObj) =
+        case KeyMap.lookup (Key.fromString "Instances") reservationObj of
+            Just (Array instancesArray) ->
+                fmap or (mapM instanceIsActive (Vector.toList instancesArray))
+            _ -> Left "describe-instances reservation missing Instances array"
+    reservationHasActiveInstance _ = Left "describe-instances reservation must be an object"
+
+    instanceIsActive :: Value -> Either String Bool
+    instanceIsActive (Object instanceObj) =
+        case KeyMap.lookup (Key.fromString "State") instanceObj of
+            Just (Object stateObj) ->
+                case KeyMap.lookup (Key.fromString "Name") stateObj of
+                    Just (String stateName) ->
+                        pure (Text.unpack stateName /= "terminated")
+                    _ -> Left "describe-instances state missing Name"
+            _ -> Left "describe-instances instance missing State object"
+    instanceIsActive _ = Left "describe-instances instance must be an object"
+instanceDescribeShowsActiveInstance _ = Left "describe-instances response must be a JSON object"
 
 ensureAwsTestStackResources :: FilePath -> IO ExitCode
 ensureAwsTestStackResources repoRoot = do
@@ -565,35 +691,44 @@ ensureAwsTestStackResources repoRoot = do
                         case bucketResult of
                             Left err -> pure (Left err)
                             Right () -> do
-                                envResult <- pulumiTestEnv repoRoot localPort accessKey secretKey
-                                case envResult of
+                                configResult <- resolveAwsTestStackConfig repoRoot
+                                case configResult of
                                     Left err -> pure (Left err)
-                                    Right environment -> do
-                                        loginExit <- pulumiLogin projectDir environment
+                                    Right stackConfig -> do
+                                        baseEnvironment <- pulumiTestBaseEnv localPort accessKey secretKey
+                                        loginExit <- pulumiLogin projectDir baseEnvironment
                                         case loginExit of
                                             ExitFailure _ -> pure (Left "pulumi login failed")
                                             ExitSuccess -> do
-                                                selectExit <- pulumiStackSelect projectDir environment True
+                                                selectExit <- pulumiStackSelect projectDir baseEnvironment True
                                                 case selectExit of
                                                     PulumiStackSelected -> do
-                                                        upExit <- pulumiUp projectDir environment
-                                                        case upExit of
-                                                            ExitFailure _ -> pure (Left "pulumi up failed")
+                                                        providerSyncExit <- syncAwsProviderConfig repoRoot projectDir baseEnvironment
+                                                        case providerSyncExit of
+                                                            ExitFailure _ -> pure (Left "pulumi provider config set failed")
                                                             ExitSuccess -> do
-                                                                outputsResult <- pulumiStackOutputs projectDir environment
-                                                                case outputsResult of
-                                                                    Left err -> pure (Left err)
-                                                                    Right outputs ->
-                                                                        case snapshotFromOutputs outputs of
-                                                                            Left err -> pure (Left err)
-                                                                            Right snapshot -> do
-                                                                                saveAwsTestStackSnapshot repoRoot snapshot
-                                                                                objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                                                case objectCountResult of
+                                                                syncExit <- syncAwsTestStackConfig projectDir baseEnvironment stackConfig
+                                                                case syncExit of
+                                                                    ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                                    ExitSuccess -> do
+                                                                        upExit <- pulumiUp projectDir baseEnvironment
+                                                                        case upExit of
+                                                                            ExitFailure _ -> pure (Left "pulumi up failed")
+                                                                            ExitSuccess -> do
+                                                                                outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+                                                                                case outputsResult of
                                                                                     Left err -> pure (Left err)
-                                                                                    Right objectCount -> do
-                                                                                        putStr (renderAwsTestStackReport snapshot objectCount)
-                                                                                        pure (Right ())
+                                                                                    Right outputs ->
+                                                                                        case snapshotFromOutputs outputs of
+                                                                                            Left err -> pure (Left err)
+                                                                                            Right snapshot -> do
+                                                                                                saveAwsTestStackSnapshot repoRoot snapshot
+                                                                                                objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                                                                                                case objectCountResult of
+                                                                                                    Left err -> pure (Left err)
+                                                                                                    Right objectCount -> do
+                                                                                                        putStr (renderAwsTestStackReport snapshot objectCount)
+                                                                                                        pure (Right ())
                                                     PulumiStackMissing ->
                                                         pure (Left "pulumi stack select reported a missing stack after --create")
                                                     PulumiStackSelectFailed detail ->
@@ -605,6 +740,15 @@ ensureAwsTestStackResources repoRoot = do
 
 destroyAwsTestStack :: FilePath -> IO ExitCode
 destroyAwsTestStack repoRoot = do
+    statusResult <- destroyAwsTestStackStatus repoRoot
+    case statusResult of
+        Left err -> failWith err
+        Right status -> do
+            putStrLn ("AWS test stack: " ++ status)
+            pure ExitSuccess
+
+destroyAwsTestStackStatus :: FilePath -> IO (Either String String)
+destroyAwsTestStackStatus repoRoot = do
     currentSnapshot <- loadAwsTestStackSnapshot repoRoot
     let projectDir = awsTestPulumiProjectDir repoRoot
     portForwardResult <- withMinioPortForward $ \localPort -> do
@@ -617,47 +761,55 @@ destroyAwsTestStack repoRoot = do
                     Left err -> pure (Left err)
                     Right () -> do
                         baseEnvironment <- pulumiTestBaseEnv localPort accessKey secretKey
-                        loginExit <- pulumiLogin projectDir baseEnvironment
-                        case loginExit of
-                            ExitFailure _ -> pure (Left "pulumi login failed")
-                            ExitSuccess -> do
+                        loginResult <- pulumiLoginQuiet projectDir baseEnvironment
+                        case loginResult of
+                            Left err -> pure (Left ("pulumi login failed: " ++ err))
+                            Right () -> do
                                 selectExit <- pulumiStackSelect projectDir baseEnvironment False
                                 case selectExit of
                                     PulumiStackSelected -> do
-                                        envResult <- pulumiTestEnv repoRoot localPort accessKey secretKey
-                                        case envResult of
+                                        configResult <- resolveAwsTestStackConfig repoRoot
+                                        case configResult of
                                             Left err -> pure (Left err)
-                                            Right environment -> do
-                                                destroyExit <- pulumiDestroy projectDir environment
-                                                case destroyExit of
-                                                    ExitFailure _ -> pure (Left "pulumi destroy failed")
+                                            Right stackConfig -> do
+                                                providerSyncExit <- syncAwsProviderConfig repoRoot projectDir baseEnvironment
+                                                case providerSyncExit of
+                                                    ExitFailure _ -> pure (Left "pulumi provider config set failed")
                                                     ExitSuccess -> do
-                                                        void (pulumiStackRemove projectDir baseEnvironment False)
-                                                        residueResult <- assertNoAwsTestStackResidue repoRoot currentSnapshot
-                                                        case residueResult of
-                                                            Left err -> pure (Left err)
-                                                            Right () -> do
-                                                                clearAwsTestStackSnapshot repoRoot
-                                                                putStrLn ("Destroyed stack " ++ awsTestStackName ++ "; verified no AWS residue")
-                                                                pure (Right ("destroyed" :: String))
+                                                        syncExit <- syncAwsTestStackConfig projectDir baseEnvironment stackConfig
+                                                        case syncExit of
+                                                            ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                            ExitSuccess -> do
+                                                                destroyResult <- pulumiDestroyQuiet projectDir baseEnvironment
+                                                                case destroyResult of
+                                                                    Left err -> pure (Left ("pulumi destroy failed: " ++ err))
+                                                                    Right () -> do
+                                                                        void (pulumiStackRemoveQuiet projectDir baseEnvironment False)
+                                                                        finalizeDestroy repoRoot currentSnapshot
                                     PulumiStackMissing -> do
-                                        putStrLn
-                                            ( "Skipped AWS test stack destroy because no stack named '"
-                                                ++ awsTestStackName
-                                                ++ "' exists in the local Pulumi backend"
-                                            )
-                                        pure (Right ("no stack to destroy" :: String))
+                                        case currentSnapshot of
+                                            Nothing ->
+                                                pure (Right ("already absent from the local Pulumi backend" :: String))
+                                            Just _ -> finalizeDestroy repoRoot currentSnapshot
                                     PulumiStackSelectFailed detail ->
                                         pure (Left ("pulumi stack select failed: " ++ detail))
     case portForwardResult of
         Left err ->
             case currentSnapshot of
-                Nothing -> do
-                    putStrLn "Skipped AWS test stack destroy because the local MinIO backend is not present and no saved AWS residue snapshot exists"
-                    pure ExitSuccess
-                Just _ -> failWith ("local MinIO backend unavailable while an AWS test stack snapshot still exists: " ++ err)
-        Right (Left err) -> failWith err
-        Right (Right _) -> pure ExitSuccess
+                Nothing ->
+                    pure (Right "no local Pulumi backend or saved residue snapshot; nothing to destroy")
+                Just _ -> pure (Left ("local MinIO backend unavailable while an AWS test stack snapshot still exists: " ++ err))
+        Right (Left err) -> pure (Left err)
+        Right (Right status) -> pure (Right status)
+
+finalizeDestroy :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Either String String)
+finalizeDestroy repoRoot currentSnapshot = do
+    residueResult <- assertNoAwsTestStackResidue repoRoot currentSnapshot
+    case residueResult of
+        Left err -> pure (Left err)
+        Right () -> do
+            clearAwsTestStackSnapshot repoRoot
+            pure (Right ("destroyed and residue check passed" :: String))
 
 failWith :: String -> IO ExitCode
 failWith message = do

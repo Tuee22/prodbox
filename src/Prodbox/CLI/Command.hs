@@ -19,9 +19,7 @@ module Prodbox.CLI.Command
     )
 where
 
-data CommandRequest
-    = DelegateToPython [String]
-    | RunNative NativeCommand
+newtype CommandRequest = RunNative NativeCommand
     deriving (Eq, Show)
 
 data NativeCommand

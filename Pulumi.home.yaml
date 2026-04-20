@@ -16,9 +16,9 @@ config:
   prodbox:prodboxId: prodbox-3349a232b3454fb3be77b2f68919904f
   prodbox:awsRegion: us-west-2
   prodbox:awsAccessKeyId:
-    secure: v1:gIaISU8F7oq/UDr4:Gb1Y/wQtGTsHN1pu7+R3WOOMfOv8vnJ2NfsDWlWHV/ENRpKG
+    secure: v1:qktSGIQP5/r9dbIT:ihijuHqRXrMGQMBOaJPjhPjHpCtYe3MolZWW7s5IhmOtzQul
   prodbox:awsSecretAccessKey:
-    secure: v1:e7OirobO8BfZRw+B:fbahzoB/IzihGuB+vB5vMZDrkKFR1OwHeCSQAo0i2U6SuzXk+f2VrfXvEUBvSkAnaFm00skUiVo=
+    secure: v1:LE6/MEKW5W7VK8c3:U7LLiaFSUCYNi5CFBbj+htDAF45HpfwAoHZEbKVOSr+oz1eJ1qiMfxOjFT2UYCdsn7/xBwvztVo=
 encryptionsalt: v1:LEfIPxd/BFc=:v1:GABlTeZECqe7L/a+:8rLutU0awQF9Z46ygyjNGNdMu9dvGg==
 
 # Stack-specific settings (can be overridden per-stack)

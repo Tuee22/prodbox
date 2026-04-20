@@ -11,6 +11,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception
     ( Exception,
+      IOException,
       SomeException,
       bracket_,
       displayException,
@@ -86,6 +87,7 @@ import System.IO
       stdin,
       stdout,
     )
+import System.IO.Error (isEOFError)
 
 newtype AwsError = AwsError String
     deriving (Show)
@@ -457,17 +459,15 @@ interactiveAwsSetupInput repoRoot policyTier = do
     putStrLn "AWS setup creates or refreshes the dedicated `prodbox` IAM user, writes"
     putStrLn "operational `aws.*` credentials, and can request baseline service quotas."
     putStrLn ""
-    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-    selectedRegion <- promptRegionChoice repoRoot initialCredentials
-    AwsSetupInput <$> validateAdminCredentialsInput initialCredentials{region = selectedRegion} <*> pure policyTier
+    credentials <- resolveAdminCredentialsWithRegionChoice repoRoot
+    AwsSetupInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
 interactiveAwsTeardownInput :: FilePath -> IO AwsTeardownInput
 interactiveAwsTeardownInput repoRoot = do
     putStrLn "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
     putStrLn "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
     putStrLn ""
-    defaultRegion <- currentRegionDefault repoRoot
-    credentials <- promptAdminCredentials defaultRegion >>= validateAdminCredentialsInput
+    credentials <- resolveAdminCredentials repoRoot
     pure (AwsTeardownInput credentials)
 
 interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
@@ -475,18 +475,16 @@ interactiveAwsCheckQuotasInput repoRoot = do
     putStrLn "AWS quota inspection reads the supported Service Quotas targets without changing"
     putStrLn "the Dhall config or creating IAM users."
     putStrLn ""
-    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-    selectedRegion <- promptRegionChoice repoRoot initialCredentials
-    AwsCheckQuotasInput <$> validateAdminCredentialsInput initialCredentials{region = selectedRegion}
+    credentials <- resolveAdminCredentialsWithRegionChoice repoRoot
+    AwsCheckQuotasInput <$> validateAdminCredentialsInput credentials
 
 interactiveAwsRequestQuotasInput :: FilePath -> PolicyTier -> IO AwsRequestQuotasInput
 interactiveAwsRequestQuotasInput repoRoot policyTier = do
     putStrLn "AWS quota requests submit increases only for supported targets that are still"
     putStrLn "below the required threshold."
     putStrLn ""
-    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-    selectedRegion <- promptRegionChoice repoRoot initialCredentials
-    AwsRequestQuotasInput <$> validateAdminCredentialsInput initialCredentials{region = selectedRegion} <*> pure policyTier
+    credentials <- resolveAdminCredentialsWithRegionChoice repoRoot
+    AwsRequestQuotasInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
 showAwsAccountGuidance :: IO ()
 showAwsAccountGuidance = do
@@ -562,6 +560,37 @@ promptAdminCredentials defaultRegion = do
               region = Text.pack (trim regionRaw)
             }
 
+resolveAdminCredentials :: FilePath -> IO Credentials
+resolveAdminCredentials repoRoot = do
+    configured <- configuredAdminCredentials repoRoot
+    case configured of
+        Just credentials -> pure credentials
+        Nothing -> promptAdminCredentials =<< currentRegionDefault repoRoot
+
+resolveAdminCredentialsWithRegionChoice :: FilePath -> IO Credentials
+resolveAdminCredentialsWithRegionChoice repoRoot = do
+    configured <- configuredAdminCredentials repoRoot
+    case configured of
+        Just credentials -> pure credentials
+        Nothing -> do
+            initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+            selectedRegion <- promptRegionChoice repoRoot initialCredentials
+            pure initialCredentials{region = selectedRegion}
+
+configuredAdminCredentials :: FilePath -> IO (Maybe Credentials)
+configuredAdminCredentials repoRoot = do
+    config <- loadConfigForWrite repoRoot
+    let credentials = aws_admin config
+    if adminCredentialsConfigured credentials
+        then Just <$> validateAdminCredentialsInput credentials
+        else pure Nothing
+
+adminCredentialsConfigured :: Credentials -> Bool
+adminCredentialsConfigured credentials =
+    not (Text.null (Text.strip (access_key_id credentials)))
+        && not (Text.null (Text.strip (secret_access_key credentials)))
+        && not (Text.null (Text.strip (region credentials)))
+
 promptRegionChoice :: FilePath -> Credentials -> IO Text
 promptRegionChoice repoRoot credentials = do
     regions <- listAwsRegions repoRoot credentials
@@ -596,7 +625,7 @@ promptText :: String -> Maybe String -> IO String
 promptText message maybeDefault = do
     putStr (message ++ defaultSuffix maybeDefault ++ ": ")
     hFlush stdout
-    input <- getLine
+    input <- readPromptLine message
     pure $
         case (trim input, maybeDefault) of
             ("", Just defaultValue) -> defaultValue
@@ -612,10 +641,10 @@ promptSecret message = do
     if terminal
         then do
             originalEcho <- hGetEcho stdin
-            value <- bracket_ (hSetEcho stdin False) (hSetEcho stdin originalEcho) getLine
+            value <- bracket_ (hSetEcho stdin False) (hSetEcho stdin originalEcho) (readPromptLine message)
             putStrLn ""
             pure (trim value)
-        else trim <$> getLine
+        else trim <$> readPromptLine message
 
 promptInt :: String -> Int -> IO Int
 promptInt message defaultValue = do
@@ -631,7 +660,7 @@ promptConfirm message defaultValue = do
     let suffix = if defaultValue then " [Y/n]" else " [y/N]"
     putStr (message ++ suffix ++ ": ")
     hFlush stdout
-    response <- fmap (map toLower . trim) getLine
+    response <- fmap (map toLower . trim) (readPromptLine message)
     case response of
         "" -> pure defaultValue
         "y" -> pure True
@@ -641,6 +670,26 @@ promptConfirm message defaultValue = do
         _ -> do
             putStrLn "Enter yes or no."
             promptConfirm message defaultValue
+
+readPromptLine :: String -> IO String
+readPromptLine message = do
+    lineResult <- try getLine :: IO (Either IOException String)
+    case lineResult of
+        Right line -> pure line
+        Left err
+            | isEOFError err ->
+                throwAws
+                    ( "Input ended while reading `"
+                        ++ message
+                        ++ "`. Re-run interactively or populate `aws_admin.*` in prodbox-config.dhall for non-interactive admin flows."
+                    )
+            | otherwise ->
+                throwAws
+                    ( "Failed to read input for `"
+                        ++ message
+                        ++ "`: "
+                        ++ show err
+                    )
 
 promptNumberedChoice :: String -> [String] -> Int -> IO Int
 promptNumberedChoice promptMessage options defaultIndex = do

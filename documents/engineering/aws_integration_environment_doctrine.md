@@ -70,6 +70,8 @@ Optional elevated validation fields:
 4. `aws_admin.region`
 
 `aws_admin.*` is reserved for `prodbox aws *` flows and the dedicated IAM lifecycle validation.
+Supported non-interactive validation consumes `aws_admin.*` directly; missing elevated credentials
+must fail fast with an actionable config error rather than falling back to ambient AWS auth.
 
 Forbidden storage patterns:
 
@@ -149,6 +151,10 @@ For `aws-eks`, `pulumi`, and `ha-rke2-aws`, permission sufficiency is proven onl
 host can reach its RKE2-backed MinIO backend and the relevant named `prodbox pulumi` surface can
 select, inspect, or create the canonical AWS test stack using settings-defined AWS auth.
 
+The supported path synchronizes operator-CIDR and SSH-public-key inputs into the stack with
+`pulumi config set`; the YAML Pulumi programs must not depend on `std:getenv` support from the
+runtime provider.
+
 ## 4. Environment Creation Rules
 
 ### 4.1 Brand-New Resources Only
@@ -184,6 +190,8 @@ Minimum rule:
    HA stack
 5. `prodbox pulumi test-destroy --yes` is the only supported surface for destroying that stack
 6. `prodbox rke2 delete --yes` must invoke both destroy paths before backend teardown
+7. the AWS validation Pulumi programs take operator-CIDR and SSH-public-key inputs through
+   explicit stack config synchronized by the Haskell orchestration layer
 
 ### 4.4 Test-Only Elevated IAM Harness
 

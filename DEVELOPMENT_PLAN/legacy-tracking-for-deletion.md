@@ -16,7 +16,9 @@ As of April 19, 2026, the Python-removal cleanup remains complete and the non-Py
 packaging plus registry residue identified by the April 18, 2026 Docker and Harbor audit is now
 removed. All Python source (`src/prodbox/`, `tests/`, `typings/`), Python packaging
 (`pyproject.toml`, `poetry.toml`, `.python-version`), Python bridge modules (`Backend/Python.hs`,
-`PythonEnv.hs`), and Python Pulumi programs remain deleted. `Pending Removal` is empty again.
+`PythonEnv.hs`), and Python Pulumi programs remain deleted. The residual Python-era command
+delegation and supported-runtime field naming discovered during the April 19, 2026 audit is also
+removed. `Pending Removal` is empty again.
 
 ## Pending Removal
 
@@ -45,6 +47,7 @@ None.
 | Python standalone IAM and quota commands (`aws_cmd.py`) | Sprint 7.2 | `src/Prodbox/Aws.hs` owns `aws setup|teardown|check-quotas|request-quotas` |
 | Python elevated-credential IAM helper (`aws_admin.py`) | Sprint 7.3 | Haskell `aws_admin` harness owns real IAM lifecycle proof |
 | Python bridge modules (`Backend/Python.hs`, `PythonEnv.hs`) | Sprint 4.3 | `Main.hs` no longer imports `Backend.Python` |
+| Residual Python-era command delegation and supported-runtime field naming (`DelegateToPython`, `supportedRuntimePythonPath`) | Sprint 6.2 audit closure on April 19, 2026 | The frontend now dispatches directly to native Haskell commands, and supported-runtime helpers no longer expose Python-named context fields |
 | Phase-owned engineering docs presenting Python as supported architecture | Sprint 6.2 | Doctrine aligned with the Haskell-only architecture |
 | Surviving Python-era architecture references in supported-path docs | Sprint 6.2 | Final cleanup sweep completed |
 | `prodbox-config.json` compatibility path and public `prodbox config compile` surface | Sprint 1.2 runtime closure on April 18, 2026 | `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/Repo.hs`, `src/Prodbox/Aws.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, and `test/integration/env/Main.hs` now close on direct `Dhall -> Haskell types`; no supported command materializes the JSON artifact |

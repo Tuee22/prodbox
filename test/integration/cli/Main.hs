@@ -45,7 +45,7 @@ main = hspec $ do
                 stdoutText `shouldContain` "aws.access_key_id=****-key"
                 stdoutText `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
 
-        it "validates config without requiring the retained Python backend" $
+        it "validates config without requiring any Python backend" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
                 binary <- resolveBinaryPath
                 writeRepoMarkers tmpDir
@@ -275,9 +275,13 @@ main = hspec $ do
                 when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
                 deleteExitCode `shouldBe` ExitSuccess
                 deleteStderr `shouldBe` ""
-                deleteStdout `shouldContain` "Skipped AWS EKS test stack destroy because no stack named 'aws-eks-test' exists in the local Pulumi backend"
-                deleteStdout `shouldContain` "Skipped AWS test stack destroy because no stack named 'aws-test' exists in the local Pulumi backend"
+                deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+                deleteStdout `shouldContain` "AWS EKS test stack: already absent from the local Pulumi backend"
+                deleteStdout `shouldContain` "AWS test stack: already absent from the local Pulumi backend"
+                deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
+                deleteStdout `shouldContain` "Managed kubeconfig: removed"
                 deleteStdout `shouldContain` "Preserved host state:"
+                deleteStdout `shouldNotContain` "Logged in to fake-rke2"
                 kubeconfigExists <- doesFileExist (tmpDir </> ".kube" </> "config")
                 kubeconfigExists `shouldBe` False
 
@@ -429,6 +433,49 @@ main = hspec $ do
                 applyManifest `shouldContain` "\"ClusterIssuer\""
                 applyManifest `shouldContain` "\"prodbox-identity\""
                 applyManifest `shouldContain` "\"machine_id\""
+
+        it "summarizes noisy uninstall-script cleanup instead of streaming raw delete traces" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+                baseEnvVars <- fakeRke2Environment tmpDir
+                let envVars = ("PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS", "1") : baseEnvVars
+
+                createDirectoryIfMissing True (tmpDir </> ".kube")
+                writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
+
+                (deleteExitCode, deleteStdout, deleteStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["rke2", "delete", "--yes"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                let deleteOutput =
+                        unlines
+                            [ "delete stdout:"
+                            , deleteStdout
+                            , "delete stderr:"
+                            , deleteStderr
+                            ]
+                when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
+                deleteExitCode `shouldBe` ExitSuccess
+                deleteStderr `shouldBe` ""
+                deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+                deleteStdout `shouldContain` "AWS EKS test stack: already absent from the local Pulumi backend"
+                deleteStdout `shouldContain` "AWS test stack: already absent from the local Pulumi backend"
+                deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
+                deleteStdout `shouldContain` "Managed kubeconfig: removed"
+                deleteStdout `shouldContain` "Preserved host state:"
+                deleteStdout `shouldNotContain` "Logged in to fake-rke2"
+                deleteStdout `shouldNotContain` "Cannot find device"
+                deleteStdout `shouldNotContain` "semodule: not found"
+                deleteStdout `shouldNotContain` "Cleanup completed successfully"
+
+                kubeconfigExists <- doesFileExist (tmpDir </> ".kube" </> "config")
+                kubeconfigExists `shouldBe` False
+
+                sudoRecord <- readFile (tmpDir </> "fake-rke2-state" </> "sudo.txt")
+                sudoRecord `shouldContain` "/usr/local/bin/rke2-uninstall.sh"
 
         it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -923,6 +970,13 @@ fakeSudoScript =
         , "  printf '%s' \"$arg\" >> \"$record_dir/sudo.txt\""
         , "done"
         , "printf '\\n' >> \"$record_dir/sudo.txt\""
+        , "if [[ \"${1:-}\" == '/usr/local/bin/rke2-uninstall.sh' && \"${PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS:-0}\" == '1' ]]; then"
+        , "  printf '+ systemctl stop rke2-server.service\\n'"
+        , "  printf 'Cannot find device \"cni0\"\\n' >&2"
+        , "  printf '/usr/local/bin/rke2-uninstall.sh: 162: semodule: not found\\n' >&2"
+        , "  printf '[2026-04-20 09:17:01] Cleanup completed successfully\\n'"
+        , "  exit 0"
+        , "fi"
         , "exec \"$@\""
         ]
 
@@ -935,7 +989,13 @@ fakeRke2TestScript =
         , "/bin/mkdir -p \"$record_dir\""
         , "printf '%s\\n' \"$*\" >> \"$record_dir/test.txt\""
         , "case \"$*\" in"
-        , "  '-x /usr/local/bin/rke2'|'-x /usr/local/bin/rke2-uninstall.sh')"
+        , "  '-x /usr/local/bin/rke2')"
+        , "    exit 1"
+        , "    ;;"
+        , "  '-x /usr/local/bin/rke2-uninstall.sh')"
+        , "    if [[ \"${PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS:-0}\" == '1' ]]; then"
+        , "      exit 0"
+        , "    fi"
         , "    exit 1"
         , "    ;;"
         , "  *)"

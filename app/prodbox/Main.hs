@@ -23,16 +23,14 @@ import System.IO (hPutStrLn, stderr)
 main :: IO ()
 main = do
     options <- customExecParser parserPrefs parserInfo
-    case optRequest options of
-        DelegateToPython _ -> failWith "Python backend delegation is no longer supported"
-        RunNative command -> do
-            repoRootResult <- findRepoRoot
-            case repoRootResult of
-                Right repoRoot -> dispatch repoRoot command
-                Left err ->
-                    if canRunWithoutRepoRoot command
-                        then dispatch "." command
-                        else failWith err
+    let RunNative command = optRequest options
+    repoRootResult <- findRepoRoot
+    case repoRootResult of
+        Right repoRoot -> dispatch repoRoot command
+        Left err ->
+            if canRunWithoutRepoRoot command
+                then dispatch "." command
+                else failWith err
   where
     parserPrefs = prefs (showHelpOnEmpty <> showHelpOnError)
 

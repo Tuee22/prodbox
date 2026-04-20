@@ -283,6 +283,37 @@ main = hspec $ do
             dockerfile `shouldContain` "--mount=type=bind,from=haskell-toolchain"
             dockerfile `shouldContain` "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/prodbox\", \"gateway\", \"start\"]"
 
+        it "keeps AWS validation Pulumi YAML stacks on explicit stack config inputs" $ do
+            repoRoot <- getCurrentDirectory
+            awsEksMain <- readFile (repoRoot </> "pulumi" </> "aws-eks" </> "Main.yaml")
+            awsTestMain <- readFile (repoRoot </> "pulumi" </> "aws-test" </> "Main.yaml")
+            awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
+            awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+
+            awsEksMain `shouldContain` "operatorCidr:"
+            awsEksMain `shouldContain` "type: string"
+            awsEksMain `shouldNotContain` "std:getenv"
+            awsEksInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsEksTestStackName"
+            awsTestMain `shouldContain` "operatorCidr:"
+            awsTestMain `shouldContain` "publicKey:"
+            awsTestMain `shouldContain` "type: string"
+            awsTestMain `shouldNotContain` "std:getenv"
+            awsTestInfra `shouldContain` "\"config\", \"set\", \"--stack\", awsTestStackName"
+
+        it "treats IAM NoSuchEntity as successful absence during EKS destroy residue checks" $ do
+            repoRoot <- getCurrentDirectory
+            awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
+
+            awsEksInfra `shouldContain` "\"nosuchentity\""
+
+        it "treats terminated EC2 instances as absent during AWS test destroy residue checks" $ do
+            repoRoot <- getCurrentDirectory
+            awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+
+            awsTestInfra `shouldContain` "instanceDescribeShowsActiveInstance"
+            awsTestInfra `shouldContain` "\"terminated\""
+            awsTestInfra `shouldContain` "Just _ -> finalizeDestroy repoRoot currentSnapshot"
+
     describe "test planning" $ do
         it "maps aggregate all to the native ordered validation workflow" $ do
             case testExecutionPlan TestAll of

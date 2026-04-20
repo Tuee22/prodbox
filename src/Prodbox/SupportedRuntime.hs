@@ -104,9 +104,7 @@ operationalCredentialReadyDelayMicroseconds = 2000000
 
 data SupportedRuntimeContext = SupportedRuntimeContext
     { supportedRuntimeRepoRoot :: FilePath,
-      supportedRuntimeHelperEnvironment :: [(String, String)],
-      supportedRuntimeBackendEnvironment :: [(String, String)],
-      supportedRuntimePythonPath :: FilePath
+      supportedRuntimeHelperEnvironment :: [(String, String)]
     }
 
 ensureOperationalAwsCredentialsFromAdminHarness :: SupportedRuntimeContext -> IO (Either String String)

@@ -20,8 +20,10 @@ The CLI surface is intentionally closed:
 
 Current implementation:
 
-- `app/prodbox/Main.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs` own the public
-  parser and command dispatch.
+- `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, and
+  `src/Prodbox/Native.hs` own the public parser, request ADT, and command dispatch.
+- The frontend request ADT routes only to native Haskell commands; no Python delegation branch
+  survives in the parser or entrypoint.
 - Runtime ownership lives in Haskell modules under `src/Prodbox/`.
 - Named test validations live in `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and
   `src/Prodbox/TestValidation.hs`.
@@ -105,6 +107,10 @@ Top-level commands:
 
 `src/Prodbox/CLI/Rke2.hs` owns the full public `prodbox rke2 ...` surface.
 
+`prodbox rke2 delete --yes` is summary-oriented on success: it reports AWS validation destroy
+disposition, local substrate cleanup, managed kubeconfig handling, and preserved host roots
+without streaming raw uninstall-script trace output.
+
 ### `prodbox pulumi`
 
 | Command | Arguments | Options |
@@ -120,6 +126,9 @@ Top-level commands:
 | `prodbox pulumi test-destroy` | none | `--yes`, `-y` |
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox pulumi ...` surface.
+
+`prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes` report one-line stack
+destroy disposition instead of replaying Pulumi login chatter on successful cleanup.
 
 ### `prodbox dns`
 

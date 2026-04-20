@@ -17,12 +17,12 @@ host.
 
 | Surface | Owner | Paths |
 |---------|-------|-------|
-| CLI frontend and command surface | Haskell parser plus native command entrypoints for the full supported command matrix | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project` |
+| CLI frontend and command surface | Haskell parser, native-only request ADT, and native command entrypoints for the full supported command matrix | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project` |
 | Configuration and settings | Haskell Dhall decoder, typed settings model, masked display, and validation | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` |
 | Settings and command runtime | Haskell effect, DAG, interpreter, prerequisite, result, subprocess, and domain modules | `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
 | Host and Kubernetes helpers | Haskell host and k8s modules | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` |
 | Container packaging and registry doctrine | Dockerfiles under `docker/`, Harbor-first image sourcing, per-platform dual-arch publication plus manifest reconcile, and mixed-arch cluster reconcile | `docker/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` |
-| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `Pulumi.yaml`, `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` |
+| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions, including stack-config synchronization for AWS validation inputs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `Pulumi.yaml`, `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` |
 | DNS inspection | Haskell DNS check module | `src/Prodbox/Dns.hs` |
 | Gateway runtime | Haskell daemon runtime with heartbeat, ownership, DNS write loops, REST server, HMAC signing, and single-stage `ubuntu:24.04` packaging with an official AWS CLI bundle per target architecture | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` |
 | Formal verification | Haskell TLA+ wrapper | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` |
@@ -38,7 +38,7 @@ host.
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | Bare metal | `prodbox` supported-host gate | Host filesystem |
 | Host build root | `.build/` | Repository worktree | Canonical `cabal build --builddir=.build exe:prodbox` plus copy to `.build/prodbox`; operator runs `./.build/prodbox` | Host filesystem |
 | Container build root | `/opt/build` | Docker build stage | Dockerfiles under `docker/` | Container filesystem |
-| Local Kubernetes substrate | RKE2 | Local host | `prodbox rke2 install|delete|status|start|stop|restart|logs` | RKE2 data dirs and systemd units |
+| Local Kubernetes substrate | RKE2 | Local host | `prodbox rke2 install|delete|status|start|stop|restart|logs`, including summary-oriented delete reporting | RKE2 data dirs and systemd units |
 | Harbor-first registry pipeline | Harbor plus Docker CLI image reconcile, stable external-endpoint gating, public-image populate, and dual-arch publish | RKE2 workload plus host Docker runtime | `prodbox rke2 install` plus Harbor-only workload-image doctrine | Cluster resources, Harbor registry data, host Docker cache, and RKE2 registry config |
 | AWS-backed EKS validation cluster | Amazon EKS | AWS | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | EKS resources in AWS |
 | AWS-backed HA RKE2 test nodes | `Ubuntu 24.04 LTS` EC2 instances | AWS | `prodbox pulumi test-resources|test-destroy --yes` plus Haskell SSH orchestration | EC2, VPC, subnet, security-group, IAM, and Route 53 state |
@@ -60,9 +60,10 @@ host.
 
 | Surface | Command | Purpose |
 |---------|---------|---------|
+| CLI frontend | `prodbox <command>` | Parse the closed command surface and dispatch directly to native Haskell commands with no legacy delegation shim |
 | Config management | `prodbox config setup|show|validate` | Interactively author, display, and validate repository-root Dhall configuration decoded directly into Haskell types |
 | Host prerequisites and diagnostics | `prodbox host ensure-tools|info|check-ports|firewall` | Verify local tools and diagnose host-networking prerequisites |
-| RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Install, inspect, control, and remove the local cluster |
+| RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Install, inspect, control, and remove the local cluster with a concise delete summary |
 | Harbor reconcile and image population | `prodbox rke2 install` | Install Harbor, require a stable `/readyz` plus `/v2/` external window, reconcile the `prodbox` project, and ensure required custom and public images are present before deployment |
 | Pulumi lifecycle | `prodbox pulumi up|destroy|preview|refresh|stack-init|eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` | Manage local-cluster infrastructure and AWS validation stacks |
 | Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, TLS, and external-reachability state |
@@ -83,7 +84,7 @@ host.
 | Build artifact contract | Runnable `./.build/prodbox`, produced by the canonical build-plus-copy flow; container build proof closes when the canonical Dockerfiles under `docker/` emit artifacts under `/opt/build` |
 | CLI and env contract | `prodbox test integration cli` and `prodbox test integration env` run built-frontend Haskell suites against the direct-Dhall config contract without recreating `prodbox-config.json` |
 | Named validation harness | `prodbox test integration public-dns`, `aws-iam`, `gateway-daemon`, `gateway-pods`, `gateway-partition`, `lifecycle`, `pulumi`, `aws-eks`, `ha-rke2-aws`, `charts-platform`, `charts-storage`, and `charts-vscode` run executable native Haskell validation flows through `src/Prodbox/TestValidation.hs` |
-| Supported host gate and local cluster lifecycle | `prodbox test integration lifecycle`, fresh-host `prodbox rke2 install`, and destructive `prodbox rke2 delete --yes` proof |
+| Supported host gate and local cluster lifecycle | `prodbox test integration lifecycle`, fresh-host `prodbox rke2 install`, and destructive `prodbox rke2 delete --yes` proof with summary-oriented cleanup reporting |
 | Harbor-first registry pipeline | `prodbox rke2 install`, Harbor inventory proof for required images, stable `/readyz` plus `/v2/` proof before image writes, and dual-arch manifest proof for `amd64` and `arm64` |
 | AWS Route 53 validation | `prodbox test integration dns-aws` |
 | Pulumi-owned AWS lifecycle | `prodbox pulumi test-resources`, `prodbox pulumi test-destroy --yes`, `prodbox test integration pulumi` |
@@ -107,7 +108,7 @@ host.
 | CLI and doctrine source | Repository worktree | `app/`, `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Version-controlled source of truth |
 | Manual PV content root | Host filesystem | Configured path, default `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | PV contents only |
 | Retained non-PV chart state | Chart platform helpers | `.prodbox-state/<namespace>/` | Generated secrets and gateway event keys |
-| Local RKE2 host state | Host lifecycle commands | RKE2 data dirs, kubeconfig files, systemd state | Deleted by `prodbox rke2 delete --yes` except retained roots |
+| Local RKE2 host state | Host lifecycle commands | RKE2 data dirs, kubeconfig files, systemd state | Deleted by `prodbox rke2 delete --yes` except retained roots, with expected-absence cleanup rendered as normal delete disposition |
 | Remote EKS AWS test stack | Pulumi plus Haskell orchestration | EKS resources in AWS | Created and destroyed only through named `prodbox pulumi` surfaces |
 | Remote HA RKE2 AWS test stack | Pulumi plus Haskell orchestration | EC2 and supporting AWS resources | Exactly three Ubuntu 24.04 EC2 instances in separate AZs |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical Haskell CLI flows |

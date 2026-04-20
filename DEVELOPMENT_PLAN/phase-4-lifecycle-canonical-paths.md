@@ -30,6 +30,9 @@ rerun on the updated implementation.
   modules.
 - All Pulumi programs are YAML-based: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, and
   `pulumi/aws-test/Main.yaml`. The root `Pulumi.yaml` uses `runtime: yaml`.
+- The AWS validation Pulumi programs take their operator-CIDR and SSH-public-key inputs through
+  explicit stack config synchronized by the native Haskell infra modules rather than YAML-runtime
+  `std:getenv` provider lookups.
 - `CheckCode.hs` runs `cabal build --builddir=.build all` without Python tooling.
 - All Python source (`src/prodbox/`), Python tests (`tests/`), Python type stubs (`typings/`),
   and Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`) have been deleted.
@@ -82,6 +85,10 @@ image contract without reopening Python or duplicate runtime paths.
 - Harbor install, project reconcile, and Docker login or push flow exist in the native lifecycle.
 - `src/Prodbox/ContainerImage.hs` defines the canonical required-public-image inventory and
   Harbor-backed targets used by the supported lifecycle and chart path.
+- `src/Prodbox/Infra/AwsEksTestStack.hs` and `src/Prodbox/Infra/AwsTestStack.hs` now synchronize
+  AWS validation stack inputs through `pulumi config set`, and `pulumi/aws-eks/Main.yaml` plus
+  `pulumi/aws-test/Main.yaml` consume those values as explicit stack config instead of
+  `std:getenv`.
 - `mirrorClusterImagesOnce` now reconciles both the canonical required public images and the
   non-Harbor images already running in the cluster into Harbor.
 - The Harbor bootstrap path now waits for both the external `/readyz` endpoint and the registry
@@ -102,6 +109,9 @@ image contract without reopening Python or duplicate runtime paths.
   workloads at Harbor-backed image references.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration lifecycle` to an executable native
   validation flow in `src/Prodbox/TestValidation.hs`.
+- `prodbox rke2 delete --yes` now emits one summary-oriented cleanup narrative that reports AWS
+  destroy disposition, local substrate cleanup, managed kubeconfig handling, and preserved roots
+  without replaying successful Pulumi login output or uninstall-script trace noise.
 - The host linker prerequisite is cleared, and `cabal run --builddir=.build exe:prodbox -- test
   integration lifecycle` now passes on this host, re-closing validation items `1-7` on the
   updated Harbor-first lifecycle path.

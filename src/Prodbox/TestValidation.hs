@@ -22,6 +22,9 @@ import Data.List (isInfixOf, sort)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Text as Text
 import qualified Data.Vector as Vector
+import Prodbox.BuildSupport
+    ( canonicalOperatorBinaryPath,
+    )
 import Prodbox.Dns (preferredPublicHostFqdn)
 import qualified Prodbox.Infra.AwsEksTestStack as AwsEks
 import qualified Prodbox.Infra.AwsTestStack as AwsTest
@@ -50,7 +53,6 @@ import Prodbox.TestPlan
 import System.Directory (removeFile)
 import System.Environment
     ( getEnvironment,
-      getExecutablePath,
     )
 import System.Exit
     ( ExitCode (..),
@@ -90,7 +92,12 @@ runNativeValidation repoRoot environment validation = do
                     repoRoot
                     environment
                     ["aws", "teardown"]
-                    ["IAM_USER=prodbox", "USER_DELETED="]
+                    ["IAM_USER=prodbox", "USER_DELETED="],
+                  assertNativeCommandOutputContainsAll
+                    repoRoot
+                    environment
+                    ["aws", "setup", "--tier", "full"]
+                    ["IAM_USER=prodbox", "POLICY_TIER=full"]
                 ]
         ValidationAwsEks ->
             runSequentially
@@ -132,8 +139,8 @@ runNativeValidation repoRoot environment validation = do
                 [ assertNativeCommandOutputContainsAll
                     repoRoot
                     environment
-                    ["charts", "deploy", "vscode"]
-                    ["CHART_DEPLOYMENT", "ROOT_CHART=vscode"],
+                    ["charts", "list"]
+                    ["CHART_LIST", "NAME=vscode", "NAME=gateway"],
                   assertNativeCommandOutputContainsAll
                     repoRoot
                     environment
@@ -145,17 +152,12 @@ runNativeValidation repoRoot environment validation = do
                 [ assertNativeCommandOutputContainsAll
                     repoRoot
                     environment
-                    ["charts", "deploy", "keycloak-postgres"]
-                    ["CHART_DEPLOYMENT", "ROOT_CHART=keycloak-postgres"],
-                  assertNativeCommandOutputContainsAll
-                    repoRoot
-                    environment
                     ["charts", "status", "keycloak-postgres"]
                     ["CHART_STATUS", "STORAGE_BINDING"],
                   assertNativeCommandOutputContainsAll
                     repoRoot
                     environment
-                    ["charts", "delete", "keycloak-postgres", "--yes"]
+                    ["charts", "delete", "vscode", "--yes"]
                     ["CHART_DELETION", "HOST_STORAGE_PRESERVED=true"]
                 ]
         ValidationLifecycle ->
@@ -187,10 +189,9 @@ runChartsVscodeValidation repoRoot = do
 
 waitForPublicEdgeReady :: FilePath -> IO ExitCode
 waitForPublicEdgeReady repoRoot = do
-    executablePath <- getExecutablePath
     let spec =
             CommandSpec
-                { commandPath = executablePath,
+                { commandPath = canonicalOperatorBinaryPath repoRoot,
                   commandArguments = ["host", "public-edge"],
                   commandEnvironment = Nothing,
                   commandWorkingDirectory = Just repoRoot
@@ -286,76 +287,104 @@ runDnsAwsValidation repoRoot = do
     settingsEnvResult <- settingsAwsEnvironment repoRoot
     case settingsEnvResult of
         Left err -> failWith err
-        Right (_, awsEnvironment) -> do
-            nonce <- validationNonce
-            let zoneName = "prodbox-dns-aws-" ++ nonce ++ ".example.com"
-                recordName = "gateway." ++ zoneName
-                recordIp = "203.0.113.10"
-                callerReference = "prodbox-dns-aws-" ++ nonce
-            createZoneResult <-
-                runTextCommand
-                    CommandSpec
-                        { commandPath = "aws",
-                          commandArguments =
-                            [ "route53",
-                              "create-hosted-zone",
-                              "--name",
-                              zoneName,
-                              "--caller-reference",
-                              callerReference,
-                              "--query",
-                              "HostedZone.Id",
-                              "--output",
-                              "text"
-                            ],
-                          commandEnvironment = Just awsEnvironment,
-                          commandWorkingDirectory = Just repoRoot
-                        }
-            case createZoneResult of
+        Right (settings, awsEnvironment) -> do
+            baseZoneNameResult <- configuredHostedZoneName repoRoot awsEnvironment settings
+            case baseZoneNameResult of
                 Left err -> failWith err
-                Right zoneId -> do
-                    let hostedZoneId = trim zoneId
-                    validationExit <- do
-                        upsertExit <- changeRoute53Record repoRoot awsEnvironment hostedZoneId "UPSERT" recordName recordIp
-                        case upsertExit of
-                            ExitFailure _ -> pure upsertExit
-                            ExitSuccess -> do
-                                verifyResult <-
-                                    runTextCommand
-                                        CommandSpec
-                                            { commandPath = "aws",
-                                              commandArguments =
-                                                [ "route53",
-                                                  "list-resource-record-sets",
-                                                  "--hosted-zone-id",
-                                                  hostedZoneId,
-                                                  "--query",
-                                                  "ResourceRecordSets[?Name == '"
-                                                      ++ ensureTrailingDot recordName
-                                                      ++ "'].ResourceRecords[0].Value | [0]",
-                                                  "--output",
-                                                  "text"
-                                                ],
-                                              commandEnvironment = Just awsEnvironment,
-                                              commandWorkingDirectory = Just repoRoot
-                                            }
-                                case verifyResult of
-                                    Left err -> failWith err
-                                    Right value ->
-                                        if trim value == recordIp
-                                            then pure ExitSuccess
-                                            else
-                                                failWith
-                                                    ( "Route 53 record lifecycle validation failed: expected "
-                                                        ++ recordIp
-                                                        ++ " but found "
-                                                        ++ trim value
-                                                    )
-                    cleanupExit <- cleanupDnsAwsValidation repoRoot awsEnvironment hostedZoneId recordName recordIp
-                    case (validationExit, cleanupExit) of
-                        (ExitSuccess, ExitSuccess) -> pure ExitSuccess
-                        (ExitFailure _, _) -> pure validationExit
-                        (_, ExitFailure _) -> pure cleanupExit
+                Right baseZoneName -> do
+                    nonce <- validationNonce
+                    let zoneName = "prodbox-dns-aws-" ++ nonce ++ "." ++ baseZoneName
+                        recordName = "gateway." ++ zoneName
+                        recordIp = "203.0.113.10"
+                        callerReference = "prodbox-dns-aws-" ++ nonce
+                    createZoneResult <-
+                        runTextCommand
+                            CommandSpec
+                                { commandPath = "aws",
+                                  commandArguments =
+                                    [ "route53",
+                                      "create-hosted-zone",
+                                      "--name",
+                                      zoneName,
+                                      "--caller-reference",
+                                      callerReference,
+                                      "--query",
+                                      "HostedZone.Id",
+                                      "--output",
+                                      "text"
+                                    ],
+                                  commandEnvironment = Just awsEnvironment,
+                                  commandWorkingDirectory = Just repoRoot
+                                }
+                    case createZoneResult of
+                        Left err -> failWith err
+                        Right zoneId -> do
+                            let hostedZoneId = trim zoneId
+                            validationExit <- do
+                                upsertExit <- changeRoute53Record repoRoot awsEnvironment hostedZoneId "UPSERT" recordName recordIp
+                                case upsertExit of
+                                    ExitFailure _ -> pure upsertExit
+                                    ExitSuccess -> do
+                                        verifyResult <-
+                                            runTextCommand
+                                                CommandSpec
+                                                    { commandPath = "aws",
+                                                      commandArguments =
+                                                        [ "route53",
+                                                          "list-resource-record-sets",
+                                                          "--hosted-zone-id",
+                                                          hostedZoneId,
+                                                          "--query",
+                                                          "ResourceRecordSets[?Name == '"
+                                                              ++ ensureTrailingDot recordName
+                                                              ++ "'].ResourceRecords[0].Value | [0]",
+                                                          "--output",
+                                                          "text"
+                                                        ],
+                                                      commandEnvironment = Just awsEnvironment,
+                                                      commandWorkingDirectory = Just repoRoot
+                                                    }
+                                        case verifyResult of
+                                            Left err -> failWith err
+                                            Right value ->
+                                                if trim value == recordIp
+                                                    then pure ExitSuccess
+                                                    else
+                                                        failWith
+                                                            ( "Route 53 record lifecycle validation failed: expected "
+                                                                ++ recordIp
+                                                                ++ " but found "
+                                                                ++ trim value
+                                                            )
+                            cleanupExit <- cleanupDnsAwsValidation repoRoot awsEnvironment hostedZoneId recordName recordIp
+                            case (validationExit, cleanupExit) of
+                                (ExitSuccess, ExitSuccess) -> pure ExitSuccess
+                                (ExitFailure _, _) -> pure validationExit
+                                (_, ExitFailure _) -> pure cleanupExit
+
+configuredHostedZoneName :: FilePath -> [(String, String)] -> ValidatedSettings -> IO (Either String String)
+configuredHostedZoneName repoRoot awsEnvironment settings = do
+    zonePayloadResult <-
+        runJsonCommand
+            CommandSpec
+                { commandPath = "aws",
+                  commandArguments =
+                    [ "route53",
+                      "get-hosted-zone",
+                      "--id",
+                      textValue (zone_id (route53 (validatedConfig settings))),
+                      "--output",
+                      "json"
+                    ],
+                  commandEnvironment = Just awsEnvironment,
+                  commandWorkingDirectory = Just repoRoot
+                }
+    case zonePayloadResult of
+        Left err -> pure (Left err)
+        Right payload ->
+            case hostedZoneDelegation payload of
+                Left err -> pure (Left err)
+                Right (zoneName, _) -> pure (Right (trimTrailingDot zoneName))
 
 cleanupDnsAwsValidation ::
     FilePath ->
@@ -544,24 +573,20 @@ runSequentially = foldM step ExitSuccess
 
 runNativeCliCommandForExitCode :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runNativeCliCommandForExitCode repoRoot environment cliArgs = do
-    spec <- nativeCliCommandSpec repoRoot environment cliArgs
-    runCommandForExitCode spec
+    runCommandForExitCode (nativeCliCommandSpec repoRoot environment cliArgs)
 
 assertNativeCommandOutputContainsAll :: FilePath -> [(String, String)] -> [String] -> [String] -> IO ExitCode
 assertNativeCommandOutputContainsAll repoRoot environment cliArgs expectedTexts = do
-    spec <- nativeCliCommandSpec repoRoot environment cliArgs
-    assertCommandOutputContainsAll spec expectedTexts
+    assertCommandOutputContainsAll (nativeCliCommandSpec repoRoot environment cliArgs) expectedTexts
 
-nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> IO CommandSpec
-nativeCliCommandSpec repoRoot environment cliArgs = do
-    executablePath <- getExecutablePath
-    pure
-        CommandSpec
-            { commandPath = executablePath,
-              commandArguments = cliArgs,
-              commandEnvironment = Just environment,
-              commandWorkingDirectory = Just repoRoot
-            }
+nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> CommandSpec
+nativeCliCommandSpec repoRoot environment cliArgs =
+    CommandSpec
+        { commandPath = canonicalOperatorBinaryPath repoRoot,
+          commandArguments = cliArgs,
+          commandEnvironment = Just environment,
+          commandWorkingDirectory = Just repoRoot
+        }
 
 runCommandForExitCode :: CommandSpec -> IO ExitCode
 runCommandForExitCode spec = do

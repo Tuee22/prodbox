@@ -289,7 +289,7 @@ pulumiPrerequisites :: [String]
 pulumiPrerequisites = orderedUnion [clusterPrerequisites, ["tool_pulumi", "tool_aws"]]
 
 awsIamPrerequisites :: [String]
-awsIamPrerequisites = ["tool_aws", "settings_object"]
+awsIamPrerequisites = ["tool_aws"]
 
 awsEksPrerequisites :: [String]
 awsEksPrerequisites = pulumiPrerequisites

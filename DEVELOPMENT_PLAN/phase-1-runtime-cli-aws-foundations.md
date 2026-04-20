@@ -24,6 +24,9 @@ dependency.
 
 - The Haskell `prodbox` binary is the sole CLI owner. All Python source, Python packaging, and
   Python bridge modules have been removed from the repository.
+- The frontend request ADT and entrypoint now close on native Haskell dispatch only:
+  `src/Prodbox/CLI/Command.hs` exposes `RunNative`, and `app/prodbox/Main.hs` no longer carries a
+  retained Python delegation branch.
 - The supported Haskell config surface is `setup|show|validate`; `config compile` is removed. The
   rest of the supported command matrix remains Haskell-owned:
   `aws policy|setup|teardown|check-quotas|request-quotas`,
@@ -67,6 +70,8 @@ artifact plus container-build topology contract.
 ### Deliverables
 
 - `app/prodbox/Main.hs` exists as the Haskell CLI entrypoint.
+- The frontend request ADT and entrypoint dispatch directly to native Haskell commands with no
+  retained delegation shim.
 - The canonical host build invocation routes host build artifacts to `.build/` and copies the
   binary to `.build/prodbox` so operators run `./.build/prodbox`.
 - The only supported home for repository-owned Dockerfiles is `docker/`.
@@ -87,6 +92,9 @@ artifact plus container-build topology contract.
 
 ### Current Validation State
 
+- `src/Prodbox/CLI/Command.hs` and `app/prodbox/Main.hs` now close the frontend on `RunNative`
+  only while preserving the repo-rootless `gateway start|status` contract through
+  `canRunWithoutRepoRoot`.
 - The host build contract is implemented through `cabal build --builddir=.build exe:prodbox` plus
   the `.build/prodbox` copy step in `src/Prodbox/BuildSupport.hs`.
 - `docker/prodbox.Dockerfile` is the canonical frontend image definition, lives under `docker/`,
@@ -152,6 +160,11 @@ modules.
   drives phase banners plus prerequisite and runbook gating through native
   `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,
   and executes the named real-world validations through `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke native CLI
+  subcommands through the canonical `./.build/prodbox` path, so aggregate validation remains
+  stable after nested suite-side operator-binary syncs.
+- `src/Prodbox/SupportedRuntime.hs` now carries only Haskell-owned repo-root and helper
+  environment context fields; no Python-named supported-runtime field survives.
 - `src/Prodbox/Host.hs` and `src/Prodbox/K8s.hs` own the public `prodbox host
   ensure-tools|check-ports|info|firewall` and `prodbox k8s health|wait|logs` paths through the
   native Haskell prerequisite, effect, DAG, interpreter, and subprocess runtime.

@@ -119,6 +119,10 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration charts-vscode` to an executable native
   validation flow in `src/Prodbox/TestValidation.hs`, and that suite remains on the
   supported-runtime bootstrap path rather than bypassing the cluster runbook.
+- The later aggregate chart validations now operate on the singleton chart stack already restored
+  by the supported-runtime bootstrap: `charts-platform` proves `charts list|status` on the
+  installed `vscode` path, and `charts-storage` proves retained-storage reporting before deleting
+  the root `vscode` stack instead of attempting singleton-violating redeploys.
 - `docker/nginx-oidc.Dockerfile` already lives in `docker/`, and the Alpine-base exception remains
   permitted for this image.
 - `src/Prodbox/CLI/Rke2.hs` now publishes `vscode-nginx` through the dual-arch Harbor-backed

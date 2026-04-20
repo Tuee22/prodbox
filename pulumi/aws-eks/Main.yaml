@@ -2,14 +2,23 @@ config:
   aws:region:
     type: string
     default: us-east-1
+  awsRegion:
+    type: string
+    default: us-east-1
+  awsAccessKeyId:
+    type: string
+    secret: true
+  awsSecretAccessKey:
+    type: string
+    secret: true
+  awsSessionToken:
+    type: string
+    secret: true
+    default: ""
+  operatorCidr:
+    type: string
 
 variables:
-  operatorCidr:
-    fn::invoke:
-      function: std:getenv
-      arguments:
-        name: PRODBOX_AWS_EKS_TEST_OPERATOR_CIDR
-      return: result
   stackName: ${pulumi.stack}
   clusterName: ${stackName}-cluster
   nodeGroupName: ${stackName}-node-group
@@ -21,6 +30,15 @@ variables:
       return: names
 
 resources:
+  awsProvider:
+    type: pulumi:providers:aws
+    defaultProvider: true
+    properties:
+      region: ${awsRegion}
+      accessKey: ${awsAccessKeyId}
+      secretKey: ${awsSecretAccessKey}
+      token: ${awsSessionToken}
+
   vpc:
     type: aws:ec2:Vpc
     properties:

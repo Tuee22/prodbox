@@ -23,6 +23,8 @@ surfaces.
 
 - The destructive rerun proof runs entirely through Haskell command paths. All Python source,
   Python tests, and Python toolchain have been removed from the repository.
+- The frontend request path and supported-runtime helpers no longer retain Python-era delegation
+  or Python-named context scaffolding inside Haskell modules.
 - The `prodbox test` orchestration path runs Haskell test suites via `cabal test` and native CLI
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
@@ -72,6 +74,9 @@ that lives only in repository-root Dhall on the Haskell stack.
 ### Current Validation State
 
 - The destructive operator flow and aggregate runner remain Haskell-only on the runtime surface.
+- `src/Prodbox/TestRunner.hs` now resyncs and reuses the canonical `./.build/prodbox` path before
+  native aggregate phases begin, so `prodbox test all` remains valid even after nested Haskell
+  suites refresh the operator binary.
 - Validation steps `2`, `4`, and `5` close on the direct-Dhall config contract: no supported
   command materializes `prodbox-config.json`, and `prodbox config compile` is removed.
 - Validation steps `7`, `9`, and `12` close honestly on the native validation harness because the
@@ -120,6 +125,9 @@ Haskell-only paths.
 
 - The repository filesystem remains Haskell-only. No supported-path Python implementation or
   Python toolchain artifact survives.
+- The dead Python-era `DelegateToPython` request constructor and
+  `supportedRuntimePythonPath` field are removed from `app/` and `src/`, so the zero-Python
+  handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
   `prodbox check-code` now passes again on this host after restoring the ncurses development
   linker dependency.
@@ -130,7 +138,8 @@ Haskell-only paths.
 ### Remaining Work
 
 None. All Python source, Python packaging, Python tests, Python type stubs, Python Pulumi
-programs, and Python bridge modules have been removed. The repository is Haskell-only.
+programs, Python bridge modules, and Python-era dispatch scaffolding have been removed. The
+repository is Haskell-only.
 
 ## Documentation Requirements
 

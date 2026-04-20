@@ -70,7 +70,7 @@ Build a clean-room Haskell `prodbox` repository with:
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | `prodbox` supported-host gate |
 | Configuration | Repository-root `prodbox-config.dhall` decoded directly into Haskell types, with `prodbox-config-types.dhall` as the shared schema and no supported `prodbox-config.json` artifact | Repository root |
 | Host diagnostics | `prodbox host ensure-tools|info|check-ports|firewall|public-edge` | Haskell CLI |
-| Local RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Haskell CLI |
+| Local RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Haskell CLI with summary-oriented delete reporting |
 | Registry and image reconcile | Harbor project `prodbox` with idempotent public-image populate and dual-arch image publication | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Haskell CLI |
 | Pulumi home stack lifecycle | `prodbox pulumi up|destroy|preview|refresh|stack-init` | Haskell orchestration plus Pulumi |
@@ -89,7 +89,7 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository state as of April 19, 2026 is a Haskell-only codebase with the reopened
+The repository state as of April 20, 2026 is a Haskell-only codebase with the reopened
 container-doctrine implementation landed and Phases `1-4` re-closed on the corrected Harbor-first
 implementation:
 
@@ -100,12 +100,19 @@ implementation:
 - All Python source (`src/prodbox/`, `tests/`, `typings/`), Python packaging (`pyproject.toml`,
   `poetry.toml`, `.python-version`), and Python bridge modules (`Backend/Python.hs`,
   `PythonEnv.hs`) have been deleted from the repository.
+- The frontend request path and supported-runtime helpers are now free of residual Python-era
+  scaffolding: `src/Prodbox/CLI/Command.hs` closes on a native-only request ADT,
+  `app/prodbox/Main.hs` dispatches only native Haskell commands, and
+  `src/Prodbox/SupportedRuntime.hs` no longer exports Python-named context fields.
 - Repository-root config artifacts are `prodbox-config.dhall` and `prodbox-config-types.dhall`;
   `src/Prodbox/Settings.hs` owns Dhall decoding, masked display, and validation with no supported
   JSON materialization path. `src/Prodbox/Aws.hs` owns `config setup` plus
   `aws policy|setup|teardown|check-quotas|request-quotas`.
 - All Pulumi programs are YAML-based: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, and
   `pulumi/aws-test/Main.yaml`. The root `Pulumi.yaml` uses `runtime: yaml`.
+- The AWS validation Pulumi programs take their operator-CIDR and SSH-public-key inputs from
+  explicit stack config written by the Haskell infra modules rather than `std:getenv` calls inside
+  the YAML runtime.
 - The current repository has three supported container-build definitions under `docker/`:
   `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `docker/nginx-oidc.Dockerfile`.
 - `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` are single-stage `ubuntu:24.04`
@@ -129,6 +136,9 @@ implementation:
   local host architecture.
 - The supported lifecycle now also waits for a stable Harbor external-serving window before Docker
   login, image mirror, or image publication continues on a fresh cluster.
+- `prodbox rke2 delete --yes` now reports AWS destroy disposition, local substrate cleanup,
+  managed kubeconfig handling, and preserved host roots as a short success narrative instead of
+  streaming raw Pulumi login output or successful uninstall-script trace noise.
 - `src/Prodbox/CLI/Pulumi.hs` now projects configured ZeroSSL EAB credentials into the supported
   cert-manager `ClusterIssuer` through `externalAccountBinding` plus the
   `cert-manager/acme-eab-credentials` secret.
@@ -137,6 +147,9 @@ implementation:
 - `TestRunner.hs` runs Haskell test suites via `cabal test`, the native `cli` and `env` suites via
   `test/integration/cli/Main.hs` and `test/integration/env/Main.hs`, and the named real-world
   integration proofs via `src/Prodbox/TestValidation.hs`.
+- `TestRunner.hs` and `TestValidation.hs` now re-invoke the native CLI through the canonical
+  `./.build/prodbox` path during aggregate workflows, so nested suite-side binary syncs do not
+  break later native phases.
 - `TestRunner.hs` now waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` during supported-runtime bootstrap and postflight
   before external `charts-vscode` proof continues.
@@ -176,7 +189,7 @@ owned by Phases `2-4` have rerun successfully on this host.
 
 | Surface | Implementation | Completed In |
 |---------|----------------|--------------|
-| CLI frontend and command surface | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 1 |
+| CLI frontend and command surface | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 1 |
 | Configuration and settings | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |

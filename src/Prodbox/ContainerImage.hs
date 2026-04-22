@@ -14,6 +14,8 @@ module Prodbox.ContainerImage
       harborImageRefFromSource,
       harborKubeRbacProxyImage,
       harborKeycloakImage,
+      publicMinioImage,
+      publicMinioMcImage,
       harborMetallbControllerImage,
       harborMetallbSpeakerImage,
       harborMinioImage,
@@ -66,6 +68,12 @@ harborCodeServerImage = harborImageRefFromRepository "code-server-mirror" "4.98.
 
 harborKeycloakImage :: ImageRef
 harborKeycloakImage = harborImageRefFromRepository "keycloak-mirror" "26.0.0"
+
+publicMinioImage :: ImageRef
+publicMinioImage = ImageRef "quay.io" "minio/minio" "RELEASE.2024-12-18T13-15-44Z"
+
+publicMinioMcImage :: ImageRef
+publicMinioMcImage = ImageRef "quay.io" "minio/mc" "RELEASE.2024-11-21T17-21-54Z"
 
 harborMinioImage :: ImageRef
 harborMinioImage = harborImageRefFromRepository "minio-mirror" "RELEASE.2024-12-18T13-15-44Z"
@@ -148,11 +156,11 @@ requiredPublicImageMirrors =
         []
         harborKeycloakImage,
       mirroredPublicImage
-        (ImageRef "quay.io" "minio/minio" "RELEASE.2024-12-18T13-15-44Z")
+        publicMinioImage
         []
         harborMinioImage,
       mirroredPublicImage
-        (ImageRef "quay.io" "minio/mc" "RELEASE.2024-11-21T17-21-54Z")
+        publicMinioMcImage
         []
         harborMinioMcImage,
       mirroredPublicImage

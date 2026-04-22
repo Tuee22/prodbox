@@ -9,12 +9,11 @@
 
 ## Phase Summary
 
-This phase reopens the development plan against a Haskell-only repository handoff. The plan suite no
-longer describes the previously closed Python architecture as the target end state. Instead, it
-owns the execution-ordered rewrite narrative, the reopened phase model, and the Python-removal
-ledger that later phases must close.
+This phase establishes the development plan as the canonical execution-ordered record for the
+Haskell-only repository. It owns the phase model, the top-level control documents, and the cleanup
+ledger used by later phases.
 
-## Sprint 0.1: Reopen the Canonical Plan Suite for the Haskell Rewrite ✅
+## Sprint 0.1: Canonical Plan Suite for the Haskell Rewrite ✅
 
 **Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`, `DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`, `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`, `DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md`, `DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`, `DEVELOPMENT_PLAN/phase-5-public-host-validation.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
@@ -32,8 +31,8 @@ removal of Python from the supported architecture.
 - The plan suite defines the build-artifact contract: `.build/prodbox` on the host (runnable as
   `./.build/prodbox`) and `/opt/build` in
   container builds.
-- The legacy ledger is reopened with Python source, Python toolchain, and Python Pulumi removal
-  work.
+- The legacy ledger captures cleanup ownership for Python removal and any later compatibility
+  residue.
 
 ### Validation
 

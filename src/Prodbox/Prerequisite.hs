@@ -42,6 +42,7 @@ allPrerequisites =
       toolDhall,
       settingsLoaded,
       settingsObject,
+      awsIamHarnessReady,
       kubeconfigExists,
       kubeconfigHomeExists,
       rke2ConfigExists,
@@ -149,6 +150,15 @@ settingsObject =
           effectNodeEffect = Validate RequireSettings
         }
 
+awsIamHarnessReady :: EffectNode
+awsIamHarnessReady =
+    EffectNode
+        { effectNodeId = "aws_iam_harness_ready",
+          effectNodeDescription = "Validate native IAM harness config and aws_admin credentials",
+          effectNodePrerequisites = [],
+          effectNodeEffect = Validate RequireAwsIamHarnessReady
+        }
+
 kubeconfigExists :: EffectNode
 kubeconfigExists =
     EffectNode
@@ -181,7 +191,7 @@ awsCredentialsValid =
     EffectNode
         { effectNodeId = "aws_credentials_valid",
           effectNodeDescription = "Validate AWS credentials are configured",
-          effectNodePrerequisites = ["settings_loaded"],
+          effectNodePrerequisites = ["settings_loaded", "tool_aws"],
           effectNodeEffect = Validate RequireAwsCredentials
         }
 

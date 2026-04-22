@@ -59,6 +59,20 @@ main = hspec $ do
                 exitCode `shouldBe` ExitSuccess
                 stderrText `shouldBe` ""
 
+        it "fails fast with setup guidance when the repo Dhall config is missing" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+
+                (exitCode, _, stderrText) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["config", "validate"]){cwd = Just tmpDir}
+                        ""
+
+                exitCode `shouldBe` ExitFailure 1
+                stderrText `shouldContain` "Missing required repository config"
+                stderrText `shouldContain` "./.build/prodbox config setup"
+
         it "runs native host info directly from the built Haskell frontend" $ do
             repoRoot <- getCurrentDirectory
             binary <- resolveBinaryPath
@@ -320,6 +334,8 @@ main = hspec $ do
                 helmRecord <- readFile (tmpDir </> "fake-rke2-state" </> "helm.txt")
                 helmRecord `shouldContain` "repo|add|minio|https://charts.min.io/"
                 helmRecord `shouldContain` "upgrade|--install|minio|minio/minio"
+                helmRecord `shouldContain` "image.repository=quay.io/minio/minio"
+                helmRecord `shouldContain` "mcImage.repository=quay.io/minio/mc"
                 helmRecord `shouldContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
                 helmRecord `shouldContain` "mcImage.repository=127.0.0.1:30080/prodbox/minio-mc-mirror"
                 helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
@@ -331,6 +347,7 @@ main = hspec $ do
                 dockerRecord `shouldContain` "buildx|stop|prodbox-multiarch-hostnet"
                 dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|public.ecr.aws/docker/library/postgres:16.4-bullseye"
                 dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/library/postgres:16.4-bullseye"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye|public.ecr.aws/docker/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|public.ecr.aws/docker/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye|docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2|ghcr.io/coder/code-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|ghcr.io/coder/code-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64|--build-context|haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim"
@@ -581,7 +598,7 @@ main = hspec $ do
                 binary <- resolveBinaryPath
                 writeRepoMarkers tmpDir
                 copySchema repoRoot tmpDir
-                writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAws
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
                 envVars <- fakeAwsEnvironment tmpDir
 
                 let setupInput = unlines ["ADMINKEY", "admin-secret", "", "", "1"]
@@ -598,6 +615,8 @@ main = hspec $ do
 
                 configAfterSetup <- readFile (tmpDir </> "prodbox-config.dhall")
                 configAfterSetup `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
+                setupAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_create_user_access_key_id")
+                setupAdminKey `shouldContain` "ADMINKEY"
 
                 let teardownInput = unlines ["ADMINKEY", "admin-secret", "", ""]
                 (teardownExitCode, teardownStdout, teardownStderr) <-
@@ -613,6 +632,8 @@ main = hspec $ do
                 configAfterTeardown <- readFile (tmpDir </> "prodbox-config.dhall")
                 configAfterTeardown `shouldContain` "access_key_id = \"\""
                 configAfterTeardown `shouldContain` "secret_access_key = \"\""
+                teardownAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_delete_user_access_key_id")
+                teardownAdminKey `shouldContain` "ADMINKEY"
 
         it "runs native aws quota inspection and request flows through the built frontend with a fake AWS CLI" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1217,15 +1238,17 @@ fakeRke2DockerScript =
         , "            if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
         , "              exit 1"
         , "            fi"
-        , "            if [[ \"$ref\" == public.ecr.aws/docker/library/postgres:16.4-bullseye ]]; then"
-        , "              echo '429 Too Many Requests' >&2"
-        , "              exit 1"
-        , "            fi"
         , "            /bin/cat <<'EOF'"
         , "{\"manifests\":[{\"digest\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"platform\":{\"os\":\"linux\",\"architecture\":\"amd64\"}},{\"digest\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"platform\":{\"os\":\"linux\",\"architecture\":\"arm64\"}}]}"
         , "EOF"
         , "            ;;"
         , "          create)"
+        , "            for arg in \"$@\"; do"
+        , "              if [[ \"$arg\" == public.ecr.aws/docker/library/postgres@sha256:* ]]; then"
+        , "                echo '429 Too Many Requests' >&2"
+        , "                exit 1"
+        , "              fi"
+        , "            done"
         , "            ;;"
         , "          *)"
         , "            ;;"
@@ -1621,6 +1644,7 @@ fakeAwsScript stateDir =
           "JSON",
           "    ;;",
           "  \"iam create-user\")",
+          "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_create_user_access_key_id\"",
           "    touch \"$STATE_DIR/user_exists\"",
           "    printf '{}\\n'",
           "    ;;",
@@ -1649,6 +1673,7 @@ fakeAwsScript stateDir =
           "    printf '{}\\n'",
           "    ;;",
           "  \"iam delete-user\")",
+          "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_delete_user_access_key_id\"",
           "    rm -f \"$STATE_DIR/user_exists\"",
           "    printf '{}\\n'",
           "    ;;",
@@ -1727,9 +1752,18 @@ validConfig :: String
 validConfig =
     configWithAws "test-access-key" "test-secret-key" "Some \"test-session-token\""
 
-validConfigWithBlankOperationalAws :: String
-validConfigWithBlankOperationalAws =
-    configWithAws "" "" "None Text"
+validConfigWithBlankOperationalAwsAndConfiguredAdmin :: String
+validConfigWithBlankOperationalAwsAndConfiguredAdmin =
+    unlines
+        [ "{ aws = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"us-east-1\" }",
+          ", aws_admin = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }",
+          ", route53 = { zone_id = \"Z1234567890ABC\" }",
+          ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }",
+          ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }",
+          ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }",
+          ", storage = { manual_pv_host_root = \".data\" }",
+          "}"
+        ]
 
 zeroSslConfig :: String
 zeroSslConfig =

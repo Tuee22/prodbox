@@ -28,7 +28,9 @@ validation environments.
 The current repository baseline deploys and manages:
 
 - **RKE2** for the local Kubernetes lifecycle
-- **Harbor** for the local registry, Harbor-only workload sourcing, and dual-arch image pipeline
+- **Harbor** for the local registry, Harbor-first steady-state workload sourcing with a narrow
+  public-registry bootstrap exception for Harbor storage-backend prerequisites, and the dual-arch
+  image pipeline
 - **MinIO** for the local-cluster-first Pulumi backend
 - **MetalLB**, **Traefik**, and **cert-manager** for the cluster edge
 - **Route 53** for explicit per-subdomain DNS ownership
@@ -101,7 +103,9 @@ schema in `prodbox-config-types.dhall`.
 ```
 
 The wizard guides AWS account setup, Route 53 zone selection, ACME provider choice, operational IAM
-bootstrap, and repository-root Dhall authoring.
+bootstrap, and repository-root Dhall authoring. On the supported public path it prompts for one
+temporary elevated AWS credential set when needed; `aws_admin.*` remains reserved for the native
+IAM lifecycle test harness.
 
 ### Required Config Fields
 
@@ -124,7 +128,7 @@ Required when using the chart platform and public `vscode` flow:
 |-------------|-------------|
 | `aws.region` | Operational AWS region |
 | `aws.session_token` | Optional AWS session token |
-| `aws_admin.*` | Test-only elevated admin credentials for `prodbox aws ...` and `prodbox test integration aws-iam` |
+| `aws_admin.*` | Test-harness-only elevated admin credential exception for `prodbox test integration aws-iam` |
 | `domain.demo_fqdn` | Gateway/public-edge FQDN |
 | `domain.demo_ttl` | DNS TTL in seconds |
 | `acme.server` | ACME server URL |

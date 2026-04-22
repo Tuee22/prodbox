@@ -280,16 +280,16 @@ chartsVscodePrerequisites :: [String]
 chartsVscodePrerequisites = orderedUnion [pulumiPrerequisites, ["tool_curl"]]
 
 publicDnsPrerequisites :: [String]
-publicDnsPrerequisites = ["settings_object", "tool_aws", "tool_dig"]
+publicDnsPrerequisites = ["route53_accessible", "tool_dig"]
 
 dnsAwsPrerequisites :: [String]
-dnsAwsPrerequisites = ["settings_object", "tool_aws"]
+dnsAwsPrerequisites = ["route53_accessible"]
 
 pulumiPrerequisites :: [String]
-pulumiPrerequisites = orderedUnion [clusterPrerequisites, ["tool_pulumi", "tool_aws"]]
+pulumiPrerequisites = orderedUnion [clusterPrerequisites, ["aws_credentials_valid", "pulumi_logged_in"]]
 
 awsIamPrerequisites :: [String]
-awsIamPrerequisites = ["tool_aws"]
+awsIamPrerequisites = ["aws_iam_harness_ready", "tool_aws"]
 
 awsEksPrerequisites :: [String]
 awsEksPrerequisites = pulumiPrerequisites

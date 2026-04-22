@@ -4,8 +4,9 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
 
-> **Purpose**: Define how `prodbox` provisions Harbor, publishes dual-arch custom images, mirrors
-> required public images, and keeps supported workloads on Harbor-only image refs.
+> **Purpose**: Define how `prodbox` provisions Harbor, bootstraps Harbor storage-backend
+> prerequisites, publishes dual-arch custom images, mirrors required public images, and keeps
+> later supported workloads on Harbor-backed image refs.
 
 ## 1. Scope
 
@@ -14,9 +15,11 @@ This document is the SSoT for the local image-registry doctrine:
 1. Harbor is installed or reconciled during `prodbox rke2 install`.
 2. Custom `prodbox` images are built outside the cluster via Docker CLI and published to Harbor as
    `linux/amd64` plus `linux/arm64` manifests.
-3. Supported cluster workloads use Harbor-only image refs on the canonical path.
-4. Required public images are mirrored into Harbor idempotently before the workloads that need them
-   are deployed.
+3. Harbor and the HA-chart workloads required to make Harbor's storage backend functional may
+   bootstrap from public container registries on the canonical path.
+4. Later supported cluster workloads use Harbor-backed image refs on the canonical path.
+5. Required public images are mirrored into Harbor idempotently after Harbor and its storage
+   backend are healthy and before the later workloads that need them are deployed.
 
 Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
@@ -33,10 +36,11 @@ The native Haskell lifecycle runtime reconciles Harbor state in order:
 4. Harbor readiness wait
 5. Stable Harbor external-endpoint wait
 6. Harbor project reconcile for `prodbox`
-7. Docker login plus public-image mirror, per-platform custom-image publish, and manifest compose
-8. `registries.yaml` reconcile and conditional RKE2 restart
-9. MinIO install from Harbor-backed image refs
-10. Gateway and `vscode-nginx` host-arch image import into the RKE2 containerd cache
+7. MinIO bootstrap install from public `quay.io/minio/*` image refs
+8. Docker login plus required public-image mirror into Harbor
+9. Per-platform custom-image publish, manifest compose, and host-arch import
+10. MinIO steady-state reconcile onto Harbor-backed image refs
+11. `registries.yaml` reconcile and conditional RKE2 restart
 
 Custom-image publication uses a `docker-container` buildx builder created with host networking.
 That builder contract is required because the canonical Harbor push target remains the local
@@ -85,14 +89,18 @@ before the effect succeeds.
 
 ## 5. Public Image Population
 
-Population is idempotent and dual-arch:
+Population is idempotent and dual-arch. It runs after Harbor and the local MinIO-backed backend are
+healthy:
 
 1. enumerate the required supported-workload public images plus any already-referenced non-Harbor
    cluster images
-2. normalize upstream refs into canonical registry-qualified image refs
+2. normalize upstream refs into canonical registry-qualified image refs and ordered candidate
+   source lists
 3. map those refs into the Harbor `prodbox` project
-4. verify the source ref publishes both `linux/amd64` and `linux/arm64`
-5. create the Harbor target manifest only when the Harbor target is missing one of those
+4. verify a candidate source publishes both `linux/amd64` and `linux/arm64`
+5. if a preferred candidate later fails during Harbor publication, purge the partial Harbor target
+   and retry the next configured candidate source
+6. create the Harbor target manifest only when the Harbor target is missing one of those
    architectures
 
 ## 6. Gateway Container Build Doctrine

@@ -11,14 +11,9 @@
 
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the
 repository-root Dhall config loader, the Haskell command runtime and test harness, and the Pulumi
-foundations for local infrastructure plus AWS validation. Sprint `1.2` remains closed on the
-direct-Dhall config contract, native validation harness, and doc harmony. Sprint `1.1` is now
-closed on this host as well: the canonical frontend image build lives at
-`docker/prodbox.Dockerfile`, the custom-image doctrine is aligned on single-stage `ubuntu:24.04`
-under `docker/`, the Haskell toolchain is mounted from the official `haskell:9.6.7-slim` image
-at build time while keeping the final image single-stage, the owning docs are updated, and the
-canonical host-side validation commands pass again after restoring the ncurses development linker
-dependency.
+foundations for local infrastructure plus AWS validation. It also owns the canonical frontend
+image placement under `docker/`, the direct-Dhall config contract, the native validation harness,
+and the aligned root guidance or engineering docs listed by its sprints.
 
 ## Current Baseline In Worktree
 
@@ -33,8 +28,9 @@ dependency.
   `host ensure-tools|check-ports|info|firewall|public-edge`, `rke2`, `pulumi`, `dns check`,
   `gateway start|status|config-gen`, `charts`, `k8s health|wait|logs`, `check-code`, `test`, and
   `tla-check`.
-- Repository-root config artifacts are `prodbox-config.dhall` and `prodbox-config-types.dhall`;
-  `src/Prodbox/Settings.hs` owns decoding, display, and validation without materializing
+- The tracked schema artifact is `prodbox-config-types.dhall`; the operator-authored repo-root
+  config is `prodbox-config.dhall`, written by `prodbox config setup` and ignored from version
+  control. `src/Prodbox/Settings.hs` owns decoding, display, and validation without materializing
   `prodbox-config.json`.
 - The host build contract copies the operator-facing binary to `.build/prodbox` after the
   canonical `cabal build --builddir=.build exe:prodbox` invocation.
@@ -48,13 +44,8 @@ dependency.
   Haskell validation flows through `src/Prodbox/TestValidation.hs`.
 - All Pulumi programs are YAML-based under `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`,
   and `pulumi/aws-test/Main.yaml`.
-- The canonical host-side validation reruns now pass on this host:
-  `cabal build --builddir=.build exe:prodbox`,
-  `cabal run --builddir=.build exe:prodbox -- check-code`,
-  `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`,
-  and `./.build/prodbox test integration env`.
+- The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
+  `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
 ## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
 
@@ -104,11 +95,6 @@ artifact plus container-build topology contract.
   location and the updated container-build doctrine.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
   canonical Dockerfile location.
-- `cabal build --builddir=.build exe:prodbox`,
-  `cabal run --builddir=.build exe:prodbox -- check-code`,
-  `./.build/prodbox check-code`,
-  and `./.build/prodbox test integration cli` now pass on this host.
-
 ### Remaining Work
 
 None.
@@ -152,6 +138,8 @@ modules.
 - `src/Prodbox/Settings.hs` decodes `prodbox-config.dhall`, validates the required config
   contract, and renders masked `prodbox config show` output without materializing
   `prodbox-config.json`.
+- Missing repo-root config now fails fast with explicit `./.build/prodbox config setup` guidance
+  instead of surfacing a raw file-open exception from the Dhall loader.
 - `src/Prodbox/BuildSupport.hs` owns the shared `.build/support` linker shim and the
   operator-facing binary sync to `.build/prodbox`.
 - `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and runs
@@ -160,6 +148,9 @@ modules.
   drives phase banners plus prerequisite and runbook gating through native
   `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,
   and executes the named real-world validations through `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestPlan.hs` now maps AWS-backed named suites through prerequisite gates that
+  validate live AWS credentials, Route 53 access, and Pulumi login before the validation bodies
+  run, so blocked environments fail during Phase `1/2` rather than inside later validation logic.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke native CLI
   subcommands through the canonical `./.build/prodbox` path, so aggregate validation remains
   stable after nested suite-side operator-binary syncs.
@@ -175,9 +166,6 @@ modules.
   proof surfaces for the Haskell-owned command surface.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
   repository and current validation harness.
-- The direct-Dhall settings contract, native harness, and doc-harmony surfaces owned by this
-  sprint remain intact, and the canonical host-side reruns now pass on this host.
-
 ### Remaining Work
 
 None.
@@ -200,7 +188,8 @@ the same supported product scope.
   `prodbox pulumi eks-resources|eks-destroy --yes` are implemented in Haskell.
 - The local-cluster-first MinIO backend doctrine is preserved.
 - The Harbor bootstrap and registry baseline exist in Haskell and carry forward into the later
-  Harbor-only dual-arch doctrine.
+  Harbor-first dual-arch doctrine with a narrow bootstrap exception for Harbor and storage-backend
+  prerequisites.
 - Both intended AWS-backed validation branches survive the rewrite: EKS-backed and HA RKE2 over
   SSH.
 

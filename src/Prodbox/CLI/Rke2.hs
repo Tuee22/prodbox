@@ -75,6 +75,7 @@ import System.FilePath
 import System.Info (os)
 import System.IO
     ( hClose,
+      hPutStr,
       hPutStrLn,
       stderr,
       openTempFile,
@@ -173,6 +174,11 @@ buildxBuilderName = "prodbox-multiarch-hostnet"
 data CustomImageBuildMode
     = CustomImageBuildDirect
     | CustomImageBuildWithHaskellToolchain
+    deriving (Eq, Show)
+
+data MinioImageSource
+    = MinioBootstrapPublic
+    | MinioSteadyStateHarbor
     deriving (Eq, Show)
 
 data CustomImageBuildPlan = CustomImageBuildPlan
@@ -329,8 +335,13 @@ runNativeInstall repoRoot = do
                               deleteNonManualStorageClasses repoRoot,
                               ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue,
                               ensureRetainedLocalStorage repoRoot settings prodboxId labelValue,
-                              ensureHarborRegistryRuntime repoRoot prodboxId,
-                              ensureMinioRuntime repoRoot,
+                              ensureHarborRegistryRuntime repoRoot,
+                              ensureMinioRuntime repoRoot MinioBootstrapPublic,
+                              mirrorClusterImagesOnce repoRoot,
+                              ensureGatewayImages repoRoot prodboxId,
+                              ensureVscodeNginxImage repoRoot,
+                              ensureMinioRuntime repoRoot MinioSteadyStateHarbor,
+                              ensureRke2RegistriesConfig repoRoot,
                               reconcileManagedAnnotations repoRoot prodboxId labelValue
                             ]
 
@@ -572,8 +583,8 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
                                                                     )
                                                             ExitSuccess -> pure ExitSuccess
 
-ensureMinioRuntime :: FilePath -> IO ExitCode
-ensureMinioRuntime repoRoot = do
+ensureMinioRuntime :: FilePath -> MinioImageSource -> IO ExitCode
+ensureMinioRuntime repoRoot imageSource = do
     repoAddResult <- captureToolOutput repoRoot "helm" ["repo", "add", minioRepositoryName, minioRepositoryUrl]
     case repoAddResult of
         Left err -> failWith err
@@ -585,77 +596,86 @@ ensureMinioRuntime repoRoot = do
                 ExitSuccess -> continue
   where
     continue =
-        runSequentially
-            [ runCommand
-                CommandSpec
-                    { commandPath = "helm",
-                      commandArguments = ["repo", "update"],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    },
-              runCommand
-                CommandSpec
-                    { commandPath = "helm",
-                      commandArguments =
-                        [ "upgrade",
-                          "--install",
-                          minioReleaseName,
-                          minioChartRef,
-                          "--version",
-                          minioChartVersion,
-                          "--namespace",
-                          minioNamespace,
-                          "--create-namespace",
-                          "--set",
-                          "mode=standalone",
-                          "--set",
-                          "replicas=1",
-                          "--set",
-                          "persistence.enabled=true",
-                          "--set",
-                          "persistence.existingClaim=minio",
-                          "--set",
-                          "image.repository=" ++ renderImageRefWithoutTag ContainerImage.harborMinioImage,
-                          "--set",
-                          "image.tag=" ++ ContainerImage.imageTag ContainerImage.harborMinioImage,
-                          "--set",
-                          "mcImage.repository=" ++ renderImageRefWithoutTag ContainerImage.harborMinioMcImage,
-                          "--set",
-                          "mcImage.tag=" ++ ContainerImage.imageTag ContainerImage.harborMinioMcImage,
-                          "--set",
-                          "persistence.size=200Gi",
-                          "--set",
-                          "service.type=ClusterIP",
-                          "--set",
-                          "consoleService.type=ClusterIP",
-                          "--set",
-                          "resources.requests.memory=256Mi",
-                          "--set",
-                          "resources.requests.cpu=100m",
-                          "--set",
-                          "resources.limits.memory=512Mi"
-                        ],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    },
-              runCommand
-                CommandSpec
-                    { commandPath = "kubectl",
-                      commandArguments =
-                        [ "wait",
-                          "--for=condition=Available",
-                          "deployment/minio",
-                          "-n",
-                          minioNamespace,
-                          "--timeout=300s"
-                        ],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    }
-            ]
+        let (minioImage, minioMcImage) = minioChartImages imageSource
+         in runSequentially
+                [ runCommand
+                    CommandSpec
+                        { commandPath = "helm",
+                          commandArguments = ["repo", "update"],
+                          commandEnvironment = Nothing,
+                          commandWorkingDirectory = Just repoRoot
+                        },
+                  runCommand
+                    CommandSpec
+                        { commandPath = "helm",
+                          commandArguments =
+                            [ "upgrade",
+                              "--install",
+                              minioReleaseName,
+                              minioChartRef,
+                              "--version",
+                              minioChartVersion,
+                              "--namespace",
+                              minioNamespace,
+                              "--create-namespace",
+                              "--set",
+                              "mode=standalone",
+                              "--set",
+                              "replicas=1",
+                              "--set",
+                              "persistence.enabled=true",
+                              "--set",
+                              "persistence.existingClaim=minio",
+                              "--set",
+                              "image.repository=" ++ renderImageRefWithoutTag minioImage,
+                              "--set",
+                              "image.tag=" ++ ContainerImage.imageTag minioImage,
+                              "--set",
+                              "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage,
+                              "--set",
+                              "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage,
+                              "--set",
+                              "persistence.size=200Gi",
+                              "--set",
+                              "service.type=ClusterIP",
+                              "--set",
+                              "consoleService.type=ClusterIP",
+                              "--set",
+                              "resources.requests.memory=256Mi",
+                              "--set",
+                              "resources.requests.cpu=100m",
+                              "--set",
+                              "resources.limits.memory=512Mi"
+                            ],
+                          commandEnvironment = Nothing,
+                          commandWorkingDirectory = Just repoRoot
+                        },
+                  runCommand
+                    CommandSpec
+                        { commandPath = "kubectl",
+                          commandArguments =
+                            [ "wait",
+                              "--for=condition=Available",
+                              "deployment/minio",
+                              "-n",
+                              minioNamespace,
+                              "--timeout=300s"
+                            ],
+                          commandEnvironment = Nothing,
+                          commandWorkingDirectory = Just repoRoot
+                        }
+                ]
 
-ensureHarborRegistryRuntime :: FilePath -> String -> IO ExitCode
-ensureHarborRegistryRuntime repoRoot prodboxId = do
+minioChartImages :: MinioImageSource -> (ContainerImage.ImageRef, ContainerImage.ImageRef)
+minioChartImages imageSource =
+    case imageSource of
+        MinioBootstrapPublic ->
+            (ContainerImage.publicMinioImage, ContainerImage.publicMinioMcImage)
+        MinioSteadyStateHarbor ->
+            (ContainerImage.harborMinioImage, ContainerImage.harborMinioMcImage)
+
+ensureHarborRegistryRuntime :: FilePath -> IO ExitCode
+ensureHarborRegistryRuntime repoRoot = do
     repoAddResult <- captureToolOutput repoRoot "helm" ["repo", "add", harborRepositoryName, harborRepositoryUrl]
     case repoAddResult of
         Left err -> failWith err
@@ -751,21 +771,7 @@ ensureHarborRegistryRuntime repoRoot prodboxId = do
                                                         [ ensureHarborProject repoRoot projectName
                                                         | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
                                                         ]
-                                                case projectExit of
-                                                    ExitFailure _ -> pure projectExit
-                                                    ExitSuccess -> do
-                                                        mirrorExit <- mirrorClusterImagesOnce repoRoot
-                                                        case mirrorExit of
-                                                            ExitFailure _ -> pure mirrorExit
-                                                            ExitSuccess -> do
-                                                                gatewayExit <- ensureGatewayImages repoRoot prodboxId
-                                                                case gatewayExit of
-                                                                    ExitFailure _ -> pure gatewayExit
-                                                                    ExitSuccess -> do
-                                                                        vscodeExit <- ensureVscodeNginxImage repoRoot
-                                                                        case vscodeExit of
-                                                                            ExitFailure _ -> pure vscodeExit
-                                                                            ExitSuccess -> ensureRke2RegistriesConfig repoRoot
+                                                pure projectExit
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -1103,14 +1109,10 @@ ensureMirroredClusterImage repoRoot sourceCandidates target = do
         Right (Just targetPlatforms)
             | supportsCanonicalImagePlatforms targetPlatforms -> pure ExitSuccess
         Right _ -> do
-            sourceManifestResult <- selectCanonicalMirrorSource repoRoot sourceCandidates target
-            case sourceManifestResult of
+            mirrorResult <- mirrorCanonicalTargetFromCandidates repoRoot sourceCandidates target
+            case mirrorResult of
                 Left err -> failWith err
-                Right (source, sourceManifest) -> do
-                    purgeExit <- purgeHarborMirrorTarget repoRoot target
-                    case purgeExit of
-                        ExitFailure _ -> pure purgeExit
-                        ExitSuccess -> pushCanonicalMirrorTarget repoRoot source sourceManifest target
+                Right () -> pure ExitSuccess
 
 ensureGatewayImages :: FilePath -> String -> IO ExitCode
 ensureGatewayImages repoRoot prodboxId = do
@@ -1349,18 +1351,25 @@ encodeHarborRepositoryName =
     encodeCharacter '/' = "%252F"
     encodeCharacter character = [character]
 
-pushCanonicalMirrorTarget :: FilePath -> String -> RawImageManifest -> String -> IO ExitCode
+pushCanonicalMirrorTarget :: FilePath -> String -> RawImageManifest -> String -> IO (Either String ())
 pushCanonicalMirrorTarget repoRoot source sourceManifest target =
     case buildCanonicalMirrorSourceRefs source sourceManifest of
-        Left err -> failWith err
+        Left err -> pure (Left err)
         Right sourceRefs ->
-            runCommand
-                CommandSpec
-                    { commandPath = "docker",
-                      commandArguments = ["buildx", "imagetools", "create", "--tag", target] ++ sourceRefs,
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    }
+            do
+                createResult <-
+                    captureToolOutput
+                        repoRoot
+                        "docker"
+                        (["buildx", "imagetools", "create", "--tag", target] ++ sourceRefs)
+                case createResult of
+                    Left err -> pure (Left err)
+                    Right output ->
+                        case processExitCode output of
+                            ExitSuccess -> do
+                                emitCapturedProcessOutput output
+                                pure (Right ())
+                            ExitFailure _ -> pure (Left (outputDetail output))
 
 buildCanonicalMirrorSourceRefs :: String -> RawImageManifest -> Either String [String]
 buildCanonicalMirrorSourceRefs source sourceManifest = do
@@ -1392,8 +1401,8 @@ buildCanonicalMirrorSourceRefs source sourceManifest = do
                         ++ source
                     )
 
-selectCanonicalMirrorSource :: FilePath -> [String] -> String -> IO (Either String (String, RawImageManifest))
-selectCanonicalMirrorSource repoRoot sourceCandidates target = go [] sourceCandidates
+mirrorCanonicalTargetFromCandidates :: FilePath -> [String] -> String -> IO (Either String ())
+mirrorCanonicalTargetFromCandidates repoRoot sourceCandidates target = go [] sourceCandidates
   where
     go diagnostics [] =
         let detail =
@@ -1402,7 +1411,7 @@ selectCanonicalMirrorSource repoRoot sourceCandidates target = go [] sourceCandi
                     else intercalate " | " (reverse diagnostics)
          in pure
                 ( Left
-                    ( "Unable to select a canonical upstream mirror source for "
+                    ( "Unable to mirror a canonical upstream source for "
                         ++ target
                         ++ ". "
                         ++ detail
@@ -1411,10 +1420,44 @@ selectCanonicalMirrorSource repoRoot sourceCandidates target = go [] sourceCandi
     go diagnostics (source : remainingSources) = do
         sourceManifestResult <- inspectRawImageManifest repoRoot source
         case sourceManifestResult of
-            Left err -> pure (Left err)
+            Left err
+                | isFatalMirrorCandidateError err -> pure (Left err)
+                | otherwise ->
+                    go
+                        (("Failed to inspect candidate source " ++ source ++ ": " ++ err) : diagnostics)
+                        remainingSources
             Right (Just sourceManifest)
                 | supportsCanonicalImagePlatforms (manifestPlatforms sourceManifest) ->
-                    pure (Right (source, sourceManifest))
+                    do
+                        purgeExit <- purgeHarborMirrorTarget repoRoot target
+                        case purgeExit of
+                            ExitFailure _ ->
+                                pure
+                                    ( Left
+                                        ( "Failed to reset Harbor mirror target '"
+                                            ++ target
+                                            ++ "' before mirroring from "
+                                            ++ source
+                                        )
+                                    )
+                            ExitSuccess -> do
+                                pushResult <- pushCanonicalMirrorTarget repoRoot source sourceManifest target
+                                case pushResult of
+                                    Right () -> pure (Right ())
+                                    Left err
+                                        | isFatalMirrorCandidateError err -> pure (Left err)
+                                        | otherwise ->
+                                            go
+                                                ( ( "Failed to publish Harbor mirror target "
+                                                        ++ target
+                                                        ++ " from "
+                                                        ++ source
+                                                        ++ ": "
+                                                        ++ err
+                                                  )
+                                                    : diagnostics
+                                                )
+                                                remainingSources
                 | otherwise ->
                     go
                         ( ( "Image "
@@ -1428,6 +1471,10 @@ selectCanonicalMirrorSource repoRoot sourceCandidates target = go [] sourceCandi
                 go
                     (("Source image is unavailable for Harbor mirroring: " ++ source) : diagnostics)
                     remainingSources
+
+isFatalMirrorCandidateError :: String -> Bool
+isFatalMirrorCandidateError detail =
+    "docker buildx imagetools support is required" `isInfixOf` map toLower detail
 
 mergeMirrorCandidatePairs :: [([String], String)] -> [([String], String)]
 mergeMirrorCandidatePairs = foldl mergePair []
@@ -2403,6 +2450,17 @@ outputDetail output =
     case filter (/= "") [trimTrailingNewlines (processStderr output), trimTrailingNewlines (processStdout output)] of
         [] -> "subprocess exited without output"
         rendered -> foldr1 (\left right -> left ++ " | " ++ right) rendered
+
+emitCapturedProcessOutput :: ProcessOutput -> IO ()
+emitCapturedProcessOutput output = do
+    let stdoutText = processStdout output
+        stderrText = processStderr output
+    if stdoutText == ""
+        then pure ()
+        else putStr stdoutText
+    if stderrText == ""
+        then pure ()
+        else hPutStr stderr stderrText
 
 trimTrailingNewlines :: String -> String
 trimTrailingNewlines = reverse . dropWhile (`elem` ['\n', '\r']) . reverse

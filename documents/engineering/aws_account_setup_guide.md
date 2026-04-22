@@ -19,7 +19,10 @@ prodbox config setup
 
 That flow expects one AWS account, one accessible Route 53 hosted zone, and one temporary elevated
 credential set that exists only long enough for `prodbox` to create the dedicated operational IAM
-user.
+user and write the steady-state `aws.*` section in `prodbox-config.dhall`.
+
+The supported goal is full from-scratch bootstrap: `prodbox` can create the operational AWS
+credentials it needs once the operator supplies one temporary elevated credential interactively.
 
 ---
 
@@ -44,7 +47,8 @@ Free Tier context relevant to `prodbox`:
 
 ## 3. Create One Temporary Elevated Access Key
 
-`prodbox config setup` and `prodbox aws setup` need one elevated AWS credential set so they can:
+`prodbox config setup` and the public `prodbox aws ...` command family need one temporary elevated
+AWS credential set presented interactively so they can:
 
 1. list AWS regions
 2. list Route 53 hosted zones
@@ -60,12 +64,16 @@ The simplest supported operator workflow is:
    Security credentials -> Access keys -> Create access key.
 3. Paste the access key ID and secret access key into the `prodbox` prompts; include the session
    token too if AWS gave you one.
-4. Keep the key only long enough to finish `prodbox config setup`.
+4. Keep the key only long enough to finish the interactive `prodbox` command you are running.
 5. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
 
 If your account or organization forbids root access keys, use a temporary admin IAM user instead.
 The repository contract is the same: the elevated key exists only for setup and teardown
 operations, not for steady-state `prodbox` runtime.
+
+Do not treat `aws_admin.*` as the ordinary operator path for this workflow. The one supported
+stored-admin-credential exception is the native IAM lifecycle test harness described in
+[aws_admin_credentials.md](./aws_admin_credentials.md).
 
 ---
 
@@ -102,7 +110,10 @@ The wizard walks through:
 3. FQDN and deployment defaults
 4. ACME provider selection
 5. dedicated IAM user creation
-6. `prodbox-config.dhall` write, compile, and validation
+6. `prodbox-config.dhall` write and direct-Dhall validation
+
+The supported public setup path prompts for the temporary elevated credential when needed. It does
+not require pre-populating `aws_admin.*`.
 
 ---
 
@@ -112,7 +123,8 @@ After the wizard succeeds:
 
 1. delete the temporary elevated access key you used for setup
 2. keep the generated `aws.*` operational credentials in `prodbox-config.dhall`
-3. reserve `aws_admin.*` only for test-only or explicit administrative flows
+3. leave `aws_admin.*` empty unless you are intentionally preparing the native IAM lifecycle test
+   harness
 
 Normal `prodbox` runtime uses only the operational `aws.*` section.
 

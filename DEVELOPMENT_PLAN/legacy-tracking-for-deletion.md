@@ -12,13 +12,9 @@
 
 ## Ledger Status
 
-As of April 19, 2026, the Python-removal cleanup remains complete and the non-Python container
-packaging plus registry residue identified by the April 18, 2026 Docker and Harbor audit is now
-removed. All Python source (`src/prodbox/`, `tests/`, `typings/`), Python packaging
-(`pyproject.toml`, `poetry.toml`, `.python-version`), Python bridge modules (`Backend/Python.hs`,
-`PythonEnv.hs`), and Python Pulumi programs remain deleted. The residual Python-era command
-delegation and supported-runtime field naming discovered during the April 19, 2026 audit is also
-removed. `Pending Removal` is empty again.
+As of April 21, 2026, `Pending Removal` remains empty. The reopened Phase `4`
+lifecycle-bootstrap cleanup and its validation closure are complete. Python implementation,
+Python toolchain ownership, and the earlier rewrite cleanup remain closed.
 
 ## Pending Removal
 
@@ -28,6 +24,7 @@ None.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| Harbor-first bootstrap ordering in `src/Prodbox/CLI/Rke2.hs` that mirrored required public images before the backend was healthy and deployed MinIO from Harbor-backed refs | Sprint 4.1 implementation closure on April 21, 2026 | Replaced by public-registry MinIO bootstrap, post-bootstrap Harbor populate, and a Harbor-backed MinIO steady-state reconcile |
 | Python-era clean-room backlog through April 15, 2026 | Pre-rewrite baseline | Closed before the Haskell rewrite reopened this ledger on April 16, 2026 |
 | `src/prodbox/**/*.py` Python implementation modules and `src/prodbox/py.typed` package marker | Sprint 4.3 | Deleted after Haskell parity reached for all supported surfaces |
 | `tests/**/*.py` Python unit and integration harnesses | Sprint 4.3 | Replaced by Haskell test suites under `test/` |
@@ -46,6 +43,8 @@ None.
 | Python interactive onboarding helper (`config_cmd.py`) | Sprint 7.1 | `src/Prodbox/Aws.hs` owns `config setup` |
 | Python standalone IAM and quota commands (`aws_cmd.py`) | Sprint 7.2 | `src/Prodbox/Aws.hs` owns `aws setup|teardown|check-quotas|request-quotas` |
 | Python elevated-credential IAM helper (`aws_admin.py`) | Sprint 7.3 | Haskell `aws_admin` harness owns real IAM lifecycle proof |
+| Public `aws_admin.*` fallback in `src/Prodbox/Aws.hs` (`configuredAdminCredentials`, `resolveAdminCredentials`, `resolveAdminCredentialsWithRegionChoice`, and the non-interactive fallback guidance) | Sprint `7.1` / Sprint `7.2` | Removed so public `prodbox config setup` and public `prodbox aws ...` now prompt for one temporary elevated credential set instead of reading stored `aws_admin.*`. |
+| Non-test `aws_admin.*` recovery path in `src/Prodbox/SupportedRuntime.hs` | Sprint `7.3` | Removed so stored `aws_admin.*` is no longer consumed outside the native IAM validation harness. |
 | Python bridge modules (`Backend/Python.hs`, `PythonEnv.hs`) | Sprint 4.3 | `Main.hs` no longer imports `Backend.Python` |
 | Residual Python-era command delegation and supported-runtime field naming (`DelegateToPython`, `supportedRuntimePythonPath`) | Sprint 6.2 audit closure on April 19, 2026 | The frontend now dispatches directly to native Haskell commands, and supported-runtime helpers no longer expose Python-named context fields |
 | Phase-owned engineering docs presenting Python as supported architecture | Sprint 6.2 | Doctrine aligned with the Haskell-only architecture |
@@ -56,7 +55,7 @@ None.
 | Multi-stage frontend image build in the former root `Dockerfile` (`haskell:9.6.7 -> debian:bookworm-slim`) | Sprint 1.1 closure on April 18, 2026 | Replaced with a single-stage `ubuntu:24.04` frontend image while preserving `/opt/build` |
 | Multi-stage gateway image build in `docker/gateway.Dockerfile` (`haskell:9.6.7 -> debian:bookworm-slim`) | Sprint 2.1 closure on April 18, 2026 | Replaced with a single-stage `ubuntu:24.04` gateway image |
 | `vscode-nginx` delivery gap for Harbor-only dual-arch image publication | Sprint 3.2 closure on April 18, 2026 | `docker/nginx-oidc.Dockerfile` remains the permitted Alpine-based exception, but the supported stack now publishes it to Harbor and references Harbor only |
-| Supported doctrine that framed Harbor as a local mirror or allowed non-Harbor workload pulls | Sprint 4.1 closure on April 18, 2026 | Supported charts, MinIO, and Pulumi home-stack workloads now reference Harbor-backed images, with Harbor as the sole supported workload image source except for Harbor bootstrap itself |
+| Supported doctrine that framed Harbor as a local mirror or allowed arbitrary non-Harbor workload pulls | Sprint 4.1 closure on April 18, 2026 | Supported charts and Pulumi home-stack workloads reference Harbor-backed images in steady state; the only supported public-image exception is the narrow Harbor/bootstrap path owned by Sprint `4.1` |
 | Arch-implicit container population doctrine without explicit `amd64` plus `arm64` and mixed-arch closure | Sprint 4.1 closure on April 18, 2026 | The lifecycle now reconciles required public images and custom images for both `amd64` and `arm64` irrespective of local host architecture |
 
 ## Related Documents

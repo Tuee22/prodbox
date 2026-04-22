@@ -19,6 +19,7 @@ data Validation
     | RequireServiceExists String
     | RequireServiceActive String
     | RequireAwsCredentials
+    | RequireAwsIamHarnessReady
     | RequireRoute53Access
     | RequirePulumiLogin
     | RequireKubectlClusterReachable

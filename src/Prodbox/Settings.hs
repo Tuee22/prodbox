@@ -15,6 +15,7 @@ module Prodbox.Settings
       loadConfigFile,
       renderConfigDhall,
       renderSettingsDisplay,
+      validateAwsBootstrapConfig,
       validateAndLoadSettings,
     )
 where
@@ -34,7 +35,10 @@ import Prodbox.Repo
     ( ConfigPaths (..),
       canonicalConfigPaths,
     )
-import System.Directory (makeAbsolute)
+import System.Directory
+    ( doesFileExist,
+      makeAbsolute,
+    )
 import System.FilePath ((</>))
 
 data Credentials = Credentials
@@ -131,27 +135,36 @@ renderSettingsDisplay showSecrets settings =
 loadConfigFile :: FilePath -> IO (Either String ConfigFile)
 loadConfigFile repoRoot = do
     let paths = canonicalConfigPaths repoRoot
-    decoded <- try (inputFile auto (configDhallPath paths)) :: IO (Either SomeException ConfigFile)
-    pure $ case decoded of
-        Left err -> Left (displayException err)
-        Right config -> Right config
+        configPath = configDhallPath paths
+    configExists <- doesFileExist configPath
+    if not configExists
+        then pure (Left (missingConfigMessage configPath))
+        else do
+            decoded <- try (inputFile auto configPath) :: IO (Either SomeException ConfigFile)
+            pure $ case decoded of
+                Left err -> Left (displayException err)
+                Right config -> Right config
 
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do
     resolvedManualRoot <- makeAbsolute (repoRoot </> Text.unpack (manual_pv_host_root (storage config)))
     pure $ do
+        validateAwsBootstrapConfig config
         requireNonEmpty "aws.access_key_id" (access_key_id (aws config))
         requireNonEmpty "aws.secret_access_key" (secret_access_key (aws config))
-        requireNonEmpty "route53.zone_id" (zone_id (route53 config))
-        requireNonEmpty "acme.email" (email (acme config))
-        validateDemoTtl (demo_ttl (domain config))
-        validateAcmeBinding (acme config)
-        validateAdminCredentials (aws_admin config)
         pure
             ValidatedSettings
                 { validatedConfig = config,
                   resolvedManualPvHostRoot = resolvedManualRoot
                 }
+
+validateAwsBootstrapConfig :: ConfigFile -> Either String ()
+validateAwsBootstrapConfig config = do
+    requireNonEmpty "route53.zone_id" (zone_id (route53 config))
+    requireNonEmpty "acme.email" (email (acme config))
+    validateDemoTtl (demo_ttl (domain config))
+    validateAcmeBinding (acme config)
+    validateAdminCredentials (aws_admin config)
 
 requireNonEmpty :: String -> Text -> Either String ()
 requireNonEmpty fieldName value =
@@ -336,3 +349,10 @@ dhallOptionalText maybeValue =
 dhallBool :: Bool -> String
 dhallBool True = "True"
 dhallBool False = "False"
+
+missingConfigMessage :: FilePath -> String
+missingConfigMessage configPath =
+    unlines
+        [ "Missing required repository config `" ++ configPath ++ "`.",
+          "Run `./.build/prodbox config setup` from the repository root to create it, then rerun the command."
+        ]

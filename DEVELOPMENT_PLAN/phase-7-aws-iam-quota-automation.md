@@ -9,11 +9,12 @@
 
 ## Phase Summary
 
-This phase ported the highest-friction operator flows to Haskell: interactive config authoring,
-policy generation, IAM user management, service-quota automation, and the test-only elevated
-credential harness. All onboarding and AWS administration surfaces are now Haskell-owned, Sprint
-`6.2` closed after the Python dependency was fully removed, and the reopened real-IAM proof now
-also closes through the native validation harness.
+This phase owns interactive config authoring, policy generation, IAM user management,
+service-quota automation, and the test-only elevated credential harness. The Haskell worktree now
+closes the intended credential boundary: public onboarding and public AWS administration prompt for
+temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
+validation harness. The dependent lifecycle work is also closed: the aggregate rerun now survives
+the corrected local bootstrap order and the canonical repo-backed Pulumi backend path.
 
 ## Current Baseline In Worktree
 
@@ -24,8 +25,14 @@ also closes through the native validation harness.
   display, and validation with no supported JSON materialization path.
 - Haskell proof exists in `test/unit/Main.hs`, and the intended built-frontend fake-AWS proof
   lives in `test/integration/cli/Main.hs`. The real IAM lifecycle named proof runs through the
-  native validation harness in `src/Prodbox/TestValidation.hs`. Current host reruns of the
-  aggregate build-plus-test gate now pass again on this host.
+  native validation harness in `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestPlan.hs` and `src/Prodbox/EffectInterpreter.hs` now gate `aws-iam` on an
+  explicit native IAM harness readiness check before the validation body runs, while
+  `src/Prodbox/SupportedRuntime.hs` no longer carries the retired non-test `aws_admin.*` repair
+  path.
+- The aggregate runner now reuses the canonical repo-backed Pulumi backend during prerequisite
+  checks, so the IAM teardown-and-restore proof no longer depends on ambient host Pulumi login
+  state.
 
 ## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
 
@@ -43,6 +50,8 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `prodbox aws policy [--tier core|full]` is implemented in Haskell.
 - The guided flow preserves AWS account, Route 53 zone, ACME provider, and manual PV-root prompts.
 - The wizard writes and validates `prodbox-config.dhall` without Python helpers.
+- The supported public bootstrap path prompts the operator for one temporary elevated credential set
+  and does not depend on stored `aws_admin.*`.
 
 ### Validation
 
@@ -58,12 +67,13 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `test/unit/Main.hs` now proves parser routing for `config setup` plus the native `aws *` command
   family.
 - `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
-  `config setup` and `aws policy --tier full`, and the aggregate build-plus-test gate now passes
-  again on this host.
+  `config setup` and `aws policy --tier full`.
+- `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
+  elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
 
 ### Remaining Work
 
-None.
+- None.
 
 ## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 
@@ -81,6 +91,8 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 - AWS CLI subprocess ownership and explicit credential injection remain canonical.
 - IAM user lifecycle remains idempotent.
 - Quota inspection and request automation preserve the supported quota set.
+- Public `prodbox aws ...` commands obtain temporary elevated credentials interactively rather than
+  from stored `aws_admin.*`.
 
 ### Validation
 
@@ -99,54 +111,68 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 - `src/Prodbox/CLI/Parser.hs` now routes the full public `prodbox aws ...` surface through
   `RunNative`.
 - `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
-  setup/teardown and quota flows, and the aggregate build-plus-test gate now passes again on this
-  host.
+  setup/teardown and quota flows.
+- `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
+  `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
 
 ### Remaining Work
 
-None.
+- None.
 
 ## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Re-prove the real IAM lifecycle end to end using the Haskell rewrite and the isolated `aws_admin`
+Prove the real IAM lifecycle end to end using the Haskell rewrite and the isolated `aws_admin`
 credential harness.
 
 ### Deliverables
 
 - `aws_admin` remains isolated from the normal operational `aws.*` section.
 - Real IAM setup and teardown validation closes on the Haskell stack.
-- The destructive lifecycle and aggregate runner preserve the supported credential-recovery rules.
+- Stored `aws_admin.*` remains the single exception to the no-stored-admin-credentials rule and is
+  read only by the native IAM validation harness.
+- The aggregate runner preserves the supported credential rules without consuming `aws_admin.*`
+  outside the test harness.
 - The operator docs for account setup, ACME provider choice, and elevated credential handling are
   aligned with the Haskell implementation.
 
 ### Validation
 
-1. `prodbox test integration aws-iam`
-2. `prodbox test all`
+1. `prodbox test unit`
+2. `prodbox test integration cli`
+3. `prodbox test integration env`
+4. `prodbox test integration aws-iam`
+5. `prodbox test all`
 
 ### Current Validation State
 
 - The isolated `aws_admin` config contract and the Haskell IAM runtime surface are implemented in
   `src/Prodbox/Settings.hs` and `src/Prodbox/Aws.hs`.
-- `src/Prodbox/Aws.hs` now consumes populated `aws_admin.*` credentials directly for elevated
-  admin flows and the real IAM validation harness, with interactive prompts retained only as a
-  fallback when the harness is empty.
-- `src/Prodbox/TestPlan.hs` maps `prodbox test integration aws-iam` to an executable native
-  validation flow in `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestPlan.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/EffectInterpreter.hs`
+  now gate `prodbox test integration aws-iam` on native IAM harness readiness before the
+  validation body runs.
 - `src/Prodbox/TestValidation.hs` now re-establishes the operational IAM user after teardown proof
   so the aggregate validation harness can continue on supported `aws.*` credentials.
-- `prodbox test all` includes that native IAM payload as part of the aggregate validation harness,
-  and the aggregate build-plus-test gate now passes again on this host.
+- `src/Prodbox/SupportedRuntime.hs` now contains only the retained supported-runtime helpers; the
+  retired non-test `aws_admin.*` recovery path has been removed.
+- `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
+  repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
+  stale ambient Pulumi host-login state.
+- The latest reruns now pass `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
+  `./.build/prodbox test integration aws-iam`, and the aggregate `./.build/prodbox test all`
+  flow.
+- The aggregate rerun preserves the supported credential boundary after real IAM teardown proof and
+  post-test restore reaches `CLASSIFICATION=ready-for-external-proof` on `prodbox host public-edge`.
 
 ### Remaining Work
 
-None.
+None. The isolated `aws_admin.*` harness is now revalidated through the full aggregate runner.
 
 ## Documentation Requirements
 
@@ -160,8 +186,8 @@ None.
 - `documents/engineering/cli_command_surface.md` - `config setup` and `aws *` command matrix.
 - `documents/engineering/aws_integration_environment_doctrine.md` - retained AWS admin rules after
   the rewrite.
-- `documents/engineering/unit_testing_policy.md` - reopened IAM lifecycle proof ownership on the
-  Haskell stack.
+- `documents/engineering/unit_testing_policy.md` - IAM lifecycle proof ownership on the Haskell
+  stack.
 
 **Product docs to create/update:**
 

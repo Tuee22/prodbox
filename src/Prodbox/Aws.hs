@@ -4,6 +4,8 @@ module Prodbox.Aws
     ( buildIamPolicyDocument,
       buildIamPolicyJson,
       runAwsCommand,
+      runAwsIamHarnessSetup,
+      runAwsIamHarnessTeardown,
       runInteractiveConfigSetup,
     )
 where
@@ -62,6 +64,7 @@ import Prodbox.Settings
       defaultConfigFile,
       loadConfigFile,
       renderConfigDhall,
+      validateAwsBootstrapConfig,
       validateAndLoadSettings,
     )
 import Prodbox.Subprocess
@@ -414,9 +417,7 @@ interactiveConfigSetupInput repoRoot = do
     putStrLn ""
     accountReady <- promptConfirm "Do you already have an AWS account?" True
     unless accountReady showAwsAccountGuidance
-    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-    selectedRegion <- promptRegionChoice repoRoot initialCredentials
-    let credentials = initialCredentials{region = selectedRegion}
+    credentials <- promptAdminCredentialsWithRegionChoice repoRoot
     zone <- promptHostedZoneChoice repoRoot credentials
     let zoneName = hostedZoneChoiceName zone
     demoFqdnRaw <- promptText "Demo public FQDN (for example demo.example.com)" (Just ("demo." ++ Text.unpack zoneName))
@@ -459,7 +460,7 @@ interactiveAwsSetupInput repoRoot policyTier = do
     putStrLn "AWS setup creates or refreshes the dedicated `prodbox` IAM user, writes"
     putStrLn "operational `aws.*` credentials, and can request baseline service quotas."
     putStrLn ""
-    credentials <- resolveAdminCredentialsWithRegionChoice repoRoot
+    credentials <- promptAdminCredentialsWithRegionChoice repoRoot
     AwsSetupInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
 interactiveAwsTeardownInput :: FilePath -> IO AwsTeardownInput
@@ -467,7 +468,7 @@ interactiveAwsTeardownInput repoRoot = do
     putStrLn "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
     putStrLn "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
     putStrLn ""
-    credentials <- resolveAdminCredentials repoRoot
+    credentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
     pure (AwsTeardownInput credentials)
 
 interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
@@ -475,7 +476,7 @@ interactiveAwsCheckQuotasInput repoRoot = do
     putStrLn "AWS quota inspection reads the supported Service Quotas targets without changing"
     putStrLn "the Dhall config or creating IAM users."
     putStrLn ""
-    credentials <- resolveAdminCredentialsWithRegionChoice repoRoot
+    credentials <- promptAdminCredentialsWithRegionChoice repoRoot
     AwsCheckQuotasInput <$> validateAdminCredentialsInput credentials
 
 interactiveAwsRequestQuotasInput :: FilePath -> PolicyTier -> IO AwsRequestQuotasInput
@@ -483,7 +484,7 @@ interactiveAwsRequestQuotasInput repoRoot policyTier = do
     putStrLn "AWS quota requests submit increases only for supported targets that are still"
     putStrLn "below the required threshold."
     putStrLn ""
-    credentials <- resolveAdminCredentialsWithRegionChoice repoRoot
+    credentials <- promptAdminCredentialsWithRegionChoice repoRoot
     AwsRequestQuotasInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
 showAwsAccountGuidance :: IO ()
@@ -560,33 +561,53 @@ promptAdminCredentials defaultRegion = do
               region = Text.pack (trim regionRaw)
             }
 
-resolveAdminCredentials :: FilePath -> IO Credentials
-resolveAdminCredentials repoRoot = do
-    configured <- configuredAdminCredentials repoRoot
-    case configured of
-        Just credentials -> pure credentials
-        Nothing -> promptAdminCredentials =<< currentRegionDefault repoRoot
+promptAdminCredentialsWithRegionChoice :: FilePath -> IO Credentials
+promptAdminCredentialsWithRegionChoice repoRoot = do
+    initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+    selectedRegion <- promptRegionChoice repoRoot initialCredentials
+    pure initialCredentials{region = selectedRegion}
 
-resolveAdminCredentialsWithRegionChoice :: FilePath -> IO Credentials
-resolveAdminCredentialsWithRegionChoice repoRoot = do
-    configured <- configuredAdminCredentials repoRoot
-    case configured of
-        Just credentials -> pure credentials
-        Nothing -> do
-            initialCredentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-            selectedRegion <- promptRegionChoice repoRoot initialCredentials
-            pure initialCredentials{region = selectedRegion}
+runAwsIamHarnessSetup :: FilePath -> PolicyTier -> IO String
+runAwsIamHarnessSetup repoRoot policyTier = do
+    credentials <- loadHarnessAdminCredentials repoRoot
+    result <-
+        applyAwsSetup
+            repoRoot
+            AwsSetupInput
+                { awsSetupAdminCredentials = credentials,
+                  awsSetupPolicyTierInput = policyTier
+                }
+    pure (renderAwsSetupResult result)
 
-configuredAdminCredentials :: FilePath -> IO (Maybe Credentials)
-configuredAdminCredentials repoRoot = do
-    config <- loadConfigForWrite repoRoot
-    let credentials = aws_admin config
-    if adminCredentialsConfigured credentials
-        then Just <$> validateAdminCredentialsInput credentials
-        else pure Nothing
+runAwsIamHarnessTeardown :: FilePath -> IO String
+runAwsIamHarnessTeardown repoRoot = do
+    credentials <- loadHarnessAdminCredentials repoRoot
+    result <-
+        applyAwsTeardown
+            repoRoot
+            AwsTeardownInput
+                { awsTeardownAdminCredentials = credentials
+                }
+    pure (renderAwsTeardownResult result)
 
-adminCredentialsConfigured :: Credentials -> Bool
-adminCredentialsConfigured credentials =
+loadHarnessAdminCredentials :: FilePath -> IO Credentials
+loadHarnessAdminCredentials repoRoot = do
+    configResult <- loadConfigFile repoRoot
+    case configResult of
+        Left err -> throwAws err
+        Right config ->
+            case validateAwsBootstrapConfig config of
+                Left err -> throwAws err
+                Right () -> do
+                    let credentials = aws_admin config
+                    if harnessAdminCredentialsConfigured credentials
+                        then validateAdminCredentialsInput credentials
+                        else
+                            throwAws
+                                "Native IAM validation requires aws_admin.access_key_id, aws_admin.secret_access_key, and aws_admin.region in prodbox-config.dhall."
+
+harnessAdminCredentialsConfigured :: Credentials -> Bool
+harnessAdminCredentialsConfigured credentials =
     not (Text.null (Text.strip (access_key_id credentials)))
         && not (Text.null (Text.strip (secret_access_key credentials)))
         && not (Text.null (Text.strip (region credentials)))
@@ -681,7 +702,7 @@ readPromptLine message = do
                 throwAws
                     ( "Input ended while reading `"
                         ++ message
-                        ++ "`. Re-run interactively or populate `aws_admin.*` in prodbox-config.dhall for non-interactive admin flows."
+                        ++ "`. Re-run the command interactively with a temporary elevated AWS credential."
                     )
             | otherwise ->
                 throwAws

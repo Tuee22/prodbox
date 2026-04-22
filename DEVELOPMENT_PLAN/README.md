@@ -14,53 +14,41 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 20, 2026, the repository is re-closed on the Haskell-only rewrite, including the
-container packaging and registry surfaces reopened by the April 18 Docker and Harbor audit. The
-repository-root `Dockerfile` is removed,
-`docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` now follow the single-stage
-`ubuntu:24.04` doctrine while sourcing GHC and Cabal from a BuildKit-mounted
-`haskell:9.6.7-slim` toolchain context, Harbor-only workload sourcing is wired through the
-supported chart and Pulumi paths, dual-arch `amd64` plus `arm64` publication or mirror logic is
-implemented, and the legacy ledger is empty again.
+As of April 21, 2026, Phases `0-7` are `Done`. Phase `4` reopened briefly to correct the
+Harbor/bootstrap split and then closed again after destructive lifecycle revalidation: the
+supported lifecycle now bootstraps MinIO from public `quay.io/minio/*` refs before Harbor
+population, reconciles MinIO back onto Harbor-backed refs after the registry is healthy, and
+retries alternate configured public-image upstreams when a preferred source fails during Harbor
+publication. Phase `7` is also closed: the isolated `aws_admin.*` boundary now survives the full
+aggregate rerun, and the canonical `./.build/prodbox test all` flow passes end to end.
 
-The temporary host linker blocker is cleared on this host after installing `libncurses-dev`.
-`cabal build --builddir=.build exe:prodbox`, `cabal run --builddir=.build exe:prodbox -- check-code`,
-`./.build/prodbox check-code`, `./.build/prodbox test unit`,
-`./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
-`./.build/prodbox dns check`, `./.build/prodbox test integration gateway-daemon`,
-`./.build/prodbox test integration gateway-pods`, `./.build/prodbox test integration charts-platform`,
-`./.build/prodbox test integration charts-vscode`, and
-`cabal run --builddir=.build exe:prodbox -- test integration lifecycle` now pass. The current
-gateway steady-state contract is also updated in the worktree: `app/prodbox/Main.hs` now permits
-repo-rootless in-cluster `gateway start|status`, `charts/gateway/` supplies AWS auth through the
-`gateway-aws-credentials` secret and probes `/v1/state` over HTTP, `src/Prodbox/CLI/Pulumi.hs`
-projects configured ZeroSSL EAB credentials into cert-manager via `externalAccountBinding`, and
-the lifecycle image-reconcile path now requires a stable Harbor `/readyz` plus `/v2/` window
-before Docker login or image publication begins.
-The destructive delete path is also re-closed on a quieter operator contract: `prodbox rke2 delete
---yes` now reports AWS destroy disposition, local substrate cleanup, managed kubeconfig handling,
-and preserved roots without streaming raw Pulumi login chatter or successful uninstall-script
-trace noise.
+The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
+artifact contract, `prodbox check-code`, built-frontend `cli` and `env` suites, the named native
+validation flows behind `prodbox test integration ...`, and the clean-room rerun owned by Phase
+`6`. The implementation details for those surfaces live in the phase documents and the component
+inventory rather than in a validation log here.
 
 The repository now contains:
 
 - one compiled Haskell `prodbox` binary owning the full supported command surface
 - one Haskell-owned CLI, config, lifecycle, Pulumi, gateway, chart, AWS, and test surface
-- one direct `Dhall -> Haskell types` config contract rooted at `prodbox-config.dhall`
+- one direct `Dhall -> Haskell types` config contract rooted at operator-authored repository-root
+  `prodbox-config.dhall`, with `prodbox config setup` writing that file and `.gitignore`
+  excluding it from version control
+- one test-harness-only stored-admin-credential exception under `prodbox-config.dhall` `aws_admin.*`
+  consumed only by the native IAM validation harness
 - one native validation harness for the named real-world proof surfaces behind
   `prodbox test integration ...`
 - one YAML-Pulumi infrastructure path with no Python runtime dependency
 - zero Python implementation, Python toolchain, or Python bridge artifacts in the repository
-- one host with the Haskell build and Phase `1` validation gates re-closed after restoring the
-  missing ncurses development linker dependency
+- one explicit cleanup ledger, now empty again after the Phase `4` bootstrap-order cleanup landed
 
-Sprint `1.2` remains closed on the direct-Dhall config contract, native validation harness, and
+Sprint `1.2` closes on the direct-Dhall config contract, native validation harness, and
 doc harmony: the operator-facing host artifact contract is enforced at `./.build/prodbox`, the
 named validation payloads behind `prodbox test integration ...` are executable native Haskell
-validation flows, `prodbox config compile` is removed, `prodbox-config.json` is no longer part of
-the supported repository contract, and the governed docs plus root guidance docs listed in Sprint
-`1.2` are aligned with the Haskell-only repository state. Current host reruns of the associated
-build and test commands now pass again on this host.
+validation flows, `prodbox config compile` is removed, `prodbox-config.json` is not part of the
+supported repository contract, and the governed docs plus root guidance docs listed in Sprint
+`1.2` are aligned with the Haskell-only repository state.
 
 The rewrite followed the seed rationale in
 [../HASKELL_REWRITE_PLAN.md](../HASKELL_REWRITE_PLAN.md) and the canonical phase model required by
@@ -119,26 +107,29 @@ A sprint can move to `Done` only when all of the following are true:
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: Phase `1` owns canonical Dockerfile placement and the frontend
-container-build doctrine. Phase `2` owns gateway packaging and DNS ownership, Phase `3` owns the
-`vscode-nginx` Harbor delivery contract plus supported chart proof, and Phase `4` owns
-Harbor-only cluster image sourcing, idempotent public-image population, dual-arch publication,
-and mixed-arch cluster support. Phases `1-4` are re-closed on this host after rerunning the named
-gateway, chart, and lifecycle validation surfaces. Phases `5-7` remain done on their owned
-public-host, zero-Python, and AWS administration surfaces.
+container-build doctrine. Phase `2` owns gateway packaging and DNS ownership. Phase `3` owns the
+`vscode-nginx` Harbor delivery contract plus supported chart proof. Phase `4` owns Harbor-first
+steady-state image sourcing, the bootstrap exception for Harbor and storage-backend prerequisites,
+idempotent public-image population, dual-arch publication, and mixed-arch cluster support. Phases
+`5-6` own the public-host proof and clean-room handoff. Phase `7` owns interactive onboarding,
+IAM automation, quota management, and the isolated elevated-credential proof harness. All phases
+are now closed on their owned surfaces.
 
-**Canonical target architecture**: one Haskell `prodbox` CLI, one repository-root
-`prodbox-config.dhall` decoded directly into Haskell types with `prodbox-config-types.dhall` as
-the shared schema and no supported `prodbox-config.json` artifact, one supported host runtime
-(`Ubuntu 24.04 LTS` with systemd), one host build root `.build/` with the operator-facing binary
-at `.build/prodbox` (runnable as `./.build/prodbox`), produced by the canonical
-`cabal build --builddir=.build exe:prodbox` invocation plus a copy step, one container build root
-`/opt/build` owned only by Dockerfiles under `docker/`, one repository-owned custom-image doctrine
+**Canonical target architecture**: one Haskell `prodbox` CLI, one operator-authored
+repository-root `prodbox-config.dhall` decoded directly into Haskell types with
+`prodbox-config-types.dhall` as the shared schema and no supported `prodbox-config.json`
+artifact, one supported host runtime (`Ubuntu 24.04 LTS` with systemd), one host build root
+`.build/` with the operator-facing binary at `.build/prodbox` (runnable as `./.build/prodbox`),
+produced by the canonical `cabal build --builddir=.build exe:prodbox` invocation plus a copy
+step, one container build root `/opt/build` owned only by Dockerfiles under `docker/`, one
+repository-owned custom-image doctrine
 where every custom Dockerfile is single-stage from `ubuntu:24.04` except
 `docker/nginx-oidc.Dockerfile`, which may remain based on `nginx:1.25-alpine`, one local RKE2
-lifecycle owned by Haskell, one Harbor-first registry pipeline where Harbor is the only workload
-permitted to bootstrap directly from Docker Hub and every other cluster deployment pulls from
-Harbor, one idempotent Haskell reconcile path that ensures required public images and custom images
-are present in Harbor for both `amd64` and `arm64` irrespective of local host architecture, one
+lifecycle owned by Haskell, one Harbor-first registry pipeline where Harbor and the HA-chart
+workloads required to make Harbor's storage backend functional may bootstrap from public
+registries but every later supported cluster deployment pulls from Harbor, one idempotent Haskell
+reconcile path that ensures required public images and custom images are present in Harbor for both
+`amd64` and `arm64` irrespective of local host architecture before those later deployments, one
 mixed-arch cluster support contract, one Pulumi integration path retained without Python Pulumi
 programs, one in-cluster gateway runtime, one Haskell chart platform, one explicit cleanup or
 removal ledger, and one destructive clean-room rerun that closes with no supported-path Python
@@ -146,8 +137,8 @@ artifacts left in the repository.
 
 ## Current Plan Status
 
-As of April 20, 2026, the development plan is fully re-closed on the reopened
-container-and-registry surfaces:
+As of April 21, 2026, the development plan is current against the repository worktree, and all
+phase-owned closure gates have been revalidated through the canonical `prodbox` surface:
 
 - The repository is Haskell-only. All Python source under `src/prodbox/`, `tests/`, and
   `typings/`, plus Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`) and
@@ -169,16 +160,30 @@ container-and-registry surfaces:
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke the native CLI
   through the canonical `./.build/prodbox` path during aggregate and validation workflows, so
   nested suite-side binary syncs do not strand later phases on a deleted executable inode.
+- `src/Prodbox/TestPlan.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/EffectInterpreter.hs`
+  now gate AWS-backed named suites on validated AWS credentials, Route 53 access, Pulumi login,
+  and native IAM harness readiness during Phase `1/2` prerequisite checks, so blocked
+  environments fail before entering the validation bodies.
+- `src/Prodbox/EffectInterpreter.hs` now proves the Pulumi-login prerequisite against the
+  canonical repo-backed MinIO backend by port-forwarding MinIO, ensuring the
+  `prodbox-test-pulumi-backends` bucket exists, and running `pulumi whoami` under the same
+  explicit backend environment used by the supported lifecycle rather than ambient host Pulumi
+  login state.
 - The supported config contract is direct `Dhall -> Haskell types`: `src/Prodbox/Settings.hs`
-  decodes and validates `prodbox-config.dhall` without materializing `prodbox-config.json`, and
-  the public `prodbox config` surface is `setup|show|validate`.
-- The canonical host-side validation reruns now pass on this host:
-  `cabal build --builddir=.build exe:prodbox`,
-  `cabal run --builddir=.build exe:prodbox -- check-code`,
-  `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`,
-  and `./.build/prodbox test integration env`.
+  decodes and validates the operator-authored repo-root `prodbox-config.dhall` without
+  materializing `prodbox-config.json`, and the public `prodbox config` surface is
+  `setup|show|validate`.
+- Missing repo-root config now fails fast with explicit `./.build/prodbox config setup` guidance
+  instead of surfacing a raw file-open exception from the Dhall loader.
+- `src/Prodbox/Aws.hs` now keeps the public `config setup` and public `aws ...` command family on
+  interactive temporary elevated credentials, while stored `aws_admin.*` remains a test-harness-only
+  exception owned by `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/SupportedRuntime.hs` now contains only the retained supported-runtime helpers; the
+  retired non-test `aws_admin.*` recovery path has been removed.
+- The canonical validation surfaces are `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+  `./.build/prodbox test integration env`, and the named native validation flows listed in
+  `src/Prodbox/TestValidation.hs`.
 - The named integration suites `aws-iam`, `dns-aws`, `aws-eks`, `pulumi`, `ha-rke2-aws`,
   `gateway-daemon`, `gateway-pods`, `gateway-partition`, `charts-platform`, `charts-storage`,
   `charts-vscode`, `public-dns`, and `lifecycle` map to executable native Haskell validation
@@ -199,9 +204,9 @@ container-and-registry surfaces:
 - `docker/nginx-oidc.Dockerfile` remains the permitted `nginx:1.25-alpine` exception and is now
   published to Harbor through the same dual-arch custom-image flow as the gateway image.
 - `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
-  and `pulumi/home/Main.yaml` now enforce Harbor-backed image references for supported workloads,
-  explicit required-public-image population, and `amd64` plus `arm64` per-platform publication
-  plus manifest reconcile irrespective of local host architecture.
+  and `pulumi/home/Main.yaml` now enforce Harbor-backed image references for the steady-state
+  supported workloads, explicit required-public-image population, and `amd64` plus `arm64`
+  per-platform publication plus manifest reconcile irrespective of local host architecture.
 - `src/Prodbox/CLI/Pulumi.hs` now projects configured ZeroSSL EAB credentials into the
   `cert-manager` namespace as `acme-eab-credentials` and wires the supported `ClusterIssuer`
   through `spec.acme.externalAccountBinding` when `acme.eab_*` is set.
@@ -209,16 +214,25 @@ container-and-registry surfaces:
   `CLASSIFICATION=ready-for-external-proof` during supported-runtime bootstrap and postflight, and
   `src/Prodbox/CLI/Rke2.hs` now requires six consecutive successful Harbor `/readyz` plus `/v2/`
   probes before Docker login or image publication continues on a fresh cluster.
-- Harbor now bootstraps before MinIO on the supported install path, and MinIO plus the supported
-  chart stack obtain their images from Harbor.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is empty in `Pending Removal`
-  again.
-- The reopened Phase `2-4` validation surfaces are re-closed on this host:
-  `./.build/prodbox dns check`, `./.build/prodbox test integration gateway-daemon`,
-  `./.build/prodbox test integration gateway-pods`,
-  `./.build/prodbox test integration charts-platform`,
-  `./.build/prodbox test integration charts-vscode`, and
-  `cabal run --builddir=.build exe:prodbox -- test integration lifecycle`.
+- `src/Prodbox/ContainerImage.hs` and `src/Prodbox/CLI/Rke2.hs` now split lifecycle bootstrap from
+  Harbor steady state: `prodbox rke2 install` boots Harbor, installs MinIO once from public
+  `quay.io/minio/*` refs to establish the local backend, mirrors required public images and
+  publishes custom images into Harbor, then reconciles MinIO back onto Harbor-backed refs before
+  later supported deployments rely on Harbor.
+- The Harbor public-image mirror path now retries alternate configured upstream candidates when a
+  preferred source publishes a valid manifest list but later fails during
+  `docker buildx imagetools create`, so transient public-registry rate limits do not strand the
+  post-bootstrap Harbor reconcile.
+- `test/integration/cli/Main.hs` now proves that bootstrap split on the built-frontend path by
+  recording both the public MinIO bootstrap refs, the publish-time fallback from
+  `public.ecr.aws/docker/library/postgres` to `docker.io/library/postgres`, and the later
+  Harbor-backed MinIO reconcile.
+- The latest reruns now pass `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
+  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration lifecycle`,
+  `./.build/prodbox rke2 install`, and `./.build/prodbox test all`.
+- The aggregate rerun now reaches the supported post-test restore state with
+  `prodbox host public-edge` reporting `CLASSIFICATION=ready-for-external-proof`.
 
 ## Exit Definition
 
@@ -228,28 +242,35 @@ This plan is complete only when all of the following are true:
    Python architecture.
 2. The supported operator flow is `prodbox`, implemented in Haskell, across config, lifecycle,
    Pulumi orchestration, gateway, chart delivery, validation, and AWS administration.
-3. The supported config contract is direct `Dhall -> Haskell types` from
-   `prodbox-config.dhall`, with `prodbox-config-types.dhall` aligned to the decoder and no
-   generated `prodbox-config.json` artifact or supported `prodbox config compile` path.
-4. The operator-facing binary lives at `.build/prodbox` (runnable as `./.build/prodbox`),
+3. The supported config contract is direct `Dhall -> Haskell types` from operator-authored
+   repository-root `prodbox-config.dhall`, with `prodbox-config-types.dhall` aligned to the
+   decoder and no generated `prodbox-config.json` artifact or supported `prodbox config compile`
+   path.
+4. Public `prodbox config setup` and public `prodbox aws ...` paths can bootstrap all required AWS
+   credentials from scratch using temporary elevated credentials entered interactively by the
+   operator.
+5. `aws_admin.*` may be stored in `prodbox-config.dhall` only as the native IAM test-harness
+   exception. No supported non-test command or runtime helper may read or use that section.
+6. The operator-facing binary lives at `.build/prodbox` (runnable as `./.build/prodbox`),
    produced by the canonical `cabal build --builddir=.build exe:prodbox` invocation plus a copy
    step.
-5. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile
+7. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile
    lives under `docker/`.
-6. Every custom Dockerfile is single-stage from `ubuntu:24.04`, except
+8. Every custom Dockerfile is single-stage from `ubuntu:24.04`, except
    `docker/nginx-oidc.Dockerfile`, which may remain based on `nginx:1.25-alpine`.
-7. Harbor is the only service allowed to bootstrap directly from Docker Hub, and every other
-   cluster deployment obtains its images from Harbor.
-8. `prodbox` idempotently ensures required public images and all custom images are present in
-   Harbor before deployment.
-9. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
+9. Harbor and the HA-chart workloads required to make Harbor's storage backend functional may
+   bootstrap from public container registries on the supported path.
+10. Every later supported cluster deployment obtains its images from Harbor.
+11. `prodbox` idempotently ensures required public images and all custom images are present in
+   Harbor after bootstrap and before those later deployments.
+12. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
    irrespective of the architecture of the machine running `prodbox`.
-10. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
-11. Pulumi remains part of the supported architecture, but no supported Pulumi program depends on
+13. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
+14. Pulumi remains part of the supported architecture, but no supported Pulumi program depends on
    Python.
-12. The strongest clean-room rerun passes from full local delete through final AWS teardown using
+15. The strongest clean-room rerun passes from full local delete through final AWS teardown using
    the Haskell stack.
-13. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is empty in
-   `Pending Removal`.
-14. The repository has no supported-path Python implementation or Python toolchain ownership
+16. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) contains no unresolved
+   cleanup.
+17. The repository has no supported-path Python implementation or Python toolchain ownership
    artifacts left.

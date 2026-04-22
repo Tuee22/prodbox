@@ -13,11 +13,8 @@ This phase defines the clean-room and zero-Python handoff criteria for the Haske
 repository. Sprint `6.1` keeps the destructive operator flow closed on Haskell command paths.
 Sprint `6.2` keeps the repository handoff closed after Phase `7` onboarding and AWS
 administration surfaces land on Haskell-only paths and all Python artifacts leave the repository.
-The non-Python container packaging, Harbor, dual-arch, and mixed-arch implementation owned by
-reopened Phases `1-4` is now present in the worktree, the legacy ledger is empty again, and the
-temporary host linker blocker is cleared on this host. The clean-room and zero-Python repository
-surfaces remain done while the earlier phase-owned reruns stay closed on their own validation
-surfaces.
+It owns the destructive rerun contract, the final zero-Python handoff criteria, and the dependency
+between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
 
 ## Current Baseline In Worktree
 
@@ -28,11 +25,7 @@ surfaces.
 - The `prodbox test` orchestration path runs Haskell test suites via `cabal test` and native CLI
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
-- The legacy tracking ledger is empty in `Pending Removal` again.
-- The temporary host linker blocker that interrupted the April 18, 2026 rerun is cleared on this
-  host after installing `libncurses-dev`.
-- The earlier Phase `1-4` container and registry reruns are closed again on this host without
-  reopening the zero-Python repository surfaces owned by this phase.
+- The legacy tracking ledger is empty; the zero-Python handoff owned by this phase remains closed.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
 
@@ -42,8 +35,8 @@ surfaces.
 
 ### Objective
 
-Re-prove the clean-room baseline from full local cluster delete and a supported config contract
-that lives only in repository-root Dhall on the Haskell stack.
+Prove the clean-room baseline from full local cluster delete and a supported config contract that
+lives only in operator-authored repository-root Dhall on the Haskell stack.
 
 ### Deliverables
 
@@ -82,8 +75,14 @@ that lives only in repository-root Dhall on the Haskell stack.
 - Validation steps `7`, `9`, and `12` close honestly on the native validation harness because the
   named integration payloads in `src/Prodbox/TestPlan.hs` map to executable native Haskell
   validation flows.
-- The April 18, 2026 host rerun no longer carries the earlier `-ltinfo` blocker, so this phase
-  does not list an active host prerequisite on the clean-room surface.
+- `src/Prodbox/TestPlan.hs` already defines the aggregate end-to-end lifecycle proof surface:
+  `prodbox test all` and `prodbox test integration all` run the native validation set that
+  includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
+  lifecycle suite is missing from the repository.
+- The latest clean-room rerun now passes through `prodbox rke2 delete --yes`,
+  `prodbox rke2 install`, the AWS-backed validation flows behind `prodbox test all`, and the
+  supported post-test restore state where `prodbox host public-edge` reports
+  `CLASSIFICATION=ready-for-external-proof`.
 
 ### Remaining Work
 
@@ -109,7 +108,7 @@ Haskell-only paths.
 - The Python-removal portion of the legacy ledger is empty; any surviving non-Python compatibility
   cleanup is owned by its originating phase.
 - Root guidance docs and governed doctrine no longer describe Python as the supported runtime.
-- The destructive rerun remains closed after Python removal rather than before it.
+- The destructive rerun closes after Python removal rather than before it.
 
 ### Validation
 
@@ -129,11 +128,10 @@ Haskell-only paths.
   `supportedRuntimePythonPath` field are removed from `app/` and `src/`, so the zero-Python
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
-  `prodbox check-code` now passes again on this host after restoring the ncurses development
-  linker dependency.
 - Repository text search across the root guidance docs and governed Sprint `1.2` docs is aligned
   with the Haskell-only repository and no longer depends on mixed-baseline wording.
-- The legacy ledger is empty again.
+- The legacy ledger is empty.
+
 
 ### Remaining Work
 

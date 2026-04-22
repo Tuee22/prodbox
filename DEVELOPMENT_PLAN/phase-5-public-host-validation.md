@@ -9,7 +9,7 @@
 
 ## Phase Summary
 
-This phase re-proves the public DNS, TLS, ingress, and external auth path through Haskell-only
+This phase proves the public DNS, TLS, ingress, and external auth path through Haskell-only
 surfaces. It preserves the existing public-host doctrine: external proof remains external-only,
 explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based closure remains
 unsupported.
@@ -30,8 +30,7 @@ unsupported.
 
 ### Objective
 
-Close the public DNS and ingress path again after the Haskell rewrite has replaced the runtime that
-owns it.
+Close the public DNS and ingress path on the Haskell runtime that owns it.
 
 ### Deliverables
 

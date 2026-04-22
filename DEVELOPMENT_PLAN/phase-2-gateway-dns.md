@@ -11,10 +11,8 @@
 
 This phase ports the gateway daemon, DNS inspection command, and related command surfaces to
 Haskell, preserves the formal model entrypoint, and keeps Route 53 write ownership inside the
-in-cluster gateway workload. The gateway runtime and DNS ownership remain closed on the Haskell
-stack. Sprint `2.1` is now done: the gateway image packaging and Harbor-backed dual-arch delivery
-contract are implemented in the worktree, the host linker prerequisite is cleared, and the named
-gateway validation surfaces have rerun successfully on the updated implementation.
+in-cluster gateway workload. It owns the gateway image packaging contract, Harbor-backed image
+delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint.
 
 ## Current Baseline In Worktree
 
@@ -36,8 +34,8 @@ gateway validation surfaces have rerun successfully on the updated implementatio
 - Gateway and TLA+ proof live in the Haskell test suites under `test/`.
 - `src/Prodbox/TestPlan.hs` maps the gateway validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
-- The canonical host-side build, doctrine gate, and Phase `1` validation reruns now pass on this
-  host after restoring the missing ncurses development linker dependency.
+- The canonical closure gates for this phase are `prodbox dns check`, the named gateway
+  integration validations, and `prodbox tla-check`.
 
 ## Sprint 2.1: Haskell Gateway Runtime and Command Surface ✅
 
@@ -103,11 +101,6 @@ container doctrine.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
-- The host linker prerequisite is cleared, and `./.build/prodbox dns check`,
-  `./.build/prodbox test integration gateway-daemon`, and
-  `./.build/prodbox test integration gateway-pods` now pass on this host, re-closing validation
-  items `3-7` on the updated gateway packaging path.
-
 ### Remaining Work
 
 None.
@@ -127,7 +120,7 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
 - `prodbox tla-check` remains part of the supported validation surface.
 - Gateway config generation still emits `dns_write_gate` for explicit public hostnames.
 - Route 53 write ownership remains single-writer under leader election.
-- Partition-heal and failover behavior are re-proved on the Haskell gateway.
+- Partition-heal and failover behavior are proved on the Haskell gateway.
 
 ### Validation
 

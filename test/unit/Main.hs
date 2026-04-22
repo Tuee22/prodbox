@@ -379,11 +379,36 @@ main = hspec $ do
                                       "tool_sudo",
                                       "tool_systemctl",
                                       "settings_object",
-                                      "tool_pulumi",
-                                      "tool_aws"
+                                      "aws_credentials_valid",
+                                      "pulumi_logged_in"
                                     ]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
+
+        it "gates AWS-backed named suites on validated access before validation bodies run" $ do
+            case testExecutionPlan (TestIntegration IntegrationPublicDns) of
+                testPlan ->
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan ->
+                            nativeIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["route53_accessible", "tool_dig"]
+                        DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
+
+            case testExecutionPlan (TestIntegration IntegrationDnsAws) of
+                testPlan ->
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan ->
+                            nativeIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["route53_accessible"]
+                        DelegatedSuite _ -> expectationFailure "expected native dns-aws plan"
+
+            case testExecutionPlan (TestIntegration IntegrationAwsIam) of
+                testPlan ->
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan ->
+                            nativeIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["aws_iam_harness_ready", "tool_aws"]
+                        DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
 
         it "keeps charts-vscode on the supported runtime bootstrap path" $ do
             case testExecutionPlan (TestIntegration IntegrationChartsVscode) of
@@ -402,8 +427,8 @@ main = hspec $ do
                                       "tool_sudo",
                                       "tool_systemctl",
                                       "settings_object",
-                                      "tool_pulumi",
-                                      "tool_aws",
+                                      "aws_credentials_valid",
+                                      "pulumi_logged_in",
                                       "tool_curl"
                                     ]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
@@ -425,6 +450,14 @@ main = hspec $ do
             rke2Source `shouldContain` "waitForHarborStableEndpoints repoRoot"
             rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
             rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
+
+        it "checks Pulumi login against the local MinIO backend path" $ do
+            repoRoot <- getCurrentDirectory
+            interpreterSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "EffectInterpreter.hs")
+
+            interpreterSource `shouldContain` "withMinioPortForward"
+            interpreterSource `shouldContain` "ensureMinioBackendBucket"
+            interpreterSource `shouldContain` "PULUMI_BACKEND_URL"
 
         it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
             case testExecutionPlan (TestIntegration IntegrationCli) of
@@ -477,6 +510,7 @@ main = hspec $ do
                       "tool_dhall",
                       "settings_loaded",
                       "settings_object",
+                      "aws_iam_harness_ready",
                       "kubeconfig_exists",
                       "kubeconfig_home_exists",
                       "rke2_config_exists",
@@ -513,7 +547,9 @@ main = hspec $ do
 
         it "keeps the expected dependency chains for infrastructure prerequisites" $ do
             effectNodePrerequisites (lookupPrerequisiteNode "aws_credentials_valid")
-                `shouldBe` ["settings_loaded"]
+                `shouldBe` ["settings_loaded", "tool_aws"]
+            effectNodePrerequisites (lookupPrerequisiteNode "aws_iam_harness_ready")
+                `shouldBe` []
             effectNodePrerequisites (lookupPrerequisiteNode "route53_accessible")
                 `shouldBe` ["aws_credentials_valid"]
             effectNodePrerequisites (lookupPrerequisiteNode "rke2_service_exists")
@@ -540,6 +576,7 @@ main = hspec $ do
             lookupPrerequisiteEffect "tool_dhall" `shouldBe` Validate (RequireTool "dhall" ["version"])
             lookupPrerequisiteEffect "settings_loaded" `shouldBe` Validate RequireSettings
             lookupPrerequisiteEffect "settings_object" `shouldBe` Validate RequireSettings
+            lookupPrerequisiteEffect "aws_iam_harness_ready" `shouldBe` Validate RequireAwsIamHarnessReady
             lookupPrerequisiteEffect "kubeconfig_exists" `shouldBe` Validate (RequireFileExists "/etc/rancher/rke2/rke2.yaml")
             lookupPrerequisiteEffect "kubeconfig_home_exists" `shouldBe` Validate RequireHomeKubeconfig
             lookupPrerequisiteEffect "rke2_config_exists" `shouldBe` Validate (RequireFileExists "/etc/rancher/rke2/config.yaml")
@@ -569,7 +606,8 @@ main = hspec $ do
                     Right
                         [ "aws_credentials_valid",
                           "route53_accessible",
-                          "settings_loaded"
+                          "settings_loaded",
+                          "tool_aws"
                         ]
             transitiveClosureIds ["infra_ready"] prerequisiteRegistry
                 `shouldBe`
@@ -586,6 +624,7 @@ main = hspec $ do
                           "settings_loaded",
                           "supported_ubuntu_2404",
                           "systemd_available",
+                          "tool_aws",
                           "tool_kubectl"
                         ]
 
@@ -876,6 +915,17 @@ main = hspec $ do
                 case result of
                     Left err -> err `shouldContain` "required for ZeroSSL ACME"
                     Right _ -> expectationFailure "expected validation failure"
+
+        it "fails fast with setup guidance when the repo Dhall config is missing" $
+            withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+                result <- validateAndLoadSettings tmpDir
+
+                case result of
+                    Left err -> do
+                        err `shouldContain` "Missing required repository config"
+                        err `shouldContain` (tmpDir </> "prodbox-config.dhall")
+                        err `shouldContain` "./.build/prodbox config setup"
+                    Right _ -> expectationFailure "expected missing-config failure"
 
 parseArgs :: [String] -> Either String Options
 parseArgs argv =

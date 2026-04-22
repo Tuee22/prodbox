@@ -13,6 +13,10 @@
   `prodbox-config.dhall` and decoded directly into Haskell settings.
 - `prodbox` must not search upward from the current working directory or prefer alternate config
   files.
+- Public `prodbox config setup` and public `prodbox aws ...` flows obtain temporary elevated AWS
+  credentials from interactive prompts; they must not rely on config-backed `aws_admin.*`.
+- `aws_admin.*` is the single stored-admin-credential exception and exists only for the native
+  `aws-iam` validation harness.
 - Stateful AWS validation uses explicit credentials rebuilt from decoded settings, not ambient host
   AWS CLI state or shared profile discovery.
 - Existing AWS resources are never valid mutation targets for supported `prodbox` integration
@@ -40,10 +44,11 @@ real AWS state, including:
 5. `prodbox test integration public-dns`
 6. `prodbox test integration aws-iam`
 7. The supporting `prodbox pulumi ...` and `prodbox aws ...` command surfaces those validations
-   rely on
+   rely on, plus the credential-boundary rules those validations depend on
 
 The public `prodbox config setup` and `prodbox aws ...` surfaces route through the native Haskell
-frontend and explicit AWS CLI subprocess environments.
+frontend and explicit AWS CLI subprocess environments, but only the native IAM validation harness
+may consume stored `aws_admin.*`.
 
 ## 2. Authentication Source And Storage Rules
 
@@ -69,7 +74,14 @@ Optional elevated validation fields:
 3. `aws_admin.session_token`
 4. `aws_admin.region`
 
-`aws_admin.*` is reserved for `prodbox aws *` flows and the dedicated IAM lifecycle validation.
+Stored admin credentials are otherwise forbidden. `aws_admin.*` is the one supported exception, and
+it is reserved for `./.build/prodbox test integration aws-iam` plus aggregate-harness execution of
+that suite.
+
+Public `prodbox config setup` and public `prodbox aws ...` commands must not consume
+`aws_admin.*` from config on the supported path; they prompt for temporary elevated credentials
+when needed.
+
 Supported non-interactive validation consumes `aws_admin.*` directly; missing elevated credentials
 must fail fast with an actionable config error rather than falling back to ambient AWS auth.
 
@@ -118,6 +130,8 @@ Before an AWS-mutating validation runs, the harness must prove:
 1. the system `aws` CLI exists when direct AWS CLI operations are required
 2. decoded settings define usable AWS authentication for the identity the validation will run under
 3. that identity can perform the lifecycle the validation owns
+4. for `aws-iam`, the native IAM harness config is complete enough to materialize operational
+   `aws.*` from `aws_admin.*` without falling back to pre-existing operational credentials
 
 ### 3.2 Required Check Semantics
 
@@ -129,6 +143,8 @@ The required checks map to:
 3. lifecycle-capability check:
    Route 53 validations must be able to create and fully own a fresh hosted-zone lifecycle;
    Pulumi-backed validations must be able to drive the canonical `prodbox pulumi` command surface
+4. native IAM harness check: `aws-iam` must fail before its validation body when `aws_admin.*` is
+   missing, partial, or paired with an otherwise incomplete harness config
 
 ### 3.3 No In-Harness Login
 
@@ -199,9 +215,10 @@ The IAM lifecycle validation uses the same repository-root Dhall configuration f
 credential section:
 
 1. `aws.*` remains the normal operational identity
-2. `aws_admin.*` is the elevated identity used only for `prodbox aws *` and
-   `prodbox test integration aws-iam`
+2. `aws_admin.*` is the elevated identity used only for `prodbox test integration aws-iam`
 3. the validation must fail fast when `aws_admin.*` is missing or partial
+4. public `prodbox config setup` and public `prodbox aws ...` commands remain outside this
+   config-backed test harness and use interactive temporary elevated credentials instead
 
 ## 5. Ownership And Cleanup
 

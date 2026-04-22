@@ -8,6 +8,8 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception
     ( IOException,
+      SomeException,
+      displayException,
       try,
     )
 import Control.Monad (foldM)
@@ -22,8 +24,15 @@ import Data.List (isInfixOf, sort)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import qualified Data.Text as Text
 import qualified Data.Vector as Vector
+import Prodbox.Aws
+    ( runAwsIamHarnessSetup,
+      runAwsIamHarnessTeardown,
+    )
 import Prodbox.BuildSupport
     ( canonicalOperatorBinaryPath,
+    )
+import Prodbox.CLI.Command
+    ( PolicyTier (PolicyFull),
     )
 import Prodbox.Dns (preferredPublicHostFqdn)
 import qualified Prodbox.Infra.AwsEksTestStack as AwsEks
@@ -83,20 +92,17 @@ runNativeValidation repoRoot environment validation = do
         ValidationDnsAws -> runDnsAwsValidation repoRoot
         ValidationAwsIam ->
             runSequentially
-                [ assertNativeCommandOutputContainsAll
-                    repoRoot
-                    environment
-                    ["aws", "setup", "--tier", "full"]
+                [ assertProducedOutputContainsAll
+                    "aws-iam harness setup --tier full"
+                    (runAwsIamHarnessSetup repoRoot PolicyFull)
                     ["IAM_USER=prodbox", "POLICY_TIER=full"],
-                  assertNativeCommandOutputContainsAll
-                    repoRoot
-                    environment
-                    ["aws", "teardown"]
+                  assertProducedOutputContainsAll
+                    "aws-iam harness teardown"
+                    (runAwsIamHarnessTeardown repoRoot)
                     ["IAM_USER=prodbox", "USER_DELETED="],
-                  assertNativeCommandOutputContainsAll
-                    repoRoot
-                    environment
-                    ["aws", "setup", "--tier", "full"]
+                  assertProducedOutputContainsAll
+                    "aws-iam harness setup --tier full"
+                    (runAwsIamHarnessSetup repoRoot PolicyFull)
                     ["IAM_USER=prodbox", "POLICY_TIER=full"]
                 ]
         ValidationAwsEks ->
@@ -578,6 +584,23 @@ runNativeCliCommandForExitCode repoRoot environment cliArgs = do
 assertNativeCommandOutputContainsAll :: FilePath -> [(String, String)] -> [String] -> [String] -> IO ExitCode
 assertNativeCommandOutputContainsAll repoRoot environment cliArgs expectedTexts = do
     assertCommandOutputContainsAll (nativeCliCommandSpec repoRoot environment cliArgs) expectedTexts
+
+assertProducedOutputContainsAll :: String -> IO String -> [String] -> IO ExitCode
+assertProducedOutputContainsAll label outputAction expectedTexts = do
+    outputResult <- try outputAction :: IO (Either SomeException String)
+    case outputResult of
+        Left err -> failWith ("`" ++ label ++ "` failed: " ++ displayException err)
+        Right output -> do
+            putStr output
+            if all (`isInfixOf` output) expectedTexts
+                then pure ExitSuccess
+                else
+                    failWith
+                        ( "`"
+                            ++ label
+                            ++ "` did not report all required output fragments: "
+                            ++ show expectedTexts
+                        )
 
 nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> CommandSpec
 nativeCliCommandSpec repoRoot environment cliArgs =

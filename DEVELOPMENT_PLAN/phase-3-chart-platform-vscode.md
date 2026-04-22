@@ -11,12 +11,9 @@
 
 This phase ports the chart platform and retained-storage orchestration to Haskell while preserving
 namespace-local stack composition, deterministic PV or PVC rebinding, and the supported
-cluster-backed `vscode` delivery model. The chart runtime remains closed on the Haskell stack.
-Sprint `3.2` is now done: `docker/nginx-oidc.Dockerfile` remains the permitted
-`nginx:1.25-alpine` exception, the Harbor-only plus dual-arch publication contract for
-`vscode-nginx` and the supported `vscode` dependency images is implemented in the worktree,
-configured ZeroSSL EAB credentials now project into cert-manager, and the named chart validation
-surfaces have rerun successfully on the updated implementation.
+cluster-backed `vscode` delivery model. It owns retained storage, Harbor-backed image sourcing for
+the supported chart stack, and the `vscode-nginx` image exception under the repository Docker
+doctrine.
 
 ## Current Baseline In Worktree
 
@@ -30,8 +27,8 @@ surfaces have rerun successfully on the updated implementation.
   now references Harbor-backed `vscode-nginx`, `code-server`, `keycloak`, and `postgres` images.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
-- The canonical host-side build, doctrine gate, and Phase `1` validation reruns now pass on this
-  host after restoring the missing ncurses development linker dependency.
+- The canonical closure gates for this phase are the named chart-platform and retained-storage
+  validation flows.
 
 ## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage ✅
 
@@ -139,10 +136,6 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestRunner.hs` now waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` during supported-runtime bootstrap and postflight
   before the external `charts-vscode` curl proof continues.
-- The host linker prerequisite is cleared, and `./.build/prodbox test integration charts-platform`
-  plus `./.build/prodbox test integration charts-vscode` now pass on this host, re-closing
-  validation items `1-4` on the updated Harbor-backed `vscode` delivery path.
-
 ### Remaining Work
 
 None.

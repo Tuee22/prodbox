@@ -11,11 +11,10 @@
 
 This phase closes the hard migration gap between parity and replacement. It ports lifecycle-critical
 paths to Haskell, removes Python Pulumi programs, and deletes Python-specific toolchain ownership
-from the repository. Those zero-Python outcomes remain done. Sprint `4.1` reopened on
-April 18, 2026 and is now done: the lifecycle doctrine is implemented in the worktree with
-Harbor-only workload sourcing, idempotent required-public-image population, first-class `amd64`
-plus `arm64` handling, mixed-arch-aware image publication, and a passing destructive lifecycle
-rerun on the updated implementation.
+from the repository. It owns Harbor-first lifecycle hardening, including the bootstrap exception
+for Harbor and the HA-chart workloads required to make Harbor's storage backend functional, YAML
+Pulumi definitions, and the repository-wide Python removal required for the supported Haskell
+path.
 
 ## Current Baseline In Worktree
 
@@ -36,31 +35,34 @@ rerun on the updated implementation.
 - `CheckCode.hs` runs `cabal build --builddir=.build all` without Python tooling.
 - All Python source (`src/prodbox/`), Python tests (`tests/`), Python type stubs (`typings/`),
   and Python packaging (`pyproject.toml`, `poetry.toml`, `.python-version`) have been deleted.
-- Harbor now installs before MinIO on the supported path, MinIO is deployed from Harbor-backed
-  image references, required public images are reconciled idempotently into Harbor, and custom
-  images publish through explicit dual-arch `buildx` flows.
-- The canonical host-side build, doctrine gate, and Phase `1` validation reruns now pass on this
-  host after restoring the missing ncurses development linker dependency.
+- The current worktree now implements the corrected bootstrap split: Harbor installs first, MinIO
+  bootstraps from public `quay.io/minio/*` refs so the local backend can come up, required public
+  images and custom images are then populated into Harbor, and MinIO is reconciled back onto
+  Harbor-backed refs for steady state.
+- The canonical closure gates for this phase are the lifecycle rerun, Pulumi validations, the
+  Harbor inventory and workload-source proofs, the bootstrap-source proof for Harbor and its
+  storage-backend prerequisites, and repository-wide Python-removal checks.
 
 ## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Lib/`, `src/Prodbox/TestRunner.hs`, `pulumi/home/Main.yaml`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
+**Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Lib/`, `src/Prodbox/TestRunner.hs`, `pulumi/home/Main.yaml`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
 Make the lifecycle-critical surfaces Haskell-only and close the Harbor-first multi-arch cluster
-image contract without reopening Python or duplicate runtime paths.
+image contract without reintroducing Python or duplicate runtime paths.
 
 ### Deliverables
 
 - The supported local lifecycle paths are Haskell-only.
 - Harbor is installed and reconciled as the canonical cluster registry.
-- Harbor is the only service allowed to bootstrap directly from Docker Hub.
-- Every other cluster deployment obtains its images from Harbor.
+- Harbor and the HA-chart workloads required to make Harbor's storage backend functional may
+  bootstrap from public container registries on the supported path.
+- Every later cluster deployment obtains its images from Harbor.
 - `prodbox` idempotently ensures required public images and all custom images are present in
-  Harbor before deployment.
+  Harbor after bootstrap and before those later deployments.
 - The supported lifecycle path publishes, mirrors, loads, or fetches both `amd64` and `arm64`
   image variants or manifests irrespective of local host architecture.
 - Mixed-arch clusters are supported on the canonical lifecycle, gateway, and chart-delivery path.
@@ -74,10 +76,12 @@ image contract without reopening Python or duplicate runtime paths.
 3. `prodbox test integration lifecycle`
 4. `prodbox rke2 delete --yes`
 5. `prodbox rke2 install`
-6. Harbor inventory proof: required public images and custom images exist in Harbor for both
-   `amd64` and `arm64`
-7. Deployment source proof: non-Harbor workloads reference Harbor-only images on the supported
-   path
+6. Bootstrap source proof: Harbor and the HA-chart workloads needed for Harbor storage-backend
+   readiness may pull from public registries on first bootstrap
+7. Harbor inventory proof: required public images and custom images exist in Harbor for both
+   `amd64` and `arm64` after bootstrap reconcile
+8. Deployment source proof: post-bootstrap non-exception workloads reference Harbor on the
+   supported path
 
 ### Current Validation State
 
@@ -90,7 +94,12 @@ image contract without reopening Python or duplicate runtime paths.
   `pulumi/aws-test/Main.yaml` consume those values as explicit stack config instead of
   `std:getenv`.
 - `mirrorClusterImagesOnce` now reconciles both the canonical required public images and the
-  non-Harbor images already running in the cluster into Harbor.
+  non-Harbor images already running in the cluster into Harbor, selecting from configured
+  candidate sources and retrying alternate upstreams when Harbor publication fails after manifest
+  inspection.
+- `runNativeInstall` in `src/Prodbox/CLI/Rke2.hs` now performs the bootstrap split explicitly:
+  public MinIO bootstrap first, Harbor population second, Harbor-backed MinIO steady-state
+  reconcile third.
 - The Harbor bootstrap path now waits for both the external `/readyz` endpoint and the registry
   `/v2/` endpoint on `127.0.0.1:30080` before attempting Docker login.
 - The Harbor bootstrap path now also requires six consecutive successful `/readyz` plus `/v2/`
@@ -107,18 +116,34 @@ image contract without reopening Python or duplicate runtime paths.
   or `--all`, never the invalid `-l ... --all` combination.
 - `pulumi/home/Main.yaml` and the chart platform now point supported shared infrastructure and app
   workloads at Harbor-backed image references.
+- `src/Prodbox/EffectInterpreter.hs` now validates the Pulumi-login prerequisite against the
+  canonical repo-backed MinIO backend by port-forwarding MinIO, ensuring the backend bucket
+  exists, and running `pulumi whoami` under the explicit backend environment used by the
+  supported lifecycle instead of ambient host Pulumi state.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration lifecycle` to an executable native
   validation flow in `src/Prodbox/TestValidation.hs`.
 - `prodbox rke2 delete --yes` now emits one summary-oriented cleanup narrative that reports AWS
   destroy disposition, local substrate cleanup, managed kubeconfig handling, and preserved roots
   without replaying successful Pulumi login output or uninstall-script trace noise.
-- The host linker prerequisite is cleared, and `cabal run --builddir=.build exe:prodbox -- test
-  integration lifecycle` now passes on this host, re-closing validation items `1-7` on the
-  updated Harbor-first lifecycle path.
+- `test/integration/cli/Main.hs` now proves the split on the built-frontend path by recording both
+  the public MinIO bootstrap refs, the publish-time fallback from
+  `public.ecr.aws/docker/library/postgres` to `docker.io/library/postgres`, and the later
+  Harbor-backed MinIO reconcile.
+- `test/unit/Main.hs` now proves that the Pulumi prerequisite uses `withMinioPortForward`,
+  `ensureMinioBackendBucket`, and `PULUMI_BACKEND_URL` on the supported path.
+- The latest reruns now pass `prodbox check-code`, `prodbox test unit`,
+  `prodbox test integration cli`, `prodbox test integration lifecycle`, `prodbox rke2 install`,
+  and the aggregate `prodbox test all` flow that exercises the destructive lifecycle rerun and
+  post-test Harbor restore on the corrected bootstrap order.
+- The same reruns also pass the dependent phase gates `prodbox test integration env` and
+  `prodbox test integration aws-iam`, so the corrected lifecycle order no longer blocks later
+  validation.
 
 ### Remaining Work
 
-None.
+None. The corrected Harbor/bootstrap split, alternate-source Harbor mirror retry, and the
+canonical repo-backed Pulumi prerequisite are implemented and revalidated through
+`prodbox rke2 install`, `prodbox test integration lifecycle`, and `prodbox test all`.
 
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
@@ -193,14 +218,14 @@ exists.
 
 - The repository no longer contains `src/prodbox/`, `tests/`, `typings/`, `pyproject.toml`,
   `poetry.toml`, `.python-version`, or any Python Pulumi program.
-- `prodbox check-code` remains the canonical doctrine gate and now passes on this host again.
+- `prodbox check-code` remains the canonical doctrine gate for this sprint.
 - Repository text search across the root guidance docs and governed Sprint `1.2` docs is aligned
   with the Haskell-only repository state.
 - `documents/engineering/pure_fp_standards.md` and
   `documents/engineering/refactoring_patterns.md` now describe Haskell-only purity, ADT, and
   boundary doctrine rather than Python-era examples.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is empty in `Pending Removal`
-  again.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is now empty; the
+  Python-removal portion owned by Sprint `4.3` remains closed.
 
 ### Remaining Work
 

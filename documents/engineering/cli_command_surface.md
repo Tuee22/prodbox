@@ -67,7 +67,9 @@ Top-level commands:
 | `prodbox config validate` | none | none |
 
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
-`config validate`. `prodbox config compile` is not part of the supported command surface.
+`config validate`. `prodbox config compile` is not part of the supported command surface. The
+supported public `config setup` path prompts for one temporary elevated AWS credential set when
+needed; stored `aws_admin.*` remains reserved for the native IAM test harness.
 
 ### `prodbox aws`
 
@@ -79,7 +81,9 @@ Top-level commands:
 | `prodbox aws check-quotas` | none | none |
 | `prodbox aws request-quotas` | none | `--tier` |
 
-`src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface.
+`src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
+is prompt-driven for temporary elevated AWS credentials; stored `aws_admin.*` is not part of the
+intended public operator flow.
 
 ### `prodbox host`
 
@@ -211,6 +215,8 @@ Named suite commands:
 - runs Haskell suites through `cabal test`
 - enforces prerequisite gates and runbook steps
 - applies the canonical aggregate ordering
+- keeps stored `aws_admin.*` confined to the native `aws-iam` harness rather than the public
+  command surface
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode` proof continues on the supported-runtime path

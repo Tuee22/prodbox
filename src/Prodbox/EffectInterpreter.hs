@@ -28,6 +28,13 @@ import Prodbox.EffectDAG
     ( EffectDAG (..),
       EffectNode (..),
     )
+import Prodbox.Infra.MinioBackend
+    ( ensureMinioBackendBucket,
+      minioBackendRegion,
+      pulumiBackendUrl,
+      readMinioCredentials,
+      withMinioPortForward,
+    )
 import Prodbox.Result
     ( Result (..),
     )
@@ -36,6 +43,8 @@ import Prodbox.Settings
       Credentials (..),
       Route53Section (..),
       ValidatedSettings (..),
+      loadConfigFile,
+      validateAwsBootstrapConfig,
       validateAndLoadSettings,
     )
 import Prodbox.Subprocess
@@ -202,6 +211,7 @@ runValidation context validation =
         RequireServiceExists serviceName -> requireServiceExists serviceName
         RequireServiceActive serviceName -> requireServiceActive serviceName
         RequireAwsCredentials -> requireAwsCredentials
+        RequireAwsIamHarnessReady -> requireAwsIamHarnessReady
         RequireRoute53Access -> requireRoute53Access
         RequirePulumiLogin -> requirePulumiLogin
         RequireKubectlClusterReachable -> requireKubectlClusterReachable
@@ -235,6 +245,15 @@ runValidation context validation =
             False -> do
                 maybeExecutable <- findExecutable toolName
                 pure (maybe False (const True) maybeExecutable)
+
+    hasHarnessAdminCredentials :: Credentials -> Bool
+    hasHarnessAdminCredentials credentials =
+        all
+            (not . Text.null . Text.strip)
+            [ access_key_id credentials,
+              secret_access_key credentials,
+              region credentials
+            ]
 
     requireFileExists :: FilePath -> IO (Result ())
     requireFileExists path = do
@@ -325,6 +344,22 @@ runValidation context validation =
                           commandWorkingDirectory = Just (interpreterRepoRoot context)
                         }
 
+    requireAwsIamHarnessReady :: IO (Result ())
+    requireAwsIamHarnessReady = do
+        configResult <- loadConfigFile (interpreterRepoRoot context)
+        pure $
+            case configResult of
+                Left err -> Failure err
+                Right config ->
+                    case validateAwsBootstrapConfig config of
+                        Left err -> Failure err
+                        Right () ->
+                            if hasHarnessAdminCredentials (aws_admin config)
+                                then Success ()
+                                else
+                                    Failure
+                                        "Native IAM validation requires aws_admin.access_key_id, aws_admin.secret_access_key, and aws_admin.region in prodbox-config.dhall."
+
     requireRoute53Access :: IO (Result ())
     requireRoute53Access = do
         settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
@@ -342,14 +377,28 @@ runValidation context validation =
                         }
 
     requirePulumiLogin :: IO (Result ())
-    requirePulumiLogin =
-        requireCapturedCommandSuccess False "Pulumi login check failed"
-            CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = ["whoami"],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just (interpreterRepoRoot context)
-                }
+    requirePulumiLogin = do
+        portForwardResult <-
+            withMinioPortForward $ \localPort -> do
+                credentialsResult <- readMinioCredentials
+                case credentialsResult of
+                    Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
+                    Right (accessKey, secretKey) -> do
+                        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
+                        case bucketResult of
+                            Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
+                            Right () -> do
+                                environment <- pulumiPrerequisiteEnvironment localPort accessKey secretKey
+                                requireCapturedCommandSuccess False "Pulumi login check failed"
+                                    CommandSpec
+                                        { commandPath = "pulumi",
+                                          commandArguments = ["whoami"],
+                                          commandEnvironment = Just environment,
+                                          commandWorkingDirectory = Just (interpreterRepoRoot context)
+                                        }
+        case portForwardResult of
+            Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
+            Right result -> pure result
 
     requireKubectlClusterReachable :: IO (Result ())
     requireKubectlClusterReachable =
@@ -375,6 +424,24 @@ runValidation context validation =
                         (Just "ubuntu", Just "24.04") -> Success ()
                         _ -> Failure "This suite requires Ubuntu 24.04 LTS."
                     )
+
+pulumiPrerequisiteEnvironment :: Int -> String -> String -> IO [(String, String)]
+pulumiPrerequisiteEnvironment localPort accessKey secretKey = do
+    currentEnv <- getEnvironment
+    let path = maybe "" id (lookup "PATH" currentEnv)
+        home = maybe "" id (lookup "HOME" currentEnv)
+    pure
+        [ ("AWS_ACCESS_KEY_ID", accessKey),
+          ("AWS_SECRET_ACCESS_KEY", secretKey),
+          ("AWS_REGION", minioBackendRegion),
+          ("AWS_DEFAULT_REGION", minioBackendRegion),
+          ("AWS_EC2_METADATA_DISABLED", "true"),
+          ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort),
+          ("PULUMI_CONFIG_PASSPHRASE", ""),
+          ("PATH", path),
+          ("HOME", home),
+          ("LANG", "C.UTF-8")
+        ]
 
 requireCapturedCommandSuccess :: Bool -> String -> CommandSpec -> IO (Result ())
 requireCapturedCommandSuccess echoOutput failureLabel spec = do

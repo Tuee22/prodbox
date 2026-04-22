@@ -34,8 +34,10 @@ Harbor registry details remain in [Local Registry Pipeline](./local_registry_pip
 ## 3. eDAG Contract
 
 `rke2 install` reconciles Harbor, retained storage, and MinIO using the Haskell lifecycle runtime.
-The Harbor portion of that lifecycle must reach a stable external-serving state before image mirror
-or MinIO install continues.
+The Harbor portion of that lifecycle must reach a stable external-serving state before public-image
+mirror, custom-image publication, or Harbor-backed steady-state workload reconcile continues. The
+bootstrap MinIO install that establishes the local backend may pull its chart images from public
+registries first.
 
 The retained-storage effect must reconcile:
 
@@ -46,7 +48,7 @@ The retained-storage effect must reconcile:
 3. `PersistentVolumeClaim` objects with explicit `volumeName` prebinding
 4. host storage directories rooted at `storage.manual_pv_host_root`
 5. Harbor external readiness plus stable `/readyz` and `/v2/` probes before image writes and
-   Harbor-backed MinIO install continue
+   Harbor-backed steady-state workload reconcile continue
 
 `rke2 delete` must preserve:
 

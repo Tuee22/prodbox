@@ -4,23 +4,25 @@
 **Supersedes**: N/A
 **Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md
 
-> **Purpose**: Define the test-only `aws_admin` credential harness and the supported way to populate
-> it in `prodbox-config.dhall`.
+> **Purpose**: Define the test-harness-only `aws_admin` exception in `prodbox-config.dhall` and the
+> supported way to populate and clear it.
 
 ---
 
 ## 1. Purpose And Scope
 
-The `aws_admin` section exists only for elevated administrative flows:
+The repository rule is: do not store admin credentials for ordinary operator flows. The one
+supported exception is `prodbox-config.dhall` `aws_admin.*`, and that exception exists only so the
+native IAM lifecycle validation can run non-interactively.
 
-1. `prodbox aws setup`
-2. `prodbox aws teardown`
-3. `prodbox aws check-quotas`
-4. `prodbox aws request-quotas`
-5. `./.build/prodbox test integration aws-iam`
+The `aws_admin` section exists only for:
 
-Normal runtime commands ignore `aws_admin.*`. The supported steady-state AWS credentials for normal
-`prodbox` operation live only in `aws.*`.
+1. `./.build/prodbox test integration aws-iam`
+2. `./.build/prodbox test all` when the aggregate runner reaches the native IAM suite
+
+Normal runtime commands use `aws.*`. Public `prodbox config setup` and public `prodbox aws ...`
+commands obtain temporary elevated credentials interactively and must not treat `aws_admin.*` as
+their supported credential source.
 
 ---
 
@@ -45,13 +47,14 @@ Rules:
 
 1. `access_key_id`, `secret_access_key`, and `region` must be set together or left empty together.
 2. `session_token` is optional.
-3. Empty `aws_admin.*` values are valid when you are not running admin flows.
+3. Empty `aws_admin.*` values are the normal steady state when you are not running the native IAM
+   lifecycle test harness.
 
 ---
 
 ## 3. How To Populate It
 
-Use one temporary elevated credential set from the AWS account:
+Populate `aws_admin.*` only when preparing the native IAM lifecycle test harness:
 
 1. preferred path: AWS console -> IAM -> Users -> temporary admin user -> Security credentials ->
    Create access key
@@ -61,17 +64,17 @@ Use one temporary elevated credential set from the AWS account:
 4. place the elevated key in `aws_admin.*`
 5. keep the normal operational key in `aws.*`
 6. run `./.build/prodbox config validate`
+7. run `./.build/prodbox test integration aws-iam`
+
+The native IAM suite fails in the Phase `1/2` prerequisite gate when `aws_admin.*` is missing,
+partial, or paired with an otherwise incomplete harness config.
 
 This split is deliberate:
 
 1. `aws.*` is the operational identity used by normal `prodbox` runtime
-2. `aws_admin.*` is the elevated identity used only when an admin lifecycle command or the IAM
-   lifecycle integration suite needs it
-
-When `aws_admin.*` is populated, `prodbox aws setup|teardown|check-quotas|request-quotas` and
-`./.build/prodbox test integration aws-iam` consume that config-backed harness directly.
-Interactive credential prompts are a fallback only when the admin harness is empty and the command
-is being driven with stdin available.
+2. `aws_admin.*` is the elevated identity used only by the native IAM lifecycle validation harness
+3. public onboarding and public `prodbox aws ...` commands still use temporary interactive prompts
+   when they need elevated credentials
 
 ---
 
@@ -79,7 +82,7 @@ is being driven with stdin available.
 
 Do not treat `aws_admin.*` as the default working credential source.
 
-After you finish the administrative task:
+After you finish the native IAM validation task:
 
 1. remove or blank `aws_admin.access_key_id`
 2. remove or blank `aws_admin.secret_access_key`

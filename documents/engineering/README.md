@@ -21,8 +21,8 @@ current Haskell-only repository contract rather than a mixed migration baseline.
 
 | Document | Purpose |
 |----------|---------|
-| [aws_account_setup_guide.md](./aws_account_setup_guide.md) | AWS account creation, hosted-zone preparation, and temporary elevated-key workflow for `prodbox config setup` |
-| [aws_admin_credentials.md](./aws_admin_credentials.md) | Test-only elevated `aws_admin` credential harness and lifecycle guidance |
+| [aws_account_setup_guide.md](./aws_account_setup_guide.md) | AWS account creation, hosted-zone preparation, and prompt-driven temporary elevated-key workflow for `prodbox config setup` |
+| [aws_admin_credentials.md](./aws_admin_credentials.md) | Test-harness-only `aws_admin` exception and lifecycle guidance |
 | [aws_test_environment.md](./aws_test_environment.md) | Shared AWS member-account, DNS, isolation, lifecycle, and auth doctrine for ephemeral multi-project testing |
 | [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL vs Let's Encrypt guidance for the interactive onboarding flow |
 | [dependency_management.md](./dependency_management.md) | Cabal- and toolchain-level dependency doctrine |

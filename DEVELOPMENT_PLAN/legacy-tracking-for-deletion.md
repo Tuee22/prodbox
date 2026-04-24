@@ -13,10 +13,9 @@
 ## Ledger Status
 
 As of April 23, 2026, the cleanup ledger is closed. The Python-removal portion remains complete,
-and the later non-Python cleanup owned by Sprint `3.3` and Sprint `4.1` / Sprint `4.2` has also
-landed: the shared `repmgr` plus `pgpool` application-database model is gone, the local-cluster
-`pulumi/home` ownership path is gone, and the Harbor bootstrap exception is narrowed to Harbor
-plus Harbor's storage backend only.
+and the later non-Python cleanup owned by Sprint `3.3` and Sprint `4.2` has landed: the retired
+root Pulumi-home residue and the legacy Bitnami shared-PostgreSQL Docker build artifacts are
+removed from the worktree.
 
 ## Pending Removal
 
@@ -26,8 +25,8 @@ None.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
-| Local-cluster supported ownership in `pulumi/home/Main.yaml` and the public `prodbox pulumi up|destroy|preview|refresh|stack-init` surface | Sprint `4.2` closure on April 23, 2026 | Pulumi is now reserved for true IaC surfaces such as the AWS validation resources; local-cluster platform and application deployment are fully owned by the Haskell lifecycle and chart runtime. |
-| Shared Bitnami `postgresql-ha` / `postgresql-repmgr` plus `pgpool` application-database doctrine | Sprint `3.3` closure on April 23, 2026 | Replaced by namespace-local Patroni-based Helm-managed PostgreSQL HA with exactly three replicas, synchronous replication, retained credentials, and no embedded chart-local PostgreSQL subcharts. |
+| Local-cluster supported ownership in `pulumi/home/Main.yaml` and the public `prodbox pulumi up|destroy|preview|refresh|stack-init` surface | Sprint `4.2` closure on April 23, 2026 | Pulumi is now reserved for true IaC surfaces such as the AWS validation resources; local-cluster platform and application deployment are fully owned by the Haskell lifecycle and chart runtime. The residual root `Pulumi.yaml` and `Pulumi.home.yaml` files were deleted in the Phase `6` cleanup closure on April 23, 2026. |
+| Shared Bitnami `postgresql-ha` / `postgresql-repmgr` plus `pgpool` application-database doctrine | Sprint `3.3` closure on April 23, 2026 | Replaced by namespace-local Patroni-based Helm-managed PostgreSQL HA with exactly three replicas, synchronous replication, retained credentials, and no embedded chart-local PostgreSQL subcharts. The residual Bitnami Docker build artifacts were deleted in the Phase `6` cleanup closure on April 23, 2026. |
 | Broader-than-target direct-public bootstrap image set in the lifecycle/runtime/docs | Sprint `4.1` closure on April 23, 2026 | The bootstrap exception now covers Harbor and Harbor's storage backend only before later Helm deployments switch to Harbor-backed image refs. |
 | Harbor-first bootstrap ordering in `src/Prodbox/CLI/Rke2.hs` that mirrored required public images before the backend was healthy and deployed MinIO from Harbor-backed refs | Sprint 4.1 implementation closure on April 21, 2026 | Replaced by public-registry MinIO bootstrap, post-bootstrap Harbor populate, and a Harbor-backed MinIO steady-state reconcile |
 | Python-era clean-room backlog through April 15, 2026 | Pre-rewrite baseline | Closed before the Haskell rewrite reopened this ledger on April 16, 2026 |

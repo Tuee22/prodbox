@@ -93,9 +93,12 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository state as of April 23, 2026 is Haskell-only and closes on the intended architecture:
+The repository state as of April 23, 2026 reaches the intended supported architecture: the
+supported surface is Haskell-only, the earlier unsupported cleanup residue is removed, and the
+legacy ledger is empty. The post-cleanup infrastructure-backed rerun on this workspace is still
+gated by missing repository-root config.
 
-### Haskell-Only Worktree
+### Supported Haskell Surface
 
 - The compiled `prodbox` binary, CLI frontend, lifecycle runtime, chart platform, gateway runtime,
   AWS integrations, and test harness live under `app/`, `src/Prodbox/`, `test/`,
@@ -117,18 +120,25 @@ The repository state as of April 23, 2026 is Haskell-only and closes on the inte
   `charts/keycloak-postgres/` now close on namespace-local Patroni PostgreSQL HA with three
   replicas, synchronous replication, retained credentials, deterministic manual-PV rebinding, and
   no embedded chart-local PostgreSQL subchart.
-- `src/Prodbox/CLI/Pulumi.hs` and `pulumi/aws-eks/Main.yaml` plus `pulumi/aws-test/Main.yaml`
-  retain Pulumi only for AWS validation IaC.
+- `src/Prodbox/CLI/Pulumi.hs` plus the stack-local YAML Pulumi definitions under
+  `pulumi/aws-eks/` and `pulumi/aws-test/` retain Pulumi only for AWS validation IaC.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
   own the aggregate reruns, named native validation flows, and destructive postflight restore
   path.
 
+### Post-Cleanup Validation Gate
+
+- The current workspace does not contain repository-root `prodbox-config.dhall`.
+- Config-gated commands such as `prodbox dns check`, `prodbox host public-edge`,
+  `prodbox test integration all`, and `prodbox test all` therefore stop at the intended
+  prerequisite boundary until operator config and the external validation environment are present.
+
 ### Interpretation
 
-The repository no longer carries `pulumi/home`, shared `pgpool` or `repmgr` application database
-ownership, or a broader-than-target Harbor bootstrap exception. The top-level plan and the phase
-documents now close on the same end state: Haskell-only runtime ownership, AWS-only Pulumi,
-Harbor-backed later workloads, and Patroni-based Helm PostgreSQL doctrine.
+The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
+application database ownership, or a broader-than-target Harbor bootstrap exception. The
+repository guidance and cleanup ledger are now aligned with that state. Remaining validation work
+on this checkout is environmental rather than implementation-driven.
 
 ## Haskell-Only Architecture by Surface
 
@@ -138,7 +148,7 @@ Harbor-backed later workloads, and Patroni-based Helm PostgreSQL doctrine.
 | Configuration and settings | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
-| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` | Phase 4 |
+| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
@@ -149,7 +159,7 @@ Harbor-backed later workloads, and Patroni-based Helm PostgreSQL doctrine.
 
 ## Current Execution State
 
-All phases are `Done`:
+Phase `6` remains `Active`; the other phases are `Done` on their supported surfaces:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, and the
@@ -160,7 +170,9 @@ All phases are `Done`:
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
   bootstrap exception, AWS-only Pulumi scope, and Python removal.
 - Phase 5 owns public-edge diagnostics and external proof.
-- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria.
+- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria, and
+  remains active until the post-cleanup rerun is repeated successfully from a configured
+  workspace on the final repository state.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
   credential proof harness.
 

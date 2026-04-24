@@ -6,7 +6,7 @@
 
 > **Purpose**: Project overview, installation guide, and documentation index for `prodbox`.
 
-Home Kubernetes cluster management with Pulumi.
+Home Kubernetes cluster management with a Haskell CLI and Pulumi-backed AWS validation stacks.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -24,6 +24,8 @@ validation environments.
 - The supported configuration contract is repository-root `prodbox-config.dhall` decoded directly
   into Haskell types. `prodbox-config.json` and `prodbox config compile` are not part of the
   supported interface.
+- The supported Pulumi scope is limited to the AWS validation stacks under `pulumi/aws-eks/` and
+  `pulumi/aws-test/`; local-cluster platform ownership does not use a root Pulumi project.
 
 The current repository baseline deploys and manages:
 

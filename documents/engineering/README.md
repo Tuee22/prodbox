@@ -17,6 +17,9 @@ tracked only in [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 The documents in this directory are stable doctrine and architecture references. They describe the
 current Haskell-only repository contract rather than a mixed migration baseline.
 
+Pulumi doctrine in this directory applies only to the AWS validation stacks under
+`pulumi/aws-eks/` and `pulumi/aws-test/`.
+
 ## Documents
 
 | Document | Purpose |

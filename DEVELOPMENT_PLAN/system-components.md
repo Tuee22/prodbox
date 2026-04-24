@@ -8,7 +8,9 @@
 > control surfaces, validation surfaces, and state or authority boundaries in the Haskell rewrite.
 
 The inventory documents the authoritative target Haskell-only architecture and the component
-boundaries that the phase documents reference.
+boundaries that the phase documents reference. When the cleanup ledger is non-empty,
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) tracks unsupported residue
+separately from this canonical target inventory.
 
 ## Haskell-Only Architecture
 
@@ -19,7 +21,7 @@ boundaries that the phase documents reference.
 | Settings and command runtime | Haskell effect, DAG, interpreter, prerequisite, result, subprocess, and domain modules | `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
 | Host and Kubernetes helpers | Haskell host and k8s modules | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` |
 | Container packaging and registry doctrine | Dockerfiles under `docker/`, Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, ordered public-image candidate retry during Harbor mirror publish, per-platform dual-arch publication plus manifest reconcile, and mixed-arch cluster reconcile | `docker/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` |
-| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions for true IaC AWS validation stacks, including stack-config synchronization for AWS validation inputs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` |
+| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions for true IaC AWS validation stacks, including stack-config synchronization for AWS validation inputs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` |
 | DNS inspection | Haskell DNS check module | `src/Prodbox/Dns.hs` |
 | Gateway runtime | Haskell daemon runtime with heartbeat, ownership, DNS write loops, REST server, HMAC signing, and single-stage `ubuntu:24.04` packaging with an official AWS CLI bundle per target architecture | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` |
 | Formal verification | Haskell TLA+ wrapper | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` |
@@ -132,7 +134,7 @@ boundaries that the phase documents reference.
 | Frontend container build | `docker/prodbox.Dockerfile` | Frontend image build owned by Phase `1`; single-stage `ubuntu:24.04` with a BuildKit-mounted `haskell:9.6.7-slim` toolchain context |
 | Gateway container build | `docker/gateway.Dockerfile` | Gateway image build owned by Phase `2`; single-stage `ubuntu:24.04` with a BuildKit-mounted `haskell:9.6.7-slim` toolchain context plus the official AWS CLI bundle keyed by `TARGETARCH` |
 | VS Code auth-proxy image build | `docker/nginx-oidc.Dockerfile` | Single-stage auth-proxy image build that may remain based on `nginx:1.25-alpine` |
-| Pulumi definitions | `Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (`runtime: yaml`) for true IaC AWS validation resources |
+| Pulumi definitions | `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (`runtime: yaml`) for true IaC AWS validation resources |
 | Engineering doctrine | `documents/engineering/` | Architecture and operator docs |
 | Development plan | `DEVELOPMENT_PLAN/` | Status, sequencing, and cleanup ownership |
 | Manual PV content root | Configured path, default `.data/` | PV contents only |

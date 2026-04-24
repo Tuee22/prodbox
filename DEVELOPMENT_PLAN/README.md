@@ -14,11 +14,18 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 23, 2026, Phases `0-7` are closed on their implemented repository surfaces. The
-supported architecture is Haskell-only, Pulumi is reserved for AWS validation IaC only, the chart
-platform uses namespace-local Patroni PostgreSQL HA for Helm-managed application data, and the
-Harbor bootstrap exception is limited to Harbor plus Harbor's storage backend before later Helm
-deployments switch to Harbor-backed image refs.
+As of April 23, 2026, Phases `0-5` and `7` are closed on their supported repository surfaces.
+Phase `6` remains `Active` only on its post-cleanup rerun surface: the supported architecture is
+Haskell-only, Pulumi is reserved for AWS validation IaC only, the chart platform uses
+namespace-local Patroni PostgreSQL HA for Helm-managed application data, the Harbor bootstrap
+exception is limited to Harbor plus Harbor's storage backend before later Helm deployments switch
+to Harbor-backed image refs, and the legacy cleanup residue tracked earlier in this phase is now
+removed.
+
+Phase `6` remains open in the current workspace because the final infrastructure-backed rerun has
+not been re-executed successfully on this exact checkout after cleanup. The repository root does
+not currently contain `prodbox-config.dhall`, so the config-gated closure commands fail fast at
+their expected prerequisite boundary before the AWS, DNS, and public-edge payloads begin.
 
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
@@ -29,14 +36,15 @@ inventory rather than in an ad hoc log here.
 The repository now contains:
 
 - one compiled Haskell `prodbox` binary owning the full supported command surface
-- one Haskell-owned CLI, config, lifecycle, Pulumi, gateway, chart, AWS, and test surface
+- one supported Haskell-owned CLI, config, lifecycle, Pulumi, gateway, chart, AWS, and test
+  surface
 - one direct `Dhall -> Haskell types` config contract rooted at operator-authored repository-root
   `prodbox-config.dhall`
 - one test-harness-only stored-admin-credential exception under `prodbox-config.dhall`
   `aws_admin.*`
 - one native validation harness for the named real-world proof surfaces behind
   `prodbox test integration ...`
-- one YAML Pulumi path retained only for the AWS validation stacks
+- two stack-local YAML Pulumi validation paths under `pulumi/aws-eks/` and `pulumi/aws-test/`
 - zero Python implementation, Python toolchain, or Python bridge artifacts in the repository
 - one cleanup ledger with no pending removal items
 
@@ -93,7 +101,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
-| 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
+| 6 | Final Clean-Room Rerun and Zero-Python Handoff | 🔄 Active | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: Phase `1` owns canonical Dockerfile placement, the direct-Dhall config
@@ -103,13 +111,15 @@ namespace-local Patroni PostgreSQL doctrine for Helm-managed application stacks.
 the Harbor-first lifecycle, the narrowed Harbor-plus-storage-backend bootstrap exception,
 AWS-only Pulumi scope, dual-arch publication, mixed-arch support, and Python removal. Phases
 `5-7` own public-host proof, the destructive clean-room rerun, and onboarding/IAM automation.
+Phase `6` remains active until the post-cleanup rerun is repeated successfully from a configured
+workspace on the final repository state.
 
 ## Current Plan Status
 
 As of April 23, 2026, the development plan is current against the repository worktree:
 
-- The repository is Haskell-only. Python source, Python packaging, Python tests, Python Pulumi
-  programs, Python type stubs, and Python bridge modules are removed.
+- The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
+  Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
 - The supported config contract is direct `Dhall -> Haskell types`; `prodbox-config.json` and
   `prodbox config compile` are not part of the supported path.
 - The public `config setup` and public `aws ...` surfaces use prompt-driven temporary elevated AWS
@@ -125,23 +135,26 @@ As of April 23, 2026, the development plan is current against the repository wor
 - The chart platform is Haskell-owned and now renders namespace-local Patroni PostgreSQL HA with
   exactly three replicas, synchronous replication, deterministic retained PV bindings, retained
   secret state, and no embedded chart-local PostgreSQL subcharts.
-- Pulumi is Haskell-orchestrated and retained only for the AWS validation stacks under
-  `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Main.yaml`.
+- The supported Pulumi path is Haskell-orchestrated and retained only for the AWS validation
+  stacks under `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and
+  `pulumi/aws-test/Pulumi.yaml` plus `pulumi/aws-test/Main.yaml`.
+- The earlier unsupported root `Pulumi.yaml` and `Pulumi.home.yaml` residue for the retired
+  local-cluster `pulumi/home` path is removed.
 - The canonical validation surfaces are `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- On April 23, 2026, the latest full rerun passed
-  `cabal build --builddir=.build all --ghc-options=-Werror`,
-  `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
-  `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
-  `./.build/prodbox tla-check`, `./.build/prodbox test integration charts-storage`,
-  `./.build/prodbox test integration charts-platform`,
-  `./.build/prodbox test integration charts-vscode`,
-  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration dns-aws`,
-  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
+- Phase `6` remains active because
+  the post-cleanup rerun on this checkout has not yet completed past the config prerequisite gate.
+- On April 23, 2026, the post-cleanup reruns passed
+  `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+  `./.build/prodbox test integration env`, and `./.build/prodbox tla-check`.
+- On the same April 23, 2026 workspace, `./.build/prodbox dns check`,
+  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
+  `./.build/prodbox test all` fail fast with the expected guidance because
+  `/home/matthewnowak/prodbox/prodbox-config.dhall` is absent.
 
 ## Exit Definition
 

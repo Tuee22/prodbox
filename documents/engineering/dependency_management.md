@@ -29,7 +29,8 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   writes. The supported custom-image publish path uses a host-network `docker-container` buildx
   builder so pushes to the canonical Harbor endpoint `127.0.0.1:30080` work from inside the
   builder.
-- Pulumi programs are YAML-based under `pulumi/` and do not introduce a Python runtime dependency.
+- Pulumi programs are YAML-based under `pulumi/aws-eks/` and `pulumi/aws-test/` only and do not
+  introduce a Python runtime dependency.
 
 ## 2. Lock File Policy
 

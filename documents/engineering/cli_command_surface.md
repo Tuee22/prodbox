@@ -129,6 +129,8 @@ without streaming raw uninstall-script trace output.
 `prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes` report one-line stack
 destroy disposition instead of replaying Pulumi login chatter on successful cleanup.
 
+No supported local-cluster platform or application deployment depends on a root Pulumi project.
+
 ### `prodbox dns`
 
 | Command | Arguments | Options |

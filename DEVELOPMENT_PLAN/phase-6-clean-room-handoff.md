@@ -5,16 +5,17 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md)
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
-> Haskell stack and an empty remaining Python-removal ledger.
+> Haskell stack and a final cleanup ledger with no unresolved supported-path residue.
 
 ## Phase Summary
 
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. Sprint `6.1` keeps the destructive operator flow closed on Haskell command paths.
-Sprint `6.2` keeps the repository handoff closed after Phase `7` onboarding and AWS
-administration surfaces land on Haskell-only paths and all Python artifacts leave the repository.
-It owns the destructive rerun contract, the final zero-Python handoff criteria, and the dependency
-between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
+Sprint `6.2` keeps the repository handoff open until Phase `7` onboarding and AWS administration
+surfaces are closed on Haskell-only paths, all Python artifacts are gone, and the final
+post-cleanup rerun is repeated on the final repository state. It owns the destructive rerun
+contract, the final zero-Python handoff criteria, and the dependency between those surfaces and
+the earlier lifecycle, gateway, chart, and AWS phases.
 
 ## Current Baseline In Worktree
 
@@ -26,7 +27,8 @@ between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for any remaining repository
-  residue; the zero-Python handoff owned here remains closed.
+  residue; it is now empty on the supported path.
+- Root guidance now aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
 
@@ -91,17 +93,17 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
 None. The clean-room rerun now closes through the aggregate suites; no remaining Phase `6`
 implementation work survives.
 
-## Sprint 6.2: Zero-Python Repository Handoff ✅
+## Sprint 6.2: Zero-Python Repository Handoff 🔄
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `src/`, `test/`, `pulumi/`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Close the rewrite with an empty Python-removal ledger and no supported-path Python artifacts left
-in the repository after the Phase `7` onboarding and AWS administration surfaces close on
-Haskell-only paths.
+Close the rewrite with no supported-path Python artifacts left in the repository and no remaining
+cleanup residue left in the legacy ledger after the Phase `7` onboarding and AWS administration
+surfaces close on Haskell-only paths.
 
 ### Deliverables
 
@@ -125,24 +127,29 @@ Haskell-only paths.
 
 ### Current Validation State
 
-- The repository filesystem remains Haskell-only. No supported-path Python implementation or
-  Python toolchain artifact survives.
+- The supported implementation surfaces remain Haskell-only. No supported-path Python
+  implementation or Python toolchain artifact survives.
 - The dead Python-era `DelegateToPython` request constructor and
   `supportedRuntimePythonPath` field are removed from `app/` and `src/`, so the zero-Python
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
-- Repository text search across the root guidance docs and governed Sprint `1.2` docs is aligned
-  with the Haskell-only repository and no longer depends on mixed-baseline wording.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is now empty, and the root
+  guidance set named in `Docs to update` is realigned to the current repository state.
 - The legacy ledger remains clear on Python-removal items.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, and `./.build/prodbox test all`.
+- On April 23, 2026, the post-cleanup reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+  `./.build/prodbox test integration env`, and `./.build/prodbox tla-check`.
+- On the same April 23, 2026 workspace, `./.build/prodbox dns check`,
+  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
+  `./.build/prodbox test all` fail fast with the expected setup guidance because repository-root
+  `prodbox-config.dhall` is absent.
 
 
 ### Remaining Work
 
-None. All Python source, Python packaging, Python tests, Python type stubs, Python Pulumi
-programs, Python bridge modules, and Python-era dispatch scaffolding have been removed. The
-repository is Haskell-only.
+- Re-execute the final infrastructure-backed rerun from a workspace that contains
+  repository-root `prodbox-config.dhall` plus the external prerequisites required by the AWS, DNS,
+  and public-edge validation surfaces.
 
 ## Documentation Requirements
 

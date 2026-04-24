@@ -27,8 +27,9 @@ and the repository no longer carries supported Python runtime ownership.
   inventory, and ordered upstream-candidate lists used during Harbor publication.
 - `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
-- `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Main.yaml` are the only supported Pulumi stack
-  programs; no supported local-cluster platform or application deployment depends on Pulumi.
+- `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
+  plus `pulumi/aws-test/Main.yaml` are the only supported Pulumi stack programs; no supported
+  local-cluster platform or application deployment depends on Pulumi.
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
@@ -97,7 +98,7 @@ None.
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
 **Status**: Done
-**Implementation**: `Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestPlan.hs`
+**Implementation**: `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestPlan.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -125,7 +126,8 @@ local-cluster supported ownership from the Pulumi path.
 
 ### Current Validation State
 
-- `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Main.yaml` are the retained AWS IaC programs.
+- `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
+  plus `pulumi/aws-test/Main.yaml` are the retained AWS IaC programs.
 - `src/Prodbox/CLI/Pulumi.hs` no longer exposes `up|preview|destroy|refresh|stack-init` for local
   cluster ownership; the public Pulumi surface is AWS-only.
 - The AWS validation stack inputs are synchronized through explicit Pulumi stack config written by
@@ -175,7 +177,9 @@ parity exists.
   `poetry.toml`, `.python-version`, or any Python Pulumi program.
 - `prodbox check-code` remains the canonical doctrine gate for this sprint.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now has no pending items.
+- The Python-removal portion of
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete; the remaining
+  open ledger items are non-Python residue owned by Sprint `3.3` and Sprint `4.2`.
 
 ### Remaining Work
 

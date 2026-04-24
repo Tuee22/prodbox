@@ -27,8 +27,8 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 - `test/` contains the Haskell unit and integration suites.
 - `prodbox-config.dhall` is decoded directly into Haskell types; `prodbox-config.json` is not part
   of the supported interface.
-- `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, and `pulumi/aws-test/Main.yaml` are the
-  supported Pulumi programs.
+- `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
+  plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.
 
 ## Git Workflow Policy
 

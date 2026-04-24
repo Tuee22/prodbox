@@ -1,4 +1,0 @@
-name: prodbox
-runtime: yaml
-main: pulumi/home/
-description: Home Kubernetes infrastructure with Pulumi

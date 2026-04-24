@@ -1,20 +1,20 @@
 module Main (main) where
 
-import Options.Applicative
-    ( customExecParser,
-      prefs,
-      showHelpOnEmpty,
-      showHelpOnError,
-    )
-import Prodbox.CLI.Command
-    ( CommandRequest (..),
-      GatewayCommand (..),
-      NativeCommand (..),
-    )
-import Prodbox.CLI.Parser
-    ( Options (..),
-      parserInfo,
-    )
+import Options.Applicative (
+    customExecParser,
+    prefs,
+    showHelpOnEmpty,
+    showHelpOnError,
+ )
+import Prodbox.CLI.Command (
+    CommandRequest (..),
+    GatewayCommand (..),
+    NativeCommand (..),
+ )
+import Prodbox.CLI.Parser (
+    Options (..),
+    parserInfo,
+ )
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot)
 import System.Exit (exitFailure, exitWith)

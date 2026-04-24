@@ -35,6 +35,7 @@ library
         Prodbox.Lib.ChartPlatform
         Prodbox.Lib.Storage
         Prodbox.Native
+        Prodbox.PostgresPlatform
         Prodbox.Prerequisite
         Prodbox.Repo
         Prodbox.Result

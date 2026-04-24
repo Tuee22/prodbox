@@ -1,21 +1,21 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Lib.Storage
-    ( ChartStorageBinding (..),
-      ChartStorageSpec (..),
-      chartStorageClassName,
-      chartStorageManifest,
-      defaultChartDataRootRelative,
-      renderStorageReport,
-      storageBinding,
-    )
+module Prodbox.Lib.Storage (
+    ChartStorageBinding (..),
+    ChartStorageSpec (..),
+    chartStorageClassName,
+    chartStorageManifest,
+    defaultChartDataRootRelative,
+    renderStorageReport,
+    storageBinding,
+)
 where
 
-import Data.Aeson
-    ( Value,
-      object,
-      (.=),
-    )
+import Data.Aeson (
+    Value,
+    object,
+    (.=),
+ )
 import System.FilePath ((</>))
 
 chartStorageClassName :: String
@@ -25,32 +25,32 @@ defaultChartDataRootRelative :: FilePath
 defaultChartDataRootRelative = ".data"
 
 data ChartStorageSpec = ChartStorageSpec
-    { chartStorageSpecStatefulSetName :: String,
-      chartStorageSpecPersistentVolumeClaimName :: String,
-      chartStorageSpecStorageSize :: String,
-      chartStorageSpecOrdinal :: Int,
-      chartStorageSpecClaimSuffix :: String
+    { chartStorageSpecStatefulSetName :: String
+    , chartStorageSpecPersistentVolumeClaimName :: String
+    , chartStorageSpecStorageSize :: String
+    , chartStorageSpecOrdinal :: Int
+    , chartStorageSpecClaimSuffix :: String
     }
     deriving (Eq, Show)
 
 data ChartStorageBinding = ChartStorageBinding
-    { chartStorageBindingStatefulSetName :: String,
-      chartStorageBindingReleaseName :: String,
-      chartStorageBindingPersistentVolumeName :: String,
-      chartStorageBindingPersistentVolumeClaimName :: String,
-      chartStorageBindingStorageSize :: String,
-      chartStorageBindingHostPath :: FilePath,
-      chartStorageBindingOrdinal :: Int,
-      chartStorageBindingClaimSuffix :: String
+    { chartStorageBindingStatefulSetName :: String
+    , chartStorageBindingReleaseName :: String
+    , chartStorageBindingPersistentVolumeName :: String
+    , chartStorageBindingPersistentVolumeClaimName :: String
+    , chartStorageBindingStorageSize :: String
+    , chartStorageBindingHostPath :: FilePath
+    , chartStorageBindingOrdinal :: Int
+    , chartStorageBindingClaimSuffix :: String
     }
     deriving (Eq, Show)
 
 storageBinding :: FilePath -> String -> String -> ChartStorageSpec -> ChartStorageBinding
 storageBinding manualPvRoot namespace releaseName spec =
     ChartStorageBinding
-        { chartStorageBindingStatefulSetName = chartStorageSpecStatefulSetName spec,
-          chartStorageBindingReleaseName = releaseName,
-          chartStorageBindingPersistentVolumeName =
+        { chartStorageBindingStatefulSetName = chartStorageSpecStatefulSetName spec
+        , chartStorageBindingReleaseName = releaseName
+        , chartStorageBindingPersistentVolumeName =
             "prodbox-chart-"
                 ++ namespace
                 ++ "-"
@@ -60,18 +60,18 @@ storageBinding manualPvRoot namespace releaseName spec =
                 ++ "-"
                 ++ show (chartStorageSpecOrdinal spec)
                 ++ "-"
-                ++ chartStorageSpecClaimSuffix spec,
-          chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec,
-          chartStorageBindingStorageSize = chartStorageSpecStorageSize spec,
-          chartStorageBindingHostPath =
+                ++ chartStorageSpecClaimSuffix spec
+        , chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec
+        , chartStorageBindingStorageSize = chartStorageSpecStorageSize spec
+        , chartStorageBindingHostPath =
             manualPvRoot
                 </> namespace
                 </> releaseName
                 </> chartStorageSpecStatefulSetName spec
                 </> show (chartStorageSpecOrdinal spec)
-                </> chartStorageSpecClaimSuffix spec,
-          chartStorageBindingOrdinal = chartStorageSpecOrdinal spec,
-          chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
+                </> chartStorageSpecClaimSuffix spec
+        , chartStorageBindingOrdinal = chartStorageSpecOrdinal spec
+        , chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
         }
 
 renderStorageReport :: [ChartStorageBinding] -> [String]
@@ -79,32 +79,32 @@ renderStorageReport bindings =
     concatMap renderBinding bindings
   where
     renderBinding binding =
-        [ "STORAGE_BINDING",
-          "RELEASE=" ++ chartStorageBindingReleaseName binding,
-          "STATEFULSET=" ++ chartStorageBindingStatefulSetName binding,
-          "ORDINAL=" ++ show (chartStorageBindingOrdinal binding),
-          "CLAIM=" ++ chartStorageBindingClaimSuffix binding,
-          "PV=" ++ chartStorageBindingPersistentVolumeName binding,
-          "PVC=" ++ chartStorageBindingPersistentVolumeClaimName binding,
-          "HOST_PATH=" ++ chartStorageBindingHostPath binding
+        [ "STORAGE_BINDING"
+        , "RELEASE=" ++ chartStorageBindingReleaseName binding
+        , "STATEFULSET=" ++ chartStorageBindingStatefulSetName binding
+        , "ORDINAL=" ++ show (chartStorageBindingOrdinal binding)
+        , "CLAIM=" ++ chartStorageBindingClaimSuffix binding
+        , "PV=" ++ chartStorageBindingPersistentVolumeName binding
+        , "PVC=" ++ chartStorageBindingPersistentVolumeClaimName binding
+        , "HOST_PATH=" ++ chartStorageBindingHostPath binding
         ]
 
 chartStorageManifest :: String -> String -> [ChartStorageBinding] -> String -> Value
 chartStorageManifest namespace rootChart bindings nodeHostname =
     object
-        [ "apiVersion" .= ("v1" :: String),
-          "kind" .= ("List" :: String),
-          "items" .= (namespaceItem : storageClassItem : concatMap bindingItems bindings)
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("List" :: String)
+        , "items" .= (namespaceItem : storageClassItem : concatMap bindingItems bindings)
         ]
   where
     namespaceItem =
         object
-            [ "apiVersion" .= ("v1" :: String),
-              "kind" .= ("Namespace" :: String),
-              "metadata"
+            [ "apiVersion" .= ("v1" :: String)
+            , "kind" .= ("Namespace" :: String)
+            , "metadata"
                 .= object
-                    [ "name" .= namespace,
-                      "labels"
+                    [ "name" .= namespace
+                    , "labels"
                         .= object
                             [ "prodbox.io/chart-root" .= rootChart
                             ]
@@ -113,57 +113,57 @@ chartStorageManifest namespace rootChart bindings nodeHostname =
 
     storageClassItem =
         object
-            [ "apiVersion" .= ("storage.k8s.io/v1" :: String),
-              "kind" .= ("StorageClass" :: String),
-              "metadata"
+            [ "apiVersion" .= ("storage.k8s.io/v1" :: String)
+            , "kind" .= ("StorageClass" :: String)
+            , "metadata"
                 .= object
-                    [ "name" .= chartStorageClassName,
-                      "labels"
+                    [ "name" .= chartStorageClassName
+                    , "labels"
                         .= object
                             [ "prodbox.io/chart-platform" .= ("true" :: String)
                             ]
-                    ],
-              "provisioner" .= ("kubernetes.io/no-provisioner" :: String),
-              "reclaimPolicy" .= ("Retain" :: String),
-              "volumeBindingMode" .= ("WaitForFirstConsumer" :: String),
-              "allowVolumeExpansion" .= True
+                    ]
+            , "provisioner" .= ("kubernetes.io/no-provisioner" :: String)
+            , "reclaimPolicy" .= ("Retain" :: String)
+            , "volumeBindingMode" .= ("WaitForFirstConsumer" :: String)
+            , "allowVolumeExpansion" .= True
             ]
 
     bindingItems binding =
         [ object
-            [ "apiVersion" .= ("v1" :: String),
-              "kind" .= ("PersistentVolume" :: String),
-              "metadata"
+            [ "apiVersion" .= ("v1" :: String)
+            , "kind" .= ("PersistentVolume" :: String)
+            , "metadata"
                 .= object
-                    [ "name" .= chartStorageBindingPersistentVolumeName binding,
-                      "labels"
+                    [ "name" .= chartStorageBindingPersistentVolumeName binding
+                    , "labels"
                         .= object
-                            [ "prodbox.io/chart-root" .= rootChart,
-                              "prodbox.io/chart-namespace" .= namespace,
-                              "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
+                            [ "prodbox.io/chart-root" .= rootChart
+                            , "prodbox.io/chart-namespace" .= namespace
+                            , "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
                             ]
-                    ],
-              "spec"
+                    ]
+            , "spec"
                 .= object
                     [ "capacity"
                         .= object
                             [ "storage" .= chartStorageBindingStorageSize binding
-                            ],
-                      "volumeMode" .= ("Filesystem" :: String),
-                      "accessModes" .= ["ReadWriteOnce" :: String],
-                      "persistentVolumeReclaimPolicy" .= ("Retain" :: String),
-                      "storageClassName" .= chartStorageClassName,
-                      "claimRef"
+                            ]
+                    , "volumeMode" .= ("Filesystem" :: String)
+                    , "accessModes" .= ["ReadWriteOnce" :: String]
+                    , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
+                    , "storageClassName" .= chartStorageClassName
+                    , "claimRef"
                         .= object
-                            [ "namespace" .= namespace,
-                              "name" .= chartStorageBindingPersistentVolumeClaimName binding
-                            ],
-                      "hostPath"
+                            [ "namespace" .= namespace
+                            , "name" .= chartStorageBindingPersistentVolumeClaimName binding
+                            ]
+                    , "hostPath"
                         .= object
-                            [ "path" .= chartStorageBindingHostPath binding,
-                              "type" .= ("DirectoryOrCreate" :: String)
-                            ],
-                      "nodeAffinity"
+                            [ "path" .= chartStorageBindingHostPath binding
+                            , "type" .= ("DirectoryOrCreate" :: String)
+                            ]
+                    , "nodeAffinity"
                         .= object
                             [ "required"
                                 .= object
@@ -171,9 +171,9 @@ chartStorageManifest namespace rootChart bindings nodeHostname =
                                         .= [ object
                                                 [ "matchExpressions"
                                                     .= [ object
-                                                            [ "key" .= ("kubernetes.io/hostname" :: String),
-                                                              "operator" .= ("In" :: String),
-                                                              "values" .= [nodeHostname]
+                                                            [ "key" .= ("kubernetes.io/hostname" :: String)
+                                                            , "operator" .= ("In" :: String)
+                                                            , "values" .= [nodeHostname]
                                                             ]
                                                        ]
                                                 ]
@@ -181,27 +181,27 @@ chartStorageManifest namespace rootChart bindings nodeHostname =
                                     ]
                             ]
                     ]
-            ],
-          object
-            [ "apiVersion" .= ("v1" :: String),
-              "kind" .= ("PersistentVolumeClaim" :: String),
-              "metadata"
+            ]
+        , object
+            [ "apiVersion" .= ("v1" :: String)
+            , "kind" .= ("PersistentVolumeClaim" :: String)
+            , "metadata"
                 .= object
-                    [ "name" .= chartStorageBindingPersistentVolumeClaimName binding,
-                      "namespace" .= namespace,
-                      "labels"
+                    [ "name" .= chartStorageBindingPersistentVolumeClaimName binding
+                    , "namespace" .= namespace
+                    , "labels"
                         .= object
-                            [ "prodbox.io/chart-root" .= rootChart,
-                              "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
+                            [ "prodbox.io/chart-root" .= rootChart
+                            , "prodbox.io/statefulset" .= chartStorageBindingStatefulSetName binding
                             ]
-                    ],
-              "spec"
+                    ]
+            , "spec"
                 .= object
-                    [ "accessModes" .= ["ReadWriteOnce" :: String],
-                      "volumeMode" .= ("Filesystem" :: String),
-                      "storageClassName" .= chartStorageClassName,
-                      "volumeName" .= chartStorageBindingPersistentVolumeName binding,
-                      "resources"
+                    [ "accessModes" .= ["ReadWriteOnce" :: String]
+                    , "volumeMode" .= ("Filesystem" :: String)
+                    , "storageClassName" .= chartStorageClassName
+                    , "volumeName" .= chartStorageBindingPersistentVolumeName binding
+                    , "resources"
                         .= object
                             [ "requests"
                                 .= object

@@ -1,58 +1,59 @@
-module Prodbox.CLI.Parser
-    ( Options (..),
-      parserInfo,
-    )
+module Prodbox.CLI.Parser (
+    Options (..),
+    parserInfo,
+)
 where
 
 import Data.Version (showVersion)
-import Options.Applicative
-    ( Parser,
-      ParserInfo,
-      auto,
-      command,
-      eitherReader,
-      fullDesc,
-      help,
-      helper,
-      hsubparser,
-      info,
-      infoOption,
-      long,
-      many,
-      metavar,
-      option,
-      optional,
-      progDesc,
-      short,
-      strArgument,
-      strOption,
-      switch,
-      value,
-      (<**>)
-    )
+import Options.Applicative (
+    Parser,
+    ParserInfo,
+    auto,
+    command,
+    eitherReader,
+    fullDesc,
+    help,
+    helper,
+    hsubparser,
+    info,
+    infoOption,
+    long,
+    many,
+    metavar,
+    option,
+    optional,
+    progDesc,
+    short,
+    strArgument,
+    strOption,
+    switch,
+    value,
+    (<**>),
+ )
 import Paths_prodbox (version)
-import Prodbox.CLI.Command
-    ( AwsCommand (..),
-      ChartsCommand (..),
-      CommandRequest (..),
-      ConfigCommand (..),
-      CoverageFlags (..),
-      DnsCommand (..),
-      GatewayCommand (..),
-      HostCommand (..),
-      IntegrationSuite (..),
-      K8sCommand (..),
-      NativeCommand (..),
-      PolicyTier (..),
-      PulumiCommand (..),
-      Rke2Command (..),
-      TestCommand (..),
-      TestScope (..),
-    )
+import Prodbox.CLI.Command (
+    AwsCommand (..),
+    ChartsCommand (..),
+    CommandRequest (..),
+    ConfigCommand (..),
+    CoverageFlags (..),
+    DnsCommand (..),
+    GatewayCommand (..),
+    HostCommand (..),
+    IntegrationSuite (..),
+    K8sCommand (..),
+    NativeCommand (..),
+    PolicyTier (..),
+    PulumiCommand (..),
+    Rke2Command (..),
+    TestCommand (..),
+    TestScope (..),
+ )
+import Prodbox.K8s (defaultInfrastructureNamespaces)
 
 data Options = Options
-    { optVerbose :: Bool,
-      optRequest :: CommandRequest
+    { optVerbose :: Bool
+    , optRequest :: CommandRequest
     }
     deriving (Eq, Show)
 
@@ -94,7 +95,7 @@ commandParser =
             <> command "gateway" (info gatewayParser (progDesc "Gateway daemon operations"))
             <> command "host" (info hostParser (progDesc "Host prerequisite checks"))
             <> command "k8s" (info k8sParser (progDesc "Kubernetes health and log utilities"))
-            <> command "pulumi" (info pulumiParser (progDesc "Infrastructure deployment"))
+            <> command "pulumi" (info pulumiParser (progDesc "AWS validation infrastructure"))
             <> command "rke2" (info rke2Parser (progDesc "Local cluster lifecycle"))
             <> command "test" (info testParser (progDesc "Named test suites"))
             <> command "tla-check" (info (native NativeTlaCheck) (progDesc "Run TLA+ checks"))
@@ -111,7 +112,8 @@ coverageFlagsParser =
                 <> help "Enable coverage reporting for the selected test scope"
             )
         <*> optional
-            ( option auto
+            ( option
+                auto
                 ( long "cov-fail-under"
                     <> metavar "INTEGER"
                     <> help "Require a minimum coverage percentage"
@@ -193,7 +195,8 @@ rke2LogsParser =
     fmap
         (RunNative . NativeRke2 . Rke2Logs)
         ( optional
-            ( option auto
+            ( option
+                auto
                 ( long "lines"
                     <> short 'n'
                     <> metavar "INTEGER"
@@ -205,27 +208,11 @@ rke2LogsParser =
 pulumiParser :: Parser CommandRequest
 pulumiParser =
     hsubparser
-        ( command "up" (info pulumiYesParserUp (progDesc "Apply infrastructure changes"))
-            <> command "destroy" (info pulumiYesParserDestroy (progDesc "Destroy infrastructure"))
-            <> command "preview" (info (native (NativePulumi PulumiPreview)) (progDesc "Preview infrastructure changes"))
-            <> command "refresh" (info pulumiYesParserRefresh (progDesc "Refresh Pulumi state"))
-            <> command "stack-init" (info pulumiStackInitParser (progDesc "Initialize a Pulumi stack"))
-            <> command "eks-resources" (info (native (NativePulumi PulumiEksResources)) (progDesc "Provision or inspect EKS test stack"))
+        ( command "eks-resources" (info (native (NativePulumi PulumiEksResources)) (progDesc "Provision or inspect EKS test stack"))
             <> command "eks-destroy" (info pulumiYesParserEksDestroy (progDesc "Destroy EKS test stack"))
             <> command "test-resources" (info (native (NativePulumi PulumiTestResources)) (progDesc "Provision or inspect HA RKE2 test stack"))
             <> command "test-destroy" (info pulumiYesParserTestDestroy (progDesc "Destroy HA RKE2 test stack"))
         )
-
-pulumiYesParserUp :: Parser CommandRequest
-pulumiYesParserUp = fmap (RunNative . NativePulumi . PulumiUp) (yesSwitchParser "Skip confirmation prompts")
-
-pulumiYesParserDestroy :: Parser CommandRequest
-pulumiYesParserDestroy =
-    fmap (RunNative . NativePulumi . PulumiDestroy) (yesSwitchParser "Skip confirmation prompts")
-
-pulumiYesParserRefresh :: Parser CommandRequest
-pulumiYesParserRefresh =
-    fmap (RunNative . NativePulumi . PulumiRefresh) (yesSwitchParser "Skip confirmation prompts")
 
 pulumiYesParserEksDestroy :: Parser CommandRequest
 pulumiYesParserEksDestroy =
@@ -234,10 +221,6 @@ pulumiYesParserEksDestroy =
 pulumiYesParserTestDestroy :: Parser CommandRequest
 pulumiYesParserTestDestroy =
     fmap (RunNative . NativePulumi . PulumiTestDestroy) (yesSwitchParser "Skip confirmation prompts")
-
-pulumiStackInitParser :: Parser CommandRequest
-pulumiStackInitParser =
-    fmap (RunNative . NativePulumi . PulumiStackInit) (strArgument (metavar "STACK"))
 
 dnsParser :: Parser CommandRequest
 dnsParser = hsubparser (command "check" (info (native (NativeDns DnsCheck)) (progDesc "Inspect Route 53 state")))
@@ -256,7 +239,8 @@ k8sWaitParser =
         (\(timeoutSeconds, namespaces) -> RunNative (NativeK8s (K8sWait (maybe 300 id timeoutSeconds) (defaultNamespaces namespaces))))
         ( (,)
             <$> optional
-                ( option auto
+                ( option
+                    auto
                     ( long "timeout"
                         <> short 't'
                         <> metavar "INTEGER"
@@ -273,7 +257,8 @@ k8sLogsParser =
         ( (,)
             <$> manyStringsOption "namespace" 'n' "Namespace to get logs from"
             <*> optional
-                ( option auto
+                ( option
+                    auto
                     ( long "tail"
                         <> metavar "INTEGER"
                         <> help "Number of log lines per container"
@@ -376,7 +361,7 @@ yesSwitchParser helpText =
 defaultNamespaces :: [String] -> [String]
 defaultNamespaces namespaces =
     case namespaces of
-        [] -> ["metallb-system", "traefik-system", "cert-manager"]
+        [] -> defaultInfrastructureNamespaces
         _ -> namespaces
 
 tierOptionParser :: PolicyTier -> String -> Parser PolicyTier

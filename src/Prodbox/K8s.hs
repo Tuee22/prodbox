@@ -1,29 +1,29 @@
-module Prodbox.K8s
-    ( defaultInfrastructureNamespaces,
-      parseKubectlObjectNames,
-      runK8sCommand,
-    )
+module Prodbox.K8s (
+    defaultInfrastructureNamespaces,
+    parseKubectlObjectNames,
+    runK8sCommand,
+)
 where
 
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Prodbox.CLI.Command (K8sCommand (..))
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (EffectNode (..), fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffectDAG)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-      commandDisplay,
-      runStreamingCommand,
-    )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+    commandDisplay,
+    runStreamingCommand,
+ )
 import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
 
 defaultInfrastructureNamespaces :: [String]
-defaultInfrastructureNamespaces = ["metallb-system", "traefik-system", "cert-manager"]
+defaultInfrastructureNamespaces = ["metallb-system", "traefik-system", "cert-manager", "postgres-operator"]
 
 runK8sCommand :: FilePath -> K8sCommand -> IO ExitCode
 runK8sCommand repoRoot command =
@@ -68,7 +68,7 @@ listNamespacePods repoRoot namespace = do
             Failure err -> Left ("failed to start `kubectl get pods` for namespace `" ++ namespace ++ "`: " ++ err)
             Success output ->
                 case processExitCode output of
-                    ExitSuccess -> Right (map (\podName -> (namespace, podName)) (parseKubectlObjectNames (processStdout output)))
+                    ExitSuccess -> Right (map (namespacePod namespace) (parseKubectlObjectNames (processStdout output)))
                     ExitFailure code ->
                         Left
                             ( "`"
@@ -76,6 +76,9 @@ listNamespacePods repoRoot namespace = do
                                 ++ "` exited with code "
                                 ++ show code
                             )
+  where
+    namespacePod :: String -> String -> (String, String)
+    namespacePod namespaceName podName = (namespaceName, podName)
 
 streamPodLogs :: FilePath -> Int -> [(String, String)] -> IO ExitCode
 streamPodLogs repoRoot tailLines podRefs = go podRefs
@@ -87,10 +90,10 @@ streamPodLogs repoRoot tailLines podRefs = go podRefs
                 ( kubectlSpec
                     repoRoot
                     (Just namespace)
-                    [ "logs",
-                      podRef,
-                      "--all-containers=true",
-                      "--tail=" ++ show tailLines
+                    [ "logs"
+                    , podRef
+                    , "--all-containers=true"
+                    , "--tail=" ++ show tailLines
                     ]
                 )
         case commandResult of
@@ -103,10 +106,10 @@ streamPodLogs repoRoot tailLines podRefs = go podRefs
                             ( kubectlSpec
                                 repoRoot
                                 (Just namespace)
-                                [ "logs",
-                                  podRef,
-                                  "--all-containers=true",
-                                  "--tail=" ++ show tailLines
+                                [ "logs"
+                                , podRef
+                                , "--all-containers=true"
+                                , "--tail=" ++ show tailLines
                                 ]
                             )
                         ++ "` exited with code "
@@ -133,20 +136,20 @@ runK8sPrerequisites repoRoot =
 waitNode :: FilePath -> Int -> [String] -> EffectNode
 waitNode repoRoot timeout namespaces =
     EffectNode
-        { effectNodeId = "k8s_wait",
-          effectNodeDescription = "Wait for deployments to become available",
-          effectNodePrerequisites = k8sPrerequisiteRoots,
-          effectNodeEffect =
+        { effectNodeId = "k8s_wait"
+        , effectNodeDescription = "Wait for deployments to become available"
+        , effectNodePrerequisites = k8sPrerequisiteRoots
+        , effectNodeEffect =
             Sequence
                 [ RunCommand
                     ( kubectlSpec
                         repoRoot
                         (Just namespace)
-                        [ "wait",
-                          "--all",
-                          "--for=condition=available",
-                          "deployment",
-                          "--timeout=" ++ show timeout ++ "s"
+                        [ "wait"
+                        , "--all"
+                        , "--for=condition=available"
+                        , "deployment"
+                        , "--timeout=" ++ show timeout ++ "s"
                         ]
                     )
                 | namespace <- namespaces
@@ -159,10 +162,10 @@ k8sPrerequisiteRoots = ["k8s_cluster_reachable"]
 kubectlSpec :: FilePath -> Maybe String -> [String] -> CommandSpec
 kubectlSpec repoRoot maybeNamespace args =
     CommandSpec
-        { commandPath = "kubectl",
-          commandArguments = namespaceArgs ++ args,
-          commandEnvironment = Nothing,
-          commandWorkingDirectory = Just repoRoot
+        { commandPath = "kubectl"
+        , commandArguments = namespaceArgs ++ args
+        , commandEnvironment = Nothing
+        , commandWorkingDirectory = Just repoRoot
         }
   where
     namespaceArgs =

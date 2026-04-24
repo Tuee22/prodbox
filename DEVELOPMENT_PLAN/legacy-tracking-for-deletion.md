@@ -12,9 +12,11 @@
 
 ## Ledger Status
 
-As of April 21, 2026, `Pending Removal` remains empty. The reopened Phase `4`
-lifecycle-bootstrap cleanup and its validation closure are complete. Python implementation,
-Python toolchain ownership, and the earlier rewrite cleanup remain closed.
+As of April 23, 2026, the cleanup ledger is closed. The Python-removal portion remains complete,
+and the later non-Python cleanup owned by Sprint `3.3` and Sprint `4.1` / Sprint `4.2` has also
+landed: the shared `repmgr` plus `pgpool` application-database model is gone, the local-cluster
+`pulumi/home` ownership path is gone, and the Harbor bootstrap exception is narrowed to Harbor
+plus Harbor's storage backend only.
 
 ## Pending Removal
 
@@ -24,6 +26,9 @@ None.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| Local-cluster supported ownership in `pulumi/home/Main.yaml` and the public `prodbox pulumi up|destroy|preview|refresh|stack-init` surface | Sprint `4.2` closure on April 23, 2026 | Pulumi is now reserved for true IaC surfaces such as the AWS validation resources; local-cluster platform and application deployment are fully owned by the Haskell lifecycle and chart runtime. |
+| Shared Bitnami `postgresql-ha` / `postgresql-repmgr` plus `pgpool` application-database doctrine | Sprint `3.3` closure on April 23, 2026 | Replaced by namespace-local Patroni-based Helm-managed PostgreSQL HA with exactly three replicas, synchronous replication, retained credentials, and no embedded chart-local PostgreSQL subcharts. |
+| Broader-than-target direct-public bootstrap image set in the lifecycle/runtime/docs | Sprint `4.1` closure on April 23, 2026 | The bootstrap exception now covers Harbor and Harbor's storage backend only before later Helm deployments switch to Harbor-backed image refs. |
 | Harbor-first bootstrap ordering in `src/Prodbox/CLI/Rke2.hs` that mirrored required public images before the backend was healthy and deployed MinIO from Harbor-backed refs | Sprint 4.1 implementation closure on April 21, 2026 | Replaced by public-registry MinIO bootstrap, post-bootstrap Harbor populate, and a Harbor-backed MinIO steady-state reconcile |
 | Python-era clean-room backlog through April 15, 2026 | Pre-rewrite baseline | Closed before the Haskell rewrite reopened this ledger on April 16, 2026 |
 | `src/prodbox/**/*.py` Python implementation modules and `src/prodbox/py.typed` package marker | Sprint 4.3 | Deleted after Haskell parity reached for all supported surfaces |
@@ -31,7 +36,7 @@ None.
 | `typings/` Python type-stub inventory | Sprint 4.3 | Removed with Python runtime and mypy |
 | `pyproject.toml`, `poetry.toml`, `.python-version` | Sprint 4.3 | Root Python packaging and Poetry ownership removed |
 | Python-specific quality-tool ownership (`check_code.py`, `lint/`, ruff, mypy) | Sprint 4.3 | Replaced by Haskell `CheckCode.hs` |
-| Python Pulumi runtimes and stack programs (`Pulumi.yaml` Python runtime, `src/prodbox/infra/`, `pulumi/aws-eks/__main__.py`, `pulumi/aws-test/__main__.py`) | Sprint 4.2 | Replaced with YAML Pulumi definitions: `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` |
+| Python Pulumi runtimes and stack programs (`Pulumi.yaml` Python runtime, `src/prodbox/infra/`, `pulumi/aws-eks/__main__.py`, `pulumi/aws-test/__main__.py`) | Sprint 4.2 | Replaced with YAML Pulumi definitions for the retained AWS IaC surfaces: `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Main.yaml` |
 | Python CLI entrypoint and command-group ownership (`src/prodbox/cli/main.py`, `src/prodbox/cli/*.py`) | Sprint 4.3 | Haskell frontend owns the full command surface |
 | Python settings, ADT, DAG, interpreter, and subprocess ownership | Sprint 4.3 | Replaced by Haskell modules under `src/Prodbox/` |
 | Python local lifecycle and Harbor/local-registry helpers | Sprint 4.1 | `src/Prodbox/CLI/Rke2.hs` owns all lifecycle paths |

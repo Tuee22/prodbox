@@ -1,10 +1,10 @@
 {-# LANGUAGE DeriveFunctor #-}
 
-module Prodbox.Result
-    ( Result (..),
-      eitherToResult,
-      resultToEither,
-    )
+module Prodbox.Result (
+    Result (..),
+    eitherToResult,
+    resultToEither,
+)
 where
 
 data Result a

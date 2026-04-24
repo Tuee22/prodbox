@@ -1,56 +1,56 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Infra.MinioBackend
-    ( minioBackendBucket,
-      minioBackendLocalPort,
-      minioBackendRegion,
-      minioNamespace,
-      minioSecretName,
-      minioServiceName,
-      withMinioPortForward,
-      readMinioCredentials,
-      ensureMinioBackendBucket,
-      bucketObjectCount,
-      pulumiBackendUrl,
-      minioEndpointUrl,
-      resolveLocalKubeconfig,
-      minioAwsEnv,
-    )
+module Prodbox.Infra.MinioBackend (
+    minioBackendBucket,
+    minioBackendLocalPort,
+    minioBackendRegion,
+    minioNamespace,
+    minioSecretName,
+    minioServiceName,
+    withMinioPortForward,
+    readMinioCredentials,
+    ensureMinioBackendBucket,
+    bucketObjectCount,
+    pulumiBackendUrl,
+    minioEndpointUrl,
+    resolveLocalKubeconfig,
+    minioAwsEnv,
+)
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception
-    ( IOException,
-      bracket,
-      try,
-    )
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy.Char8 as BL8
+import Control.Exception (
+    IOException,
+    bracket,
+    try,
+ )
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+ )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Directory (doesFileExist)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO (Handle, hClose)
-import System.Process
-    ( CreateProcess (..),
-      ProcessHandle,
-      StdStream (..),
-      createProcess,
-      proc,
-      terminateProcess,
-      waitForProcess,
-    )
+import System.Process (
+    CreateProcess (..),
+    ProcessHandle,
+    StdStream (..),
+    createProcess,
+    proc,
+    terminateProcess,
+    waitForProcess,
+ )
 
 minioBackendBucket :: String
 minioBackendBucket = "prodbox-test-pulumi-backends"
@@ -75,9 +75,12 @@ minioEndpointUrl localPort = "http://127.0.0.1:" ++ show localPort
 
 pulumiBackendUrl :: Int -> String
 pulumiBackendUrl localPort =
-    "s3://" ++ minioBackendBucket
-        ++ "?region=" ++ minioBackendRegion
-        ++ "&endpoint=127.0.0.1:" ++ show localPort
+    "s3://"
+        ++ minioBackendBucket
+        ++ "?region="
+        ++ minioBackendRegion
+        ++ "&endpoint=127.0.0.1:"
+        ++ show localPort
         ++ "&disableSSL=true"
         ++ "&s3ForcePathStyle=true"
 
@@ -88,9 +91,9 @@ resolveLocalKubeconfig = do
     let candidates =
             [ path
             | Just path <-
-                [ kubeconfigEnv,
-                  fmap (</> ".kube" </> "config") homeDir,
-                  Just "/etc/rancher/rke2/rke2.yaml"
+                [ kubeconfigEnv
+                , fmap (</> ".kube" </> "config") homeDir
+                , Just "/etc/rancher/rke2/rke2.yaml"
                 ]
             ]
     findFirst candidates
@@ -105,9 +108,8 @@ kubectlEnv = do
     kubeconfigResult <- resolveLocalKubeconfig
     case kubeconfigResult of
         Left err -> pure (Left err)
-        Right kubeconfigPath -> do
-            baseEnv <- baseEnvironment
-            pure (Right (upsertEnv "KUBECONFIG" kubeconfigPath baseEnv))
+        Right kubeconfigPath ->
+            Right . upsertEnv "KUBECONFIG" kubeconfigPath <$> baseEnvironment
 
 baseEnvironment :: IO [(String, String)]
 baseEnvironment = do
@@ -131,21 +133,23 @@ withMinioPortForward action = do
         Right environment -> do
             let localPort = minioBackendLocalPort
                 portForwardProc =
-                    (proc "kubectl"
-                        [ "port-forward",
-                          "-n", minioNamespace,
-                          "svc/" ++ minioServiceName,
-                          show localPort ++ ":9000"
+                    ( proc
+                        "kubectl"
+                        [ "port-forward"
+                        , "-n"
+                        , minioNamespace
+                        , "svc/" ++ minioServiceName
+                        , show localPort ++ ":9000"
                         ]
                     )
-                    { std_out = CreatePipe,
-                      std_err = CreatePipe,
-                      env = Just environment,
-                      delegate_ctlc = False
-                    }
+                        { std_out = CreatePipe
+                        , std_err = CreatePipe
+                        , env = Just environment
+                        , delegate_ctlc = False
+                        }
             bracket
                 (try (createProcess portForwardProc) :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle)))
-                (\result ->
+                ( \result ->
                     case result of
                         Left _ -> pure ()
                         Right (_, stdoutHandle, stderrHandle, processHandle) -> do
@@ -154,7 +158,7 @@ withMinioPortForward action = do
                             maybe (pure ()) hClose stdoutHandle
                             maybe (pure ()) hClose stderrHandle
                 )
-                (\result ->
+                ( \result ->
                     case result of
                         Left exc -> pure (Left ("failed to start kubectl port-forward: " ++ show exc))
                         Right (_, _, _, _) -> do
@@ -180,11 +184,11 @@ isPortOpen port = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "bash",
-                  commandArguments =
-                    ["-c", "echo > /dev/tcp/127.0.0.1/" ++ show port],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "bash"
+                , commandArguments =
+                    ["-c", "echo > /dev/tcp/127.0.0.1/" ++ show port]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
                 }
     pure $
         case result of
@@ -209,14 +213,18 @@ readSecretField environment fieldName = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "kubectl",
-                  commandArguments =
-                    [ "get", "secret", minioSecretName,
-                      "-n", minioNamespace,
-                      "-o", "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
-                    ],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "get"
+                    , "secret"
+                    , minioSecretName
+                    , "-n"
+                    , minioNamespace
+                    , "-o"
+                    , "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Nothing
                 }
     case result of
         Failure err -> pure (Left ("failed to read MinIO secret field " ++ fieldName ++ ": " ++ err))
@@ -237,11 +245,11 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
     headResult <-
         captureCommand
             CommandSpec
-                { commandPath = "aws",
-                  commandArguments =
-                    ["--endpoint-url", endpoint, "s3api", "head-bucket", "--bucket", minioBackendBucket],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "aws"
+                , commandArguments =
+                    ["--endpoint-url", endpoint, "s3api", "head-bucket", "--bucket", minioBackendBucket]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Nothing
                 }
     case headResult of
         Failure err -> pure (Left ("failed to check MinIO bucket: " ++ err))
@@ -252,14 +260,17 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
                     createResult <-
                         captureCommand
                             CommandSpec
-                                { commandPath = "aws",
-                                  commandArguments =
-                                    [ "--endpoint-url", endpoint,
-                                      "s3api", "create-bucket",
-                                      "--bucket", minioBackendBucket
-                                    ],
-                                  commandEnvironment = Just environment,
-                                  commandWorkingDirectory = Nothing
+                                { commandPath = "aws"
+                                , commandArguments =
+                                    [ "--endpoint-url"
+                                    , endpoint
+                                    , "s3api"
+                                    , "create-bucket"
+                                    , "--bucket"
+                                    , minioBackendBucket
+                                    ]
+                                , commandEnvironment = Just environment
+                                , commandWorkingDirectory = Nothing
                                 }
                     case createResult of
                         Failure err -> pure (Left ("failed to create MinIO bucket: " ++ err))
@@ -276,14 +287,17 @@ bucketObjectCount localPort accessKey secretKey = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "aws",
-                  commandArguments =
-                    [ "--endpoint-url", endpoint,
-                      "s3api", "list-objects-v2",
-                      "--bucket", minioBackendBucket
-                    ],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "aws"
+                , commandArguments =
+                    [ "--endpoint-url"
+                    , endpoint
+                    , "s3api"
+                    , "list-objects-v2"
+                    , "--bucket"
+                    , minioBackendBucket
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Nothing
                 }
     case result of
         Failure err -> pure (Left ("failed to list MinIO bucket objects: " ++ err))
@@ -302,14 +316,14 @@ bucketObjectCount localPort accessKey secretKey = do
 
 minioAwsEnv :: String -> String -> [(String, String)]
 minioAwsEnv accessKey secretKey =
-    [ ("AWS_ACCESS_KEY_ID", accessKey),
-      ("AWS_SECRET_ACCESS_KEY", secretKey),
-      ("AWS_REGION", minioBackendRegion),
-      ("AWS_DEFAULT_REGION", minioBackendRegion),
-      ("AWS_EC2_METADATA_DISABLED", "true"),
-      ("PATH", ""),
-      ("HOME", ""),
-      ("LANG", "C.UTF-8")
+    [ ("AWS_ACCESS_KEY_ID", accessKey)
+    , ("AWS_SECRET_ACCESS_KEY", secretKey)
+    , ("AWS_REGION", minioBackendRegion)
+    , ("AWS_DEFAULT_REGION", minioBackendRegion)
+    , ("AWS_EC2_METADATA_DISABLED", "true")
+    , ("PATH", "")
+    , ("HOME", "")
+    , ("LANG", "C.UTF-8")
     ]
 
 trim :: String -> String

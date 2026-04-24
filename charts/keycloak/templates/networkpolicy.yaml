@@ -23,10 +23,15 @@ spec:
           port: 8080
   egress:
     - to:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              application: spilo
       ports:
         - protocol: TCP
           port: 5432
+    - to:
+        - podSelector: {}
+      ports:
         - protocol: TCP
           port: 8080
     - to:

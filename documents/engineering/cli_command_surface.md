@@ -47,13 +47,13 @@ Top-level commands:
 | `config` | Group | Dhall configuration management |
 | `host` | Group | Host prerequisite checks and public-edge diagnostics |
 | `rke2` | Group | Local cluster lifecycle |
-| `pulumi` | Group | Infrastructure deployment and AWS validation stacks |
+| `pulumi` | Group | AWS validation stack lifecycle |
 | `dns` | Group | Route 53 inspection |
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
 | `charts` | Group | Bespoke Helm chart lifecycle |
 | `test` | Group | Explicit named test suites |
-| `check-code` | Command | Haskell build and operator-binary sync gate |
+| `check-code` | Command | Formatter, lint, warning-clean build, and operator-binary sync gate |
 | `tla-check` | Command | TLA+ model checking via Docker |
 
 ## 3. Command Matrix
@@ -119,11 +119,6 @@ without streaming raw uninstall-script trace output.
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox pulumi up` | none | `--yes`, `-y` |
-| `prodbox pulumi destroy` | none | `--yes`, `-y` |
-| `prodbox pulumi preview` | none | none |
-| `prodbox pulumi refresh` | none | `--yes`, `-y` |
-| `prodbox pulumi stack-init` | `STACK` | none |
 | `prodbox pulumi eks-resources` | none | none |
 | `prodbox pulumi eks-destroy` | none | `--yes`, `-y` |
 | `prodbox pulumi test-resources` | none | none |
@@ -174,6 +169,11 @@ owns the daemon runtime.
 
 `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
 `src/Prodbox/Lib/Storage.hs` own the public chart surface.
+
+The supported chart doctrine does not permit embedded chart-local PostgreSQL subcharts.
+`keycloak-postgres` is an internal namespace-local Patroni dependency release, and chart deploy
+fails fast until `prodbox rke2 install` has reconciled the cluster-wide `postgres-operator`
+platform.
 
 ### `prodbox test`
 
@@ -230,6 +230,10 @@ Named suite commands:
 
 `src/Prodbox/CheckCode.hs` owns the public `check-code` entrypoint.
 
+The supported command runs Fourmolu, HLint, warning-clean `cabal build`, and the final operator
+binary sync. Detailed Haskell quality doctrine is defined in
+[Haskell Code Guide](./haskell_code_guide.md).
+
 ### `prodbox tla-check`
 
 | Command | Arguments | Options |
@@ -243,3 +247,4 @@ Named suite commands:
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Code Quality Doctrine](./code_quality.md)
+- [Haskell Code Guide](./haskell_code_guide.md)

@@ -1,95 +1,95 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Aws
-    ( buildIamPolicyDocument,
-      buildIamPolicyJson,
-      runAwsCommand,
-      runAwsIamHarnessSetup,
-      runAwsIamHarnessTeardown,
-      runInteractiveConfigSetup,
-    )
+module Prodbox.Aws (
+    buildIamPolicyDocument,
+    buildIamPolicyJson,
+    runAwsCommand,
+    runAwsIamHarnessSetup,
+    runAwsIamHarnessTeardown,
+    runInteractiveConfigSetup,
+)
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception
-    ( Exception,
-      IOException,
-      SomeException,
-      bracket_,
-      displayException,
-      throwIO,
-      try,
-    )
+import Control.Exception (
+    Exception,
+    IOException,
+    SomeException,
+    bracket_,
+    displayException,
+    throwIO,
+    try,
+ )
 import Control.Monad (forM, unless, when)
-import Data.Aeson
-    ( Array,
-      Object,
-      Value (..),
-      eitherDecode,
-      object,
-      (.=),
-    )
-import qualified Data.Aeson.Encode.Pretty as AesonPretty
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import Data.Char (isAlphaNum, isSpace, toLower)
-import Data.List
-    ( findIndex,
-      intercalate,
-      isPrefixOf,
-      transpose,
-    )
-import qualified Data.Text as Text
+import Data.Aeson (
+    Array,
+    Object,
+    Value (..),
+    eitherDecode,
+    object,
+    (.=),
+ )
+import Data.Aeson.Encode.Pretty qualified as AesonPretty
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (isAlphaNum, isAsciiLower, isAsciiUpper, isSpace, toLower)
+import Data.List (
+    findIndex,
+    intercalate,
+    isPrefixOf,
+    transpose,
+ )
 import Data.Text (Text)
-import qualified Data.Vector as Vector
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
 import Numeric.Natural (Natural)
-import Prodbox.CLI.Command
-    ( AwsCommand (..),
-      PolicyTier (..),
-    )
-import Prodbox.Repo
-    ( ConfigPaths (..),
-      canonicalConfigPaths,
-    )
+import Prodbox.CLI.Command (
+    AwsCommand (..),
+    PolicyTier (..),
+ )
+import Prodbox.Repo (
+    ConfigPaths (..),
+    canonicalConfigPaths,
+ )
 import Prodbox.Result (Result (..))
-import Prodbox.Settings
-    ( AcmeSection (..),
-      ConfigFile (..),
-      Credentials (..),
-      DeploymentSection (..),
-      DomainSection (..),
-      Route53Section (..),
-      StorageSection (..),
-      defaultConfigFile,
-      loadConfigFile,
-      renderConfigDhall,
-      validateAwsBootstrapConfig,
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
-import System.Directory
-    ( doesFileExist,
-      findExecutable,
-    )
+import Prodbox.Settings (
+    AcmeSection (..),
+    ConfigFile (..),
+    Credentials (..),
+    DeploymentSection (..),
+    DomainSection (..),
+    Route53Section (..),
+    StorageSection (..),
+    defaultConfigFile,
+    loadConfigFile,
+    renderConfigDhall,
+    validateAndLoadSettings,
+    validateAwsBootstrapConfig,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
+import System.Directory (
+    doesFileExist,
+    findExecutable,
+ )
 import System.Environment (getEnvironment)
-import System.Exit
-    ( ExitCode (ExitFailure, ExitSuccess),
-    )
-import System.IO
-    ( hFlush,
-      hGetEcho,
-      hIsTerminalDevice,
-      hPutStrLn,
-      hSetEcho,
-      stderr,
-      stdin,
-      stdout,
-    )
+import System.Exit (
+    ExitCode (ExitFailure, ExitSuccess),
+ )
+import System.IO (
+    hFlush,
+    hGetEcho,
+    hIsTerminalDevice,
+    hPutStrLn,
+    hSetEcho,
+    stderr,
+    stdin,
+    stdout,
+ )
 import System.IO.Error (isEOFError)
 
 newtype AwsError = AwsError String
@@ -99,70 +99,70 @@ instance Exception AwsError where
     displayException (AwsError message) = message
 
 data RegionChoice = RegionChoice
-    { regionChoiceName :: Text,
-      regionChoiceOptInStatus :: Text
+    { regionChoiceName :: Text
+    , regionChoiceOptInStatus :: Text
     }
     deriving (Eq, Show)
 
 data HostedZoneChoice = HostedZoneChoice
-    { hostedZoneChoiceId :: Text,
-      hostedZoneChoiceName :: Text
+    { hostedZoneChoiceId :: Text
+    , hostedZoneChoiceName :: Text
     }
     deriving (Eq, Show)
 
 data QuotaSpec = QuotaSpec
-    { quotaDisplayName :: Text,
-      quotaServiceCode :: Text,
-      quotaCode :: Text,
-      quotaTargetValue :: Double
+    { quotaDisplayName :: Text
+    , quotaServiceCode :: Text
+    , quotaCode :: Text
+    , quotaTargetValue :: Double
     }
     deriving (Eq, Show)
 
 data QuotaStatus = QuotaStatus
-    { quotaStatusDisplayName :: Text,
-      quotaStatusServiceCode :: Text,
-      quotaStatusQuotaCode :: Text,
-      quotaStatusCurrentValue :: Double,
-      quotaStatusTargetValue :: Double,
-      quotaStatusSource :: Text,
-      quotaStatusMeetsTarget :: Bool,
-      quotaStatusRequestStatus :: Maybe Text,
-      quotaStatusNote :: Maybe Text
+    { quotaStatusDisplayName :: Text
+    , quotaStatusServiceCode :: Text
+    , quotaStatusQuotaCode :: Text
+    , quotaStatusCurrentValue :: Double
+    , quotaStatusTargetValue :: Double
+    , quotaStatusSource :: Text
+    , quotaStatusMeetsTarget :: Bool
+    , quotaStatusRequestStatus :: Maybe Text
+    , quotaStatusNote :: Maybe Text
     }
     deriving (Eq, Show)
 
 data IamSetupResult = IamSetupResult
-    { iamSetupUserName :: Text,
-      iamSetupPolicyTier :: PolicyTier,
-      iamSetupAccessKeyId :: Text,
-      iamSetupQuotaStatuses :: [QuotaStatus],
-      iamSetupDhallPath :: FilePath
+    { iamSetupUserName :: Text
+    , iamSetupPolicyTier :: PolicyTier
+    , iamSetupAccessKeyId :: Text
+    , iamSetupQuotaStatuses :: [QuotaStatus]
+    , iamSetupDhallPath :: FilePath
     }
     deriving (Eq, Show)
 
 data IamTeardownResult = IamTeardownResult
-    { iamTeardownUserName :: Text,
-      iamTeardownDeletedAccessKeys :: [Text],
-      iamTeardownUserDeleted :: Bool,
-      iamTeardownDhallPath :: FilePath
+    { iamTeardownUserName :: Text
+    , iamTeardownDeletedAccessKeys :: [Text]
+    , iamTeardownUserDeleted :: Bool
+    , iamTeardownDhallPath :: FilePath
     }
     deriving (Eq, Show)
 
 data ConfigSetupResult = ConfigSetupResult
-    { configSetupRegion :: Text,
-      configSetupRoute53ZoneId :: Text,
-      configSetupDemoFqdn :: Text,
-      configSetupVscodeFqdn :: Maybe Text,
-      configSetupPolicyTier :: PolicyTier,
-      configSetupAccessKeyId :: Text,
-      configSetupQuotaStatuses :: [QuotaStatus],
-      configSetupDhallPath :: FilePath
+    { configSetupRegion :: Text
+    , configSetupRoute53ZoneId :: Text
+    , configSetupDemoFqdn :: Text
+    , configSetupVscodeFqdn :: Maybe Text
+    , configSetupPolicyTier :: PolicyTier
+    , configSetupAccessKeyId :: Text
+    , configSetupQuotaStatuses :: [QuotaStatus]
+    , configSetupDhallPath :: FilePath
     }
     deriving (Eq, Show)
 
 data AwsSetupInput = AwsSetupInput
-    { awsSetupAdminCredentials :: Credentials,
-      awsSetupPolicyTierInput :: PolicyTier
+    { awsSetupAdminCredentials :: Credentials
+    , awsSetupPolicyTierInput :: PolicyTier
     }
     deriving (Eq, Show)
 
@@ -177,26 +177,26 @@ data AwsCheckQuotasInput = AwsCheckQuotasInput
     deriving (Eq, Show)
 
 data AwsRequestQuotasInput = AwsRequestQuotasInput
-    { awsRequestQuotasAdminCredentials :: Credentials,
-      awsRequestQuotasPolicyTierInput :: PolicyTier
+    { awsRequestQuotasAdminCredentials :: Credentials
+    , awsRequestQuotasPolicyTierInput :: PolicyTier
     }
     deriving (Eq, Show)
 
 data ConfigSetupInput = ConfigSetupInput
-    { configSetupAdminCredentialsInput :: Credentials,
-      configSetupRoute53ZoneIdInput :: Text,
-      configSetupDemoFqdnInput :: Text,
-      configSetupDemoTtlInput :: Natural,
-      configSetupVscodeFqdnInput :: Maybe Text,
-      configSetupAcmeEmailInput :: Text,
-      configSetupAcmeServerInput :: Text,
-      configSetupAcmeEabKeyIdInput :: Maybe Text,
-      configSetupAcmeEabHmacKeyInput :: Maybe Text,
-      configSetupDevModeInput :: Bool,
-      configSetupBootstrapPublicIpOverrideInput :: Maybe Text,
-      configSetupPulumiEnableDnsBootstrapInput :: Bool,
-      configSetupManualPvHostRootInput :: Text,
-      configSetupPolicyTierInput :: PolicyTier
+    { configSetupAdminCredentialsInput :: Credentials
+    , configSetupRoute53ZoneIdInput :: Text
+    , configSetupDemoFqdnInput :: Text
+    , configSetupDemoTtlInput :: Natural
+    , configSetupVscodeFqdnInput :: Maybe Text
+    , configSetupAcmeEmailInput :: Text
+    , configSetupAcmeServerInput :: Text
+    , configSetupAcmeEabKeyIdInput :: Maybe Text
+    , configSetupAcmeEabHmacKeyInput :: Maybe Text
+    , configSetupDevModeInput :: Bool
+    , configSetupBootstrapPublicIpOverrideInput :: Maybe Text
+    , configSetupPulumiEnableDnsBootstrapInput :: Bool
+    , configSetupManualPvHostRootInput :: Text
+    , configSetupPolicyTierInput :: PolicyTier
     }
     deriving (Eq, Show)
 
@@ -223,25 +223,25 @@ operationalCredentialRetryDelayMicros = 2000000
 
 baselineQuotaSpecs :: [QuotaSpec]
 baselineQuotaSpecs =
-    [ QuotaSpec "Running On-Demand Standard vCPU" "ec2" "L-1216C47A" 32.0,
-      QuotaSpec "VPCs per Region" "vpc" "L-F678F1CE" 10.0,
-      QuotaSpec "Internet gateways per Region" "vpc" "L-A4707A72" 10.0
+    [ QuotaSpec "Running On-Demand Standard vCPU" "ec2" "L-1216C47A" 32.0
+    , QuotaSpec "VPCs per Region" "vpc" "L-F678F1CE" 10.0
+    , QuotaSpec "Internet gateways per Region" "vpc" "L-A4707A72" 10.0
     ]
 
 fullQuotaSpecs :: [QuotaSpec]
 fullQuotaSpecs =
     baselineQuotaSpecs
-        ++ [ QuotaSpec "Elastic IP addresses" "ec2" "L-0263D0A3" 10.0,
-             QuotaSpec "Security groups per Region" "vpc" "L-E79EC296" 300.0,
-             QuotaSpec "Hosted zones per account" "route53" "L-4EA4796A" 500.0,
-             QuotaSpec "Subnets per VPC" "vpc" "L-407747CB" 200.0
+        ++ [ QuotaSpec "Elastic IP addresses" "ec2" "L-0263D0A3" 10.0
+           , QuotaSpec "Security groups per Region" "vpc" "L-E79EC296" 300.0
+           , QuotaSpec "Hosted zones per account" "route53" "L-4EA4796A" 500.0
+           , QuotaSpec "Subnets per VPC" "vpc" "L-407747CB" 200.0
            ]
 
 buildIamPolicyDocument :: PolicyTier -> Value
 buildIamPolicyDocument policyTier =
     object
-        [ "Version" .= ("2012-10-17" :: String),
-          "Statement" .= (corePolicyStatements ++ extraPolicyStatements policyTier)
+        [ "Version" .= ("2012-10-17" :: String)
+        , "Statement" .= (corePolicyStatements ++ extraPolicyStatements policyTier)
         ]
 
 buildIamPolicyJson :: PolicyTier -> String
@@ -302,15 +302,15 @@ executeConfigSetup repoRoot = do
 
 corePolicyStatements :: [Value]
 corePolicyStatements =
-    [ statement "StsIdentity" ["sts:GetCallerIdentity"] "*",
-      statement
+    [ statement "StsIdentity" ["sts:GetCallerIdentity"] "*"
+    , statement
         "Route53RecordManagement"
-        [ "route53:ChangeResourceRecordSets",
-          "route53:GetHostedZone",
-          "route53:ListResourceRecordSets"
+        [ "route53:ChangeResourceRecordSets"
+        , "route53:GetHostedZone"
+        , "route53:ListResourceRecordSets"
         ]
-        "arn:aws:route53:::hostedzone/*",
-      statement "Route53ChangePolling" ["route53:GetChange"] "arn:aws:route53:::change/*"
+        "arn:aws:route53:::hostedzone/*"
+    , statement "Route53ChangePolling" ["route53:GetChange"] "arn:aws:route53:::change/*"
     ]
 
 extraPolicyStatements :: PolicyTier -> [Value]
@@ -320,70 +320,70 @@ extraPolicyStatements policyTier =
         PolicyFull ->
             [ statement
                 "Route53HostedZoneLifecycle"
-                [ "route53:CreateHostedZone",
-                  "route53:DeleteHostedZone",
-                  "route53:ListHostedZones"
+                [ "route53:CreateHostedZone"
+                , "route53:DeleteHostedZone"
+                , "route53:ListHostedZones"
                 ]
-                "*",
-              statement
+                "*"
+            , statement
                 "Ec2HaTestStackLifecycle"
-                [ "ec2:AssociateRouteTable",
-                  "ec2:AttachInternetGateway",
-                  "ec2:AuthorizeSecurityGroupEgress",
-                  "ec2:AuthorizeSecurityGroupIngress",
-                  "ec2:CreateInternetGateway",
-                  "ec2:CreateRoute",
-                  "ec2:CreateRouteTable",
-                  "ec2:CreateSecurityGroup",
-                  "ec2:CreateSubnet",
-                  "ec2:CreateTags",
-                  "ec2:CreateVpc",
-                  "ec2:DeleteInternetGateway",
-                  "ec2:DeleteRoute",
-                  "ec2:DeleteRouteTable",
-                  "ec2:DeleteSecurityGroup",
-                  "ec2:DeleteSubnet",
-                  "ec2:DeleteTags",
-                  "ec2:DeleteVpc",
-                  "ec2:Describe*",
-                  "ec2:DetachInternetGateway",
-                  "ec2:DisassociateRouteTable",
-                  "ec2:ModifySubnetAttribute",
-                  "ec2:ModifyVpcAttribute",
-                  "ec2:RunInstances",
-                  "ec2:RevokeSecurityGroupEgress",
-                  "ec2:RevokeSecurityGroupIngress",
-                  "ec2:TerminateInstances"
+                [ "ec2:AssociateRouteTable"
+                , "ec2:AttachInternetGateway"
+                , "ec2:AuthorizeSecurityGroupEgress"
+                , "ec2:AuthorizeSecurityGroupIngress"
+                , "ec2:CreateInternetGateway"
+                , "ec2:CreateRoute"
+                , "ec2:CreateRouteTable"
+                , "ec2:CreateSecurityGroup"
+                , "ec2:CreateSubnet"
+                , "ec2:CreateTags"
+                , "ec2:CreateVpc"
+                , "ec2:DeleteInternetGateway"
+                , "ec2:DeleteRoute"
+                , "ec2:DeleteRouteTable"
+                , "ec2:DeleteSecurityGroup"
+                , "ec2:DeleteSubnet"
+                , "ec2:DeleteTags"
+                , "ec2:DeleteVpc"
+                , "ec2:Describe*"
+                , "ec2:DetachInternetGateway"
+                , "ec2:DisassociateRouteTable"
+                , "ec2:ModifySubnetAttribute"
+                , "ec2:ModifyVpcAttribute"
+                , "ec2:RunInstances"
+                , "ec2:RevokeSecurityGroupEgress"
+                , "ec2:RevokeSecurityGroupIngress"
+                , "ec2:TerminateInstances"
                 ]
-                "*",
-              statement
+                "*"
+            , statement
                 "IamEksRoleLifecycle"
-                [ "iam:AttachRolePolicy",
-                  "iam:CreateRole",
-                  "iam:CreateServiceLinkedRole",
-                  "iam:DeleteRole",
-                  "iam:DetachRolePolicy",
-                  "iam:GetRole",
-                  "iam:GetRolePolicy",
-                  "iam:ListAttachedRolePolicies",
-                  "iam:ListInstanceProfilesForRole",
-                  "iam:ListRolePolicies",
-                  "iam:ListRoleTags",
-                  "iam:PassRole",
-                  "iam:TagRole",
-                  "iam:UntagRole"
+                [ "iam:AttachRolePolicy"
+                , "iam:CreateRole"
+                , "iam:CreateServiceLinkedRole"
+                , "iam:DeleteRole"
+                , "iam:DetachRolePolicy"
+                , "iam:GetRole"
+                , "iam:GetRolePolicy"
+                , "iam:ListAttachedRolePolicies"
+                , "iam:ListInstanceProfilesForRole"
+                , "iam:ListRolePolicies"
+                , "iam:ListRoleTags"
+                , "iam:PassRole"
+                , "iam:TagRole"
+                , "iam:UntagRole"
                 ]
-                "*",
-              statement
+                "*"
+            , statement
                 "EksTestStackLifecycle"
-                [ "eks:CreateCluster",
-                  "eks:CreateNodegroup",
-                  "eks:DeleteCluster",
-                  "eks:DeleteNodegroup",
-                  "eks:Describe*",
-                  "eks:List*",
-                  "eks:TagResource",
-                  "eks:UntagResource"
+                [ "eks:CreateCluster"
+                , "eks:CreateNodegroup"
+                , "eks:DeleteCluster"
+                , "eks:DeleteNodegroup"
+                , "eks:Describe*"
+                , "eks:List*"
+                , "eks:TagResource"
+                , "eks:UntagResource"
                 ]
                 "*"
             ]
@@ -391,10 +391,10 @@ extraPolicyStatements policyTier =
 statement :: String -> [String] -> String -> Value
 statement sid actions resourceArn =
     object
-        [ "Sid" .= sid,
-          "Effect" .= ("Allow" :: String),
-          "Action" .= actions,
-          "Resource" .= resourceArn
+        [ "Sid" .= sid
+        , "Effect" .= ("Allow" :: String)
+        , "Action" .= actions
+        , "Resource" .= resourceArn
         ]
 
 prettyConfig :: AesonPretty.Config
@@ -555,10 +555,10 @@ promptAdminCredentials defaultRegion = do
     regionRaw <- promptText "AWS region for elevated operations (you can change it after regions are listed)" (Just (Text.unpack defaultRegion))
     validateAdminCredentialsInput
         Credentials
-            { access_key_id = accessKeyId,
-              secret_access_key = secretAccessKey,
-              session_token = normalizeOptionalText (Text.pack sessionTokenRaw),
-              region = Text.pack (trim regionRaw)
+            { access_key_id = accessKeyId
+            , secret_access_key = secretAccessKey
+            , session_token = normalizeOptionalText (Text.pack sessionTokenRaw)
+            , region = Text.pack (trim regionRaw)
             }
 
 promptAdminCredentialsWithRegionChoice :: FilePath -> IO Credentials
@@ -574,8 +574,8 @@ runAwsIamHarnessSetup repoRoot policyTier = do
         applyAwsSetup
             repoRoot
             AwsSetupInput
-                { awsSetupAdminCredentials = credentials,
-                  awsSetupPolicyTierInput = policyTier
+                { awsSetupAdminCredentials = credentials
+                , awsSetupPolicyTierInput = policyTier
                 }
     pure (renderAwsSetupResult result)
 
@@ -731,10 +731,10 @@ validateAdminCredentialsInput :: Credentials -> IO Credentials
 validateAdminCredentialsInput credentials = do
     let normalized =
             Credentials
-                { access_key_id = Text.strip (access_key_id credentials),
-                  secret_access_key = Text.strip (secret_access_key credentials),
-                  session_token = normalizeOptionalText =<< session_token credentials,
-                  region = Text.strip (region credentials)
+                { access_key_id = Text.strip (access_key_id credentials)
+                , secret_access_key = Text.strip (secret_access_key credentials)
+                , session_token = normalizeOptionalText =<< session_token credentials
+                , region = Text.strip (region credentials)
                 }
     when (Text.null (access_key_id normalized)) (throwAws "Admin AWS access key ID is required")
     when (Text.null (secret_access_key normalized)) (throwAws "Admin AWS secret access key is required")
@@ -778,20 +778,20 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
     when ((normalizedEabKeyId == Nothing) /= (normalizedEabHmacKey == Nothing)) $ throwAws "acme_eab_key_id and acme_eab_hmac_key must either both be set or both be empty"
     pure
         ConfigSetupInput
-            { configSetupAdminCredentialsInput = normalizedAdminCredentials,
-              configSetupRoute53ZoneIdInput = normalizedZoneId,
-              configSetupDemoFqdnInput = normalizedDemoFqdn,
-              configSetupDemoTtlInput = fromIntegral demoTtl,
-              configSetupVscodeFqdnInput = normalizedVscodeFqdn,
-              configSetupAcmeEmailInput = normalizedAcmeEmail,
-              configSetupAcmeServerInput = Text.strip acmeServer,
-              configSetupAcmeEabKeyIdInput = normalizedEabKeyId,
-              configSetupAcmeEabHmacKeyInput = normalizedEabHmacKey,
-              configSetupDevModeInput = devMode,
-              configSetupBootstrapPublicIpOverrideInput = normalizedBootstrapOverride,
-              configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap,
-              configSetupManualPvHostRootInput = normalizedManualPvHostRoot,
-              configSetupPolicyTierInput = policyTier
+            { configSetupAdminCredentialsInput = normalizedAdminCredentials
+            , configSetupRoute53ZoneIdInput = normalizedZoneId
+            , configSetupDemoFqdnInput = normalizedDemoFqdn
+            , configSetupDemoTtlInput = fromIntegral demoTtl
+            , configSetupVscodeFqdnInput = normalizedVscodeFqdn
+            , configSetupAcmeEmailInput = normalizedAcmeEmail
+            , configSetupAcmeServerInput = Text.strip acmeServer
+            , configSetupAcmeEabKeyIdInput = normalizedEabKeyId
+            , configSetupAcmeEabHmacKeyInput = normalizedEabHmacKey
+            , configSetupDevModeInput = devMode
+            , configSetupBootstrapPublicIpOverrideInput = normalizedBootstrapOverride
+            , configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap
+            , configSetupManualPvHostRootInput = normalizedManualPvHostRoot
+            , configSetupPolicyTierInput = policyTier
             }
 
 applyAwsSetup :: FilePath -> AwsSetupInput -> IO IamSetupResult
@@ -804,10 +804,10 @@ applyAwsSetup repoRoot input = do
             currentConfig
                 { aws =
                     Credentials
-                        { access_key_id = newAccessKeyId,
-                          secret_access_key = newSecretAccessKey,
-                          session_token = Nothing,
-                          region = region (awsSetupAdminCredentials input)
+                        { access_key_id = newAccessKeyId
+                        , secret_access_key = newSecretAccessKey
+                        , session_token = Nothing
+                        , region = region (awsSetupAdminCredentials input)
                         }
                 }
         paths = canonicalConfigPaths repoRoot
@@ -824,11 +824,11 @@ applyAwsSetup repoRoot input = do
         Right _ ->
             pure
                 IamSetupResult
-                    { iamSetupUserName = prodboxIamUserName,
-                      iamSetupPolicyTier = awsSetupPolicyTierInput input,
-                      iamSetupAccessKeyId = newAccessKeyId,
-                      iamSetupQuotaStatuses = quotaStatuses,
-                      iamSetupDhallPath = configDhallPath paths
+                    { iamSetupUserName = prodboxIamUserName
+                    , iamSetupPolicyTier = awsSetupPolicyTierInput input
+                    , iamSetupAccessKeyId = newAccessKeyId
+                    , iamSetupQuotaStatuses = quotaStatuses
+                    , iamSetupDhallPath = configDhallPath paths
                     }
 
 applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO IamTeardownResult
@@ -845,20 +845,20 @@ applyAwsTeardown repoRoot input = do
             currentConfig
                 { aws =
                     Credentials
-                        { access_key_id = "",
-                          secret_access_key = "",
-                          session_token = Nothing,
-                          region = currentRegion
+                        { access_key_id = ""
+                        , secret_access_key = ""
+                        , session_token = Nothing
+                        , region = currentRegion
                         }
                 }
         paths = canonicalConfigPaths repoRoot
     writeConfigFile (configDhallPath paths) updatedConfig
     pure
         IamTeardownResult
-            { iamTeardownUserName = prodboxIamUserName,
-              iamTeardownDeletedAccessKeys = deletedAccessKeys,
-              iamTeardownUserDeleted = userDeleted,
-              iamTeardownDhallPath = configDhallPath paths
+            { iamTeardownUserName = prodboxIamUserName
+            , iamTeardownDeletedAccessKeys = deletedAccessKeys
+            , iamTeardownUserDeleted = userDeleted
+            , iamTeardownDhallPath = configDhallPath paths
             }
 
 applyAwsCheckQuotas :: FilePath -> AwsCheckQuotasInput -> IO [QuotaStatus]
@@ -880,32 +880,32 @@ applyConfigSetup repoRoot input = do
             currentConfig
                 { aws =
                     Credentials
-                        { access_key_id = newAccessKeyId,
-                          secret_access_key = newSecretAccessKey,
-                          session_token = Nothing,
-                          region = region adminCredentials
-                        },
-                  route53 = Route53Section{zone_id = configSetupRoute53ZoneIdInput input},
-                  domain =
+                        { access_key_id = newAccessKeyId
+                        , secret_access_key = newSecretAccessKey
+                        , session_token = Nothing
+                        , region = region adminCredentials
+                        }
+                , route53 = Route53Section{zone_id = configSetupRoute53ZoneIdInput input}
+                , domain =
                     DomainSection
-                        { demo_fqdn = configSetupDemoFqdnInput input,
-                          demo_ttl = configSetupDemoTtlInput input,
-                          vscode_fqdn = configSetupVscodeFqdnInput input
-                        },
-                  acme =
+                        { demo_fqdn = configSetupDemoFqdnInput input
+                        , demo_ttl = configSetupDemoTtlInput input
+                        , vscode_fqdn = configSetupVscodeFqdnInput input
+                        }
+                , acme =
                     AcmeSection
-                        { email = configSetupAcmeEmailInput input,
-                          server = configSetupAcmeServerInput input,
-                          eab_key_id = configSetupAcmeEabKeyIdInput input,
-                          eab_hmac_key = configSetupAcmeEabHmacKeyInput input
-                        },
-                  deployment =
+                        { email = configSetupAcmeEmailInput input
+                        , server = configSetupAcmeServerInput input
+                        , eab_key_id = configSetupAcmeEabKeyIdInput input
+                        , eab_hmac_key = configSetupAcmeEabHmacKeyInput input
+                        }
+                , deployment =
                     DeploymentSection
-                        { dev_mode = configSetupDevModeInput input,
-                          bootstrap_public_ip_override = configSetupBootstrapPublicIpOverrideInput input,
-                          pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
-                        },
-                  storage = StorageSection{manual_pv_host_root = configSetupManualPvHostRootInput input}
+                        { dev_mode = configSetupDevModeInput input
+                        , bootstrap_public_ip_override = configSetupBootstrapPublicIpOverrideInput input
+                        , pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
+                        }
+                , storage = StorageSection{manual_pv_host_root = configSetupManualPvHostRootInput input}
                 }
         paths = canonicalConfigPaths repoRoot
     writeConfigFile (configDhallPath paths) updatedConfig
@@ -915,14 +915,14 @@ applyConfigSetup repoRoot input = do
         Right _ ->
             pure
                 ConfigSetupResult
-                    { configSetupRegion = region adminCredentials,
-                      configSetupRoute53ZoneId = configSetupRoute53ZoneIdInput input,
-                      configSetupDemoFqdn = configSetupDemoFqdnInput input,
-                      configSetupVscodeFqdn = configSetupVscodeFqdnInput input,
-                      configSetupPolicyTier = configSetupPolicyTierInput input,
-                      configSetupAccessKeyId = newAccessKeyId,
-                      configSetupQuotaStatuses = quotaStatuses,
-                      configSetupDhallPath = configDhallPath paths
+                    { configSetupRegion = region adminCredentials
+                    , configSetupRoute53ZoneId = configSetupRoute53ZoneIdInput input
+                    , configSetupDemoFqdn = configSetupDemoFqdnInput input
+                    , configSetupVscodeFqdn = configSetupVscodeFqdnInput input
+                    , configSetupPolicyTier = configSetupPolicyTierInput input
+                    , configSetupAccessKeyId = newAccessKeyId
+                    , configSetupQuotaStatuses = quotaStatuses
+                    , configSetupDhallPath = configDhallPath paths
                     }
 
 ensureOperationalIamUser :: FilePath -> Credentials -> PolicyTier -> IO (Text, Text, [QuotaStatus])
@@ -931,10 +931,10 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "create-user",
-              "--user-name",
-              Text.unpack prodboxIamUserName
+            [ "iam"
+            , "create-user"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
             ]
     when (processExitCode createUserOutput /= ExitSuccess && awsErrorCode (errorDetail createUserOutput) /= Just "EntityAlreadyExists") $
         throwAws ("aws iam create-user failed: " ++ errorDetail createUserOutput)
@@ -946,14 +946,14 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "put-user-policy",
-              "--user-name",
-              Text.unpack prodboxIamUserName,
-              "--policy-name",
-              Text.unpack prodboxIamInlinePolicyName,
-              "--policy-document",
-              buildIamPolicyJson policyTier
+            [ "iam"
+            , "put-user-policy"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
+            , "--policy-name"
+            , Text.unpack prodboxIamInlinePolicyName
+            , "--policy-document"
+            , buildIamPolicyJson policyTier
             ]
     _ <- requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput
 
@@ -961,10 +961,10 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "create-access-key",
-              "--user-name",
-              Text.unpack prodboxIamUserName
+            [ "iam"
+            , "create-access-key"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
             ]
     accessKeyValue <- decodeJsonPayload "aws iam create-access-key" =<< requireCommandSuccess "aws iam create-access-key" createAccessKeyOutput
     accessKeyObject <- requireObject "create-access-key" accessKeyValue
@@ -980,10 +980,10 @@ waitForOperationalCredentialsReady repoRoot adminCredentials newAccessKeyId newS
   where
     operationalCredentials =
         Credentials
-            { access_key_id = newAccessKeyId,
-              secret_access_key = newSecretAccessKey,
-              session_token = Nothing,
-              region = region adminCredentials
+            { access_key_id = newAccessKeyId
+            , secret_access_key = newSecretAccessKey
+            , session_token = Nothing
+            , region = region adminCredentials
             }
     go attemptsRemaining lastError = do
         environment <- operationalAwsEnvironment operationalCredentials
@@ -1016,12 +1016,12 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "service-quotas",
-              "get-service-quota",
-              "--service-code",
-              Text.unpack (quotaServiceCode spec),
-              "--quota-code",
-              Text.unpack (quotaCode spec)
+            [ "service-quotas"
+            , "get-service-quota"
+            , "--service-code"
+            , Text.unpack (quotaServiceCode spec)
+            , "--quota-code"
+            , Text.unpack (quotaCode spec)
             ]
     (quotaObject, sourceLabel) <-
         if processExitCode primaryOutput == ExitSuccess
@@ -1035,12 +1035,12 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
                     runAwsCliCompleted
                         repoRoot
                         adminCredentials
-                        [ "service-quotas",
-                          "get-aws-default-service-quota",
-                          "--service-code",
-                          Text.unpack (quotaServiceCode spec),
-                          "--quota-code",
-                          Text.unpack (quotaCode spec)
+                        [ "service-quotas"
+                        , "get-aws-default-service-quota"
+                        , "--service-code"
+                        , Text.unpack (quotaServiceCode spec)
+                        , "--quota-code"
+                        , Text.unpack (quotaCode spec)
                         ]
                 fallbackPayloadText <- requireCommandSuccess (Text.unpack (quotaDisplayName spec)) fallbackOutput
                 value <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) fallbackPayloadText
@@ -1051,15 +1051,15 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
     let meetsTarget = currentValue >= quotaTargetValue spec
         baseStatus =
             QuotaStatus
-                { quotaStatusDisplayName = quotaDisplayName spec,
-                  quotaStatusServiceCode = quotaServiceCode spec,
-                  quotaStatusQuotaCode = quotaCode spec,
-                  quotaStatusCurrentValue = currentValue,
-                  quotaStatusTargetValue = quotaTargetValue spec,
-                  quotaStatusSource = sourceLabel,
-                  quotaStatusMeetsTarget = meetsTarget,
-                  quotaStatusRequestStatus = Nothing,
-                  quotaStatusNote = Nothing
+                { quotaStatusDisplayName = quotaDisplayName spec
+                , quotaStatusServiceCode = quotaServiceCode spec
+                , quotaStatusQuotaCode = quotaCode spec
+                , quotaStatusCurrentValue = currentValue
+                , quotaStatusTargetValue = quotaTargetValue spec
+                , quotaStatusSource = sourceLabel
+                , quotaStatusMeetsTarget = meetsTarget
+                , quotaStatusRequestStatus = Nothing
+                , quotaStatusNote = Nothing
                 }
     if meetsTarget || not requestIfNeeded
         then pure baseStatus
@@ -1068,21 +1068,21 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
                 runAwsCliCompleted
                     repoRoot
                     adminCredentials
-                    [ "service-quotas",
-                      "request-service-quota-increase",
-                      "--service-code",
-                      Text.unpack (quotaServiceCode spec),
-                      "--quota-code",
-                      Text.unpack (quotaCode spec),
-                      "--desired-value",
-                      formatDouble (quotaTargetValue spec)
+                    [ "service-quotas"
+                    , "request-service-quota-increase"
+                    , "--service-code"
+                    , Text.unpack (quotaServiceCode spec)
+                    , "--quota-code"
+                    , Text.unpack (quotaCode spec)
+                    , "--desired-value"
+                    , formatDouble (quotaTargetValue spec)
                     ]
             if processExitCode requestOutput /= ExitSuccess
                 then
                     pure
                         baseStatus
-                            { quotaStatusRequestStatus = Just "error",
-                              quotaStatusNote = Just (Text.pack (errorDetail requestOutput))
+                            { quotaStatusRequestStatus = Just "error"
+                            , quotaStatusNote = Just (Text.pack (errorDetail requestOutput))
                             }
                 else do
                     requestValue <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout requestOutput)
@@ -1121,8 +1121,8 @@ parseRegionChoice value = do
     regionNameValue <- requireTextField "describe-regions" "RegionName" regionObject
     pure
         RegionChoice
-            { regionChoiceName = regionNameValue,
-              regionChoiceOptInStatus = maybe "opt-in-not-required" id (optionalTextField "OptInStatus" regionObject)
+            { regionChoiceName = regionNameValue
+            , regionChoiceOptInStatus = maybe "opt-in-not-required" id (optionalTextField "OptInStatus" regionObject)
             }
 
 parseHostedZoneChoice :: Value -> IO HostedZoneChoice
@@ -1132,8 +1132,8 @@ parseHostedZoneChoice value = do
     zoneNameValue <- requireTextField "list-hosted-zones" "Name" zoneObject
     pure
         HostedZoneChoice
-            { hostedZoneChoiceId = Text.replace "/hostedzone/" "" zoneIdValue,
-              hostedZoneChoiceName = Text.dropWhileEnd (== '.') zoneNameValue
+            { hostedZoneChoiceId = Text.replace "/hostedzone/" "" zoneIdValue
+            , hostedZoneChoiceName = Text.dropWhileEnd (== '.') zoneNameValue
             }
 
 listOperationalAccessKeys :: FilePath -> Credentials -> IO [Text]
@@ -1142,10 +1142,10 @@ listOperationalAccessKeys repoRoot adminCredentials = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "list-access-keys",
-              "--user-name",
-              Text.unpack prodboxIamUserName
+            [ "iam"
+            , "list-access-keys"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
             ]
     listPayloadText <- requireCommandSuccess "aws iam list-access-keys" listKeysOutput
     listPayloadValue <- decodeJsonPayload "list-access-keys" listPayloadText
@@ -1161,26 +1161,24 @@ deleteExistingOperationalKeys repoRoot adminCredentials = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "list-access-keys",
-              "--user-name",
-              Text.unpack prodboxIamUserName
+            [ "iam"
+            , "list-access-keys"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
             ]
     if processExitCode listKeysOutput == ExitSuccess
         then do
             listPayloadValue <- decodeJsonPayload "list-access-keys" (processStdout listKeysOutput)
             listPayloadObject <- requireObject "list-access-keys" listPayloadValue
             accessKeysArray <- requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject
-            deleted <- forM (Vector.toList accessKeysArray) $ \item -> do
+            forM (Vector.toList accessKeysArray) $ \item -> do
                 metadataObject <- requireObject "AccessKeyMetadata" item
                 accessKeyIdValue <- requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
                 deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue
                 pure accessKeyIdValue
-            pure deleted
-        else
-            case awsErrorCode (errorDetail listKeysOutput) of
-                Just "NoSuchEntity" -> pure []
-                _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
+        else case awsErrorCode (errorDetail listKeysOutput) of
+            Just "NoSuchEntity" -> pure []
+            _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
 
 deleteOperationalAccessKey :: FilePath -> Credentials -> Text -> IO ()
 deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue = do
@@ -1188,12 +1186,12 @@ deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "delete-access-key",
-              "--user-name",
-              Text.unpack prodboxIamUserName,
-              "--access-key-id",
-              Text.unpack accessKeyIdValue
+            [ "iam"
+            , "delete-access-key"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
+            , "--access-key-id"
+            , Text.unpack accessKeyIdValue
             ]
     _ <- requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput
     pure ()
@@ -1204,12 +1202,12 @@ deleteUserPolicyIfPresent repoRoot adminCredentials = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "delete-user-policy",
-              "--user-name",
-              Text.unpack prodboxIamUserName,
-              "--policy-name",
-              Text.unpack prodboxIamInlinePolicyName
+            [ "iam"
+            , "delete-user-policy"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
+            , "--policy-name"
+            , Text.unpack prodboxIamInlinePolicyName
             ]
     when (processExitCode deletePolicyOutput /= ExitSuccess && awsErrorCode (errorDetail deletePolicyOutput) /= Just "NoSuchEntity") $
         throwAws ("aws iam delete-user-policy failed: " ++ errorDetail deletePolicyOutput)
@@ -1220,10 +1218,10 @@ deleteOperationalUserIfPresent repoRoot adminCredentials = do
         runAwsCliCompleted
             repoRoot
             adminCredentials
-            [ "iam",
-              "delete-user",
-              "--user-name",
-              Text.unpack prodboxIamUserName
+            [ "iam"
+            , "delete-user"
+            , "--user-name"
+            , Text.unpack prodboxIamUserName
             ]
     case processExitCode deleteUserOutput of
         ExitSuccess -> pure True
@@ -1241,34 +1239,34 @@ quotaSpecsForTier policyTier =
 renderAwsSetupResult :: IamSetupResult -> String
 renderAwsSetupResult result =
     unlines
-        [ "IAM_USER=" ++ Text.unpack (iamSetupUserName result),
-          "POLICY_TIER=" ++ renderPolicyTier (iamSetupPolicyTier result),
-          "AWS_ACCESS_KEY_ID=" ++ Text.unpack (iamSetupAccessKeyId result),
-          "CONFIG_PATH=" ++ iamSetupDhallPath result,
-          "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (iamSetupQuotaStatuses result)))
+        [ "IAM_USER=" ++ Text.unpack (iamSetupUserName result)
+        , "POLICY_TIER=" ++ renderPolicyTier (iamSetupPolicyTier result)
+        , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (iamSetupAccessKeyId result)
+        , "CONFIG_PATH=" ++ iamSetupDhallPath result
+        , "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (iamSetupQuotaStatuses result)))
         ]
 
 renderAwsTeardownResult :: IamTeardownResult -> String
 renderAwsTeardownResult result =
     unlines
-        [ "IAM_USER=" ++ Text.unpack (iamTeardownUserName result),
-          "USER_DELETED=" ++ map toLower (show (iamTeardownUserDeleted result)),
-          "DELETED_ACCESS_KEYS=" ++ show (length (iamTeardownDeletedAccessKeys result)),
-          "CONFIG_PATH=" ++ iamTeardownDhallPath result
+        [ "IAM_USER=" ++ Text.unpack (iamTeardownUserName result)
+        , "USER_DELETED=" ++ map toLower (show (iamTeardownUserDeleted result))
+        , "DELETED_ACCESS_KEYS=" ++ show (length (iamTeardownDeletedAccessKeys result))
+        , "CONFIG_PATH=" ++ iamTeardownDhallPath result
         ]
 
 renderConfigSetupResult :: ConfigSetupResult -> String
 renderConfigSetupResult result =
     unlines
-        [ "AWS_REGION=" ++ Text.unpack (configSetupRegion result),
-          "ROUTE53_ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneId result),
-          "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result),
-          "VSCODE_FQDN=" ++ maybe "" Text.unpack (configSetupVscodeFqdn result),
-          "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result),
-          "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result),
-          "CONFIG_PATH=" ++ configSetupDhallPath result,
-          "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (configSetupQuotaStatuses result))),
-          "POST_SETUP_GUIDANCE=Delete the temporary elevated/root access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
+        [ "AWS_REGION=" ++ Text.unpack (configSetupRegion result)
+        , "ROUTE53_ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneId result)
+        , "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result)
+        , "VSCODE_FQDN=" ++ maybe "" Text.unpack (configSetupVscodeFqdn result)
+        , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result)
+        , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result)
+        , "CONFIG_PATH=" ++ configSetupDhallPath result
+        , "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (configSetupQuotaStatuses result)))
+        , "POST_SETUP_GUIDANCE=Delete the temporary elevated/root access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
         ]
 
 renderQuotaTable :: String -> [QuotaStatus] -> String
@@ -1284,12 +1282,12 @@ renderQuotaTable title statuses =
 
 quotaStatusRow :: QuotaStatus -> [String]
 quotaStatusRow status =
-    [ Text.unpack (quotaStatusDisplayName status),
-      formatDouble (quotaStatusCurrentValue status),
-      formatDouble (quotaStatusTargetValue status),
-      if quotaStatusMeetsTarget status then "yes" else "no",
-      maybe "" Text.unpack (quotaStatusRequestStatus status),
-      maybe "" Text.unpack (quotaStatusNote status)
+    [ Text.unpack (quotaStatusDisplayName status)
+    , formatDouble (quotaStatusCurrentValue status)
+    , formatDouble (quotaStatusTargetValue status)
+    , if quotaStatusMeetsTarget status then "yes" else "no"
+    , maybe "" Text.unpack (quotaStatusRequestStatus status)
+    , maybe "" Text.unpack (quotaStatusNote status)
     ]
 
 quotaRequested :: QuotaStatus -> Bool
@@ -1336,10 +1334,19 @@ adminAwsEnvironment :: Credentials -> IO [(String, String)]
 adminAwsEnvironment credentials = do
     base <- subprocessBaseEnvironment
     pure
-        ( upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region credentials))
-            ( upsertEnv "AWS_REGION" (Text.unpack (region credentials))
-                ( maybe id (upsertEnv "AWS_SESSION_TOKEN" . Text.unpack) (session_token credentials)
-                    ( upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key credentials))
+        ( upsertEnv
+            "AWS_DEFAULT_REGION"
+            (Text.unpack (region credentials))
+            ( upsertEnv
+                "AWS_REGION"
+                (Text.unpack (region credentials))
+                ( maybe
+                    id
+                    (upsertEnv "AWS_SESSION_TOKEN" . Text.unpack)
+                    (session_token credentials)
+                    ( upsertEnv
+                        "AWS_SECRET_ACCESS_KEY"
+                        (Text.unpack (secret_access_key credentials))
                         (upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id credentials)) base)
                     )
                 )
@@ -1362,10 +1369,10 @@ runAwsCliCompletedWithEnvironment repoRoot environment arguments = do
     outputResult <-
         captureCommand
             CommandSpec
-                { commandPath = "aws",
-                  commandArguments = arguments ++ ["--output", "json"],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "aws"
+                , commandArguments = arguments ++ ["--output", "json"]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just repoRoot
                 }
     case outputResult of
         Failure err -> throwAws err
@@ -1461,7 +1468,7 @@ isValidFqdn value =
         let size = Text.length label
          in size >= 2 && size <= 63 && Text.all isAsciiLetter label
     validFqdnChar character = isAsciiLetter character || isDigit character || character == '-'
-    isAsciiLetter character = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z')
+    isAsciiLetter character = isAsciiLower character || isAsciiUpper character
     isDigit character = character >= '0' && character <= '9'
 
 hasValidEmailShape :: Text -> Bool

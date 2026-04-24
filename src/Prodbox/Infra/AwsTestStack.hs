@@ -1,61 +1,61 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Infra.AwsTestStack
-    ( AwsTestNode (..),
-      AwsTestStackSnapshot (..),
-      awsTestStackName,
-      ensureAwsTestStackResources,
-      destroyAwsTestStack,
-      loadAwsTestStackSnapshot,
-      saveAwsTestStackSnapshot,
-      clearAwsTestStackSnapshot,
-      assertNoAwsTestStackResidue,
-      renderAwsTestStackReport,
-      ensureAwsTestSshKey,
-    )
+module Prodbox.Infra.AwsTestStack (
+    AwsTestNode (..),
+    AwsTestStackSnapshot (..),
+    awsTestStackName,
+    ensureAwsTestStackResources,
+    destroyAwsTestStack,
+    loadAwsTestStackSnapshot,
+    saveAwsTestStackSnapshot,
+    clearAwsTestStackSnapshot,
+    assertNoAwsTestStackResidue,
+    renderAwsTestStackReport,
+    ensureAwsTestSshKey,
+)
 where
 
 import Control.Monad (foldM, forM, void)
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+    encode,
+    object,
+    (.=),
+ )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (isAsciiUpper, toLower)
 import Data.List (isInfixOf)
-import Data.Char (toLower)
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-      encode,
-      object,
-      (.=),
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
-import Prodbox.Infra.MinioBackend
-    ( bucketObjectCount,
-      ensureMinioBackendBucket,
-      pulumiBackendUrl,
-      readMinioCredentials,
-      withMinioPortForward,
-    )
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
+import Prodbox.Infra.MinioBackend (
+    bucketObjectCount,
+    ensureMinioBackendBucket,
+    pulumiBackendUrl,
+    readMinioCredentials,
+    withMinioPortForward,
+ )
 import Prodbox.Result (Result (..))
-import Prodbox.Settings
-    ( Credentials (..),
-      ValidatedSettings (..),
-      aws,
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-      runStreamingCommand,
-    )
-import System.Directory
-    ( createDirectoryIfMissing,
-      doesFileExist,
-      removeFile,
-    )
+import Prodbox.Settings (
+    Credentials (..),
+    ValidatedSettings (..),
+    aws,
+    validateAndLoadSettings,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+    runStreamingCommand,
+ )
+import System.Directory (
+    createDirectoryIfMissing,
+    doesFileExist,
+    removeFile,
+ )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -80,27 +80,27 @@ awsTestPublicKeyPath :: FilePath -> FilePath
 awsTestPublicKeyPath repoRoot = awsTestStateDir repoRoot </> "id_ed25519.pub"
 
 data AwsTestNode = AwsTestNode
-    { testNodeName :: String,
-      testNodeAvailabilityZone :: String,
-      testNodeInstanceId :: String,
-      testNodePrivateIp :: String,
-      testNodePublicIp :: String
+    { testNodeName :: String
+    , testNodeAvailabilityZone :: String
+    , testNodeInstanceId :: String
+    , testNodePrivateIp :: String
+    , testNodePublicIp :: String
     }
     deriving (Eq, Show)
 
 data AwsTestStackSnapshot = AwsTestStackSnapshot
-    { testSnapshotStackName :: String,
-      testSnapshotBackendBucket :: String,
-      testSnapshotVpcId :: String,
-      testSnapshotSubnetIds :: [String],
-      testSnapshotSecurityGroupId :: String,
-      testSnapshotNodes :: [AwsTestNode]
+    { testSnapshotStackName :: String
+    , testSnapshotBackendBucket :: String
+    , testSnapshotVpcId :: String
+    , testSnapshotSubnetIds :: [String]
+    , testSnapshotSecurityGroupId :: String
+    , testSnapshotNodes :: [AwsTestNode]
     }
     deriving (Eq, Show)
 
 data AwsTestStackConfig = AwsTestStackConfig
-    { testStackOperatorCidr :: String,
-      testStackPublicKey :: String
+    { testStackOperatorCidr :: String
+    , testStackPublicKey :: String
     }
     deriving (Eq, Show)
 
@@ -118,10 +118,10 @@ ensureAwsTestSshKey repoRoot = do
             result <-
                 captureCommand
                     CommandSpec
-                        { commandPath = "ssh-keygen",
-                          commandArguments = ["-q", "-t", "ed25519", "-N", "", "-f", privateKeyPath],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Nothing
+                        { commandPath = "ssh-keygen"
+                        , commandArguments = ["-q", "-t", "ed25519", "-N", "", "-f", privateKeyPath]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Nothing
                         }
             case result of
                 Failure err -> pure (Left ("ssh-keygen failed: " ++ err))
@@ -160,22 +160,22 @@ clearAwsTestStackSnapshot repoRoot = do
 snapshotToJson :: AwsTestStackSnapshot -> Value
 snapshotToJson snapshot =
     object
-        [ "stack_name" .= testSnapshotStackName snapshot,
-          "backend_bucket" .= testSnapshotBackendBucket snapshot,
-          "vpc_id" .= testSnapshotVpcId snapshot,
-          "subnet_ids" .= testSnapshotSubnetIds snapshot,
-          "security_group_id" .= testSnapshotSecurityGroupId snapshot,
-          "nodes" .= map nodeToJson (testSnapshotNodes snapshot)
+        [ "stack_name" .= testSnapshotStackName snapshot
+        , "backend_bucket" .= testSnapshotBackendBucket snapshot
+        , "vpc_id" .= testSnapshotVpcId snapshot
+        , "subnet_ids" .= testSnapshotSubnetIds snapshot
+        , "security_group_id" .= testSnapshotSecurityGroupId snapshot
+        , "nodes" .= map nodeToJson (testSnapshotNodes snapshot)
         ]
 
 nodeToJson :: AwsTestNode -> Value
 nodeToJson node =
     object
-        [ "name" .= testNodeName node,
-          "availability_zone" .= testNodeAvailabilityZone node,
-          "instance_id" .= testNodeInstanceId node,
-          "private_ip" .= testNodePrivateIp node,
-          "public_ip" .= testNodePublicIp node
+        [ "name" .= testNodeName node
+        , "availability_zone" .= testNodeAvailabilityZone node
+        , "instance_id" .= testNodeInstanceId node
+        , "private_ip" .= testNodePrivateIp node
+        , "public_ip" .= testNodePublicIp node
         ]
 
 snapshotFromJson :: Value -> Either String AwsTestStackSnapshot
@@ -188,12 +188,12 @@ snapshotFromJson (Object obj) = do
     nodes <- requireNodeList obj "nodes"
     Right
         AwsTestStackSnapshot
-            { testSnapshotStackName = stackName,
-              testSnapshotBackendBucket = backendBucket,
-              testSnapshotVpcId = vpcId,
-              testSnapshotSubnetIds = subnetIds,
-              testSnapshotSecurityGroupId = securityGroupId,
-              testSnapshotNodes = nodes
+            { testSnapshotStackName = stackName
+            , testSnapshotBackendBucket = backendBucket
+            , testSnapshotVpcId = vpcId
+            , testSnapshotSubnetIds = subnetIds
+            , testSnapshotSecurityGroupId = securityGroupId
+            , testSnapshotNodes = nodes
             }
 snapshotFromJson _ = Left "snapshot must be a JSON object"
 
@@ -206,11 +206,11 @@ nodeFromJson (Object obj) = do
     publicIp <- requireString obj "public_ip"
     Right
         AwsTestNode
-            { testNodeName = name,
-              testNodeAvailabilityZone = az,
-              testNodeInstanceId = instanceId,
-              testNodePrivateIp = privateIp,
-              testNodePublicIp = publicIp
+            { testNodeName = name
+            , testNodeAvailabilityZone = az
+            , testNodeInstanceId = instanceId
+            , testNodePrivateIp = privateIp
+            , testNodePublicIp = publicIp
             }
 nodeFromJson _ = Left "node must be a JSON object"
 
@@ -245,24 +245,24 @@ requireNodeList obj key =
 renderAwsTestStackReport :: AwsTestStackSnapshot -> Int -> String
 renderAwsTestStackReport snapshot objectCount =
     unlines
-        ( [ "STACK=" ++ testSnapshotStackName snapshot,
-            "BACKEND_BUCKET=" ++ testSnapshotBackendBucket snapshot,
-            "BACKEND_OBJECT_COUNT=" ++ show objectCount,
-            "VPC_ID=" ++ testSnapshotVpcId snapshot,
-            "SUBNET_IDS=" ++ joinComma (testSnapshotSubnetIds snapshot),
-            "SECURITY_GROUP_ID=" ++ testSnapshotSecurityGroupId snapshot,
-            "NODE_COUNT=" ++ show (length (testSnapshotNodes snapshot))
+        ( [ "STACK=" ++ testSnapshotStackName snapshot
+          , "BACKEND_BUCKET=" ++ testSnapshotBackendBucket snapshot
+          , "BACKEND_OBJECT_COUNT=" ++ show objectCount
+          , "VPC_ID=" ++ testSnapshotVpcId snapshot
+          , "SUBNET_IDS=" ++ joinComma (testSnapshotSubnetIds snapshot)
+          , "SECURITY_GROUP_ID=" ++ testSnapshotSecurityGroupId snapshot
+          , "NODE_COUNT=" ++ show (length (testSnapshotNodes snapshot))
           ]
             ++ concatMap renderNodeReport (zip [0 ..] (testSnapshotNodes snapshot))
         )
 
 renderNodeReport :: (Int, AwsTestNode) -> [String]
 renderNodeReport (index, node) =
-    [ "NODE_" ++ show index ++ "_NAME=" ++ testNodeName node,
-      "NODE_" ++ show index ++ "_AZ=" ++ testNodeAvailabilityZone node,
-      "NODE_" ++ show index ++ "_INSTANCE_ID=" ++ testNodeInstanceId node,
-      "NODE_" ++ show index ++ "_PRIVATE_IP=" ++ testNodePrivateIp node,
-      "NODE_" ++ show index ++ "_PUBLIC_IP=" ++ testNodePublicIp node
+    [ "NODE_" ++ show index ++ "_NAME=" ++ testNodeName node
+    , "NODE_" ++ show index ++ "_AZ=" ++ testNodeAvailabilityZone node
+    , "NODE_" ++ show index ++ "_INSTANCE_ID=" ++ testNodeInstanceId node
+    , "NODE_" ++ show index ++ "_PRIVATE_IP=" ++ testNodePrivateIp node
+    , "NODE_" ++ show index ++ "_PUBLIC_IP=" ++ testNodePublicIp node
     ]
 
 settingsAwsEnv :: FilePath -> IO (Either String [(String, String)])
@@ -274,11 +274,10 @@ settingsAwsEnv repoRoot = do
             baseEnv <- getEnvironment
             let creds = aws (validatedConfig settings)
                 withKeys =
-                    upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id creds))
-                        $ upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key creds))
-                        $ upsertEnv "AWS_REGION" (Text.unpack (region creds))
-                        $ upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region creds))
-                        $ baseEnv
+                    upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id creds)) $
+                        upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key creds)) $
+                            upsertEnv "AWS_REGION" (Text.unpack (region creds)) $
+                                upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region creds)) baseEnv
                 withToken = case session_token creds of
                     Just token -> upsertEnv "AWS_SESSION_TOKEN" (Text.unpack token) withKeys
                     Nothing -> filter ((/= "AWS_SESSION_TOKEN") . fst) withKeys
@@ -289,10 +288,10 @@ fetchPublicIpv4 = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "curl",
-                  commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "curl"
+                , commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
                 }
     case result of
         Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
@@ -311,16 +310,16 @@ pulumiTestBaseEnv localPort minioAccessKey minioSecretKey = do
     let path = maybe "" id (lookup "PATH" currentEnv)
         home = maybe "" id (lookup "HOME" currentEnv)
     pure
-        [ ("AWS_ACCESS_KEY_ID", minioAccessKey),
-          ("AWS_SECRET_ACCESS_KEY", minioSecretKey),
-          ("AWS_REGION", "us-east-1"),
-          ("AWS_DEFAULT_REGION", "us-east-1"),
-          ("AWS_EC2_METADATA_DISABLED", "true"),
-          ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort),
-          ("PULUMI_CONFIG_PASSPHRASE", ""),
-          ("PATH", path),
-          ("HOME", home),
-          ("LANG", "C.UTF-8")
+        [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
+        , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
+        , ("AWS_REGION", "us-east-1")
+        , ("AWS_DEFAULT_REGION", "us-east-1")
+        , ("AWS_EC2_METADATA_DISABLED", "true")
+        , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+        , ("PULUMI_CONFIG_PASSPHRASE", "")
+        , ("PATH", path)
+        , ("HOME", home)
+        , ("LANG", "C.UTF-8")
         ]
 
 resolveAwsTestStackConfig :: FilePath -> IO (Either String AwsTestStackConfig)
@@ -334,8 +333,8 @@ resolveAwsTestStackConfig repoRoot = do
             pure
                 ( Right
                     AwsTestStackConfig
-                        { testStackOperatorCidr = publicIp ++ "/32",
-                          testStackPublicKey = publicKey
+                        { testStackOperatorCidr = publicIp ++ "/32"
+                        , testStackPublicKey = publicKey
                         }
                 )
 
@@ -344,8 +343,8 @@ syncAwsTestStackConfig projectDir environment stackConfig =
     foldM runConfigSet ExitSuccess configEntries
   where
     configEntries =
-        [ (False, "operatorCidr", testStackOperatorCidr stackConfig),
-          (False, "publicKey", testStackPublicKey stackConfig)
+        [ (False, "operatorCidr", testStackOperatorCidr stackConfig)
+        , (False, "publicKey", testStackPublicKey stackConfig)
         ]
 
     runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
@@ -368,14 +367,14 @@ syncAwsProviderConfig repoRoot projectDir environment = do
             foldM runConfigSet ExitSuccess (providerConfigEntries (aws (validatedConfig settings)))
   where
     providerConfigEntries creds =
-        [ (False, "aws:region", Text.unpack (region creds)),
-          (True, "aws:accessKey", Text.unpack (access_key_id creds)),
-          (True, "aws:secretKey", Text.unpack (secret_access_key creds)),
-          (True, "aws:token", maybe "" Text.unpack (session_token creds)),
-          (False, "awsRegion", Text.unpack (region creds)),
-          (True, "awsAccessKeyId", Text.unpack (access_key_id creds)),
-          (True, "awsSecretAccessKey", Text.unpack (secret_access_key creds)),
-          (True, "awsSessionToken", maybe "" Text.unpack (session_token creds))
+        [ (False, "aws:region", Text.unpack (region creds))
+        , (True, "aws:accessKey", Text.unpack (access_key_id creds))
+        , (True, "aws:secretKey", Text.unpack (secret_access_key creds))
+        , (True, "aws:token", maybe "" Text.unpack (session_token creds))
+        , (False, "awsRegion", Text.unpack (region creds))
+        , (True, "awsAccessKeyId", Text.unpack (access_key_id creds))
+        , (True, "awsSecretAccessKey", Text.unpack (secret_access_key creds))
+        , (True, "awsSessionToken", maybe "" Text.unpack (session_token creds))
         ]
 
     runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
@@ -426,10 +425,10 @@ pulumiStackSelect projectDir environment createIfMissing =
                 result <-
                     captureCommand
                         CommandSpec
-                            { commandPath = "pulumi",
-                              commandArguments = arguments,
-                              commandEnvironment = Just environment,
-                              commandWorkingDirectory = Just projectDir
+                            { commandPath = "pulumi"
+                            , commandArguments = arguments
+                            , commandEnvironment = Just environment
+                            , commandWorkingDirectory = Just projectDir
                             }
                 pure $
                     case result of
@@ -463,10 +462,10 @@ pulumiStackOutputs projectDir environment = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = ["stack", "output", "--json", "--stack", awsTestStackName],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just projectDir
+                { commandPath = "pulumi"
+                , commandArguments = ["stack", "output", "--json", "--stack", awsTestStackName]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just projectDir
                 }
     case result of
         Failure err -> pure (Left ("failed to run pulumi stack output: " ++ err))
@@ -484,10 +483,10 @@ runPulumiCommand projectDir environment arguments = do
     result <-
         runStreamingCommand
             CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = arguments,
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just projectDir
+                { commandPath = "pulumi"
+                , commandArguments = arguments
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just projectDir
                 }
     case result of
         Failure err -> do
@@ -500,10 +499,10 @@ runPulumiCommandQuiet projectDir environment arguments = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = arguments,
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just projectDir
+                { commandPath = "pulumi"
+                , commandArguments = arguments
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just projectDir
                 }
     pure $
         case result of
@@ -526,12 +525,12 @@ snapshotFromOutputs (Object obj) = do
         else
             Right
                 AwsTestStackSnapshot
-                    { testSnapshotStackName = stackName,
-                      testSnapshotBackendBucket = backendBucket,
-                      testSnapshotVpcId = vpcId,
-                      testSnapshotSubnetIds = subnetIds,
-                      testSnapshotSecurityGroupId = securityGroupId,
-                      testSnapshotNodes = nodes
+                    { testSnapshotStackName = stackName
+                    , testSnapshotBackendBucket = backendBucket
+                    , testSnapshotVpcId = vpcId
+                    , testSnapshotSubnetIds = subnetIds
+                    , testSnapshotSecurityGroupId = securityGroupId
+                    , testSnapshotNodes = nodes
                     }
 snapshotFromOutputs _ = Left "pulumi output must be a JSON object"
 
@@ -544,10 +543,10 @@ resourceStillExists repoRoot command = do
             result <-
                 captureCommand
                     CommandSpec
-                        { commandPath = head command,
-                          commandArguments = tail command,
-                          commandEnvironment = Just environment,
-                          commandWorkingDirectory = Nothing
+                        { commandPath = head command
+                        , commandArguments = tail command
+                        , commandEnvironment = Just environment
+                        , commandWorkingDirectory = Nothing
                         }
             case result of
                 Failure err -> pure (Left err)
@@ -569,10 +568,10 @@ instanceStillExists repoRoot instanceId = do
             result <-
                 captureCommand
                     CommandSpec
-                        { commandPath = "aws",
-                          commandArguments = ["ec2", "describe-instances", "--instance-ids", instanceId, "--output", "json"],
-                          commandEnvironment = Just environment,
-                          commandWorkingDirectory = Nothing
+                        { commandPath = "aws"
+                        , commandArguments = ["ec2", "describe-instances", "--instance-ids", instanceId, "--output", "json"]
+                        , commandEnvironment = Just environment
+                        , commandWorkingDirectory = Nothing
                         }
             case result of
                 Failure err -> pure (Left err)
@@ -591,11 +590,17 @@ instanceStillExists repoRoot instanceId = do
 isResourceMissing :: String -> Bool
 isResourceMissing detail =
     let lowered = map toLowerAscii detail
-     in any (`isSubstring` lowered)
-            [ "notfound", "not found", "does not exist",
-              "invalidgroup.notfound", "invalidsubnetid.notfound",
-              "invalidvpcid.notfound", "invalidinstanceid.notfound",
-              "nokeypair", "nosuchentity"
+     in any
+            (`isSubstring` lowered)
+            [ "notfound"
+            , "not found"
+            , "does not exist"
+            , "invalidgroup.notfound"
+            , "invalidsubnetid.notfound"
+            , "invalidvpcid.notfound"
+            , "invalidinstanceid.notfound"
+            , "nokeypair"
+            , "nosuchentity"
             ]
 
 isSubstring :: String -> String -> Bool
@@ -609,7 +614,7 @@ isSubstring needle haystack = any (startsWith needle) (tails haystack)
 
 toLowerAscii :: Char -> Char
 toLowerAscii c
-    | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
+    | isAsciiUpper c = toEnum (fromEnum c + 32)
     | otherwise = c
 
 assertNoAwsTestStackResidue :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Either String ())
@@ -639,11 +644,12 @@ checkResidueItems repoRoot snapshot = do
             sgResult <- resourceStillExists repoRoot ["aws", "ec2", "describe-security-groups", "--group-ids", testSnapshotSecurityGroupId snapshot]
             instanceResults <- forM (testSnapshotNodes snapshot) $ \node ->
                 instanceStillExists repoRoot (testNodeInstanceId node)
-            let allResults = [("vpc=" ++ testSnapshotVpcId snapshot, vpcResult)]
-                    ++ zipWith (\sid r -> ("subnet=" ++ sid, r)) (testSnapshotSubnetIds snapshot) subnetResults
-                    ++ [("security-group=" ++ testSnapshotSecurityGroupId snapshot, sgResult)]
-                    ++ zipWith (\n r -> ("instance=" ++ testNodeInstanceId n, r)) (testSnapshotNodes snapshot) instanceResults
-            case sequence (map snd allResults) of
+            let allResults =
+                    [("vpc=" ++ testSnapshotVpcId snapshot, vpcResult)]
+                        ++ zipWith (\sid r -> ("subnet=" ++ sid, r)) (testSnapshotSubnetIds snapshot) subnetResults
+                        ++ [("security-group=" ++ testSnapshotSecurityGroupId snapshot, sgResult)]
+                        ++ zipWith (\n r -> ("instance=" ++ testNodeInstanceId n, r)) (testSnapshotNodes snapshot) instanceResults
+            case mapM snd allResults of
                 Left err -> pure (Left err)
                 Right existsList ->
                     pure (Right [label | (label, True) <- zip (map fst allResults) existsList])

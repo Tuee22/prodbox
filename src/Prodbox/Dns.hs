@@ -1,43 +1,43 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Dns
-    ( fetchPublicIp,
-      preferredPublicHostFqdn,
-      queryRoute53Record,
-      renderDnsStatusReport,
-      runDnsCommand,
-    )
+module Prodbox.Dns (
+    fetchPublicIp,
+    preferredPublicHostFqdn,
+    queryRoute53Record,
+    renderDnsStatusReport,
+    runDnsCommand,
+)
 where
 
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-    )
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+ )
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
 import Prodbox.CLI.Command (DnsCommand (..))
 import Prodbox.Result (Result (..))
-import Prodbox.Settings
-    ( Credentials (..),
-      DomainSection (..),
-      Route53Section (..),
-      ValidatedSettings (..),
-      aws,
-      domain,
-      route53,
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
+import Prodbox.Settings (
+    Credentials (..),
+    DomainSection (..),
+    Route53Section (..),
+    ValidatedSettings (..),
+    aws,
+    domain,
+    route53,
+    validateAndLoadSettings,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Directory (findExecutable)
-import System.Exit
-    ( ExitCode (..),
-    )
+import System.Exit (
+    ExitCode (..),
+ )
 import System.IO (hPutStrLn, stderr)
 
 runDnsCommand :: FilePath -> DnsCommand -> IO ExitCode
@@ -62,11 +62,11 @@ runDnsCommand repoRoot command =
 renderDnsStatusReport :: ValidatedSettings -> String -> Maybe String -> String
 renderDnsStatusReport settings publicIp currentRecordIp =
     unlines
-        [ "DNS status",
-          "FQDN=" ++ Text.unpack (demo_fqdn (domain config)),
-          "PUBLIC_IP=" ++ publicIp,
-          "ROUTE53_A_RECORD=" ++ maybe "<missing>" id currentRecordIp,
-          "STATUS=" ++ status
+        [ "DNS status"
+        , "FQDN=" ++ Text.unpack (demo_fqdn (domain config))
+        , "PUBLIC_IP=" ++ publicIp
+        , "ROUTE53_A_RECORD=" ++ maybe "<missing>" id currentRecordIp
+        , "STATUS=" ++ status
         ]
   where
     config = validatedConfig settings
@@ -92,10 +92,10 @@ fetchPublicIp = do
             outputResult <-
                 captureCommand
                     CommandSpec
-                        { commandPath = "curl",
-                          commandArguments = ["-fsSL", "https://api.ipify.org"],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Nothing
+                        { commandPath = "curl"
+                        , commandArguments = ["-fsSL", "https://api.ipify.org"]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Nothing
                         }
             pure $
                 case outputResult of
@@ -114,10 +114,10 @@ queryRoute53Record repoRoot settings fqdn = do
     outputResult <-
         captureCommand
             CommandSpec
-                { commandPath = "aws",
-                  commandArguments = ["route53", "list-resource-record-sets", "--hosted-zone-id", Text.unpack (zone_id (route53 config)), "--output", "json"],
-                  commandEnvironment = Just (awsCliEnvironment (aws config)),
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "aws"
+                , commandArguments = ["route53", "list-resource-record-sets", "--hosted-zone-id", Text.unpack (zone_id (route53 config)), "--output", "json"]
+                , commandEnvironment = Just (awsCliEnvironment (aws config))
+                , commandWorkingDirectory = Just repoRoot
                 }
     pure $
         case outputResult of
@@ -172,11 +172,12 @@ ensureTrailingDot value = if null value || last value == '.' then value else val
 
 awsCliEnvironment :: Credentials -> [(String, String)]
 awsCliEnvironment credentials =
-    addSessionToken (session_token credentials)
-        [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials)),
-          ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials)),
-          ("AWS_REGION", Text.unpack (region credentials)),
-          ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
+    addSessionToken
+        (session_token credentials)
+        [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials))
+        , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials))
+        , ("AWS_REGION", Text.unpack (region credentials))
+        , ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
         ]
 
 addSessionToken :: Maybe Text.Text -> [(String, String)] -> [(String, String)]

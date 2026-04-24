@@ -1,65 +1,66 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Gateway
-    ( renderGatewayConfigTemplate,
-      renderGatewayStatusReport,
-      runGatewayCommand,
-    )
+module Prodbox.Gateway (
+    renderGatewayConfigTemplate,
+    renderGatewayStatusReport,
+    runGatewayCommand,
+)
 where
 
 import Control.Exception (IOException, try)
-import Data.Aeson
-    ( FromJSON (parseJSON),
-      Value (..),
-      eitherDecode,
-      object,
-      withObject,
-      (.:),
-      (.:?),
-      (.=),
-    )
-import qualified Data.Aeson.Encode.Pretty as Pretty
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
+import Data.Aeson (
+    FromJSON (parseJSON),
+    Value (..),
+    eitherDecode,
+    object,
+    withObject,
+    (.:),
+    (.:?),
+    (.=),
+ )
+import Data.Aeson.Encode.Pretty qualified as Pretty
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toUpper)
+import Data.Foldable (for_)
 import Data.List (intercalate, sortOn)
 import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific, floatingOrInteger)
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
-import qualified Prodbox.Gateway.Daemon as Daemon
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
+import Prodbox.CLI.Command (GatewayCommand (..))
+import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Types (parseDaemonConfig)
 import Prodbox.Result (Result (..))
-import Prodbox.CLI.Command (GatewayCommand (..))
-import Prodbox.Settings
-    ( Credentials (..),
-      DomainSection (..),
-      Route53Section (..),
-      ValidatedSettings (..),
-      aws,
-      domain,
-      route53,
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
+import Prodbox.Settings (
+    Credentials (..),
+    DomainSection (..),
+    Route53Section (..),
+    ValidatedSettings (..),
+    aws,
+    domain,
+    route53,
+    validateAndLoadSettings,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Directory (findExecutable)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr)
 
 data GatewayDaemonConfig = GatewayDaemonConfig
-    { gatewayNodeId :: String,
-      gatewayCertFile :: FilePath,
-      gatewayKeyFile :: FilePath,
-      gatewayCaFile :: FilePath,
-      gatewayOrdersFile :: FilePath
+    { gatewayNodeId :: String
+    , gatewayCertFile :: FilePath
+    , gatewayKeyFile :: FilePath
+    , gatewayCaFile :: FilePath
+    , gatewayOrdersFile :: FilePath
     }
     deriving (Eq, Show)
 
@@ -69,10 +70,10 @@ data Orders = Orders
     deriving (Eq, Show)
 
 data GatewayPeerEndpoint = GatewayPeerEndpoint
-    { peerNodeId :: String,
-      peerStableDnsName :: String,
-      peerRestHost :: String,
-      peerRestPort :: Int
+    { peerNodeId :: String
+    , peerStableDnsName :: String
+    , peerRestHost :: String
+    , peerRestPort :: Int
     }
     deriving (Eq, Show)
 
@@ -89,16 +90,14 @@ instance FromJSON GatewayDaemonConfig where
         _ <- obj .:? "reconnect_interval_seconds" :: Parser (Maybe Scientific)
         _ <- obj .:? "sync_interval_seconds" :: Parser (Maybe Scientific)
         maybeGate <- obj .:? "dns_write_gate" :: Parser (Maybe Value)
-        case maybeGate of
-            Nothing -> pure ()
-            Just gateValue -> requireJsonObject "dns_write_gate" gateValue
+        for_ maybeGate (requireJsonObject "dns_write_gate")
         pure
             GatewayDaemonConfig
-                { gatewayNodeId = nodeId,
-                  gatewayCertFile = certFile,
-                  gatewayKeyFile = keyFile,
-                  gatewayCaFile = caFile,
-                  gatewayOrdersFile = ordersFile
+                { gatewayNodeId = nodeId
+                , gatewayCertFile = certFile
+                , gatewayKeyFile = keyFile
+                , gatewayCaFile = caFile
+                , gatewayOrdersFile = ordersFile
                 }
 
 instance FromJSON Orders where
@@ -119,10 +118,10 @@ instance FromJSON GatewayPeerEndpoint where
         _ <- obj .: "socket_port" :: Parser Int
         pure
             GatewayPeerEndpoint
-                { peerNodeId = nodeId,
-                  peerStableDnsName = stableDnsName,
-                  peerRestHost = restHost,
-                  peerRestPort = restPort
+                { peerNodeId = nodeId
+                , peerStableDnsName = stableDnsName
+                , peerRestHost = restHost
+                , peerRestPort = restPort
                 }
 
 runGatewayCommand :: FilePath -> GatewayCommand -> IO ExitCode
@@ -185,23 +184,23 @@ renderGatewayConfigTemplate settings nodeId =
     config = validatedConfig settings
     template =
         object
-            [ "node_id" .= nodeId,
-              "cert_file" .= ("/path/to/" ++ nodeId ++ ".crt"),
-              "key_file" .= ("/path/to/" ++ nodeId ++ ".key"),
-              "ca_file" .= ("/path/to/ca.crt" :: String),
-              "orders_file" .= ("/path/to/orders.json" :: String),
-              "event_keys"
+            [ "node_id" .= nodeId
+            , "cert_file" .= ("/path/to/" ++ nodeId ++ ".crt")
+            , "key_file" .= ("/path/to/" ++ nodeId ++ ".key")
+            , "ca_file" .= ("/path/to/ca.crt" :: String)
+            , "orders_file" .= ("/path/to/orders.json" :: String)
+            , "event_keys"
                 .= Object
-                    (KeyMap.singleton (Key.fromString nodeId) (String "REPLACE_WITH_SECRET_KEY")),
-              "heartbeat_interval_seconds" .= (1.0 :: Double),
-              "reconnect_interval_seconds" .= (1.0 :: Double),
-              "sync_interval_seconds" .= (5.0 :: Double),
-              "dns_write_gate"
+                    (KeyMap.singleton (Key.fromString nodeId) (String "REPLACE_WITH_SECRET_KEY"))
+            , "heartbeat_interval_seconds" .= (1.0 :: Double)
+            , "reconnect_interval_seconds" .= (1.0 :: Double)
+            , "sync_interval_seconds" .= (5.0 :: Double)
+            , "dns_write_gate"
                 .= object
-                    [ "zone_id" .= Text.unpack (zone_id (route53 config)),
-                      "fqdn" .= preferredGatewayFqdn settings,
-                      "ttl" .= (fromIntegral (demo_ttl (domain config)) :: Integer),
-                      "aws_region" .= Text.unpack (region (aws config))
+                    [ "zone_id" .= Text.unpack (zone_id (route53 config))
+                    , "fqdn" .= preferredGatewayFqdn settings
+                    , "ttl" .= (fromIntegral (demo_ttl (domain config)) :: Integer)
+                    , "aws_region" .= Text.unpack (region (aws config))
                     ]
             ]
 
@@ -211,16 +210,16 @@ renderGatewayStatusReport payload =
         Object obj ->
             Right
                 ( unlines
-                    ( [ "Gateway status",
-                        "NODE_ID=" ++ fromMaybe "<unknown>" (lookupTextField "node_id" obj),
-                        "GATEWAY_OWNER=" ++ fromMaybe "<unknown>" (lookupTextField "gateway_owner" obj),
-                        "ACTIVE_CLAIM=" ++ boolText (lookupBoolField "has_active_claim" obj),
-                        "MESH_PEERS=" ++ renderMeshPeers obj,
-                        "EVENT_COUNT=" ++ renderEventCount obj,
-                        "LAST_PUBLIC_IP=" ++ fallback "<unknown>" (lookupTextField "last_public_ip_observed" obj),
-                        "LAST_DNS_WRITE_IP=" ++ fallback "<none>" (lookupTextField "last_dns_write_ip" obj),
-                        "LAST_DNS_WRITE_AT=" ++ fallback "<none>" (lookupTextField "last_dns_write_at_utc" obj),
-                        "DNS_WRITE_GATE=" ++ renderDnsWriteGate obj
+                    ( [ "Gateway status"
+                      , "NODE_ID=" ++ fromMaybe "<unknown>" (lookupTextField "node_id" obj)
+                      , "GATEWAY_OWNER=" ++ fromMaybe "<unknown>" (lookupTextField "gateway_owner" obj)
+                      , "ACTIVE_CLAIM=" ++ boolText (lookupBoolField "has_active_claim" obj)
+                      , "MESH_PEERS=" ++ renderMeshPeers obj
+                      , "EVENT_COUNT=" ++ renderEventCount obj
+                      , "LAST_PUBLIC_IP=" ++ fallback "<unknown>" (lookupTextField "last_public_ip_observed" obj)
+                      , "LAST_DNS_WRITE_IP=" ++ fallback "<none>" (lookupTextField "last_dns_write_ip" obj)
+                      , "LAST_DNS_WRITE_AT=" ++ fallback "<none>" (lookupTextField "last_dns_write_at_utc" obj)
+                      , "DNS_WRITE_GATE=" ++ renderDnsWriteGate obj
                       ]
                         ++ renderHeartbeatLines obj
                     )
@@ -236,21 +235,21 @@ queryGatewayState configPath config endpoint = do
             outputResult <-
                 captureCommand
                     CommandSpec
-                        { commandPath = "curl",
-                          commandArguments =
-                            [ "-fsSL",
-                              "--max-time",
-                              "5",
-                              "--cert",
-                              gatewayCertFile config,
-                              "--key",
-                              gatewayKeyFile config,
-                              "--cacert",
-                              gatewayCaFile config,
-                              gatewayStatusUrl endpoint
-                            ],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just (takeDirectory configPath)
+                        { commandPath = "curl"
+                        , commandArguments =
+                            [ "-fsSL"
+                            , "--max-time"
+                            , "5"
+                            , "--cert"
+                            , gatewayCertFile config
+                            , "--key"
+                            , gatewayKeyFile config
+                            , "--cacert"
+                            , gatewayCaFile config
+                            , gatewayStatusUrl endpoint
+                            ]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just (takeDirectory configPath)
                         }
             pure $
                 case outputResult of
@@ -284,7 +283,7 @@ lookupPeerEndpoint nodeId orders =
         [] -> Nothing
         endpoint : _ -> Just endpoint
 
-loadJsonFile :: FromJSON a => FilePath -> (Value -> Parser a) -> String -> IO (Either String a)
+loadJsonFile :: (FromJSON a) => FilePath -> (Value -> Parser a) -> String -> IO (Either String a)
 loadJsonFile path parser label = do
     fileResult <- readBinaryFile path
     pure $ do

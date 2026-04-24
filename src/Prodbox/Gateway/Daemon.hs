@@ -1,94 +1,94 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Gateway.Daemon
-    ( runGatewayDaemon,
-    )
+module Prodbox.Gateway.Daemon (
+    runGatewayDaemon,
+)
 where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (async, cancel, waitAnyCancel)
-import Control.Concurrent.STM
-    ( TVar,
-      atomically,
-      modifyTVar',
-      newTVarIO,
-      readTVarIO,
-    )
+import Control.Concurrent.STM (
+    TVar,
+    atomically,
+    modifyTVar',
+    newTVarIO,
+    readTVarIO,
+ )
 import Control.Exception (SomeException, try)
 import Control.Monad (forever, void, when)
 import Crypto.Hash.SHA256 (hash, hmac)
-import Data.Aeson
-    ( Value (..),
-      encode,
-      object,
-      (.=),
-    )
-import qualified Data.ByteString as BS
-import qualified Data.ByteString.Char8 as BS8
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
+import Data.Aeson (
+    Value (..),
+    encode,
+    object,
+    (.=),
+ )
+import Data.ByteString qualified as BS
+import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (intToDigit)
-import qualified Data.Map.Strict as Map
+import Data.Map.Strict qualified as Map
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word8)
-import Network.Socket
-    ( Family (AF_INET),
-      SockAddr (..),
-      Socket,
-      SocketOption (ReuseAddr),
-      SocketType (Stream),
-      accept,
-      bind,
-      gracefulClose,
-      listen,
-      setSocketOption,
-      socket,
-      tupleToHostAddress,
-      withSocketsDo,
-    )
+import Network.Socket (
+    Family (AF_INET),
+    SockAddr (..),
+    Socket,
+    SocketOption (ReuseAddr),
+    SocketType (Stream),
+    accept,
+    bind,
+    gracefulClose,
+    listen,
+    setSocketOption,
+    socket,
+    tupleToHostAddress,
+    withSocketsDo,
+ )
 import Network.Socket.ByteString (sendAll)
-import Prodbox.Gateway.Types
-    ( CommitLog (..),
-      DaemonConfig (..),
-      DnsWriteGate (..),
-      GatewayRule (..),
-      Orders (..),
-      PeerEndpoint (..),
-      SignedEvent (..),
-      appendIfNew,
-      emptyCommitLog,
-      parseOrders,
-    )
+import Prodbox.Gateway.Types (
+    CommitLog (..),
+    DaemonConfig (..),
+    DnsWriteGate (..),
+    GatewayRule (..),
+    Orders (..),
+    PeerEndpoint (..),
+    SignedEvent (..),
+    appendIfNew,
+    emptyCommitLog,
+    parseOrders,
+ )
 import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
 
 data DaemonState = DaemonState
-    { stateCommitLog :: CommitLog,
-      stateLastHeartbeatTimes :: Map.Map String UTCTime,
-      stateGatewayOwner :: Maybe String,
-      stateLastPublicIp :: Maybe String,
-      stateLastDnsWriteIp :: Maybe String,
-      stateLastDnsWriteTime :: Maybe UTCTime,
-      stateMeshPeers :: [String]
+    { stateCommitLog :: CommitLog
+    , stateLastHeartbeatTimes :: Map.Map String UTCTime
+    , stateGatewayOwner :: Maybe String
+    , stateLastPublicIp :: Maybe String
+    , stateLastDnsWriteIp :: Maybe String
+    , stateLastDnsWriteTime :: Maybe UTCTime
+    , stateMeshPeers :: [String]
     }
 
 initialState :: DaemonState
 initialState =
     DaemonState
-        { stateCommitLog = emptyCommitLog,
-          stateLastHeartbeatTimes = Map.empty,
-          stateGatewayOwner = Nothing,
-          stateLastPublicIp = Nothing,
-          stateLastDnsWriteIp = Nothing,
-          stateLastDnsWriteTime = Nothing,
-          stateMeshPeers = []
+        { stateCommitLog = emptyCommitLog
+        , stateLastHeartbeatTimes = Map.empty
+        , stateGatewayOwner = Nothing
+        , stateLastPublicIp = Nothing
+        , stateLastDnsWriteIp = Nothing
+        , stateLastDnsWriteTime = Nothing
+        , stateMeshPeers = []
         }
 
 runGatewayDaemon :: DaemonConfig -> IO ExitCode
@@ -128,8 +128,8 @@ heartbeatLoop config _orders stateVar eventKeys = forever $ do
     let nodeId = daemonNodeId config
         heartbeatPayload =
             object
-                [ "node_id" .= nodeId,
-                  "timestamp" .= formatUtcIso now
+                [ "node_id" .= nodeId
+                , "timestamp" .= formatUtcIso now
                 ]
     case Map.lookup nodeId eventKeys of
         Nothing -> hPutStrLn stderr ("No event key for local node " ++ nodeId)
@@ -137,8 +137,8 @@ heartbeatLoop config _orders stateVar eventKeys = forever $ do
             let event = createSignedEvent nodeId "heartbeat" heartbeatPayload key now
             atomically $ modifyTVar' stateVar $ \state ->
                 state
-                    { stateCommitLog = appendIfNew (stateCommitLog state) event,
-                      stateLastHeartbeatTimes =
+                    { stateCommitLog = appendIfNew (stateCommitLog state) event
+                    , stateLastHeartbeatTimes =
                         Map.insert nodeId now (stateLastHeartbeatTimes state)
                     }
     threadDelay (round (daemonHeartbeatInterval config * 1000000))
@@ -151,8 +151,8 @@ gatewayLoop config _orders stateVar = forever $ do
         timeout = fromIntegral (heartbeatTimeoutSeconds rule)
         activeNodes =
             [ nodeId
-            | nodeId <- rankedNodes rule,
-              case Map.lookup nodeId (stateLastHeartbeatTimes state) of
+            | nodeId <- rankedNodes rule
+            , case Map.lookup nodeId (stateLastHeartbeatTimes state) of
                 Just lastHeartbeat -> diffUTCTime now lastHeartbeat < timeout
                 Nothing -> nodeId == daemonNodeId config
             ]
@@ -186,9 +186,9 @@ dnsWriteLoop config _orders stateVar = forever $ do
                                     now <- getCurrentTime
                                     atomically $ modifyTVar' stateVar $ \s ->
                                         s
-                                            { stateLastPublicIp = Just currentIp,
-                                              stateLastDnsWriteIp = Just currentIp,
-                                              stateLastDnsWriteTime = Just now
+                                            { stateLastPublicIp = Just currentIp
+                                            , stateLastDnsWriteIp = Just currentIp
+                                            , stateLastDnsWriteTime = Just now
                                             }
                                     hPutStrLn stderr ("DNS write: " ++ dnsWriteGateFqdn gate ++ " -> " ++ currentIp)
     threadDelay (round (daemonSyncInterval config * 1000000))
@@ -219,7 +219,9 @@ handleRestClient sock config stateVar = do
             responseHeaders =
                 "HTTP/1.1 200 OK\r\n"
                     ++ "Content-Type: application/json\r\n"
-                    ++ "Content-Length: " ++ show (BL.length responseBody) ++ "\r\n"
+                    ++ "Content-Length: "
+                    ++ show (BL.length responseBody)
+                    ++ "\r\n"
                     ++ "Connection: close\r\n"
                     ++ "\r\n"
         sendAll sock (BS8.pack responseHeaders)
@@ -229,25 +231,25 @@ renderStateJson :: DaemonConfig -> DaemonState -> BL.ByteString
 renderStateJson config state =
     encode $
         object
-            [ "node_id" .= daemonNodeId config,
-              "gateway_owner" .= stateGatewayOwner state,
-              "has_active_claim" .= (stateGatewayOwner state == Just (daemonNodeId config)),
-              "mesh_peers" .= stateMeshPeers state,
-              "event_count" .= length (commitLogEvents (stateCommitLog state)),
-              "last_public_ip_observed" .= stateLastPublicIp state,
-              "last_dns_write_ip" .= stateLastDnsWriteIp state,
-              "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state),
-              "dns_write_gate" .= fmap renderDnsWriteGate (daemonDnsWriteGate config),
-              "heartbeat_age_seconds" .= renderHeartbeatAges state
+            [ "node_id" .= daemonNodeId config
+            , "gateway_owner" .= stateGatewayOwner state
+            , "has_active_claim" .= (stateGatewayOwner state == Just (daemonNodeId config))
+            , "mesh_peers" .= stateMeshPeers state
+            , "event_count" .= length (commitLogEvents (stateCommitLog state))
+            , "last_public_ip_observed" .= stateLastPublicIp state
+            , "last_dns_write_ip" .= stateLastDnsWriteIp state
+            , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
+            , "dns_write_gate" .= fmap renderDnsWriteGate (daemonDnsWriteGate config)
+            , "heartbeat_age_seconds" .= renderHeartbeatAges state
             ]
 
 renderDnsWriteGate :: DnsWriteGate -> Value
 renderDnsWriteGate gate =
     object
-        [ "zone_id" .= dnsWriteGateZoneId gate,
-          "fqdn" .= dnsWriteGateFqdn gate,
-          "ttl" .= dnsWriteGateTtl gate,
-          "aws_region" .= dnsWriteGateAwsRegion gate
+        [ "zone_id" .= dnsWriteGateZoneId gate
+        , "fqdn" .= dnsWriteGateFqdn gate
+        , "ttl" .= dnsWriteGateTtl gate
+        , "aws_region" .= dnsWriteGateAwsRegion gate
         ]
 
 renderHeartbeatAges :: DaemonState -> Value
@@ -258,10 +260,10 @@ fetchPublicIp = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "curl",
-                  commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "curl"
+                , commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
                 }
     case result of
         Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
@@ -282,13 +284,13 @@ writeDnsRecord gate ip = do
                     object
                         [ "Changes"
                             .= [ object
-                                    [ "Action" .= ("UPSERT" :: String),
-                                      "ResourceRecordSet"
+                                    [ "Action" .= ("UPSERT" :: String)
+                                    , "ResourceRecordSet"
                                         .= object
-                                            [ "Name" .= dnsWriteGateFqdn gate,
-                                              "Type" .= ("A" :: String),
-                                              "TTL" .= dnsWriteGateTtl gate,
-                                              "ResourceRecords" .= [object ["Value" .= ip]]
+                                            [ "Name" .= dnsWriteGateFqdn gate
+                                            , "Type" .= ("A" :: String)
+                                            , "TTL" .= dnsWriteGateTtl gate
+                                            , "ResourceRecords" .= [object ["Value" .= ip]]
                                             ]
                                     ]
                                ]
@@ -296,15 +298,19 @@ writeDnsRecord gate ip = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "aws",
-                  commandArguments =
-                    [ "route53", "change-resource-record-sets",
-                      "--hosted-zone-id", dnsWriteGateZoneId gate,
-                      "--change-batch", changeBatch,
-                      "--region", dnsWriteGateAwsRegion gate
-                    ],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "aws"
+                , commandArguments =
+                    [ "route53"
+                    , "change-resource-record-sets"
+                    , "--hosted-zone-id"
+                    , dnsWriteGateZoneId gate
+                    , "--change-batch"
+                    , changeBatch
+                    , "--region"
+                    , dnsWriteGateAwsRegion gate
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
                 }
     case result of
         Failure err -> pure (Left ("aws cli failed: " ++ err))
@@ -319,10 +325,10 @@ createSignedEvent nodeId evtType payload key now =
         tsStr = formatUtcIso now
         unsignedPayload =
             object
-                [ "emitter_node_id" .= nodeId,
-                  "event_type" .= evtType,
-                  "payload_json" .= payloadJsonStr,
-                  "timestamp_utc" .= tsStr
+                [ "emitter_node_id" .= nodeId
+                , "event_type" .= evtType
+                , "payload_json" .= payloadJsonStr
+                , "timestamp_utc" .= tsStr
                 ]
         unsignedStr = BL8.unpack (encode unsignedPayload)
         eventHashBytes = hash (BS8.pack unsignedStr)
@@ -330,12 +336,12 @@ createSignedEvent nodeId evtType payload key now =
         signatureBytes = hmac (BS8.pack key) (BS8.pack eventHashHex)
         signatureHexStr = bytesToHex signatureBytes
      in SignedEvent
-            { eventHash = eventHashHex,
-              emitterNodeId = nodeId,
-              timestampUtc = tsStr,
-              eventType = evtType,
-              payloadJson = payloadJsonStr,
-              signatureHex = signatureHexStr
+            { eventHash = eventHashHex
+            , emitterNodeId = nodeId
+            , timestampUtc = tsStr
+            , eventType = evtType
+            , payloadJson = payloadJsonStr
+            , signatureHex = signatureHexStr
             }
 
 formatUtcIso :: UTCTime -> String

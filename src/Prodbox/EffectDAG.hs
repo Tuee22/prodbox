@@ -1,40 +1,40 @@
-module Prodbox.EffectDAG
-    ( EffectDAG (..),
-      EffectNode (..),
-      fromRootIds,
-      transitiveClosureIds,
-    )
+module Prodbox.EffectDAG (
+    EffectDAG (..),
+    EffectNode (..),
+    fromRootIds,
+    transitiveClosureIds,
+)
 where
 
-import Control.Monad
-    ( foldM,
-    )
-import Data.List
-    ( sort,
-    )
-import qualified Data.Map.Strict as Map
-import Data.Map.Strict
-    ( Map,
-    )
-import qualified Data.Set as Set
-import Data.Set
-    ( Set,
-    )
-import Prodbox.Effect
-    ( Effect,
-    )
+import Control.Monad (
+    foldM,
+ )
+import Data.List (
+    sort,
+ )
+import Data.Map.Strict (
+    Map,
+ )
+import Data.Map.Strict qualified as Map
+import Data.Set (
+    Set,
+ )
+import Data.Set qualified as Set
+import Prodbox.Effect (
+    Effect,
+ )
 
 data EffectNode = EffectNode
-    { effectNodeId :: String,
-      effectNodeDescription :: String,
-      effectNodePrerequisites :: [String],
-      effectNodeEffect :: Effect
+    { effectNodeId :: String
+    , effectNodeDescription :: String
+    , effectNodePrerequisites :: [String]
+    , effectNodeEffect :: Effect
     }
     deriving (Eq, Show)
 
 data EffectDAG = EffectDAG
-    { effectDagRoots :: [String],
-      effectDagNodes :: Map String EffectNode
+    { effectDagRoots :: [String]
+    , effectDagNodes :: Map String EffectNode
     }
     deriving (Eq, Show)
 
@@ -44,8 +44,8 @@ fromRootIds rootIds registry = do
     let nodeIds = Set.fromList closureIds
     pure
         EffectDAG
-            { effectDagRoots = sort (orderedUnique rootIds),
-              effectDagNodes = Map.filterWithKey (\nodeId _ -> Set.member nodeId nodeIds) registry
+            { effectDagRoots = sort (orderedUnique rootIds)
+            , effectDagNodes = Map.filterWithKey (\nodeId _ -> Set.member nodeId nodeIds) registry
             }
 
 transitiveClosureIds :: [String] -> Map String EffectNode -> Either String [String]

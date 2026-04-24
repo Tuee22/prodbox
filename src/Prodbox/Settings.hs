@@ -2,50 +2,50 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Settings
-    ( AcmeSection (..),
-      ConfigFile (..),
-      Credentials (..),
-      DeploymentSection (..),
-      DomainSection (..),
-      Route53Section (..),
-      StorageSection (..),
-      ValidatedSettings (..),
-      defaultConfigFile,
-      loadConfigFile,
-      renderConfigDhall,
-      renderSettingsDisplay,
-      validateAwsBootstrapConfig,
-      validateAndLoadSettings,
-    )
+module Prodbox.Settings (
+    AcmeSection (..),
+    ConfigFile (..),
+    Credentials (..),
+    DeploymentSection (..),
+    DomainSection (..),
+    Route53Section (..),
+    StorageSection (..),
+    ValidatedSettings (..),
+    defaultConfigFile,
+    loadConfigFile,
+    renderConfigDhall,
+    renderSettingsDisplay,
+    validateAwsBootstrapConfig,
+    validateAndLoadSettings,
+)
 where
 
-import Control.Exception
-    ( SomeException,
-      displayException,
-      try,
-    )
+import Control.Exception (
+    SomeException,
+    displayException,
+    try,
+ )
 import Data.Char (toLower)
-import qualified Data.Text as Text
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Dhall (FromDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
-import Prodbox.Repo
-    ( ConfigPaths (..),
-      canonicalConfigPaths,
-    )
-import System.Directory
-    ( doesFileExist,
-      makeAbsolute,
-    )
+import Prodbox.Repo (
+    ConfigPaths (..),
+    canonicalConfigPaths,
+ )
+import System.Directory (
+    doesFileExist,
+    makeAbsolute,
+ )
 import System.FilePath ((</>))
 
 data Credentials = Credentials
-    { access_key_id :: Text,
-      secret_access_key :: Text,
-      session_token :: Maybe Text,
-      region :: Text
+    { access_key_id :: Text
+    , secret_access_key :: Text
+    , session_token :: Maybe Text
+    , region :: Text
     }
     deriving (Eq, Show, Generic, FromDhall)
 
@@ -55,24 +55,24 @@ data Route53Section = Route53Section
     deriving (Eq, Show, Generic, FromDhall)
 
 data DomainSection = DomainSection
-    { demo_fqdn :: Text,
-      demo_ttl :: Natural,
-      vscode_fqdn :: Maybe Text
+    { demo_fqdn :: Text
+    , demo_ttl :: Natural
+    , vscode_fqdn :: Maybe Text
     }
     deriving (Eq, Show, Generic, FromDhall)
 
 data AcmeSection = AcmeSection
-    { email :: Text,
-      server :: Text,
-      eab_key_id :: Maybe Text,
-      eab_hmac_key :: Maybe Text
+    { email :: Text
+    , server :: Text
+    , eab_key_id :: Maybe Text
+    , eab_hmac_key :: Maybe Text
     }
     deriving (Eq, Show, Generic, FromDhall)
 
 data DeploymentSection = DeploymentSection
-    { dev_mode :: Bool,
-      bootstrap_public_ip_override :: Maybe Text,
-      pulumi_enable_dns_bootstrap :: Bool
+    { dev_mode :: Bool
+    , bootstrap_public_ip_override :: Maybe Text
+    , pulumi_enable_dns_bootstrap :: Bool
     }
     deriving (Eq, Show, Generic, FromDhall)
 
@@ -82,19 +82,19 @@ data StorageSection = StorageSection
     deriving (Eq, Show, Generic, FromDhall)
 
 data ConfigFile = ConfigFile
-    { aws :: Credentials,
-      aws_admin :: Credentials,
-      route53 :: Route53Section,
-      domain :: DomainSection,
-      acme :: AcmeSection,
-      deployment :: DeploymentSection,
-      storage :: StorageSection
+    { aws :: Credentials
+    , aws_admin :: Credentials
+    , route53 :: Route53Section
+    , domain :: DomainSection
+    , acme :: AcmeSection
+    , deployment :: DeploymentSection
+    , storage :: StorageSection
     }
     deriving (Eq, Show, Generic, FromDhall)
 
 data ValidatedSettings = ValidatedSettings
-    { validatedConfig :: ConfigFile,
-      resolvedManualPvHostRoot :: FilePath
+    { validatedConfig :: ConfigFile
+    , resolvedManualPvHostRoot :: FilePath
     }
     deriving (Eq, Show)
 
@@ -108,26 +108,26 @@ validateAndLoadSettings repoRoot = do
 renderSettingsDisplay :: Bool -> ValidatedSettings -> String
 renderSettingsDisplay showSecrets settings =
     unlines
-        [ "aws.region=" ++ renderText (region (aws config)),
-          "aws.access_key_id=" ++ renderSensitive showSecrets (access_key_id (aws config)),
-          "aws.secret_access_key=" ++ renderSensitive showSecrets (secret_access_key (aws config)),
-          "aws.session_token=" ++ renderSensitiveMaybe showSecrets (session_token (aws config)),
-          "aws_admin.access_key_id=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (access_key_id (aws_admin config))),
-          "aws_admin.secret_access_key=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (secret_access_key (aws_admin config))),
-          "aws_admin.session_token=" ++ renderSensitiveMaybe showSecrets (normalizeMaybeText (session_token (aws_admin config))),
-          "aws_admin.region=" ++ renderMaybeText (normalizeOptionalText (region (aws_admin config))),
-          "route53.zone_id=" ++ renderText (zone_id (route53 config)),
-          "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config)),
-          "domain.demo_ttl=" ++ show (demo_ttl (domain config)),
-          "domain.vscode_fqdn=" ++ renderMaybeText (vscode_fqdn (domain config)),
-          "acme.email=" ++ renderSensitive showSecrets (email (acme config)),
-          "acme.server=" ++ renderText (server (acme config)),
-          "acme.eab_key_id=" ++ renderMaybeText (eab_key_id (acme config)),
-          "acme.eab_hmac_key=" ++ renderSensitiveMaybe showSecrets (eab_hmac_key (acme config)),
-          "deployment.dev_mode=" ++ renderBool (dev_mode (deployment config)),
-          "deployment.bootstrap_public_ip_override=" ++ renderMaybeText (bootstrap_public_ip_override (deployment config)),
-          "deployment.pulumi_enable_dns_bootstrap=" ++ renderBool (pulumi_enable_dns_bootstrap (deployment config)),
-          "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
+        [ "aws.region=" ++ renderText (region (aws config))
+        , "aws.access_key_id=" ++ renderSensitive showSecrets (access_key_id (aws config))
+        , "aws.secret_access_key=" ++ renderSensitive showSecrets (secret_access_key (aws config))
+        , "aws.session_token=" ++ renderSensitiveMaybe showSecrets (session_token (aws config))
+        , "aws_admin.access_key_id=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (access_key_id (aws_admin config)))
+        , "aws_admin.secret_access_key=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (secret_access_key (aws_admin config)))
+        , "aws_admin.session_token=" ++ renderSensitiveMaybe showSecrets (normalizeMaybeText (session_token (aws_admin config)))
+        , "aws_admin.region=" ++ renderMaybeText (normalizeOptionalText (region (aws_admin config)))
+        , "route53.zone_id=" ++ renderText (zone_id (route53 config))
+        , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
+        , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
+        , "domain.vscode_fqdn=" ++ renderMaybeText (vscode_fqdn (domain config))
+        , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
+        , "acme.server=" ++ renderText (server (acme config))
+        , "acme.eab_key_id=" ++ renderMaybeText (eab_key_id (acme config))
+        , "acme.eab_hmac_key=" ++ renderSensitiveMaybe showSecrets (eab_hmac_key (acme config))
+        , "deployment.dev_mode=" ++ renderBool (dev_mode (deployment config))
+        , "deployment.bootstrap_public_ip_override=" ++ renderMaybeText (bootstrap_public_ip_override (deployment config))
+        , "deployment.pulumi_enable_dns_bootstrap=" ++ renderBool (pulumi_enable_dns_bootstrap (deployment config))
+        , "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
         ]
   where
     config = validatedConfig settings
@@ -154,8 +154,8 @@ validateConfig repoRoot config = do
         requireNonEmpty "aws.secret_access_key" (secret_access_key (aws config))
         pure
             ValidatedSettings
-                { validatedConfig = config,
-                  resolvedManualPvHostRoot = resolvedManualRoot
+                { validatedConfig = config
+                , resolvedManualPvHostRoot = resolvedManualRoot
                 }
 
 validateAwsBootstrapConfig :: ConfigFile -> Either String ()
@@ -182,18 +182,17 @@ validateAcmeBinding :: AcmeSection -> Either String ()
 validateAcmeBinding acmeSection
     | isZeroSslServer (server acmeSection)
         && (eab_key_id acmeSection == Nothing || eab_hmac_key acmeSection == Nothing) =
-            Left "acme.eab_key_id and acme.eab_hmac_key are required for ZeroSSL ACME"
+        Left "acme.eab_key_id and acme.eab_hmac_key are required for ZeroSSL ACME"
     | hasExactlyOne (eab_key_id acmeSection) (eab_hmac_key acmeSection) =
         Left "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
     | otherwise = Right ()
 
 validateAdminCredentials :: Credentials -> Either String ()
 validateAdminCredentials adminSection =
-    case
-        ( normalizeOptionalText (access_key_id adminSection),
-          normalizeOptionalText (secret_access_key adminSection),
-          normalizeOptionalText (region adminSection)
-        ) of
+    case ( normalizeOptionalText (access_key_id adminSection)
+         , normalizeOptionalText (secret_access_key adminSection)
+         , normalizeOptionalText (region adminSection)
+         ) of
         (Nothing, Nothing, Nothing) -> Right ()
         (Just _, Just _, Just _) -> Right ()
         _ ->
@@ -231,7 +230,7 @@ renderSensitiveMaybe :: Bool -> Maybe Text -> String
 renderSensitiveMaybe showSecrets maybeValue =
     renderMaybeText $
         fmap
-            (\value ->
+            ( \value ->
                 if showSecrets
                     then value
                     else maskSecret value
@@ -260,81 +259,81 @@ defaultConfigFile =
     ConfigFile
         { aws =
             Credentials
-                { access_key_id = "",
-                  secret_access_key = "",
-                  session_token = Nothing,
-                  region = "us-east-1"
-                },
-          aws_admin =
+                { access_key_id = ""
+                , secret_access_key = ""
+                , session_token = Nothing
+                , region = "us-east-1"
+                }
+        , aws_admin =
             Credentials
-                { access_key_id = "",
-                  secret_access_key = "",
-                  session_token = Nothing,
-                  region = ""
-                },
-          route53 = Route53Section{zone_id = ""},
-          domain =
+                { access_key_id = ""
+                , secret_access_key = ""
+                , session_token = Nothing
+                , region = ""
+                }
+        , route53 = Route53Section{zone_id = ""}
+        , domain =
             DomainSection
-                { demo_fqdn = "demo.example.com",
-                  demo_ttl = 60,
-                  vscode_fqdn = Nothing
-                },
-          acme =
+                { demo_fqdn = "demo.example.com"
+                , demo_ttl = 60
+                , vscode_fqdn = Nothing
+                }
+        , acme =
             AcmeSection
-                { email = "",
-                  server = "https://acme-v02.api.letsencrypt.org/directory",
-                  eab_key_id = Nothing,
-                  eab_hmac_key = Nothing
-                },
-          deployment =
+                { email = ""
+                , server = "https://acme-v02.api.letsencrypt.org/directory"
+                , eab_key_id = Nothing
+                , eab_hmac_key = Nothing
+                }
+        , deployment =
             DeploymentSection
-                { dev_mode = True,
-                  bootstrap_public_ip_override = Nothing,
-                  pulumi_enable_dns_bootstrap = True
-                },
-          storage = StorageSection{manual_pv_host_root = ".data"}
+                { dev_mode = True
+                , bootstrap_public_ip_override = Nothing
+                , pulumi_enable_dns_bootstrap = True
+                }
+        , storage = StorageSection{manual_pv_host_root = ".data"}
         }
 
 renderConfigDhall :: ConfigFile -> String
 renderConfigDhall config =
     unlines
-        [ "let Config = ./prodbox-config-types.dhall",
-          "",
-          "in  Config::{",
-          "    , aws = Config.default.aws // {",
-          "        , access_key_id = " ++ dhallText (access_key_id (aws config)),
-          "        , secret_access_key = " ++ dhallText (secret_access_key (aws config)),
-          "        , session_token = " ++ dhallOptionalText (session_token (aws config)),
-          "        , region = " ++ dhallText (region (aws config)),
-          "        }",
-          "    , aws_admin = Config.default.aws_admin // {",
-          "        , access_key_id = " ++ dhallText (access_key_id (aws_admin config)),
-          "        , secret_access_key = " ++ dhallText (secret_access_key (aws_admin config)),
-          "        , session_token = " ++ dhallOptionalText (session_token (aws_admin config)),
-          "        , region = " ++ dhallText (region (aws_admin config)),
-          "        }",
-          "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }",
-          "    , domain = Config.default.domain // {",
-          "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config)),
-          "        , demo_ttl = " ++ show (demo_ttl (domain config)),
-          "        , vscode_fqdn = " ++ dhallOptionalText (vscode_fqdn (domain config)),
-          "        }",
-          "    , acme = Config.default.acme // {",
-          "        , email = " ++ dhallText (email (acme config)),
-          "        , server = " ++ dhallText (server (acme config)),
-          "        , eab_key_id = " ++ dhallOptionalText (eab_key_id (acme config)),
-          "        , eab_hmac_key = " ++ dhallOptionalText (eab_hmac_key (acme config)),
-          "        }",
-          "    , deployment = Config.default.deployment // {",
-          "        , dev_mode = " ++ dhallBool (dev_mode (deployment config)),
-          "        , bootstrap_public_ip_override = " ++ dhallOptionalText (bootstrap_public_ip_override (deployment config)),
-          "        , pulumi_enable_dns_bootstrap = " ++ dhallBool (pulumi_enable_dns_bootstrap (deployment config)),
-          "        }",
-          "    , storage = Config.default.storage // {",
-          "        , manual_pv_host_root = " ++ dhallText (manual_pv_host_root (storage config)),
-          "        }",
-          "    }",
-          ""
+        [ "let Config = ./prodbox-config-types.dhall"
+        , ""
+        , "in  Config::{"
+        , "    , aws = Config.default.aws // {"
+        , "        , access_key_id = " ++ dhallText (access_key_id (aws config))
+        , "        , secret_access_key = " ++ dhallText (secret_access_key (aws config))
+        , "        , session_token = " ++ dhallOptionalText (session_token (aws config))
+        , "        , region = " ++ dhallText (region (aws config))
+        , "        }"
+        , "    , aws_admin = Config.default.aws_admin // {"
+        , "        , access_key_id = " ++ dhallText (access_key_id (aws_admin config))
+        , "        , secret_access_key = " ++ dhallText (secret_access_key (aws_admin config))
+        , "        , session_token = " ++ dhallOptionalText (session_token (aws_admin config))
+        , "        , region = " ++ dhallText (region (aws_admin config))
+        , "        }"
+        , "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }"
+        , "    , domain = Config.default.domain // {"
+        , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))
+        , "        , demo_ttl = " ++ show (demo_ttl (domain config))
+        , "        , vscode_fqdn = " ++ dhallOptionalText (vscode_fqdn (domain config))
+        , "        }"
+        , "    , acme = Config.default.acme // {"
+        , "        , email = " ++ dhallText (email (acme config))
+        , "        , server = " ++ dhallText (server (acme config))
+        , "        , eab_key_id = " ++ dhallOptionalText (eab_key_id (acme config))
+        , "        , eab_hmac_key = " ++ dhallOptionalText (eab_hmac_key (acme config))
+        , "        }"
+        , "    , deployment = Config.default.deployment // {"
+        , "        , dev_mode = " ++ dhallBool (dev_mode (deployment config))
+        , "        , bootstrap_public_ip_override = " ++ dhallOptionalText (bootstrap_public_ip_override (deployment config))
+        , "        , pulumi_enable_dns_bootstrap = " ++ dhallBool (pulumi_enable_dns_bootstrap (deployment config))
+        , "        }"
+        , "    , storage = Config.default.storage // {"
+        , "        , manual_pv_host_root = " ++ dhallText (manual_pv_host_root (storage config))
+        , "        }"
+        , "    }"
+        , ""
         ]
 
 dhallText :: Text -> String
@@ -353,6 +352,6 @@ dhallBool False = "False"
 missingConfigMessage :: FilePath -> String
 missingConfigMessage configPath =
     unlines
-        [ "Missing required repository config `" ++ configPath ++ "`.",
-          "Run `./.build/prodbox config setup` from the repository root to create it, then rerun the command."
+        [ "Missing required repository config `" ++ configPath ++ "`."
+        , "Run `./.build/prodbox config setup` from the repository root to create it, then rerun the command."
         ]

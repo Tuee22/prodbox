@@ -31,6 +31,7 @@ current Haskell-only repository contract rather than a mixed migration baseline.
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
+| [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine and review-guidance split |
 | [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor-first workload sourcing, public-image reconcile, and dual-arch image publication |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage and deterministic PVC/PV rebinding doctrine |
@@ -92,6 +93,7 @@ current Haskell-only repository contract rather than a mixed migration baseline.
 ### Code Quality
 
 - [Code Quality Doctrine](./code_quality.md)
+- [Haskell Code Guide](./haskell_code_guide.md)
 - [Pure FP Standards](./pure_fp_standards.md)
 
 ### CLI Surface

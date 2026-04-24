@@ -1,28 +1,28 @@
-module Prodbox.BuildSupport
-    ( addBuildSupportEnvironment,
-      canonicalOperatorBinaryPath,
-      syncBuiltOperatorBinary,
-    )
+module Prodbox.BuildSupport (
+    addBuildSupportEnvironment,
+    canonicalOperatorBinaryPath,
+    syncBuiltOperatorBinary,
+)
 where
 
-import System.Directory
-    ( Permissions (..),
-      copyFile,
-      createDirectoryIfMissing,
-      createFileLink,
-      doesFileExist,
-      getPermissions,
-      setPermissions,
-    )
-import System.Exit
-    ( ExitCode (..),
-    )
+import System.Directory (
+    Permissions (..),
+    copyFile,
+    createDirectoryIfMissing,
+    createFileLink,
+    doesFileExist,
+    getPermissions,
+    setPermissions,
+ )
+import System.Exit (
+    ExitCode (..),
+ )
 import System.FilePath ((</>))
-import System.Process
-    ( CreateProcess (cwd, env),
-      proc,
-      readCreateProcessWithExitCode,
-    )
+import System.Process (
+    CreateProcess (cwd, env),
+    proc,
+    readCreateProcessWithExitCode,
+ )
 
 addBuildSupportEnvironment :: FilePath -> [(String, String)] -> IO [(String, String)]
 addBuildSupportEnvironment repoRoot environment = do
@@ -73,8 +73,8 @@ ensureBuildSupportDirectory repoRoot = do
 firstExistingSystemLib :: IO (Maybe FilePath)
 firstExistingSystemLib =
     firstExistingFile
-        [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6",
-          "/lib/x86_64-linux-gnu/libtinfo.so.6"
+        [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6"
+        , "/lib/x86_64-linux-gnu/libtinfo.so.6"
         ]
 
 firstExistingFile :: [FilePath] -> IO (Maybe FilePath)

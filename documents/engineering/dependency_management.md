@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md
+**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/haskell_code_guide.md
 
 > **Purpose**: Define current dependency-management doctrine for the Haskell `prodbox` repository.
 
@@ -78,6 +78,7 @@ cabal build --builddir=.build exe:prodbox
 
 ### External Command Dependencies
 
+- Haskell quality tools: `fourmolu`, `hlint`
 - Host/runtime tools: `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `systemctl`
 - Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
 - Infrastructure tooling: `pulumi`
@@ -105,5 +106,6 @@ Checklist:
 
 - [CLI Command Surface](./cli_command_surface.md)
 - [Code Quality Doctrine](./code_quality.md)
+- [Haskell Code Guide](./haskell_code_guide.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)

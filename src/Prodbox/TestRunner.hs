@@ -1,65 +1,65 @@
-module Prodbox.TestRunner
-    ( runTests,
-    )
+module Prodbox.TestRunner (
+    runTests,
+)
 where
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (foldM, unless)
 import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
-import Prodbox.BuildSupport
-    ( addBuildSupportEnvironment,
-      canonicalOperatorBinaryPath,
-      syncBuiltOperatorBinary,
-    )
-import Prodbox.CLI.Command
-    ( TestCommand (..),
-      validateCoverage,
-    )
-import Prodbox.Effect
-    ( Effect (EmitLine),
-    )
-import Prodbox.EffectDAG
-    ( EffectDAG,
-      EffectNode (..),
-      fromRootIds,
-      transitiveClosureIds,
-    )
-import Prodbox.EffectInterpreter
-    ( InterpreterContext (..),
-      runEffectDAG,
-    )
-import Prodbox.Prerequisite
-    ( prerequisiteRegistry,
-    )
-import Prodbox.Result
-    ( Result (..),
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-      runStreamingCommand,
-    )
-import Prodbox.TestPlan
-    ( NativeSuitePlan (..),
-      NativeValidation,
-      TestExecutionMode (..),
-      TestExecutionPlan (..),
-      testExecutionPlan,
-    )
+import Data.Map.Strict qualified as Map
+import Prodbox.BuildSupport (
+    addBuildSupportEnvironment,
+    canonicalOperatorBinaryPath,
+    syncBuiltOperatorBinary,
+ )
+import Prodbox.CLI.Command (
+    TestCommand (..),
+    validateCoverage,
+ )
+import Prodbox.Effect (
+    Effect (EmitLine),
+ )
+import Prodbox.EffectDAG (
+    EffectDAG,
+    EffectNode (..),
+    fromRootIds,
+    transitiveClosureIds,
+ )
+import Prodbox.EffectInterpreter (
+    InterpreterContext (..),
+    runEffectDAG,
+ )
+import Prodbox.Prerequisite (
+    prerequisiteRegistry,
+ )
+import Prodbox.Result (
+    Result (..),
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+    runStreamingCommand,
+ )
+import Prodbox.TestPlan (
+    NativeSuitePlan (..),
+    NativeValidation,
+    TestExecutionMode (..),
+    TestExecutionPlan (..),
+    testExecutionPlan,
+ )
 import Prodbox.TestValidation (runNativeValidation)
-import System.Environment
-    ( getEnvironment,
-    )
-import System.Exit
-    ( ExitCode (..),
-    )
-import System.IO
-    ( hPutStr,
-      hPutStrLn,
-      stderr,
-    )
+import System.Environment (
+    getEnvironment,
+ )
+import System.Exit (
+    ExitCode (..),
+ )
+import System.IO (
+    hPutStr,
+    hPutStrLn,
+    stderr,
+ )
 
 phaseOneGateMessage :: String
 phaseOneGateMessage = "Phase 1/2: validating integration prerequisites"
@@ -123,15 +123,15 @@ runHaskellSuites repoRoot environment suites = do
     runSuite ExitSuccess suiteName =
         runCommandForExitCode
             CommandSpec
-                { commandPath = "cabal",
-                  commandArguments =
-                    [ "test",
-                      "--builddir=.build",
-                      suiteName,
-                      "--test-show-details=direct"
-                    ],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "cabal"
+                , commandArguments =
+                    [ "test"
+                    , "--builddir=.build"
+                    , suiteName
+                    , "--test-show-details=direct"
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just repoRoot
                 }
 
 runNativeSuite :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
@@ -169,26 +169,24 @@ emitLineAction message = putStrLn message >> pure ExitSuccess
 
 runbookActions :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 runbookActions repoRoot environment suitePlan =
-    case nativeRequiresIntegrationRunbook suitePlan of
-        False -> []
-        True ->
-            [ emitLineAction phaseOnePointFiveMessage,
-              runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+    if nativeRequiresIntegrationRunbook suitePlan
+        then
+            [ emitLineAction phaseOnePointFiveMessage
+            , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
             ]
+        else []
 
 supportedRuntimeBootstrapActions :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 supportedRuntimeBootstrapActions repoRoot environment suitePlan =
-    case nativeRequiresSupportedRuntimeBootstrap suitePlan of
-        False -> []
-        True ->
-            [ emitLineAction phaseOnePointSixMessage,
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "refresh", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "up", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"],
-              runWaitForNativeCommandOutputContains
+    if nativeRequiresSupportedRuntimeBootstrap suitePlan
+        then
+            [ emitLineAction phaseOnePointSixMessage
+            , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
+            , runWaitForNativeCommandOutputContains
                 repoRoot
                 environment
                 ["host", "public-edge"]
@@ -196,37 +194,35 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
                 publicEdgeReadyAttempts
                 publicEdgeReadyDelayMicroseconds
             ]
+        else []
 
 supportedRuntimePostflightActions :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 supportedRuntimePostflightActions repoRoot environment suitePlan =
-    case nativeRequiresSupportedRuntimePostflight suitePlan of
-        False -> []
-        True ->
-            [ emitLineAction postTestRestoreMessage,
-              runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"],
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "refresh", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "up", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"],
-              runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"],
-              runWaitForNativeCommandOutputContains
+    if nativeRequiresSupportedRuntimePostflight suitePlan
+        then
+            [ emitLineAction postTestRestoreMessage
+            , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
+            , runWaitForNativeCommandOutputContains
                 repoRoot
                 environment
                 ["host", "public-edge"]
                 publicEdgeReadyClassification
                 publicEdgeReadyAttempts
-                publicEdgeReadyDelayMicroseconds,
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"],
-              runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
+                publicEdgeReadyDelayMicroseconds
+            , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
             ]
+        else []
 
 runNativeValidations :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
 runNativeValidations repoRoot environment suitePlan =
     case nativeValidations suitePlan of
         [] -> pure ExitSuccess
         validations -> foldM runValidation ExitSuccess validations
-
   where
     runValidation :: ExitCode -> NativeValidation -> IO ExitCode
     runValidation failure@(ExitFailure _) _ = pure failure
@@ -253,7 +249,7 @@ addPhaseOneHeader suitePlan
     addHeaderDependency :: String -> Map.Map String EffectNode -> Map.Map String EffectNode
     addHeaderDependency effectId =
         Map.adjust
-            (\node ->
+            ( \node ->
                 node
                     { effectNodePrerequisites =
                         orderedPrepend phaseOneHeaderId (effectNodePrerequisites node)
@@ -264,16 +260,16 @@ addPhaseOneHeader suitePlan
 phaseOneHeaderNode :: NativeSuitePlan -> EffectNode
 phaseOneHeaderNode suitePlan =
     EffectNode
-        { effectNodeId = phaseOneHeaderId,
-          effectNodeDescription = "Phase 1 header",
-          effectNodePrerequisites = [],
-          effectNodeEffect = EmitLine gateMessage
+        { effectNodeId = phaseOneHeaderId
+        , effectNodeDescription = "Phase 1 header"
+        , effectNodePrerequisites = []
+        , effectNodeEffect = EmitLine gateMessage
         }
   where
     gateMessage =
-        case null (nativeIntegrationGatePrerequisites suitePlan) of
-            True -> phaseOneNoPrereqMessage
-            False -> phaseOneGateMessage
+        if null (nativeIntegrationGatePrerequisites suitePlan)
+            then phaseOneNoPrereqMessage
+            else phaseOneGateMessage
 
 phaseOneDependencies :: NativeSuitePlan -> [String]
 phaseOneDependencies suitePlan =
@@ -335,10 +331,10 @@ runNativeCliCommandForExitCode repoRoot environment cliArgs = do
 nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> CommandSpec
 nativeCliCommandSpec repoRoot environment cliArgs =
     CommandSpec
-        { commandPath = canonicalOperatorBinaryPath repoRoot,
-          commandArguments = cliArgs,
-          commandEnvironment = Just environment,
-          commandWorkingDirectory = Just repoRoot
+        { commandPath = canonicalOperatorBinaryPath repoRoot
+        , commandArguments = cliArgs
+        , commandEnvironment = Just environment
+        , commandWorkingDirectory = Just repoRoot
         }
 
 ensureCanonicalOperatorBinary :: FilePath -> [(String, String)] -> IO ExitCode

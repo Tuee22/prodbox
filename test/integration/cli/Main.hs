@@ -1,30 +1,30 @@
 module Main (main) where
 
 import Control.Monad (when)
-import System.Directory
-    ( Permissions (..),
-      copyFile,
-      createDirectoryIfMissing,
-      doesFileExist,
-      getCurrentDirectory,
-      getPermissions,
-      setPermissions,
-    )
+import Prodbox.BuildSupport (
+    addBuildSupportEnvironment,
+    canonicalOperatorBinaryPath,
+    syncBuiltOperatorBinary,
+ )
+import System.Directory (
+    Permissions (..),
+    copyFile,
+    createDirectoryIfMissing,
+    doesFileExist,
+    getCurrentDirectory,
+    getPermissions,
+    setPermissions,
+ )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process
-    ( CreateProcess (cwd, env),
-      proc,
-      readCreateProcessWithExitCode,
-    )
+import System.Process (
+    CreateProcess (cwd, env),
+    proc,
+    readCreateProcessWithExitCode,
+ )
 import Test.Hspec
-import Prodbox.BuildSupport
-    ( addBuildSupportEnvironment,
-      canonicalOperatorBinaryPath,
-      syncBuiltOperatorBinary,
-    )
 
 main :: IO ()
 main = hspec $ do
@@ -160,35 +160,36 @@ main = hspec $ do
 
                 (statusExitCode, statusStdout, statusStderr) <-
                     readCreateProcessWithExitCode
-                        (proc binary ["charts", "status", "keycloak-postgres"]){cwd = Just tmpDir, env = Just envVars}
+                        (proc binary ["charts", "status", "vscode"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
                 statusExitCode `shouldBe` ExitSuccess
                 statusStderr `shouldBe` ""
                 statusStdout `shouldContain` "CHART_STATUS"
-                statusStdout `shouldContain` "NAME=keycloak-postgres"
+                statusStdout `shouldContain` "NAME=vscode"
                 statusStdout `shouldContain` "STORAGE_BINDING"
 
                 (deployExitCode, deployStdout, deployStderr) <-
                     readCreateProcessWithExitCode
-                        (proc binary ["charts", "deploy", "keycloak-postgres"]){cwd = Just tmpDir, env = Just envVars}
+                        (proc binary ["charts", "deploy", "vscode"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
                 deployExitCode `shouldBe` ExitSuccess
                 deployStderr `shouldBe` ""
                 deployStdout `shouldContain` "CHART_DEPLOYMENT"
-                deployStdout `shouldContain` "ROOT_CHART=keycloak-postgres"
+                deployStdout `shouldContain` "ROOT_CHART=vscode"
 
                 appliedManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply.json")
                 appliedManifest `shouldContain` "PersistentVolumeClaim"
-                appliedManifest `shouldContain` "keycloak-postgres-data-0"
+                appliedManifest `shouldContain` "vscode-data-0"
 
                 upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
-                upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|keycloak-postgres"
+                upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|keycloak"
+                upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|vscode"
 
                 (deleteExitCode, deleteStdout, deleteStderr) <-
                     readCreateProcessWithExitCode
-                        (proc binary ["charts", "delete", "keycloak-postgres", "--yes"]){cwd = Just tmpDir, env = Just envVars}
+                        (proc binary ["charts", "delete", "vscode", "--yes"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
                 deleteExitCode `shouldBe` ExitSuccess
@@ -197,12 +198,13 @@ main = hspec $ do
                 deleteStdout `shouldContain` "HOST_STORAGE_PRESERVED=true"
 
                 uninstallRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-uninstall.txt")
-                uninstallRecord `shouldContain` "uninstall|keycloak-postgres|--namespace|keycloak-postgres"
+                uninstallRecord `shouldContain` "uninstall|vscode|--namespace|vscode"
+                uninstallRecord `shouldContain` "uninstall|keycloak|--namespace|vscode"
 
                 deleteRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-delete.txt")
-                deleteRecord `shouldContain` "delete|pvc|keycloak-postgres-data-0|--namespace|keycloak-postgres"
-                deleteRecord `shouldContain` "delete|pv|prodbox-chart-keycloak-postgres-keycloak-postgres-keycloak-postgres-0-data"
-                deleteRecord `shouldContain` "delete|namespace|keycloak-postgres"
+                deleteRecord `shouldContain` "delete|pvc|vscode-data-0|--namespace|vscode"
+                deleteRecord `shouldContain` "delete|pv|prodbox-chart-vscode-vscode-vscode-0-data"
+                deleteRecord `shouldContain` "delete|namespace|vscode"
 
         it "runs native rke2 status, start, and logs through the built frontend with fake systemctl and journalctl" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -321,6 +323,7 @@ main = hspec $ do
                 kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldContain` "annotate|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldContain` "label|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
+                kubectlRecord `shouldNotContain` "delete|namespace|harbor|--ignore-not-found=true|--wait=true|--timeout=300s"
 
                 applyIdentity <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-1.json")
                 applyIdentity `shouldContain` "prodbox-identity"
@@ -340,16 +343,27 @@ main = hspec $ do
                 helmRecord `shouldContain` "mcImage.repository=127.0.0.1:30080/prodbox/minio-mc-mirror"
                 helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
                 helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
+                helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
+                helmRecord `shouldContain` "upgrade|--install|metallb|metallb/metallb"
+                helmRecord `shouldContain` "repo|add|traefik|https://traefik.github.io/charts"
+                helmRecord `shouldContain` "upgrade|--install|traefik|traefik/traefik"
+                helmRecord `shouldContain` "repo|add|jetstack|https://charts.jetstack.io"
+                helmRecord `shouldContain` "upgrade|--install|cert-manager|jetstack/cert-manager"
+                helmRecord `shouldContain` "repo|add|postgres-operator-charts|https://opensource.zalando.com/postgres-operator/charts/postgres-operator"
+                helmRecord `shouldContain` "upgrade|--install|postgres-operator|postgres-operator-charts/postgres-operator"
 
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
                 dockerRecord `shouldContain` "buildx|create|--name|prodbox-multiarch-hostnet|--driver|docker-container|--driver-opt|network=host|--use"
                 dockerRecord `shouldContain` "buildx|stop|prodbox-multiarch-hostnet"
-                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|public.ecr.aws/docker/library/postgres:16.4-bullseye"
-                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/library/postgres:16.4-bullseye"
-                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye|public.ecr.aws/docker/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|public.ecr.aws/docker/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye|docker.io/library/postgres@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/library/postgres@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
+                dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|ghcr.io/zalando/postgres-operator:v1.15.1"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|ghcr.io/zalando/spilo-17:4.0-p3"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|ghcr.io/coder/code-server:4.98.2"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/codercom/code-server:4.98.2"
                 dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2|ghcr.io/coder/code-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|ghcr.io/coder/code-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2|docker.io/codercom/code-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/codercom/code-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64|--build-context|haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim"
                 dockerRecord `shouldContain` "|--push|-f|docker/gateway.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-gateway:prodbox-"
                 dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-amd64|."
@@ -369,87 +383,6 @@ main = hspec $ do
                 pulumiRecord `shouldContain` "login|s3://prodbox-test-pulumi-backends?region=us-east-1&endpoint=127.0.0.1:39000&disableSSL=true&s3ForcePathStyle=true"
                 pulumiRecord `shouldContain` "stack|select|aws-eks-test"
                 pulumiRecord `shouldContain` "stack|select|aws-test"
-
-        it "runs native pulumi preview, up, refresh, and stack-init through the built frontend with fake pulumi and kubectl" $
-            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-                binary <- resolveBinaryPath
-                writeRepoMarkers tmpDir
-                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-                envVars <- fakePulumiEnvironment tmpDir
-
-                (previewExitCode, previewStdout, previewStderr) <-
-                    readCreateProcessWithExitCode
-                        (proc binary ["pulumi", "preview"]){cwd = Just tmpDir, env = Just envVars}
-                        ""
-
-                previewExitCode `shouldBe` ExitSuccess
-                previewStderr `shouldBe` ""
-                previewStdout `shouldContain` "PULUMI_PREVIEW"
-
-                (upExitCode, upStdout, upStderr) <-
-                    readCreateProcessWithExitCode
-                        (proc binary ["pulumi", "up", "--yes"]){cwd = Just tmpDir, env = Just envVars}
-                        ""
-
-                upExitCode `shouldBe` ExitSuccess
-                upStderr `shouldBe` ""
-                upStdout `shouldContain` "PULUMI_UP"
-
-                (refreshExitCode, refreshStdout, refreshStderr) <-
-                    readCreateProcessWithExitCode
-                        (proc binary ["pulumi", "refresh", "--yes"]){cwd = Just tmpDir, env = Just envVars}
-                        ""
-
-                refreshExitCode `shouldBe` ExitSuccess
-                refreshStderr `shouldBe` ""
-                refreshStdout `shouldContain` "PULUMI_REFRESH"
-
-                (stackInitExitCode, stackInitStdout, stackInitStderr) <-
-                    readCreateProcessWithExitCode
-                        (proc binary ["pulumi", "stack-init", "dev"]){cwd = Just tmpDir, env = Just envVars}
-                        ""
-
-                stackInitExitCode `shouldBe` ExitSuccess
-                stackInitStderr `shouldBe` ""
-                stackInitStdout `shouldContain` "STACK_INIT=dev"
-
-                pulumiRecord <- readFile (tmpDir </> "fake-pulumi-state" </> "calls.txt")
-                pulumiRecord `shouldContain` "ARGV=whoami"
-                pulumiRecord `shouldContain` "ARGV=stack|select|home"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|prodboxId|prodbox-"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|awsRegion|us-east-1"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|--secret|awsAccessKeyId|test-access-key"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|--secret|awsSecretAccessKey|test-secret-key"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|metallbPool|192.168.50.240-192.168.50.250"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|ingressLbIp|192.168.50.240"
-                pulumiRecord `shouldContain` "ARGV=config|set|--stack|home|dnsBootstrapIp|198.51.100.24"
-                pulumiRecord `shouldContain` "ARGV=preview|--stack|home"
-                pulumiRecord `shouldContain` "ARGV=stack|select|home|--create"
-                pulumiRecord `shouldContain` "ARGV=up|--yes|--stack|home"
-                pulumiRecord `shouldContain` "ARGV=refresh|--yes|--stack|home"
-                pulumiRecord `shouldContain` "ARGV=stack|init|dev"
-                pulumiRecord `shouldContain` ("PULUMI_BACKEND_URL=file://" ++ (tmpDir </> ".pulumi-backend"))
-                pulumiRecord `shouldContain` "PULUMI_CONFIG_PASSPHRASE="
-                pulumiRecord `shouldContain` "AWS_ACCESS_KEY_ID=test-access-key"
-                pulumiRecord `shouldContain` "AWS_SECRET_ACCESS_KEY=test-secret-key"
-                pulumiRecord `shouldContain` "AWS_SESSION_TOKEN=test-session-token"
-                pulumiRecord `shouldContain` "AWS_REGION=us-east-1"
-                pulumiRecord `shouldContain` "PRODBOX_ID=prodbox-"
-
-                kubectlRecord <- readFile (tmpDir </> "fake-pulumi-state" </> "kubectl.txt")
-                kubectlRecord `shouldContain` "apply|-f|"
-                kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
-                kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
-                kubectlRecord `shouldContain` "annotate|deployments.apps|--all|prodbox.io/id=prodbox-"
-                kubectlRecord `shouldContain` "label|deployments.apps|--all|prodbox.io/id=prodbox-"
-                kubectlRecord `shouldContain` "annotate|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
-                kubectlRecord `shouldContain` "label|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
-
-                applyManifest <- readFile (tmpDir </> "fake-pulumi-state" </> "kubectl-applies.txt")
-                applyManifest `shouldContain` "\"ConfigMap\""
-                applyManifest `shouldContain` "\"ClusterIssuer\""
-                applyManifest `shouldContain` "\"prodbox-identity\""
-                applyManifest `shouldContain` "\"machine_id\""
 
         it "summarizes noisy uninstall-script cleanup instead of streaming raw delete traces" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -499,18 +432,18 @@ main = hspec $ do
                 binary <- resolveBinaryPath
                 writeRepoMarkers tmpDir
                 writeFile (tmpDir </> "prodbox-config.dhall") zeroSslConfig
-                envVars <- fakePulumiEnvironment tmpDir
+                envVars <- fakeRke2Environment tmpDir
 
                 (upExitCode, upStdout, upStderr) <-
                     readCreateProcessWithExitCode
-                        (proc binary ["pulumi", "up", "--yes"]){cwd = Just tmpDir, env = Just envVars}
+                        (proc binary ["rke2", "install"]){cwd = Just tmpDir, env = Just envVars}
                         ""
 
                 upExitCode `shouldBe` ExitSuccess
                 upStderr `shouldBe` ""
-                upStdout `shouldContain` "PULUMI_UP"
+                upStdout `shouldContain` "Kubernetes control plane is running"
 
-                applyManifest <- readFile (tmpDir </> "fake-pulumi-state" </> "kubectl-applies.txt")
+                applyManifest <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-5.json")
                 applyManifest `shouldContain` "\"ClusterIssuer\""
                 applyManifest `shouldContain` "\"Secret\""
                 applyManifest `shouldContain` "\"externalAccountBinding\""
@@ -557,23 +490,23 @@ main = hspec $ do
 
                 let inputText =
                         unlines
-                            [ "",
-                              "ADMINKEY",
-                              "admin-secret",
-                              "",
-                              "",
-                              "1",
-                              "1",
-                              "",
-                              "",
-                              "",
-                              "2",
-                              "ops@example.com",
-                              "1",
-                              "",
-                              "",
-                              "",
-                              ""
+                            [ ""
+                            , "ADMINKEY"
+                            , "admin-secret"
+                            , ""
+                            , ""
+                            , "1"
+                            , "1"
+                            , ""
+                            , ""
+                            , ""
+                            , "2"
+                            , "ops@example.com"
+                            , "1"
+                            , ""
+                            , ""
+                            , ""
+                            , ""
                             ]
 
                 (exitCode, stdoutText, stderrText) <-
@@ -718,11 +651,11 @@ writeFakeCurlScript repoRoot = do
 fakeCurlScript :: String
 fakeCurlScript =
     unlines
-        [ "#!/usr/bin/env bash",
-          "set -euo pipefail",
-          "cat <<'JSON'",
-          "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"event_count\":5,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"code.example.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}",
-          "JSON"
+        [ "#!/usr/bin/env bash"
+        , "set -euo pipefail"
+        , "cat <<'JSON'"
+        , "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"event_count\":5,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"code.example.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
+        , "JSON"
         ]
 
 fakeAwsEnvironment :: FilePath -> IO [(String, String)]
@@ -758,9 +691,9 @@ fakeChartEnvironment repoRoot = do
                 (\(key, _) -> key /= "PATH" && key /= "PRODBOX_FAKE_CHART_RECORD_DIR" && key /= "PRODBOX_FAKE_HELM_LIST_JSON")
                 currentEnvironment
     pure
-        ( [ ("PATH", updatedPath),
-            ("PRODBOX_FAKE_CHART_RECORD_DIR", recordDir),
-            ("PRODBOX_FAKE_HELM_LIST_JSON", "[]")
+        ( [ ("PATH", updatedPath)
+          , ("PRODBOX_FAKE_CHART_RECORD_DIR", recordDir)
+          , ("PRODBOX_FAKE_HELM_LIST_JSON", "[]")
           ]
             ++ baseEnvironment
         )
@@ -786,11 +719,10 @@ fakeHelmScript =
         , "set -euo pipefail"
         , "record_dir=${PRODBOX_FAKE_CHART_RECORD_DIR:?}"
         , "/bin/mkdir -p \"$record_dir\""
-        , "record_args() {"
+        , "append_args() {"
         , "  local target=$1"
         , "  shift"
         , "  local first=1"
-        , "  : > \"$target\""
         , "  for arg in \"$@\"; do"
         , "    if [[ $first -eq 0 ]]; then"
         , "      printf '|' >> \"$target\""
@@ -805,10 +737,10 @@ fakeHelmScript =
         , "    printf '%s\\n' \"${PRODBOX_FAKE_HELM_LIST_JSON:-[]}\""
         , "    ;;"
         , "  upgrade)"
-        , "    record_args \"$record_dir/helm-upgrade.txt\" \"$@\""
+        , "    append_args \"$record_dir/helm-upgrade.txt\" \"$@\""
         , "    ;;"
         , "  uninstall)"
-        , "    record_args \"$record_dir/helm-uninstall.txt\" \"$@\""
+        , "    append_args \"$record_dir/helm-uninstall.txt\" \"$@\""
         , "    ;;"
         , "  *)"
         , "    printf 'unsupported fake helm command: %s\\n' \"$*\" >&2"
@@ -843,6 +775,39 @@ fakeKubectlScript =
         , "{\"items\":[{\"metadata\":{\"name\":\"bathurst\"}}]}"
         , "JSON"
         , "    ;;"
+        , "  'get crd')"
+        , "    if [[ \"${3:-}\" == 'postgresqls.acid.zalan.do' ]]; then"
+        , "      printf 'customresourcedefinition.apiextensions.k8s.io/postgresqls.acid.zalan.do\\n'"
+        , "    else"
+        , "      printf 'Error from server (NotFound): customresourcedefinitions \"%s\" not found\\n' \"${3:-crd}\" >&2"
+        , "      exit 1"
+        , "    fi"
+        , "    ;;"
+        , "  'get deployment')"
+        , "    if [[ \"${3:-}\" == 'postgres-operator' && \"$*\" == *'--namespace postgres-operator'* ]]; then"
+        , "      printf 'deployment.apps/postgres-operator\\n'"
+        , "    else"
+        , "      printf 'Error from server (NotFound): deployments \"%s\" not found\\n' \"${3:-deployment}\" >&2"
+        , "      exit 1"
+        , "    fi"
+        , "    ;;"
+        , "  'get postgresql')"
+        , "    if [[ \"$*\" == *'jsonpath={.status.PostgresClusterStatus}'* ]]; then"
+        , "      printf '\\n'"
+        , "    else"
+        , "      printf 'Error from server (NotFound): postgresqls \"%s\" not found\\n' \"${3:-postgresql}\" >&2"
+        , "      exit 1"
+        , "    fi"
+        , "    ;;"
+        , "  'get secret')"
+        , "    if [[ \"$*\" == *'go-template={{index .data \"password\" | base64decode}}'* ]]; then"
+        , "      printf 'Error from server (NotFound): secrets \"%s\" not found\\n' \"${3:-secret}\" >&2"
+        , "      exit 1"
+        , "    else"
+        , "      printf 'Error from server (NotFound): secrets \"%s\" not found\\n' \"${3:-secret}\" >&2"
+        , "      exit 1"
+        , "    fi"
+        , "    ;;"
         , "  'get pv')"
         , "    printf 'Error from server (NotFound): persistentvolumes \"%s\" not found\\n' \"${3:-pv}\" >&2"
         , "    exit 1"
@@ -850,7 +815,7 @@ fakeKubectlScript =
         , "  'apply -f')"
         , "    cp \"${3:?}\" \"$record_dir/kubectl-apply.json\""
         , "    ;;"
-        , "  'delete pvc'|'delete pv'|'delete namespace')"
+        , "  'delete pod'|'delete pvc'|'delete pv'|'delete namespace')"
         , "    append_args \"$record_dir/kubectl-delete.txt\" \"$@\""
         , "    ;;"
         , "  *)"
@@ -875,24 +840,22 @@ fakeRke2Environment repoRoot = do
         updatedPath = fakeBin ++ ":" ++ existingPath
         baseEnvironment =
             filter
-                (\(key, _) ->
-                    not
-                        ( key `elem`
-                            [ "PATH",
-                              "PRODBOX_FAKE_RKE2_RECORD_DIR",
-                              "PRODBOX_RKE2_CONTAINERD_SOCKET",
-                              "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT",
-                              "HOME"
-                            ]
-                        )
+                ( \(key, _) ->
+                    key
+                        `notElem` [ "PATH"
+                                  , "PRODBOX_FAKE_RKE2_RECORD_DIR"
+                                  , "PRODBOX_RKE2_CONTAINERD_SOCKET"
+                                  , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
+                                  , "HOME"
+                                  ]
                 )
                 currentEnvironment
     pure
-        ( [ ("PATH", updatedPath),
-            ("PRODBOX_FAKE_RKE2_RECORD_DIR", recordDir),
-            ("PRODBOX_RKE2_CONTAINERD_SOCKET", socketPath),
-            ("PRODBOX_RKE2_ENDPOINT_STATUS_ROOT", endpointStatusRoot),
-            ("HOME", repoRoot)
+        ( [ ("PATH", updatedPath)
+          , ("PRODBOX_FAKE_RKE2_RECORD_DIR", recordDir)
+          , ("PRODBOX_RKE2_CONTAINERD_SOCKET", socketPath)
+          , ("PRODBOX_RKE2_ENDPOINT_STATUS_ROOT", endpointStatusRoot)
+          , ("HOME", repoRoot)
           ]
             ++ baseEnvironment
         )
@@ -1045,6 +1008,10 @@ fakeRke2CurlScript =
         , "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$out\""
         , "  exit 0"
         , "fi"
+        , "if [[ \"$*\" == *'https://api.ipify.org'* ]]; then"
+        , "  printf '198.51.100.24'"
+        , "  exit 0"
+        , "fi"
         , "if [[ \"$*\" == *'/api/v2.0/projects/'* && \"$*\" == *'-X DELETE'* ]]; then"
         , "  printf '200'"
         , "  exit 0"
@@ -1169,7 +1136,7 @@ fakeRke2KubectlScript =
         , "        ;;"
         , "    esac"
         , "    ;;"
-        , "  wait)"
+        , "  wait|rollout)"
         , "    ;;"
         , "  port-forward)"
         , "    trap 'exit 0' TERM INT"
@@ -1236,6 +1203,7 @@ fakeRke2DockerScript =
         , "          inspect)"
         , "            ref=${!#}"
         , "            if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
+        , "              echo 'not found' >&2"
         , "              exit 1"
         , "            fi"
         , "            /bin/cat <<'EOF'"
@@ -1244,7 +1212,7 @@ fakeRke2DockerScript =
         , "            ;;"
         , "          create)"
         , "            for arg in \"$@\"; do"
-        , "              if [[ \"$arg\" == public.ecr.aws/docker/library/postgres@sha256:* ]]; then"
+        , "              if [[ \"$arg\" == ghcr.io/coder/code-server@sha256:* ]]; then"
         , "                echo '429 Too Many Requests' >&2"
         , "                exit 1"
         , "              fi"
@@ -1400,8 +1368,15 @@ fakeRke2AwsScript =
     unlines
         [ "#!/bin/bash"
         , "set -euo pipefail"
+        , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:-/tmp/prodbox-fake-rke2-state}"
+        , "/bin/mkdir -p \"$record_dir\""
+        , "printf '%s\\n' \"$*\" >> \"$record_dir/aws.txt\""
         , "case \"$*\" in"
         , "  *'s3api head-bucket'*|*'s3api create-bucket'*)"
+        , "    exit 0"
+        , "    ;;"
+        , "  *'route53 change-resource-record-sets'*)"
+        , "    printf '{\"ChangeInfo\":{\"Status\":\"INSYNC\"}}\\n'"
         , "    exit 0"
         , "    ;;"
         , "  *)"
@@ -1425,327 +1400,132 @@ fakeRke2BashScript =
         , "exec /bin/bash \"$@\""
         ]
 
-fakePulumiEnvironment :: FilePath -> IO [(String, String)]
-fakePulumiEnvironment repoRoot = do
-    fakeBin <- writeFakePulumiScripts repoRoot
-    let recordDir = repoRoot </> "fake-pulumi-state"
-    createDirectoryIfMissing True recordDir
-    currentEnvironment <- getEnvironment
-    let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
-        updatedPath = fakeBin ++ ":" ++ existingPath
-        baseEnvironment =
-            filter
-                (\(key, _) ->
-                    not
-                        ( key `elem`
-                            [ "PATH",
-                              "PRODBOX_FAKE_PULUMI_RECORD_DIR",
-                              "PULUMI_BACKEND_URL",
-                              "PULUMI_CONFIG_PASSPHRASE",
-                              "PULUMI_CONFIG_PASSPHRASE_FILE",
-                              "AWS_ACCESS_KEY_ID",
-                              "AWS_SECRET_ACCESS_KEY",
-                              "AWS_SESSION_TOKEN",
-                              "AWS_REGION",
-                              "AWS_DEFAULT_REGION",
-                              "PRODBOX_ID",
-                              "PRODBOX_AWS_ACCESS_KEY_ID",
-                              "PRODBOX_AWS_SECRET_ACCESS_KEY",
-                              "PRODBOX_AWS_SESSION_TOKEN",
-                              "PRODBOX_PULUMI_METALLB_POOL",
-                              "PRODBOX_PULUMI_INGRESS_LB_IP",
-                              "PRODBOX_PULUMI_DNS_BOOTSTRAP_IP"
-                            ]
-                        )
-                )
-                currentEnvironment
-    pure
-        ( [ ("PATH", updatedPath),
-            ("PRODBOX_FAKE_PULUMI_RECORD_DIR", recordDir),
-            ("PRODBOX_PULUMI_METALLB_POOL", "192.168.50.240-192.168.50.250"),
-            ("PRODBOX_PULUMI_INGRESS_LB_IP", "192.168.50.240"),
-            ("PRODBOX_PULUMI_DNS_BOOTSTRAP_IP", "198.51.100.24")
-          ]
-            ++ baseEnvironment
-        )
-
-writeFakePulumiScripts :: FilePath -> IO FilePath
-writeFakePulumiScripts repoRoot = do
-    let binDir = repoRoot </> "bin"
-    createDirectoryIfMissing True binDir
-    writeExecutable (binDir </> "pulumi") fakePulumiScript
-    writeExecutable (binDir </> "kubectl") fakePulumiKubectlScript
-    pure binDir
-
-fakePulumiScript :: String
-fakePulumiScript =
-    unlines
-        [ "#!/usr/bin/env bash"
-        , "set -euo pipefail"
-        , "record_dir=${PRODBOX_FAKE_PULUMI_RECORD_DIR:?}"
-        , "/bin/mkdir -p \"$record_dir\""
-        , "record_call() {"
-        , "  {"
-        , "    printf 'ARGV='"
-        , "    local first=1"
-        , "    for arg in \"$@\"; do"
-        , "      if [[ $first -eq 0 ]]; then"
-        , "        printf '|'"
-        , "      fi"
-        , "      first=0"
-        , "      printf '%s' \"$arg\""
-        , "    done"
-        , "    printf '\\n'"
-        , "    printf 'PULUMI_BACKEND_URL=%s\\n' \"${PULUMI_BACKEND_URL:-}\""
-        , "    printf 'PULUMI_CONFIG_PASSPHRASE=%s\\n' \"${PULUMI_CONFIG_PASSPHRASE:-}\""
-        , "    printf 'AWS_ACCESS_KEY_ID=%s\\n' \"${AWS_ACCESS_KEY_ID:-}\""
-        , "    printf 'AWS_SECRET_ACCESS_KEY=%s\\n' \"${AWS_SECRET_ACCESS_KEY:-}\""
-        , "    printf 'AWS_SESSION_TOKEN=%s\\n' \"${AWS_SESSION_TOKEN:-}\""
-        , "    printf 'AWS_REGION=%s\\n' \"${AWS_REGION:-}\""
-        , "    printf 'PRODBOX_ID=%s\\n\\n' \"${PRODBOX_ID:-}\""
-        , "  } >> \"$record_dir/calls.txt\""
-        , "}"
-        , "record_call \"$@\""
-        , "case \"${1:-}\" in"
-        , "  whoami)"
-        , "    printf 'fake-user\\n'"
-        , "    ;;"
-        , "  stack)"
-        , "    case \"${2:-}\" in"
-        , "      select)"
-        , "        printf 'STACK_SELECTED=%s\\n' \"${3:-}\""
-        , "        ;;"
-        , "      init)"
-        , "        printf 'STACK_INIT=%s\\n' \"${3:-}\""
-        , "        ;;"
-        , "      *)"
-        , "        printf 'unsupported fake pulumi stack command: %s\\n' \"$*\" >&2"
-        , "        exit 1"
-        , "        ;;"
-        , "    esac"
-        , "    ;;"
-        , "  config)"
-        , "    case \"${2:-}\" in"
-        , "      set)"
-        , "        :"
-        , "        ;;"
-        , "      *)"
-        , "        printf 'unsupported fake pulumi config command: %s\\n' \"$*\" >&2"
-        , "        exit 1"
-        , "        ;;"
-        , "    esac"
-        , "    ;;"
-        , "  preview)"
-        , "    printf 'PULUMI_PREVIEW\\n'"
-        , "    ;;"
-        , "  up)"
-        , "    printf 'PULUMI_UP\\n'"
-        , "    ;;"
-        , "  refresh)"
-        , "    printf 'PULUMI_REFRESH\\n'"
-        , "    ;;"
-        , "  destroy)"
-        , "    printf 'PULUMI_DESTROY\\n'"
-        , "    ;;"
-        , "  *)"
-        , "    printf 'unsupported fake pulumi command: %s\\n' \"$*\" >&2"
-        , "    exit 1"
-        , "    ;;"
-        , "esac"
-        ]
-
-fakePulumiKubectlScript :: String
-fakePulumiKubectlScript =
-    unlines
-        [ "#!/usr/bin/env bash"
-        , "set -euo pipefail"
-        , "record_dir=${PRODBOX_FAKE_PULUMI_RECORD_DIR:?}"
-        , "/bin/mkdir -p \"$record_dir\""
-        , "append_args() {"
-        , "  local first=1"
-        , "  for arg in \"$@\"; do"
-        , "    if [[ $first -eq 0 ]]; then"
-        , "      printf '|' >> \"$record_dir/kubectl.txt\""
-        , "    fi"
-        , "    first=0"
-        , "    printf '%s' \"$arg\" >> \"$record_dir/kubectl.txt\""
-        , "  done"
-        , "  printf '\\n' >> \"$record_dir/kubectl.txt\""
-        , "}"
-        , "append_args \"$@\""
-        , "case \"${1:-}\" in"
-        , "  api-resources)"
-        , "    if [[ \"$*\" == *\"--namespaced=true\"* ]]; then"
-        , "      printf 'deployments.apps\\nconfigmaps\\nevents.events.k8s.io\\n'"
-        , "    else"
-        , "      printf 'clusterroles.rbac.authorization.k8s.io\\n'"
-        , "    fi"
-        , "    ;;"
-        , "  get)"
-        , "    case \"${2:-}\" in"
-        , "      deployments.apps)"
-        , "        if [[ \"$*\" == *\"-n prodbox\"* ]]; then"
-        , "          printf 'deployment.apps/prodbox-api\\n'"
-        , "        fi"
-        , "        ;;"
-        , "      configmaps)"
-        , "        if [[ \"$*\" == *\"-n prodbox\"* ]]; then"
-        , "          printf 'configmap/existing-config\\n'"
-        , "        fi"
-        , "        ;;"
-        , "      clusterroles.rbac.authorization.k8s.io)"
-        , "        if [[ \"$*\" == *\"app.kubernetes.io/instance=harbor\"* ]]; then"
-        , "          printf 'clusterrole.rbac.authorization.k8s.io/harbor-role\\n'"
-        , "        fi"
-        , "        ;;"
-        , "      crd)"
-        , "        printf 'customresourcedefinition.apiextensions.k8s.io/ingressroutes.traefik.io\\n'"
-        , "        ;;"
-        , "      *)"
-        , "        ;;"
-        , "    esac"
-        , "    ;;"
-        , "  apply)"
-        , "    cat \"${3:?}\" >> \"$record_dir/kubectl-applies.txt\""
-        , "    printf '\\n---\\n' >> \"$record_dir/kubectl-applies.txt\""
-        , "    ;;"
-        , "  wait)"
-        , "    ;;"
-        , "  annotate|label)"
-        , "    ;;"
-        , "  *)"
-        , "    printf 'unsupported fake kubectl command: %s\\n' \"$*\" >&2"
-        , "    exit 1"
-        , "    ;;"
-        , "esac"
-        ]
-
 fakeAwsScript :: FilePath -> String
 fakeAwsScript stateDir =
     unlines
-        [ "#!/usr/bin/env bash",
-          "set -euo pipefail",
-          "STATE_DIR=\"" ++ stateDir ++ "\"",
-          "/bin/mkdir -p \"$STATE_DIR\"",
-          "if [[ $# -ge 2 && \"${@: -2:1}\" == \"--output\" ]]; then",
-          "  set -- \"${@:1:$#-2}\"",
-          "fi",
-          "service=${1:-}",
-          "action=${2:-}",
-          "case \"$service $action\" in",
-          "  \"ec2 describe-regions\")",
-          "    cat <<'JSON'",
-          "{\"Regions\":[{\"RegionName\":\"us-east-1\",\"OptInStatus\":\"opt-in-not-required\"},{\"RegionName\":\"us-west-2\",\"OptInStatus\":\"opt-in-not-required\"}]}",
-          "JSON",
-          "    ;;",
-          "  \"route53 list-hosted-zones\")",
-          "    cat <<'JSON'",
-          "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.com.\"}]}",
-          "JSON",
-          "    ;;",
-          "  \"iam create-user\")",
-          "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_create_user_access_key_id\"",
-          "    touch \"$STATE_DIR/user_exists\"",
-          "    printf '{}\\n'",
-          "    ;;",
-          "  \"iam list-access-keys\")",
-          "    if [[ -f \"$STATE_DIR/access_key_id\" ]]; then",
-          "      access_key_id=$(cat \"$STATE_DIR/access_key_id\")",
-          "      printf '{\"AccessKeyMetadata\":[{\"AccessKeyId\":\"%s\"}]}\\n' \"$access_key_id\"",
-          "    else",
-          "      printf '{\"AccessKeyMetadata\":[]}\\n'",
-          "    fi",
-          "    ;;",
-          "  \"iam delete-access-key\")",
-          "    rm -f \"$STATE_DIR/access_key_id\"",
-          "    printf '{}\\n'",
-          "    ;;",
-          "  \"iam put-user-policy\")",
-          "    printf '{}\\n'",
-          "    ;;",
-          "  \"iam create-access-key\")",
-          "    printf 'AKIAFAKESETUP' > \"$STATE_DIR/access_key_id\"",
-          "    cat <<'JSON'",
-          "{\"AccessKey\":{\"AccessKeyId\":\"AKIAFAKESETUP\",\"SecretAccessKey\":\"fake-secret-access-key\"}}",
-          "JSON",
-          "    ;;",
-          "  \"iam delete-user-policy\")",
-          "    printf '{}\\n'",
-          "    ;;",
-          "  \"iam delete-user\")",
-          "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_delete_user_access_key_id\"",
-          "    rm -f \"$STATE_DIR/user_exists\"",
-          "    printf '{}\\n'",
-          "    ;;",
-          "  \"service-quotas get-service-quota\")",
-          "    cat <<'JSON'",
-          "{\"Quota\":{\"Value\":8.0}}",
-          "JSON",
-          "    ;;",
-          "  \"service-quotas get-aws-default-service-quota\")",
-          "    cat <<'JSON'",
-          "{\"Quota\":{\"Value\":8.0}}",
-          "JSON",
-          "    ;;",
-          "  \"service-quotas request-service-quota-increase\")",
-          "    cat <<'JSON'",
-          "{\"RequestedQuota\":{\"Status\":\"PENDING\"}}",
-          "JSON",
-          "    ;;",
-          "  \"sts get-caller-identity\")",
-          "    cat <<'JSON'",
-          "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDAFake\"}",
-          "JSON",
-          "    ;;",
-          "  *)",
-          "    printf 'unsupported fake aws command: %s %s\\n' \"$service\" \"$action\" >&2",
-          "    exit 1",
-          "    ;;",
-          "esac"
+        [ "#!/usr/bin/env bash"
+        , "set -euo pipefail"
+        , "STATE_DIR=\"" ++ stateDir ++ "\""
+        , "/bin/mkdir -p \"$STATE_DIR\""
+        , "if [[ $# -ge 2 && \"${@: -2:1}\" == \"--output\" ]]; then"
+        , "  set -- \"${@:1:$#-2}\""
+        , "fi"
+        , "service=${1:-}"
+        , "action=${2:-}"
+        , "case \"$service $action\" in"
+        , "  \"ec2 describe-regions\")"
+        , "    cat <<'JSON'"
+        , "{\"Regions\":[{\"RegionName\":\"us-east-1\",\"OptInStatus\":\"opt-in-not-required\"},{\"RegionName\":\"us-west-2\",\"OptInStatus\":\"opt-in-not-required\"}]}"
+        , "JSON"
+        , "    ;;"
+        , "  \"route53 list-hosted-zones\")"
+        , "    cat <<'JSON'"
+        , "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.com.\"}]}"
+        , "JSON"
+        , "    ;;"
+        , "  \"iam create-user\")"
+        , "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_create_user_access_key_id\""
+        , "    touch \"$STATE_DIR/user_exists\""
+        , "    printf '{}\\n'"
+        , "    ;;"
+        , "  \"iam list-access-keys\")"
+        , "    if [[ -f \"$STATE_DIR/access_key_id\" ]]; then"
+        , "      access_key_id=$(cat \"$STATE_DIR/access_key_id\")"
+        , "      printf '{\"AccessKeyMetadata\":[{\"AccessKeyId\":\"%s\"}]}\\n' \"$access_key_id\""
+        , "    else"
+        , "      printf '{\"AccessKeyMetadata\":[]}\\n'"
+        , "    fi"
+        , "    ;;"
+        , "  \"iam delete-access-key\")"
+        , "    rm -f \"$STATE_DIR/access_key_id\""
+        , "    printf '{}\\n'"
+        , "    ;;"
+        , "  \"iam put-user-policy\")"
+        , "    printf '{}\\n'"
+        , "    ;;"
+        , "  \"iam create-access-key\")"
+        , "    printf 'AKIAFAKESETUP' > \"$STATE_DIR/access_key_id\""
+        , "    cat <<'JSON'"
+        , "{\"AccessKey\":{\"AccessKeyId\":\"AKIAFAKESETUP\",\"SecretAccessKey\":\"fake-secret-access-key\"}}"
+        , "JSON"
+        , "    ;;"
+        , "  \"iam delete-user-policy\")"
+        , "    printf '{}\\n'"
+        , "    ;;"
+        , "  \"iam delete-user\")"
+        , "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_delete_user_access_key_id\""
+        , "    rm -f \"$STATE_DIR/user_exists\""
+        , "    printf '{}\\n'"
+        , "    ;;"
+        , "  \"service-quotas get-service-quota\")"
+        , "    cat <<'JSON'"
+        , "{\"Quota\":{\"Value\":8.0}}"
+        , "JSON"
+        , "    ;;"
+        , "  \"service-quotas get-aws-default-service-quota\")"
+        , "    cat <<'JSON'"
+        , "{\"Quota\":{\"Value\":8.0}}"
+        , "JSON"
+        , "    ;;"
+        , "  \"service-quotas request-service-quota-increase\")"
+        , "    cat <<'JSON'"
+        , "{\"RequestedQuota\":{\"Status\":\"PENDING\"}}"
+        , "JSON"
+        , "    ;;"
+        , "  \"sts get-caller-identity\")"
+        , "    cat <<'JSON'"
+        , "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDAFake\"}"
+        , "JSON"
+        , "    ;;"
+        , "  *)"
+        , "    printf 'unsupported fake aws command: %s %s\\n' \"$service\" \"$action\" >&2"
+        , "    exit 1"
+        , "    ;;"
+        , "esac"
         ]
 
 gatewayStatusConfig :: String
 gatewayStatusConfig =
     unlines
-        [ "{",
-          "  \"node_id\": \"node-a\",",
-          "  \"cert_file\": \"node-a.crt\",",
-          "  \"key_file\": \"node-a.key\",",
-          "  \"ca_file\": \"ca.crt\",",
-          "  \"orders_file\": \"orders.json\",",
-          "  \"event_keys\": { \"node-a\": \"REPLACE_WITH_SECRET_KEY\" },",
-          "  \"heartbeat_interval_seconds\": 1.0,",
-          "  \"reconnect_interval_seconds\": 1.0,",
-          "  \"sync_interval_seconds\": 5.0,",
-          "  \"dns_write_gate\": {",
-          "    \"zone_id\": \"Z123\",",
-          "    \"fqdn\": \"code.example.com\",",
-          "    \"ttl\": 60,",
-          "    \"aws_region\": \"us-east-1\"",
-          "  }",
-          "}"
+        [ "{"
+        , "  \"node_id\": \"node-a\","
+        , "  \"cert_file\": \"node-a.crt\","
+        , "  \"key_file\": \"node-a.key\","
+        , "  \"ca_file\": \"ca.crt\","
+        , "  \"orders_file\": \"orders.json\","
+        , "  \"event_keys\": { \"node-a\": \"REPLACE_WITH_SECRET_KEY\" },"
+        , "  \"heartbeat_interval_seconds\": 1.0,"
+        , "  \"reconnect_interval_seconds\": 1.0,"
+        , "  \"sync_interval_seconds\": 5.0,"
+        , "  \"dns_write_gate\": {"
+        , "    \"zone_id\": \"Z123\","
+        , "    \"fqdn\": \"code.example.com\","
+        , "    \"ttl\": 60,"
+        , "    \"aws_region\": \"us-east-1\""
+        , "  }"
+        , "}"
         ]
 
 gatewayOrders :: String
 gatewayOrders =
     unlines
-        [ "{",
-          "  \"version_utc\": 1,",
-          "  \"nodes\": [",
-          "    {",
-          "      \"node_id\": \"node-a\",",
-          "      \"stable_dns_name\": \"node-a.example.test\",",
-          "      \"rest_host\": \"0.0.0.0\",",
-          "      \"rest_port\": 31001,",
-          "      \"socket_host\": \"0.0.0.0\",",
-          "      \"socket_port\": 32001",
-          "    }",
-          "  ],",
-          "  \"gateway_rule\": {",
-          "    \"ranked_nodes\": [\"node-a\"],",
-          "    \"heartbeat_timeout_seconds\": 3",
-          "  }",
-          "}"
+        [ "{"
+        , "  \"version_utc\": 1,"
+        , "  \"nodes\": ["
+        , "    {"
+        , "      \"node_id\": \"node-a\","
+        , "      \"stable_dns_name\": \"node-a.example.test\","
+        , "      \"rest_host\": \"0.0.0.0\","
+        , "      \"rest_port\": 31001,"
+        , "      \"socket_host\": \"0.0.0.0\","
+        , "      \"socket_port\": 32001"
+        , "    }"
+        , "  ],"
+        , "  \"gateway_rule\": {"
+        , "    \"ranked_nodes\": [\"node-a\"],"
+        , "    \"heartbeat_timeout_seconds\": 3"
+        , "  }"
+        , "}"
         ]
 
 validConfig :: String
@@ -1755,14 +1535,14 @@ validConfig =
 validConfigWithBlankOperationalAwsAndConfiguredAdmin :: String
 validConfigWithBlankOperationalAwsAndConfiguredAdmin =
     unlines
-        [ "{ aws = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"us-east-1\" }",
-          ", aws_admin = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }",
-          ", route53 = { zone_id = \"Z1234567890ABC\" }",
-          ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }",
-          ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }",
-          ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }",
-          ", storage = { manual_pv_host_root = \".data\" }",
-          "}"
+        [ "{ aws = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"us-east-1\" }"
+        , ", aws_admin = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
+        , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }"
+        , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+        , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+        , ", storage = { manual_pv_host_root = \".data\" }"
+        , "}"
         ]
 
 zeroSslConfig :: String
@@ -1788,12 +1568,12 @@ configWithAws accessKeyId secretAccessKey sessionTokenValue =
 configWithAwsAndAcme :: String -> String -> String -> String -> String -> String -> String
 configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer eabKeyIdValue eabHmacKeyValue =
     unlines
-        [ "{ aws = { access_key_id = \"" ++ accessKeyId ++ "\", secret_access_key = \"" ++ secretAccessKey ++ "\", session_token = " ++ sessionTokenValue ++ ", region = \"us-east-1\" }",
-          ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }",
-          ", route53 = { zone_id = \"Z1234567890ABC\" }",
-          ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }",
-          ", acme = { email = \"test@example.com\", server = \"" ++ acmeServer ++ "\", eab_key_id = " ++ eabKeyIdValue ++ ", eab_hmac_key = " ++ eabHmacKeyValue ++ " }",
-          ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }",
-          ", storage = { manual_pv_host_root = \".data\" }",
-          "}"
+        [ "{ aws = { access_key_id = \"" ++ accessKeyId ++ "\", secret_access_key = \"" ++ secretAccessKey ++ "\", session_token = " ++ sessionTokenValue ++ ", region = \"us-east-1\" }"
+        , ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
+        , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }"
+        , ", acme = { email = \"test@example.com\", server = \"" ++ acmeServer ++ "\", eab_key_id = " ++ eabKeyIdValue ++ ", eab_hmac_key = " ++ eabHmacKeyValue ++ " }"
+        , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+        , ", storage = { manual_pv_host_root = \".data\" }"
+        , "}"
         ]

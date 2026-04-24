@@ -1,24 +1,24 @@
 module Main (main) where
 
-import Prodbox.BuildSupport
-    ( addBuildSupportEnvironment,
-      canonicalOperatorBinaryPath,
-      syncBuiltOperatorBinary,
-    )
-import System.Directory
-    ( createDirectoryIfMissing,
-      doesFileExist,
-      getCurrentDirectory,
-    )
+import Prodbox.BuildSupport (
+    addBuildSupportEnvironment,
+    canonicalOperatorBinaryPath,
+    syncBuiltOperatorBinary,
+ )
+import System.Directory (
+    createDirectoryIfMissing,
+    doesFileExist,
+    getCurrentDirectory,
+ )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
-import System.Process
-    ( CreateProcess (cwd, env),
-      proc,
-      readCreateProcessWithExitCode,
-    )
+import System.Process (
+    CreateProcess (cwd, env),
+    proc,
+    readCreateProcessWithExitCode,
+ )
 import Test.Hspec
 
 main :: IO ()
@@ -84,25 +84,25 @@ writeRepoMarkers repoRoot = do
 validConfig :: String
 validConfig =
     unlines
-        [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = Some \"test-session-token\", region = \"us-east-1\" }",
-          ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }",
-          ", route53 = { zone_id = \"Z1234567890ABC\" }",
-          ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }",
-          ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }",
-          ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }",
-          ", storage = { manual_pv_host_root = \".data\" }",
-          "}"
+        [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = Some \"test-session-token\", region = \"us-east-1\" }"
+        , ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
+        , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }"
+        , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+        , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+        , ", storage = { manual_pv_host_root = \".data\" }"
+        , "}"
         ]
 
 invalidConfig :: String
 invalidConfig =
     unlines
-        [ "{ aws = { access_key_id = \"\", secret_access_key = \"test-secret-key\", session_token = None Text, region = \"us-east-1\" }",
-          ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }",
-          ", route53 = { zone_id = \"Z1234567890ABC\" }",
-          ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = None Text }",
-          ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }",
-          ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }",
-          ", storage = { manual_pv_host_root = \".data\" }",
-          "}"
+        [ "{ aws = { access_key_id = \"\", secret_access_key = \"test-secret-key\", session_token = None Text, region = \"us-east-1\" }"
+        , ", aws_admin = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
+        , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = None Text }"
+        , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+        , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+        , ", storage = { manual_pv_host_root = \".data\" }"
+        , "}"
         ]

@@ -1,22 +1,22 @@
-module Prodbox.CLI.Command
-    ( AwsCommand (..),
-      ChartsCommand (..),
-      DnsCommand (..),
-      GatewayCommand (..),
-      CommandRequest (..),
-      ConfigCommand (..),
-      CoverageFlags (..),
-      HostCommand (..),
-      IntegrationSuite (..),
-      K8sCommand (..),
-      NativeCommand (..),
-      PolicyTier (..),
-      PulumiCommand (..),
-      Rke2Command (..),
-      TestCommand (..),
-      TestScope (..),
-      validateCoverage,
-    )
+module Prodbox.CLI.Command (
+    AwsCommand (..),
+    ChartsCommand (..),
+    DnsCommand (..),
+    GatewayCommand (..),
+    CommandRequest (..),
+    ConfigCommand (..),
+    CoverageFlags (..),
+    HostCommand (..),
+    IntegrationSuite (..),
+    K8sCommand (..),
+    NativeCommand (..),
+    PolicyTier (..),
+    PulumiCommand (..),
+    Rke2Command (..),
+    TestCommand (..),
+    TestScope (..),
+    validateCoverage,
+)
 where
 
 newtype CommandRequest = RunNative NativeCommand
@@ -88,12 +88,7 @@ data AwsCommand
     deriving (Eq, Show)
 
 data PulumiCommand
-    = PulumiUp Bool
-    | PulumiDestroy Bool
-    | PulumiPreview
-    | PulumiRefresh Bool
-    | PulumiStackInit String
-    | PulumiEksResources
+    = PulumiEksResources
     | PulumiEksDestroy Bool
     | PulumiTestResources
     | PulumiTestDestroy Bool
@@ -110,8 +105,8 @@ data Rke2Command
     deriving (Eq, Show)
 
 data TestCommand = TestCommand
-    { testScope :: TestScope,
-      testCoverage :: CoverageFlags
+    { testScope :: TestScope
+    , testCoverage :: CoverageFlags
     }
     deriving (Eq, Show)
 
@@ -141,8 +136,8 @@ data IntegrationSuite
     deriving (Eq, Show)
 
 data CoverageFlags = CoverageFlags
-    { coverageEnabled :: Bool,
-      coverageFailUnder :: Maybe Int
+    { coverageEnabled :: Bool
+    , coverageFailUnder :: Maybe Int
     }
     deriving (Eq, Show)
 
@@ -150,6 +145,7 @@ validateCoverage :: CoverageFlags -> Either String ()
 validateCoverage flags =
     case (coverageEnabled flags, coverageFailUnder flags) of
         (False, Just _) -> Left "--cov-fail-under requires --coverage."
-        (_, Just minimumPercent) | minimumPercent < 0 || minimumPercent > 100 ->
-            Left "--cov-fail-under must be between 0 and 100."
+        (_, Just minimumPercent)
+            | minimumPercent < 0 || minimumPercent > 100 ->
+                Left "--cov-fail-under must be between 0 and 100."
         _ -> Right ()

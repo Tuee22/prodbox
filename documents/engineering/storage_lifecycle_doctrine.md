@@ -15,19 +15,24 @@
 - `prodbox rke2 install` recreates the cluster-scoped `manual` `StorageClass` and removes every
   other `StorageClass` before retained-storage reconciliation succeeds.
 - The configured manual PV host root (default repository `.data/`) stores PV contents only.
+- Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks use
+  CLI-owned static PVs rooted at
+  `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-postgres/<ordinal>/data/`.
 - Retained non-PV chart state lives under the repo-local `.prodbox-state/<namespace>/` root.
-- `prodbox rke2 delete --yes` must destroy both Pulumi-managed AWS test stacks before local backend
-  teardown removes the MinIO host that stores Pulumi state.
+- `prodbox rke2 delete --yes` must destroy both Pulumi-managed AWS validation stacks before local
+  backend teardown removes the MinIO host that stores Pulumi state.
 
 ## 2. Scope
 
 This doctrine governs:
 
 1. retained local storage resources created by `prodbox rke2 install`
-2. rebinding guarantees expected after `prodbox rke2 delete --yes` plus `prodbox rke2 install`
-3. the boundary between the PV-only manual host root and the repo-local `.prodbox-state/` retained
+2. retained local storage resources created by `prodbox charts deploy keycloak|vscode` for the
+   namespace-local Patroni PostgreSQL cluster and `vscode` data
+3. rebinding guarantees expected after `prodbox rke2 delete --yes` plus `prodbox rke2 install`
+4. the boundary between the PV-only manual host root and the repo-local `.prodbox-state/` retained
    chart-state root
-4. MinIO persistence behavior on the supported single-node RKE2 machine
+5. MinIO persistence behavior on the supported single-node RKE2 machine
 
 Harbor registry details remain in [Local Registry Pipeline](./local_registry_pipeline.md).
 
@@ -36,7 +41,7 @@ Harbor registry details remain in [Local Registry Pipeline](./local_registry_pip
 `rke2 install` reconciles Harbor, retained storage, and MinIO using the Haskell lifecycle runtime.
 The Harbor portion of that lifecycle must reach a stable external-serving state before public-image
 mirror, custom-image publication, or Harbor-backed steady-state workload reconcile continues. The
-bootstrap MinIO install that establishes the local backend may pull its chart images from public
+bootstrap MinIO install that establishes the local backend may pull its images from public
 registries first.
 
 The retained-storage effect must reconcile:
@@ -83,9 +88,11 @@ Lifecycle-oriented validation should prove:
 
 1. the real MinIO PVC remains bound to the same PV across delete/reinstall
 2. only the `manual` `StorageClass` remains after `prodbox rke2 install`
-3. `./.build/prodbox rke2 delete --yes` succeeds on the first operator invocation
-4. temporary validation resources are fully removed at test end
-5. baseline runtime after test completion matches the post-install state defined by
+3. the `keycloak-postgres` and `vscode` storage bindings remain deterministic for their root
+   namespaces
+4. `./.build/prodbox rke2 delete --yes` succeeds on the first operator invocation
+5. temporary validation resources are fully removed at test end
+6. baseline runtime after test completion matches the post-install state defined by
    `prodbox rke2 install`
 
 Cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
@@ -99,11 +106,17 @@ The chart platform uses two retained repository-local roots with different autho
 
 Rules:
 
-1. `.data/` is PV-content-only storage
-2. `.prodbox-state/` is retained non-PV chart state
-3. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes either retained
-   host-state root
-4. full cluster delete preserves both retained roots so reinstall can reconnect stateful services
+1. `.data/` is PV-content-only storage.
+2. The internal `keycloak-postgres` release uses the deterministic path
+   `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-postgres/<ordinal>/data/`.
+3. The `vscode` StatefulSet uses the deterministic path `.data/vscode/vscode/vscode/0/data/`.
+4. `.prodbox-state/` is retained non-PV chart state.
+5. `.prodbox-state/<namespace>/.secrets.json` retains chart secrets plus the Patroni application,
+   superuser, and standby passwords that must remain stable when preserved PostgreSQL volumes are
+   rebound.
+6. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes either retained
+   host-state root.
+7. Full cluster delete preserves both retained roots so reinstall can reconnect stateful services.
 
 ## Cross-References
 

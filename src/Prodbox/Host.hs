@@ -1,87 +1,88 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Host
-    ( LanAddressing (..),
-      PortStatus (..),
-      detectLanAddressing,
-      renderPortAvailabilityReport,
-      runHostCommand,
-    )
+module Prodbox.Host (
+    LanAddressing (..),
+    PortStatus (..),
+    detectLanAddressing,
+    renderPortAvailabilityReport,
+    runHostCommand,
+)
 where
 
 import Control.Monad (filterM)
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-    )
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import Data.Bits
-    ( (.&.),
-      (.|.),
-      shiftL,
-      xor,
-    )
-import qualified Data.Set as Set
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+ )
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bits (
+    shiftL,
+    xor,
+    (.&.),
+    (.|.),
+ )
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (isAsciiUpper)
 import Data.Set (Set)
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
+import Data.Set qualified as Set
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
 import Numeric (readHex)
 import Prodbox.CLI.Command (HostCommand (..))
-import Prodbox.Dns
-    ( fetchPublicIp,
-      preferredPublicHostFqdn,
-      queryRoute53Record,
-    )
+import Prodbox.Dns (
+    fetchPublicIp,
+    preferredPublicHostFqdn,
+    queryRoute53Record,
+ )
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.Result (Result (..))
-import Prodbox.Settings
-    ( ValidatedSettings (..),
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
+import Prodbox.Settings (
+    ValidatedSettings (..),
+    validateAndLoadSettings,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
 
 data PortStatus = PortStatus
-    { portNumber :: Int,
-      portAvailable :: Bool,
-      portDetail :: String
+    { portNumber :: Int
+    , portAvailable :: Bool
+    , portDetail :: String
     }
     deriving (Eq, Show)
 
 data EdgeRuntime = EdgeRuntime
-    { edgePublicIp :: String,
-      edgeRoute53RecordIp :: Maybe String,
-      edgeActiveLanInterface :: String,
-      edgeActiveLanIpv4 :: String,
-      edgeActiveLanCidr :: String,
-      edgeMetallbPool :: String,
-      edgeIngressLbIp :: String,
-      edgeTraefikServiceIp :: String,
-      edgeHasTraefikClass :: Bool,
-      edgeHasNginxClass :: Bool,
-      edgeIngressNginxServices :: Int,
-      edgeVscodeIngressClass :: String,
-      edgeVscodeIngressHost :: String,
-      edgeCertificateReady :: String
+    { edgePublicIp :: String
+    , edgeRoute53RecordIp :: Maybe String
+    , edgeActiveLanInterface :: String
+    , edgeActiveLanIpv4 :: String
+    , edgeActiveLanCidr :: String
+    , edgeMetallbPool :: String
+    , edgeIngressLbIp :: String
+    , edgeTraefikServiceIp :: String
+    , edgeHasTraefikClass :: Bool
+    , edgeHasNginxClass :: Bool
+    , edgeIngressNginxServices :: Int
+    , edgeVscodeIngressClass :: String
+    , edgeVscodeIngressHost :: String
+    , edgeCertificateReady :: String
     }
     deriving (Eq, Show)
 
 data LanAddressing = LanAddressing
-    { lanInterfaceName :: String,
-      lanInterfaceIpv4 :: String,
-      lanNetworkCidr :: String,
-      lanMetallbPool :: String,
-      lanIngressLbIp :: String
+    { lanInterfaceName :: String
+    , lanInterfaceIpv4 :: String
+    , lanNetworkCidr :: String
+    , lanMetallbPool :: String
+    , lanIngressLbIp :: String
     }
     deriving (Eq, Show)
 
@@ -92,14 +93,14 @@ runHostCommand repoRoot command =
             prerequisiteResult <-
                 runPrerequisites
                     repoRoot
-                    [ "tool_kubectl",
-                      "tool_helm",
-                      "tool_pulumi",
-                      "tool_docker",
-                      "tool_ctr",
-                      "tool_sudo",
-                      "tool_systemctl",
-                      "tool_rke2"
+                    [ "tool_kubectl"
+                    , "tool_helm"
+                    , "tool_pulumi"
+                    , "tool_docker"
+                    , "tool_ctr"
+                    , "tool_sudo"
+                    , "tool_systemctl"
+                    , "tool_rke2"
                     ]
             case prerequisiteResult of
                 Failure err -> failWith err
@@ -138,20 +139,20 @@ runHostPublicEdge repoRoot = do
                                         (Right lan, Right ingressClassesDoc, Right traefikServiceDoc, Right ingressNginxDoc, Right vscodeIngressDoc, Right certificateDoc) -> do
                                             let runtime =
                                                     EdgeRuntime
-                                                        { edgePublicIp = publicIp,
-                                                          edgeRoute53RecordIp = route53RecordIp,
-                                                          edgeActiveLanInterface = lanInterfaceName lan,
-                                                          edgeActiveLanIpv4 = lanInterfaceIpv4 lan,
-                                                          edgeActiveLanCidr = lanNetworkCidr lan,
-                                                          edgeMetallbPool = lanMetallbPool lan,
-                                                          edgeIngressLbIp = lanIngressLbIp lan,
-                                                          edgeTraefikServiceIp = traefikServiceIp traefikServiceDoc,
-                                                          edgeHasTraefikClass = ingressClassPresent ingressClassesDoc "traefik",
-                                                          edgeHasNginxClass = ingressClassPresent ingressClassesDoc "nginx",
-                                                          edgeIngressNginxServices = serviceCount ingressNginxDoc,
-                                                          edgeVscodeIngressClass = vscodeIngressClass vscodeIngressDoc,
-                                                          edgeVscodeIngressHost = vscodeIngressHost vscodeIngressDoc,
-                                                          edgeCertificateReady = certificateReady certificateDoc
+                                                        { edgePublicIp = publicIp
+                                                        , edgeRoute53RecordIp = route53RecordIp
+                                                        , edgeActiveLanInterface = lanInterfaceName lan
+                                                        , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
+                                                        , edgeActiveLanCidr = lanNetworkCidr lan
+                                                        , edgeMetallbPool = lanMetallbPool lan
+                                                        , edgeIngressLbIp = lanIngressLbIp lan
+                                                        , edgeTraefikServiceIp = traefikServiceIp traefikServiceDoc
+                                                        , edgeHasTraefikClass = ingressClassPresent ingressClassesDoc "traefik"
+                                                        , edgeHasNginxClass = ingressClassPresent ingressClassesDoc "nginx"
+                                                        , edgeIngressNginxServices = serviceCount ingressNginxDoc
+                                                        , edgeVscodeIngressClass = vscodeIngressClass vscodeIngressDoc
+                                                        , edgeVscodeIngressHost = vscodeIngressHost vscodeIngressDoc
+                                                        , edgeCertificateReady = certificateReady certificateDoc
                                                         }
                                             putStr (renderPublicEdgeReport settings runtime)
                                             pure ExitSuccess
@@ -182,25 +183,25 @@ renderStatus status =
 renderPublicEdgeReport :: ValidatedSettings -> EdgeRuntime -> String
 renderPublicEdgeReport settings runtime =
     unlines
-        [ "Public edge diagnostic",
-          "FQDN=" ++ preferredPublicHostFqdn settings,
-          "PUBLIC_IP=" ++ edgePublicIp runtime,
-          "ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeRoute53RecordIp runtime),
-          "ROUTE53_STATUS=" ++ route53Status,
-          "ACTIVE_LAN_INTERFACE=" ++ edgeActiveLanInterface runtime,
-          "ACTIVE_LAN_IPV4=" ++ edgeActiveLanIpv4 runtime,
-          "ACTIVE_LAN_CIDR=" ++ edgeActiveLanCidr runtime,
-          "METALLB_POOL=" ++ edgeMetallbPool runtime,
-          "INGRESS_LB_IP=" ++ edgeIngressLbIp runtime,
-          "TRAEFIK_SERVICE_IP=" ++ edgeTraefikServiceIp runtime,
-          "INGRESSCLASS_TRAEFIK=" ++ presentText (edgeHasTraefikClass runtime),
-          "INGRESSCLASS_NGINX=" ++ presentText (edgeHasNginxClass runtime),
-          "INGRESS_NGINX_SERVICES=" ++ show (edgeIngressNginxServices runtime),
-          "VSCODE_INGRESS_CLASS=" ++ edgeVscodeIngressClass runtime,
-          "VSCODE_INGRESS_HOST=" ++ edgeVscodeIngressHost runtime,
-          "CERTIFICATE_READY=" ++ edgeCertificateReady runtime,
-          "PRIVATE_EDGE_READY=" ++ boolText privateEdgeReady,
-          "CLASSIFICATION=" ++ classification
+        [ "Public edge diagnostic"
+        , "FQDN=" ++ preferredPublicHostFqdn settings
+        , "PUBLIC_IP=" ++ edgePublicIp runtime
+        , "ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeRoute53RecordIp runtime)
+        , "ROUTE53_STATUS=" ++ route53Status
+        , "ACTIVE_LAN_INTERFACE=" ++ edgeActiveLanInterface runtime
+        , "ACTIVE_LAN_IPV4=" ++ edgeActiveLanIpv4 runtime
+        , "ACTIVE_LAN_CIDR=" ++ edgeActiveLanCidr runtime
+        , "METALLB_POOL=" ++ edgeMetallbPool runtime
+        , "INGRESS_LB_IP=" ++ edgeIngressLbIp runtime
+        , "TRAEFIK_SERVICE_IP=" ++ edgeTraefikServiceIp runtime
+        , "INGRESSCLASS_TRAEFIK=" ++ presentText (edgeHasTraefikClass runtime)
+        , "INGRESSCLASS_NGINX=" ++ presentText (edgeHasNginxClass runtime)
+        , "INGRESS_NGINX_SERVICES=" ++ show (edgeIngressNginxServices runtime)
+        , "VSCODE_INGRESS_CLASS=" ++ edgeVscodeIngressClass runtime
+        , "VSCODE_INGRESS_HOST=" ++ edgeVscodeIngressHost runtime
+        , "CERTIFICATE_READY=" ++ edgeCertificateReady runtime
+        , "PRIVATE_EDGE_READY=" ++ boolText privateEdgeReady
+        , "CLASSIFICATION=" ++ classification
         ]
   where
     route53Status
@@ -235,9 +236,9 @@ runHostCheckPorts = do
 mkPortStatus :: Set Int -> Int -> PortStatus
 mkPortStatus listeningPorts port =
     PortStatus
-        { portNumber = port,
-          portAvailable = Set.notMember port listeningPorts,
-          portDetail =
+        { portNumber = port
+        , portAvailable = Set.notMember port listeningPorts
+        , portDetail =
             if Set.member port listeningPorts
                 then "listening socket detected"
                 else "no listening socket detected"
@@ -297,10 +298,10 @@ commandEffect :: FilePath -> [String] -> FilePath -> Effect
 commandEffect commandPath commandArguments repoRoot =
     RunCommand
         CommandSpec
-            { commandPath = commandPath,
-              commandArguments = commandArguments,
-              commandEnvironment = Nothing,
-              commandWorkingDirectory = Just repoRoot
+            { commandPath = commandPath
+            , commandArguments = commandArguments
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
             }
 
 kubectlJson :: FilePath -> Maybe String -> [String] -> IO (Either String Value)
@@ -308,10 +309,10 @@ kubectlJson repoRoot maybeNamespace args = do
     outputResult <-
         captureCommand
             CommandSpec
-                { commandPath = "kubectl",
-                  commandArguments = namespaceArgs ++ args,
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "kubectl"
+                , commandArguments = namespaceArgs ++ args
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
                 }
     pure $
         case outputResult of
@@ -328,10 +329,10 @@ optionalKubectlJson repoRoot maybeNamespace args = do
     outputResult <-
         captureCommand
             CommandSpec
-                { commandPath = "kubectl",
-                  commandArguments = namespaceArgs ++ args,
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "kubectl"
+                , commandArguments = namespaceArgs ++ args
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
                 }
     pure $
         case outputResult of
@@ -504,10 +505,10 @@ detectLanAddressing = do
             routeResult <-
                 captureCommand
                     CommandSpec
-                        { commandPath = "ip",
-                          commandArguments = ["-j", "-4", "route", "show", "default"],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Nothing
+                        { commandPath = "ip"
+                        , commandArguments = ["-j", "-4", "route", "show", "default"]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Nothing
                         }
             case routeResult of
                 Failure _ -> pure (Right fallbackLanAddressing)
@@ -521,10 +522,10 @@ detectLanAddressing = do
                                     addrResult <-
                                         captureCommand
                                             CommandSpec
-                                                { commandPath = "ip",
-                                                  commandArguments = ["-j", "-4", "addr", "show", "dev", interfaceName],
-                                                  commandEnvironment = Nothing,
-                                                  commandWorkingDirectory = Nothing
+                                                { commandPath = "ip"
+                                                , commandArguments = ["-j", "-4", "addr", "show", "dev", interfaceName]
+                                                , commandEnvironment = Nothing
+                                                , commandWorkingDirectory = Nothing
                                                 }
                                     case addrResult of
                                         Failure _ -> pure (Right fallbackLanAddressing)
@@ -562,11 +563,11 @@ decodeLanAddressing interfaceName stdoutText = do
                             (metallbPool, ingressLbIp) <- selectMetallbRange ipv4Text prefixLength
                             Right
                                 LanAddressing
-                                    { lanInterfaceName = interfaceName,
-                                      lanInterfaceIpv4 = ipv4Text,
-                                      lanNetworkCidr = networkCidr,
-                                      lanMetallbPool = metallbPool,
-                                      lanIngressLbIp = ingressLbIp
+                                    { lanInterfaceName = interfaceName
+                                    , lanInterfaceIpv4 = ipv4Text
+                                    , lanNetworkCidr = networkCidr
+                                    , lanMetallbPool = metallbPool
+                                    , lanIngressLbIp = ingressLbIp
                                     }
                         Nothing -> Left "no IPv4 addr_info entry found"
                 _ -> Left "unexpected ip addr payload"
@@ -624,7 +625,7 @@ tails value@(_ : remaining) = value : tails remaining
 
 toLowerAscii :: Char -> Char
 toLowerAscii character
-    | 'A' <= character && character <= 'Z' = toEnum (fromEnum character + 32)
+    | isAsciiUpper character = toEnum (fromEnum character + 32)
     | otherwise = character
 
 ipv4ToWord32 :: String -> Either String Integer
@@ -667,11 +668,11 @@ splitOn delimiter value = go value "" []
 fallbackLanAddressing :: LanAddressing
 fallbackLanAddressing =
     LanAddressing
-        { lanInterfaceName = "<unknown>",
-          lanInterfaceIpv4 = "<unknown>",
-          lanNetworkCidr = "<unknown>",
-          lanMetallbPool = "<unknown>",
-          lanIngressLbIp = "<unknown>"
+        { lanInterfaceName = "<unknown>"
+        , lanInterfaceIpv4 = "<unknown>"
+        , lanNetworkCidr = "<unknown>"
+        , lanMetallbPool = "<unknown>"
+        , lanIngressLbIp = "<unknown>"
         }
 
 presentText :: Bool -> String

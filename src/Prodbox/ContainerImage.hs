@@ -1,46 +1,47 @@
-module Prodbox.ContainerImage
-    ( ImageRef (..),
-      canonicalImagePlatforms,
-      harborMirrorSourceCandidates,
-      harborCertManagerAcmesolverImage,
-      harborCertManagerCainjectorImage,
-      harborCertManagerControllerImage,
-      harborCertManagerStartupApiCheckImage,
-      harborCertManagerWebhookImage,
-      harborCodeServerImage,
-      harborFrrImage,
-      harborGatewayImageRepository,
-      harborGatewayRepository,
-      harborImageRefFromSource,
-      harborKubeRbacProxyImage,
-      harborKeycloakImage,
-      publicMinioImage,
-      publicMinioMcImage,
-      harborMetallbControllerImage,
-      harborMetallbSpeakerImage,
-      harborMinioImage,
-      harborMinioMcImage,
-      harborMirrorProject,
-      harborMirrorTargetForSource,
-      harborPostgresImage,
-      harborRegistryEndpoint,
-      harborTraefikImage,
-      harborVscodeNginxImage,
-      normalizeImageRefText,
-      parseImageRef,
-      renderImageRef,
-      requiredPublicImageCandidatePairs,
-      requiredPublicImagePairs,
-    )
+module Prodbox.ContainerImage (
+    ImageRef (..),
+    canonicalImagePlatforms,
+    harborMirrorSourceCandidates,
+    harborCertManagerAcmesolverImage,
+    harborCertManagerCainjectorImage,
+    harborCertManagerControllerImage,
+    harborCertManagerStartupApiCheckImage,
+    harborCertManagerWebhookImage,
+    harborCodeServerImage,
+    harborFrrImage,
+    harborGatewayImageRepository,
+    harborGatewayRepository,
+    harborImageRefFromSource,
+    harborKubeRbacProxyImage,
+    harborKeycloakImage,
+    publicMinioImage,
+    publicMinioMcImage,
+    harborMetallbControllerImage,
+    harborMetallbSpeakerImage,
+    harborMinioImage,
+    harborMinioMcImage,
+    harborMirrorProject,
+    harborMirrorTargetForSource,
+    harborPostgresOperatorImage,
+    harborRegistryEndpoint,
+    harborSpiloImage,
+    harborTraefikImage,
+    harborVscodeNginxImage,
+    normalizeImageRefText,
+    parseImageRef,
+    renderImageRef,
+    requiredPublicImageCandidatePairs,
+    requiredPublicImagePairs,
+)
 where
 
 import Data.Char (isSpace)
 import Data.List (find, nub)
 
 data ImageRef = ImageRef
-    { imageRegistry :: String,
-      imageRepository :: String,
-      imageTag :: String
+    { imageRegistry :: String
+    , imageRepository :: String
+    , imageTag :: String
     }
     deriving (Eq, Show)
 
@@ -60,8 +61,12 @@ harborVscodeNginxImage :: ImageRef
 harborVscodeNginxImage =
     ImageRef harborRegistryEndpoint (harborMirrorProject ++ "/prodbox-nginx-oidc") "latest"
 
-harborPostgresImage :: ImageRef
-harborPostgresImage = harborImageRefFromRepository "postgres-mirror" "16.4-bullseye"
+harborPostgresOperatorImage :: ImageRef
+harborPostgresOperatorImage =
+    harborImageRefFromRepository "postgres-operator-mirror" "v1.15.1"
+
+harborSpiloImage :: ImageRef
+harborSpiloImage = harborImageRefFromRepository "spilo-17-mirror" "4.0-p3"
 
 harborCodeServerImage :: ImageRef
 harborCodeServerImage = harborImageRefFromRepository "code-server-mirror" "4.98.2"
@@ -113,14 +118,14 @@ harborCertManagerStartupApiCheckImage = harborImageRefFromRepository "cert-manag
 
 canonicalImagePlatforms :: [(String, String)]
 canonicalImagePlatforms =
-    [ ("linux", "amd64"),
-      ("linux", "arm64")
+    [ ("linux", "amd64")
+    , ("linux", "arm64")
     ]
 
 data PublicImageMirror = PublicImageMirror
-    { publicImagePrimarySource :: ImageRef,
-      publicImageSourceAliases :: [ImageRef],
-      publicImageTarget :: ImageRef
+    { publicImagePrimarySource :: ImageRef
+    , publicImageSourceAliases :: [ImageRef]
+    , publicImageTarget :: ImageRef
     }
 
 requiredPublicImagePairs :: [(String, String)]
@@ -144,62 +149,66 @@ requiredPublicImageCandidatePairs =
 requiredPublicImageMirrors :: [PublicImageMirror]
 requiredPublicImageMirrors =
     [ mirroredPublicImage
-        (ImageRef "public.ecr.aws" "docker/library/postgres" "16.4-bullseye")
-        [ImageRef "docker.io" "library/postgres" "16.4-bullseye"]
-        harborPostgresImage,
-      mirroredPublicImage
+        (ImageRef "ghcr.io" "zalando/postgres-operator" "v1.15.1")
+        []
+        harborPostgresOperatorImage
+    , mirroredPublicImage
+        (ImageRef "ghcr.io" "zalando/spilo-17" "4.0-p3")
+        []
+        harborSpiloImage
+    , mirroredPublicImage
         (ImageRef "ghcr.io" "coder/code-server" "4.98.2")
         [ImageRef "docker.io" "codercom/code-server" "4.98.2"]
-        harborCodeServerImage,
-      mirroredPublicImage
+        harborCodeServerImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "keycloak/keycloak" "26.0.0")
         []
-        harborKeycloakImage,
-      mirroredPublicImage
+        harborKeycloakImage
+    , mirroredPublicImage
         publicMinioImage
         []
-        harborMinioImage,
-      mirroredPublicImage
+        harborMinioImage
+    , mirroredPublicImage
         publicMinioMcImage
         []
-        harborMinioMcImage,
-      mirroredPublicImage
+        harborMinioMcImage
+    , mirroredPublicImage
         (ImageRef "ghcr.io" "traefik/traefik" "v3.1.4")
         [ImageRef "docker.io" "library/traefik" "v3.1.4"]
-        harborTraefikImage,
-      mirroredPublicImage
+        harborTraefikImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "metallb/controller" "v0.14.9")
         []
-        harborMetallbControllerImage,
-      mirroredPublicImage
+        harborMetallbControllerImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "metallb/speaker" "v0.14.9")
         []
-        harborMetallbSpeakerImage,
-      mirroredPublicImage
+        harborMetallbSpeakerImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "frrouting/frr" "9.1.0")
         []
-        harborFrrImage,
-      mirroredPublicImage
+        harborFrrImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "brancz/kube-rbac-proxy" "v0.12.0")
         [ImageRef "gcr.io" "kubebuilder/kube-rbac-proxy" "v0.12.0"]
-        harborKubeRbacProxyImage,
-      mirroredPublicImage
+        harborKubeRbacProxyImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "jetstack/cert-manager-controller" "v1.16.2")
         []
-        harborCertManagerControllerImage,
-      mirroredPublicImage
+        harborCertManagerControllerImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "jetstack/cert-manager-webhook" "v1.16.2")
         []
-        harborCertManagerWebhookImage,
-      mirroredPublicImage
+        harborCertManagerWebhookImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "jetstack/cert-manager-cainjector" "v1.16.2")
         []
-        harborCertManagerCainjectorImage,
-      mirroredPublicImage
+        harborCertManagerCainjectorImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "jetstack/cert-manager-acmesolver" "v1.16.2")
         []
-        harborCertManagerAcmesolverImage,
-      mirroredPublicImage
+        harborCertManagerAcmesolverImage
+    , mirroredPublicImage
         (ImageRef "quay.io" "jetstack/cert-manager-startupapicheck" "v1.16.2")
         []
         harborCertManagerStartupApiCheckImage
@@ -208,9 +217,9 @@ requiredPublicImageMirrors =
 mirroredPublicImage :: ImageRef -> [ImageRef] -> ImageRef -> PublicImageMirror
 mirroredPublicImage source aliases target =
     PublicImageMirror
-        { publicImagePrimarySource = source,
-          publicImageSourceAliases = aliases,
-          publicImageTarget = target
+        { publicImagePrimarySource = source
+        , publicImageSourceAliases = aliases
+        , publicImageTarget = target
         }
 
 renderImageRef :: ImageRef -> String

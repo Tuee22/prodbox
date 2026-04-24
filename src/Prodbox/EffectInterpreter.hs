@@ -1,81 +1,81 @@
-module Prodbox.EffectInterpreter
-    ( InterpreterContext (..),
-      runEffect,
-      runEffectDAG,
-    )
+module Prodbox.EffectInterpreter (
+    InterpreterContext (..),
+    runEffect,
+    runEffectDAG,
+)
 where
 
-import Control.Monad
-    ( foldM,
-      when,
-    )
-import Data.List
-    ( intercalate,
-      isInfixOf,
-      sort,
-    )
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Data.Set
-    ( Set,
-    )
-import qualified Data.Text as Text
-import Prodbox.Effect
-    ( Effect (..),
-      Validation (..),
-    )
-import Prodbox.EffectDAG
-    ( EffectDAG (..),
-      EffectNode (..),
-    )
-import Prodbox.Infra.MinioBackend
-    ( ensureMinioBackendBucket,
-      minioBackendRegion,
-      pulumiBackendUrl,
-      readMinioCredentials,
-      withMinioPortForward,
-    )
-import Prodbox.Result
-    ( Result (..),
-    )
-import Prodbox.Settings
-    ( ConfigFile (..),
-      Credentials (..),
-      Route53Section (..),
-      ValidatedSettings (..),
-      loadConfigFile,
-      validateAwsBootstrapConfig,
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-      commandDisplay,
-      runStreamingCommand,
-    )
-import System.Directory
-    ( doesDirectoryExist,
-      doesFileExist,
-      findExecutable,
-      getHomeDirectory,
-    )
-import System.Environment
-    ( getEnvironment,
-    )
-import System.Exit
-    ( ExitCode (..),
-    )
-import System.FilePath
-    ( (</>),
-    )
-import System.Info
-    ( os,
-    )
-import System.IO
-    ( hPutStr,
-      stderr,
-    )
+import Control.Monad (
+    foldM,
+    when,
+ )
+import Data.List (
+    intercalate,
+    isInfixOf,
+    sort,
+ )
+import Data.Map.Strict qualified as Map
+import Data.Set (
+    Set,
+ )
+import Data.Set qualified as Set
+import Data.Text qualified as Text
+import Prodbox.Effect (
+    Effect (..),
+    Validation (..),
+ )
+import Prodbox.EffectDAG (
+    EffectDAG (..),
+    EffectNode (..),
+ )
+import Prodbox.Infra.MinioBackend (
+    ensureMinioBackendBucket,
+    minioBackendRegion,
+    pulumiBackendUrl,
+    readMinioCredentials,
+    withMinioPortForward,
+ )
+import Prodbox.Result (
+    Result (..),
+ )
+import Prodbox.Settings (
+    ConfigFile (..),
+    Credentials (..),
+    Route53Section (..),
+    ValidatedSettings (..),
+    loadConfigFile,
+    validateAndLoadSettings,
+    validateAwsBootstrapConfig,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+    commandDisplay,
+    runStreamingCommand,
+ )
+import System.Directory (
+    doesDirectoryExist,
+    doesFileExist,
+    findExecutable,
+    getHomeDirectory,
+ )
+import System.Environment (
+    getEnvironment,
+ )
+import System.Exit (
+    ExitCode (..),
+ )
+import System.FilePath (
+    (</>),
+ )
+import System.IO (
+    hPutStr,
+    stderr,
+ )
+import System.Info (
+    os,
+ )
 
 data InterpreterContext = InterpreterContext
     { interpreterRepoRoot :: FilePath
@@ -103,9 +103,9 @@ runEffectDAG context dag = go initialPending Set.empty
         readyIds =
             sort
                 [ effectId
-                | effectId <- Set.toList pending,
-                  let node = nodes Map.! effectId,
-                  all (`Set.member` completed) (effectNodePrerequisites node)
+                | effectId <- Set.toList pending
+                , let node = nodes Map.! effectId
+                , all (`Set.member` completed) (effectNodePrerequisites node)
                 ]
 
     runReady :: [String] -> Set String -> Set String -> IO (Result ())
@@ -232,17 +232,17 @@ runValidation context validation =
         validationLabel = "Tool check failed"
         spec =
             CommandSpec
-                { commandPath = toolName,
-                  commandArguments = versionArgs,
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just (interpreterRepoRoot context)
+                { commandPath = toolName
+                , commandArguments = versionArgs
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just (interpreterRepoRoot context)
                 }
 
     executableExists :: FilePath -> IO Bool
     executableExists toolName =
-        case '/' `elem` toolName of
-            True -> doesFileExist toolName
-            False -> do
+        if '/' `elem` toolName
+            then doesFileExist toolName
+            else do
                 maybeExecutable <- findExecutable toolName
                 pure (maybe False (const True) maybeExecutable)
 
@@ -250,9 +250,9 @@ runValidation context validation =
     hasHarnessAdminCredentials credentials =
         all
             (not . Text.null . Text.strip)
-            [ access_key_id credentials,
-              secret_access_key credentials,
-              region credentials
+            [ access_key_id credentials
+            , secret_access_key credentials
+            , region credentials
             ]
 
     requireFileExists :: FilePath -> IO (Result ())
@@ -288,10 +288,10 @@ runValidation context validation =
         outputResult <-
             captureCommand
                 CommandSpec
-                    { commandPath = "systemctl",
-                      commandArguments = ["show", "--property=LoadState", "--value", serviceName],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just (interpreterRepoRoot context)
+                    { commandPath = "systemctl"
+                    , commandArguments = ["show", "--property=LoadState", "--value", serviceName]
+                    , commandEnvironment = Nothing
+                    , commandWorkingDirectory = Just (interpreterRepoRoot context)
                     }
         pure $
             case outputResult of
@@ -321,12 +321,14 @@ runValidation context validation =
 
     requireServiceActive :: String -> IO (Result ())
     requireServiceActive serviceName =
-        requireCapturedCommandSuccess False ("Service `" ++ serviceName ++ "` is not active")
+        requireCapturedCommandSuccess
+            False
+            ("Service `" ++ serviceName ++ "` is not active")
             CommandSpec
-                { commandPath = "systemctl",
-                  commandArguments = ["is-active", serviceName],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just (interpreterRepoRoot context)
+                { commandPath = "systemctl"
+                , commandArguments = ["is-active", serviceName]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just (interpreterRepoRoot context)
                 }
 
     requireAwsCredentials :: IO (Result ())
@@ -336,12 +338,14 @@ runValidation context validation =
             Left err -> pure (Failure err)
             Right settings -> do
                 environment <- awsCommandEnvironment settings
-                requireCapturedCommandSuccess False "AWS credential check failed"
+                requireCapturedCommandSuccess
+                    False
+                    "AWS credential check failed"
                     CommandSpec
-                        { commandPath = "aws",
-                          commandArguments = ["sts", "get-caller-identity", "--output", "json"],
-                          commandEnvironment = Just environment,
-                          commandWorkingDirectory = Just (interpreterRepoRoot context)
+                        { commandPath = "aws"
+                        , commandArguments = ["sts", "get-caller-identity", "--output", "json"]
+                        , commandEnvironment = Just environment
+                        , commandWorkingDirectory = Just (interpreterRepoRoot context)
                         }
 
     requireAwsIamHarnessReady :: IO (Result ())
@@ -368,12 +372,14 @@ runValidation context validation =
             Right settings -> do
                 environment <- awsCommandEnvironment settings
                 let zoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
-                requireCapturedCommandSuccess False "Route 53 access check failed"
+                requireCapturedCommandSuccess
+                    False
+                    "Route 53 access check failed"
                     CommandSpec
-                        { commandPath = "aws",
-                          commandArguments = ["route53", "get-hosted-zone", "--id", zoneId, "--output", "json"],
-                          commandEnvironment = Just environment,
-                          commandWorkingDirectory = Just (interpreterRepoRoot context)
+                        { commandPath = "aws"
+                        , commandArguments = ["route53", "get-hosted-zone", "--id", zoneId, "--output", "json"]
+                        , commandEnvironment = Just environment
+                        , commandWorkingDirectory = Just (interpreterRepoRoot context)
                         }
 
     requirePulumiLogin :: IO (Result ())
@@ -389,12 +395,14 @@ runValidation context validation =
                             Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
                             Right () -> do
                                 environment <- pulumiPrerequisiteEnvironment localPort accessKey secretKey
-                                requireCapturedCommandSuccess False "Pulumi login check failed"
+                                requireCapturedCommandSuccess
+                                    False
+                                    "Pulumi login check failed"
                                     CommandSpec
-                                        { commandPath = "pulumi",
-                                          commandArguments = ["whoami"],
-                                          commandEnvironment = Just environment,
-                                          commandWorkingDirectory = Just (interpreterRepoRoot context)
+                                        { commandPath = "pulumi"
+                                        , commandArguments = ["whoami"]
+                                        , commandEnvironment = Just environment
+                                        , commandWorkingDirectory = Just (interpreterRepoRoot context)
                                         }
         case portForwardResult of
             Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
@@ -402,12 +410,14 @@ runValidation context validation =
 
     requireKubectlClusterReachable :: IO (Result ())
     requireKubectlClusterReachable =
-        requireCapturedCommandSuccess True "Kubernetes cluster check failed"
+        requireCapturedCommandSuccess
+            True
+            "Kubernetes cluster check failed"
             CommandSpec
-                { commandPath = "kubectl",
-                  commandArguments = ["cluster-info"],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just (interpreterRepoRoot context)
+                { commandPath = "kubectl"
+                , commandArguments = ["cluster-info"]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just (interpreterRepoRoot context)
                 }
 
     requireUbuntu2404 :: IO (Result ())
@@ -431,16 +441,16 @@ pulumiPrerequisiteEnvironment localPort accessKey secretKey = do
     let path = maybe "" id (lookup "PATH" currentEnv)
         home = maybe "" id (lookup "HOME" currentEnv)
     pure
-        [ ("AWS_ACCESS_KEY_ID", accessKey),
-          ("AWS_SECRET_ACCESS_KEY", secretKey),
-          ("AWS_REGION", minioBackendRegion),
-          ("AWS_DEFAULT_REGION", minioBackendRegion),
-          ("AWS_EC2_METADATA_DISABLED", "true"),
-          ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort),
-          ("PULUMI_CONFIG_PASSPHRASE", ""),
-          ("PATH", path),
-          ("HOME", home),
-          ("LANG", "C.UTF-8")
+        [ ("AWS_ACCESS_KEY_ID", accessKey)
+        , ("AWS_SECRET_ACCESS_KEY", secretKey)
+        , ("AWS_REGION", minioBackendRegion)
+        , ("AWS_DEFAULT_REGION", minioBackendRegion)
+        , ("AWS_EC2_METADATA_DISABLED", "true")
+        , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+        , ("PULUMI_CONFIG_PASSPHRASE", "")
+        , ("PATH", path)
+        , ("HOME", home)
+        , ("LANG", "C.UTF-8")
         ]
 
 requireCapturedCommandSuccess :: Bool -> String -> CommandSpec -> IO (Result ())
@@ -479,16 +489,15 @@ echoProcessOutput output = do
     hPutStr stderr (processStderr output)
 
 awsCommandEnvironment :: ValidatedSettings -> IO [(String, String)]
-awsCommandEnvironment settings = do
-    baseEnvironment <- getEnvironment
-    pure (mergeEnvironment (awsEnvironmentEntries (aws (validatedConfig settings))) baseEnvironment)
+awsCommandEnvironment settings =
+    mergeEnvironment (awsEnvironmentEntries (aws (validatedConfig settings))) <$> getEnvironment
 
 awsEnvironmentEntries :: Credentials -> [(String, String)]
 awsEnvironmentEntries credentials =
-    [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials)),
-      ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials)),
-      ("AWS_REGION", Text.unpack (region credentials)),
-      ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
+    [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials))
+    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials))
+    , ("AWS_REGION", Text.unpack (region credentials))
+    , ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
     ]
         ++ sessionTokenEntry
   where

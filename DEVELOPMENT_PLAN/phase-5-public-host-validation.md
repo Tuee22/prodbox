@@ -12,15 +12,15 @@
 This phase proves the public DNS, TLS, ingress, and external auth path through Haskell-only
 surfaces. It preserves the existing public-host doctrine: external proof remains external-only,
 explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based closure remains
-unsupported.
+unsupported. This phase is closed on its owned proof surfaces.
 
 ## Current Baseline In Worktree
 
 - `src/Prodbox/Host.hs` owns the public `prodbox host public-edge` surface. All Python host
   wrappers and duplicate report logic have been removed.
 - Public-edge proof lives in the Haskell test suites under `test/`.
-- Ingress and TLS bootstrap are handled through YAML Pulumi definitions and the Haskell chart
-  runtime.
+- The public-edge proof depends on the Harbor-first lifecycle and chart/runtime surfaces closed in
+  earlier phases; this phase remains limited to the diagnostic and external proof contract.
 
 ## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
 
@@ -60,6 +60,10 @@ Close the public DNS and ingress path on the Haskell runtime that owns it.
 - The named validation commands `prodbox test integration charts-vscode` and
   `prodbox test integration public-dns` now run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox host public-edge`,
+  `./.build/prodbox test integration charts-vscode`, `./.build/prodbox test integration dns-aws`,
+  and the public-edge or public-DNS proof surfaces inside `./.build/prodbox test integration all`
+  plus `./.build/prodbox test all`.
 
 ### Remaining Work
 

@@ -2,196 +2,196 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: [../../README.md](../../README.md), [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md), [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
 
-> **Purpose**: Define the singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for the `prodbox charts` command platform.
-
----
+> **Purpose**: Define the singleton chart identity, namespace isolation, external Patroni
+> PostgreSQL dependency model, storage lifecycle, and delete semantics for `prodbox charts`.
 
 ## 1. Canonical Doctrine Statements
 
-The chart platform deploys bespoke Helm charts through the native Haskell `prodbox charts`
-surface implemented in `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
-`src/Prodbox/Lib/Storage.hs`. Each root chart owns a namespace equal to its name and manages all
-prerequisite charts within that namespace.
+The chart platform is owned by the native Haskell runtime in:
 
----
+- `src/Prodbox/CLI/Charts.hs`
+- `src/Prodbox/Lib/ChartPlatform.hs`
+- `src/Prodbox/Lib/Storage.hs`
+
+The supported chart doctrine is:
+
+1. `prodbox charts` manages only the repo-owned root charts `gateway`, `keycloak`, and `vscode`.
+2. No repo-owned chart may render or own an embedded PostgreSQL subchart.
+3. Helm-managed application PostgreSQL is namespace-local and Patroni-based: the internal
+   `keycloak-postgres` release renders an `acid.zalan.do/v1` `postgresql` resource in the root
+   chart namespace, and the cluster-wide `postgres-operator` reconciles it.
+4. `keycloak` depends on that namespace-local Patroni cluster. `vscode` depends on `keycloak` and
+   does not talk directly to PostgreSQL.
+5. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
+   path is `./.build/prodbox rke2 install`.
 
 ## 2. Singleton Chart Identity Rule
 
 One Helm release per chart name exists cluster-wide at any time.
 
-- Before any deployment, `deployChartPlan` inspects `helm list --all-namespaces` through the
-  Haskell chart runtime and asserts no release in the plan is already installed.
-- If any duplicate release is detected, the entire deploy is rejected before any Helm action.
-- Reinstalling a chart requires an explicit `prodbox charts delete <chart>` first.
-
----
+- Before deployment, the Haskell runtime inspects `helm list --all-namespaces`.
+- If any release in the plan already exists, the entire deploy is rejected before Helm mutate
+  operations begin.
+- Reinstall requires an explicit `prodbox charts delete <chart>` first.
 
 ## 3. Root-Chart-Owned Namespace Rule
 
 The namespace for a root chart stack equals the root chart name.
 
-- `prodbox charts deploy vscode` deploys into the `vscode` namespace.
-- All prerequisite charts (e.g. `keycloak`, `keycloak-postgres`) are co-deployed into the same `vscode` namespace.
-- No chart template may render resources into a foreign namespace.
+- `prodbox charts deploy gateway` deploys into the `gateway` namespace.
+- `prodbox charts deploy keycloak` deploys `keycloak-postgres` plus `keycloak` into the
+  `keycloak` namespace.
+- `prodbox charts deploy vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the
+  `vscode` namespace.
 
----
+Repo-owned chart templates do not render resources into foreign namespaces. The only cluster-wide
+dependency is the lifecycle-owned Patroni operator in the `postgres-operator` namespace.
 
-## 4. Same-Namespace-Only Prerequisite Composition
+## 4. Patroni PostgreSQL Dependency Contract
 
-All charts within a root stack share one namespace. Cross-namespace service references are prohibited.
+The application database is not an embedded subchart. It is a separate Helm-managed release in the
+same namespace as the consuming chart stack.
 
-- Service names are unqualified (e.g. `keycloak-postgres`, not `keycloak-postgres.vscode.svc.cluster.local`).
-- NetworkPolicy rules deny ingress/egress to/from other namespaces by default.
+The supported contract is:
 
----
+- `prodbox rke2 install` installs the cluster-wide `postgres-operator` Helm release into the
+  `postgres-operator` namespace.
+- `prodbox charts deploy keycloak` and `prodbox charts deploy vscode` include the internal
+  `keycloak-postgres` release before `keycloak`.
+- Each Patroni cluster runs exactly three PostgreSQL replicas.
+- Patroni synchronous replication is enabled with strict mode.
+- The PostgreSQL workload image is Harbor-backed `spilo-17`.
+- Keycloak consumes the operator-generated credentials secret
+  `keycloak.prodbox-<root-chart>-postgres.credentials.postgresql.acid.zalan.do`.
+- The primary service endpoint is
+  `prodbox-<root-chart>-postgres.<namespace>.svc.cluster.local`.
 
-## 5. Default-Deny Network Policy Isolation
+The chart runtime validates the platform prerequisite by requiring both:
 
-Every bespoke chart must include a `NetworkPolicy` that:
+- CRD `postgresqls.acid.zalan.do`
+- deployment `postgres-operator` in namespace `postgres-operator`
 
-1. Denies all ingress by default.
-2. Allows ingress only from pods within the same namespace (matching `prodbox.io/chart-root` label).
-3. Allows ingress from the ingress controller namespace for charts with an `Ingress` resource.
+before any chart that depends on PostgreSQL is deployed.
 
----
+## 5. CLI-Owned PV/PVC Lifecycle
 
-## 6. CLI-Owned PV/PVC Lifecycle
+Repo-owned charts never create `PersistentVolume` or `PersistentVolumeClaim` objects directly.
 
-Charts never create `PersistentVolume` or `PersistentVolumeClaim` objects.
+- The Haskell CLI creates PV and PVC objects before Helm runs.
+- Charts consume those claims through deterministic rendered values.
+- This keeps rebinding deterministic across delete and reinstall cycles.
 
-- The CLI creates PV and PVC objects before calling Helm, using deterministic names derived from the namespace and statefulset.
-- Charts reference existing PVCs via `existingClaim` values.
-- This guarantees PV/PVC rebinding survives delete/redeploy cycles without data loss.
+This rule applies to the internal `keycloak-postgres` release as well. There is no Pulumi-owned
+PostgreSQL exception on the supported path.
 
----
+## 6. `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` Host-Path Contract
 
-## 7. `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` Host-Path Contract
+Chart-owned retained host storage lives at:
 
-Retained host storage for chart workloads lives at:
-
-```
+```text
 <repo-root>/.data/<namespace>/<release>/<workload>/<ordinal>/<claim>/
 ```
 
-For example, `keycloak-postgres` in the `vscode` namespace:
+Examples:
 
-```
-.data/vscode/keycloak-postgres/keycloak-postgres/0/data/
-```
+- `keycloak-postgres` for the `keycloak` root chart:
+  `.data/keycloak/keycloak-postgres/prodbox-keycloak-postgres/0/data/`
+- `keycloak-postgres` for the `vscode` root chart:
+  `.data/vscode/keycloak-postgres/prodbox-vscode-postgres/0/data/`
+- `vscode` StatefulSet:
+  `.data/vscode/vscode/vscode/0/data/`
 
 Rules:
 
-1. The CLI creates host directories with `mkdir -p` before applying storage manifests.
-2. `.data/` is excluded from both `.gitignore` and `.dockerignore` and is reserved for PV contents only.
-3. PV names are deterministic: `prodbox-chart-<namespace>-<release>-<workload>-<ordinal>-<claim>`.
-4. The `StorageClass` `manual` (provisioner `kubernetes.io/no-provisioner`, Retain policy) is the only permitted StorageClass; bootstrap fails if a chart requests a dynamic provisioner.
-5. Replica counts are chart-specific. Single-writer retained-state charts such as `keycloak-postgres` and `vscode` stay single-replica unless they gain an explicit clustered storage design; charts that support concurrent replicas keep pod anti-affinity enabled by default. Dev mode (`PRODBOX_DEV_MODE=true`) suppresses anti-affinity but retains the configured replica counts.
+1. The CLI creates host directories before storage manifests are applied.
+2. `.data/` is reserved for PV contents only.
+3. PV names are deterministic.
+4. `manual` is the only supported `StorageClass`.
+5. `vscode` remains single-replica retained storage on the supported path.
 
-Retained non-PV chart state lives separately under `.prodbox-state/<namespace>/`. That root stores generated secrets and gateway event keys so full cluster delete/reinstall can reconnect retained services without violating the PV-only `.data/` boundary.
+Retained non-PV chart state lives separately under `.prodbox-state/<namespace>/`.
 
----
-
-## 8. Delete Semantics
+## 7. Delete Semantics
 
 `prodbox charts delete <chart>`:
 
-1. Calls `helm uninstall` for each release in reverse dependency order.
-2. Deletes all CLI-created PVCs in the chart namespace.
-3. Deletes all CLI-created PVs (cluster-scoped).
-4. Deletes the namespace (which garbage-collects remaining namespace-scoped resources).
-5. **Never deletes retained host-state directories** — `.data/` PV contents and `.prodbox-state/` retained chart state are preserved on disk.
+1. calls `helm uninstall` for each release in reverse dependency order
+2. deletes CLI-created PVCs in the root-chart namespace
+3. deletes CLI-created PVs
+4. deletes the root-chart namespace
+5. preserves `.data/` and `.prodbox-state/` on disk
 
-This means a subsequent `prodbox charts deploy <chart>` will rebind to the same host paths with new PV/PVC objects.
+This means a later deploy can rebind to the same retained host state.
 
----
+## 8. Supported Charts
 
-## 9. Supported Charts
+The chart registry is defined in `src/Prodbox/Lib/ChartPlatform.hs`.
 
-The chart registry is defined in `src/Prodbox/Lib/ChartPlatform.hs`. Current charts:
-
-| Chart | Dependencies | Storage | Public Host Required |
-|-------|-------------|---------|---------------------|
-| `keycloak-postgres` | none | 20Gi | no |
-| `keycloak` | `keycloak-postgres` | none | yes |
-| `vscode` | `keycloak` | 50Gi | yes |
-| `gateway` | none | none | yes |
+| Chart | Kind | Dependencies | External Requirements | Storage | Public Host Required |
+|-------|------|--------------|-----------------------|---------|----------------------|
+| `keycloak-postgres` | internal | none | Patroni platform | 3 x 20Gi | no |
+| `keycloak` | root | `keycloak-postgres` | none beyond dependency | none | yes |
+| `vscode` | root | `keycloak` | none beyond dependency chain | 50Gi | yes |
+| `gateway` | root | none | none | none | yes |
 
 Root charts:
 
-- `gateway` — deploys the in-cluster distributed gateway stack into the `gateway` namespace.
-- `vscode` — deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
-- The `gateway` chart renders the `gateway-aws-credentials` secret from repository settings,
-  passes those credentials via environment variables, and probes `/v1/state` over HTTP on the
-  in-pod REST port for pod health.
+- `gateway` deploys the in-cluster distributed gateway stack into the `gateway` namespace.
+- `keycloak` deploys `keycloak-postgres` plus `keycloak` into the `keycloak` namespace.
+- `vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
 
-## 10. Supported Auth Model For `vscode`
+## 9. Supported Auth Model For `vscode`
 
-The `vscode` chart stack supports one auth model only:
+The supported `vscode` auth path is:
 
-1. nginx handles the OIDC authorization-code flow.
-2. Keycloak uses its local user database and serves the login page under `/auth`.
-3. code-server is reachable only behind the nginx auth wall.
-4. Supported image refs are Harbor-only: `keycloak-postgres`, `keycloak`, `vscode-nginx`, and
-   `code-server` all resolve from the local Harbor `prodbox` project rather than direct upstream
-   registries.
+1. nginx handles the OIDC authorization-code flow
+2. Keycloak serves the login page under `/auth`
+3. code-server is reachable only behind the nginx auth wall
+4. Keycloak stores its data in the namespace-local Patroni cluster for the root chart
+5. supported image refs are Harbor-only for `keycloak`, `vscode-nginx`, `code-server`,
+   `postgres-operator`, and `spilo` after Harbor bootstrap
 
-Unsupported legacy paths:
+Unsupported legacy paths remain:
 
-- `oauth2-proxy`
-- Google OAuth as the supported identity-provider path
-- Standalone local `docker-compose` delivery paths outside `prodbox charts`
+- embedded PostgreSQL chart subcomponents
+- shared `pgpool` or `repmgr` service dependencies
+- standalone local `docker-compose` delivery outside `prodbox charts`
 
-TLS for the supported `vscode` ingress is cluster-managed through cert-manager. When the selected
-ACME provider is ZeroSSL, the Haskell Pulumi custom-resource reconcile materializes the EAB HMAC
-key in the `cert-manager` namespace as `acme-eab-credentials` and points the supported
-`ClusterIssuer` at that secret via `spec.acme.externalAccountBinding`.
+## 10. Required Settings and Auto-Generated Secrets
 
----
-
-## 11. Required Settings and Auto-Generated Secrets
-
-The following repository configuration value decoded by `src/Prodbox/Settings.hs` is required for
-chart deployment:
+The following repository configuration value is required for the public `vscode` path:
 
 | Setting | Purpose |
 |---------|---------|
-| `VSCODE_FQDN` | Public FQDN for VS Code and Keycloak |
+| `domain.vscode_fqdn` | Public FQDN for VS Code and Keycloak ingress |
 
-Cluster-internal secrets are auto-generated at chart deploy time and persisted in
-`.prodbox-state/<namespace>/.secrets.json`. They are not configured via `.env`:
+Namespace-local chart secrets live in `.prodbox-state/<namespace>/.secrets.json`:
 
 | Secret | Purpose |
 |--------|---------|
 | `keycloak_admin_password` | Keycloak admin credentials |
-| `keycloak_postgres_password` | PostgreSQL database password |
-| `keycloak_nginx_client_secret` | nginx OIDC client secret (registered in Keycloak as `vscode-nginx`) |
+| `keycloak_nginx_client_secret` | nginx OIDC client secret |
+| `patroni_app_password` | retained Patroni application-user password for the namespace-local cluster |
+| `patroni_superuser_password` | retained Patroni `postgres` superuser password for the namespace-local cluster |
+| `patroni_standby_password` | retained Patroni standby-user password for the namespace-local cluster |
 
----
+The chart platform renders the three corresponding Kubernetes secrets before the Patroni cluster
+resource so retained PVC rebinding does not rotate credentials underneath preserved PostgreSQL
+data.
 
-## 12. Planning Ownership
+## 11. Planning Ownership
 
 This document is normative chart-platform doctrine only.
 
-Delivery sequencing, completion status, remaining work, and legacy-path removal
-are owned by
-[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
-
-Canonical repository facts referenced by this doctrine:
-
-1. `prodbox charts` is the only supported chart-lifecycle entrypoint.
-2. The supported auth path for `vscode` is nginx OIDC plus local Keycloak users.
-3. There is no separate repository-supported `docker/vscode-dev` flow for `vscode`.
-4. Public-host closure and any remaining cleanup refactors must be tracked in
-   [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), not in this doctrine
-   document.
+Delivery sequencing, completion status, remaining work, and cleanup ownership are owned by
+[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ## Cross-References
 
 - [CLI Command Surface](./cli_command_surface.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
-- [Effectful DAG Architecture](./effectful_dag_architecture.md)
-- [Unit Testing Policy](./unit_testing_policy.md)
+- [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Documentation Standards](../documentation_standards.md)

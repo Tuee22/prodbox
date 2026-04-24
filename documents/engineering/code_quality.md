@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Define policy guardrails and enforcement flow for `prodbox check-code`.
 
@@ -23,15 +23,10 @@ operator entrypoint:
 `src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs a fail-fast
 sequence:
 
-1. `cabal build --builddir=.build all`
-2. Sync the built operator binary to `.build/prodbox`
-
-Local closure on the April 18, 2026 worktree also includes:
-
-```bash
-cabal build --builddir=.build exe:prodbox
-cabal test --builddir=.build test:prodbox-unit test:prodbox-integration-cli test:prodbox-integration-env
-```
+1. `fourmolu --mode check app src test`
+2. `hlint app src test --hint=.hlint.yaml`
+3. `cabal build --builddir=.build all --ghc-options=-Werror`
+4. Sync the built operator binary to `.build/prodbox`
 
 ## 2A. Development Tooling Policy
 
@@ -54,10 +49,14 @@ Use local CLI entrypoints only:
 
 Current enforced quality surfaces:
 
-- Haskell buildability through `cabal build --builddir=.build all`
-- Operator-binary sync to `./.build/prodbox`
-- Test-suite compilation through the Cabal build
-- Doctrine alignment described by the governed docs in this directory
+- Fourmolu formatting through `fourmolu.toml`
+- HLint through `.hlint.yaml`
+- warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
+- operator-binary sync to `./.build/prodbox`
+- doctrine alignment described by the governed docs in this directory
+
+Detailed Haskell hard-gate doctrine and the review-guidance split live in
+[Haskell Code Guide](./haskell_code_guide.md).
 
 Doctrine violations must fail with a non-zero exit code.
 
@@ -76,6 +75,7 @@ This SSoT co-owns purity and guardrail doctrine intention.
 
 ## Cross-References
 
+- [Haskell Code Guide](./haskell_code_guide.md)
 - [Pure FP Standards](./pure_fp_standards.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)

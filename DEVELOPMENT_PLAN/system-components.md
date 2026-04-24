@@ -7,8 +7,8 @@
 > **Purpose**: Document the authoritative target component inventory for infrastructure, runtime
 > control surfaces, validation surfaces, and state or authority boundaries in the Haskell rewrite.
 
-The inventory documents the current Haskell-only architecture and the component boundaries that the
-phase documents reference.
+The inventory documents the authoritative target Haskell-only architecture and the component
+boundaries that the phase documents reference.
 
 ## Haskell-Only Architecture
 
@@ -18,8 +18,8 @@ phase documents reference.
 | Configuration and settings | Haskell Dhall decoder, typed settings model, masked display, and validation over the operator-authored repo-root config | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` |
 | Settings and command runtime | Haskell effect, DAG, interpreter, prerequisite, result, subprocess, and domain modules | `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
 | Host and Kubernetes helpers | Haskell host and k8s modules | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` |
-| Container packaging and registry doctrine | Dockerfiles under `docker/`, Harbor-first steady-state image sourcing with a narrow public-registry bootstrap exception for Harbor and storage-backend prerequisites, ordered public-image candidate retry during Harbor mirror publish, per-platform dual-arch publication plus manifest reconcile, and mixed-arch cluster reconcile | `docker/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` |
-| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions, including stack-config synchronization for AWS validation inputs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `Pulumi.yaml`, `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` |
+| Container packaging and registry doctrine | Dockerfiles under `docker/`, Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, ordered public-image candidate retry during Harbor mirror publish, per-platform dual-arch publication plus manifest reconcile, and mixed-arch cluster reconcile | `docker/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` |
+| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions for true IaC AWS validation stacks, including stack-config synchronization for AWS validation inputs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` |
 | DNS inspection | Haskell DNS check module | `src/Prodbox/Dns.hs` |
 | Gateway runtime | Haskell daemon runtime with heartbeat, ownership, DNS write loops, REST server, HMAC signing, and single-stage `ubuntu:24.04` packaging with an official AWS CLI bundle per target architecture | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` |
 | Formal verification | Haskell TLA+ wrapper | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` |
@@ -36,20 +36,21 @@ phase documents reference.
 | Host build root | `.build/` | Repository worktree | Canonical `cabal build --builddir=.build exe:prodbox` plus copy to `.build/prodbox`; operator runs `./.build/prodbox` | Host filesystem |
 | Container build root | `/opt/build` | Docker build stage | Dockerfiles under `docker/` | Container filesystem |
 | Local Kubernetes substrate | RKE2 | Local host | `prodbox rke2 install|delete|status|start|stop|restart|logs`, including summary-oriented delete reporting | RKE2 data dirs and systemd units |
-| Harbor-first registry pipeline | Harbor plus Docker CLI image reconcile, bootstrap public-registry exception for Harbor and the HA-chart workloads needed for Harbor storage-backend readiness, post-bootstrap Harbor populate with ordered candidate retry on publish-time failure, and dual-arch publish | RKE2 workload plus host Docker runtime | `prodbox rke2 install` plus Harbor-first steady-state workload-image doctrine | Cluster resources, Harbor registry data, host Docker cache, and RKE2 registry config |
+| Harbor-first registry pipeline | Harbor plus Docker CLI image reconcile, Harbor-plus-storage-backend public-registry bootstrap exception until Harbor is externally ready, post-bootstrap Harbor populate with ordered candidate retry on publish-time failure, and dual-arch publish | RKE2 workload plus host Docker runtime | `prodbox rke2 install` plus Harbor-first steady-state workload-image doctrine | Cluster resources, Harbor registry data, host Docker cache, and RKE2 registry config |
 | AWS-backed EKS validation cluster | Amazon EKS | AWS | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | EKS resources in AWS |
 | AWS-backed HA RKE2 test nodes | `Ubuntu 24.04 LTS` EC2 instances | AWS | `prodbox pulumi test-resources|test-destroy --yes` plus Haskell SSH orchestration | EC2, VPC, subnet, security-group, IAM, and Route 53 state |
 | Pulumi test backend | MinIO | Local RKE2 workload | Local-cluster-first bootstrap plus Pulumi backend configuration | S3-compatible objects in `prodbox-test-pulumi-backends` |
-| Load balancer IPs | MetalLB | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
-| Public edge ingress | Traefik | RKE2 workload | Pulumi plus cluster runtime | Cluster resources |
-| TLS issuance | cert-manager plus ACME provider selected from config, with ZeroSSL EAB projection when configured | RKE2 workload | Pulumi plus cluster runtime | Kubernetes secrets |
-| DNS control plane | Route 53 hosted zone | AWS | Pulumi bootstrap plus in-cluster gateway `dns_write_gate` | Route 53 |
+| Load balancer IPs | MetalLB | RKE2 workload | Haskell lifecycle plus chart runtime | Cluster resources |
+| Public edge ingress | Traefik | RKE2 workload | Haskell lifecycle plus chart runtime | Cluster resources |
+| TLS issuance | cert-manager plus ACME provider selected from config, with ZeroSSL EAB projection when configured | RKE2 workload | Haskell lifecycle plus chart runtime | Kubernetes secrets |
+| DNS control plane | Route 53 hosted zone | AWS | Haskell AWS orchestration plus in-cluster gateway `dns_write_gate` | Route 53 |
 | Gateway mesh | Haskell distributed gateway daemon | In-cluster Kubernetes workload | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources, `gateway-aws-credentials`, and Route 53 |
 | Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | `prodbox rke2 install` | Cluster-scoped resource |
 | Manual PV root | Configured host path, default `.data/` | Host filesystem | `prodbox-config.dhall` plus cluster and chart lifecycle commands | PV contents only |
 | Retained chart-state root | `.prodbox-state/` | Host filesystem | `prodbox charts` helpers plus `prodbox rke2 delete --yes` preservation contract | Generated secrets and gateway event keys |
 | Chart platform | Helm plus Haskell orchestration | RKE2 workloads | `prodbox charts ...` | Cluster resources plus retained roots |
-| Namespace-local auth stack | `keycloak-postgres`, `keycloak`, `vscode-nginx` | RKE2 workloads | Haskell chart platform plus Harbor-backed steady-state image sourcing | Cluster resources plus retained roots |
+| External application PostgreSQL HA | Patroni-based Helm deployments with exactly three PostgreSQL replicas and synchronous replication | RKE2 workloads | Haskell chart platform plus Harbor-backed steady-state image sourcing | Cluster resources plus retained roots |
+| Namespace-local auth stack | `keycloak`, `vscode-nginx` | RKE2 workloads | Haskell chart platform plus external Patroni PostgreSQL dependency | Cluster resources plus retained roots |
 | Namespace-local app stack | `vscode` | RKE2 workload | Haskell chart platform | Cluster resources plus retained roots |
 | AWS admin credential isolation | Dhall config `aws_admin` section reserved for the native IAM validation harness only | Repository config plus integration tests | Haskell config and IAM validation harness | Repository root |
 
@@ -61,8 +62,8 @@ phase documents reference.
 | Config management | `prodbox config setup|show|validate` | Interactively author, display, and validate operator-authored repository-root Dhall configuration decoded directly into Haskell types, with temporary elevated AWS input provided by prompts on the supported public path |
 | Host prerequisites and diagnostics | `prodbox host ensure-tools|info|check-ports|firewall` | Verify local tools and diagnose host-networking prerequisites |
 | RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Install, inspect, control, and remove the local cluster with a concise delete summary |
-| Harbor reconcile and image population | `prodbox rke2 install` | Bootstrap Harbor and the HA-chart workloads needed for Harbor storage-backend readiness from public registries as needed, require a stable `/readyz` plus `/v2/` external window, reconcile the `prodbox` project, and ensure required custom and public images are present in Harbor before later deployments, retrying alternate configured public-image candidates when a preferred source fails during Harbor publication |
-| Pulumi lifecycle | `prodbox pulumi up|destroy|preview|refresh|stack-init|eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` | Manage local-cluster infrastructure and AWS validation stacks |
+| Harbor reconcile and image population | `prodbox rke2 install` | Allow direct public pulls only for Harbor and Harbor's storage backend before Harbor is healthy and externally serving, require a stable `/readyz` plus `/v2/` external window, reconcile the `prodbox` project, and ensure required custom and public images are present in Harbor before later Helm deployments, retrying alternate configured public-image candidates when a preferred source fails during Harbor publication |
+| Pulumi lifecycle | `prodbox pulumi eks-resources|eks-destroy --yes|test-resources|test-destroy --yes` | Manage AWS validation stacks only |
 | Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, ingress, TLS, and external-reachability state |
 | Gateway runtime | `prodbox gateway start|status|config-gen` | Start the in-pod gateway entrypoint, inspect gateway state, and generate config |
 | Chart runtime | `prodbox charts list|status|deploy|delete` | Manage the chart platform and app stacks |
@@ -82,7 +83,7 @@ phase documents reference.
 | CLI and env contract | `prodbox test integration cli` and `prodbox test integration env` run built-frontend Haskell suites against the direct-Dhall config contract without recreating `prodbox-config.json` |
 | Named validation harness | `prodbox test integration public-dns`, `aws-iam`, `gateway-daemon`, `gateway-pods`, `gateway-partition`, `lifecycle`, `pulumi`, `aws-eks`, `ha-rke2-aws`, `charts-platform`, `charts-storage`, and `charts-vscode` run executable native Haskell validation flows through `src/Prodbox/TestValidation.hs`, with the Phase `1/2` prerequisite DAG validating AWS credentials, Route 53 access, Pulumi login, and native IAM harness readiness before AWS-backed suites enter their validation bodies |
 | Supported host gate and local cluster lifecycle | `prodbox test integration lifecycle`, fresh-host `prodbox rke2 install`, and destructive `prodbox rke2 delete --yes` proof with summary-oriented cleanup reporting |
-| Harbor-first registry pipeline | `prodbox rke2 install`, bootstrap-source proof for Harbor and storage-backend prerequisites, Harbor inventory proof for required images after bootstrap, stable `/readyz` plus `/v2/` proof before image writes, and dual-arch manifest proof for `amd64` and `arm64` |
+| Harbor-first registry pipeline | `prodbox rke2 install`, bootstrap-source proof for the Harbor plus storage-backend direct-public exception before Harbor is externally ready, Harbor inventory proof for required images after bootstrap, stable `/readyz` plus `/v2/` proof before image writes, and dual-arch manifest proof for `amd64` and `arm64` |
 | AWS Route 53 validation | `prodbox test integration dns-aws` |
 | Pulumi-owned AWS lifecycle | `prodbox pulumi test-resources`, `prodbox pulumi test-destroy --yes`, `prodbox test integration pulumi` |
 | AWS EKS validation | `prodbox pulumi eks-resources`, `prodbox pulumi eks-destroy --yes`, `prodbox test integration aws-eks` |
@@ -131,7 +132,7 @@ phase documents reference.
 | Frontend container build | `docker/prodbox.Dockerfile` | Frontend image build owned by Phase `1`; single-stage `ubuntu:24.04` with a BuildKit-mounted `haskell:9.6.7-slim` toolchain context |
 | Gateway container build | `docker/gateway.Dockerfile` | Gateway image build owned by Phase `2`; single-stage `ubuntu:24.04` with a BuildKit-mounted `haskell:9.6.7-slim` toolchain context plus the official AWS CLI bundle keyed by `TARGETARCH` |
 | VS Code auth-proxy image build | `docker/nginx-oidc.Dockerfile` | Single-stage auth-proxy image build that may remain based on `nginx:1.25-alpine` |
-| Pulumi definitions | `Pulumi.yaml`, `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (`runtime: yaml`) |
+| Pulumi definitions | `Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (`runtime: yaml`) for true IaC AWS validation resources |
 | Engineering doctrine | `documents/engineering/` | Architecture and operator docs |
 | Development plan | `DEVELOPMENT_PLAN/` | Status, sequencing, and cleanup ownership |
 | Manual PV content root | Configured path, default `.data/` | PV contents only |

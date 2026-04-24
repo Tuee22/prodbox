@@ -11,9 +11,10 @@
 
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the
 repository-root Dhall config loader, the Haskell command runtime and test harness, and the Pulumi
-foundations for local infrastructure plus AWS validation. It also owns the canonical frontend
-image placement under `docker/`, the direct-Dhall config contract, the native validation harness,
-and the aligned root guidance or engineering docs listed by its sprints.
+foundations for true IaC plus AWS validation. It also owns the canonical frontend image placement
+under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
+root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
+Pulumi ownership is Phase `4` work, not a change to the foundations closed here.
 
 ## Current Baseline In Worktree
 
@@ -42,8 +43,8 @@ and the aligned root guidance or engineering docs listed by its sprints.
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
   Haskell validation flows through `src/Prodbox/TestValidation.hs`.
-- All Pulumi programs are YAML-based under `pulumi/home/Main.yaml`, `pulumi/aws-eks/Main.yaml`,
-  and `pulumi/aws-test/Main.yaml`.
+- The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
+  `pulumi/aws-test/Main.yaml`. The AWS validation stacks match the target Pulumi boundary.
 - The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
@@ -93,6 +94,9 @@ artifact plus container-build topology contract.
   `haskell:9.6.7-slim` toolchain context.
 - `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
+- On April 23, 2026, the latest reruns passed
+  `cabal build --builddir=.build all --ghc-options=-Werror`,
+  `./.build/prodbox check-code`, and `./.build/prodbox test integration cli`.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
   canonical Dockerfile location.
 ### Remaining Work
@@ -103,7 +107,7 @@ None.
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/Repo.hs`, `test/unit/`, `test/integration/cli/`, `test/integration/env/`
-**Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/effect_interpreter.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/prerequisite_dag_system.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/streaming_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+**Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/effect_interpreter.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/haskell_code_guide.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/prerequisite_dag_system.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/streaming_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
@@ -142,8 +146,9 @@ modules.
   instead of surfacing a raw file-open exception from the Dhall loader.
 - `src/Prodbox/BuildSupport.hs` owns the shared `.build/support` linker shim and the
   operator-facing binary sync to `.build/prodbox`.
-- `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and runs
-  `cabal build --builddir=.build all`, then syncs the built executable to `.build/prodbox`.
+- `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and runs Fourmolu, HLint, and
+  warning-clean `cabal build --builddir=.build all --ghc-options=-Werror`, then syncs the built
+  executable to `.build/prodbox`.
 - `src/Prodbox/TestRunner.hs` owns `prodbox test ...`; it runs Haskell suites via `cabal test`,
   drives phase banners plus prerequisite and runbook gating through native
   `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,
@@ -164,6 +169,9 @@ modules.
   cluster-backed readiness roots used by the named validation flows.
 - `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
   proof surfaces for the Haskell-owned command surface.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
+  `./.build/prodbox test integration env`.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
   repository and current validation harness.
 ### Remaining Work
@@ -188,8 +196,7 @@ the same supported product scope.
   `prodbox pulumi eks-resources|eks-destroy --yes` are implemented in Haskell.
 - The local-cluster-first MinIO backend doctrine is preserved.
 - The Harbor bootstrap and registry baseline exist in Haskell and carry forward into the later
-  Harbor-first dual-arch doctrine with a narrow bootstrap exception for Harbor and storage-backend
-  prerequisites.
+  Harbor-first dual-arch doctrine with a Harbor-bootstrap public-registry exception.
 - Both intended AWS-backed validation branches survive the rewrite: EKS-backed and HA RKE2 over
   SSH.
 
@@ -214,6 +221,9 @@ the same supported product scope.
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox test integration all` and
+  `./.build/prodbox test all`, which exercised the lifecycle, Pulumi, EKS, and HA-RKE2 AWS
+  validation surfaces end to end.
 
 ### Remaining Work
 
@@ -226,6 +236,8 @@ None.
 - `documents/engineering/README.md` - Haskell-only doctrine index.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell command matrix.
 - `documents/engineering/code_quality.md` - Haskell `check-code` contract.
+- `documents/engineering/haskell_code_guide.md` - hard-gate Haskell quality doctrine and
+  review-guidance split.
 - `documents/engineering/dependency_management.md` - non-Python build and dependency posture,
   including the canonical Dockerfile location and base-image doctrine.
 - `documents/engineering/effect_interpreter.md` - Haskell interpreter contract.

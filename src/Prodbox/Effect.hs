@@ -1,12 +1,12 @@
-module Prodbox.Effect
-    ( Effect (..),
-      Validation (..),
-    )
+module Prodbox.Effect (
+    Effect (..),
+    Validation (..),
+)
 where
 
-import Prodbox.Subprocess
-    ( CommandSpec,
-    )
+import Prodbox.Subprocess (
+    CommandSpec,
+ )
 
 data Validation
     = RequireLinux

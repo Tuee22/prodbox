@@ -1,34 +1,34 @@
-module Prodbox.CLI.Charts
-    ( runChartsCommand,
-    )
+module Prodbox.CLI.Charts (
+    runChartsCommand,
+)
 where
 
 import Control.Exception (IOException, try)
 import Data.Char (toLower)
 import Prodbox.CLI.Command (ChartsCommand (..))
-import Prodbox.Lib.ChartPlatform
-    ( buildChartDeletePlan,
-      buildChartDeploymentPlan,
-      deleteChartPlan,
-      deployChartPlan,
-      renderChartList,
-      renderChartStatus,
-      resolveChartSecrets,
-      resolveGatewayEventKeys,
-    )
-import Prodbox.Settings
-    ( ValidatedSettings,
-      validateAndLoadSettings,
-    )
-import System.Exit
-    ( ExitCode (ExitFailure, ExitSuccess),
-    )
-import System.IO
-    ( hFlush,
-      hPutStrLn,
-      stderr,
-      stdout,
-    )
+import Prodbox.Lib.ChartPlatform (
+    buildChartDeletePlan,
+    buildChartDeploymentPlan,
+    deleteChartPlan,
+    deployChartPlan,
+    renderChartList,
+    renderChartStatus,
+    resolveChartSecrets,
+    resolveGatewayEventKeys,
+ )
+import Prodbox.Settings (
+    ValidatedSettings,
+    validateAndLoadSettings,
+ )
+import System.Exit (
+    ExitCode (ExitFailure, ExitSuccess),
+ )
+import System.IO (
+    hFlush,
+    hPutStrLn,
+    stderr,
+    stdout,
+ )
 
 runChartsCommand :: FilePath -> ChartsCommand -> IO ExitCode
 runChartsCommand repoRoot command =
@@ -62,12 +62,11 @@ runChartsCommand repoRoot command =
                 allowed <- if confirmed then pure True else promptForDelete chartName
                 if not allowed
                     then failWith "User declined confirmation"
-                    else
-                        case buildChartDeletePlan repoRoot (Just settings) chartName of
-                            Left err -> failWith err
-                            Right plan -> do
-                                deleteResult <- deleteChartPlan plan
-                                either failWith writeSuccess deleteResult
+                    else case buildChartDeletePlan repoRoot (Just settings) chartName of
+                        Left err -> failWith err
+                        Right plan -> do
+                            deleteResult <- deleteChartPlan plan
+                            either failWith writeSuccess deleteResult
 
 withSettings :: FilePath -> (ValidatedSettings -> IO ExitCode) -> IO ExitCode
 withSettings repoRoot action = do

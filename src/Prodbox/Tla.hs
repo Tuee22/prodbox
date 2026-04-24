@@ -1,18 +1,18 @@
-module Prodbox.Tla
-    ( runTlaCheck,
-    )
+module Prodbox.Tla (
+    runTlaCheck,
+)
 where
 
 import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-    )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.Exit
-    ( ExitCode (..),
-    )
+import System.Exit (
+    ExitCode (..),
+ )
 import System.FilePath (takeDirectory)
 
 runTlaCheck :: FilePath -> IO ExitCode
@@ -31,10 +31,10 @@ runTlaCheck repoRoot = do
             outputResult <-
                 captureCommand
                     CommandSpec
-                        { commandPath = "docker",
-                          commandArguments = tail command,
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
+                        { commandPath = "docker"
+                        , commandArguments = tail command
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
                         }
             case outputResult of
                 Failure err -> do
@@ -46,37 +46,37 @@ runTlaCheck repoRoot = do
 
 dockerCommand :: FilePath -> [String]
 dockerCommand tlaDir =
-    [ "docker",
-      "run",
-      "--rm",
-      "--entrypoint",
-      "",
-      "--volume",
-      tlaDir ++ ":/workspace",
-      "--workdir",
-      "/workspace",
-      "maxdiefenbach/tlaplus",
-      "java",
-      "-XX:+UseParallelGC",
-      "-cp",
-      "/opt/TLA+Toolbox/tla2tools.jar",
-      "tlc2.TLC",
-      "-workers",
-      "8",
-      "-config",
-      "gateway_orders_rule.cfg",
-      "gateway_orders_rule.tla"
+    [ "docker"
+    , "run"
+    , "--rm"
+    , "--entrypoint"
+    , ""
+    , "--volume"
+    , tlaDir ++ ":/workspace"
+    , "--workdir"
+    , "/workspace"
+    , "maxdiefenbach/tlaplus"
+    , "java"
+    , "-XX:+UseParallelGC"
+    , "-cp"
+    , "/opt/TLA+Toolbox/tla2tools.jar"
+    , "tlc2.TLC"
+    , "-workers"
+    , "8"
+    , "-config"
+    , "gateway_orders_rule.cfg"
+    , "gateway_orders_rule.tla"
     ]
 
 renderResult :: [String] -> Int -> String -> String -> String
 renderResult command returnCode stdoutText stderrText =
     unlines
-        [ "command: " ++ unwords command,
-          "returncode: " ++ show returnCode,
-          "stdout:",
-          stdoutText,
-          "stderr:",
-          stderrText
+        [ "command: " ++ unwords command
+        , "returncode: " ++ show returnCode
+        , "stdout:"
+        , stdoutText
+        , "stderr:"
+        , stderrText
         ]
 
 writeResult :: FilePath -> String -> IO ()

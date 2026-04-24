@@ -1,49 +1,49 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.SupportedRuntime
-    ( SupportedRuntimeContext (..),
-      removeDeletePendingAwsResources,
-      removeFqdnFromHostsText,
-      removePublicHostHostsOverride,
-    )
+module Prodbox.SupportedRuntime (
+    SupportedRuntimeContext (..),
+    removeDeletePendingAwsResources,
+    removeFqdnFromHostsText,
+    removePublicHostHostsOverride,
+)
 where
 
-import Control.Exception
-    ( IOException,
-      displayException,
-      try,
-    )
-import Data.Aeson
-    ( Value (..),
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
+import Control.Exception (
+    IOException,
+    displayException,
+    try,
+ )
+import Data.Aeson (
+    Value (..),
+ )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Char (toLower)
 import Data.List (intercalate)
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
-import Prodbox.Settings
-    ( ConfigFile (..),
-      DomainSection (..),
-      ValidatedSettings (..),
-      validateAndLoadSettings,
-    )
-import System.Directory
-    ( Permissions,
-      getPermissions,
-      writable,
-    )
-import System.Exit
-    ( ExitCode (..),
-    )
-import System.Process
-    ( proc,
-      readCreateProcessWithExitCode,
-    )
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
+import Prodbox.Settings (
+    ConfigFile (..),
+    DomainSection (..),
+    ValidatedSettings (..),
+    validateAndLoadSettings,
+ )
+import System.Directory (
+    Permissions,
+    getPermissions,
+    writable,
+ )
+import System.Exit (
+    ExitCode (..),
+ )
+import System.Process (
+    proc,
+    readCreateProcessWithExitCode,
+ )
 
 data SupportedRuntimeContext = SupportedRuntimeContext
-    { supportedRuntimeRepoRoot :: FilePath,
-      supportedRuntimeHelperEnvironment :: [(String, String)]
+    { supportedRuntimeRepoRoot :: FilePath
+    , supportedRuntimeHelperEnvironment :: [(String, String)]
     }
 
 removePublicHostHostsOverride :: SupportedRuntimeContext -> IO (Either String String)
@@ -95,19 +95,18 @@ removeFqdnFromHostsText hostsText fqdn =
                         removedHere = length names - length keptNames
                      in if removedHere == 0
                             then (rawLine : updatedLines, removedEntries)
-                            else
-                                case keptNames of
-                                    [] ->
-                                        case trimSpaces commentPart of
-                                            "" -> (updatedLines, removedEntries + removedHere)
-                                            strippedComment -> (("# " ++ strippedComment) : updatedLines, removedEntries + removedHere)
-                                    _ ->
-                                        let rebuilt = ipAddress ++ " " ++ unwords keptNames
-                                            rendered =
-                                                case trimSpaces commentPart of
-                                                    "" -> rebuilt
-                                                    strippedComment -> rebuilt ++ "  # " ++ strippedComment
-                                         in (rendered : updatedLines, removedEntries + removedHere)
+                            else case keptNames of
+                                [] ->
+                                    case trimSpaces commentPart of
+                                        "" -> (updatedLines, removedEntries + removedHere)
+                                        strippedComment -> (("# " ++ strippedComment) : updatedLines, removedEntries + removedHere)
+                                _ ->
+                                    let rebuilt = ipAddress ++ " " ++ unwords keptNames
+                                        rendered =
+                                            case trimSpaces commentPart of
+                                                "" -> rebuilt
+                                                strippedComment -> rebuilt ++ "  # " ++ strippedComment
+                                     in (rendered : updatedLines, removedEntries + removedHere)
 
 removeDeletePendingAwsResources :: Value -> Either String (Value, Int)
 removeDeletePendingAwsResources exportedValue =
@@ -171,7 +170,8 @@ writeHostsFile hostsPath updatedText = do
                             ( readCreateProcessWithExitCode
                                 (proc "sudo" ["tee", hostsPath])
                                 updatedText
-                            ) :: IO (Either IOException (ExitCode, String, String))
+                            ) ::
+                            IO (Either IOException (ExitCode, String, String))
                     pure $
                         case sudoResult of
                             Left err -> Left ("failed to rewrite " ++ hostsPath ++ ": " ++ displayException err)

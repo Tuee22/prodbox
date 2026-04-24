@@ -1,85 +1,121 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.CLI.Rke2
-    ( runRke2Command,
-    )
+module Prodbox.CLI.Rke2 (
+    runRke2Command,
+)
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception
-    ( IOException,
-      bracket,
-      displayException,
-      finally,
-      try,
-    )
+import Control.Exception (
+    IOException,
+    bracket,
+    displayException,
+    finally,
+    try,
+ )
 import Control.Monad (foldM)
-import Data.Aeson
-    ( FromJSON (parseJSON),
-      Value,
-      eitherDecode,
-      encode,
-      object,
-      withObject,
-      (.:),
-      (.:?),
-      (.=),
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import Data.Char
-    ( isHexDigit,
-      isSpace,
-      toLower,
-    )
-import Data.List
-    ( intercalate,
-      isInfixOf,
-      isPrefixOf,
-      nub,
-    )
-import Prodbox.CLI.Command
-    ( PulumiCommand (..),
-      Rke2Command (..),
-    )
+import Data.Aeson (
+    FromJSON (parseJSON),
+    Value,
+    eitherDecode,
+    encode,
+    object,
+    withObject,
+    (.:),
+    (.:?),
+    (.=),
+ )
+import Data.Aeson.Key qualified as Key
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (
+    isHexDigit,
+    isSpace,
+    toLower,
+ )
+import Data.List (
+    intercalate,
+    isInfixOf,
+    isPrefixOf,
+    nub,
+ )
+import Data.Text qualified as Text
+import Prodbox.CLI.Command (
+    PulumiCommand (..),
+    Rke2Command (..),
+ )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
-import qualified Prodbox.ContainerImage as ContainerImage
+import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Dns (fetchPublicIp)
+import Prodbox.Host (
+    LanAddressing (..),
+    detectLanAddressing,
+ )
+import Prodbox.PostgresPlatform (
+    patroniOperatorDeploymentName,
+    patroniOperatorNamespace,
+    patroniOperatorReleaseName,
+    patroniPostgresqlCrdName,
+ )
 import Prodbox.Result (Result (..))
-import Prodbox.Settings
-    ( ValidatedSettings (..),
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-      runStreamingCommand,
-    )
-import System.Directory
-    ( doesDirectoryExist,
-      doesFileExist,
-      getHomeDirectory,
-      getTemporaryDirectory,
-      listDirectory,
-      removeFile,
-    )
-import System.Environment (lookupEnv)
-import System.Exit
-    ( ExitCode (ExitFailure, ExitSuccess),
-    )
-import System.FilePath
-    ( takeDirectory,
-      (</>),
-    )
+import Prodbox.Settings (
+    AcmeSection (..),
+    ConfigFile (..),
+    Credentials (..),
+    DeploymentSection (..),
+    DomainSection (..),
+    Route53Section (..),
+    ValidatedSettings (..),
+    access_key_id,
+    acme,
+    aws,
+    bootstrap_public_ip_override,
+    demo_fqdn,
+    demo_ttl,
+    domain,
+    eab_hmac_key,
+    eab_key_id,
+    email,
+    pulumi_enable_dns_bootstrap,
+    region,
+    route53,
+    secret_access_key,
+    server,
+    session_token,
+    validateAndLoadSettings,
+    validatedConfig,
+    zone_id,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+    runStreamingCommand,
+ )
+import System.Directory (
+    doesDirectoryExist,
+    doesFileExist,
+    getHomeDirectory,
+    getTemporaryDirectory,
+    listDirectory,
+    removeFile,
+ )
+import System.Environment (getEnvironment, lookupEnv)
+import System.Exit (
+    ExitCode (ExitFailure, ExitSuccess),
+ )
+import System.FilePath (
+    takeDirectory,
+    (</>),
+ )
+import System.IO (
+    hClose,
+    hPutStr,
+    hPutStrLn,
+    openTempFile,
+    stderr,
+ )
 import System.Info (os)
-import System.IO
-    ( hClose,
-      hPutStr,
-      hPutStrLn,
-      stderr,
-      openTempFile,
-    )
 
 rke2BinaryPath :: FilePath
 rke2BinaryPath = "/usr/local/bin/rke2"
@@ -168,6 +204,84 @@ minioChartRef = "minio/minio"
 minioChartVersion :: String
 minioChartVersion = "5.4.0"
 
+metallbNamespace :: String
+metallbNamespace = "metallb-system"
+
+metallbReleaseName :: String
+metallbReleaseName = "metallb"
+
+metallbRepositoryName :: String
+metallbRepositoryName = "metallb"
+
+metallbRepositoryUrl :: String
+metallbRepositoryUrl = "https://metallb.github.io/metallb"
+
+metallbChartRef :: String
+metallbChartRef = "metallb/metallb"
+
+metallbChartVersion :: String
+metallbChartVersion = "0.14.9"
+
+traefikNamespace :: String
+traefikNamespace = "traefik-system"
+
+traefikReleaseName :: String
+traefikReleaseName = "traefik"
+
+traefikRepositoryName :: String
+traefikRepositoryName = "traefik"
+
+traefikRepositoryUrl :: String
+traefikRepositoryUrl = "https://traefik.github.io/charts"
+
+traefikChartRef :: String
+traefikChartRef = "traefik/traefik"
+
+traefikChartVersion :: String
+traefikChartVersion = "32.0.0"
+
+certManagerNamespace :: String
+certManagerNamespace = "cert-manager"
+
+certManagerReleaseName :: String
+certManagerReleaseName = "cert-manager"
+
+certManagerRepositoryName :: String
+certManagerRepositoryName = "jetstack"
+
+certManagerRepositoryUrl :: String
+certManagerRepositoryUrl = "https://charts.jetstack.io"
+
+certManagerChartRef :: String
+certManagerChartRef = "jetstack/cert-manager"
+
+certManagerChartVersion :: String
+certManagerChartVersion = "v1.16.2"
+
+postgresOperatorRepositoryName :: String
+postgresOperatorRepositoryName = "postgres-operator-charts"
+
+postgresOperatorRepositoryUrl :: String
+postgresOperatorRepositoryUrl = "https://opensource.zalando.com/postgres-operator/charts/postgres-operator"
+
+postgresOperatorChartRef :: String
+postgresOperatorChartRef = "postgres-operator-charts/postgres-operator"
+
+postgresOperatorChartVersion :: String
+postgresOperatorChartVersion = "1.15.1"
+
+chartClusterIssuer :: String
+chartClusterIssuer = "letsencrypt-http01"
+
+route53CredentialsSecretName :: String
+route53CredentialsSecretName = "route53-credentials"
+
+acmeEabSecretName :: String
+acmeEabSecretName = "acme-eab-credentials"
+
+acmeEabSecretKey :: String
+acmeEabSecretKey = "secret"
+
 buildxBuilderName :: String
 buildxBuilderName = "prodbox-multiarch-hostnet"
 
@@ -182,8 +296,8 @@ data MinioImageSource
     deriving (Eq, Show)
 
 data CustomImageBuildPlan = CustomImageBuildPlan
-    { customImageDockerfile :: FilePath,
-      customImageBuildMode :: CustomImageBuildMode
+    { customImageDockerfile :: FilePath
+    , customImageBuildMode :: CustomImageBuildMode
     }
     deriving (Eq, Show)
 
@@ -204,37 +318,40 @@ minioStorageSize = "200Gi"
 
 managedNamespaces :: [String]
 managedNamespaces =
-    [ prodboxNamespace,
-      harborNamespace,
-      "metallb-system",
-      "traefik-system",
-      "cert-manager",
-      "gateway",
-      "vscode"
+    [ prodboxNamespace
+    , harborNamespace
+    , metallbNamespace
+    , traefikNamespace
+    , certManagerNamespace
+    , patroniOperatorNamespace
+    , "gateway"
+    , "vscode"
     ]
 
 managedHelmInstances :: [String]
 managedHelmInstances =
-    [ "harbor",
-      "minio",
-      "metallb",
-      "traefik",
-      "cert-manager"
+    [ "harbor"
+    , "minio"
+    , "metallb"
+    , "traefik"
+    , "cert-manager"
+    , patroniOperatorReleaseName
     ]
 
 ephemeralResourceKinds :: [String]
 ephemeralResourceKinds =
-    [ "events",
-      "events.events.k8s.io"
+    [ "events"
+    , "events.events.k8s.io"
     ]
 
 doctrineCrdSuffixes :: [String]
 doctrineCrdSuffixes =
-    [ ".metallb.io",
-      ".cert-manager.io",
-      ".acme.cert-manager.io",
-      ".traefik.io",
-      ".containo.us"
+    [ ".metallb.io"
+    , ".cert-manager.io"
+    , ".acme.cert-manager.io"
+    , ".traefik.io"
+    , ".containo.us"
+    , ".acid.zalan.do"
     ]
 
 runRke2Command :: FilePath -> Rke2Command -> IO ExitCode
@@ -244,37 +361,37 @@ runRke2Command repoRoot command =
             requireLinux $
                 runCommand
                     CommandSpec
-                        { commandPath = "systemctl",
-                          commandArguments = ["is-active", rke2ServiceName],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
+                        { commandPath = "systemctl"
+                        , commandArguments = ["is-active", rke2ServiceName]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
                         }
         Rke2Start ->
             requireLinux $
                 runCommand
                     CommandSpec
-                        { commandPath = "sudo",
-                          commandArguments = ["systemctl", "start", rke2ServiceName],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
+                        { commandPath = "sudo"
+                        , commandArguments = ["systemctl", "start", rke2ServiceName]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
                         }
         Rke2Stop ->
             requireLinux $
                 runCommand
                     CommandSpec
-                        { commandPath = "sudo",
-                          commandArguments = ["systemctl", "stop", rke2ServiceName],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
+                        { commandPath = "sudo"
+                        , commandArguments = ["systemctl", "stop", rke2ServiceName]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
                         }
         Rke2Restart ->
             requireLinux $
                 runCommand
                     CommandSpec
-                        { commandPath = "sudo",
-                          commandArguments = ["systemctl", "restart", rke2ServiceName],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
+                        { commandPath = "sudo"
+                        , commandArguments = ["systemctl", "restart", rke2ServiceName]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
                         }
         Rke2Install -> requireLinux (runNativeInstall repoRoot)
         Rke2Delete confirmed ->
@@ -289,16 +406,16 @@ runRke2Command repoRoot command =
                     Right linesToShow ->
                         runCommand
                             CommandSpec
-                                { commandPath = "journalctl",
-                                  commandArguments =
-                                    [ "-u",
-                                      rke2ServiceName,
-                                      "-n",
-                                      show linesToShow,
-                                      "--no-pager"
-                                    ],
-                                  commandEnvironment = Nothing,
-                                  commandWorkingDirectory = Just repoRoot
+                                { commandPath = "journalctl"
+                                , commandArguments =
+                                    [ "-u"
+                                    , rke2ServiceName
+                                    , "-n"
+                                    , show linesToShow
+                                    , "--no-pager"
+                                    ]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
                                 }
 
 runNativeInstall :: FilePath -> IO ExitCode
@@ -313,36 +430,38 @@ runNativeInstall repoRoot = do
                 Right (machineId, prodboxId) ->
                     let labelValue = prodboxIdToLabelValue prodboxId
                      in runSequentially
-                            [ ensureRke2ServerInstalled repoRoot,
-                              ensureRke2IngressController repoRoot,
-                              runCommand
+                            [ ensureRke2ServerInstalled repoRoot
+                            , ensureRke2IngressController repoRoot
+                            , runCommand
                                 CommandSpec
-                                    { commandPath = "sudo",
-                                      commandArguments = ["systemctl", "enable", rke2ServiceName],
-                                      commandEnvironment = Nothing,
-                                      commandWorkingDirectory = Just repoRoot
-                                    },
-                              runCommand
+                                    { commandPath = "sudo"
+                                    , commandArguments = ["systemctl", "enable", rke2ServiceName]
+                                    , commandEnvironment = Nothing
+                                    , commandWorkingDirectory = Just repoRoot
+                                    }
+                            , runCommand
                                 CommandSpec
-                                    { commandPath = "sudo",
-                                      commandArguments = ["systemctl", "restart", rke2ServiceName],
-                                      commandEnvironment = Nothing,
-                                      commandWorkingDirectory = Just repoRoot
-                                    },
-                              syncUserKubeconfig repoRoot,
-                              verifyClusterInfo repoRoot,
-                              waitForClusterNodesReady repoRoot,
-                              deleteNonManualStorageClasses repoRoot,
-                              ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue,
-                              ensureRetainedLocalStorage repoRoot settings prodboxId labelValue,
-                              ensureHarborRegistryRuntime repoRoot,
-                              ensureMinioRuntime repoRoot MinioBootstrapPublic,
-                              mirrorClusterImagesOnce repoRoot,
-                              ensureGatewayImages repoRoot prodboxId,
-                              ensureVscodeNginxImage repoRoot,
-                              ensureMinioRuntime repoRoot MinioSteadyStateHarbor,
-                              ensureRke2RegistriesConfig repoRoot,
-                              reconcileManagedAnnotations repoRoot prodboxId labelValue
+                                    { commandPath = "sudo"
+                                    , commandArguments = ["systemctl", "restart", rke2ServiceName]
+                                    , commandEnvironment = Nothing
+                                    , commandWorkingDirectory = Just repoRoot
+                                    }
+                            , syncUserKubeconfig repoRoot
+                            , verifyClusterInfo repoRoot
+                            , waitForClusterNodesReady repoRoot
+                            , deleteNonManualStorageClasses repoRoot
+                            , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
+                            , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
+                            , ensureHarborRegistryRuntime repoRoot
+                            , ensureMinioRuntime repoRoot MinioBootstrapPublic
+                            , mirrorClusterImagesOnce repoRoot
+                            , ensureGatewayImages repoRoot prodboxId
+                            , ensureVscodeNginxImage repoRoot
+                            , ensureRke2RegistriesConfig repoRoot
+                            , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+                            , reconcileDnsBootstrapRecord repoRoot settings
+                            , ensureMinioRuntime repoRoot MinioSteadyStateHarbor
+                            , reconcileManagedAnnotations repoRoot prodboxId labelValue
                             ]
 
 runNativeDelete :: FilePath -> IO ExitCode
@@ -353,12 +472,12 @@ runNativeDelete repoRoot = do
         Right settings -> do
             putStrLn "Deleting local RKE2 environment..."
             runSequentially
-                [ runPulumiCommand repoRoot (PulumiEksDestroy True),
-                  runPulumiCommand repoRoot (PulumiTestDestroy True),
-                  deleteRke2ClusterSubstrate repoRoot,
-                  removeCalicoEndpointStatusResidue,
-                  removeManagedKubeconfig,
-                  renderRetainedStateNotice repoRoot settings
+                [ runPulumiCommand repoRoot (PulumiEksDestroy True)
+                , runPulumiCommand repoRoot (PulumiTestDestroy True)
+                , deleteRke2ClusterSubstrate repoRoot
+                , removeCalicoEndpointStatusResidue
+                , removeManagedKubeconfig
+                , renderRetainedStateNotice repoRoot settings
                 ]
 
 ensureRke2ServerInstalled :: FilePath -> IO ExitCode
@@ -386,10 +505,10 @@ ensureRke2ServerInstalled repoRoot = do
                                     ExitSuccess ->
                                         runCommand
                                             CommandSpec
-                                                { commandPath = "sudo",
-                                                  commandArguments = ["env", "INSTALL_RKE2_TYPE=server", "sh", installerPath],
-                                                  commandEnvironment = Nothing,
-                                                  commandWorkingDirectory = Just repoRoot
+                                                { commandPath = "sudo"
+                                                , commandArguments = ["env", "INSTALL_RKE2_TYPE=server", "sh", installerPath]
+                                                , commandEnvironment = Nothing
+                                                , commandWorkingDirectory = Just repoRoot
                                                 }
 
 ensureRke2IngressController :: FilePath -> IO ExitCode
@@ -414,31 +533,31 @@ syncUserKubeconfig repoRoot = do
              in runSequentially
                     [ runCommand
                         CommandSpec
-                            { commandPath = "sudo",
-                              commandArguments = ["mkdir", "-p", takeDirectory targetPath],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
-                            },
-                      runCommand
+                            { commandPath = "sudo"
+                            , commandArguments = ["mkdir", "-p", takeDirectory targetPath]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Just repoRoot
+                            }
+                    , runCommand
                         CommandSpec
-                            { commandPath = "sudo",
-                              commandArguments = ["cp", rke2KubeconfigPath, targetPath],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
-                            },
-                      runCommand
+                            { commandPath = "sudo"
+                            , commandArguments = ["cp", rke2KubeconfigPath, targetPath]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Just repoRoot
+                            }
+                    , runCommand
                         CommandSpec
-                            { commandPath = "sudo",
-                              commandArguments = ["chown", ownerSpec, targetPath],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
-                            },
-                      runCommand
+                            { commandPath = "sudo"
+                            , commandArguments = ["chown", ownerSpec, targetPath]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Just repoRoot
+                            }
+                    , runCommand
                         CommandSpec
-                            { commandPath = "chmod",
-                              commandArguments = ["600", targetPath],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
+                            { commandPath = "chmod"
+                            , commandArguments = ["600", targetPath]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Just repoRoot
                             }
                     ]
 
@@ -446,10 +565,10 @@ verifyClusterInfo :: FilePath -> IO ExitCode
 verifyClusterInfo repoRoot =
     runCommand
         CommandSpec
-            { commandPath = "kubectl",
-              commandArguments = ["cluster-info"],
-              commandEnvironment = Nothing,
-              commandWorkingDirectory = Just repoRoot
+            { commandPath = "kubectl"
+            , commandArguments = ["cluster-info"]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
             }
 
 waitForClusterNodesReady :: FilePath -> IO ExitCode
@@ -480,16 +599,16 @@ waitForClusterNodesReady repoRoot = go rke2NodeDiscoveryAttempts "cluster API no
                                 _ ->
                                     runCommand
                                         CommandSpec
-                                            { commandPath = "kubectl",
-                                              commandArguments =
-                                                [ "wait",
-                                                  "--for=condition=Ready",
-                                                  "node",
-                                                  "--all",
-                                                  "--timeout=300s"
-                                                ],
-                                              commandEnvironment = Nothing,
-                                              commandWorkingDirectory = Just repoRoot
+                                            { commandPath = "kubectl"
+                                            , commandArguments =
+                                                [ "wait"
+                                                , "--for=condition=Ready"
+                                                , "node"
+                                                , "--all"
+                                                , "--timeout=300s"
+                                                ]
+                                            , commandEnvironment = Nothing
+                                            , commandWorkingDirectory = Just repoRoot
                                             }
                         ExitFailure _ -> do
                             threadDelay rke2NodeDiscoveryDelayMicroseconds
@@ -506,16 +625,16 @@ deleteNonManualStorageClasses repoRoot = do
                 ExitSuccess ->
                     let refs =
                             [ ref
-                            | ref <- parseObjectNames (processStdout output),
-                              dropResourcePrefix ref /= manualStorageClass
+                            | ref <- parseObjectNames (processStdout output)
+                            , dropResourcePrefix ref /= manualStorageClass
                             ]
                      in runSequentially
                             [ runCommand
                                 CommandSpec
-                                    { commandPath = "kubectl",
-                                      commandArguments = ["delete", "storageclass", ref, "--ignore-not-found=true"],
-                                      commandEnvironment = Nothing,
-                                      commandWorkingDirectory = Just repoRoot
+                                    { commandPath = "kubectl"
+                                    , commandArguments = ["delete", "storageclass", ref, "--ignore-not-found=true"]
+                                    , commandEnvironment = Nothing
+                                    , commandWorkingDirectory = Just repoRoot
                                     }
                             | ref <- refs
                             ]
@@ -538,13 +657,14 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
                             let existingPhase = trimWhitespace (processStdout pvPhaseOutput)
                             resetExit <-
                                 if existingPhase `elem` ["Released", "Failed"]
-                                    then runCommand
-                                        CommandSpec
-                                            { commandPath = "kubectl",
-                                              commandArguments = ["delete", "pv", minioPersistentVolume, "--ignore-not-found=true", "--wait=true"],
-                                              commandEnvironment = Nothing,
-                                              commandWorkingDirectory = Just repoRoot
-                                            }
+                                    then
+                                        runCommand
+                                            CommandSpec
+                                                { commandPath = "kubectl"
+                                                , commandArguments = ["delete", "pv", minioPersistentVolume, "--ignore-not-found=true", "--wait=true"]
+                                                , commandEnvironment = Nothing
+                                                , commandWorkingDirectory = Just repoRoot
+                                                }
                                     else pure ExitSuccess
                             case resetExit of
                                 ExitFailure _ -> pure resetExit
@@ -552,13 +672,13 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
                                     pvcPhaseResult <-
                                         captureKubectl
                                             repoRoot
-                                            [ "get",
-                                              "pvc",
-                                              minioPersistentClaim,
-                                              "-n",
-                                              minioNamespace,
-                                              "-o",
-                                              "jsonpath={.status.phase}"
+                                            [ "get"
+                                            , "pvc"
+                                            , minioPersistentClaim
+                                            , "-n"
+                                            , minioNamespace
+                                            , "-o"
+                                            , "jsonpath={.status.phase}"
                                             ]
                                     case pvcPhaseResult of
                                         Left err -> failWith err
@@ -600,69 +720,69 @@ ensureMinioRuntime repoRoot imageSource = do
          in runSequentially
                 [ runCommand
                     CommandSpec
-                        { commandPath = "helm",
-                          commandArguments = ["repo", "update"],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
-                        },
-                  runCommand
+                        { commandPath = "helm"
+                        , commandArguments = ["repo", "update"]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+                , runCommand
                     CommandSpec
-                        { commandPath = "helm",
-                          commandArguments =
-                            [ "upgrade",
-                              "--install",
-                              minioReleaseName,
-                              minioChartRef,
-                              "--version",
-                              minioChartVersion,
-                              "--namespace",
-                              minioNamespace,
-                              "--create-namespace",
-                              "--set",
-                              "mode=standalone",
-                              "--set",
-                              "replicas=1",
-                              "--set",
-                              "persistence.enabled=true",
-                              "--set",
-                              "persistence.existingClaim=minio",
-                              "--set",
-                              "image.repository=" ++ renderImageRefWithoutTag minioImage,
-                              "--set",
-                              "image.tag=" ++ ContainerImage.imageTag minioImage,
-                              "--set",
-                              "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage,
-                              "--set",
-                              "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage,
-                              "--set",
-                              "persistence.size=200Gi",
-                              "--set",
-                              "service.type=ClusterIP",
-                              "--set",
-                              "consoleService.type=ClusterIP",
-                              "--set",
-                              "resources.requests.memory=256Mi",
-                              "--set",
-                              "resources.requests.cpu=100m",
-                              "--set",
-                              "resources.limits.memory=512Mi"
-                            ],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
-                        },
-                  runCommand
+                        { commandPath = "helm"
+                        , commandArguments =
+                            [ "upgrade"
+                            , "--install"
+                            , minioReleaseName
+                            , minioChartRef
+                            , "--version"
+                            , minioChartVersion
+                            , "--namespace"
+                            , minioNamespace
+                            , "--create-namespace"
+                            , "--set"
+                            , "mode=standalone"
+                            , "--set"
+                            , "replicas=1"
+                            , "--set"
+                            , "persistence.enabled=true"
+                            , "--set"
+                            , "persistence.existingClaim=minio"
+                            , "--set"
+                            , "image.repository=" ++ renderImageRefWithoutTag minioImage
+                            , "--set"
+                            , "image.tag=" ++ ContainerImage.imageTag minioImage
+                            , "--set"
+                            , "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage
+                            , "--set"
+                            , "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage
+                            , "--set"
+                            , "persistence.size=200Gi"
+                            , "--set"
+                            , "service.type=ClusterIP"
+                            , "--set"
+                            , "consoleService.type=ClusterIP"
+                            , "--set"
+                            , "resources.requests.memory=256Mi"
+                            , "--set"
+                            , "resources.requests.cpu=100m"
+                            , "--set"
+                            , "resources.limits.memory=512Mi"
+                            ]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+                , runCommand
                     CommandSpec
-                        { commandPath = "kubectl",
-                          commandArguments =
-                            [ "wait",
-                              "--for=condition=Available",
-                              "deployment/minio",
-                              "-n",
-                              minioNamespace,
-                              "--timeout=300s"
-                            ],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
+                        { commandPath = "kubectl"
+                        , commandArguments =
+                            [ "wait"
+                            , "--for=condition=Available"
+                            , "deployment/minio"
+                            , "-n"
+                            , minioNamespace
+                            , "--timeout=300s"
+                            ]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
                         }
                 ]
 
@@ -687,50 +807,47 @@ ensureHarborRegistryRuntime repoRoot = do
                 ExitSuccess -> continue
   where
     continue = do
+        existingHarborHealthy <- harborRuntimeAlreadyHealthy repoRoot
         installExit <-
-            runSequentially
-                [ runCommand
-                    CommandSpec
-                        { commandPath = "kubectl",
-                          commandArguments = ["delete", "namespace", harborNamespace, "--ignore-not-found=true", "--wait=true", "--timeout=300s"],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
-                        },
-                  runCommand
-                    CommandSpec
-                        { commandPath = "helm",
-                          commandArguments = ["repo", "update"],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
-                        },
-                  runCommand
-                    CommandSpec
-                        { commandPath = "helm",
-                          commandArguments =
-                            [ "upgrade",
-                              "--install",
-                              harborReleaseName,
-                              harborRepositoryName ++ "/harbor",
-                              "--namespace",
-                              harborNamespace,
-                              "--create-namespace",
-                              "--set",
-                              "expose.type=nodePort",
-                              "--set",
-                              "expose.tls.enabled=false",
-                              "--set",
-                              "expose.nodePort.ports.http.nodePort=30080",
-                              "--set",
-                              "externalURL=http://" ++ harborRegistryEndpoint,
-                              "--set",
-                              "harborAdminPassword=Harbor12345",
-                              "--set",
-                              "persistence.enabled=false"
-                            ],
-                          commandEnvironment = Nothing,
-                          commandWorkingDirectory = Just repoRoot
-                        }
-                ]
+            if existingHarborHealthy
+                then pure ExitSuccess
+                else
+                    runSequentially
+                        [ runCommand
+                            CommandSpec
+                                { commandPath = "helm"
+                                , commandArguments = ["repo", "update"]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                        , runCommand
+                            CommandSpec
+                                { commandPath = "helm"
+                                , commandArguments =
+                                    [ "upgrade"
+                                    , "--install"
+                                    , harborReleaseName
+                                    , harborRepositoryName ++ "/harbor"
+                                    , "--namespace"
+                                    , harborNamespace
+                                    , "--create-namespace"
+                                    , "--set"
+                                    , "expose.type=nodePort"
+                                    , "--set"
+                                    , "expose.tls.enabled=false"
+                                    , "--set"
+                                    , "expose.nodePort.ports.http.nodePort=30080"
+                                    , "--set"
+                                    , "externalURL=http://" ++ harborRegistryEndpoint
+                                    , "--set"
+                                    , "harborAdminPassword=Harbor12345"
+                                    , "--set"
+                                    , "persistence.enabled=false"
+                                    ]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                        ]
         case installExit of
             ExitFailure _ -> pure installExit
             ExitSuccess -> do
@@ -748,9 +865,9 @@ ensureHarborRegistryRuntime repoRoot = do
                             ExitSuccess -> do
                                 harborEndpointExit <-
                                     runSequentially
-                                        [ waitForHarborReadyEndpoint repoRoot,
-                                          waitForHarborRegistryEndpoint repoRoot,
-                                          waitForHarborStableEndpoints repoRoot
+                                        [ waitForHarborReadyEndpoint repoRoot
+                                        , waitForHarborRegistryEndpoint repoRoot
+                                        , waitForHarborStableEndpoints repoRoot
                                         ]
                                 case harborEndpointExit of
                                     ExitFailure _ -> pure harborEndpointExit
@@ -758,36 +875,69 @@ ensureHarborRegistryRuntime repoRoot = do
                                         loginExit <-
                                             runCommand
                                                 CommandSpec
-                                                    { commandPath = "docker",
-                                                      commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword],
-                                                      commandEnvironment = Nothing,
-                                                      commandWorkingDirectory = Just repoRoot
+                                                    { commandPath = "docker"
+                                                    , commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
+                                                    , commandEnvironment = Nothing
+                                                    , commandWorkingDirectory = Just repoRoot
                                                     }
                                         case loginExit of
                                             ExitFailure _ -> pure loginExit
-                                            ExitSuccess -> do
-                                                projectExit <-
-                                                    runSequentially
-                                                        [ ensureHarborProject repoRoot projectName
-                                                        | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
-                                                        ]
-                                                pure projectExit
+                                            ExitSuccess ->
+                                                runSequentially
+                                                    [ ensureHarborProject repoRoot projectName
+                                                    | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
+                                                    ]
+
+harborRuntimeAlreadyHealthy :: FilePath -> IO Bool
+harborRuntimeAlreadyHealthy repoRoot = do
+    deploymentsPresent <- harborDeploymentsExist repoRoot
+    if not deploymentsPresent
+        then pure False
+        else do
+            readyStatusResult <- probeHarborHttpStatus repoRoot harborReadyPath
+            registryStatusResult <- probeHarborHttpStatus repoRoot "/v2/"
+            pure $
+                case (readyStatusResult, registryStatusResult) of
+                    (Right "200", Right registryStatus) -> registryStatus `elem` ["200", "401"]
+                    _ -> False
+
+harborDeploymentsExist :: FilePath -> IO Bool
+harborDeploymentsExist repoRoot = do
+    outputResult <-
+        captureKubectl
+            repoRoot
+            [ "get"
+            , "deployment"
+            , harborComponentName harborReleaseName "core"
+            , harborComponentName harborReleaseName "registry"
+            , harborComponentName harborReleaseName "nginx"
+            , "-n"
+            , harborNamespace
+            , "-o"
+            , "name"
+            ]
+    pure $
+        case outputResult of
+            Left _ -> False
+            Right output ->
+                processExitCode output == ExitSuccess
+                    && trimWhitespace (processStdout output) /= ""
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
     runCommand
         CommandSpec
-            { commandPath = "kubectl",
-              commandArguments =
-                [ "wait",
-                  "--for=condition=Available",
-                  "deployment/" ++ deploymentName,
-                  "-n",
-                  namespace,
-                  "--timeout=300s"
-                ],
-              commandEnvironment = Nothing,
-              commandWorkingDirectory = Just repoRoot
+            { commandPath = "kubectl"
+            , commandArguments =
+                [ "wait"
+                , "--for=condition=Available"
+                , "deployment/" ++ deploymentName
+                , "-n"
+                , namespace
+                , "--timeout=300s"
+                ]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
             }
 
 waitForHarborReadyEndpoint :: FilePath -> IO ExitCode
@@ -865,14 +1015,14 @@ probeHarborHttpStatus repoRoot path = do
         captureToolOutput
             repoRoot
             "curl"
-            [ "-sS",
-              "--max-time",
-              "5",
-              "-o",
-              "/dev/null",
-              "-w",
-              "%{http_code}",
-              "http://" ++ harborRegistryEndpoint ++ path
+            [ "-sS"
+            , "--max-time"
+            , "5"
+            , "-o"
+            , "/dev/null"
+            , "-w"
+            , "%{http_code}"
+            , "http://" ++ harborRegistryEndpoint ++ path
             ]
     pure $
         case outputResult of
@@ -887,13 +1037,13 @@ ensureHarborNginxReadinessContract repoRoot = do
     configOutputResult <-
         captureKubectl
             repoRoot
-            [ "get",
-              "configmap",
-              harborComponentName harborReleaseName "nginx",
-              "-n",
-              harborNamespace,
-              "-o",
-              "jsonpath={.data.nginx\\.conf}"
+            [ "get"
+            , "configmap"
+            , harborComponentName harborReleaseName "nginx"
+            , "-n"
+            , harborNamespace
+            , "-o"
+            , "jsonpath={.data.nginx\\.conf}"
             ]
     case configOutputResult of
         Left err -> failWith err
@@ -906,14 +1056,14 @@ ensureHarborNginxReadinessContract repoRoot = do
                         Just patchedConfig -> do
                             let configMapManifest =
                                     object
-                                        [ "apiVersion" .= ("v1" :: String),
-                                          "kind" .= ("ConfigMap" :: String),
-                                          "metadata"
+                                        [ "apiVersion" .= ("v1" :: String)
+                                        , "kind" .= ("ConfigMap" :: String)
+                                        , "metadata"
                                             .= object
-                                                [ "name" .= harborComponentName harborReleaseName "nginx",
-                                                  "namespace" .= harborNamespace
-                                                ],
-                                          "data" .= object ["nginx.conf" .= patchedConfig]
+                                                [ "name" .= harborComponentName harborReleaseName "nginx"
+                                                , "namespace" .= harborNamespace
+                                                ]
+                                        , "data" .= object ["nginx.conf" .= patchedConfig]
                                         ]
                                 deploymentPatch =
                                     object
@@ -927,31 +1077,34 @@ ensureHarborNginxReadinessContract repoRoot = do
                                                                     .= object
                                                                         [ Key.fromString harborReadyAnnotationKey .= harborReadyAnnotationValue
                                                                         ]
-                                                                ],
-                                                          "spec"
+                                                                ]
+                                                        , "spec"
                                                             .= object
                                                                 [ "containers"
-                                                                    .= ([ object
-                                                                            [ "name" .= ("nginx" :: String),
-                                                                              "readinessProbe"
+                                                                    .= ( [ object
+                                                                            [ "name" .= ("nginx" :: String)
+                                                                            , "readinessProbe"
                                                                                 .= object
                                                                                     [ "httpGet"
                                                                                         .= object
-                                                                                            [ "path" .= harborReadyPath,
-                                                                                              "port" .= (8080 :: Int),
-                                                                                              "scheme" .= ("HTTP" :: String)
-                                                                                            ]
-                                                                                    ],
-                                                                              "livenessProbe"
-                                                                                .= object
-                                                                                    [ "httpGet"
-                                                                                        .= object
-                                                                                            [ "path" .= harborReadyPath,
-                                                                                              "port" .= (8080 :: Int),
-                                                                                              "scheme" .= ("HTTP" :: String)
+                                                                                            [ "path" .= harborReadyPath
+                                                                                            , "port" .= (8080 :: Int)
+                                                                                            , "scheme" .= ("HTTP" :: String)
                                                                                             ]
                                                                                     ]
-                                                                            ] ] :: [Value])
+                                                                            , "livenessProbe"
+                                                                                .= object
+                                                                                    [ "httpGet"
+                                                                                        .= object
+                                                                                            [ "path" .= harborReadyPath
+                                                                                            , "port" .= (8080 :: Int)
+                                                                                            , "scheme" .= ("HTTP" :: String)
+                                                                                            ]
+                                                                                    ]
+                                                                            ]
+                                                                         ] ::
+                                                                            [Value]
+                                                                       )
                                                                 ]
                                                         ]
                                                 ]
@@ -971,15 +1124,15 @@ ensureHarborNginxReadinessContract repoRoot = do
                                     patchResult <-
                                         captureKubectl
                                             repoRoot
-                                            [ "patch",
-                                              "deployment",
-                                              harborComponentName harborReleaseName "nginx",
-                                              "-n",
-                                              harborNamespace,
-                                              "--type",
-                                              "strategic",
-                                              "--patch",
-                                              trimTrailingNewlines (BL8.unpack (encode deploymentPatch))
+                                            [ "patch"
+                                            , "deployment"
+                                            , harborComponentName harborReleaseName "nginx"
+                                            , "-n"
+                                            , harborNamespace
+                                            , "--type"
+                                            , "strategic"
+                                            , "--patch"
+                                            , trimTrailingNewlines (BL8.unpack (encode deploymentPatch))
                                             ]
                                     case patchResult of
                                         Left err -> failWith err
@@ -995,20 +1148,20 @@ ensureHarborProject repoRoot projectName = do
         captureToolOutput
             repoRoot
             "curl"
-            [ "-sS",
-              "-u",
-              harborAdminUser ++ ":" ++ harborAdminPassword,
-              "-H",
-              "Content-Type: application/json",
-              "-X",
-              "POST",
-              "-d",
-              payload,
-              "-o",
-              "/dev/null",
-              "-w",
-              "%{http_code}",
-              "http://" ++ harborRegistryEndpoint ++ "/api/v2.0/projects"
+            [ "-sS"
+            , "-u"
+            , harborAdminUser ++ ":" ++ harborAdminPassword
+            , "-H"
+            , "Content-Type: application/json"
+            , "-X"
+            , "POST"
+            , "-d"
+            , payload
+            , "-o"
+            , "/dev/null"
+            , "-w"
+            , "%{http_code}"
+            , "http://" ++ harborRegistryEndpoint ++ "/api/v2.0/projects"
             ]
     case outputResult of
         Left err -> failWith err
@@ -1024,9 +1177,642 @@ ensureHarborProject repoRoot projectName = do
                             ++ statusCode
                         )
 
+ensureClusterPlatformRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
+    lanDefaultsResult <- resolveClusterPlatformLanDefaults
+    case lanDefaultsResult of
+        Left err -> failWith err
+        Right (metallbPool, ingressLbIp) ->
+            runSequentially
+                [ ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool
+                , ensureTraefikRuntime repoRoot prodboxId labelValue ingressLbIp
+                , ensureCertManagerRuntime repoRoot prodboxId labelValue
+                , ensureAcmeRuntime repoRoot settings prodboxId labelValue
+                , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
+                ]
+
+resolveClusterPlatformLanDefaults :: IO (Either String (String, String))
+resolveClusterPlatformLanDefaults = do
+    maybeMetallbPool <- lookupNonEmptyEnv "PRODBOX_PULUMI_METALLB_POOL"
+    maybeIngressLbIp <- lookupNonEmptyEnv "PRODBOX_PULUMI_INGRESS_LB_IP"
+    case (maybeMetallbPool, maybeIngressLbIp) of
+        (Just metallbPool, Just ingressLbIp) -> pure (Right (metallbPool, ingressLbIp))
+        (Just _, Nothing) ->
+            pure
+                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP, or set neither")
+        (Nothing, Just _) ->
+            pure
+                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP, or set neither")
+        (Nothing, Nothing) ->
+            fmap
+                ( \lanResult ->
+                    case lanResult of
+                        Left err ->
+                            Left ("failed to derive MetalLB defaults from host networking: " ++ err)
+                        Right lan -> Right (lanMetallbPool lan, lanIngressLbIp lan)
+                )
+                detectLanAddressing
+
+ensureMetalLbRuntime :: FilePath -> String -> String -> String -> IO ExitCode
+ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool = do
+    repoExit <- ensureHelmRepoAdded repoRoot metallbRepositoryName metallbRepositoryUrl
+    case repoExit of
+        ExitFailure _ -> pure repoExit
+        ExitSuccess -> do
+            installExit <-
+                helmUpgradeInstallWithJsonValues
+                    repoRoot
+                    metallbReleaseName
+                    metallbChartRef
+                    metallbChartVersion
+                    metallbNamespace
+                    (metallbHelmValues prodboxId labelValue)
+            case installExit of
+                ExitFailure _ -> pure installExit
+                ExitSuccess -> do
+                    waitExit <-
+                        runSequentially
+                            [ rolloutStatus repoRoot metallbNamespace "deployment/metallb-controller"
+                            , rolloutStatus repoRoot metallbNamespace "daemonset/metallb-speaker"
+                            , waitForCrdEstablished repoRoot "ipaddresspools.metallb.io"
+                            , waitForCrdEstablished repoRoot "l2advertisements.metallb.io"
+                            ]
+                    case waitExit of
+                        ExitFailure _ -> pure waitExit
+                        ExitSuccess ->
+                            kubectlApplyJsonManifest
+                                repoRoot
+                                "prodbox-metallb-resources"
+                                (metallbRuntimeManifest prodboxId labelValue metallbPool)
+
+metallbHelmValues :: String -> String -> Value
+metallbHelmValues prodboxId labelValue =
+    object
+        [ "controller"
+            .= object
+                [ "image"
+                    .= object
+                        [ "repository" .= renderImageRefWithoutTag ContainerImage.harborMetallbControllerImage
+                        , "tag" .= ContainerImage.imageTag ContainerImage.harborMetallbControllerImage
+                        ]
+                ]
+        , "speaker"
+            .= object
+                [ "image"
+                    .= object
+                        [ "repository" .= renderImageRefWithoutTag ContainerImage.harborMetallbSpeakerImage
+                        , "tag" .= ContainerImage.imageTag ContainerImage.harborMetallbSpeakerImage
+                        ]
+                , "frr"
+                    .= object
+                        [ "image"
+                            .= object
+                                [ "repository" .= renderImageRefWithoutTag ContainerImage.harborFrrImage
+                                , "tag" .= ContainerImage.imageTag ContainerImage.harborFrrImage
+                                ]
+                        ]
+                ]
+        , "commonLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        , "commonAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+        ]
+
+metallbRuntimeManifest :: String -> String -> String -> [Value]
+metallbRuntimeManifest prodboxId labelValue metallbPool =
+    [ object
+        [ "apiVersion" .= ("metallb.io/v1beta1" :: String)
+        , "kind" .= ("IPAddressPool" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= ("default-pool" :: String)
+                , "namespace" .= metallbNamespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec" .= object ["addresses" .= [metallbPool]]
+        ]
+    , object
+        [ "apiVersion" .= ("metallb.io/v1beta1" :: String)
+        , "kind" .= ("L2Advertisement" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= ("default-advertisement" :: String)
+                , "namespace" .= metallbNamespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec" .= object ["ipAddressPools" .= ["default-pool" :: String]]
+        ]
+    ]
+
+ensureTraefikRuntime :: FilePath -> String -> String -> String -> IO ExitCode
+ensureTraefikRuntime repoRoot prodboxId labelValue ingressLbIp = do
+    repoExit <- ensureHelmRepoAdded repoRoot traefikRepositoryName traefikRepositoryUrl
+    case repoExit of
+        ExitFailure _ -> pure repoExit
+        ExitSuccess -> do
+            installExit <-
+                helmUpgradeInstallWithJsonValues
+                    repoRoot
+                    traefikReleaseName
+                    traefikChartRef
+                    traefikChartVersion
+                    traefikNamespace
+                    (traefikHelmValues prodboxId labelValue ingressLbIp)
+            case installExit of
+                ExitFailure _ -> pure installExit
+                ExitSuccess -> waitForDeployment repoRoot traefikNamespace traefikReleaseName
+
+traefikHelmValues :: String -> String -> String -> Value
+traefikHelmValues prodboxId labelValue ingressLbIp =
+    object
+        [ "image"
+            .= object
+                [ "registry" .= ContainerImage.imageRegistry ContainerImage.harborTraefikImage
+                , "repository" .= ContainerImage.imageRepository ContainerImage.harborTraefikImage
+                , "tag" .= ContainerImage.imageTag ContainerImage.harborTraefikImage
+                ]
+        , "service"
+            .= object
+                [ "type" .= ("LoadBalancer" :: String)
+                , "spec" .= object ["loadBalancerIP" .= ingressLbIp]
+                ]
+        , "ports"
+            .= object
+                [ "web" .= object ["expose" .= object ["default" .= True]]
+                , "websecure" .= object ["expose" .= object ["default" .= True]]
+                ]
+        , "ingressClass"
+            .= object
+                [ "name" .= ("traefik" :: String)
+                , "isDefaultClass" .= False
+                ]
+        , "logs" .= object ["access" .= object ["enabled" .= True]]
+        , "metrics" .= object ["prometheus" .= object ["entryPoint" .= ("metrics" :: String)]]
+        , "commonLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        , "commonAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+        ]
+
+ensureCertManagerRuntime :: FilePath -> String -> String -> IO ExitCode
+ensureCertManagerRuntime repoRoot prodboxId labelValue = do
+    repoExit <- ensureHelmRepoAdded repoRoot certManagerRepositoryName certManagerRepositoryUrl
+    case repoExit of
+        ExitFailure _ -> pure repoExit
+        ExitSuccess -> do
+            installExit <-
+                helmUpgradeInstallWithJsonValues
+                    repoRoot
+                    certManagerReleaseName
+                    certManagerChartRef
+                    certManagerChartVersion
+                    certManagerNamespace
+                    (certManagerHelmValues prodboxId labelValue)
+            case installExit of
+                ExitFailure _ -> pure installExit
+                ExitSuccess ->
+                    runSequentially
+                        [ waitForDeployment repoRoot certManagerNamespace certManagerReleaseName
+                        , waitForDeployment repoRoot certManagerNamespace (certManagerReleaseName ++ "-webhook")
+                        , waitForDeployment repoRoot certManagerNamespace (certManagerReleaseName ++ "-cainjector")
+                        , waitForCrdEstablished repoRoot "clusterissuers.cert-manager.io"
+                        ]
+
+certManagerHelmValues :: String -> String -> Value
+certManagerHelmValues _prodboxId labelValue =
+    object
+        [ "crds" .= object ["enabled" .= True]
+        , "image"
+            .= object
+                [ "repository" .= renderImageRefWithoutTag ContainerImage.harborCertManagerControllerImage
+                , "tag" .= ContainerImage.imageTag ContainerImage.harborCertManagerControllerImage
+                ]
+        , "webhook"
+            .= object
+                [ "image"
+                    .= object
+                        [ "repository" .= renderImageRefWithoutTag ContainerImage.harborCertManagerWebhookImage
+                        , "tag" .= ContainerImage.imageTag ContainerImage.harborCertManagerWebhookImage
+                        ]
+                ]
+        , "cainjector"
+            .= object
+                [ "image"
+                    .= object
+                        [ "repository" .= renderImageRefWithoutTag ContainerImage.harborCertManagerCainjectorImage
+                        , "tag" .= ContainerImage.imageTag ContainerImage.harborCertManagerCainjectorImage
+                        ]
+                ]
+        , "acmesolver"
+            .= object
+                [ "image"
+                    .= object
+                        [ "repository" .= renderImageRefWithoutTag ContainerImage.harborCertManagerAcmesolverImage
+                        , "tag" .= ContainerImage.imageTag ContainerImage.harborCertManagerAcmesolverImage
+                        ]
+                ]
+        , "startupapicheck"
+            .= object
+                [ "image"
+                    .= object
+                        [ "repository" .= renderImageRefWithoutTag ContainerImage.harborCertManagerStartupApiCheckImage
+                        , "tag" .= ContainerImage.imageTag ContainerImage.harborCertManagerStartupApiCheckImage
+                        ]
+                ]
+        , "global"
+            .= object
+                [ "leaderElection" .= object ["namespace" .= certManagerNamespace]
+                ]
+        , "podLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        , "resources"
+            .= object
+                [ "requests"
+                    .= object
+                        [ "cpu" .= ("50m" :: String)
+                        , "memory" .= ("64Mi" :: String)
+                        ]
+                ]
+        ]
+
+ensureAcmeRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
+    currentEnvironment <- getEnvironment
+    withTemporaryJsonManifest
+        "prodbox-acme-runtime"
+        (acmeRuntimeManifest settings prodboxId labelValue)
+        ( \manifestPath -> do
+            applyExit <-
+                runCommand
+                    CommandSpec
+                        { commandPath = "kubectl"
+                        , commandArguments = ["apply", "-f", manifestPath]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+            case applyExit of
+                ExitFailure _ -> pure applyExit
+                ExitSuccess -> do
+                    issuerWaitEnv <- awsCommandEnvironment currentEnvironment settings
+                    runCommand
+                        CommandSpec
+                            { commandPath = "kubectl"
+                            , commandArguments =
+                                [ "wait"
+                                , "--for=condition=Ready"
+                                , "clusterissuer/" ++ chartClusterIssuer
+                                , "--timeout=300s"
+                                ]
+                            , commandEnvironment = Just issuerWaitEnv
+                            , commandWorkingDirectory = Just repoRoot
+                            }
+        )
+
+acmeRuntimeManifest :: ValidatedSettings -> String -> String -> [Value]
+acmeRuntimeManifest settings prodboxId labelValue =
+    route53Secret : maybe [] pure maybeEabSecret ++ [clusterIssuer]
+  where
+    config = validatedConfig settings
+    route53Secret =
+        object
+            [ "apiVersion" .= ("v1" :: String)
+            , "kind" .= ("Secret" :: String)
+            , "metadata"
+                .= object
+                    [ "name" .= route53CredentialsSecretName
+                    , "namespace" .= certManagerNamespace
+                    , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                    , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                    ]
+            , "type" .= ("Opaque" :: String)
+            , "stringData"
+                .= object
+                    [ "access-key-id" .= Text.unpack (access_key_id (aws config))
+                    , "secret-access-key" .= Text.unpack (secret_access_key (aws config))
+                    ]
+            ]
+    maybeEabSecret =
+        case (eab_key_id (acme config), eab_hmac_key (acme config)) of
+            (Just _, Just hmacKey) ->
+                Just
+                    ( object
+                        [ "apiVersion" .= ("v1" :: String)
+                        , "kind" .= ("Secret" :: String)
+                        , "metadata"
+                            .= object
+                                [ "name" .= acmeEabSecretName
+                                , "namespace" .= certManagerNamespace
+                                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                                ]
+                        , "type" .= ("Opaque" :: String)
+                        , "stringData" .= object [Key.fromString acmeEabSecretKey .= Text.unpack hmacKey]
+                        ]
+                    )
+            _ -> Nothing
+    clusterIssuer =
+        object
+            [ "apiVersion" .= ("cert-manager.io/v1" :: String)
+            , "kind" .= ("ClusterIssuer" :: String)
+            , "metadata"
+                .= object
+                    [ "name" .= chartClusterIssuer
+                    , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                    , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                    ]
+            , "spec" .= object ["acme" .= acmeClusterIssuerSpec settings]
+            ]
+
+acmeClusterIssuerSpec :: ValidatedSettings -> Value
+acmeClusterIssuerSpec settings =
+    object $
+        [ "server" .= Text.unpack (server acmeConfig)
+        , "email" .= Text.unpack (email acmeConfig)
+        , "privateKeySecretRef" .= object ["name" .= ("letsencrypt-account-key" :: String)]
+        , "solvers"
+            .= [ object
+                    [ "dns01"
+                        .= object
+                            [ "route53"
+                                .= object
+                                    [ "region" .= Text.unpack (region awsConfig)
+                                    , "hostedZoneID" .= Text.unpack (zone_id (route53 config))
+                                    , "accessKeyIDSecretRef"
+                                        .= object
+                                            [ "name" .= route53CredentialsSecretName
+                                            , "key" .= ("access-key-id" :: String)
+                                            ]
+                                    , "secretAccessKeySecretRef"
+                                        .= object
+                                            [ "name" .= route53CredentialsSecretName
+                                            , "key" .= ("secret-access-key" :: String)
+                                            ]
+                                    ]
+                            ]
+                    ]
+               ]
+        ]
+            ++ maybe [] (\binding -> ["externalAccountBinding" .= binding]) externalAccountBinding
+  where
+    config = validatedConfig settings
+    awsConfig = aws config
+    acmeConfig = acme config
+    externalAccountBinding =
+        case (eab_key_id acmeConfig, eab_hmac_key acmeConfig) of
+            (Just keyId, Just _) ->
+                Just
+                    ( object
+                        [ "keyID" .= Text.unpack keyId
+                        , "keySecretRef"
+                            .= object
+                                [ "name" .= acmeEabSecretName
+                                , "key" .= acmeEabSecretKey
+                                ]
+                        ]
+                    )
+            _ -> Nothing
+
+ensurePostgresOperatorRuntime :: FilePath -> String -> String -> IO ExitCode
+ensurePostgresOperatorRuntime repoRoot prodboxId labelValue = do
+    repoExit <- ensureHelmRepoAdded repoRoot postgresOperatorRepositoryName postgresOperatorRepositoryUrl
+    case repoExit of
+        ExitFailure _ -> pure repoExit
+        ExitSuccess -> do
+            installExit <-
+                helmUpgradeInstallWithJsonValues
+                    repoRoot
+                    patroniOperatorReleaseName
+                    postgresOperatorChartRef
+                    postgresOperatorChartVersion
+                    patroniOperatorNamespace
+                    (postgresOperatorHelmValues prodboxId labelValue)
+            case installExit of
+                ExitFailure _ -> pure installExit
+                ExitSuccess ->
+                    runSequentially
+                        [ waitForCrdEstablished repoRoot patroniPostgresqlCrdName
+                        , waitForDeployment repoRoot patroniOperatorNamespace patroniOperatorDeploymentName
+                        ]
+
+postgresOperatorHelmValues :: String -> String -> Value
+postgresOperatorHelmValues prodboxId labelValue =
+    object
+        [ "image"
+            .= object
+                [ "registry" .= ContainerImage.imageRegistry ContainerImage.harborPostgresOperatorImage
+                , "repository" .= ContainerImage.imageRepository ContainerImage.harborPostgresOperatorImage
+                , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresOperatorImage
+                ]
+        , "configGeneral"
+            .= object
+                [ "enable_crd_registration" .= True
+                , "docker_image" .= ContainerImage.renderImageRef ContainerImage.harborSpiloImage
+                ]
+        , "configKubernetes"
+            .= object
+                [ "watched_namespace" .= ("*" :: String)
+                , "enable_pod_antiaffinity" .= False
+                ]
+        , "configLoadBalancer"
+            .= object
+                [ "enable_master_load_balancer" .= False
+                , "enable_replica_load_balancer" .= False
+                ]
+        , "commonLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        , "podLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        , "podAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+        ]
+
+reconcileDnsBootstrapRecord :: FilePath -> ValidatedSettings -> IO ExitCode
+reconcileDnsBootstrapRecord repoRoot settings =
+    if not (pulumi_enable_dns_bootstrap (deployment (validatedConfig settings)))
+        then pure ExitSuccess
+        else do
+            publicIpResult <- resolveDnsBootstrapIp settings
+            case publicIpResult of
+                Left err -> failWith err
+                Right publicIp -> do
+                    environment <- getEnvironment
+                    awsEnvironment <- awsCommandEnvironment environment settings
+                    let config = validatedConfig settings
+                        zoneIdValue = Text.unpack (zone_id (route53 config))
+                        fqdn = Text.unpack (demo_fqdn (domain config))
+                        ttlValue = fromIntegral (demo_ttl (domain config)) :: Integer
+                    withTemporaryJsonBytes
+                        "prodbox-dns-bootstrap"
+                        (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
+                        ( \payloadPath ->
+                            runCommand
+                                CommandSpec
+                                    { commandPath = "aws"
+                                    , commandArguments =
+                                        [ "route53"
+                                        , "change-resource-record-sets"
+                                        , "--hosted-zone-id"
+                                        , zoneIdValue
+                                        , "--change-batch"
+                                        , "file://" ++ payloadPath
+                                        ]
+                                    , commandEnvironment = Just awsEnvironment
+                                    , commandWorkingDirectory = Just repoRoot
+                                    }
+                        )
+
+resolveDnsBootstrapIp :: ValidatedSettings -> IO (Either String String)
+resolveDnsBootstrapIp settings = do
+    maybeBootstrapIp <- lookupNonEmptyEnv "PRODBOX_PULUMI_DNS_BOOTSTRAP_IP"
+    case maybeBootstrapIp of
+        Just value -> pure (Right value)
+        Nothing ->
+            case nonEmptyTextValue =<< bootstrap_public_ip_override (deployment (validatedConfig settings)) of
+                Just value -> pure (Right value)
+                Nothing -> fetchPublicIp
+
+route53AChangeBatch :: String -> String -> String -> Integer -> Value
+route53AChangeBatch action fqdn publicIp ttlValue =
+    object
+        [ "Comment" .= ("prodbox bootstrap DNS reconcile" :: String)
+        , "Changes"
+            .= [ object
+                    [ "Action" .= action
+                    , "ResourceRecordSet"
+                        .= object
+                            [ "Name" .= fqdn
+                            , "Type" .= ("A" :: String)
+                            , "TTL" .= ttlValue
+                            , "ResourceRecords" .= [object ["Value" .= publicIp]]
+                            ]
+                    ]
+               ]
+        ]
+
+ensureHelmRepoAdded :: FilePath -> String -> String -> IO ExitCode
+ensureHelmRepoAdded repoRoot repoName repoUrl = do
+    repoAddResult <- captureToolOutput repoRoot "helm" ["repo", "add", repoName, repoUrl]
+    case repoAddResult of
+        Left err -> failWith err
+        Right repoAddOutput ->
+            case processExitCode repoAddOutput of
+                ExitFailure _
+                    | "already exists" `isInfixOf` map toLower (outputDetail repoAddOutput) -> updateRepo
+                    | otherwise -> failWith ("Failed to add Helm repo " ++ repoName ++ ": " ++ outputDetail repoAddOutput)
+                ExitSuccess -> updateRepo
+  where
+    updateRepo =
+        runCommand
+            CommandSpec
+                { commandPath = "helm"
+                , commandArguments = ["repo", "update", repoName]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+
+helmUpgradeInstallWithJsonValues :: FilePath -> String -> String -> String -> String -> Value -> IO ExitCode
+helmUpgradeInstallWithJsonValues repoRoot releaseName chartRef chartVersion namespace values =
+    withTemporaryJsonBytes ("prodbox-helm-values-" ++ releaseName) (encode values) $ \valuesPath ->
+        runCommand
+            CommandSpec
+                { commandPath = "helm"
+                , commandArguments =
+                    [ "upgrade"
+                    , "--install"
+                    , releaseName
+                    , chartRef
+                    , "--version"
+                    , chartVersion
+                    , "--namespace"
+                    , namespace
+                    , "--create-namespace"
+                    , "-f"
+                    , valuesPath
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+
+waitForCrdEstablished :: FilePath -> String -> IO ExitCode
+waitForCrdEstablished repoRoot crdName =
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl"
+            , commandArguments =
+                [ "wait"
+                , "--for=condition=Established"
+                , "--timeout=300s"
+                , "crd/" ++ crdName
+                ]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
+            }
+
+rolloutStatus :: FilePath -> String -> String -> IO ExitCode
+rolloutStatus repoRoot namespace resourceRef =
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl"
+            , commandArguments =
+                [ "rollout"
+                , "status"
+                , resourceRef
+                , "--namespace"
+                , namespace
+                , "--timeout=300s"
+                ]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
+            }
+
+kubectlApplyJsonManifest :: FilePath -> String -> [Value] -> IO ExitCode
+kubectlApplyJsonManifest repoRoot prefix items =
+    withTemporaryJsonManifest prefix items $ \manifestPath -> do
+        outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
+        case outputResult of
+            Left err -> failWith err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess -> pure ExitSuccess
+                    ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
+
+awsCommandEnvironment :: [(String, String)] -> ValidatedSettings -> IO [(String, String)]
+awsCommandEnvironment baseEnvironment settings =
+    pure (mergeEnvironmentEntries (awsEnvironmentEntries (aws (validatedConfig settings))) baseEnvironment)
+
+awsEnvironmentEntries :: Credentials -> [(String, String)]
+awsEnvironmentEntries credentials =
+    [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials))
+    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials))
+    , ("AWS_REGION", Text.unpack (region credentials))
+    , ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
+    ]
+        ++ case session_token credentials of
+            Nothing -> []
+            Just token -> [("AWS_SESSION_TOKEN", Text.unpack token)]
+
+mergeEnvironmentEntries :: [(String, String)] -> [(String, String)] -> [(String, String)]
+mergeEnvironmentEntries updates baseEnvironment =
+    updates ++ filter (not . (`elem` updatedKeys) . fst) baseEnvironment
+  where
+    updatedKeys = map fst updates
+
+lookupNonEmptyEnv :: String -> IO (Maybe String)
+lookupNonEmptyEnv name = do
+    maybeValue <- lookupEnv name
+    pure $
+        case maybeValue of
+            Just value ->
+                let trimmed = trimWhitespace value
+                 in if trimmed == ""
+                        then Nothing
+                        else Just trimmed
+            Nothing -> Nothing
+
+nonEmptyTextValue :: Text.Text -> Maybe String
+nonEmptyTextValue rawValue =
+    let trimmed = trimWhitespace (Text.unpack rawValue)
+     in if trimmed == ""
+            then Nothing
+            else Just trimmed
+
 data ManifestPlatform = ManifestPlatform
-    { manifestPlatformOs :: String,
-      manifestPlatformArchitecture :: String
+    { manifestPlatformOs :: String
+    , manifestPlatformArchitecture :: String
     }
 
 instance FromJSON ManifestPlatform where
@@ -1037,8 +1823,8 @@ instance FromJSON ManifestPlatform where
                 <*> payload .: "architecture"
 
 data ManifestDescriptor = ManifestDescriptor
-    { manifestDescriptorDigest :: Maybe String,
-      manifestDescriptorPlatform :: Maybe ManifestPlatform
+    { manifestDescriptorDigest :: Maybe String
+    , manifestDescriptorPlatform :: Maybe ManifestPlatform
     }
 
 instance FromJSON ManifestDescriptor where
@@ -1049,9 +1835,9 @@ instance FromJSON ManifestDescriptor where
                 <*> payload .:? "platform"
 
 data RawImageManifest = RawImageManifest
-    { rawImageManifestManifests :: Maybe [ManifestDescriptor],
-      rawImageManifestOs :: Maybe String,
-      rawImageManifestArchitecture :: Maybe String
+    { rawImageManifestManifests :: Maybe [ManifestDescriptor]
+    , rawImageManifestOs :: Maybe String
+    , rawImageManifestArchitecture :: Maybe String
     }
 
 instance FromJSON RawImageManifest where
@@ -1071,12 +1857,12 @@ mirrorClusterImagesOnce repoRoot = do
             let requiredPairs = ContainerImage.requiredPublicImageCandidatePairs
                 discoveredPairs =
                     [ (sources, target)
-                    | image <- images,
-                      Just source <- [ContainerImage.normalizeImageRefText image],
-                      not (isHarborBootstrapImage source),
-                      not (isHarborHostedImage source),
-                      Just target <- [ContainerImage.harborMirrorTargetForSource source],
-                      Just sources <- [ContainerImage.harborMirrorSourceCandidates source]
+                    | image <- images
+                    , Just source <- [ContainerImage.normalizeImageRefText image]
+                    , not (isHarborBootstrapImage source)
+                    , not (isHarborHostedImage source)
+                    , Just target <- [ContainerImage.harborMirrorTargetForSource source]
+                    , Just sources <- [ContainerImage.harborMirrorSourceCandidates source]
                     ]
                 imagePairs = mergeMirrorCandidatePairs (discoveredPairs ++ requiredPairs)
              in runSequentially
@@ -1089,11 +1875,11 @@ collectClusterImages repoRoot = do
     outputResult <-
         captureKubectl
             repoRoot
-            [ "get",
-              "pods",
-              "-A",
-              "-o",
-              "jsonpath={range .items[*]}{range .spec.initContainers[*]}{.image}{\"\\n\"}{end}{range .spec.containers[*]}{.image}{\"\\n\"}{end}{end}"
+            [ "get"
+            , "pods"
+            , "-A"
+            , "-o"
+            , "jsonpath={range .items[*]}{range .spec.initContainers[*]}{.image}{\"\\n\"}{end}{range .spec.containers[*]}{.image}{\"\\n\"}{end}{end}"
             ]
     pure $ do
         output <- outputResult
@@ -1122,8 +1908,8 @@ ensureGatewayImages repoRoot prodboxId = do
     ensureCustomImageVariants
         repoRoot
         CustomImageBuildPlan
-            { customImageDockerfile = "docker/gateway.Dockerfile",
-              customImageBuildMode = CustomImageBuildWithHaskellToolchain
+            { customImageDockerfile = "docker/gateway.Dockerfile"
+            , customImageBuildMode = CustomImageBuildWithHaskellToolchain
             }
         [gatewayImage, latestImage]
         gatewayImage
@@ -1134,8 +1920,8 @@ ensureVscodeNginxImage repoRoot = do
     ensureCustomImageVariants
         repoRoot
         CustomImageBuildPlan
-            { customImageDockerfile = "docker/nginx-oidc.Dockerfile",
-              customImageBuildMode = CustomImageBuildDirect
+            { customImageDockerfile = "docker/nginx-oidc.Dockerfile"
+            , customImageBuildMode = CustomImageBuildDirect
             }
         [imageRef]
         imageRef
@@ -1157,12 +1943,12 @@ ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
                     runSequentially
                         [ runCommand
                             CommandSpec
-                                { commandPath = "docker",
-                                  commandArguments = ["pull", importRef],
-                                  commandEnvironment = Nothing,
-                                  commandWorkingDirectory = Just repoRoot
-                                },
-                          importImageIntoRke2Containerd repoRoot importRef
+                                { commandPath = "docker"
+                                , commandArguments = ["pull", importRef]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                        , importImageIntoRke2Containerd repoRoot importRef
                         ]
 
 buildMissingCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
@@ -1171,20 +1957,20 @@ buildMissingCustomImageVariants repoRoot buildPlan taggedRefs =
         CustomImageBuildDirect ->
             runCommand
                 CommandSpec
-                    { commandPath = "docker",
-                      commandArguments =
-                        [ "buildx",
-                          "build",
-                          "--platform",
-                          canonicalPlatformArgument,
-                          "--push",
-                          "-f",
-                          customImageDockerfile buildPlan
+                    { commandPath = "docker"
+                    , commandArguments =
+                        [ "buildx"
+                        , "build"
+                        , "--platform"
+                        , canonicalPlatformArgument
+                        , "--push"
+                        , "-f"
+                        , customImageDockerfile buildPlan
                         ]
                             ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
-                            ++ ["."],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
+                            ++ ["."]
+                    , commandEnvironment = Nothing
+                    , commandWorkingDirectory = Just repoRoot
                     }
         CustomImageBuildWithHaskellToolchain ->
             buildCustomImageVariantsWithHaskellToolchain repoRoot buildPlan taggedRefs
@@ -1212,10 +1998,10 @@ buildCustomImageVariantsWithHaskellToolchain repoRoot buildPlan taggedRefs =
                         runSequentially
                             [ runCommand
                                 CommandSpec
-                                    { commandPath = "docker",
-                                      commandArguments = ["buildx", "imagetools", "create", "--tag", targetRef] ++ platformRefs,
-                                      commandEnvironment = Nothing,
-                                      commandWorkingDirectory = Just repoRoot
+                                    { commandPath = "docker"
+                                    , commandArguments = ["buildx", "imagetools", "create", "--tag", targetRef] ++ platformRefs
+                                    , commandEnvironment = Nothing
+                                    , commandWorkingDirectory = Just repoRoot
                                     }
                             | (targetRef, platformRefs) <- manifestSources
                             ]
@@ -1227,22 +2013,22 @@ buildSinglePlatformCustomImage repoRoot buildPlan platform taggedRefs =
         Right stagedRefs ->
             runCommand
                 CommandSpec
-                    { commandPath = "docker",
-                      commandArguments =
-                        [ "buildx",
-                          "build",
-                          "--platform",
-                          renderPlatformArgument platform,
-                          "--build-context",
-                          haskellToolchainBuildContextName ++ "=docker-image://docker.io/library/" ++ haskellToolchainImageRef,
-                          "--push",
-                          "-f",
-                          customImageDockerfile buildPlan
+                    { commandPath = "docker"
+                    , commandArguments =
+                        [ "buildx"
+                        , "build"
+                        , "--platform"
+                        , renderPlatformArgument platform
+                        , "--build-context"
+                        , haskellToolchainBuildContextName ++ "=docker-image://docker.io/library/" ++ haskellToolchainImageRef
+                        , "--push"
+                        , "-f"
+                        , customImageDockerfile buildPlan
                         ]
                             ++ concat [["-t", tagRef] | tagRef <- stagedRefs]
-                            ++ ["."],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
+                            ++ ["."]
+                    , commandEnvironment = Nothing
+                    , commandWorkingDirectory = Just repoRoot
                     }
 
 stagedImageRefForPlatform :: (String, String) -> String -> Either String String
@@ -1291,7 +2077,22 @@ inspectRawImageManifest repoRoot imageRef = do
                     ExitFailure _ ->
                         if isBuildxUnavailable (outputDetail output)
                             then Left "docker buildx imagetools support is required for the Harbor multi-arch reconcile path"
-                            else Right Nothing
+                            else
+                                if isMissingImageInspectError (outputDetail output)
+                                    then Right Nothing
+                                    else Left (outputDetail output)
+
+isMissingImageInspectError :: String -> Bool
+isMissingImageInspectError detail =
+    let lowered = map toLower detail
+     in any
+            (`isInfixOf` lowered)
+            [ "not found"
+            , "manifest unknown"
+            , "name unknown"
+            , "no such manifest"
+            , "repository does not exist"
+            ]
 
 purgeHarborMirrorTarget :: FilePath -> String -> IO ExitCode
 purgeHarborMirrorTarget repoRoot target =
@@ -1303,16 +2104,16 @@ purgeHarborMirrorTarget repoRoot target =
                 captureToolOutput
                     repoRoot
                     "curl"
-                    [ "-sS",
-                      "-u",
-                      harborAdminUser ++ ":" ++ harborAdminPassword,
-                      "-X",
-                      "DELETE",
-                      "-o",
-                      "/dev/null",
-                      "-w",
-                      "%{http_code}",
-                      "http://" ++ harborRegistryEndpoint ++ "/api/v2.0/projects/" ++ projectName ++ "/repositories/" ++ encodeHarborRepositoryName repositoryName
+                    [ "-sS"
+                    , "-u"
+                    , harborAdminUser ++ ":" ++ harborAdminPassword
+                    , "-X"
+                    , "DELETE"
+                    , "-o"
+                    , "/dev/null"
+                    , "-w"
+                    , "%{http_code}"
+                    , "http://" ++ harborRegistryEndpoint ++ "/api/v2.0/projects/" ++ projectName ++ "/repositories/" ++ encodeHarborRepositoryName repositoryName
                     ]
             case outputResult of
                 Left err -> failWith err
@@ -1336,13 +2137,12 @@ parseHarborTargetRepository target = do
     imageRef <- ContainerImage.parseImageRef target
     if ContainerImage.imageRegistry imageRef /= harborRegistryEndpoint
         then Right Nothing
-        else
-            case break (== '/') (ContainerImage.imageRepository imageRef) of
-                (projectName, '/' : repositoryName)
-                    | projectName /= "" && repositoryName /= "" ->
-                        Right (Just (projectName, repositoryName))
-                _ ->
-                    Left ("invalid Harbor image repository path: " ++ ContainerImage.imageRepository imageRef)
+        else case break (== '/') (ContainerImage.imageRepository imageRef) of
+            (projectName, '/' : repositoryName)
+                | projectName /= "" && repositoryName /= "" ->
+                    Right (Just (projectName, repositoryName))
+            _ ->
+                Left ("invalid Harbor image repository path: " ++ ContainerImage.imageRepository imageRef)
 
 encodeHarborRepositoryName :: String -> String
 encodeHarborRepositoryName =
@@ -1381,14 +2181,13 @@ buildCanonicalMirrorSourceRefs source sourceManifest = do
     traverse (buildPlatformSourceRef imageRef descriptors) ContainerImage.canonicalImagePlatforms
   where
     buildPlatformSourceRef imageRef descriptors (osName, architecture) =
-        case
-            [ digest
-            | descriptor <- descriptors,
-              Just platform <- [manifestDescriptorPlatform descriptor],
-              manifestPlatformOs platform == osName,
-              manifestPlatformArchitecture platform == architecture,
-              Just digest <- [manifestDescriptorDigest descriptor]
-            ] of
+        case [ digest
+             | descriptor <- descriptors
+             , Just platform <- [manifestDescriptorPlatform descriptor]
+             , manifestPlatformOs platform == osName
+             , manifestPlatformArchitecture platform == architecture
+             , Just digest <- [manifestDescriptorDigest descriptor]
+             ] of
             digest : _ ->
                 Right (renderDigestedImageRef imageRef digest)
             [] ->
@@ -1494,15 +2293,15 @@ ensureDockerBuildxBuilder repoRoot = do
         captureToolOutput
             repoRoot
             "docker"
-            [ "buildx",
-              "create",
-              "--name",
-              buildxBuilderName,
-              "--driver",
-              "docker-container",
-              "--driver-opt",
-              "network=host",
-              "--use"
+            [ "buildx"
+            , "create"
+            , "--name"
+            , buildxBuilderName
+            , "--driver"
+            , "docker-container"
+            , "--driver-opt"
+            , "network=host"
+            , "--use"
             ]
     case createResult of
         Left err -> failWith err
@@ -1520,21 +2319,21 @@ ensureDockerBuildxBuilder repoRoot = do
         runSequentially
             [ runCommand
                 CommandSpec
-                    { commandPath = "docker",
-                      commandArguments = ["buildx", "use", buildxBuilderName],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    },
-              bootstrapBuilder
+                    { commandPath = "docker"
+                    , commandArguments = ["buildx", "use", buildxBuilderName]
+                    , commandEnvironment = Nothing
+                    , commandWorkingDirectory = Just repoRoot
+                    }
+            , bootstrapBuilder
             ]
 
     bootstrapBuilder =
         runCommand
             CommandSpec
-                { commandPath = "docker",
-                  commandArguments = ["buildx", "inspect", "--bootstrap", buildxBuilderName],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "docker"
+                , commandArguments = ["buildx", "inspect", "--bootstrap", buildxBuilderName]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
                 }
 
 buildxBuilderAlreadyExists :: String -> Bool
@@ -1574,8 +2373,8 @@ manifestPlatforms manifest =
         case rawImageManifestManifests manifest of
             Just descriptors ->
                 [ (manifestPlatformOs platform, manifestPlatformArchitecture platform)
-                | descriptor <- descriptors,
-                  Just platform <- [manifestDescriptorPlatform descriptor]
+                | descriptor <- descriptors
+                , Just platform <- [manifestDescriptorPlatform descriptor]
                 ]
             Nothing ->
                 case (rawImageManifestOs manifest, rawImageManifestArchitecture manifest) of
@@ -1612,17 +2411,17 @@ importImageIntoRke2Containerd repoRoot imageRef = do
                 runSequentially
                     [ runCommand
                         CommandSpec
-                            { commandPath = "docker",
-                              commandArguments = ["save", "-o", archivePath, imageRef],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
-                            },
-                      runCommand
+                            { commandPath = "docker"
+                            , commandArguments = ["save", "-o", archivePath, imageRef]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Just repoRoot
+                            }
+                    , runCommand
                         CommandSpec
-                            { commandPath = "sudo",
-                              commandArguments = ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "import", archivePath],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
+                            { commandPath = "sudo"
+                            , commandArguments = ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "import", archivePath]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Just repoRoot
                             }
                     ]
 
@@ -1643,12 +2442,12 @@ ensureRke2RegistriesConfig repoRoot = do
                                 runSequentially
                                     [ runCommand
                                         CommandSpec
-                                            { commandPath = "sudo",
-                                              commandArguments = ["systemctl", "restart", rke2ServiceName],
-                                              commandEnvironment = Nothing,
-                                              commandWorkingDirectory = Just repoRoot
-                                            },
-                                      verifyClusterInfo repoRoot
+                                            { commandPath = "sudo"
+                                            , commandArguments = ["systemctl", "restart", rke2ServiceName]
+                                            , commandEnvironment = Nothing
+                                            , commandWorkingDirectory = Just repoRoot
+                                            }
+                                    , verifyClusterInfo repoRoot
                                     ]
 
 deleteRke2ClusterSubstrate :: FilePath -> IO ExitCode
@@ -1678,12 +2477,12 @@ deleteRke2ClusterSubstrate repoRoot = do
                             ["systemctl", "disable", "--now", rke2ServiceName]
                     cleanupExit <-
                         runCommand
-                        CommandSpec
-                            { commandPath = "sudo",
-                              commandArguments = ["rm", "-rf", "/var/lib/rancher/rke2", "/var/lib/rancher", "/etc/rancher/rke2", "/usr/local/bin/rke2", "/usr/local/bin/rke2-killall.sh", "/usr/local/bin/rke2-uninstall.sh"],
-                              commandEnvironment = Nothing,
-                              commandWorkingDirectory = Just repoRoot
-                            }
+                            CommandSpec
+                                { commandPath = "sudo"
+                                , commandArguments = ["rm", "-rf", "/var/lib/rancher/rke2", "/var/lib/rancher", "/etc/rancher/rke2", "/usr/local/bin/rke2", "/usr/local/bin/rke2-killall.sh", "/usr/local/bin/rke2-uninstall.sh"]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
                     case cleanupExit of
                         ExitFailure _ -> pure cleanupExit
                         ExitSuccess -> reportDeleteStep "Local RKE2 substrate" "cleanup complete"
@@ -1703,18 +2502,18 @@ removeCalicoEndpointStatusResidue = do
                 Right fileNames ->
                     let matchingPaths =
                             [ endpointStatusRoot </> fileName
-                            | fileName <- fileNames,
-                              "rke2" `isInfixOf` fileName
+                            | fileName <- fileNames
+                            , "rke2" `isInfixOf` fileName
                             ]
                      in if null matchingPaths
                             then pure ExitSuccess
                             else
                                 runCommand
                                     CommandSpec
-                                        { commandPath = "sudo",
-                                          commandArguments = ["rm", "-f"] ++ matchingPaths,
-                                          commandEnvironment = Nothing,
-                                          commandWorkingDirectory = Nothing
+                                        { commandPath = "sudo"
+                                        , commandArguments = ["rm", "-f"] ++ matchingPaths
+                                        , commandEnvironment = Nothing
+                                        , commandWorkingDirectory = Nothing
                                         }
 
 removeManagedKubeconfig :: IO ExitCode
@@ -1808,74 +2607,74 @@ ensureHostStoragePath repoRoot hostPath =
     runSequentially
         [ runCommand
             CommandSpec
-                { commandPath = "sudo",
-                  commandArguments = ["mkdir", "-p", hostPath],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
-                },
-          runCommand
+                { commandPath = "sudo"
+                , commandArguments = ["mkdir", "-p", hostPath]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+        , runCommand
             CommandSpec
-                { commandPath = "sudo",
-                  commandArguments = ["chown", "-R", "1000:1000", hostPath],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
-                },
-          runCommand
+                { commandPath = "sudo"
+                , commandArguments = ["chown", "-R", "1000:1000", hostPath]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+        , runCommand
             CommandSpec
-                { commandPath = "sudo",
-                  commandArguments = ["chmod", "0770", hostPath],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "sudo"
+                , commandArguments = ["chmod", "0770", hostPath]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
                 }
         ]
 
 storageManifestItems :: FilePath -> String -> String -> String -> [Value]
 storageManifestItems hostPath nodeName prodboxId labelValue =
     [ object
-        [ "apiVersion" .= ("storage.k8s.io/v1" :: String),
-          "kind" .= ("StorageClass" :: String),
-          "metadata"
+        [ "apiVersion" .= ("storage.k8s.io/v1" :: String)
+        , "kind" .= ("StorageClass" :: String)
+        , "metadata"
             .= object
-                [ "name" .= manualStorageClass,
-                  "annotations"
-                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId],
-                  "labels"
+                [ "name" .= manualStorageClass
+                , "annotations"
+                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels"
                     .= object [Key.fromString prodboxLabelKey .= labelValue]
-                ],
-          "provisioner" .= ("kubernetes.io/no-provisioner" :: String),
-          "volumeBindingMode" .= ("WaitForFirstConsumer" :: String),
-          "reclaimPolicy" .= ("Retain" :: String),
-          "allowVolumeExpansion" .= True
-        ],
-      object
-        [ "apiVersion" .= ("v1" :: String),
-          "kind" .= ("PersistentVolume" :: String),
-          "metadata"
+                ]
+        , "provisioner" .= ("kubernetes.io/no-provisioner" :: String)
+        , "volumeBindingMode" .= ("WaitForFirstConsumer" :: String)
+        , "reclaimPolicy" .= ("Retain" :: String)
+        , "allowVolumeExpansion" .= True
+        ]
+    , object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("PersistentVolume" :: String)
+        , "metadata"
             .= object
-                [ "name" .= minioPersistentVolume,
-                  "annotations"
-                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId],
-                  "labels"
+                [ "name" .= minioPersistentVolume
+                , "annotations"
+                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels"
                     .= object [Key.fromString prodboxLabelKey .= labelValue]
-                ],
-          "spec"
+                ]
+        , "spec"
             .= object
-                [ "capacity" .= object ["storage" .= minioStorageSize],
-                  "volumeMode" .= ("Filesystem" :: String),
-                  "accessModes" .= (["ReadWriteOnce" :: String] :: [String]),
-                  "persistentVolumeReclaimPolicy" .= ("Retain" :: String),
-                  "storageClassName" .= manualStorageClass,
-                  "claimRef"
+                [ "capacity" .= object ["storage" .= minioStorageSize]
+                , "volumeMode" .= ("Filesystem" :: String)
+                , "accessModes" .= (["ReadWriteOnce" :: String] :: [String])
+                , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
+                , "storageClassName" .= manualStorageClass
+                , "claimRef"
                     .= object
-                        [ "namespace" .= minioNamespace,
-                          "name" .= minioPersistentClaim
-                        ],
-                  "hostPath"
+                        [ "namespace" .= minioNamespace
+                        , "name" .= minioPersistentClaim
+                        ]
+                , "hostPath"
                     .= object
-                        [ "path" .= hostPath,
-                          "type" .= ("DirectoryOrCreate" :: String)
-                        ],
-                  "nodeAffinity"
+                        [ "path" .= hostPath
+                        , "type" .= ("DirectoryOrCreate" :: String)
+                        ]
+                , "nodeAffinity"
                     .= object
                         [ "required"
                             .= object
@@ -1883,9 +2682,9 @@ storageManifestItems hostPath nodeName prodboxId labelValue =
                                     .= [ object
                                             [ "matchExpressions"
                                                 .= [ object
-                                                        [ "key" .= ("kubernetes.io/hostname" :: String),
-                                                          "operator" .= ("In" :: String),
-                                                          "values" .= ([nodeName] :: [String])
+                                                        [ "key" .= ("kubernetes.io/hostname" :: String)
+                                                        , "operator" .= ("In" :: String)
+                                                        , "values" .= ([nodeName] :: [String])
                                                         ]
                                                    ]
                                             ]
@@ -1893,26 +2692,26 @@ storageManifestItems hostPath nodeName prodboxId labelValue =
                                 ]
                         ]
                 ]
-        ],
-      object
-        [ "apiVersion" .= ("v1" :: String),
-          "kind" .= ("PersistentVolumeClaim" :: String),
-          "metadata"
+        ]
+    , object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("PersistentVolumeClaim" :: String)
+        , "metadata"
             .= object
-                [ "name" .= minioPersistentClaim,
-                  "namespace" .= minioNamespace,
-                  "annotations"
-                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId],
-                  "labels"
+                [ "name" .= minioPersistentClaim
+                , "namespace" .= minioNamespace
+                , "annotations"
+                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels"
                     .= object [Key.fromString prodboxLabelKey .= labelValue]
-                ],
-          "spec"
+                ]
+        , "spec"
             .= object
-                [ "accessModes" .= (["ReadWriteOnce" :: String] :: [String]),
-                  "volumeMode" .= ("Filesystem" :: String),
-                  "storageClassName" .= manualStorageClass,
-                  "volumeName" .= minioPersistentVolume,
-                  "resources" .= object ["requests" .= object ["storage" .= minioStorageSize]]
+                [ "accessModes" .= (["ReadWriteOnce" :: String] :: [String])
+                , "volumeMode" .= ("Filesystem" :: String)
+                , "storageClassName" .= manualStorageClass
+                , "volumeName" .= minioPersistentVolume
+                , "resources" .= object ["requests" .= object ["storage" .= minioStorageSize]]
                 ]
         ]
     ]
@@ -1930,39 +2729,42 @@ ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue =
   where
     manifest =
         object
-            [ "apiVersion" .= ("v1" :: String),
-              "kind" .= ("List" :: String),
-              "items"
-                .= ([ object
-                        [ "apiVersion" .= ("v1" :: String),
-                          "kind" .= ("Namespace" :: String),
-                          "metadata"
+            [ "apiVersion" .= ("v1" :: String)
+            , "kind" .= ("List" :: String)
+            , "items"
+                .= ( [ object
+                        [ "apiVersion" .= ("v1" :: String)
+                        , "kind" .= ("Namespace" :: String)
+                        , "metadata"
                             .= object
-                                [ "name" .= prodboxNamespace,
-                                  "annotations"
-                                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId],
-                                  "labels"
+                                [ "name" .= prodboxNamespace
+                                , "annotations"
+                                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                                , "labels"
                                     .= object [Key.fromString prodboxLabelKey .= labelValue]
                                 ]
-                        ],
-                     object
-                        [ "apiVersion" .= ("v1" :: String),
-                          "kind" .= ("ConfigMap" :: String),
-                          "metadata"
+                        ]
+                     , object
+                        [ "apiVersion" .= ("v1" :: String)
+                        , "kind" .= ("ConfigMap" :: String)
+                        , "metadata"
                             .= object
-                                [ "name" .= prodboxIdentityConfigMap,
-                                  "namespace" .= prodboxNamespace,
-                                  "annotations"
-                                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId],
-                                  "labels"
+                                [ "name" .= prodboxIdentityConfigMap
+                                , "namespace" .= prodboxNamespace
+                                , "annotations"
+                                    .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                                , "labels"
                                     .= object [Key.fromString prodboxLabelKey .= labelValue]
-                                ],
-                          "data"
-                            .= object
-                                [ "machine_id" .= machineId,
-                                  "prodbox_id" .= prodboxId
                                 ]
-                        ] ] :: [Value])
+                        , "data"
+                            .= object
+                                [ "machine_id" .= machineId
+                                , "prodbox_id" .= prodboxId
+                                ]
+                        ]
+                     ] ::
+                        [Value]
+                   )
             ]
 
 reconcileManagedAnnotations :: FilePath -> String -> String -> IO ExitCode
@@ -1975,8 +2777,8 @@ reconcileManagedAnnotations repoRoot prodboxId labelValue = do
         (Right namespacedResources, Right clusterResources) -> do
             let namespaceActions =
                     concat
-                        [ [ annotateObject repoRoot Nothing ("namespace/" ++ namespace) prodboxId labelValue,
-                            annotateNamespacedResources repoRoot namespace namespacedResources prodboxId labelValue
+                        [ [ annotateObject repoRoot Nothing ("namespace/" ++ namespace) prodboxId labelValue
+                          , annotateNamespacedResources repoRoot namespace namespacedResources prodboxId labelValue
                           ]
                         | namespace <- managedNamespaces
                         ]
@@ -1997,11 +2799,11 @@ listApiResources repoRoot namespaced = do
     outputResult <-
         captureKubectl
             repoRoot
-            [ "api-resources",
-              "--verbs=list",
-              "--namespaced=" ++ map toLower (show namespaced),
-              "-o",
-              "name"
+            [ "api-resources"
+            , "--verbs=list"
+            , "--namespaced=" ++ map toLower (show namespaced)
+            , "-o"
+            , "name"
             ]
     pure $ do
         output <- outputResult
@@ -2010,7 +2812,8 @@ listApiResources repoRoot namespaced = do
                 Left ("Failed to list Kubernetes API resources: " ++ outputDetail output)
             ExitSuccess ->
                 Right
-                    ( filter (`notElem` ephemeralResourceKinds)
+                    ( filter
+                        (`notElem` ephemeralResourceKinds)
                         (nonEmptyLines (processStdout output))
                     )
 
@@ -2026,13 +2829,13 @@ annotateNamespacedResource repoRoot namespace resource prodboxId labelValue = do
     outputResult <-
         captureKubectl
             repoRoot
-            [ "get",
-              resource,
-              "-n",
-              namespace,
-              "-o",
-              "name",
-              "--ignore-not-found=true"
+            [ "get"
+            , resource
+            , "-n"
+            , namespace
+            , "-o"
+            , "name"
+            , "--ignore-not-found=true"
             ]
     case outputResult of
         Left err -> pure (Left err)
@@ -2060,13 +2863,13 @@ annotateClusterResource repoRoot instanceName resource prodboxId labelValue = do
     outputResult <-
         captureKubectl
             repoRoot
-            [ "get",
-              resource,
-              "-l",
-              selector,
-              "-o",
-              "name",
-              "--ignore-not-found=true"
+            [ "get"
+            , resource
+            , "-l"
+            , selector
+            , "-o"
+            , "name"
+            , "--ignore-not-found=true"
             ]
     case outputResult of
         Left err -> pure (Left err)
@@ -2095,8 +2898,8 @@ annotateDoctrineCrds repoRoot prodboxId labelValue = do
                 ExitSuccess ->
                     runEitherActions
                         [ annotateObject repoRoot Nothing ref prodboxId labelValue
-                        | ref <- parseObjectNames (processStdout output),
-                          any (`isInfixOf` dropResourcePrefix ref) doctrineCrdSuffixes
+                        | ref <- parseObjectNames (processStdout output)
+                        , any (`isInfixOf` dropResourcePrefix ref) doctrineCrdSuffixes
                         ]
 
 annotateObject :: FilePath -> Maybe String -> String -> String -> String -> IO (Either String ())
@@ -2113,33 +2916,32 @@ annotateObject repoRoot maybeNamespace objectRef prodboxId labelValue = do
         Right annotateOutput ->
             if shouldIgnoreAnnotationFailure annotateOutput
                 then pure (Right ())
-                else
-                    case processExitCode annotateOutput of
-                        ExitFailure _ -> pure (Left ("annotate " ++ objectRef ++ " failed: " ++ outputDetail annotateOutput))
-                        ExitSuccess -> do
-                            labelResult <-
-                                captureKubectl
-                                    repoRoot
-                                    ( appendNamespaceArgs
-                                        maybeNamespace
-                                        ["label", objectRef, prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
-                                    )
-                            case labelResult of
-                                Left err -> pure (Left err)
-                                Right labelOutput ->
-                                    if shouldIgnoreAnnotationFailure labelOutput
-                                        then pure (Right ())
-                                        else
-                                            case processExitCode labelOutput of
-                                                ExitFailure _ -> pure (Left ("label " ++ objectRef ++ " failed: " ++ outputDetail labelOutput))
-                                                ExitSuccess -> pure (Right ())
+                else case processExitCode annotateOutput of
+                    ExitFailure _ -> pure (Left ("annotate " ++ objectRef ++ " failed: " ++ outputDetail annotateOutput))
+                    ExitSuccess -> do
+                        labelResult <-
+                            captureKubectl
+                                repoRoot
+                                ( appendNamespaceArgs
+                                    maybeNamespace
+                                    ["label", objectRef, prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
+                                )
+                        case labelResult of
+                            Left err -> pure (Left err)
+                            Right labelOutput ->
+                                if shouldIgnoreAnnotationFailure labelOutput
+                                    then pure (Right ())
+                                    else case processExitCode labelOutput of
+                                        ExitFailure _ -> pure (Left ("label " ++ objectRef ++ " failed: " ++ outputDetail labelOutput))
+                                        ExitSuccess -> pure (Right ())
 
 annotateResourceSet :: FilePath -> Maybe String -> String -> Maybe String -> String -> String -> IO (Either String ())
 annotateResourceSet repoRoot maybeNamespace resource maybeSelector prodboxId labelValue = do
     annotateResult <-
         captureKubectl
             repoRoot
-            ( appendNamespaceArgs maybeNamespace
+            ( appendNamespaceArgs
+                maybeNamespace
                 ( ["annotate", resource]
                     ++ resourceSelectionArgs maybeSelector
                     ++ [prodboxAnnotationKey ++ "=" ++ prodboxId, "--overwrite"]
@@ -2150,28 +2952,27 @@ annotateResourceSet repoRoot maybeNamespace resource maybeSelector prodboxId lab
         Right annotateOutput ->
             if shouldIgnoreAnnotationFailure annotateOutput
                 then pure (Right ())
-                else
-                    case processExitCode annotateOutput of
-                        ExitFailure _ -> pure (Left ("annotate " ++ resource ++ " failed: " ++ outputDetail annotateOutput))
-                        ExitSuccess -> do
-                            labelResult <-
-                                captureKubectl
-                                    repoRoot
-                                    ( appendNamespaceArgs maybeNamespace
-                                        ( ["label", resource]
-                                            ++ resourceSelectionArgs maybeSelector
-                                            ++ [prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
-                                        )
+                else case processExitCode annotateOutput of
+                    ExitFailure _ -> pure (Left ("annotate " ++ resource ++ " failed: " ++ outputDetail annotateOutput))
+                    ExitSuccess -> do
+                        labelResult <-
+                            captureKubectl
+                                repoRoot
+                                ( appendNamespaceArgs
+                                    maybeNamespace
+                                    ( ["label", resource]
+                                        ++ resourceSelectionArgs maybeSelector
+                                        ++ [prodboxLabelKey ++ "=" ++ labelValue, "--overwrite"]
                                     )
-                            case labelResult of
-                                Left err -> pure (Left err)
-                                Right labelOutput ->
-                                    if shouldIgnoreAnnotationFailure labelOutput
-                                        then pure (Right ())
-                                        else
-                                            case processExitCode labelOutput of
-                                                ExitFailure _ -> pure (Left ("label " ++ resource ++ " failed: " ++ outputDetail labelOutput))
-                                                ExitSuccess -> pure (Right ())
+                                )
+                        case labelResult of
+                            Left err -> pure (Left err)
+                            Right labelOutput ->
+                                if shouldIgnoreAnnotationFailure labelOutput
+                                    then pure (Right ())
+                                    else case processExitCode labelOutput of
+                                        ExitFailure _ -> pure (Left ("label " ++ resource ++ " failed: " ++ outputDetail labelOutput))
+                                        ExitSuccess -> pure (Right ())
 
 appendNamespaceArgs :: Maybe String -> [String] -> [String]
 appendNamespaceArgs Nothing args = args
@@ -2196,10 +2997,10 @@ captureKubectl repoRoot arguments = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "kubectl",
-                  commandArguments = arguments,
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = "kubectl"
+                , commandArguments = arguments
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
                 }
     pure $
         case result of
@@ -2211,10 +3012,10 @@ captureToolOutput repoRoot toolName arguments = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = toolName,
-                  commandArguments = arguments,
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Just repoRoot
+                { commandPath = toolName
+                , commandArguments = arguments
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
                 }
     pure $
         case result of
@@ -2240,17 +3041,17 @@ writeRootFile repoRoot path contents =
         runSequentially
             [ runCommand
                 CommandSpec
-                    { commandPath = "sudo",
-                      commandArguments = ["mkdir", "-p", takeDirectory path],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
-                    },
-              runCommand
+                    { commandPath = "sudo"
+                    , commandArguments = ["mkdir", "-p", takeDirectory path]
+                    , commandEnvironment = Nothing
+                    , commandWorkingDirectory = Just repoRoot
+                    }
+            , runCommand
                 CommandSpec
-                    { commandPath = "sudo",
-                      commandArguments = ["cp", tempPath, path],
-                      commandEnvironment = Nothing,
-                      commandWorkingDirectory = Just repoRoot
+                    { commandPath = "sudo"
+                    , commandArguments = ["cp", tempPath, path]
+                    , commandEnvironment = Nothing
+                    , commandWorkingDirectory = Just repoRoot
                     }
             ]
 
@@ -2258,15 +3059,16 @@ withTemporaryTextFile :: String -> String -> (FilePath -> IO ExitCode) -> IO Exi
 withTemporaryTextFile prefix contents action = do
     temporaryDirectory <- getTemporaryDirectory
     bracket
-        (do
+        ( do
             (path, handle) <- openTempFile temporaryDirectory prefix
             hClose handle
             writeFile path contents
             pure path
         )
-        (\tempPath -> do
+        ( \tempPath -> do
             _ <- try (removeFile tempPath) :: IO (Either IOException ())
-            pure ())
+            pure ()
+        )
         action
 
 withTemporaryJsonManifest :: String -> [Value] -> (FilePath -> IO ExitCode) -> IO ExitCode
@@ -2277,15 +3079,16 @@ withTemporaryJsonBytes :: String -> BL.ByteString -> (FilePath -> IO ExitCode) -
 withTemporaryJsonBytes prefix contents action = do
     temporaryDirectory <- getTemporaryDirectory
     bracket
-        (do
+        ( do
             (path, handle) <- openTempFile temporaryDirectory prefix
             hClose handle
             BL.writeFile path contents
             pure path
         )
-        (\tempPath -> do
+        ( \tempPath -> do
             _ <- try (removeFile tempPath) :: IO (Either IOException ())
-            pure ())
+            pure ()
+        )
         action
 
 currentOwnerSpec :: FilePath -> IO (Either String String)
@@ -2310,9 +3113,10 @@ resolveMachineIdentity = do
                 let machineId = map toLower (trimWhitespace rawMachineId)
                  in if machineId == ""
                         then Left "/etc/machine-id is empty"
-                        else if length machineId /= 32 || any (not . isHexDigit) machineId
-                            then Left ("Unexpected machine-id format in /etc/machine-id: " ++ show machineId)
-                            else Right (machineId, "prodbox-" ++ machineId)
+                        else
+                            if length machineId /= 32 || any (not . isHexDigit) machineId
+                                then Left ("Unexpected machine-id format in /etc/machine-id: " ++ show machineId)
+                                else Right (machineId, "prodbox-" ++ machineId)
 
 prodboxIdToLabelValue :: String -> String
 prodboxIdToLabelValue = take 63
@@ -2328,9 +3132,10 @@ resolveContainerdSocket = do
             pure $
                 if k3sExists
                     then Right "/run/k3s/containerd/containerd.sock"
-                    else if rke2Exists
-                        then Right "/run/rke2/containerd/containerd.sock"
-                        else Left "RKE2 containerd socket not found at expected paths: /run/k3s/containerd/containerd.sock, /run/rke2/containerd/containerd.sock"
+                    else
+                        if rke2Exists
+                            then Right "/run/rke2/containerd/containerd.sock"
+                            else Left "RKE2 containerd socket not found at expected paths: /run/k3s/containerd/containerd.sock, /run/rke2/containerd/containerd.sock"
 
 renderIngressControllerConfig :: String -> String -> String
 renderIngressControllerConfig existingContent controller =
@@ -2350,16 +3155,16 @@ renderIngressControllerConfig existingContent controller =
 renderRke2RegistriesYaml :: String
 renderRke2RegistriesYaml =
     unlines
-        [ "mirrors:",
-          "  docker.io:",
-          "    endpoint:",
-          "      - \"http://" ++ harborRegistryEndpoint ++ "\"",
-          "    rewrite:",
-          "      \"^(.*)$\": \"prodbox/$1\"",
-          "configs:",
-          "  \"" ++ harborRegistryEndpoint ++ "\":",
-          "    tls:",
-          "      insecure_skip_verify: true"
+        [ "mirrors:"
+        , "  docker.io:"
+        , "    endpoint:"
+        , "      - \"http://" ++ harborRegistryEndpoint ++ "\""
+        , "    rewrite:"
+        , "      \"^(.*)$\": \"prodbox/$1\""
+        , "configs:"
+        , "  \"" ++ harborRegistryEndpoint ++ "\":"
+        , "    tls:"
+        , "      insecure_skip_verify: true"
         ]
 
 renderHarborNginxReadyzConfig :: String -> Maybe String
@@ -2371,11 +3176,11 @@ renderHarborNginxReadyzConfig nginxConf
             (before, rootLine : after) ->
                 let indent = takeWhile isSpace rootLine
                     readyLines =
-                        [ indent ++ "location = " ++ harborReadyPath ++ " {",
-                          indent ++ "  access_log off;",
-                          indent ++ "  return 200 \"ok\\n\";",
-                          indent ++ "}",
-                          ""
+                        [ indent ++ "location = " ++ harborReadyPath ++ " {"
+                        , indent ++ "  access_log off;"
+                        , indent ++ "  return 200 \"ok\\n\";"
+                        , indent ++ "}"
+                        , ""
                         ]
                  in Just (unlines (before ++ readyLines ++ (rootLine : after)))
   where
@@ -2403,10 +3208,10 @@ stripPrefix prefix value =
 parseObjectNames :: String -> [String]
 parseObjectNames stdoutText =
     [ line
-    | rawLine <- lines stdoutText,
-      let line = trimWhitespace rawLine,
-      line /= "",
-      '/' `elem` line
+    | rawLine <- lines stdoutText
+    , let line = trimWhitespace rawLine
+    , line /= ""
+    , '/' `elem` line
     ]
 
 dropResourcePrefix :: String -> String

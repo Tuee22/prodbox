@@ -52,8 +52,8 @@ spec:
             - name: KC_DB_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: keycloak-runtime
-                  key: KC_DB_PASSWORD
+                  name: {{ .Values.postgres.passwordSecretName | quote }}
+                  key: password
             - name: KEYCLOAK_ADMIN
               valueFrom:
                 secretKeyRef:

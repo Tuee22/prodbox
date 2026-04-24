@@ -1,0 +1,4 @@
+indentation = 2
+column-limit = 100
+comma-style = "leading"
+import-export-style = "leading"

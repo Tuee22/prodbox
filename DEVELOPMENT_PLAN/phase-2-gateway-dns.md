@@ -101,6 +101,9 @@ container doctrine.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox dns check`, `./.build/prodbox tla-check`,
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
 ### Remaining Work
 
 None.
@@ -138,6 +141,9 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
   failover behavior.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to an executable
   native validation flow in `src/Prodbox/TestValidation.hs`.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox tla-check`,
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all`, which re-exercised
+  the gateway partition and pod validations under the aggregate native suites.
 
 ### Remaining Work
 

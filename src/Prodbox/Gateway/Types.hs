@@ -1,52 +1,49 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Gateway.Types
-    ( PeerEndpoint (..),
-      GatewayRule (..),
-      Orders (..),
-      SignedEvent (..),
-      CommitLog (..),
-      DaemonConfig (..),
-      DnsWriteGate (..),
-      ChannelName (..),
-      ConnectionKey (..),
-      emptyCommitLog,
-      appendIfNew,
-      sortedEvents,
-      latestTimestamp,
-      parseDaemonConfig,
-      parseOrders,
-      peerDialRestHost,
-      peerRestUrl,
-      peerDialSocketHost,
-    )
+module Prodbox.Gateway.Types (
+    PeerEndpoint (..),
+    GatewayRule (..),
+    Orders (..),
+    SignedEvent (..),
+    CommitLog (..),
+    DaemonConfig (..),
+    DnsWriteGate (..),
+    ChannelName (..),
+    ConnectionKey (..),
+    emptyCommitLog,
+    appendIfNew,
+    sortedEvents,
+    latestTimestamp,
+    parseDaemonConfig,
+    parseOrders,
+    peerDialRestHost,
+    peerRestUrl,
+    peerDialSocketHost,
+)
 where
 
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-      encode,
-      object,
-      (.=),
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import Data.List (nub, sort, sortBy)
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+ )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.List (nub, sortBy)
 import Data.Ord (comparing)
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
 
 data ChannelName = MeshChannel | GatewayChannel
     deriving (Eq, Ord, Show)
 
 data PeerEndpoint = PeerEndpoint
-    { peerNodeId :: String,
-      peerStableDnsName :: String,
-      peerRestHost :: String,
-      peerRestPort :: Int,
-      peerSocketHost :: String,
-      peerSocketPort :: Int
+    { peerNodeId :: String
+    , peerStableDnsName :: String
+    , peerRestHost :: String
+    , peerRestPort :: Int
+    , peerSocketHost :: String
+    , peerSocketPort :: Int
     }
     deriving (Eq, Show)
 
@@ -67,37 +64,25 @@ peerDialSocketHost peer =
         else peerSocketHost peer
 
 data GatewayRule = GatewayRule
-    { rankedNodes :: [String],
-      heartbeatTimeoutSeconds :: Int
+    { rankedNodes :: [String]
+    , heartbeatTimeoutSeconds :: Int
     }
     deriving (Eq, Show)
-
-isolationTimeoutSeconds :: GatewayRule -> Int
-isolationTimeoutSeconds = heartbeatTimeoutSeconds
 
 data Orders = Orders
-    { ordersVersionUtc :: Int,
-      ordersNodes :: [PeerEndpoint],
-      ordersGatewayRule :: GatewayRule
+    { ordersVersionUtc :: Int
+    , ordersNodes :: [PeerEndpoint]
+    , ordersGatewayRule :: GatewayRule
     }
     deriving (Eq, Show)
 
-ordersPeerById :: Orders -> String -> Maybe PeerEndpoint
-ordersPeerById orders nodeId =
-    case filter (\n -> peerNodeId n == nodeId) (ordersNodes orders) of
-        [node] -> Just node
-        _ -> Nothing
-
-ordersNodeIds :: Orders -> [String]
-ordersNodeIds orders = map peerNodeId (ordersNodes orders)
-
 data SignedEvent = SignedEvent
-    { eventHash :: String,
-      emitterNodeId :: String,
-      timestampUtc :: String,
-      eventType :: String,
-      payloadJson :: String,
-      signatureHex :: String
+    { eventHash :: String
+    , emitterNodeId :: String
+    , timestampUtc :: String
+    , eventType :: String
+    , payloadJson :: String
+    , signatureHex :: String
     }
     deriving (Eq, Show)
 
@@ -126,30 +111,30 @@ latestTimestamp commitLog =
         events -> Just (maximum (map timestampUtc events))
 
 data DnsWriteGate = DnsWriteGate
-    { dnsWriteGateZoneId :: String,
-      dnsWriteGateFqdn :: String,
-      dnsWriteGateTtl :: Int,
-      dnsWriteGateAwsRegion :: String
+    { dnsWriteGateZoneId :: String
+    , dnsWriteGateFqdn :: String
+    , dnsWriteGateTtl :: Int
+    , dnsWriteGateAwsRegion :: String
     }
     deriving (Eq, Show)
 
 data DaemonConfig = DaemonConfig
-    { daemonNodeId :: String,
-      daemonCertFile :: FilePath,
-      daemonKeyFile :: FilePath,
-      daemonCaFile :: FilePath,
-      daemonOrdersFile :: FilePath,
-      daemonEventKeys :: [(String, String)],
-      daemonHeartbeatInterval :: Double,
-      daemonReconnectInterval :: Double,
-      daemonSyncInterval :: Double,
-      daemonDnsWriteGate :: Maybe DnsWriteGate
+    { daemonNodeId :: String
+    , daemonCertFile :: FilePath
+    , daemonKeyFile :: FilePath
+    , daemonCaFile :: FilePath
+    , daemonOrdersFile :: FilePath
+    , daemonEventKeys :: [(String, String)]
+    , daemonHeartbeatInterval :: Double
+    , daemonReconnectInterval :: Double
+    , daemonSyncInterval :: Double
+    , daemonDnsWriteGate :: Maybe DnsWriteGate
     }
     deriving (Eq, Show)
 
 data ConnectionKey = ConnectionKey
-    { connectionKeyPeerNodeId :: String,
-      connectionKeyChannel :: ChannelName
+    { connectionKeyPeerNodeId :: String
+    , connectionKeyChannel :: ChannelName
     }
     deriving (Eq, Ord, Show)
 
@@ -171,16 +156,16 @@ parseDaemonConfig jsonText =
             validateIntervals heartbeat reconnect sync
             Right
                 DaemonConfig
-                    { daemonNodeId = nodeId,
-                      daemonCertFile = certFile,
-                      daemonKeyFile = keyFile,
-                      daemonCaFile = caFile,
-                      daemonOrdersFile = ordersFile,
-                      daemonEventKeys = eventKeys,
-                      daemonHeartbeatInterval = heartbeat,
-                      daemonReconnectInterval = reconnect,
-                      daemonSyncInterval = sync,
-                      daemonDnsWriteGate = dnsGate
+                    { daemonNodeId = nodeId
+                    , daemonCertFile = certFile
+                    , daemonKeyFile = keyFile
+                    , daemonCaFile = caFile
+                    , daemonOrdersFile = ordersFile
+                    , daemonEventKeys = eventKeys
+                    , daemonHeartbeatInterval = heartbeat
+                    , daemonReconnectInterval = reconnect
+                    , daemonSyncInterval = sync
+                    , daemonDnsWriteGate = dnsGate
                     }
         Right _ -> Left "daemon config must be a JSON object"
 
@@ -200,9 +185,9 @@ parseOrders jsonText =
                         then
                             Right
                                 Orders
-                                    { ordersVersionUtc = versionUtc,
-                                      ordersNodes = nodes,
-                                      ordersGatewayRule = rule
+                                    { ordersVersionUtc = versionUtc
+                                    , ordersNodes = nodes
+                                    , ordersGatewayRule = rule
                                     }
                         else Left "gateway_rule.ranked_nodes must be a subset of orders.nodes.node_id"
         Right _ -> Left "orders must be a JSON object"
@@ -251,10 +236,10 @@ parseDnsWriteGate obj =
             Right
                 ( Just
                     DnsWriteGate
-                        { dnsWriteGateZoneId = zoneId,
-                          dnsWriteGateFqdn = fqdn,
-                          dnsWriteGateTtl = round ttl,
-                          dnsWriteGateAwsRegion = awsRegion
+                        { dnsWriteGateZoneId = zoneId
+                        , dnsWriteGateFqdn = fqdn
+                        , dnsWriteGateTtl = round ttl
+                        , dnsWriteGateAwsRegion = awsRegion
                         }
                 )
         _ -> Left "dns_write_gate must be a JSON object or null"
@@ -264,8 +249,8 @@ rejectForbiddenCredKeys obj =
     let forbidden = ["aws_access_key_id", "aws_secret_access_key", "aws_session_token"]
         present =
             [ key
-            | key <- forbidden,
-              case KeyMap.lookup (Key.fromString key) obj of
+            | key <- forbidden
+            , case KeyMap.lookup (Key.fromString key) obj of
                 Just (String text) -> not (Text.null text)
                 _ -> False
             ]
@@ -289,12 +274,12 @@ parseNode (Object obj) = do
     socketPort <- requireInt obj "socket_port"
     Right
         PeerEndpoint
-            { peerNodeId = nodeId,
-              peerStableDnsName = stableDnsName,
-              peerRestHost = restHost,
-              peerRestPort = restPort,
-              peerSocketHost = socketHost,
-              peerSocketPort = socketPort
+            { peerNodeId = nodeId
+            , peerStableDnsName = stableDnsName
+            , peerRestHost = restHost
+            , peerRestPort = restPort
+            , peerSocketHost = socketHost
+            , peerSocketPort = socketPort
             }
 parseNode _ = Left "orders.nodes entries must be objects"
 
@@ -326,8 +311,8 @@ parseGatewayRule obj =
                                 else
                                     Right
                                         GatewayRule
-                                            { rankedNodes = rankedNodesList,
-                                              heartbeatTimeoutSeconds = timeoutValue
+                                            { rankedNodes = rankedNodesList
+                                            , heartbeatTimeoutSeconds = timeoutValue
                                             }
         _ -> Left "orders.gateway_rule must be an object"
 

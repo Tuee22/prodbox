@@ -1,59 +1,59 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Infra.AwsEksTestStack
-    ( AwsEksTestStackSnapshot (..),
-      awsEksTestStackName,
-      ensureAwsEksTestStackResources,
-      destroyAwsEksTestStack,
-      loadAwsEksTestStackSnapshot,
-      saveAwsEksTestStackSnapshot,
-      clearAwsEksTestStackSnapshot,
-      assertNoAwsEksTestStackResidue,
-      renderAwsEksTestStackReport,
-    )
+module Prodbox.Infra.AwsEksTestStack (
+    AwsEksTestStackSnapshot (..),
+    awsEksTestStackName,
+    ensureAwsEksTestStackResources,
+    destroyAwsEksTestStack,
+    loadAwsEksTestStackSnapshot,
+    saveAwsEksTestStackSnapshot,
+    clearAwsEksTestStackSnapshot,
+    assertNoAwsEksTestStackResidue,
+    renderAwsEksTestStackReport,
+)
 where
 
 import Control.Monad (foldM, forM)
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+    encode,
+    object,
+    (.=),
+ )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy qualified as BL
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (isAsciiUpper, toLower)
 import Data.List (isInfixOf)
-import Data.Char (toLower)
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-      encode,
-      object,
-      (.=),
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy as BL
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import qualified Data.Text as Text
-import qualified Data.Vector as Vector
-import Prodbox.Infra.MinioBackend
-    ( bucketObjectCount,
-      ensureMinioBackendBucket,
-      pulumiBackendUrl,
-      readMinioCredentials,
-      withMinioPortForward,
-    )
+import Data.Text qualified as Text
+import Data.Vector qualified as Vector
+import Prodbox.Infra.MinioBackend (
+    bucketObjectCount,
+    ensureMinioBackendBucket,
+    pulumiBackendUrl,
+    readMinioCredentials,
+    withMinioPortForward,
+ )
 import Prodbox.Result (Result (..))
-import Prodbox.Settings
-    ( Credentials (..),
-      ValidatedSettings (..),
-      aws,
-      validateAndLoadSettings,
-    )
-import Prodbox.Subprocess
-    ( CommandSpec (..),
-      ProcessOutput (..),
-      captureCommand,
-      runStreamingCommand,
-    )
-import System.Directory
-    ( createDirectoryIfMissing,
-      doesFileExist,
-      removeFile,
-    )
+import Prodbox.Settings (
+    Credentials (..),
+    ValidatedSettings (..),
+    aws,
+    validateAndLoadSettings,
+ )
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+    runStreamingCommand,
+ )
+import System.Directory (
+    createDirectoryIfMissing,
+    doesFileExist,
+    removeFile,
+ )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -72,15 +72,15 @@ awsEksTestSnapshotPath :: FilePath -> FilePath
 awsEksTestSnapshotPath repoRoot = awsEksTestStateDir repoRoot </> "stack-snapshot.json"
 
 data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
-    { eksSnapshotStackName :: String,
-      eksSnapshotBackendBucket :: String,
-      eksSnapshotClusterName :: String,
-      eksSnapshotClusterRoleName :: String,
-      eksSnapshotNodeGroupName :: String,
-      eksSnapshotNodeRoleName :: String,
-      eksSnapshotVpcId :: String,
-      eksSnapshotSubnetIds :: [String],
-      eksSnapshotClusterSecurityGroupId :: String
+    { eksSnapshotStackName :: String
+    , eksSnapshotBackendBucket :: String
+    , eksSnapshotClusterName :: String
+    , eksSnapshotClusterRoleName :: String
+    , eksSnapshotNodeGroupName :: String
+    , eksSnapshotNodeRoleName :: String
+    , eksSnapshotVpcId :: String
+    , eksSnapshotSubnetIds :: [String]
+    , eksSnapshotClusterSecurityGroupId :: String
     }
     deriving (Eq, Show)
 
@@ -119,15 +119,15 @@ clearAwsEksTestStackSnapshot repoRoot = do
 snapshotToJson :: AwsEksTestStackSnapshot -> Value
 snapshotToJson snapshot =
     object
-        [ "stack_name" .= eksSnapshotStackName snapshot,
-          "backend_bucket" .= eksSnapshotBackendBucket snapshot,
-          "cluster_name" .= eksSnapshotClusterName snapshot,
-          "cluster_role_name" .= eksSnapshotClusterRoleName snapshot,
-          "node_group_name" .= eksSnapshotNodeGroupName snapshot,
-          "node_role_name" .= eksSnapshotNodeRoleName snapshot,
-          "vpc_id" .= eksSnapshotVpcId snapshot,
-          "subnet_ids" .= eksSnapshotSubnetIds snapshot,
-          "cluster_security_group_id" .= eksSnapshotClusterSecurityGroupId snapshot
+        [ "stack_name" .= eksSnapshotStackName snapshot
+        , "backend_bucket" .= eksSnapshotBackendBucket snapshot
+        , "cluster_name" .= eksSnapshotClusterName snapshot
+        , "cluster_role_name" .= eksSnapshotClusterRoleName snapshot
+        , "node_group_name" .= eksSnapshotNodeGroupName snapshot
+        , "node_role_name" .= eksSnapshotNodeRoleName snapshot
+        , "vpc_id" .= eksSnapshotVpcId snapshot
+        , "subnet_ids" .= eksSnapshotSubnetIds snapshot
+        , "cluster_security_group_id" .= eksSnapshotClusterSecurityGroupId snapshot
         ]
 
 snapshotFromJson :: Value -> Either String AwsEksTestStackSnapshot
@@ -143,15 +143,15 @@ snapshotFromJson (Object obj) = do
     clusterSecurityGroupId <- requireString obj "cluster_security_group_id"
     Right
         AwsEksTestStackSnapshot
-            { eksSnapshotStackName = stackName,
-              eksSnapshotBackendBucket = backendBucket,
-              eksSnapshotClusterName = clusterName,
-              eksSnapshotClusterRoleName = clusterRoleName,
-              eksSnapshotNodeGroupName = nodeGroupName,
-              eksSnapshotNodeRoleName = nodeRoleName,
-              eksSnapshotVpcId = vpcId,
-              eksSnapshotSubnetIds = subnetIds,
-              eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
+            { eksSnapshotStackName = stackName
+            , eksSnapshotBackendBucket = backendBucket
+            , eksSnapshotClusterName = clusterName
+            , eksSnapshotClusterRoleName = clusterRoleName
+            , eksSnapshotNodeGroupName = nodeGroupName
+            , eksSnapshotNodeRoleName = nodeRoleName
+            , eksSnapshotVpcId = vpcId
+            , eksSnapshotSubnetIds = subnetIds
+            , eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
             }
 snapshotFromJson _ = Left "snapshot must be a JSON object"
 
@@ -167,15 +167,15 @@ snapshotFromOutputs (Object obj) = do
     clusterSecurityGroupId <- requireString obj "cluster_security_group_id"
     Right
         AwsEksTestStackSnapshot
-            { eksSnapshotStackName = awsEksTestStackName,
-              eksSnapshotBackendBucket = backendBucket,
-              eksSnapshotClusterName = clusterName,
-              eksSnapshotClusterRoleName = clusterRoleName,
-              eksSnapshotNodeGroupName = nodeGroupName,
-              eksSnapshotNodeRoleName = nodeRoleName,
-              eksSnapshotVpcId = vpcId,
-              eksSnapshotSubnetIds = subnetIds,
-              eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
+            { eksSnapshotStackName = awsEksTestStackName
+            , eksSnapshotBackendBucket = backendBucket
+            , eksSnapshotClusterName = clusterName
+            , eksSnapshotClusterRoleName = clusterRoleName
+            , eksSnapshotNodeGroupName = nodeGroupName
+            , eksSnapshotNodeRoleName = nodeRoleName
+            , eksSnapshotVpcId = vpcId
+            , eksSnapshotSubnetIds = subnetIds
+            , eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
             }
 snapshotFromOutputs _ = Left "pulumi output must be a JSON object"
 
@@ -204,16 +204,16 @@ requireStringList obj key =
 renderAwsEksTestStackReport :: AwsEksTestStackSnapshot -> Int -> String
 renderAwsEksTestStackReport snapshot objectCount =
     unlines
-        [ "STACK=" ++ eksSnapshotStackName snapshot,
-          "BACKEND_BUCKET=" ++ eksSnapshotBackendBucket snapshot,
-          "BACKEND_OBJECT_COUNT=" ++ show objectCount,
-          "CLUSTER_NAME=" ++ eksSnapshotClusterName snapshot,
-          "NODE_GROUP_NAME=" ++ eksSnapshotNodeGroupName snapshot,
-          "CLUSTER_ROLE_NAME=" ++ eksSnapshotClusterRoleName snapshot,
-          "NODE_ROLE_NAME=" ++ eksSnapshotNodeRoleName snapshot,
-          "VPC_ID=" ++ eksSnapshotVpcId snapshot,
-          "SUBNET_IDS=" ++ joinComma (eksSnapshotSubnetIds snapshot),
-          "CLUSTER_SECURITY_GROUP_ID=" ++ eksSnapshotClusterSecurityGroupId snapshot
+        [ "STACK=" ++ eksSnapshotStackName snapshot
+        , "BACKEND_BUCKET=" ++ eksSnapshotBackendBucket snapshot
+        , "BACKEND_OBJECT_COUNT=" ++ show objectCount
+        , "CLUSTER_NAME=" ++ eksSnapshotClusterName snapshot
+        , "NODE_GROUP_NAME=" ++ eksSnapshotNodeGroupName snapshot
+        , "CLUSTER_ROLE_NAME=" ++ eksSnapshotClusterRoleName snapshot
+        , "NODE_ROLE_NAME=" ++ eksSnapshotNodeRoleName snapshot
+        , "VPC_ID=" ++ eksSnapshotVpcId snapshot
+        , "SUBNET_IDS=" ++ joinComma (eksSnapshotSubnetIds snapshot)
+        , "CLUSTER_SECURITY_GROUP_ID=" ++ eksSnapshotClusterSecurityGroupId snapshot
         ]
 
 settingsAwsEnv :: FilePath -> IO (Either String [(String, String)])
@@ -225,11 +225,10 @@ settingsAwsEnv repoRoot = do
             baseEnv <- getEnvironment
             let creds = aws (validatedConfig settings)
                 withKeys =
-                    upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id creds))
-                        $ upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key creds))
-                        $ upsertEnv "AWS_REGION" (Text.unpack (region creds))
-                        $ upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region creds))
-                        $ baseEnv
+                    upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id creds)) $
+                        upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key creds)) $
+                            upsertEnv "AWS_REGION" (Text.unpack (region creds)) $
+                                upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region creds)) baseEnv
                 withToken = case session_token creds of
                     Just token -> upsertEnv "AWS_SESSION_TOKEN" (Text.unpack token) withKeys
                     Nothing -> filter ((/= "AWS_SESSION_TOKEN") . fst) withKeys
@@ -240,10 +239,10 @@ fetchPublicIpv4 = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "curl",
-                  commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"],
-                  commandEnvironment = Nothing,
-                  commandWorkingDirectory = Nothing
+                { commandPath = "curl"
+                , commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
                 }
     case result of
         Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
@@ -262,16 +261,16 @@ pulumiEksBaseEnv localPort minioAccessKey minioSecretKey = do
     let path = maybe "" id (lookup "PATH" currentEnv)
         home = maybe "" id (lookup "HOME" currentEnv)
     pure
-        [ ("AWS_ACCESS_KEY_ID", minioAccessKey),
-          ("AWS_SECRET_ACCESS_KEY", minioSecretKey),
-          ("AWS_REGION", "us-east-1"),
-          ("AWS_DEFAULT_REGION", "us-east-1"),
-          ("AWS_EC2_METADATA_DISABLED", "true"),
-          ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort),
-          ("PULUMI_CONFIG_PASSPHRASE", ""),
-          ("PATH", path),
-          ("HOME", home),
-          ("LANG", "C.UTF-8")
+        [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
+        , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
+        , ("AWS_REGION", "us-east-1")
+        , ("AWS_DEFAULT_REGION", "us-east-1")
+        , ("AWS_EC2_METADATA_DISABLED", "true")
+        , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+        , ("PULUMI_CONFIG_PASSPHRASE", "")
+        , ("PATH", path)
+        , ("HOME", home)
+        , ("LANG", "C.UTF-8")
         ]
 
 resolveAwsEksTestStackConfig :: IO (Either String AwsEksTestStackConfig)
@@ -313,14 +312,14 @@ syncAwsProviderConfig repoRoot projectDir environment = do
             foldM runConfigSet ExitSuccess (providerConfigEntries (aws (validatedConfig settings)))
   where
     providerConfigEntries creds =
-        [ (False, "aws:region", Text.unpack (region creds)),
-          (True, "aws:accessKey", Text.unpack (access_key_id creds)),
-          (True, "aws:secretKey", Text.unpack (secret_access_key creds)),
-          (True, "aws:token", maybe "" Text.unpack (session_token creds)),
-          (False, "awsRegion", Text.unpack (region creds)),
-          (True, "awsAccessKeyId", Text.unpack (access_key_id creds)),
-          (True, "awsSecretAccessKey", Text.unpack (secret_access_key creds)),
-          (True, "awsSessionToken", maybe "" Text.unpack (session_token creds))
+        [ (False, "aws:region", Text.unpack (region creds))
+        , (True, "aws:accessKey", Text.unpack (access_key_id creds))
+        , (True, "aws:secretKey", Text.unpack (secret_access_key creds))
+        , (True, "aws:token", maybe "" Text.unpack (session_token creds))
+        , (False, "awsRegion", Text.unpack (region creds))
+        , (True, "awsAccessKeyId", Text.unpack (access_key_id creds))
+        , (True, "awsSecretAccessKey", Text.unpack (secret_access_key creds))
+        , (True, "awsSessionToken", maybe "" Text.unpack (session_token creds))
         ]
 
     runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
@@ -361,10 +360,10 @@ pulumiStackSelect projectDir environment createIfMissing =
                 result <-
                     captureCommand
                         CommandSpec
-                            { commandPath = "pulumi",
-                              commandArguments = arguments,
-                              commandEnvironment = Just environment,
-                              commandWorkingDirectory = Just projectDir
+                            { commandPath = "pulumi"
+                            , commandArguments = arguments
+                            , commandEnvironment = Just environment
+                            , commandWorkingDirectory = Just projectDir
                             }
                 pure $
                     case result of
@@ -402,10 +401,10 @@ pulumiStackOutputs projectDir environment = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = ["stack", "output", "--json", "--stack", awsEksTestStackName],
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just projectDir
+                { commandPath = "pulumi"
+                , commandArguments = ["stack", "output", "--json", "--stack", awsEksTestStackName]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just projectDir
                 }
     case result of
         Failure err -> pure (Left ("failed to run pulumi stack output: " ++ err))
@@ -423,10 +422,10 @@ runPulumiCommand projectDir environment arguments = do
     result <-
         runStreamingCommand
             CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = arguments,
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just projectDir
+                { commandPath = "pulumi"
+                , commandArguments = arguments
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just projectDir
                 }
     case result of
         Failure err -> do
@@ -439,10 +438,10 @@ runPulumiCommandQuiet projectDir environment arguments = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "pulumi",
-                  commandArguments = arguments,
-                  commandEnvironment = Just environment,
-                  commandWorkingDirectory = Just projectDir
+                { commandPath = "pulumi"
+                , commandArguments = arguments
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just projectDir
                 }
     pure $
         case result of
@@ -461,10 +460,10 @@ resourceStillExists repoRoot command = do
             result <-
                 captureCommand
                     CommandSpec
-                        { commandPath = head command,
-                          commandArguments = tail command,
-                          commandEnvironment = Just environment,
-                          commandWorkingDirectory = Nothing
+                        { commandPath = head command
+                        , commandArguments = tail command
+                        , commandEnvironment = Just environment
+                        , commandWorkingDirectory = Nothing
                         }
             case result of
                 Failure err -> pure (Left err)
@@ -480,10 +479,15 @@ resourceStillExists repoRoot command = do
 isResourceMissing :: String -> Bool
 isResourceMissing detail =
     let lowered = map toLowerAscii detail
-     in any (`isSubstring` lowered)
-            [ "notfound", "not found", "does not exist",
-              "invalidgroup.notfound", "invalidsubnetid.notfound",
-              "invalidvpcid.notfound", "nosuchentity"
+     in any
+            (`isSubstring` lowered)
+            [ "notfound"
+            , "not found"
+            , "does not exist"
+            , "invalidgroup.notfound"
+            , "invalidsubnetid.notfound"
+            , "invalidvpcid.notfound"
+            , "nosuchentity"
             ]
 
 isSubstring :: String -> String -> Bool
@@ -499,7 +503,7 @@ allTails s@(_ : rest) = s : allTails rest
 
 toLowerAscii :: Char -> Char
 toLowerAscii c
-    | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
+    | isAsciiUpper c = toEnum (fromEnum c + 32)
     | otherwise = c
 
 assertNoAwsEksTestStackResidue :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO (Either String ())
@@ -521,8 +525,10 @@ assertNoAwsEksTestStackResidue repoRoot maybeSnapshot = do
 checkResidueItems :: FilePath -> AwsEksTestStackSnapshot -> IO (Either String [String])
 checkResidueItems repoRoot snapshot = do
     clusterResult <- resourceStillExists repoRoot ["aws", "eks", "describe-cluster", "--name", eksSnapshotClusterName snapshot]
-    nodeGroupResult <- resourceStillExists repoRoot
-        ["aws", "eks", "describe-nodegroup", "--cluster-name", eksSnapshotClusterName snapshot, "--nodegroup-name", eksSnapshotNodeGroupName snapshot]
+    nodeGroupResult <-
+        resourceStillExists
+            repoRoot
+            ["aws", "eks", "describe-nodegroup", "--cluster-name", eksSnapshotClusterName snapshot, "--nodegroup-name", eksSnapshotNodeGroupName snapshot]
     clusterRoleResult <- resourceStillExists repoRoot ["aws", "iam", "get-role", "--role-name", eksSnapshotClusterRoleName snapshot]
     nodeRoleResult <- resourceStillExists repoRoot ["aws", "iam", "get-role", "--role-name", eksSnapshotNodeRoleName snapshot]
     vpcResult <- resourceStillExists repoRoot ["aws", "ec2", "describe-vpcs", "--vpc-ids", eksSnapshotVpcId snapshot]
@@ -530,15 +536,15 @@ checkResidueItems repoRoot snapshot = do
         resourceStillExists repoRoot ["aws", "ec2", "describe-subnets", "--subnet-ids", subnetId]
     sgResult <- resourceStillExists repoRoot ["aws", "ec2", "describe-security-groups", "--group-ids", eksSnapshotClusterSecurityGroupId snapshot]
     let allResults =
-            [ ("cluster=" ++ eksSnapshotClusterName snapshot, clusterResult),
-              ("node-group=" ++ eksSnapshotNodeGroupName snapshot, nodeGroupResult),
-              ("cluster-role=" ++ eksSnapshotClusterRoleName snapshot, clusterRoleResult),
-              ("node-role=" ++ eksSnapshotNodeRoleName snapshot, nodeRoleResult),
-              ("vpc=" ++ eksSnapshotVpcId snapshot, vpcResult)
+            [ ("cluster=" ++ eksSnapshotClusterName snapshot, clusterResult)
+            , ("node-group=" ++ eksSnapshotNodeGroupName snapshot, nodeGroupResult)
+            , ("cluster-role=" ++ eksSnapshotClusterRoleName snapshot, clusterRoleResult)
+            , ("node-role=" ++ eksSnapshotNodeRoleName snapshot, nodeRoleResult)
+            , ("vpc=" ++ eksSnapshotVpcId snapshot, vpcResult)
             ]
                 ++ zipWith (\sid r -> ("subnet=" ++ sid, r)) (eksSnapshotSubnetIds snapshot) subnetResults
                 ++ [("security-group=" ++ eksSnapshotClusterSecurityGroupId snapshot, sgResult)]
-    case sequence (map snd allResults) of
+    case mapM snd allResults of
         Left err -> pure (Left err)
         Right existsList ->
             pure (Right [label | (label, True) <- zip (map fst allResults) existsList])

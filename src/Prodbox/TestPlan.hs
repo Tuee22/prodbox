@@ -1,20 +1,20 @@
-module Prodbox.TestPlan
-    ( NativeSuitePlan (..),
-      NativeValidation (..),
-      TestExecutionMode (..),
-      TestExecutionPlan (..),
-      nativeValidationId,
-      testExecutionPlan,
-    )
+module Prodbox.TestPlan (
+    NativeSuitePlan (..),
+    NativeValidation (..),
+    TestExecutionMode (..),
+    TestExecutionPlan (..),
+    nativeValidationId,
+    testExecutionPlan,
+)
 where
 
-import Data.List
-    ( nub,
-    )
-import Prodbox.CLI.Command
-    ( IntegrationSuite (..),
-      TestScope (..),
-    )
+import Data.List (
+    nub,
+ )
+import Prodbox.CLI.Command (
+    IntegrationSuite (..),
+    TestScope (..),
+ )
 
 data NativeValidation
     = ValidationChartsVscode
@@ -33,12 +33,12 @@ data NativeValidation
     deriving (Eq, Show)
 
 data NativeSuitePlan = NativeSuitePlan
-    { nativeSuiteId :: String,
-      nativeValidations :: [NativeValidation],
-      nativeIntegrationGatePrerequisites :: [String],
-      nativeRequiresIntegrationRunbook :: Bool,
-      nativeRequiresSupportedRuntimeBootstrap :: Bool,
-      nativeRequiresSupportedRuntimePostflight :: Bool
+    { nativeSuiteId :: String
+    , nativeValidations :: [NativeValidation]
+    , nativeIntegrationGatePrerequisites :: [String]
+    , nativeRequiresIntegrationRunbook :: Bool
+    , nativeRequiresSupportedRuntimeBootstrap :: Bool
+    , nativeRequiresSupportedRuntimePostflight :: Bool
     }
     deriving (Eq, Show)
 
@@ -48,9 +48,9 @@ data TestExecutionMode
     deriving (Eq, Show)
 
 data TestExecutionPlan = TestExecutionPlan
-    { testPlanLabel :: String,
-      testPlanHaskellSuites :: [String],
-      testPlanExecutionMode :: TestExecutionMode
+    { testPlanLabel :: String
+    , testPlanHaskellSuites :: [String]
+    , testPlanExecutionMode :: TestExecutionMode
     }
     deriving (Eq, Show)
 
@@ -60,45 +60,45 @@ testExecutionPlan scope =
         TestAll ->
             nativeExecutionPlan
                 "all"
-                [ "test:prodbox-unit",
-                  "test:prodbox-integration-cli",
-                  "test:prodbox-integration-env"
+                [ "test:prodbox-unit"
+                , "test:prodbox-integration-cli"
+                , "test:prodbox-integration-env"
                 ]
                 NativeSuitePlan
-                    { nativeSuiteId = "all",
-                      nativeValidations = canonicalNativeValidations,
-                      nativeIntegrationGatePrerequisites = allIntegrationPrerequisites,
-                      nativeRequiresIntegrationRunbook = True,
-                      nativeRequiresSupportedRuntimeBootstrap = True,
-                      nativeRequiresSupportedRuntimePostflight = True
+                    { nativeSuiteId = "all"
+                    , nativeValidations = canonicalNativeValidations
+                    , nativeIntegrationGatePrerequisites = allIntegrationPrerequisites
+                    , nativeRequiresIntegrationRunbook = True
+                    , nativeRequiresSupportedRuntimeBootstrap = True
+                    , nativeRequiresSupportedRuntimePostflight = True
                     }
         TestUnit ->
             nativeExecutionPlan
                 "unit"
                 ["test:prodbox-unit"]
                 NativeSuitePlan
-                    { nativeSuiteId = "unit",
-                      nativeValidations = [],
-                      nativeIntegrationGatePrerequisites = [],
-                      nativeRequiresIntegrationRunbook = False,
-                      nativeRequiresSupportedRuntimeBootstrap = False,
-                      nativeRequiresSupportedRuntimePostflight = False
+                    { nativeSuiteId = "unit"
+                    , nativeValidations = []
+                    , nativeIntegrationGatePrerequisites = []
+                    , nativeRequiresIntegrationRunbook = False
+                    , nativeRequiresSupportedRuntimeBootstrap = False
+                    , nativeRequiresSupportedRuntimePostflight = False
                     }
         TestIntegration integrationSuite ->
             case integrationSuite of
                 IntegrationAll ->
                     nativeExecutionPlan
                         "integration all"
-                        [ "test:prodbox-integration-cli",
-                          "test:prodbox-integration-env"
+                        [ "test:prodbox-integration-cli"
+                        , "test:prodbox-integration-env"
                         ]
                         NativeSuitePlan
-                            { nativeSuiteId = "integration-all",
-                              nativeValidations = canonicalNativeValidations,
-                              nativeIntegrationGatePrerequisites = allIntegrationPrerequisites,
-                              nativeRequiresIntegrationRunbook = True,
-                              nativeRequiresSupportedRuntimeBootstrap = True,
-                              nativeRequiresSupportedRuntimePostflight = True
+                            { nativeSuiteId = "integration-all"
+                            , nativeValidations = canonicalNativeValidations
+                            , nativeIntegrationGatePrerequisites = allIntegrationPrerequisites
+                            , nativeRequiresIntegrationRunbook = True
+                            , nativeRequiresSupportedRuntimeBootstrap = True
+                            , nativeRequiresSupportedRuntimePostflight = True
                             }
                 IntegrationCli ->
                     nativeIntegrationPlan
@@ -198,12 +198,12 @@ testExecutionPlan scope =
                         "integration charts-vscode"
                         []
                         NativeSuitePlan
-                            { nativeSuiteId = "integration-charts-vscode",
-                              nativeValidations = [ValidationChartsVscode],
-                              nativeIntegrationGatePrerequisites = chartsVscodePrerequisites,
-                              nativeRequiresIntegrationRunbook = True,
-                              nativeRequiresSupportedRuntimeBootstrap = True,
-                              nativeRequiresSupportedRuntimePostflight = False
+                            { nativeSuiteId = "integration-charts-vscode"
+                            , nativeValidations = [ValidationChartsVscode]
+                            , nativeIntegrationGatePrerequisites = chartsVscodePrerequisites
+                            , nativeRequiresIntegrationRunbook = True
+                            , nativeRequiresSupportedRuntimeBootstrap = True
+                            , nativeRequiresSupportedRuntimePostflight = False
                             }
                 IntegrationPublicDns ->
                     nativeNamedSuite
@@ -218,12 +218,12 @@ testExecutionPlan scope =
             label
             haskellSuites
             NativeSuitePlan
-                { nativeSuiteId = suiteId,
-                  nativeValidations = validations,
-                  nativeIntegrationGatePrerequisites = prerequisites,
-                  nativeRequiresIntegrationRunbook = requiresRunbook,
-                  nativeRequiresSupportedRuntimeBootstrap = False,
-                  nativeRequiresSupportedRuntimePostflight = False
+                { nativeSuiteId = suiteId
+                , nativeValidations = validations
+                , nativeIntegrationGatePrerequisites = prerequisites
+                , nativeRequiresIntegrationRunbook = requiresRunbook
+                , nativeRequiresSupportedRuntimeBootstrap = False
+                , nativeRequiresSupportedRuntimePostflight = False
                 }
 
     nativeNamedSuite label suiteId validations prerequisites requiresRunbook =
@@ -231,49 +231,49 @@ testExecutionPlan scope =
 
 canonicalNativeValidations :: [NativeValidation]
 canonicalNativeValidations =
-    [ ValidationChartsVscode,
-      ValidationPublicDns,
-      ValidationDnsAws,
-      ValidationAwsIam,
-      ValidationAwsEks,
-      ValidationPulumi,
-      ValidationHaRke2Aws,
-      ValidationGatewayDaemon,
-      ValidationGatewayPods,
-      ValidationGatewayPartition,
-      ValidationChartsPlatform,
-      ValidationChartsStorage,
-      ValidationLifecycle
+    [ ValidationChartsVscode
+    , ValidationPublicDns
+    , ValidationDnsAws
+    , ValidationAwsIam
+    , ValidationAwsEks
+    , ValidationPulumi
+    , ValidationHaRke2Aws
+    , ValidationGatewayDaemon
+    , ValidationGatewayPods
+    , ValidationGatewayPartition
+    , ValidationChartsPlatform
+    , ValidationChartsStorage
+    , ValidationLifecycle
     ]
 
 allIntegrationPrerequisites :: [String]
 allIntegrationPrerequisites =
     orderedUnion
-        [ chartsVscodePrerequisites,
-          publicDnsPrerequisites,
-          dnsAwsPrerequisites,
-          awsIamPrerequisites,
-          awsEksPrerequisites,
-          pulumiPrerequisites,
-          awsHaRke2Prerequisites,
-          gatewayDaemonPrerequisites,
-          gatewayPodsPrerequisites,
-          chartsPlatformPrerequisites,
-          chartsStoragePrerequisites,
-          lifecyclePrerequisites,
-          gatewayPartitionPrerequisites
+        [ chartsVscodePrerequisites
+        , publicDnsPrerequisites
+        , dnsAwsPrerequisites
+        , awsIamPrerequisites
+        , awsEksPrerequisites
+        , pulumiPrerequisites
+        , awsHaRke2Prerequisites
+        , gatewayDaemonPrerequisites
+        , gatewayPodsPrerequisites
+        , chartsPlatformPrerequisites
+        , chartsStoragePrerequisites
+        , lifecyclePrerequisites
+        , gatewayPartitionPrerequisites
         ]
 
 clusterPrerequisites :: [String]
 clusterPrerequisites =
-    [ "supported_ubuntu_2404",
-      "tool_docker",
-      "tool_ctr",
-      "tool_helm",
-      "tool_kubectl",
-      "tool_sudo",
-      "tool_systemctl",
-      "settings_object"
+    [ "supported_ubuntu_2404"
+    , "tool_docker"
+    , "tool_ctr"
+    , "tool_helm"
+    , "tool_kubectl"
+    , "tool_sudo"
+    , "tool_systemctl"
+    , "settings_object"
     ]
 
 chartsVscodePrerequisites :: [String]
@@ -318,9 +318,9 @@ lifecyclePrerequisites = clusterPrerequisites
 nativeExecutionPlan :: String -> [String] -> NativeSuitePlan -> TestExecutionPlan
 nativeExecutionPlan label haskellSuites suitePlan =
     TestExecutionPlan
-        { testPlanLabel = label,
-          testPlanHaskellSuites = haskellSuites,
-          testPlanExecutionMode = NativeSuite suitePlan
+        { testPlanLabel = label
+        , testPlanHaskellSuites = haskellSuites
+        , testPlanExecutionMode = NativeSuite suitePlan
         }
 
 nativeValidationId :: NativeValidation -> String

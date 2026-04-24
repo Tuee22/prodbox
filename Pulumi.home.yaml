@@ -16,9 +16,19 @@ config:
   prodbox:prodboxId: prodbox-3349a232b3454fb3be77b2f68919904f
   prodbox:awsRegion: us-west-2
   prodbox:awsAccessKeyId:
-    secure: v1:nGbxoGtRPwD//9Oz:HOSjuNVlzf+JOCYiSrdK23Oy5G/wpxPSQc36wx1BfmgwrEXl
+    secure: v1:j27i9xMwSi0xWJX/:3vwC3p/Va56RK+dPyzcO9HLGnpzDLLq+7XPWnwexCJ+EM8P0
   prodbox:awsSecretAccessKey:
-    secure: v1:b/W67YcIKggz5f6g:kZyOBgrzFmuYkqremXD4OvN3RXr2a/5KNWnbm4EvSVh1q3HApYMRdFAX/nCGi/Z+ebtxd8jm/lg=
+    secure: v1:2h1rl0sTaJqwl+Xz:XWoTm274gwzmijqLGJtGgmDyUwRtnL4/pROMjwWHmnlFHd5IeLl4T8J2yqE/rQoU5WMRiXXkF7o=
+  prodbox:manualPvRoot: /home/matthewnowak/prodbox/.data
+  prodbox:localNodeHostname: bathurst
+  prodbox:sharedPostgresPassword:
+    secure: v1:sphtYs2zwNhmTWfq:suBan2kG5vx5Iibje0OjGOtSppsw4s0Gf7vTROZJTVbr9809ENzK2nSeH9xiV5ML/tiwpsZJ4wtZ8HaPN7OpZQ==
+  prodbox:sharedPostgresRepmgrPassword:
+    secure: v1:0mq9evL0BfE5rcR1:eAzad6+bjv0MmB5Mc6dvBBtx7qps+sirgAhV4NiaAhjvePKi09mfDW8RJ2xYollTUCvIvh4HeM25C3PdXKGjpQ==
+  prodbox:sharedPostgresPgpoolAdminPassword:
+    secure: v1:o1OmSaVeiqSMOb0x:EDhOfTQXne/dSjbQQ5uvLN8dJ3eStpy8RPMNMQSHfmbmhgLsc2/ifz1uJ+SzyFRQt8UQt+mrCzvRSj9Toox8Og==
+  prodbox:sharedPostgresPgpoolSrCheckPassword:
+    secure: v1:C+td2TQxPqWKA7QF:QkcnwTFi1lJ1an35VinP6jWikjbeKG3yBF1IYJYGPDOywSsV53GF2wwECSRErwC7QvlWP0H9dwCwzNoCMLB5XQ==
 encryptionsalt: v1:LEfIPxd/BFc=:v1:GABlTeZECqe7L/a+:8rLutU0awQF9Z46ygyjNGNdMu9dvGg==
 
 # Stack-specific settings (can be overridden per-stack)

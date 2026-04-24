@@ -33,11 +33,13 @@ The current repository baseline deploys and manages:
   image pipeline
 - **MinIO** for the local-cluster-first Pulumi backend
 - **MetalLB**, **Traefik**, and **cert-manager** for the cluster edge
+- **Zalando Patroni PostgreSQL** for Helm-managed application databases, with namespace-local
+  three-replica synchronous clusters
 - **Route 53** for explicit per-subdomain DNS ownership
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
 - **AWS validation stacks** through `prodbox pulumi eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`
-- **Bespoke charts** for `gateway`, `keycloak-postgres`, `keycloak`, and `vscode`
+- **Bespoke charts** for `gateway`, `keycloak`, and `vscode`
 
 Implementation status, remaining work, and legacy-path removal are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under
@@ -151,12 +153,11 @@ Validate the repository config:
 ./.build/prodbox rke2 status
 ```
 
-### Deploy Infrastructure
+### Bootstrap Local Platform
 
 ```bash
-./.build/prodbox pulumi stack-init home
-./.build/prodbox pulumi preview
-./.build/prodbox pulumi up --yes
+./.build/prodbox rke2 install
+./.build/prodbox charts deploy vscode
 ```
 
 ### AWS Validation Stacks

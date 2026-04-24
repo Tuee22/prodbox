@@ -13,8 +13,8 @@ This phase owns interactive config authoring, policy generation, IAM user manage
 service-quota automation, and the test-only elevated credential harness. The Haskell worktree now
 closes the intended credential boundary: public onboarding and public AWS administration prompt for
 temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
-validation harness. The dependent lifecycle work is also closed: the aggregate rerun now survives
-the corrected local bootstrap order and the canonical repo-backed Pulumi backend path.
+validation harness. The AWS-backed reruns now pass on the implemented repository surfaces. This
+phase is closed on its owned credential and IAM boundaries.
 
 ## Current Baseline In Worktree
 
@@ -70,6 +70,9 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, and the aggregate suites that continue to exercise the
+  public onboarding surfaces.
 
 ### Remaining Work
 
@@ -114,6 +117,9 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   setup/teardown and quota flows.
 - `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox test integration cli`,
+  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
+  `./.build/prodbox test all`.
 
 ### Remaining Work
 
@@ -163,16 +169,17 @@ credential harness.
 - `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
   repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
   stale ambient Pulumi host-login state.
-- The latest reruns now pass `./.build/prodbox test unit`,
+- On April 23, 2026, the latest reruns passed `./.build/prodbox test unit`,
   `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
-  `./.build/prodbox test integration aws-iam`, and the aggregate `./.build/prodbox test all`
-  flow.
-- The aggregate rerun preserves the supported credential boundary after real IAM teardown proof and
-  post-test restore reaches `CLASSIFICATION=ready-for-external-proof` on `prodbox host public-edge`.
+  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
+  `./.build/prodbox test all`.
+- The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather
+  than failing at prerequisite validation.
 
 ### Remaining Work
 
-None. The isolated `aws_admin.*` harness is now revalidated through the full aggregate runner.
+None. The IAM harness and aggregate reruns are no longer blocked by repo-root operational AWS
+credentials, and no remaining Phase `7` implementation work survives.
 
 ## Documentation Requirements
 

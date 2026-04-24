@@ -2,114 +2,115 @@
 
 module Main (main) where
 
-import Data.Aeson
-    ( Value (..),
-      eitherDecode,
-    )
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
-import qualified Data.ByteString.Lazy.Char8 as BL8
-import qualified Data.Map.Strict as Map
-import qualified Data.Set as Set
-import Data.List
-    ( sort,
-    )
-import qualified Data.Vector as Vector
-import Options.Applicative
-    ( ParserResult (..),
-      defaultPrefs,
-      execParserPure,
-      renderFailure,
-    )
-import qualified Prodbox.ContainerImage as ContainerImage
-import Prodbox.Aws
-    ( buildIamPolicyDocument,
-    )
-import Prodbox.CLI.Command
-    ( AwsCommand (..),
-      ChartsCommand (..),
-      CommandRequest (..),
-      ConfigCommand (..),
-      CoverageFlags (..),
-      DnsCommand (..),
-      GatewayCommand (..),
-      HostCommand (..),
-      IntegrationSuite (..),
-      K8sCommand (..),
-      NativeCommand (..),
-      PolicyTier (..),
-      PulumiCommand (..),
-      Rke2Command (..),
-      TestCommand (..),
-      TestScope (..),
-    )
-import Prodbox.CLI.Parser
-    ( Options (..),
-      parserInfo,
-    )
-import Prodbox.Effect
-    ( Effect (..),
-      Validation (..),
-    )
-import Prodbox.EffectDAG
-    ( EffectNode (..),
-      transitiveClosureIds,
-    )
-import Prodbox.Gateway
-    ( renderGatewayConfigTemplate,
-      renderGatewayStatusReport,
-    )
-import Prodbox.Host
-    ( PortStatus (..),
-      renderPortAvailabilityReport,
-    )
-import Prodbox.K8s
-    ( defaultInfrastructureNamespaces,
-      parseKubectlObjectNames,
-    )
-import Prodbox.Lib.ChartPlatform
-    ( ChartDeploymentPlan (..),
-      ChartReleasePlan (..),
-      buildChartDeletePlan,
-      buildChartDeploymentPlan,
-      supportedChartNames,
-    )
-import Prodbox.Lib.Storage
-    ( ChartStorageBinding (..),
-      ChartStorageSpec (..),
-      storageBinding,
-    )
-import Prodbox.Prerequisite
-    ( prerequisiteRegistry,
-    )
-import Prodbox.Settings
-    ( ConfigFile (..),
-      Credentials (..),
-      DeploymentSection (..),
-      DomainSection (..),
-      Route53Section (..),
-      StorageSection (..),
-      ValidatedSettings (..),
-      defaultConfigFile,
-      renderSettingsDisplay,
-      validateAndLoadSettings,
-    )
-import Prodbox.SupportedRuntime
-    ( removeDeletePendingAwsResources,
-      removeFqdnFromHostsText,
-    )
-import Prodbox.TestPlan
-    ( NativeSuitePlan (..),
-      NativeValidation (..),
-      TestExecutionMode (..),
-      TestExecutionPlan (..),
-      nativeValidationId,
-      testExecutionPlan,
-    )
-import System.Directory
-    ( doesFileExist,
-      getCurrentDirectory,
-    )
+import Data.Aeson (
+    Value (..),
+    eitherDecode,
+ )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.List (
+    sort,
+ )
+import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
+import Data.Vector qualified as Vector
+import Options.Applicative (
+    ParserResult (..),
+    defaultPrefs,
+    execParserPure,
+    renderFailure,
+ )
+import Prodbox.Aws (
+    buildIamPolicyDocument,
+ )
+import Prodbox.CLI.Command (
+    AwsCommand (..),
+    ChartsCommand (..),
+    CommandRequest (..),
+    ConfigCommand (..),
+    CoverageFlags (..),
+    DnsCommand (..),
+    GatewayCommand (..),
+    HostCommand (..),
+    IntegrationSuite (..),
+    K8sCommand (..),
+    NativeCommand (..),
+    PolicyTier (..),
+    PulumiCommand (..),
+    Rke2Command (..),
+    TestCommand (..),
+    TestScope (..),
+ )
+import Prodbox.CLI.Parser (
+    Options (..),
+    parserInfo,
+ )
+import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Effect (
+    Effect (..),
+    Validation (..),
+ )
+import Prodbox.EffectDAG (
+    EffectNode (..),
+    transitiveClosureIds,
+ )
+import Prodbox.Gateway (
+    renderGatewayConfigTemplate,
+    renderGatewayStatusReport,
+ )
+import Prodbox.Host (
+    PortStatus (..),
+    renderPortAvailabilityReport,
+ )
+import Prodbox.K8s (
+    parseKubectlObjectNames,
+ )
+import Prodbox.Lib.ChartPlatform (
+    ChartDeploymentPlan (..),
+    ChartReleasePlan (..),
+    buildChartDeletePlan,
+    buildChartDeploymentPlan,
+    resolveChartSecrets,
+    supportedChartNames,
+ )
+import Prodbox.Lib.Storage (
+    ChartStorageBinding (..),
+    ChartStorageSpec (..),
+    storageBinding,
+ )
+import Prodbox.Prerequisite (
+    prerequisiteRegistry,
+ )
+import Prodbox.Settings (
+    ConfigFile (..),
+    Credentials (..),
+    DeploymentSection (..),
+    DomainSection (..),
+    Route53Section (..),
+    StorageSection (..),
+    ValidatedSettings (..),
+    defaultConfigFile,
+    renderSettingsDisplay,
+    validateAndLoadSettings,
+ )
+import Prodbox.SupportedRuntime (
+    removeDeletePendingAwsResources,
+    removeFqdnFromHostsText,
+ )
+import Prodbox.TestPlan (
+    NativeSuitePlan (..),
+    NativeValidation (..),
+    TestExecutionMode (..),
+    TestExecutionPlan (..),
+    nativeValidationId,
+    testExecutionPlan,
+ )
+import System.Directory (
+    createDirectoryIfMissing,
+    doesFileExist,
+    getCurrentDirectory,
+ )
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -178,11 +179,11 @@ main = hspec $ do
                 `shouldBe` Right (Options False (RunNative (NativeRke2 (Rke2Delete True))))
 
         it "routes pulumi commands through the native Haskell runtime" $ do
-            parseArgs ["pulumi", "up", "--yes"]
-                `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiUp True))))
+            parseArgs ["pulumi", "test-resources"]
+                `shouldBe` Right (Options False (RunNative (NativePulumi PulumiTestResources)))
 
-            parseArgs ["pulumi", "refresh", "--yes"]
-                `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiRefresh True))))
+            parseArgs ["pulumi", "eks-destroy", "--yes"]
+                `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiEksDestroy True))))
 
         it "routes charts commands through the native Haskell runtime" $ do
             parseArgs ["charts", "delete", "gateway", "--yes"]
@@ -194,7 +195,18 @@ main = hspec $ do
 
         it "routes native k8s commands through the Haskell runtime with defaults" $ do
             parseArgs ["k8s", "logs"]
-                `shouldBe` Right (Options False (RunNative (NativeK8s (K8sLogs defaultInfrastructureNamespaces 10))))
+                `shouldBe` Right
+                    ( Options
+                        False
+                        ( RunNative
+                            ( NativeK8s
+                                ( K8sLogs
+                                    ["metallb-system", "traefik-system", "cert-manager", "postgres-operator"]
+                                    10
+                                )
+                            )
+                        )
+                    )
 
         it "parses native test-suite ownership with coverage flags" $ do
             parseArgs ["test", "integration", "cli", "--coverage", "--cov-fail-under", "90"]
@@ -218,8 +230,8 @@ main = hspec $ do
                         Just (Array statements) -> do
                             let sids =
                                     [ sid
-                                    | Object statement <- Vector.toList statements,
-                                      Just (String sid) <- [KeyMap.lookup (Key.fromString "Sid") statement]
+                                    | Object statement <- Vector.toList statements
+                                    , Just (String sid) <- [KeyMap.lookup (Key.fromString "Sid") statement]
                                     ]
                             sids `shouldContain` ["Ec2HaTestStackLifecycle", "IamEksRoleLifecycle", "EksTestStackLifecycle"]
                         _ -> expectationFailure "expected Statement array"
@@ -229,14 +241,15 @@ main = hspec $ do
         it "keeps the Phase 1.1 Haskell frontend scaffold in the repository" $ do
             repoRoot <- getCurrentDirectory
             scaffoldExists <-
-                mapM (doesFileExist . (repoRoot </>))
-                    [ "app/prodbox/Main.hs",
-                      "src/Prodbox/CLI/Parser.hs",
-                      "src/Prodbox/Gateway/Daemon.hs",
-                      "prodbox.cabal",
-                      "cabal.project",
-                      "docker/prodbox.Dockerfile",
-                      "test/integration/env/Main.hs"
+                mapM
+                    (doesFileExist . (repoRoot </>))
+                    [ "app/prodbox/Main.hs"
+                    , "src/Prodbox/CLI/Parser.hs"
+                    , "src/Prodbox/Gateway/Daemon.hs"
+                    , "prodbox.cabal"
+                    , "cabal.project"
+                    , "docker/prodbox.Dockerfile"
+                    , "test/integration/env/Main.hs"
                     ]
 
             scaffoldExists `shouldBe` replicate 7 True
@@ -258,6 +271,22 @@ main = hspec $ do
             dockerfile `shouldContain` "--mount=type=bind,from=haskell-toolchain"
             dockerfile `shouldContain` "cabal build --builddir=.build exe:prodbox"
             dockerfile `shouldContain` "cabal list-bin --builddir=.build exe:prodbox"
+
+        it "keeps the Haskell quality gate on repo-owned formatter and lint inputs" $ do
+            repoRoot <- getCurrentDirectory
+            checkCode <- readFile (repoRoot </> "src" </> "Prodbox" </> "CheckCode.hs")
+            fourmoluConfig <- readFile (repoRoot </> "fourmolu.toml")
+            hlintConfig <- readFile (repoRoot </> ".hlint.yaml")
+            editorConfig <- readFile (repoRoot </> ".editorconfig")
+
+            checkCode `shouldContain` "fourmolu"
+            checkCode `shouldContain` "hlint"
+            checkCode `shouldContain` "--ghc-options=-Werror"
+            fourmoluConfig `shouldContain` "indentation = 2"
+            fourmoluConfig `shouldContain` "column-limit = 100"
+            hlintConfig `shouldContain` "--cpp-simple"
+            editorConfig `shouldContain` "indent_style = space"
+            editorConfig `shouldContain` "indent_size = 2"
 
         it "keeps the gateway chart on repo-rootless startup with env-based AWS auth" $ do
             repoRoot <- getCurrentDirectory
@@ -287,9 +316,13 @@ main = hspec $ do
             repoRoot <- getCurrentDirectory
             awsEksMain <- readFile (repoRoot </> "pulumi" </> "aws-eks" </> "Main.yaml")
             awsTestMain <- readFile (repoRoot </> "pulumi" </> "aws-test" </> "Main.yaml")
+            pulumiCli <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Pulumi.hs")
             awsEksInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
             awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
 
+            doesFileExist (repoRoot </> "pulumi" </> "home" </> "Main.yaml") `shouldReturn` False
+            pulumiCli `shouldNotContain` "PulumiUp"
+            pulumiCli `shouldNotContain` "PulumiRefresh"
             awsEksMain `shouldContain` "operatorCidr:"
             awsEksMain `shouldContain` "type: string"
             awsEksMain `shouldNotContain` "std:getenv"
@@ -320,11 +353,10 @@ main = hspec $ do
                 testPlan -> do
                     testPlanLabel testPlan `shouldBe` "all"
                     testPlanHaskellSuites testPlan
-                        `shouldBe`
-                            [ "test:prodbox-unit",
-                              "test:prodbox-integration-cli",
-                              "test:prodbox-integration-env"
-                            ]
+                        `shouldBe` [ "test:prodbox-unit"
+                                   , "test:prodbox-integration-cli"
+                                   , "test:prodbox-integration-env"
+                                   ]
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "all"
@@ -332,21 +364,20 @@ main = hspec $ do
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
                             map nativeValidationId (nativeValidations suitePlan)
-                                `shouldBe`
-                                    [ "charts-vscode",
-                                      "public-dns",
-                                      "dns-aws",
-                                      "aws-iam",
-                                      "aws-eks",
-                                      "pulumi",
-                                      "ha-rke2-aws",
-                                      "gateway-daemon",
-                                      "gateway-pods",
-                                      "gateway-partition",
-                                      "charts-platform",
-                                      "charts-storage",
-                                      "lifecycle"
-                                    ]
+                                `shouldBe` [ "charts-vscode"
+                                           , "public-dns"
+                                           , "dns-aws"
+                                           , "aws-iam"
+                                           , "aws-eks"
+                                           , "pulumi"
+                                           , "ha-rke2-aws"
+                                           , "gateway-daemon"
+                                           , "gateway-pods"
+                                           , "gateway-partition"
+                                           , "charts-platform"
+                                           , "charts-storage"
+                                           , "lifecycle"
+                                           ]
                         DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
         it "keeps integration-all in the canonical external-proof-first order" $ do
@@ -370,18 +401,17 @@ main = hspec $ do
                             nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
                             nativeValidations suitePlan `shouldBe` [ValidationAwsEks]
                             nativeIntegrationGatePrerequisites suitePlan
-                                `shouldBe`
-                                    [ "supported_ubuntu_2404",
-                                      "tool_docker",
-                                      "tool_ctr",
-                                      "tool_helm",
-                                      "tool_kubectl",
-                                      "tool_sudo",
-                                      "tool_systemctl",
-                                      "settings_object",
-                                      "aws_credentials_valid",
-                                      "pulumi_logged_in"
-                                    ]
+                                `shouldBe` [ "supported_ubuntu_2404"
+                                           , "tool_docker"
+                                           , "tool_ctr"
+                                           , "tool_helm"
+                                           , "tool_kubectl"
+                                           , "tool_sudo"
+                                           , "tool_systemctl"
+                                           , "settings_object"
+                                           , "aws_credentials_valid"
+                                           , "pulumi_logged_in"
+                                           ]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
@@ -418,19 +448,18 @@ main = hspec $ do
                             nativeSuiteId suitePlan `shouldBe` "integration-charts-vscode"
                             nativeValidations suitePlan `shouldBe` [ValidationChartsVscode]
                             nativeIntegrationGatePrerequisites suitePlan
-                                `shouldBe`
-                                    [ "supported_ubuntu_2404",
-                                      "tool_docker",
-                                      "tool_ctr",
-                                      "tool_helm",
-                                      "tool_kubectl",
-                                      "tool_sudo",
-                                      "tool_systemctl",
-                                      "settings_object",
-                                      "aws_credentials_valid",
-                                      "pulumi_logged_in",
-                                      "tool_curl"
-                                    ]
+                                `shouldBe` [ "supported_ubuntu_2404"
+                                           , "tool_docker"
+                                           , "tool_ctr"
+                                           , "tool_helm"
+                                           , "tool_kubectl"
+                                           , "tool_sudo"
+                                           , "tool_systemctl"
+                                           , "settings_object"
+                                           , "aws_credentials_valid"
+                                           , "pulumi_logged_in"
+                                           , "tool_curl"
+                                           ]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native charts-vscode plan"
@@ -450,6 +479,12 @@ main = hspec $ do
             rke2Source `shouldContain` "waitForHarborStableEndpoints repoRoot"
             rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
             rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
+
+        it "keeps postgres-operator anti-affinity disabled on the supported single-node runtime" $ do
+            repoRoot <- getCurrentDirectory
+            rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+
+            rke2Source `shouldContain` "\"enable_pod_antiaffinity\" .= False"
 
         it "checks Pulumi login against the local MinIO backend path" $ do
             repoRoot <- getCurrentDirectory
@@ -491,43 +526,43 @@ main = hspec $ do
         it "covers the full shared prerequisite inventory" $ do
             sort (Map.keys prerequisiteRegistry)
                 `shouldBe` sort
-                    [ "platform_linux",
-                      "systemd_available",
-                      "supported_ubuntu_2404",
-                      "machine_identity",
-                      "tool_curl",
-                      "tool_dig",
-                      "tool_kubectl",
-                      "tool_docker",
-                      "tool_ctr",
-                      "tool_helm",
-                      "tool_sudo",
-                      "tool_pulumi",
-                      "tool_aws",
-                      "tool_ssh",
-                      "tool_rke2",
-                      "tool_systemctl",
-                      "tool_dhall",
-                      "settings_loaded",
-                      "settings_object",
-                      "aws_iam_harness_ready",
-                      "kubeconfig_exists",
-                      "kubeconfig_home_exists",
-                      "rke2_config_exists",
-                      "aws_credentials_valid",
-                      "route53_accessible",
-                      "rke2_installed",
-                      "rke2_service_exists",
-                      "rke2_service_active",
-                      "k8s_cluster_reachable",
-                      "pulumi_logged_in",
-                      "k8s_ready",
-                      "infra_ready"
+                    [ "platform_linux"
+                    , "systemd_available"
+                    , "supported_ubuntu_2404"
+                    , "machine_identity"
+                    , "tool_curl"
+                    , "tool_dig"
+                    , "tool_kubectl"
+                    , "tool_docker"
+                    , "tool_ctr"
+                    , "tool_helm"
+                    , "tool_sudo"
+                    , "tool_pulumi"
+                    , "tool_aws"
+                    , "tool_ssh"
+                    , "tool_rke2"
+                    , "tool_systemctl"
+                    , "tool_dhall"
+                    , "settings_loaded"
+                    , "settings_object"
+                    , "aws_iam_harness_ready"
+                    , "kubeconfig_exists"
+                    , "kubeconfig_home_exists"
+                    , "rke2_config_exists"
+                    , "aws_credentials_valid"
+                    , "route53_accessible"
+                    , "rke2_installed"
+                    , "rke2_service_exists"
+                    , "rke2_service_active"
+                    , "k8s_cluster_reachable"
+                    , "pulumi_logged_in"
+                    , "k8s_ready"
+                    , "infra_ready"
                     ]
 
         it "keeps registry keys aligned with effect node ids and descriptions" $ do
             mapM_
-                (\(key, node) -> do
+                ( \(key, node) -> do
                     effectNodeId node `shouldBe` key
                     effectNodeDescription node `shouldNotBe` ""
                 )
@@ -592,60 +627,57 @@ main = hspec $ do
 
         it "expands shared prerequisite chains transitively" $ do
             transitiveClosureIds ["rke2_service_active"] prerequisiteRegistry
-                `shouldBe`
-                    Right
-                        [ "platform_linux",
-                          "rke2_installed",
-                          "rke2_service_active",
-                          "rke2_service_exists",
-                          "supported_ubuntu_2404",
-                          "systemd_available"
-                        ]
+                `shouldBe` Right
+                    [ "platform_linux"
+                    , "rke2_installed"
+                    , "rke2_service_active"
+                    , "rke2_service_exists"
+                    , "supported_ubuntu_2404"
+                    , "systemd_available"
+                    ]
             transitiveClosureIds ["route53_accessible"] prerequisiteRegistry
-                `shouldBe`
-                    Right
-                        [ "aws_credentials_valid",
-                          "route53_accessible",
-                          "settings_loaded",
-                          "tool_aws"
-                        ]
+                `shouldBe` Right
+                    [ "aws_credentials_valid"
+                    , "route53_accessible"
+                    , "settings_loaded"
+                    , "tool_aws"
+                    ]
             transitiveClosureIds ["infra_ready"] prerequisiteRegistry
-                `shouldBe`
-                    Right
-                        [ "aws_credentials_valid",
-                          "infra_ready",
-                          "k8s_cluster_reachable",
-                          "k8s_ready",
-                          "kubeconfig_exists",
-                          "platform_linux",
-                          "rke2_installed",
-                          "rke2_service_active",
-                          "rke2_service_exists",
-                          "settings_loaded",
-                          "supported_ubuntu_2404",
-                          "systemd_available",
-                          "tool_aws",
-                          "tool_kubectl"
-                        ]
+                `shouldBe` Right
+                    [ "aws_credentials_valid"
+                    , "infra_ready"
+                    , "k8s_cluster_reachable"
+                    , "k8s_ready"
+                    , "kubeconfig_exists"
+                    , "platform_linux"
+                    , "rke2_installed"
+                    , "rke2_service_active"
+                    , "rke2_service_exists"
+                    , "settings_loaded"
+                    , "supported_ubuntu_2404"
+                    , "systemd_available"
+                    , "tool_aws"
+                    , "tool_kubectl"
+                    ]
 
     describe "native chart platform helpers" $ do
         it "derives deterministic storage bindings" $ do
             let spec =
                     ChartStorageSpec
-                        { chartStorageSpecStatefulSetName = "keycloak-postgres",
-                          chartStorageSpecPersistentVolumeClaimName = "keycloak-postgres-data-0",
-                          chartStorageSpecStorageSize = "20Gi",
-                          chartStorageSpecOrdinal = 0,
-                          chartStorageSpecClaimSuffix = "data"
+                        { chartStorageSpecStatefulSetName = "vscode"
+                        , chartStorageSpecPersistentVolumeClaimName = "vscode-data-0"
+                        , chartStorageSpecStorageSize = "20Gi"
+                        , chartStorageSpecOrdinal = 0
+                        , chartStorageSpecClaimSuffix = "data"
                         }
-                binding = storageBinding "/tmp/prodbox/.data" "vscode" "keycloak-postgres" spec
+                binding = storageBinding "/tmp/prodbox/.data" "vscode" "vscode" spec
             chartStorageBindingPersistentVolumeName binding
-                `shouldBe` "prodbox-chart-vscode-keycloak-postgres-keycloak-postgres-0-data"
+                `shouldBe` "prodbox-chart-vscode-vscode-vscode-0-data"
             chartStorageBindingHostPath binding
-                `shouldBe` "/tmp/prodbox/.data/vscode/keycloak-postgres/keycloak-postgres/0/data"
+                `shouldBe` "/tmp/prodbox/.data/vscode/vscode/vscode/0/data"
 
         it "lists supported charts in canonical order" $ do
-            supportedChartNames `shouldBe` ["keycloak-postgres", "keycloak", "vscode", "gateway"]
+            supportedChartNames `shouldBe` ["keycloak", "vscode", "gateway"]
 
         it "builds delete plans in reverse dependency order" $ do
             case buildChartDeletePlan "/tmp/prodbox" Nothing "vscode" of
@@ -675,21 +707,55 @@ main = hspec $ do
 
                     let releaseValues =
                             Map.fromList
-                                [ ( chartReleasePlanReleaseName release,
-                                    eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value
+                                [ ( chartReleasePlanReleaseName release
+                                  , eitherDecode (BL8.pack (chartReleasePlanValuesJson release)) :: Either String Value
                                   )
                                 | release <- chartDeploymentPlanReleases plan
                                 ]
 
                     case Map.lookup "keycloak-postgres" releaseValues of
                         Just (Right (Object payload)) -> do
-                            KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 1)
-                            case KeyMap.lookup (Key.fromString "image") payload of
-                                Just (Object imagePayload) -> do
-                                    KeyMap.lookup (Key.fromString "repository") imagePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/postgres-mirror")
-                                    KeyMap.lookup (Key.fromString "tag") imagePayload `shouldBe` Just (String "16.4-bullseye")
-                                _ -> expectationFailure "expected keycloak-postgres image payload"
+                            case KeyMap.lookup (Key.fromString "cluster") payload of
+                                Just (Object clusterPayload) -> do
+                                    KeyMap.lookup (Key.fromString "name") clusterPayload
+                                        `shouldBe` Just (String "prodbox-vscode-postgres")
+                                    KeyMap.lookup (Key.fromString "instances") clusterPayload
+                                        `shouldBe` Just (Number 3)
+                                _ -> expectationFailure "expected keycloak-postgres cluster payload"
+                            case KeyMap.lookup (Key.fromString "postgres") payload of
+                                Just (Object postgresPayload) ->
+                                    KeyMap.lookup (Key.fromString "credentialsSecretName") postgresPayload
+                                        `shouldBe` Just (String "keycloak.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                _ -> expectationFailure "expected keycloak-postgres postgres payload"
+                            case KeyMap.lookup (Key.fromString "secrets") payload of
+                                Just (Object secretsPayload) -> do
+                                    case KeyMap.lookup (Key.fromString "application") secretsPayload of
+                                        Just (Object applicationPayload) ->
+                                            KeyMap.lookup (Key.fromString "name") applicationPayload
+                                                `shouldBe` Just (String "keycloak.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                        _ -> expectationFailure "expected keycloak-postgres application secret payload"
+                                    case KeyMap.lookup (Key.fromString "superuser") secretsPayload of
+                                        Just (Object superuserPayload) ->
+                                            KeyMap.lookup (Key.fromString "name") superuserPayload
+                                                `shouldBe` Just (String "postgres.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                        _ -> expectationFailure "expected keycloak-postgres superuser secret payload"
+                                    case KeyMap.lookup (Key.fromString "standby") secretsPayload of
+                                        Just (Object standbyPayload) ->
+                                            KeyMap.lookup (Key.fromString "name") standbyPayload
+                                                `shouldBe` Just (String "standby.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                        _ -> expectationFailure "expected keycloak-postgres standby secret payload"
+                                _ -> expectationFailure "expected keycloak-postgres secrets payload"
+                            case KeyMap.lookup (Key.fromString "security") payload of
+                                Just (Object securityPayload) -> do
+                                    KeyMap.lookup (Key.fromString "runAsUser") securityPayload
+                                        `shouldBe` Just (Number 101)
+                                    KeyMap.lookup (Key.fromString "runAsGroup") securityPayload
+                                        `shouldBe` Just (Number 103)
+                                    KeyMap.lookup (Key.fromString "fsGroup") securityPayload
+                                        `shouldBe` Just (Number 103)
+                                _ -> expectationFailure "expected keycloak-postgres security payload"
                         _ -> expectationFailure "expected keycloak-postgres values payload"
+
                     case Map.lookup "keycloak" releaseValues of
                         Just (Right (Object payload)) -> do
                             KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 2)
@@ -698,6 +764,15 @@ main = hspec $ do
                                     KeyMap.lookup (Key.fromString "repository") imagePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/keycloak-mirror")
                                     KeyMap.lookup (Key.fromString "tag") imagePayload `shouldBe` Just (String "26.0.0")
                                 _ -> expectationFailure "expected keycloak image payload"
+                            case KeyMap.lookup (Key.fromString "postgres") payload of
+                                Just (Object postgresPayload) -> do
+                                    KeyMap.lookup (Key.fromString "host") postgresPayload
+                                        `shouldBe` Just (String "prodbox-vscode-postgres.vscode.svc.cluster.local")
+                                    KeyMap.lookup (Key.fromString "database") postgresPayload `shouldBe` Just (String "keycloak")
+                                    KeyMap.lookup (Key.fromString "username") postgresPayload `shouldBe` Just (String "keycloak")
+                                    KeyMap.lookup (Key.fromString "passwordSecretName") postgresPayload
+                                        `shouldBe` Just (String "keycloak.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                _ -> expectationFailure "expected keycloak postgres payload"
                         _ -> expectationFailure "expected keycloak values payload"
                     case Map.lookup "vscode" releaseValues of
                         Just (Right (Object payload)) -> do
@@ -713,44 +788,70 @@ main = hspec $ do
                         _ -> expectationFailure "expected vscode values payload"
 
                     case chartDeploymentPlanReleases plan of
-                        firstRelease : _ ->
-                            case chartReleasePlanStorageBindings firstRelease of
+                        [keycloakPostgresRelease, _keycloakRelease, vscodeRelease] -> do
+                            length (chartReleasePlanStorageBindings keycloakPostgresRelease) `shouldBe` 3
+                            case chartReleasePlanStorageBindings vscodeRelease of
                                 [binding] ->
                                     chartStorageBindingPersistentVolumeName binding
-                                        `shouldBe` "prodbox-chart-vscode-keycloak-postgres-keycloak-postgres-0-data"
-                                _ -> expectationFailure "expected keycloak-postgres storage binding"
+                                        `shouldBe` "prodbox-chart-vscode-vscode-vscode-0-data"
+                                _ -> expectationFailure "expected vscode storage binding"
                         [] -> expectationFailure "expected releases in chart deployment plan"
+                        _ -> expectationFailure "expected keycloak-postgres, keycloak, and vscode releases"
+
+        it "merges new Patroni secret keys into retained chart secret state" $
+            withSystemTempDirectory "prodbox-chart-secrets" $ \tempRoot -> do
+                let namespaceDir = tempRoot </> ".prodbox-state" </> "vscode"
+                    secretPath = namespaceDir </> ".secrets.json"
+                createDirectoryIfMissing True namespaceDir
+                writeFile secretPath "{\"keycloak_admin_password\":\"adminpass\",\"keycloak_nginx_client_secret\":\"nginxsecret\"}\n"
+                result <- resolveChartSecrets tempRoot "vscode"
+                case result of
+                    Left err -> expectationFailure err
+                    Right secrets -> do
+                        Map.lookup "keycloak_admin_password" secrets `shouldBe` Just "adminpass"
+                        Map.lookup "keycloak_nginx_client_secret" secrets `shouldBe` Just "nginxsecret"
+                        case Map.lookup "patroni_app_password" secrets of
+                            Just value -> value `shouldSatisfy` (not . null)
+                            Nothing -> expectationFailure "expected patroni_app_password"
+                        case Map.lookup "patroni_standby_password" secrets of
+                            Just value -> value `shouldSatisfy` (not . null)
+                            Nothing -> expectationFailure "expected patroni_standby_password"
+                        case Map.lookup "patroni_superuser_password" secrets of
+                            Just value -> value `shouldSatisfy` (not . null)
+                            Nothing -> expectationFailure "expected patroni_superuser_password"
 
     describe "native gateway helpers" $ do
         it "renders deterministic gateway status output" $ do
             let payload =
                     Object
                         ( KeyMap.fromList
-                            [ (Key.fromString "node_id", String "node-a"),
-                              (Key.fromString "gateway_owner", String "node-a"),
-                              (Key.fromString "has_active_claim", Bool True),
-                              (Key.fromString "mesh_peers", Array (Vector.fromList [String "node-b"])),
-                              (Key.fromString "event_count", Number 5),
-                              (Key.fromString "last_public_ip_observed", String "203.0.113.10"),
-                              (Key.fromString "last_dns_write_ip", String "203.0.113.10"),
-                              (Key.fromString "last_dns_write_at_utc", String "2026-04-06T10:00:00Z"),
-                              ( Key.fromString "dns_write_gate",
-                                Object
+                            [ (Key.fromString "node_id", String "node-a")
+                            , (Key.fromString "gateway_owner", String "node-a")
+                            , (Key.fromString "has_active_claim", Bool True)
+                            , (Key.fromString "mesh_peers", Array (Vector.fromList [String "node-b"]))
+                            , (Key.fromString "event_count", Number 5)
+                            , (Key.fromString "last_public_ip_observed", String "203.0.113.10")
+                            , (Key.fromString "last_dns_write_ip", String "203.0.113.10")
+                            , (Key.fromString "last_dns_write_at_utc", String "2026-04-06T10:00:00Z")
+                            ,
+                                ( Key.fromString "dns_write_gate"
+                                , Object
                                     ( KeyMap.fromList
-                                        [ (Key.fromString "zone_id", String "Z123"),
-                                          (Key.fromString "fqdn", String "code.example.com"),
-                                          (Key.fromString "ttl", Number 60)
+                                        [ (Key.fromString "zone_id", String "Z123")
+                                        , (Key.fromString "fqdn", String "code.example.com")
+                                        , (Key.fromString "ttl", Number 60)
                                         ]
                                     )
-                              ),
-                              ( Key.fromString "heartbeat_age_seconds",
-                                Object
+                                )
+                            ,
+                                ( Key.fromString "heartbeat_age_seconds"
+                                , Object
                                     ( KeyMap.fromList
-                                        [ (Key.fromString "node-a", Number 0.0),
-                                          (Key.fromString "node-b", Number 1.5)
+                                        [ (Key.fromString "node-a", Number 0.0)
+                                        , (Key.fromString "node-b", Number 1.5)
                                         ]
                                     )
-                              )
+                                )
                             ]
                         )
             case renderGatewayStatusReport payload of
@@ -784,54 +885,55 @@ main = hspec $ do
     describe "native host and k8s helpers" $ do
         it "renders deterministic host port availability output" $ do
             renderPortAvailabilityReport
-                [ PortStatus 80 True "no listening socket detected",
-                  PortStatus 443 False "listening socket detected"
+                [ PortStatus 80 True "no listening socket detected"
+                , PortStatus 443 False "listening socket detected"
                 ]
-                `shouldBe`
-                    unlines
-                        [ "Host port check",
-                          "PORT=80 AVAILABLE=true DETAIL=no listening socket detected",
-                          "PORT=443 AVAILABLE=false DETAIL=listening socket detected",
-                          "Ports unavailable: 443",
-                          "STATUS=busy"
-                        ]
+                `shouldBe` unlines
+                    [ "Host port check"
+                    , "PORT=80 AVAILABLE=true DETAIL=no listening socket detected"
+                    , "PORT=443 AVAILABLE=false DETAIL=listening socket detected"
+                    , "Ports unavailable: 443"
+                    , "STATUS=busy"
+                    ]
 
         it "parses kubectl object names into a deterministic list" $ do
             parseKubectlObjectNames "pod/alpha\n\npod/bravo\n"
                 `shouldBe` ["pod/alpha", "pod/bravo"]
 
     describe "container image mapping" $ do
-        it "prefers non-Docker-Hub upstream mirrors for rate-limited public images" $ do
+        it "keeps the supported platform image mirrors on explicit Harbor targets" $ do
             mapM_
                 (\expectedPair -> ContainerImage.requiredPublicImagePairs `shouldContain` [expectedPair])
-                [ ("public.ecr.aws/docker/library/postgres:16.4-bullseye", "127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye"),
-                  ("ghcr.io/coder/code-server:4.98.2", "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"),
-                  ("ghcr.io/traefik/traefik:v3.1.4", "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4")
+                [ ("ghcr.io/coder/code-server:4.98.2", "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2")
+                , ("ghcr.io/traefik/traefik:v3.1.4", "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4")
                 ]
 
-        it "maps legacy public-image aliases to stable Harbor targets" $ do
-            ContainerImage.harborMirrorTargetForSource "postgres:16.4-bullseye"
-                `shouldBe` Just "127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye"
+        it "maps supported public-image aliases to stable Harbor targets only for mirrored upstreams" $ do
+            ContainerImage.harborMirrorTargetForSource "ghcr.io/zalando/postgres-operator:v1.15.1"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/postgres-operator-mirror:v1.15.1"
+            ContainerImage.harborMirrorTargetForSource "ghcr.io/zalando/spilo-17:4.0-p3"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/spilo-17-mirror:4.0-p3"
             ContainerImage.harborMirrorTargetForSource "docker.io/codercom/code-server:4.98.2"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
             ContainerImage.harborMirrorTargetForSource "docker.io/library/traefik:v3.1.4"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4"
 
         it "orders public-image mirror candidates with the discovered source first" $ do
-            ContainerImage.harborMirrorSourceCandidates "postgres:16.4-bullseye"
-                `shouldBe` Just ["docker.io/library/postgres:16.4-bullseye", "public.ecr.aws/docker/library/postgres:16.4-bullseye"]
+            ContainerImage.harborMirrorSourceCandidates "ghcr.io/zalando/postgres-operator:v1.15.1"
+                `shouldBe` Just ["ghcr.io/zalando/postgres-operator:v1.15.1"]
             ContainerImage.harborMirrorSourceCandidates "ghcr.io/coder/code-server:4.98.2"
                 `shouldBe` Just ["ghcr.io/coder/code-server:4.98.2", "docker.io/codercom/code-server:4.98.2"]
 
         it "tracks candidate upstream sets for required public images" $ do
             ContainerImage.requiredPublicImageCandidatePairs
-                `shouldContain`
-                    [ ( [ "public.ecr.aws/docker/library/postgres:16.4-bullseye",
-                            "docker.io/library/postgres:16.4-bullseye"
-                          ],
-                          "127.0.0.1:30080/prodbox/postgres-mirror:16.4-bullseye"
-                        )
-                    ]
+                `shouldContain` [
+                                    (
+                                        [ "ghcr.io/coder/code-server:4.98.2"
+                                        , "docker.io/codercom/code-server:4.98.2"
+                                        ]
+                                    , "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+                                    )
+                                ]
 
     describe "supported runtime helpers" $ do
         it "removes only the target FQDN from hosts text" $ do
@@ -844,36 +946,38 @@ main = hspec $ do
             let exportedValue =
                     Object
                         ( KeyMap.fromList
-                            [ ( Key.fromString "deployment",
-                                Object
+                            [
+                                ( Key.fromString "deployment"
+                                , Object
                                     ( KeyMap.fromList
-                                        [ ( Key.fromString "resources",
-                                            Array
+                                        [
+                                            ( Key.fromString "resources"
+                                            , Array
                                                 ( Vector.fromList
                                                     [ Object
                                                         ( KeyMap.fromList
-                                                            [ (Key.fromString "type", String "pulumi:providers:aws"),
-                                                              (Key.fromString "delete", Bool True)
+                                                            [ (Key.fromString "type", String "pulumi:providers:aws")
+                                                            , (Key.fromString "delete", Bool True)
                                                             ]
-                                                        ),
-                                                      Object
+                                                        )
+                                                    , Object
                                                         ( KeyMap.fromList
-                                                            [ (Key.fromString "type", String "aws:route53/record:Record"),
-                                                              (Key.fromString "delete", Bool True)
+                                                            [ (Key.fromString "type", String "aws:route53/record:Record")
+                                                            , (Key.fromString "delete", Bool True)
                                                             ]
-                                                        ),
-                                                      Object
+                                                        )
+                                                    , Object
                                                         ( KeyMap.fromList
-                                                            [ (Key.fromString "type", String "kubernetes:core/v1:Namespace"),
-                                                              (Key.fromString "delete", Bool False)
+                                                            [ (Key.fromString "type", String "kubernetes:core/v1:Namespace")
+                                                            , (Key.fromString "delete", Bool False)
                                                             ]
                                                         )
                                                     ]
                                                 )
-                                          )
+                                            )
                                         ]
                                     )
-                              )
+                                )
                             ]
                         )
             case removeDeletePendingAwsResources exportedValue of
@@ -986,33 +1090,35 @@ testValidatedSettings manualRoot =
             defaultConfigFile
                 { aws =
                     Credentials
-                        { access_key_id = "test-access-key",
-                          secret_access_key = "test-secret-key",
-                          session_token = Just "test-session-token",
-                          region = "us-east-1"
-                        },
-                  route53 = Route53Section{zone_id = "Z1234567890ABC"},
-                  domain =
+                        { access_key_id = "test-access-key"
+                        , secret_access_key = "test-secret-key"
+                        , session_token = Just "test-session-token"
+                        , region = "us-east-1"
+                        }
+                , route53 = Route53Section{zone_id = "Z1234567890ABC"}
+                , domain =
                     DomainSection
-                        { demo_fqdn = "test.example.com",
-                          demo_ttl = 60,
-                          vscode_fqdn = Just "vscode.example.com"
-                        },
-                  deployment =
+                        { demo_fqdn = "test.example.com"
+                        , demo_ttl = 60
+                        , vscode_fqdn = Just "vscode.example.com"
+                        }
+                , deployment =
                     DeploymentSection
-                        { dev_mode = True,
-                          bootstrap_public_ip_override = Nothing,
-                          pulumi_enable_dns_bootstrap = True
-                        },
-                  storage = StorageSection{manual_pv_host_root = ".data"}
-                },
-          resolvedManualPvHostRoot = manualRoot
+                        { dev_mode = True
+                        , bootstrap_public_ip_override = Nothing
+                        , pulumi_enable_dns_bootstrap = True
+                        }
+                , storage = StorageSection{manual_pv_host_root = ".data"}
+                }
+        , resolvedManualPvHostRoot = manualRoot
         }
 
 testChartSecrets :: Map.Map String String
 testChartSecrets =
     Map.fromList
-        [ ("keycloak_admin_password", "adminpass"),
-          ("keycloak_postgres_password", "pgpass"),
-          ("keycloak_nginx_client_secret", "nginxsecret")
+        [ ("keycloak_admin_password", "adminpass")
+        , ("keycloak_nginx_client_secret", "nginxsecret")
+        , ("patroni_app_password", "patroniapppassword")
+        , ("patroni_standby_password", "patronistandbypassword")
+        , ("patroni_superuser_password", "patronisuperuserpassword")
         ]

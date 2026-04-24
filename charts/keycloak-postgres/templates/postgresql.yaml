@@ -1,0 +1,27 @@
+apiVersion: acid.zalan.do/v1
+kind: postgresql
+metadata:
+  name: {{ .Values.cluster.name }}
+  labels:
+    {{- include "keycloak-postgres.labels" . | nindent 4 }}
+spec:
+  teamId: {{ .Values.cluster.teamId | quote }}
+  numberOfInstances: {{ .Values.cluster.instances }}
+  dockerImage: "{{ .Values.image.spilo.repository }}:{{ .Values.image.spilo.tag }}"
+  volume:
+    size: {{ .Values.storage.size | quote }}
+    storageClass: {{ .Values.storage.className | quote }}
+  users:
+    {{ .Values.postgres.username }}:
+      - login
+  databases:
+    {{ .Values.postgres.database }}: {{ .Values.postgres.username }}
+  postgresql:
+    version: {{ .Values.postgres.version | quote }}
+  spiloRunAsUser: {{ .Values.security.runAsUser }}
+  spiloRunAsGroup: {{ .Values.security.runAsGroup }}
+  spiloFSGroup: {{ .Values.security.fsGroup }}
+  patroni:
+    synchronous_mode: true
+    synchronous_mode_strict: true
+    synchronous_node_count: 2

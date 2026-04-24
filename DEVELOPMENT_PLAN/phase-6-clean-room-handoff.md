@@ -25,7 +25,8 @@ between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases
 - The `prodbox test` orchestration path runs Haskell test suites via `cabal test` and native CLI
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
-- The legacy tracking ledger is empty; the zero-Python handoff owned by this phase remains closed.
+- The legacy tracking ledger is the authoritative cleanup ledger for any remaining repository
+  residue; the zero-Python handoff owned here remains closed.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
 
@@ -79,14 +80,16 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   `prodbox test all` and `prodbox test integration all` run the native validation set that
   includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
   lifecycle suite is missing from the repository.
-- The latest clean-room rerun now passes through `prodbox rke2 delete --yes`,
-  `prodbox rke2 install`, the AWS-backed validation flows behind `prodbox test all`, and the
-  supported post-test restore state where `prodbox host public-edge` reports
-  `CLASSIFICATION=ready-for-external-proof`.
+- On April 23, 2026, the latest clean-room reruns passed through
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`, which exercised
+  `prodbox rke2 delete --yes`, `prodbox rke2 install`, the destructive lifecycle proof, the
+  AWS-backed create/destroy validations, residue checks, and the final supported-runtime restore
+  back to the clean-room steady state.
 
 ### Remaining Work
 
-None.
+None. The clean-room rerun now closes through the aggregate suites; no remaining Phase `6`
+implementation work survives.
 
 ## Sprint 6.2: Zero-Python Repository Handoff ✅
 
@@ -130,7 +133,9 @@ Haskell-only paths.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - Repository text search across the root guidance docs and governed Sprint `1.2` docs is aligned
   with the Haskell-only repository and no longer depends on mixed-baseline wording.
-- The legacy ledger is empty.
+- The legacy ledger remains clear on Python-removal items.
+- On April 23, 2026, the latest reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, and `./.build/prodbox test all`.
 
 
 ### Remaining Work

@@ -60,10 +60,10 @@ Close the public DNS and ingress path on the Haskell runtime that owns it.
 - The named validation commands `prodbox test integration charts-vscode` and
   `prodbox test integration public-dns` now run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox host public-edge`,
-  `./.build/prodbox test integration charts-vscode`, `./.build/prodbox test integration dns-aws`,
-  and the public-edge or public-DNS proof surfaces inside `./.build/prodbox test integration all`
-  plus `./.build/prodbox test all`.
+- The last completed public-edge closure reruns remain the April 23, 2026 runs:
+  `./.build/prodbox host public-edge`, `./.build/prodbox test integration charts-vscode`,
+  `./.build/prodbox test integration public-dns`, and the public-edge or public-DNS proof
+  surfaces inside `./.build/prodbox test integration all` and `./.build/prodbox test all`.
 
 ### Remaining Work
 

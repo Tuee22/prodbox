@@ -14,7 +14,7 @@ local lifecycle, the narrowed Harbor bootstrap doctrine, AWS-only Pulumi scope, 
 Pulumi stack format, and the repository-wide Python removal that leaves the supported path
 Haskell-only.
 
-As of April 23, 2026, this phase is closed. `prodbox rke2 install` now allows direct public pulls
+As of April 24, 2026, this phase remains closed. `prodbox rke2 install` now allows direct public pulls
 only for Harbor and Harbor's storage backend before Harbor is externally ready, mirrors required
 public images and publishes custom images into Harbor after Harbor is healthy, and keeps every
 later Helm deployment on Harbor-backed refs. Pulumi is retained only for the AWS validation stacks,
@@ -85,11 +85,11 @@ contract without reintroducing Python or duplicate runtime paths.
   inspection.
 - `ensureCustomImageVariants` keeps the custom Haskell images single-stage while publishing
   `linux/amd64` and `linux/arm64` variants and composing the final manifest tag in Harbor.
-- The April 23, 2026 reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration lifecycle`, `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all`.
+- The last completed lifecycle-closure reruns remain the April 23, 2026 runs:
+  `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration lifecycle`,
+  `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
 
 ### Remaining Work
 
@@ -132,7 +132,7 @@ local-cluster supported ownership from the Pulumi path.
   cluster ownership; the public Pulumi surface is AWS-only.
 - The AWS validation stack inputs are synchronized through explicit Pulumi stack config written by
   the Haskell infra modules rather than `std:getenv` lookups inside the YAML runtime.
-- The latest reruns now pass the Pulumi-owned AWS validation bodies:
+- The last completed AWS-IaC closure reruns remain the April 23, 2026 runs:
   `./.build/prodbox test integration pulumi`,
   `./.build/prodbox test integration aws-eks`, and
   `./.build/prodbox test integration ha-rke2-aws`, with those same AWS IaC create/destroy
@@ -178,8 +178,8 @@ parity exists.
 - `prodbox check-code` remains the canonical doctrine gate for this sprint.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete; the remaining
-  open ledger items are non-Python residue owned by Sprint `3.3` and Sprint `4.2`.
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
+  is now fully closed with no remaining pending-removal items.
 
 ### Remaining Work
 

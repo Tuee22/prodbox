@@ -12,10 +12,10 @@
 
 ## Ledger Status
 
-As of April 23, 2026, the cleanup ledger is closed. The Python-removal portion remains complete,
-and the later non-Python cleanup owned by Sprint `3.3` and Sprint `4.2` has landed: the retired
-root Pulumi-home residue and the legacy Bitnami shared-PostgreSQL Docker build artifacts are
-removed from the worktree.
+As of April 24, 2026, the cleanup ledger remains closed. An April 24 audit still finds no pending
+removal items: the Python-removal portion remains complete, and the later non-Python cleanup owned
+by Sprint `3.3` and Sprint `4.2` has already landed with the retired root Pulumi-home residue and
+the legacy Bitnami shared-PostgreSQL Docker build artifacts removed from the worktree.
 
 ## Pending Removal
 

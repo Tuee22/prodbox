@@ -20,7 +20,10 @@ Each project test run must own its own AWS resource set, including DNS namespace
 
 No test may mutate, depend on, or clean up resources that were created by a different project or a different test run.
 
-Human and automation access must use temporary credentials. Long-lived IAM user access keys are prohibited for normal testing workflows.
+Shared-account baseline human and automation access must use temporary credentials.
+Project-specific exceptions for repo-local operator workflows or harness-owned credential storage
+must be documented explicitly by the owning project doctrine rather than inferred from this
+shared-account baseline.
 
 Within one AWS account, resource ownership can be isolated, but account-level quotas and some service-wide control-plane limits remain shared. Workloads that require hard blast-radius isolation must use separate AWS accounts.
 
@@ -40,6 +43,13 @@ Expected service coverage includes at least:
 Other AWS services may be used in the same shared test account only when they can follow the same ownership, tagging, cleanup, and safety requirements defined here.
 
 This document owns the general AWS test-account model, DNS namespace strategy, cross-project isolation rules, and authentication posture.
+
+## 1A. Planning Ownership
+
+This document owns the shared multi-project AWS environment baseline only.
+
+Clean-room sequencing, completion status, remaining work, and cleanup ownership for `prodbox`
+AWS validation are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 Project-specific harness rules remain owned by project documents. For `prodbox`, the
 repository-root Dhall-configured CLI/test-harness doctrine is defined in
@@ -225,9 +235,12 @@ The platform owner must maintain a documented concurrency budget for the shared 
 
 ## 4. Authentication Model
 
-### 4.1 Human Access
+### 4.1 Human Baseline Access
 
 Human access must use AWS IAM Identity Center with workforce identities and MFA.
+
+This section governs shared-account administration and generic human access. It does not override
+project-specific credential-storage doctrine for a supported project-owned harness.
 
 Required pattern:
 
@@ -250,9 +263,10 @@ Expected responsibilities:
 2. `AwsTestEnvironmentProjectOperator` can create and destroy ephemeral test resources for assigned projects inside the shared account.
 3. `AwsTestEnvironmentReadOnly` can inspect resources, logs, and cost data without mutation authority.
 
-### 4.3 Automation Access
+### 4.3 Automation Baseline Access
 
-Automation outside AWS must use temporary credentials through federation, not long-lived IAM user keys.
+Automation outside AWS must use temporary credentials through federation unless an authoritative
+project-specific doctrine defines a narrower exception for its own supported harness.
 
 Preferred patterns:
 
@@ -262,8 +276,14 @@ Preferred patterns:
 Forbidden by default:
 
 1. shared IAM users for CI
-2. long-lived access keys stored in repositories
+2. long-lived access keys stored in repositories or shared automation systems without an explicit
+   project-owned doctrine
 3. plaintext credentials in `.env` files, CI variables, or project trees when federation is available
+
+For `prodbox`, the supported stored-credential exception is limited to repository-root
+`prodbox-config.dhall` under the ownership rules in
+[AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md) and
+[AWS Account Setup Guide](./aws_account_setup_guide.md).
 
 ### 4.4 In-Account Workload Access
 
@@ -563,13 +583,17 @@ Project-specific documents may add stricter rules for their own harnesses, CLI t
 
 For `prodbox`:
 
-1. host-side AWS CLI credential-source restrictions and AWS suite ownership are defined in [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
-2. the supported remote AWS stacks are one ephemeral Pulumi-managed EKS cluster plus exactly three
+1. host-side AWS CLI credential-source restrictions, repository-root `prodbox-config.dhall`
+   credential ownership, and AWS suite ownership are defined in
+   [AWS Integration Environment Doctrine](./aws_integration_environment_doctrine.md)
+2. bootstrap and steady-state `aws.*` credential handoff for `prodbox config setup` is defined in
+   [AWS Account Setup Guide](./aws_account_setup_guide.md)
+3. the supported remote AWS stacks are one ephemeral Pulumi-managed EKS cluster plus exactly three
    Pulumi-managed Ubuntu 24.04 EC2 instances in separate availability zones for the HA RKE2 path,
    both backed by Pulumi state stored in the local-cluster MinIO bucket
    `prodbox-test-pulumi-backends`
-3. general integration setup and cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
-4. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
+4. general integration setup and cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
+5. unit vs integration execution policy is defined in [Unit Testing Policy](./unit_testing_policy.md#2-unit-vs-integration-tests)
 
 ---
 

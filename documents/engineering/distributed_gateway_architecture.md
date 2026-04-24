@@ -40,6 +40,10 @@ Clean-room sequencing, completion status, remaining work, and legacy-path
 removal for gateway delivery are owned by
 [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
+This document defines the target gateway architecture and formal protocol contract.
+Current module-to-model correspondence, runtime compression points, and verification-boundary notes
+are owned by [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
+
 Canonical repository facts referenced by this doctrine:
 
 1. `src/Prodbox/Gateway.hs` owns `prodbox gateway start|status|config-gen`.
@@ -207,9 +211,9 @@ For modelling assumptions, variable correspondence, known divergences, and verif
 
 ---
 
-## 9. GatewayClaim / GatewayYield Event Lifecycle
+## 9. Target GatewayClaim / GatewayYield Event Lifecycle
 
-Ownership transitions are tracked via typed events in the commit log:
+In the target protocol, ownership transitions are tracked via typed events in the commit log:
 
 | Event | Trigger | Payload |
 |-------|---------|---------|
@@ -220,14 +224,18 @@ Ownership transitions are tracked via typed events in the commit log:
 
 ---
 
-## 10. DNS Write Gating
+## 10. Target DNS Write Gating
 
-Only the elected gateway owner writes the primary DNS A record. Two conditions must be satisfied:
+In the target protocol, only the elected gateway owner writes the primary DNS A record. Two
+conditions must be satisfied:
 
 1. **Ownership check**: `gateway_owner == self.node_id`
 2. **Claim check**: A `GatewayClaim` event from self exists in the local commit log
 
 This prevents stale writes from lagging nodes that haven't yet learned about ownership changes.
+
+Current runtime correspondence and any compressed operational status fields are documented in
+[TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
 
 ### DnsWriteGate Configuration
 

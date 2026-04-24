@@ -94,9 +94,9 @@ artifact plus container-build topology contract.
   `haskell:9.6.7-slim` toolchain context.
 - `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
-- On April 23, 2026, the latest reruns passed
-  `cabal build --builddir=.build all --ghc-options=-Werror`,
-  `./.build/prodbox check-code`, and `./.build/prodbox test integration cli`.
+- On April 24, 2026, fresh local reruns passed `cabal build --builddir=.build exe:prodbox`, sync
+  of `./.build/prodbox`, `./.build/prodbox check-code`, and
+  `./.build/prodbox test integration cli`.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
   canonical Dockerfile location.
 ### Remaining Work
@@ -169,7 +169,7 @@ modules.
   cluster-backed readiness roots used by the named validation flows.
 - `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
   proof surfaces for the Haskell-owned command surface.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox check-code`,
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
   `./.build/prodbox test integration env`.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
@@ -221,9 +221,9 @@ the same supported product scope.
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`, which exercised the lifecycle, Pulumi, EKS, and HA-RKE2 AWS
-  validation surfaces end to end.
+- The last completed infrastructure-backed aggregate reruns remain the April 23, 2026 closure
+  runs: `./.build/prodbox test integration all` and `./.build/prodbox test all`, which exercised
+  the lifecycle, Pulumi, EKS, and HA-RKE2 AWS validation surfaces end to end.
 
 ### Remaining Work
 

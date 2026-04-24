@@ -16,6 +16,14 @@ Every concept has exactly one canonical document. Other documents may reference 
 
 SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
 
+### Development Plan Authority
+
+`DEVELOPMENT_PLAN/README.md` is the single source of truth for phase order, sprint status,
+blockers, remaining work, validation closure, and cleanup ownership.
+
+Documents under `documents/` may explain architecture, doctrine, and verification boundaries, but
+they must link back to the development plan instead of maintaining competing status ledgers.
+
 ### DRY + Link Liberally
 
 - Never copy-paste content between documents
@@ -24,9 +32,9 @@ SSoT ownership, bidirectional links, and non-duplication rules are mandatory for
 
 ### Separation of Concerns
 
-- **Engineering docs**: Architecture, design decisions, patterns
-- **Domain docs**: Business logic, configuration options
-- **Reference docs**: API documentation, type definitions
+- **Engineering docs**: Architecture, design decisions, patterns, verification boundaries
+- **Domain docs**: Business logic, configuration options, operator workflows
+- **Reference docs**: API documentation, type definitions, indexes
 
 ---
 
@@ -105,7 +113,7 @@ When document A references document B, document B's "Referenced by" should inclu
 ### Always Link
 
 ```markdown
-For configuration details, see [Settings](../src/prodbox/settings.py).
+For sprint status and cleanup ownership, see [Development Plan](../DEVELOPMENT_PLAN/README.md).
 ```
 
 ---
@@ -114,56 +122,44 @@ For configuration details, see [Settings](../src/prodbox/settings.py).
 
 ### Always Specify Language
 
-```python
-# File: src/prodbox/cli/types.py
-@dataclass(frozen=True)
-class Success(Generic[T]):
-    value: T
+```haskell
+-- File: src/Prodbox/Gateway/Types.hs
+data GatewayRule = GatewayRule
+    { rankedNodes :: [String]
+    , heartbeatTimeoutSeconds :: Int
+    }
 ```
 
 ### File Path Comment
 
 First line of code blocks should indicate source:
 
-```python
-# File: src/prodbox/cli/effects.py  # Actual source file
+```haskell
+-- File: src/Prodbox/Gateway/Daemon.hs  -- Actual source file
 ```
 
 Or for teaching examples:
 
-```python
-# Example: Hypothetical usage
-result = parse_int("42")
+```haskell
+-- Example: Hypothetical helper
+renderNodeId :: String -> String
+renderNodeId nodeId = "node=" ++ nodeId
 ```
 
-### Zero Tolerance for Any
+### Current-Surface Examples Only
 
 Code examples must not use:
-- `Any` type
-- `# type: ignore`
-- `cast()`
+- removed paths from unsupported implementations
+- unsupported toolchains or bridge layers
+- stale commands that bypass the public `prodbox` surface
 
 ---
 
-## 7. Docstrings (Python) - Google Style
+## 7. Function Documentation
 
-```python
-def parse_int(value: str) -> Result[int, str]:
-    """Parse string to integer.
-
-    Args:
-        value: String to parse
-
-    Returns:
-        Success(int) if valid integer, Failure(str) with error message
-
-    Raises:
-        Never raises - uses Result type
-
-    Example:
-        >>> parse_int("42")
-        Success(value=42)
-    """
+```haskell
+-- | Parse and validate the gateway daemon config from JSON text.
+parseDaemonConfig :: String -> Either String DaemonConfig
 ```
 
 ---
@@ -207,10 +203,10 @@ flowchart TB
 - BAD: Duplicating configuration examples
 - GOOD: Link to canonical source
 
-### Examples Using Any
+### Examples Pointing At Removed Paths
 
-- BAD: `def foo() -> Any:`
-- GOOD: `def foo() -> Result[str, str]:`
+- BAD: `See the old Python settings module`
+- GOOD: `See ../DEVELOPMENT_PLAN/README.md for sprint status and cleanup ownership`
 
 ---
 
@@ -219,12 +215,13 @@ flowchart TB
 This SSoT co-owns documentation-topology doctrine intention.
 
 - Owned statement: SSoT ownership, bidirectional links, and non-duplication rules are mandatory for all new doctrinal content.
-- Linked dependents: `documents/engineering/README.md`, `src/prodbox/lib/lint/doc_lint_guard.py`.
+- Linked dependents: `documents/engineering/README.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`.
 
 ---
 
 ## Cross-References
 
 - [Engineering docs index](./engineering/README.md)
+- [Development Plan](../DEVELOPMENT_PLAN/README.md)
 - [CLAUDE.md](../CLAUDE.md) - AI assistant guidelines
 - [AGENTS.md](../AGENTS.md) - Agent guidelines

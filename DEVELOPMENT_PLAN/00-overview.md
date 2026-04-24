@@ -93,10 +93,11 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository state as of April 23, 2026 reaches the intended supported architecture: the
+The repository state as of April 24, 2026 reaches the intended supported architecture: the
 supported surface is Haskell-only, the earlier unsupported cleanup residue is removed, and the
-legacy ledger is empty. The post-cleanup infrastructure-backed rerun on this workspace is still
-gated by missing repository-root config.
+legacy ledger is empty. The current checkout now includes operator-authored repository-root
+`prodbox-config.dhall`, but the post-cleanup infrastructure-backed rerun has not yet been repeated
+on this configured workspace after the latest local validation refresh.
 
 ### Supported Haskell Surface
 
@@ -128,17 +129,22 @@ gated by missing repository-root config.
 
 ### Post-Cleanup Validation Gate
 
-- The current workspace does not contain repository-root `prodbox-config.dhall`.
-- Config-gated commands such as `prodbox dns check`, `prodbox host public-edge`,
-  `prodbox test integration all`, and `prodbox test all` therefore stop at the intended
-  prerequisite boundary until operator config and the external validation environment are present.
+- The current workspace now contains repository-root `prodbox-config.dhall`.
+- On April 24, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
+  `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
+  `./.build/prodbox tla-check`.
+- The infrastructure-backed closure commands `prodbox dns check`, `prodbox host public-edge`,
+  `prodbox test integration all`, and `prodbox test all` were not re-executed as part of this
+  documentation refresh, so Phase `6` remains active until the configured clean-room rerun is
+  repeated on the final repository state.
 
 ### Interpretation
 
 The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
 application database ownership, or a broader-than-target Harbor bootstrap exception. The
 repository guidance and cleanup ledger are now aligned with that state. Remaining validation work
-on this checkout is environmental rather than implementation-driven.
+on this checkout is rerun-closure work rather than implementation cleanup.
 
 ## Haskell-Only Architecture by Surface
 

@@ -8,6 +8,18 @@
 
 ---
 
+## Scope Notes
+
+This index owns model discovery only.
+
+Current model-to-runtime correspondence, known divergences, and verification boundaries are owned
+by [TLA+ Modelling Assumptions](../tla_modelling_assumptions.md).
+
+Sprint sequencing, closure status, remaining work, and cleanup ownership for the TLA surface are
+owned by [DEVELOPMENT_PLAN/README.md](../../../DEVELOPMENT_PLAN/README.md).
+
+---
+
 ## Models
 
 | Model | Purpose |

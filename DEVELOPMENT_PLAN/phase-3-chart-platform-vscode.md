@@ -15,7 +15,7 @@ retained storage, Harbor-backed image sourcing for the supported chart stack, th
 `vscode-nginx` image exception under the repository Docker doctrine, and the PostgreSQL doctrine
 for every Helm-managed application stack.
 
-As of April 23, 2026, this phase is closed. The supported chart platform is Haskell-owned, the
+As of April 24, 2026, this phase remains closed. The supported chart platform is Haskell-owned, the
 `vscode` stack stays on Harbor-backed images after Harbor bootstrap, and every Helm-managed
 PostgreSQL dependency now lands on the external Patroni-based doctrine: exactly three replicas,
 synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -68,10 +68,11 @@ platform doctrine.
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
 - `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`.
-- On April 23, 2026, the canonical reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration charts-storage`, and
-  `./.build/prodbox test integration charts-platform`, then repeated those chart-platform proofs
-  inside `./.build/prodbox test integration all` and `./.build/prodbox test all`.
+- The last completed cluster-backed chart-platform closure reruns remain the April 23, 2026 runs:
+  `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration charts-storage`, and
+  `./.build/prodbox test integration charts-platform`, then those same chart-platform proofs inside
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`.
 
 ### Remaining Work
 
@@ -113,9 +114,10 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestRunner.hs` waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` before the external `charts-vscode` curl proof
   continues.
-- On April 23, 2026, `./.build/prodbox test integration charts-vscode` passed on the Harbor-backed
-  `keycloak-postgres -> keycloak -> vscode` path, and the same public-edge redirect proof passed
-  again inside `./.build/prodbox test integration all` plus `./.build/prodbox test all`.
+- The last completed cluster-backed `vscode` closure reruns remain the April 23, 2026 runs:
+  `./.build/prodbox test integration charts-vscode` on the Harbor-backed
+  `keycloak-postgres -> keycloak -> vscode` path, plus the same public-edge redirect proof inside
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`.
 
 ### Remaining Work
 
@@ -166,12 +168,11 @@ PostgreSQL for every Helm-managed PostgreSQL dependency.
   mode, explicit Spilo security IDs, and deterministic manual-PV bindings.
 - `charts/keycloak/` now consumes the operator-generated database secret and the namespace-local
   primary service endpoint.
-- The April 23, 2026 reruns passed `./.build/prodbox test unit`,
-  `./.build/prodbox test integration charts-storage`,
+- The last completed Patroni-backed chart closure reruns remain the April 23, 2026 runs:
+  `./.build/prodbox test unit`, `./.build/prodbox test integration charts-storage`,
   `./.build/prodbox test integration charts-platform`, and
-  `./.build/prodbox test integration charts-vscode` on the Patroni path, then repeated the same
-  Patroni-backed chart stack proof through `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`.
+  `./.build/prodbox test integration charts-vscode`, then the same Patroni-backed chart stack
+  proof through `./.build/prodbox test integration all` and `./.build/prodbox test all`.
 
 ### Remaining Work
 

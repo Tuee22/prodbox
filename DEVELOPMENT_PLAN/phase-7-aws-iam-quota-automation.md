@@ -70,9 +70,10 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, and the aggregate suites that continue to exercise the
-  public onboarding surfaces.
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
+- The last completed aggregate suites that continue to exercise the public onboarding surfaces
+  remain the April 23, 2026 closure runs.
 
 ### Remaining Work
 
@@ -117,7 +118,9 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   setup/teardown and quota flows.
 - `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox test integration cli`,
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
+- The last completed IAM and aggregate closure reruns remain the April 23, 2026 runs for
   `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
   `./.build/prodbox test all`.
 
@@ -169,8 +172,9 @@ credential harness.
 - `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
   repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
   stale ambient Pulumi host-login state.
-- On April 23, 2026, the latest reruns passed `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, and `./.build/prodbox test integration env`.
+- The last completed IAM and aggregate closure reruns remain the April 23, 2026 runs for
   `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
   `./.build/prodbox test all`.
 - The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather

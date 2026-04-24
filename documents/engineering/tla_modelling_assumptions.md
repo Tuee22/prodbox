@@ -8,6 +8,17 @@
 
 ---
 
+## 0A. Planning Ownership
+
+This document owns modelling assumptions, implementation correspondence, and divergence tracking
+only.
+
+Sprint sequencing, completion status, remaining work, validation closure, and cleanup ownership
+for the gateway/TLA surfaces are owned by
+[DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+
+---
+
 ## 1. Abstract System Model
 
 The TLA+ specification (`documents/engineering/tla/gateway_orders_rule.tla`) models a set of peer nodes with crash-recovery semantics, delayed heartbeat delivery via full-duplex channels, ranked failover election, ownership claim/yield events, and DNS write gating.
@@ -44,50 +55,73 @@ The spec contains both synchronous heartbeats (`Heartbeat(s, r)`) and async hear
 
 | TLA+ Variable | Implementation | Location |
 |---|---|---|
-| `live` | Process existence (running vs crashed) | `GatewayDaemon.start()`/`stop()` |
-| `seenHeartbeatTs[viewer][peer]` | `_get_last_heartbeat()` from commit log scan | `gateway_daemon.py:1115` |
-| `ownerView[n]` | `self._gateway_owner` | `gateway_daemon.py:1132` |
-| `eventLog` | `self._commit_log.events` | `CommitLog` class |
-| `dnsWriteNode` | `self._last_dns_write_ip` (side effect of write) | `gateway_daemon.py:923` |
-| `msgQueue` | In-flight TCP messages (implicit) | Socket protocol |
-| `activeOrderTs[n]` | `self._orders.version_utc` | Orders dataclass |
-| `now` | `datetime.now(UTC)` | `_utc_now()` |
-| `RankOrder` (constant) | `orders.gateway_rule.ranked_nodes` | Orders config |
-| `Rank1`/`Rank2`/`Rank3` (constants) | Individual rank positions | TLC workaround for sequence literals |
-| `NoTimestamp` (constant, -1) | `None` from `_get_last_heartbeat()` | Cold-start sentinel |
+| `live` | Running `runGatewayDaemon` process and its active loops | `src/Prodbox/Gateway/Daemon.hs` |
+| `seenHeartbeatTs[viewer][peer]` | `DaemonState.stateLastHeartbeatTimes` heartbeat freshness map | `DaemonState`, `heartbeatLoop`, `gatewayLoop` |
+| `ownerView[n]` | `DaemonState.stateGatewayOwner` | `DaemonState`, `gatewayLoop` |
+| `eventLog` | `CommitLog.commitLogEvents` carried in `DaemonState.stateCommitLog` | `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Daemon.hs` |
+| `dnsWriteNode` | Last successful write tracked by `stateLastDnsWriteIp` / `stateLastDnsWriteTime` | `DaemonState`, `dnsWriteLoop` |
+| `msgQueue` | Not materialized as a first-class runtime queue; transport is abstracted behind daemon loops and socket/REST boundaries | `src/Prodbox/Gateway/Daemon.hs` |
+| `activeOrderTs[n]` | `Orders.ordersVersionUtc` from the parsed Orders document | `src/Prodbox/Gateway/Types.hs` |
+| `now` | `getCurrentTime` samples used by the daemon loops | `src/Prodbox/Gateway/Daemon.hs` |
+| `RankOrder` (constant) | `GatewayRule.rankedNodes` | `src/Prodbox/Gateway/Types.hs` |
+| `Rank1`/`Rank2`/`Rank3` (constants) | TLC-only constants used to build `RankOrder` during model checking | `documents/engineering/tla/gateway_orders_rule.cfg` |
+| `NoTimestamp` (constant, -1) | Absence from `stateLastHeartbeatTimes` for a peer | `gatewayLoop` freshness logic |
 
 ### Actions
 
 | TLA+ Action | Implementation | Location |
 |---|---|---|
-| `Tick` | Wall clock progression | N/A (real-time) |
-| `Crash(n)` / `Recover(n)` | Process kill / restart | K8s pod lifecycle |
-| `SendHeartbeat(sender)` | `_heartbeat_loop()` | `gateway_daemon.py:880-887` |
-| `DeliverHeartbeat` | TCP message arrival + commit log append | Socket protocol handler |
-| `Heartbeat(s, r)` | Synchronous heartbeat (primary model checking action) | `_heartbeat_loop()` |
-| `PromoteOrders(r, newTs)` | Orders file reload with higher `version_utc` | Orders validation |
-| `RecomputeOwner(n)` | `_recompute_gateway_owner()` | `gateway_daemon.py:1108-1137` |
-| `DnsWrite(n)` | `_attempt_dns_write()` | `gateway_daemon.py:900-930` |
+| `Tick` | Wall-clock progression sampled via `getCurrentTime` | `heartbeatLoop`, `gatewayLoop`, `dnsWriteLoop` |
+| `Crash(n)` / `Recover(n)` | Process or pod stop/restart around `runGatewayDaemon` | `src/Prodbox/Gateway/Daemon.hs`, `charts/gateway/` |
+| `SendHeartbeat(sender)` | `heartbeatLoop` appends local signed `heartbeat` events and refreshes local heartbeat time | `src/Prodbox/Gateway/Daemon.hs` |
+| `DeliverHeartbeat` | Abstracted in the current runtime surface; not materialized as a standalone queue action | `src/Prodbox/Gateway/Daemon.hs` |
+| `Heartbeat(s, r)` | Model-only synchronous heartbeat step retained for tractable TLC exploration | `documents/engineering/tla/gateway_orders_rule.tla` |
+| `PromoteOrders(r, newTs)` | Orders parsing and `ordersVersionUtc` promotion boundary | `parseOrders`, `runGatewayDaemon` |
+| `RecomputeOwner(n)` | `gatewayLoop` recomputes owner from ranked fresh heartbeats | `src/Prodbox/Gateway/Daemon.hs` |
+| `DnsWrite(n)` | `dnsWriteLoop` plus `fetchPublicIp` / `writeDnsRecord` | `src/Prodbox/Gateway/Daemon.hs` |
 
 ---
 
-## 3. Known Divergences
+## 3. Known Divergences And Compression Points
 
-### Divergence 1: Election Algorithm — Resolved
+### Divergence 1: Correspondence Surface Is Haskell-Only
 
-**TLA+ model**: `LeaderFromUpSet` now uses `RankIndex(n)` based on `RankOrder == <<Rank1, Rank2, Rank3>>` — selects the highest-ranked node (lowest rank index) from the UpSet candidates. Includes cold-start self-preference: if a node hasn't been heartbeated yet (`seenHeartbeatTs[viewer][self] = NoTimestamp`), it adds itself to the candidate set.
+The supported implementation surface is now the Haskell gateway and TLA entrypoint:
 
-**Implementation**: Uses rank-ordered iteration through `orders.gateway_rule.ranked_nodes` — first node in the configured rank list with a fresh heartbeat.
+1. `src/Prodbox/Gateway/Daemon.hs`
+2. `src/Prodbox/Gateway/Types.hs`
+3. `src/Prodbox/Gateway.hs`
+4. `src/Prodbox/Tla.hs`
 
-**Resolution**: Added `Rank1`/`Rank2`/`Rank3` individual constants (TLC config files cannot express sequence literals), constructed as `RankOrder == <<Rank1, Rank2, Rank3>>` in the spec. `RankIndex(n)` returns the position in this sequence. `LeaderFromUpSet` selects `CHOOSE x ∈ candidates : ∀ y ∈ candidates : RankIndex(x) ≤ RankIndex(y)`.
+Historical Python symbol names are no longer authoritative for model-to-implementation
+correspondence and must not be treated as current repository facts.
 
-### Divergence 2: DNS Write Yield Guard — Resolved
+### Divergence 2: Message Delivery Is More Explicit In The Model
 
-**TLA+ model**: `CanWriteDns(n)` requires `HasClaim(n) ∧ ¬HasYieldAfterLastClaim(n)`. A node must have an active claim with no subsequent yield in the event log.
+The TLA+ model keeps both:
 
-**Implementation**: `_attempt_dns_write` now calls `has_active_claim_from(node_id)`, which checks that the node has a `gateway_claim` event in the commit log with no subsequent `gateway_yield` — matching the TLA+ `CanWriteDns` guard exactly.
+1. synchronous `Heartbeat(s, r)` for tractable model checking
+2. asynchronous `SendHeartbeat` / `DeliverHeartbeat` actions over `msgQueue` for protocol
+   reference
 
-**Resolution**: Added `has_active_claim_from(node_id)` method to `GatewayDaemon` and updated `_attempt_dns_write` to use it. The original `has_claim_from()` is retained for test assertions checking event presence. Six dedicated regression tests in `TestHasActiveClaim` cover cold start, claim, yield, reclaim, cross-node isolation, and the race condition scenario.
+The current Haskell runtime compresses that surface: it stores local heartbeat freshness in
+`stateLastHeartbeatTimes`, keeps transport implicit behind daemon loops and socket/REST boundaries,
+and does not expose a first-class runtime `msgQueue`.
+
+### Divergence 3: Ownership Lifecycle Is More Explicit In The Model Than In The Current Runtime Surface
+
+The target architecture and TLA+ model use `GatewayClaim` / `GatewayYield` as the formal
+DNS-write gate.
+
+The current Haskell daemon status surface exposes:
+
+1. `stateGatewayOwner` as the in-memory owner view
+2. `has_active_claim` rendered from `stateGatewayOwner state == Just (daemonNodeId config)`
+3. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
+
+Treat the event-log lifecycle in the model as the formal safety contract and the runtime fields as
+the current operational projection. Phase closure and any remaining alignment work on that
+boundary are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 ---
 
@@ -150,7 +184,9 @@ In a fully asynchronous system with partitions, the system cannot guarantee both
 
 The TLA+ model proves safety invariants under the modelled assumptions (bounded timestamps, crash-recovery, message delay). These invariants hold for all reachable states in the bounded state space.
 
-Under severe partition, the implementation chooses safety-first: nodes self-elect as failsafe (satisfying `SingletonTakeover`), accepting temporary split-brain that heals on reconvergence. This is documented in [Distributed Gateway Architecture Section 5](./distributed_gateway_architecture.md#5-safety-boundary-important).
+Under severe partition, the implementation chooses safety-first: nodes self-elect as failsafe
+(satisfying `SingletonSelfElection`), accepting temporary split-brain that heals on reconvergence.
+This is documented in [Distributed Gateway Architecture Section 5](./distributed_gateway_architecture.md#5-safety-boundary-important).
 
 The design contract:
 1. `NoTugOfWar` and `NoSimultaneousDNSWriters` are proven for the fully-stable state (converged views, current ownerView, non-empty UpSet).
@@ -167,7 +203,7 @@ The design contract:
 | TLA+ spec written | Complete (~340 lines) |
 | TLC model checker execution | **Complete** — all 6 invariants verified over 4,394,744 distinct states (HeartbeatTimeout=2, MaxTimestamp=2) |
 | CI integration | **Intentionally not used during active development** |
-| Model-implementation correspondence audit | **This document** |
+| Model-implementation correspondence audit | **Complete at the current Haskell module level; divergences are recorded in this document** |
 
 ### Running the Model Checker
 
@@ -199,4 +235,5 @@ In prodbox:
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md) — system design and protocol spec
 - [TLA+ Model](./tla/gateway_orders_rule.tla) — formal specification
 - [TLA+ Config](./tla/gateway_orders_rule.cfg) — model checking bounds
+- [Development Plan](../../DEVELOPMENT_PLAN/README.md) — phase status, closure, and cleanup ownership
 - [Documentation Standards](../documentation_standards.md) — document format requirements

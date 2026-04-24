@@ -82,7 +82,7 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   `prodbox test all` and `prodbox test integration all` run the native validation set that
   includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
   lifecycle suite is missing from the repository.
-- On April 23, 2026, the latest clean-room reruns passed through
+- The last completed clean-room closure reruns remain the April 23, 2026 runs under
   `./.build/prodbox test integration all` and `./.build/prodbox test all`, which exercised
   `prodbox rke2 delete --yes`, `prodbox rke2 install`, the destructive lifecycle proof, the
   AWS-backed create/destroy validations, residue checks, and the final supported-runtime restore
@@ -136,20 +136,24 @@ surfaces close on Haskell-only paths.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is now empty, and the root
   guidance set named in `Docs to update` is realigned to the current repository state.
 - The legacy ledger remains clear on Python-removal items.
-- On April 23, 2026, the post-cleanup reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`, and `./.build/prodbox tla-check`.
-- On the same April 23, 2026 workspace, `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all` fail fast with the expected setup guidance because repository-root
-  `prodbox-config.dhall` is absent.
+- On April 24, 2026, fresh local reruns on the current configured checkout passed
+  `cabal build --builddir=.build exe:prodbox`, sync of `./.build/prodbox`,
+  `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
+  `./.build/prodbox tla-check`.
+- The current workspace now contains repository-root `prodbox-config.dhall`, so the closure gap is
+  no longer the missing-config prerequisite boundary.
+- The last completed infrastructure-backed aggregate reruns remain the April 23, 2026 closure
+  runs for `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
 
 
 ### Remaining Work
 
-- Re-execute the final infrastructure-backed rerun from a workspace that contains
-  repository-root `prodbox-config.dhall` plus the external prerequisites required by the AWS, DNS,
-  and public-edge validation surfaces.
+- Re-execute the final infrastructure-backed rerun on this configured checkout, or another
+  configured workspace, through `prodbox dns check`, `prodbox host public-edge`,
+  `prodbox test integration all`, and `prodbox test all` so the final clean-room handoff is
+  re-proved on the post-cleanup repository state.
 
 ## Documentation Requirements
 

@@ -14,7 +14,7 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 23, 2026, Phases `0-5` and `7` are closed on their supported repository surfaces.
+As of April 24, 2026, Phases `0-5` and `7` are closed on their supported repository surfaces.
 Phase `6` remains `Active` only on its post-cleanup rerun surface: the supported architecture is
 Haskell-only, Pulumi is reserved for AWS validation IaC only, the chart platform uses
 namespace-local Patroni PostgreSQL HA for Helm-managed application data, the Harbor bootstrap
@@ -23,9 +23,10 @@ to Harbor-backed image refs, and the legacy cleanup residue tracked earlier in t
 removed.
 
 Phase `6` remains open in the current workspace because the final infrastructure-backed rerun has
-not been re-executed successfully on this exact checkout after cleanup. The repository root does
-not currently contain `prodbox-config.dhall`, so the config-gated closure commands fail fast at
-their expected prerequisite boundary before the AWS, DNS, and public-edge payloads begin.
+not yet been re-executed on this configured checkout after cleanup. The repository root now
+contains operator-authored `prodbox-config.dhall`, so the closure gap is no longer the config
+prerequisite boundary; it is the missing fresh rerun of the AWS-, DNS-, and public-edge-backed
+proof surfaces on the final repository state.
 
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
@@ -116,7 +117,7 @@ workspace on the final repository state.
 
 ## Current Plan Status
 
-As of April 23, 2026, the development plan is current against the repository worktree:
+As of April 24, 2026, the development plan is current against the repository worktree:
 
 - The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
@@ -145,16 +146,15 @@ As of April 23, 2026, the development plan is current against the repository wor
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- Phase `6` remains active because
-  the post-cleanup rerun on this checkout has not yet completed past the config prerequisite gate.
-- On April 23, 2026, the post-cleanup reruns passed
-  `cabal build --builddir=.build exe:prodbox`, `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`, and `./.build/prodbox tla-check`.
-- On the same April 23, 2026 workspace, `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all` fail fast with the expected guidance because
-  `/home/matthewnowak/prodbox/prodbox-config.dhall` is absent.
+- Phase `6` remains active because the post-cleanup infrastructure-backed rerun has not yet been
+  re-executed on this configured checkout after the config file was restored.
+- On April 24, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
+  `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
+  `./.build/prodbox tla-check`.
+- The last completed infrastructure-backed closure reruns remain the April 23, 2026 runs for
+  `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
 
 ## Exit Definition
 

@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[system-components.md](system-components.md)
 
 > **Purpose**: Capture the Haskell gateway runtime, its formal verification path, and the
 > canonical Route 53 ownership or update flow.
@@ -101,11 +102,12 @@ container doctrine.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code` and
-  `./.build/prodbox test unit`.
-- The last completed infrastructure-backed gateway and DNS closure reruns remain the April 23,
-  2026 runs for `./.build/prodbox dns check`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all`.
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, and `./.build/prodbox dns check`.
+- The latest completed infrastructure-backed gateway and DNS closure reruns remain the April 23,
+  2026 runs for `./.build/prodbox test integration all` and `./.build/prodbox test all`; the
+  fresh April 24 aggregate reruns are still Phase `1` closure work and are not yet closure
+  evidence here.
 
 ### Remaining Work
 
@@ -145,9 +147,10 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to an executable
   native validation flow in `src/Prodbox/TestValidation.hs`.
 - On April 24, 2026, a fresh local rerun passed `./.build/prodbox tla-check`.
-- The last completed aggregate reruns that re-exercised the gateway partition and pod validations
-  remain the April 23, 2026 closure runs under `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`.
+- The latest completed aggregate reruns that re-exercised the gateway partition and pod
+  validations remain the April 23, 2026 closure runs under
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`; the fresh April 24
+  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
 
 ### Remaining Work
 

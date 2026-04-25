@@ -2,7 +2,9 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[system-components.md](system-components.md),
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 > **Purpose**: Define the supported Haskell onboarding wizard, standalone AWS IAM and quota command
 > surface, and the elevated-credential validation harness for real IAM lifecycle proof.
@@ -13,8 +15,9 @@ This phase owns interactive config authoring, policy generation, IAM user manage
 service-quota automation, and the test-only elevated credential harness. The Haskell worktree now
 closes the intended credential boundary: public onboarding and public AWS administration prompt for
 temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
-validation harness. The AWS-backed reruns now pass on the implemented repository surfaces. This
-phase is closed on its owned credential and IAM boundaries.
+validation harness. The targeted AWS-backed reruns on its owned surfaces now pass on the
+implemented repository surfaces, and the reopened aggregate rerun refresh remains Phase `1`
+closure work. This phase is closed on its owned credential and IAM boundaries.
 
 ## Current Baseline In Worktree
 
@@ -72,8 +75,10 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
 - On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- The last completed aggregate suites that continue to exercise the public onboarding surfaces
-  remain the April 23, 2026 closure runs.
+- The latest completed aggregate suites that continue to exercise the public onboarding surfaces
+  remain the April 23, 2026 closure runs under `./.build/prodbox test integration all` and
+  `./.build/prodbox test all`; the fresh April 24 aggregate reruns are still Phase `1` closure
+  work and are not yet closure evidence here.
 
 ### Remaining Work
 
@@ -120,9 +125,10 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
 - On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- The last completed IAM and aggregate closure reruns remain the April 23, 2026 runs for
-  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all`.
+- The latest completed aggregate suites that continue to exercise the public AWS administration
+  surfaces remain the April 23, 2026 closure runs under `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`; the fresh April 24 aggregate reruns are still Phase `1`
+  closure work and are not yet closure evidence here.
 
 ### Remaining Work
 
@@ -173,10 +179,11 @@ credential harness.
   repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
   stale ambient Pulumi host-login state.
 - On April 24, 2026, fresh local reruns passed `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, and `./.build/prodbox test integration env`.
-- The last completed IAM and aggregate closure reruns remain the April 23, 2026 runs for
-  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all`.
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
+  `./.build/prodbox test integration aws-iam`.
+- The latest completed aggregate IAM closure reruns remain the April 23, 2026 closure runs under
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`; the fresh April 24
+  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
 - The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather
   than failing at prerequisite validation.
 

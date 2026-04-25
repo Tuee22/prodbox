@@ -187,6 +187,9 @@ main = hspec $ do
                 upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|keycloak"
                 upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|vscode"
 
+                execRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-exec.txt")
+                execRecord `shouldContain` "exec|prodbox-vscode-postgres-0|--namespace|vscode|--|patronictl|list|-f|json"
+
                 (deleteExitCode, deleteStdout, deleteStderr) <-
                     readCreateProcessWithExitCode
                         (proc binary ["charts", "delete", "vscode", "--yes"]){cwd = Just tmpDir, env = Just envVars}
@@ -793,11 +796,15 @@ fakeKubectlScript =
         , "    ;;"
         , "  'get postgresql')"
         , "    if [[ \"$*\" == *'jsonpath={.status.PostgresClusterStatus}'* ]]; then"
-        , "      printf '\\n'"
+        , "      printf 'Running\\n'"
         , "    else"
         , "      printf 'Error from server (NotFound): postgresqls \"%s\" not found\\n' \"${3:-postgresql}\" >&2"
         , "      exit 1"
         , "    fi"
+        , "    ;;"
+        , "  'exec prodbox-vscode-postgres-0')"
+        , "    append_args \"$record_dir/kubectl-exec.txt\" \"$@\""
+        , "    printf '%s\\n' '[{\"Cluster\":\"prodbox-vscode-postgres\",\"Member\":\"prodbox-vscode-postgres-0\",\"Role\":\"Leader\",\"State\":\"running\"},{\"Cluster\":\"prodbox-vscode-postgres\",\"Member\":\"prodbox-vscode-postgres-1\",\"Role\":\"Replica\",\"State\":\"running\"},{\"Cluster\":\"prodbox-vscode-postgres\",\"Member\":\"prodbox-vscode-postgres-2\",\"Role\":\"Replica\",\"State\":\"running\"}]'"
         , "    ;;"
         , "  'get secret')"
         , "    if [[ \"$*\" == *'go-template={{index .data \"password\" | base64decode}}'* ]]; then"

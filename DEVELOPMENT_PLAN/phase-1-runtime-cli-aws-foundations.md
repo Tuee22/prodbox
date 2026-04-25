@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[system-components.md](system-components.md)
 
 > **Purpose**: Capture the Haskell runtime, CLI, configuration, build, and Pulumi foundations that
 > make later gateway, chart, and public-host phases meaningful and testable.
@@ -15,6 +16,11 @@ foundations for true IaC plus AWS validation. It also owns the canonical fronten
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here.
+
+As of April 24, 2026, the implementation in this phase remains in place but the phase is
+temporarily reopened on its aggregate-validation ownership. The reopen is limited to finishing
+fresh aggregate reruns after the AWS SSH-readiness repair in `src/Prodbox/TestValidation.hs`;
+later phases remain closed on their owned surfaces while that proof completes.
 
 ## Current Baseline In Worktree
 
@@ -76,8 +82,8 @@ artifact plus container-build topology contract.
 
 1. `prodbox check-code`
 2. `prodbox test integration cli`
-3. Host build proof: the canonical Cabal build emits the binary at `.build/prodbox`, runnable as
-   `./.build/prodbox`
+3. Host build proof: the canonical `cabal build --builddir=.build exe:prodbox` invocation plus
+   the `.build/prodbox` copy step yields a runnable `./.build/prodbox`
 4. Container build proof: the canonical frontend Dockerfile under `docker/` emits artifacts under
    `/opt/build`
 5. Repository path proof: no supported root-level `Dockerfile` remains
@@ -178,9 +184,9 @@ modules.
 
 None.
 
-## Sprint 1.3: Local Lifecycle and AWS Validation Foundations on the Haskell Stack ✅
+## Sprint 1.3: Local Lifecycle and AWS Validation Foundations on the Haskell Stack 🔄
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestRunner.hs`, `pulumi/`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -210,6 +216,8 @@ the same supported product scope.
 6. `prodbox test integration pulumi`
 7. `prodbox test integration aws-eks`
 8. `prodbox test integration ha-rke2-aws`
+9. `prodbox test integration all`
+10. `prodbox test all`
 
 ### Current Validation State
 
@@ -221,13 +229,18 @@ the same supported product scope.
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- The last completed infrastructure-backed aggregate reruns remain the April 23, 2026 closure
-  runs: `./.build/prodbox test integration all` and `./.build/prodbox test all`, which exercised
-  the lifecycle, Pulumi, EKS, and HA-RKE2 AWS validation surfaces end to end.
+- On April 24, 2026, the targeted repair rerun `./.build/prodbox test integration ha-rke2-aws`
+  passed after `src/Prodbox/TestValidation.hs` gained bounded SSH-readiness retries for the AWS
+  HA-RKE2 proof surface.
+- Fresh reruns of `./.build/prodbox test integration all` and `./.build/prodbox test all` are
+  still in progress after that repair and are not yet closure evidence for this reopened phase
+  surface.
 
 ### Remaining Work
 
-None.
+- Finish the fresh aggregate reruns `./.build/prodbox test integration all` and
+  `./.build/prodbox test all` after the AWS SSH-readiness repair, then restore this phase to
+  closed status.
 
 ## Documentation Requirements
 

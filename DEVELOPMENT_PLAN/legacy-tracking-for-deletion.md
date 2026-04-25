@@ -2,7 +2,13 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [development_plan_standards.md](development_plan_standards.md), [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md), [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md), [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
+**Referenced by**: [README.md](README.md),
+[development_plan_standards.md](development_plan_standards.md),
+[system-components.md](system-components.md),
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md),
+[phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
+[phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
+[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
 
 > **Purpose**: Record the completed Python-removal work and every surviving compatibility helper,
 > duplicate surface, or tooling residue that is still slated for deletion during the Haskell

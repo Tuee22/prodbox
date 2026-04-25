@@ -13,6 +13,7 @@ module Prodbox.Lib.ChartPlatform (
     gatewayNodeIds,
     keycloakNginxClientId,
     keycloakRealmName,
+    mergeChartSecretValues,
     renderChartList,
     renderChartStatus,
     resolveChart,
@@ -22,6 +23,7 @@ module Prodbox.Lib.ChartPlatform (
 )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (
     IOException,
     bracket,
@@ -29,6 +31,7 @@ import Control.Exception (
     try,
  )
 import Control.Monad (
+    filterM,
     foldM,
     forM,
     forM_,
@@ -202,12 +205,31 @@ data ChartInstallSnapshot = ChartInstallSnapshot
     }
     deriving (Eq, Show)
 
+data PatroniClusterMember = PatroniClusterMember
+    { patroniClusterMemberName :: String
+    , patroniClusterMemberRole :: String
+    , patroniClusterMemberState :: String
+    }
+    deriving (Eq, Show)
+
+data PatroniClusterReadiness
+    = PatroniClusterReady
+    | PatroniClusterPending String
+    deriving (Eq, Show)
+
 instance FromJSON ChartInstallSnapshot where
     parseJSON = withObject "helm list entry" $ \obj ->
         ChartInstallSnapshot
             <$> obj .: "name"
             <*> obj .: "namespace"
             <*> obj .: "status"
+
+instance FromJSON PatroniClusterMember where
+    parseJSON = withObject "patronictl list member" $ \obj ->
+        PatroniClusterMember
+            <$> obj .: "Member"
+            <*> obj .: "Role"
+            <*> obj .: "State"
 
 supportedChartNames :: [String]
 supportedChartNames = ["keycloak", "vscode", "gateway"]
@@ -429,7 +451,17 @@ deployChartPlan plan = do
   where
     deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
     deployRelease (Left err) _ = pure (Left err)
-    deployRelease (Right ()) release = helmUpgradeInstall release
+    deployRelease (Right ()) release = do
+        installResult <- helmUpgradeInstall release
+        case installResult of
+            Left err -> pure (Left err)
+            Right () -> validateReleaseReady release
+
+validateReleaseReady :: ChartReleasePlan -> IO (Either String ())
+validateReleaseReady release
+    | chartReleasePlanReleaseName release == "keycloak-postgres" =
+        waitForPatroniClusterReady (chartReleasePlanNamespace release)
+    | otherwise = pure (Right ())
 
 validateExternalRequirements :: ChartDeploymentPlan -> IO (Either String ())
 validateExternalRequirements plan =
@@ -483,6 +515,126 @@ validatePatroniPlatformReady = do
                                             ( "Patroni PostgreSQL platform is not ready. "
                                                 ++ "Run `prodbox rke2 install` before deploying charts that depend on PostgreSQL."
                                             )
+
+waitForPatroniClusterReady :: String -> IO (Either String ())
+waitForPatroniClusterReady namespace =
+    wait patroniClusterReadyAttempts
+  where
+    clusterName = patroniClusterName namespace
+    timeoutSeconds = (patroniClusterReadyAttempts * patroniClusterReadyDelayMicros) `div` 1000000
+
+    wait :: Int -> IO (Either String ())
+    wait attemptsLeft = do
+        readinessResult <- patroniClusterReadiness namespace
+        case readinessResult of
+            Left err ->
+                if attemptsLeft <= 1
+                    then pure (Left ("Patroni cluster " ++ clusterName ++ " did not converge: " ++ err))
+                    else do
+                        threadDelay patroniClusterReadyDelayMicros
+                        wait (attemptsLeft - 1)
+            Right PatroniClusterReady -> pure (Right ())
+            Right (PatroniClusterPending detail) ->
+                if attemptsLeft <= 1
+                    then
+                        pure
+                            ( Left
+                                ( "Patroni cluster "
+                                    ++ clusterName
+                                    ++ " did not converge within "
+                                    ++ show timeoutSeconds
+                                    ++ " seconds. Last status: "
+                                    ++ detail
+                                    ++ "."
+                                )
+                            )
+                    else do
+                        threadDelay patroniClusterReadyDelayMicros
+                        wait (attemptsLeft - 1)
+
+patroniClusterReadyAttempts :: Int
+patroniClusterReadyAttempts = 180
+
+patroniClusterReadyDelayMicros :: Int
+patroniClusterReadyDelayMicros = 10 * 1000000
+
+patroniClusterReadiness :: String -> IO (Either String PatroniClusterReadiness)
+patroniClusterReadiness namespace = do
+    clusterStatus <- readOptionalPatroniClusterStatus namespace
+    if clusterStatus /= Just "Running"
+        then
+            pure
+                ( Right
+                    ( PatroniClusterPending
+                        ( "PostgresClusterStatus="
+                            ++ maybe "<missing>" id clusterStatus
+                        )
+                    )
+                )
+        else do
+            membersResult <- patroniClusterMembers namespace
+            pure $
+                case membersResult of
+                    Left err -> Left err
+                    Right members ->
+                        let normalizedState member = map toLower (trimWhitespace (patroniClusterMemberState member))
+                            normalizedRole member = map toLower (trimWhitespace (patroniClusterMemberRole member))
+                            readyMember member
+                                | normalizedRole member == "leader" = normalizedState member == "running"
+                                | otherwise = normalizedState member `elem` ["running", "streaming"]
+                            leaderCount =
+                                length
+                                    [ ()
+                                    | member <- members
+                                    , normalizedRole member == "leader"
+                                    , normalizedState member == "running"
+                                    ]
+                            readyReplicaCount =
+                                length
+                                    [ ()
+                                    | member <- members
+                                    , normalizedRole member /= "leader"
+                                    , normalizedState member `elem` ["running", "streaming"]
+                                    ]
+                            memberSummary = renderPatroniClusterMembers members
+                         in if length members == 3 && all readyMember members && leaderCount == 1 && readyReplicaCount == 2
+                                then Right PatroniClusterReady
+                                else Right (PatroniClusterPending memberSummary)
+
+patroniClusterMembers :: String -> IO (Either String [PatroniClusterMember])
+patroniClusterMembers namespace = do
+    let clusterName = patroniClusterName namespace
+        primaryPodName = clusterName ++ "-0"
+    outputResult <-
+        runCaptured
+            "kubectl exec patronictl list"
+            "kubectl"
+            ["exec", primaryPodName, "--namespace", namespace, "--", "patronictl", "list", "-f", "json"]
+    pure $ do
+        output <- outputResult
+        case processExitCode output of
+            ExitSuccess ->
+                either
+                    (Left . ("kubectl exec patronictl list returned unexpected JSON payload: " ++))
+                    Right
+                    (eitherDecode (BL8.pack (processStdout output)) :: Either String [PatroniClusterMember])
+            ExitFailure _ ->
+                Left
+                    ( "kubectl exec patronictl list failed: "
+                        ++ processStderr output
+                        ++ processStdout output
+                    )
+
+renderPatroniClusterMembers :: [PatroniClusterMember] -> String
+renderPatroniClusterMembers members =
+    "members=" ++ intercalate "," (map renderMember members)
+  where
+    renderMember member =
+        patroniClusterMemberName member
+            ++ ":"
+            ++ map toLower (trimWhitespace (patroniClusterMemberRole member))
+            ++ "/"
+            ++ map toLower (trimWhitespace (patroniClusterMemberState member))
 
 deleteChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deleteChartPlan plan = do
@@ -602,7 +754,7 @@ resolveChartSecrets repoRoot namespace = do
             when resetRequired (writePatroniResetMarker namespaceDir)
             mergeRequiredKeys
                 targetPath
-                (Map.union existingValues recoveredValues)
+                (mergeChartSecretValues existingValues recoveredValues)
                 requiredChartSecretKeys
                 24
 
@@ -621,6 +773,15 @@ recoverPatroniSecretValues namespace = do
             , maybe [] (\value -> [("patroni_standby_password", value)]) standbyPassword
             , maybe [] (\value -> [("patroni_superuser_password", value)]) superuserPassword
             ]
+
+mergeChartSecretValues :: Map String String -> Map String String -> Map String String
+mergeChartSecretValues existingValues recoveredValues =
+    Map.union recoveredPatroniValues existingValues
+  where
+    recoveredPatroniValues =
+        Map.filterWithKey
+            (\key _ -> key `elem` requiredPatroniSecretKeys)
+            recoveredValues
 
 readOptionalPatroniClusterStatus :: String -> IO (Maybe String)
 readOptionalPatroniClusterStatus namespace = do
@@ -1214,21 +1375,25 @@ ensureChartStorage plan = do
             case resetResult of
                 Left err -> pure (Left err)
                 Right () -> do
-                    nodeHostnameResult <- singleNodeHostname
-                    case nodeHostnameResult of
+                    replicaResetResult <- resetRetainedPatroniReplicaBindings
+                    case replicaResetResult of
                         Left err -> pure (Left err)
-                        Right nodeHostname -> do
-                            prepareResult <- foldM prepareBinding (Right ()) bindings
-                            case prepareResult of
+                        Right () -> do
+                            nodeHostnameResult <- singleNodeHostname
+                            case nodeHostnameResult of
                                 Left err -> pure (Left err)
-                                Right () ->
-                                    applyManifest
-                                        ( chartStorageManifest
-                                            (chartDeploymentPlanNamespace plan)
-                                            (chartDeploymentPlanRootChart plan)
-                                            bindings
-                                            nodeHostname
-                                        )
+                                Right nodeHostname -> do
+                                    prepareResult <- foldM prepareBinding (Right ()) bindings
+                                    case prepareResult of
+                                        Left err -> pure (Left err)
+                                        Right () ->
+                                            applyManifest
+                                                ( chartStorageManifest
+                                                    (chartDeploymentPlanNamespace plan)
+                                                    (chartDeploymentPlanRootChart plan)
+                                                    bindings
+                                                    nodeHostname
+                                                )
   where
     resetPatroniStorageIfRequested :: IO (Either String ())
     resetPatroniStorageIfRequested = do
@@ -1256,6 +1421,18 @@ ensureChartStorage plan = do
     resetBinding (Left err) _ = pure (Left err)
     resetBinding (Right ()) binding =
         runCommandExpectSuccess "sudo rm" "sudo" ["rm", "-rf", chartStorageBindingHostPath binding]
+
+    resetRetainedPatroniReplicaBindings :: IO (Either String ())
+    resetRetainedPatroniReplicaBindings = do
+        let replicaBindings =
+                [ binding
+                | release <- chartDeploymentPlanReleases plan
+                , chartReleasePlanReleaseName release == "keycloak-postgres"
+                , binding <- chartReleasePlanStorageBindings release
+                , chartStorageBindingOrdinal binding > 0
+                ]
+        existingReplicaBindings <- filterM (doesDirectoryExist . chartStorageBindingHostPath) replicaBindings
+        foldM resetBinding (Right ()) existingReplicaBindings
 
     prepareBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
     prepareBinding (Left err) _ = pure (Left err)

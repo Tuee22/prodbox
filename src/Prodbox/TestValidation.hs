@@ -2,6 +2,7 @@
 
 module Prodbox.TestValidation (
     runNativeValidation,
+    verifyAwsTestSshReachability,
 )
 where
 
@@ -83,6 +84,12 @@ publicEdgeReadyAttempts = 30
 
 publicEdgeReadyDelayMicroseconds :: Int
 publicEdgeReadyDelayMicroseconds = 10000000
+
+awsTestSshReadyAttempts :: Int
+awsTestSshReadyAttempts = 18
+
+awsTestSshReadyDelayMicroseconds :: Int
+awsTestSshReadyDelayMicroseconds = 10000000
 
 runNativeValidation :: FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
 runNativeValidation repoRoot environment validation = do
@@ -548,30 +555,70 @@ verifyAwsTestSshReachability repoRoot = do
                 ( \exitCode node ->
                     case exitCode of
                         ExitFailure _ -> pure exitCode
-                        ExitSuccess ->
-                            runCommandForExitCode
-                                CommandSpec
-                                    { commandPath = "ssh"
-                                    , commandArguments =
-                                        [ "-i"
-                                        , privateKeyPath
-                                        , "-o"
-                                        , "BatchMode=yes"
-                                        , "-o"
-                                        , "StrictHostKeyChecking=no"
-                                        , "-o"
-                                        , "UserKnownHostsFile=/dev/null"
-                                        , "-o"
-                                        , "ConnectTimeout=20"
-                                        , "ubuntu@" ++ AwsTest.testNodePublicIp node
-                                        , "hostname"
-                                        ]
-                                    , commandEnvironment = Nothing
-                                    , commandWorkingDirectory = Just repoRoot
-                                    }
+                        ExitSuccess -> waitForAwsTestNodeSsh repoRoot privateKeyPath node awsTestSshReadyAttempts
                 )
                 ExitSuccess
                 (AwsTest.testSnapshotNodes current)
+
+waitForAwsTestNodeSsh :: FilePath -> FilePath -> AwsTest.AwsTestNode -> Int -> IO ExitCode
+waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
+    let spec =
+            CommandSpec
+                { commandPath = "ssh"
+                , commandArguments =
+                    [ "-i"
+                    , privateKeyPath
+                    , "-o"
+                    , "BatchMode=yes"
+                    , "-o"
+                    , "StrictHostKeyChecking=no"
+                    , "-o"
+                    , "UserKnownHostsFile=/dev/null"
+                    , "-o"
+                    , "ConnectTimeout=20"
+                    , "ubuntu@" ++ AwsTest.testNodePublicIp node
+                    , "hostname"
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+        nodeLabel = AwsTest.testNodeName node ++ " (" ++ AwsTest.testNodePublicIp node ++ ")"
+    outputResult <- captureCommand spec
+    case outputResult of
+        Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
+        Success output ->
+            case processExitCode output of
+                ExitSuccess -> do
+                    putStr (processStdout output)
+                    hPutStr stderr (processStderr output)
+                    pure ExitSuccess
+                ExitFailure _
+                    | attemptsLeft > 1 && shouldRetryAwsTestSsh (outputDetail output) -> do
+                        hPutStrLn stderr ("Waiting for AWS test-stack SSH readiness on " ++ nodeLabel ++ " before retry: " ++ outputDetail output)
+                        threadDelay awsTestSshReadyDelayMicroseconds
+                        waitForAwsTestNodeSsh repoRoot privateKeyPath node (attemptsLeft - 1)
+                    | otherwise ->
+                        failWith
+                            ( "AWS test-stack SSH validation failed for "
+                                ++ nodeLabel
+                                ++ ": "
+                                ++ outputDetail output
+                            )
+
+shouldRetryAwsTestSsh :: String -> Bool
+shouldRetryAwsTestSsh detail =
+    let lowered = map toLowerAscii detail
+     in any
+            (`isInfixOf` lowered)
+            [ "connection refused"
+            , "connection timed out"
+            , "operation timed out"
+            , "connection reset by peer"
+            , "connection closed by remote host"
+            , "no route to host"
+            , "host is down"
+            , "network is unreachable"
+            ]
 
 runSequentially :: [IO ExitCode] -> IO ExitCode
 runSequentially = foldM step ExitSuccess

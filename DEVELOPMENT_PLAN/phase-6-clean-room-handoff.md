@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
 > Haskell stack and a final cleanup ledger with no unresolved supported-path residue.
@@ -11,11 +12,12 @@
 
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. Sprint `6.1` keeps the destructive operator flow closed on Haskell command paths.
-Sprint `6.2` keeps the repository handoff open until Phase `7` onboarding and AWS administration
-surfaces are closed on Haskell-only paths, all Python artifacts are gone, and the final
-post-cleanup rerun is repeated on the final repository state. It owns the destructive rerun
-contract, the final zero-Python handoff criteria, and the dependency between those surfaces and
-the earlier lifecycle, gateway, chart, and AWS phases.
+Sprint `6.2` remains closed as well: the Phase `7` onboarding and AWS administration surfaces are
+closed on Haskell-only paths, the Python artifact cleanup is complete, and the current reopen is
+scoped to the Phase `1` aggregate-validation refresh after the AWS SSH-readiness repair rather
+than to the Phase `6` handoff criteria. This phase owns the destructive rerun contract, the final
+zero-Python handoff criteria, and the dependency between those surfaces and the earlier
+lifecycle, gateway, chart, and AWS phases.
 
 ## Current Baseline In Worktree
 
@@ -82,20 +84,21 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   `prodbox test all` and `prodbox test integration all` run the native validation set that
   includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
   lifecycle suite is missing from the repository.
-- The last completed clean-room closure reruns remain the April 23, 2026 runs under
+- The latest completed clean-room closure reruns remain the April 23, 2026 closure runs under
   `./.build/prodbox test integration all` and `./.build/prodbox test all`, which exercised
   `prodbox rke2 delete --yes`, `prodbox rke2 install`, the destructive lifecycle proof, the
   AWS-backed create/destroy validations, residue checks, and the final supported-runtime restore
-  back to the clean-room steady state.
+  back to the clean-room steady state. The fresh April 24 aggregate reruns are still Phase `1`
+  closure work and are not yet closure evidence here.
 
 ### Remaining Work
 
-None. The clean-room rerun now closes through the aggregate suites; no remaining Phase `6`
-implementation work survives.
+None. The clean-room rerun remains closed through the existing aggregate closure evidence; the
+current aggregate-rerun refresh is Phase `1` work rather than surviving Phase `6` work.
 
-## Sprint 6.2: Zero-Python Repository Handoff 🔄
+## Sprint 6.2: Zero-Python Repository Handoff ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `src/`, `test/`, `pulumi/`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -139,21 +142,23 @@ surfaces close on Haskell-only paths.
 - On April 24, 2026, fresh local reruns on the current configured checkout passed
   `cabal build --builddir=.build exe:prodbox`, sync of `./.build/prodbox`,
   `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
-  `./.build/prodbox tla-check`.
-- The current workspace now contains repository-root `prodbox-config.dhall`, so the closure gap is
-  no longer the missing-config prerequisite boundary.
-- The last completed infrastructure-backed aggregate reruns remain the April 23, 2026 closure
-  runs for `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
-  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
+  `./.build/prodbox tla-check`, `./.build/prodbox dns check`,
+  `./.build/prodbox host public-edge`, and `./.build/prodbox test integration aws-iam`.
+- On April 24, 2026, a direct retained-state rerun also passed
+  `./.build/prodbox charts delete vscode --yes` followed by
+  `./.build/prodbox charts deploy vscode`.
+- The current workspace contains repository-root `prodbox-config.dhall`.
+- The latest completed infrastructure-backed aggregate reruns remain the April 23, 2026 closure
+  runs for `./.build/prodbox test integration all` and `./.build/prodbox test all`; the fresh
+  April 24 aggregate reruns are still Phase `1` closure work and are not yet closure evidence
+  here.
 
 
 ### Remaining Work
 
-- Re-execute the final infrastructure-backed rerun on this configured checkout, or another
-  configured workspace, through `prodbox dns check`, `prodbox host public-edge`,
-  `prodbox test integration all`, and `prodbox test all` so the final clean-room handoff is
-  re-proved on the post-cleanup repository state.
+None. The reopened aggregate-rerun refresh is Phase `1` closure work rather than surviving
+Phase `6` handoff work.
 
 ## Documentation Requirements
 

@@ -2,7 +2,19 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md), [../documents/engineering/README.md](../documents/engineering/README.md)
+**Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md),
+[../documents/engineering/README.md](../documents/engineering/README.md),
+[development_plan_standards.md](development_plan_standards.md),
+[00-overview.md](00-overview.md), [system-components.md](system-components.md),
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md),
+[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
+[phase-2-gateway-dns.md](phase-2-gateway-dns.md),
+[phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
+[phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
+[phase-5-public-host-validation.md](phase-5-public-host-validation.md),
+[phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
+[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
 
 > **Purpose**: Provide the single execution-ordered development plan for the Haskell rewrite of
 > `prodbox`, including phase status, validation gates, and cleanup ownership.
@@ -14,19 +26,18 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 24, 2026, Phases `0-5` and `7` are closed on their supported repository surfaces.
-Phase `6` remains `Active` only on its post-cleanup rerun surface: the supported architecture is
-Haskell-only, Pulumi is reserved for AWS validation IaC only, the chart platform uses
-namespace-local Patroni PostgreSQL HA for Helm-managed application data, the Harbor bootstrap
-exception is limited to Harbor plus Harbor's storage backend before later Helm deployments switch
-to Harbor-backed image refs, and the legacy cleanup residue tracked earlier in this phase is now
-removed.
+As of April 24, 2026, Phases `0-7` remain implemented on their supported repository surfaces, but
+Phase `1` is temporarily reopened on its aggregate-validation ownership while fresh aggregate
+reruns are still in flight. The reopen was triggered by an SSH-readiness gap discovered in
+`ValidationHaRke2Aws` during `./.build/prodbox test all`; the fix now lives in
+`src/Prodbox/TestValidation.hs`, and later phases remain closed on their owned surfaces while the
+final aggregate reruns complete.
 
-Phase `6` remains open in the current workspace because the final infrastructure-backed rerun has
-not yet been re-executed on this configured checkout after cleanup. The repository root now
-contains operator-authored `prodbox-config.dhall`, so the closure gap is no longer the config
-prerequisite boundary; it is the missing fresh rerun of the AWS-, DNS-, and public-edge-backed
-proof surfaces on the final repository state.
+The supported architecture remains Haskell-only, Pulumi remains reserved for AWS validation IaC
+only, the chart platform remains namespace-local Patroni PostgreSQL HA for Helm-managed
+application data, the Harbor bootstrap exception remains limited to Harbor plus Harbor's storage
+backend before later Helm deployments switch to Harbor-backed image refs, and the legacy cleanup
+residue tracked earlier in this phase remains removed.
 
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
@@ -97,23 +108,24 @@ A sprint can move to `Done` only when all of the following are true:
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
-| 6 | Final Clean-Room Rerun and Zero-Python Handoff | 🔄 Active | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
+| 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: Phase `1` owns canonical Dockerfile placement, the direct-Dhall config
-contract, and the native validation harness. Phase `2` owns gateway packaging and DNS ownership.
-Phase `3` owns the chart platform, retained storage, Harbor-backed `vscode` delivery, and the
-namespace-local Patroni PostgreSQL doctrine for Helm-managed application stacks. Phase `4` owns
-the Harbor-first lifecycle, the narrowed Harbor-plus-storage-backend bootstrap exception,
-AWS-only Pulumi scope, dual-arch publication, mixed-arch support, and Python removal. Phases
-`5-7` own public-host proof, the destructive clean-room rerun, and onboarding/IAM automation.
-Phase `6` remains active until the post-cleanup rerun is repeated successfully from a configured
-workspace on the final repository state.
+contract, and the native validation harness; it is the only phase temporarily reopened while fresh
+aggregate reruns finish after the April 24, 2026 AWS SSH-readiness repair. Phase `2` owns gateway
+packaging and DNS ownership. Phase `3` owns the chart platform, retained storage, Harbor-backed
+`vscode` delivery, and the namespace-local Patroni PostgreSQL doctrine for Helm-managed
+application stacks. Phase `4` owns the Harbor-first lifecycle, the narrowed Harbor-plus-storage-
+backend bootstrap exception, AWS-only Pulumi scope, dual-arch publication, mixed-arch support,
+and Python removal. Phases `5-7` own public-host proof, the destructive clean-room rerun, and
+onboarding/IAM automation. Those later phases remain closed on their owned surfaces while Phase
+`1` aggregate reruns complete.
 
 ## Current Plan Status
 
@@ -136,6 +148,12 @@ As of April 24, 2026, the development plan is current against the repository wor
 - The chart platform is Haskell-owned and now renders namespace-local Patroni PostgreSQL HA with
   exactly three replicas, synchronous replication, deterministic retained PV bindings, retained
   secret state, and no embedded chart-local PostgreSQL subcharts.
+- The chart platform now renders retained Patroni application, standby, and superuser secrets
+  before the Patroni cluster resource, prefers recovered live Patroni passwords when stale
+  retained state exists, waits for a running Patroni leader plus two ready replicas before
+  releasing dependent charts, reinitializes retained Patroni follower roots before redeploy so
+  replicas can rejoin from the preserved cluster anchor, and gates Keycloak liveness behind a
+  startup probe sized for the canonical cold-restore path.
 - The supported Pulumi path is Haskell-orchestrated and retained only for the AWS validation
   stacks under `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and
   `pulumi/aws-test/Pulumi.yaml` plus `pulumi/aws-test/Main.yaml`.
@@ -146,15 +164,17 @@ As of April 24, 2026, the development plan is current against the repository wor
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- Phase `6` remains active because the post-cleanup infrastructure-backed rerun has not yet been
-  re-executed on this configured checkout after the config file was restored.
 - On April 24, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
   `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
-  `./.build/prodbox tla-check`.
-- The last completed infrastructure-backed closure reruns remain the April 23, 2026 runs for
-  `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
-  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
+  `./.build/prodbox tla-check`, `./.build/prodbox dns check`,
+  `./.build/prodbox host public-edge`, `./.build/prodbox test integration aws-iam`, and the
+  targeted repair rerun `./.build/prodbox test integration ha-rke2-aws`.
+- Fresh reruns of `./.build/prodbox test integration all` and `./.build/prodbox test all` are
+  still in progress after the AWS SSH-readiness repair and are not yet closure evidence.
+- On April 24, 2026, a direct retained-state rerun also passed
+  `./.build/prodbox charts delete vscode --yes` followed by
+  `./.build/prodbox charts deploy vscode`.
 
 ## Exit Definition
 

@@ -63,7 +63,7 @@ The supported contract is:
 - Each Patroni cluster runs exactly three PostgreSQL replicas.
 - Patroni synchronous replication is enabled with strict mode.
 - The PostgreSQL workload image is Harbor-backed `spilo-17`.
-- Keycloak consumes the operator-generated credentials secret
+- Keycloak consumes the namespace-local retained credentials secret
   `keycloak.prodbox-<root-chart>-postgres.credentials.postgresql.acid.zalan.do`.
 - The primary service endpoint is
   `prodbox-<root-chart>-postgres.<namespace>.svc.cluster.local`.
@@ -74,6 +74,13 @@ The chart runtime validates the platform prerequisite by requiring both:
 - deployment `postgres-operator` in namespace `postgres-operator`
 
 before any chart that depends on PostgreSQL is deployed.
+
+After the internal `keycloak-postgres` release installs, the chart runtime waits for the Patroni
+cluster to report `PostgresClusterStatus=Running` and for `patronictl list -f json` to show one
+running leader plus two ready replicas before it deploys `keycloak` or later dependent charts.
+Before the retained Patroni cluster is recreated, the chart runtime reinitializes retained
+follower roots for ordinals `1` and `2` so those replicas rejoin from the preserved cluster
+anchor instead of trying to continue from stale follower-local WAL state.
 
 ## 5. CLI-Owned PV/PVC Lifecycle
 

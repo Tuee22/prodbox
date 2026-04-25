@@ -2,6 +2,7 @@
 
 module Main (main) where
 
+import Control.Exception (finally)
 import Data.Aeson (
     Value (..),
     eitherDecode,
@@ -63,6 +64,7 @@ import Prodbox.Host (
     PortStatus (..),
     renderPortAvailabilityReport,
  )
+import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.K8s (
     parseKubectlObjectNames,
  )
@@ -71,6 +73,7 @@ import Prodbox.Lib.ChartPlatform (
     ChartReleasePlan (..),
     buildChartDeletePlan,
     buildChartDeploymentPlan,
+    mergeChartSecretValues,
     resolveChartSecrets,
     supportedChartNames,
  )
@@ -106,11 +109,23 @@ import Prodbox.TestPlan (
     nativeValidationId,
     testExecutionPlan,
  )
+import Prodbox.TestValidation (
+    verifyAwsTestSshReachability,
+ )
 import System.Directory (
+    Permissions (..),
     createDirectoryIfMissing,
     doesFileExist,
     getCurrentDirectory,
+    getPermissions,
+    setPermissions,
  )
+import System.Environment (
+    lookupEnv,
+    setEnv,
+    unsetEnv,
+ )
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import Test.Hspec
@@ -300,6 +315,27 @@ main = hspec $ do
             deploymentTemplate `shouldNotContain` "/app/prodbox-config.json"
             awsSecretTemplate `shouldContain` "name: gateway-aws-credentials"
             awsSecretTemplate `shouldNotContain` "prodbox-config.json"
+
+        it "renders retained Patroni credential secrets before the PostgreSQL cluster resource" $ do
+            repoRoot <- getCurrentDirectory
+            secretsTemplate <- readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "00-secrets.yaml")
+            postgresTemplate <- readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "postgresql.yaml")
+
+            secretsTemplate `shouldContain` "kind: Secret"
+            secretsTemplate `shouldContain` ".Values.secrets.application.name"
+            secretsTemplate `shouldContain` ".Values.secrets.superuser.name"
+            secretsTemplate `shouldContain` ".Values.secrets.standby.name"
+            secretsTemplate `shouldContain` "application: spilo"
+            postgresTemplate `shouldContain` "kind: postgresql"
+
+        it "gates Keycloak liveness behind a startup probe during cold restores" $ do
+            repoRoot <- getCurrentDirectory
+            deploymentTemplate <- readFile (repoRoot </> "charts" </> "keycloak" </> "templates" </> "deployment.yaml")
+
+            deploymentTemplate `shouldContain` "progressDeadlineSeconds: 1800"
+            deploymentTemplate `shouldContain` "startupProbe:"
+            deploymentTemplate `shouldContain` "path: {{ printf \"%s/health/ready\" .Values.keycloak.relativePath }}"
+            deploymentTemplate `shouldContain` "failureThreshold: 60"
 
         it "keeps the gateway image on the single-stage ubuntu doctrine" $ do
             repoRoot <- getCurrentDirectory
@@ -820,6 +856,28 @@ main = hspec $ do
                             Just value -> value `shouldSatisfy` (not . null)
                             Nothing -> expectationFailure "expected patroni_superuser_password"
 
+        it "prefers live Patroni secret recovery over stale retained Patroni values" $ do
+            let existingSecrets =
+                    Map.fromList
+                        [ ("keycloak_admin_password", "adminpass")
+                        , ("keycloak_nginx_client_secret", "nginxsecret")
+                        , ("patroni_app_password", "stale-app")
+                        , ("patroni_standby_password", "stale-standby")
+                        , ("patroni_superuser_password", "stale-superuser")
+                        ]
+                recoveredSecrets =
+                    Map.fromList
+                        [ ("patroni_app_password", "live-app")
+                        , ("patroni_standby_password", "live-standby")
+                        , ("patroni_superuser_password", "live-superuser")
+                        ]
+                mergedSecrets = mergeChartSecretValues existingSecrets recoveredSecrets
+            Map.lookup "keycloak_admin_password" mergedSecrets `shouldBe` Just "adminpass"
+            Map.lookup "keycloak_nginx_client_secret" mergedSecrets `shouldBe` Just "nginxsecret"
+            Map.lookup "patroni_app_password" mergedSecrets `shouldBe` Just "live-app"
+            Map.lookup "patroni_standby_password" mergedSecrets `shouldBe` Just "live-standby"
+            Map.lookup "patroni_superuser_password" mergedSecrets `shouldBe` Just "live-superuser"
+
     describe "native gateway helpers" $ do
         it "renders deterministic gateway status output" $ do
             let payload =
@@ -994,6 +1052,63 @@ main = hspec $ do
                                 _ -> expectationFailure "expected deployment object"
                         _ -> expectationFailure "expected exported object"
 
+    describe "native validation helpers" $ do
+        it "retries AWS test-stack SSH validation until a node accepts connections" $
+            withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+                let stateDir = tmpDir </> ".prodbox-state" </> AwsTest.awsTestStackName
+                    privateKeyPath = stateDir </> "id_ed25519"
+                    publicKeyPath = stateDir </> "id_ed25519.pub"
+                    sshStateDir = tmpDir </> "ssh-state"
+                    binDir = tmpDir </> "bin"
+                    fakeSshPath = binDir </> "ssh"
+                    snapshot =
+                        AwsTest.AwsTestStackSnapshot
+                            { AwsTest.testSnapshotStackName = AwsTest.awsTestStackName
+                            , AwsTest.testSnapshotBackendBucket = "prodbox-test-pulumi-backends"
+                            , AwsTest.testSnapshotVpcId = "vpc-1234567890"
+                            , AwsTest.testSnapshotSubnetIds = ["subnet-1", "subnet-2", "subnet-3"]
+                            , AwsTest.testSnapshotSecurityGroupId = "sg-1234567890"
+                            , AwsTest.testSnapshotNodes =
+                                [ AwsTest.AwsTestNode
+                                    { AwsTest.testNodeName = "aws-test-node-0"
+                                    , AwsTest.testNodeAvailabilityZone = "us-west-2a"
+                                    , AwsTest.testNodeInstanceId = "i-1234567890"
+                                    , AwsTest.testNodePrivateIp = "10.0.0.10"
+                                    , AwsTest.testNodePublicIp = "203.0.113.10"
+                                    }
+                                ]
+                            }
+                createDirectoryIfMissing True stateDir
+                createDirectoryIfMissing True sshStateDir
+                createDirectoryIfMissing True binDir
+                writeFile privateKeyPath "fake-private-key\n"
+                writeFile publicKeyPath "fake-public-key\n"
+                AwsTest.saveAwsTestStackSnapshot tmpDir snapshot
+                writeFile fakeSshPath (unlines fakeAwsTestSshScript)
+                makeExecutable fakeSshPath
+
+                originalPath <- lookupEnv "PATH"
+                originalSshStateDir <- lookupEnv "PRODBOX_TEST_SSH_STATE_DIR"
+                let restoreEnv key previous =
+                        case previous of
+                            Just value -> setEnv key value
+                            Nothing -> unsetEnv key
+                    configuredPath =
+                        case originalPath of
+                            Just currentPath -> binDir ++ ":" ++ currentPath
+                            Nothing -> binDir
+
+                setEnv "PATH" configuredPath
+                setEnv "PRODBOX_TEST_SSH_STATE_DIR" sshStateDir
+                validationResult <-
+                    verifyAwsTestSshReachability tmpDir
+                        `finally` do
+                            restoreEnv "PATH" originalPath
+                            restoreEnv "PRODBOX_TEST_SSH_STATE_DIR" originalSshStateDir
+
+                validationResult `shouldBe` ExitSuccess
+                readFile (sshStateDir </> "count") `shouldReturn` "3"
+
     describe "settings" $ do
         it "validates Dhall config and renders masked output without materializing JSON" $
             withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -1039,6 +1154,30 @@ parseArgs argv =
             let (message, _) = renderFailure failure "prodbox"
              in Left message
         CompletionInvoked _ -> Left "shell completion requested"
+
+makeExecutable :: FilePath -> IO ()
+makeExecutable path = do
+    permissions <- getPermissions path
+    setPermissions path permissions{executable = True}
+
+fakeAwsTestSshScript :: [String]
+fakeAwsTestSshScript =
+    [ "#!/usr/bin/env bash"
+    , "set -eu"
+    , "state_dir=\"${PRODBOX_TEST_SSH_STATE_DIR:?}\""
+    , "count_file=\"$state_dir/count\""
+    , "count=0"
+    , "if [ -f \"$count_file\" ]; then"
+    , "  count=$(cat \"$count_file\")"
+    , "fi"
+    , "count=$((count + 1))"
+    , "printf '%s' \"$count\" > \"$count_file\""
+    , "if [ \"$count\" -lt 3 ]; then"
+    , "  echo \"ssh: connect to host 203.0.113.10 port 22: Connection refused\" >&2"
+    , "  exit 255"
+    , "fi"
+    , "echo \"aws-test-node-0\""
+    ]
 
 lookupPrerequisiteNode :: String -> EffectNode
 lookupPrerequisiteNode prerequisiteId =

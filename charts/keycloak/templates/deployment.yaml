@@ -5,6 +5,7 @@ metadata:
   labels:
     {{- include "keycloak.labels" . | nindent 4 }}
 spec:
+  progressDeadlineSeconds: 1800
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
@@ -68,6 +69,12 @@ spec:
             - name: realm-import
               mountPath: /opt/keycloak/data/import
               readOnly: true
+          startupProbe:
+            httpGet:
+              path: {{ printf "%s/health/ready" .Values.keycloak.relativePath }}
+              port: 9000
+            failureThreshold: 60
+            periodSeconds: 10
           readinessProbe:
             httpGet:
               path: {{ printf "%s/health/ready" .Values.keycloak.relativePath }}

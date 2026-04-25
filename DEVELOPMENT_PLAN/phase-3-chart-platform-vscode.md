@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[system-components.md](system-components.md)
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, and the
 > supported cluster-backed `vscode` delivery path.
@@ -33,7 +34,7 @@ synchronous replication, and no embedded chart-local PostgreSQL subchart.
 - `keycloak-postgres` renders a Patroni cluster resource in the root chart namespace, depends on
   the lifecycle-owned `postgres-operator` platform, and stores data under deterministic manual-PV
   bindings.
-- `keycloak` now consumes the operator-generated Patroni credentials secret and the namespace-local
+- `keycloak` now consumes the namespace-local retained Patroni credentials secret and the namespace-local
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
@@ -68,11 +69,13 @@ platform doctrine.
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
 - `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`.
-- The last completed cluster-backed chart-platform closure reruns remain the April 23, 2026 runs:
-  `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration charts-storage`, and
-  `./.build/prodbox test integration charts-platform`, then those same chart-platform proofs inside
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`.
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code` and
+  `./.build/prodbox test unit`.
+- The latest completed cluster-backed chart-platform closure reruns remain the April 23, 2026
+  runs: `./.build/prodbox test integration charts-storage`,
+  `./.build/prodbox test integration charts-platform`, and those same chart-platform proofs inside
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`. The fresh April 24
+  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
 
 ### Remaining Work
 
@@ -114,10 +117,14 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestRunner.hs` waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` before the external `charts-vscode` curl proof
   continues.
-- The last completed cluster-backed `vscode` closure reruns remain the April 23, 2026 runs:
+- On April 24, 2026, a direct retained-state rerun passed
+  `./.build/prodbox charts delete vscode --yes` followed by
+  `./.build/prodbox charts deploy vscode`.
+- The latest completed cluster-backed `vscode` closure reruns remain the April 23, 2026 runs:
   `./.build/prodbox test integration charts-vscode` on the Harbor-backed
   `keycloak-postgres -> keycloak -> vscode` path, plus the same public-edge redirect proof inside
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`.
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`. The fresh April 24
+  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
 
 ### Remaining Work
 
@@ -159,20 +166,29 @@ PostgreSQL for every Helm-managed PostgreSQL dependency.
 
 - `src/Prodbox/PostgresPlatform.hs` now defines the Patroni operator, cluster, service, and secret
   naming contract.
-- `src/Prodbox/Lib/ChartPlatform.hs` now renders `keycloak-postgres`, injects the operator
-  credentials secret into `keycloak`, and validates the cluster-wide Patroni platform before chart
-  deploy.
+- `src/Prodbox/Lib/ChartPlatform.hs` now renders `keycloak-postgres`, injects the namespace-local
+  retained Patroni credentials secret into `keycloak`, validates the cluster-wide Patroni platform
+  before chart deploy, waits for the Patroni cluster to converge to one running leader plus two
+  ready replicas before releasing dependent charts, reinitializes retained Patroni follower roots
+  before redeploy so replicas can cleanly rejoin from the preserved cluster anchor, and prefers
+  recovered live Patroni passwords when stale retained state is present.
 - `src/Prodbox/ContainerImage.hs` now mirrors `postgres-operator` and `spilo-17` into Harbor and
   no longer carries Bitnami `repmgr` or `pgpool` targets on the supported path.
-- `charts/keycloak-postgres/` now renders the Patroni cluster with three replicas, synchronous
+- `charts/keycloak-postgres/` now renders the retained application, superuser, and standby
+  credentials secrets before the Patroni cluster resource, alongside three replicas, synchronous
   mode, explicit Spilo security IDs, and deterministic manual-PV bindings.
-- `charts/keycloak/` now consumes the operator-generated database secret and the namespace-local
+- `charts/keycloak/` now consumes the namespace-local retained database secret and the namespace-local
   primary service endpoint.
-- The last completed Patroni-backed chart closure reruns remain the April 23, 2026 runs:
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox test unit` and a direct
+  retained-state `./.build/prodbox charts delete vscode --yes` plus
+  `./.build/prodbox charts deploy vscode` cycle.
+- The latest completed Patroni-backed chart closure reruns remain the April 23, 2026 runs:
   `./.build/prodbox test unit`, `./.build/prodbox test integration charts-storage`,
   `./.build/prodbox test integration charts-platform`, and
   `./.build/prodbox test integration charts-vscode`, then the same Patroni-backed chart stack
-  proof through `./.build/prodbox test integration all` and `./.build/prodbox test all`.
+  proof through `./.build/prodbox test integration all` and `./.build/prodbox test all`. The
+  fresh April 24 aggregate reruns are still Phase `1` closure work and are not yet closure
+  evidence here.
 
 ### Remaining Work
 

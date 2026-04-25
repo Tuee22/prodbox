@@ -85,11 +85,15 @@ contract without reintroducing Python or duplicate runtime paths.
   inspection.
 - `ensureCustomImageVariants` keeps the custom Haskell images single-stage while publishing
   `linux/amd64` and `linux/arm64` variants and composing the final manifest tag in Harbor.
-- The last completed lifecycle-closure reruns remain the April 23, 2026 runs:
+- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+  `./.build/prodbox dns check`, and `./.build/prodbox host public-edge`.
+- The latest completed lifecycle-closure reruns remain the April 23, 2026 runs:
   `./.build/prodbox check-code`, `./.build/prodbox test unit`,
   `./.build/prodbox test integration cli`, `./.build/prodbox test integration lifecycle`,
   `./.build/prodbox dns check`, `./.build/prodbox host public-edge`,
-  `./.build/prodbox test integration all`, and `./.build/prodbox test all`.
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all`. The fresh April 24
+  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
 
 ### Remaining Work
 
@@ -132,12 +136,16 @@ local-cluster supported ownership from the Pulumi path.
   cluster ownership; the public Pulumi surface is AWS-only.
 - The AWS validation stack inputs are synchronized through explicit Pulumi stack config written by
   the Haskell infra modules rather than `std:getenv` lookups inside the YAML runtime.
-- The last completed AWS-IaC closure reruns remain the April 23, 2026 runs:
+- On April 24, 2026, the targeted repair rerun `./.build/prodbox test integration ha-rke2-aws`
+  passed after `src/Prodbox/TestValidation.hs` gained bounded SSH-readiness retries for the AWS
+  HA-RKE2 proof surface.
+- The latest completed AWS-IaC closure reruns remain the April 23, 2026 runs:
   `./.build/prodbox test integration pulumi`,
   `./.build/prodbox test integration aws-eks`, and
   `./.build/prodbox test integration ha-rke2-aws`, with those same AWS IaC create/destroy
   validations rerun again inside `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`.
+  `./.build/prodbox test all`. The fresh April 24 aggregate reruns are still Phase `1` closure
+  work and are not yet closure evidence here.
 
 ### Remaining Work
 

@@ -26,12 +26,14 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 24, 2026, Phases `0-7` remain implemented on their supported repository surfaces, but
-Phase `1` is temporarily reopened on its aggregate-validation ownership while fresh aggregate
-reruns are still in flight. The reopen was triggered by an SSH-readiness gap discovered in
-`ValidationHaRke2Aws` during `./.build/prodbox test all`; the fix now lives in
-`src/Prodbox/TestValidation.hs`, and later phases remain closed on their owned surfaces while the
-final aggregate reruns complete.
+As of April 25, 2026, Phases `0-7` are complete on their supported repository surfaces. Phase `4`
+was briefly reopened after a Harbor custom-image inspection gap surfaced during a direct
+`./.build/prodbox rke2 install`: Harbor returned `401 Unauthorized` while
+`src/Prodbox/CLI/Rke2.hs` inspected a missing `prodbox-nginx-oidc` target, so the lifecycle path
+failed before rebuilding and publishing that custom image. The fix now lives in
+`src/Prodbox/CLI/Rke2.hs`, and fresh reruns passed both `./.build/prodbox test integration all`
+and `./.build/prodbox test all`, followed by a final direct `./.build/prodbox host public-edge`
+rerun that again reached `CLASSIFICATION=ready-for-external-proof`.
 
 The supported architecture remains Haskell-only, Pulumi remains reserved for AWS validation IaC
 only, the chart platform remains namespace-local Patroni PostgreSQL HA for Helm-managed
@@ -108,7 +110,7 @@ A sprint can move to `Done` only when all of the following are true:
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
@@ -116,20 +118,20 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: Phase `1` owns canonical Dockerfile placement, the direct-Dhall config
-contract, and the native validation harness; it is the only phase temporarily reopened while fresh
-aggregate reruns finish after the April 24, 2026 AWS SSH-readiness repair. Phase `2` owns gateway
-packaging and DNS ownership. Phase `3` owns the chart platform, retained storage, Harbor-backed
-`vscode` delivery, and the namespace-local Patroni PostgreSQL doctrine for Helm-managed
-application stacks. Phase `4` owns the Harbor-first lifecycle, the narrowed Harbor-plus-storage-
-backend bootstrap exception, AWS-only Pulumi scope, dual-arch publication, mixed-arch support,
-and Python removal. Phases `5-7` own public-host proof, the destructive clean-room rerun, and
-onboarding/IAM automation. Those later phases remain closed on their owned surfaces while Phase
-`1` aggregate reruns complete.
+**Status interpretation**: Every phase is currently `Done`. Phase `1` owns canonical Dockerfile
+placement, the direct-Dhall config contract, and the native validation harness. Phase `2` owns
+gateway packaging and DNS ownership. Phase `3` owns the chart platform, retained storage,
+Harbor-backed `vscode` delivery, and the namespace-local Patroni PostgreSQL doctrine for
+Helm-managed application stacks. Phase `4` owns the Harbor-first lifecycle, the narrowed
+Harbor-plus-storage-backend bootstrap exception, AWS-only Pulumi scope, dual-arch publication,
+mixed-arch support, and Python removal; its closure is now re-established after the Harbor
+custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs` and the fresh aggregate reruns.
+Phases `5-7` own public-host proof, the destructive clean-room rerun, and onboarding/IAM
+automation.
 
 ## Current Plan Status
 
-As of April 24, 2026, the development plan is current against the repository worktree:
+As of April 25, 2026, the development plan is current against the repository worktree:
 
 - The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
@@ -164,17 +166,20 @@ As of April 24, 2026, the development plan is current against the repository wor
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- On April 24, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
+- On April 25, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
   `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
   `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
   `./.build/prodbox tla-check`, `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration aws-iam`, and the
-  targeted repair rerun `./.build/prodbox test integration ha-rke2-aws`.
-- Fresh reruns of `./.build/prodbox test integration all` and `./.build/prodbox test all` are
-  still in progress after the AWS SSH-readiness repair and are not yet closure evidence.
-- On April 24, 2026, a direct retained-state rerun also passed
+  `./.build/prodbox test integration aws-iam`, `./.build/prodbox rke2 install`, and
+  `./.build/prodbox host public-edge`.
+- On April 25, 2026, a direct retained-state rerun also passed
   `./.build/prodbox charts delete vscode --yes` followed by
   `./.build/prodbox charts deploy vscode`.
+- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
+  `./.build/prodbox test all` after the Harbor custom-image inspection repair in
+  `src/Prodbox/CLI/Rke2.hs`.
+- On April 25, 2026, a final direct rerun of `./.build/prodbox host public-edge` again reached
+  `CLASSIFICATION=ready-for-external-proof`.
 
 ## Exit Definition
 

@@ -16,8 +16,9 @@ service-quota automation, and the test-only elevated credential harness. The Has
 closes the intended credential boundary: public onboarding and public AWS administration prompt for
 temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
 validation harness. The targeted AWS-backed reruns on its owned surfaces now pass on the
-implemented repository surfaces, and the reopened aggregate rerun refresh remains Phase `1`
-closure work. This phase is closed on its owned credential and IAM boundaries.
+implemented repository surfaces, and the current aggregate rerun refresh is Phase `4` closure
+work after the Harbor custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs`. This phase is
+closed on its owned credential and IAM boundaries.
 
 ## Current Baseline In Worktree
 
@@ -73,12 +74,11 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- The latest completed aggregate suites that continue to exercise the public onboarding surfaces
-  remain the April 23, 2026 closure runs under `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`; the fresh April 24 aggregate reruns are still Phase `1` closure
-  work and are not yet closure evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, continuing to exercise the public onboarding surfaces on the
+  supported Haskell path.
 
 ### Remaining Work
 
@@ -123,12 +123,11 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   setup/teardown and quota flows.
 - `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- The latest completed aggregate suites that continue to exercise the public AWS administration
-  surfaces remain the April 23, 2026 closure runs under `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`; the fresh April 24 aggregate reruns are still Phase `1`
-  closure work and are not yet closure evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, continuing to exercise the public AWS administration
+  surfaces.
 
 ### Remaining Work
 
@@ -178,19 +177,19 @@ credential harness.
 - `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
   repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
   stale ambient Pulumi host-login state.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox test unit`,
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox test unit`,
   `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
   `./.build/prodbox test integration aws-iam`.
-- The latest completed aggregate IAM closure reruns remain the April 23, 2026 closure runs under
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`; the fresh April 24
-  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, re-establishing the aggregate IAM closure proof on supported
+  repo-root operational `aws.*` credentials.
 - The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather
   than failing at prerequisite validation.
 
 ### Remaining Work
 
-None. The IAM harness and aggregate reruns are no longer blocked by repo-root operational AWS
-credentials, and no remaining Phase `7` implementation work survives.
+None. The IAM harness and aggregate reruns now pass again on supported repo-root operational
+`aws.*` credentials, and no remaining Phase `7` implementation work survives.
 
 ## Documentation Requirements
 

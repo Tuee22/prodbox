@@ -17,10 +17,10 @@ under `docker/`, the direct-Dhall config contract, the native validation harness
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here.
 
-As of April 24, 2026, the implementation in this phase remains in place but the phase is
-temporarily reopened on its aggregate-validation ownership. The reopen is limited to finishing
-fresh aggregate reruns after the AWS SSH-readiness repair in `src/Prodbox/TestValidation.hs`;
-later phases remain closed on their owned surfaces while that proof completes.
+As of April 25, 2026, this phase is closed again. The AWS SSH-readiness repair in
+`src/Prodbox/TestValidation.hs` is now backed by fresh passing reruns of both
+`./.build/prodbox test integration all` and `./.build/prodbox test all`, so the lifecycle and AWS
+validation foundations are re-established on their supported Haskell surface.
 
 ## Current Baseline In Worktree
 
@@ -100,7 +100,7 @@ artifact plus container-build topology contract.
   `haskell:9.6.7-slim` toolchain context.
 - `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
-- On April 24, 2026, fresh local reruns passed `cabal build --builddir=.build exe:prodbox`, sync
+- On April 25, 2026, fresh local reruns passed `cabal build --builddir=.build exe:prodbox`, sync
   of `./.build/prodbox`, `./.build/prodbox check-code`, and
   `./.build/prodbox test integration cli`.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
@@ -175,7 +175,7 @@ modules.
   cluster-backed readiness roots used by the named validation flows.
 - `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
   proof surfaces for the Haskell-owned command surface.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
   `./.build/prodbox test integration env`.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
@@ -184,9 +184,9 @@ modules.
 
 None.
 
-## Sprint 1.3: Local Lifecycle and AWS Validation Foundations on the Haskell Stack 🔄
+## Sprint 1.3: Local Lifecycle and AWS Validation Foundations on the Haskell Stack ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestRunner.hs`, `pulumi/`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -229,18 +229,15 @@ the same supported product scope.
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- On April 24, 2026, the targeted repair rerun `./.build/prodbox test integration ha-rke2-aws`
-  passed after `src/Prodbox/TestValidation.hs` gained bounded SSH-readiness retries for the AWS
-  HA-RKE2 proof surface.
-- Fresh reruns of `./.build/prodbox test integration all` and `./.build/prodbox test all` are
-  still in progress after that repair and are not yet closure evidence for this reopened phase
-  surface.
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox rke2 install` and
+  `./.build/prodbox test integration aws-iam`.
+- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
+  `./.build/prodbox test all`, re-exercising the native lifecycle and AWS-backed validation
+  foundations after the Harbor custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs`.
 
 ### Remaining Work
 
-- Finish the fresh aggregate reruns `./.build/prodbox test integration all` and
-  `./.build/prodbox test all` after the AWS SSH-readiness repair, then restore this phase to
-  closed status.
+None.
 
 ## Documentation Requirements
 

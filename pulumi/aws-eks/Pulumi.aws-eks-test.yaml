@@ -1,0 +1,17 @@
+encryptionsalt: v1:QfT/rS3e/Zc=:v1:ycnnXS9poq2yNSBS:3jfJRDqYN6zrcVpeQ9mWv9lxS/YRgw==
+config:
+  aws:region: us-west-2
+  aws:accessKey:
+    secure: v1:jvAjF6txIog8LF1x:BT3HNLwAJaY6kH1OA5ufWyee+1VowWFVesj/AsMeFRxpQQGR
+  aws:secretKey:
+    secure: v1:NmVy29XPFWMo79QU:IvMgmp4Zk8VeV9/FikWNBSiZ430RP/BbpGtZKSbizFpBj8/t8etvc0ZW0M8TOmveocCB+BxQW5c=
+  aws:token:
+    secure: v1:+9/2lRMNN9ORgItb:Vt6gzYRyDc8KhylLY/9Y9w==
+  prodbox-aws-eks-test:awsRegion: us-west-2
+  prodbox-aws-eks-test:awsAccessKeyId:
+    secure: v1:pNnCCWNaJHbGz5KB:Qn7rlVxec3rgTREpPVS66SFyuj+caBLcrVcOnhQElyfG66+m
+  prodbox-aws-eks-test:awsSecretAccessKey:
+    secure: v1:+apZ5Wd0VessxWo3:/jgq8EUA2Ewe3Fsa5v2a02joQvsKOTqj0dN3OtNAxfxCxgWxC68rPm62FlHPQQTLxzvkIZrDFKQ=
+  prodbox-aws-eks-test:awsSessionToken:
+    secure: v1:HlR31KnviieZo5id:CGgBuLnVdFD/D49vFHwZdw==
+  prodbox-aws-eks-test:operatorCidr: 142.115.123.42/32

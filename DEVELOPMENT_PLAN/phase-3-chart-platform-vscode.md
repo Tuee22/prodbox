@@ -16,7 +16,7 @@ retained storage, Harbor-backed image sourcing for the supported chart stack, th
 `vscode-nginx` image exception under the repository Docker doctrine, and the PostgreSQL doctrine
 for every Helm-managed application stack.
 
-As of April 24, 2026, this phase remains closed. The supported chart platform is Haskell-owned, the
+As of April 25, 2026, this phase remains closed. The supported chart platform is Haskell-owned, the
 `vscode` stack stays on Harbor-backed images after Harbor bootstrap, and every Helm-managed
 PostgreSQL dependency now lands on the external Patroni-based doctrine: exactly three replicas,
 synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -69,13 +69,11 @@ platform doctrine.
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
 - `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code` and
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code` and
   `./.build/prodbox test unit`.
-- The latest completed cluster-backed chart-platform closure reruns remain the April 23, 2026
-  runs: `./.build/prodbox test integration charts-storage`,
-  `./.build/prodbox test integration charts-platform`, and those same chart-platform proofs inside
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`. The fresh April 24
-  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, re-exercising the cluster-backed chart-platform closure
+  surfaces after the Harbor custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs`.
 
 ### Remaining Work
 
@@ -117,14 +115,12 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestRunner.hs` waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` before the external `charts-vscode` curl proof
   continues.
-- On April 24, 2026, a direct retained-state rerun passed
+- On April 25, 2026, a direct retained-state rerun passed
   `./.build/prodbox charts delete vscode --yes` followed by
   `./.build/prodbox charts deploy vscode`.
-- The latest completed cluster-backed `vscode` closure reruns remain the April 23, 2026 runs:
-  `./.build/prodbox test integration charts-vscode` on the Harbor-backed
-  `keycloak-postgres -> keycloak -> vscode` path, plus the same public-edge redirect proof inside
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`. The fresh April 24
-  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, re-exercising the Harbor-backed
+  `keycloak-postgres -> keycloak -> vscode` path and the public-edge redirect proof.
 
 ### Remaining Work
 
@@ -179,16 +175,12 @@ PostgreSQL for every Helm-managed PostgreSQL dependency.
   mode, explicit Spilo security IDs, and deterministic manual-PV bindings.
 - `charts/keycloak/` now consumes the namespace-local retained database secret and the namespace-local
   primary service endpoint.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox test unit` and a direct
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox test unit` and a direct
   retained-state `./.build/prodbox charts delete vscode --yes` plus
   `./.build/prodbox charts deploy vscode` cycle.
-- The latest completed Patroni-backed chart closure reruns remain the April 23, 2026 runs:
-  `./.build/prodbox test unit`, `./.build/prodbox test integration charts-storage`,
-  `./.build/prodbox test integration charts-platform`, and
-  `./.build/prodbox test integration charts-vscode`, then the same Patroni-backed chart stack
-  proof through `./.build/prodbox test integration all` and `./.build/prodbox test all`. The
-  fresh April 24 aggregate reruns are still Phase `1` closure work and are not yet closure
-  evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, re-exercising the Patroni-backed chart stack proof on the
+  supported path.
 
 ### Remaining Work
 

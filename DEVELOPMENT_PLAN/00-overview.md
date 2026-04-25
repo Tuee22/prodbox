@@ -103,12 +103,12 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository state as of April 24, 2026 reaches the intended supported architecture on its
-implemented surfaces: the supported surface is Haskell-only, the earlier unsupported cleanup
+The repository state as of April 25, 2026 reaches the intended supported architecture on all
+supported surfaces: the supported surface is Haskell-only, the earlier unsupported cleanup
 residue is removed, and the legacy ledger is empty. The current checkout includes operator-
-authored repository-root `prodbox-config.dhall`, but Phase `1` is temporarily reopened on its
-aggregate-validation ownership while fresh aggregate reruns complete after the AWS SSH-readiness
-repair in `src/Prodbox/TestValidation.hs`.
+authored repository-root `prodbox-config.dhall`, and the earlier temporary Phase `4`
+aggregate-validation reopen is now closed again after the Harbor custom-image inspection repair in
+`src/Prodbox/CLI/Rke2.hs` plus fresh aggregate reruns.
 
 ### Supported Haskell Surface
 
@@ -144,26 +144,28 @@ repair in `src/Prodbox/TestValidation.hs`.
 ### Post-Cleanup Validation Gate
 
 - The current workspace now contains repository-root `prodbox-config.dhall`.
-- On April 24, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
+- On April 25, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
   `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
   `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
   `./.build/prodbox tla-check`, `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration aws-iam`, and the
-  targeted repair rerun `./.build/prodbox test integration ha-rke2-aws`.
-- Fresh reruns of `./.build/prodbox test integration all` and `./.build/prodbox test all` are in
-  progress after that repair and are not yet closure evidence.
-- On April 24, 2026, a direct retained-state rerun also passed
+  `./.build/prodbox test integration aws-iam`, `./.build/prodbox rke2 install`, and
+  `./.build/prodbox host public-edge`.
+- On April 25, 2026, a direct retained-state rerun also passed
   `./.build/prodbox charts delete vscode --yes` followed by
   `./.build/prodbox charts deploy vscode`.
+- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
+  `./.build/prodbox test all` after the Harbor custom-image inspection repair in
+  `src/Prodbox/CLI/Rke2.hs`.
+- On April 25, 2026, a final direct rerun of `./.build/prodbox host public-edge` again reached
+  `CLASSIFICATION=ready-for-external-proof`.
 
 ### Interpretation
 
 The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
 application database ownership, or a broader-than-target Harbor bootstrap exception. The
-repository guidance and cleanup ledger are now aligned with that state. The only remaining
-validation work on this checkout is the reopened Phase `1` aggregate-rerun refresh after the AWS
-SSH-readiness repair; targeted April 24 reruns already reconfirm the chart restore path and other
-later phase-owned surfaces without reopening those later phases.
+repository guidance and cleanup ledger are now aligned with that state, and the earlier temporary
+Phase `4` aggregate-rerun refresh is closed again after the repaired Harbor custom-image path plus
+fresh aggregate and full-suite reruns.
 
 ## Haskell-Only Architecture by Surface
 
@@ -184,21 +186,22 @@ later phase-owned surfaces without reopening those later phases.
 
 ## Current Execution State
 
-Phase `1` is temporarily `Active` on its aggregate-validation ownership; Phases `0` and `2-7`
-remain `Done` on their supported surfaces:
+Phases `0-7` are `Done` on their supported surfaces:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, and the
-  Haskell test and quality framework; it is reopened only until the fresh aggregate reruns finish
-  after the AWS SSH-readiness repair.
+  Haskell test and quality framework; its closure was re-established on April 25, 2026 after
+  fresh reruns of `./.build/prodbox test integration all` and `./.build/prodbox test all`
+  completed after the AWS SSH-readiness repair.
 - Phase 2 owns the gateway runtime, DNS inspection surface, and TLA+ validation entrypoint.
 - Phase 3 owns the chart platform, retained state model, supported cluster-backed `vscode`
   delivery path, and the external Patroni PostgreSQL doctrine for Helm-managed workloads.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
-  bootstrap exception, AWS-only Pulumi scope, and Python removal.
+  bootstrap exception, AWS-only Pulumi scope, and Python removal; its closure is now
+  re-established after the Harbor custom-image inspection repair in
+  `src/Prodbox/CLI/Rke2.hs` and the fresh aggregate reruns.
 - Phase 5 owns public-edge diagnostics and external proof.
-- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria; it
-  remains closed on its implemented surface while the reopened Phase `1` aggregate reruns finish.
+- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
   credential proof harness.
 

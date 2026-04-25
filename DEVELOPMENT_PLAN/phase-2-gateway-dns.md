@@ -102,12 +102,12 @@ container doctrine.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
-- On April 24, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox dns check`.
-- The latest completed infrastructure-backed gateway and DNS closure reruns remain the April 23,
-  2026 runs for `./.build/prodbox test integration all` and `./.build/prodbox test all`; the
-  fresh April 24 aggregate reruns are still Phase `1` closure work and are not yet closure
-  evidence here.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, re-exercising the infrastructure-backed gateway and DNS
+  closure surfaces after the Harbor custom-image inspection repair in
+  `src/Prodbox/CLI/Rke2.hs`.
 
 ### Remaining Work
 
@@ -146,11 +146,10 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
   failover behavior.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to an executable
   native validation flow in `src/Prodbox/TestValidation.hs`.
-- On April 24, 2026, a fresh local rerun passed `./.build/prodbox tla-check`.
-- The latest completed aggregate reruns that re-exercised the gateway partition and pod
-  validations remain the April 23, 2026 closure runs under
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`; the fresh April 24
-  aggregate reruns are still Phase `1` closure work and are not yet closure evidence here.
+- On April 25, 2026, a fresh local rerun passed `./.build/prodbox tla-check`.
+- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
+  and `./.build/prodbox test all`, re-exercising the gateway partition and pod validations on the
+  supported Haskell gateway surface.
 
 ### Remaining Work
 

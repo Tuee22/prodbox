@@ -2079,6 +2079,7 @@ inspectRawImageManifest repoRoot imageRef = do
                             then Left "docker buildx imagetools support is required for the Harbor multi-arch reconcile path"
                             else
                                 if isMissingImageInspectError (outputDetail output)
+                                    || isHarborUnauthorizedInspectError imageRef (outputDetail output)
                                     then Right Nothing
                                     else Left (outputDetail output)
 
@@ -2093,6 +2094,13 @@ isMissingImageInspectError detail =
             , "no such manifest"
             , "repository does not exist"
             ]
+
+isHarborUnauthorizedInspectError :: String -> String -> Bool
+isHarborUnauthorizedInspectError imageRef detail =
+    let lowered = map toLower detail
+     in isHarborHostedImage imageRef
+            && "unexpected status from head request" `isInfixOf` lowered
+            && "401 unauthorized" `isInfixOf` lowered
 
 purgeHarborMirrorTarget :: FilePath -> String -> IO ExitCode
 purgeHarborMirrorTarget repoRoot target =

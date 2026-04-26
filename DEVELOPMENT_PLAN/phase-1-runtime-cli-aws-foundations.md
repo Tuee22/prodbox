@@ -17,10 +17,11 @@ under `docker/`, the direct-Dhall config contract, the native validation harness
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here.
 
-As of April 25, 2026, this phase is closed again. The AWS SSH-readiness repair in
-`src/Prodbox/TestValidation.hs` is now backed by fresh passing reruns of both
-`./.build/prodbox test integration all` and `./.build/prodbox test all`, so the lifecycle and AWS
-validation foundations are re-established on their supported Haskell surface.
+As of April 25, 2026, Sprint `1.2` and Sprint `1.3` remain closed, but Sprint `1.1` is active
+again. The target frontend container doctrine keeps `ubuntu:24.04` as the base image while
+replacing the mounted `haskell:9.6.7-slim` toolchain context with in-image `ghcup` pinned to GHC
+`9.14.1`, removing symlinked Haskell tool shims, and requiring explicit repo package-bound
+updates plus full canonical validation before closure.
 
 ## Current Baseline In Worktree
 
@@ -42,9 +43,12 @@ validation foundations are re-established on their supported Haskell surface.
 - The host build contract copies the operator-facing binary to `.build/prodbox` after the
   canonical `cabal build --builddir=.build exe:prodbox` invocation.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
-- `docker/prodbox.Dockerfile` is a single-stage `ubuntu:24.04` build that preserves the
-  `/opt/build` artifact contract and mounts the official `haskell:9.6.7-slim` image as a
-  BuildKit toolchain context during publication.
+- `docker/prodbox.Dockerfile` currently preserves the `/opt/build` artifact contract through a
+  mounted `haskell:9.6.7-slim` BuildKit toolchain context and symlinked GHC tool shims. Reopened
+  Sprint `1.1` replaces that path with in-image `ghcup` pinned to GHC `9.14.1` and no symlinked
+  Haskell tool shims.
+- `prodbox.cabal` currently carries `base ^>=4.18.2.1`, so the explicit repo upgrade to GHC
+  `9.14.1` with aligned package bounds is not yet closed.
 - `test/integration/env/Main.hs` proves built-frontend config masking and validation directly
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
@@ -54,9 +58,9 @@ validation foundations are re-established on their supported Haskell surface.
 - The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
-## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
+## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface 🔄
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `docker/prodbox.Dockerfile`, `docker/`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`
 
@@ -73,20 +77,27 @@ artifact plus container-build topology contract.
 - The canonical host build invocation routes host build artifacts to `.build/` and copies the
   binary to `.build/prodbox` so operators run `./.build/prodbox`.
 - The only supported home for repository-owned Dockerfiles is `docker/`.
-- The custom Haskell frontend image is single-stage from `ubuntu:24.04` and still emits artifacts
-  under `/opt/build`.
+- The custom Haskell frontend image is single-stage from `ubuntu:24.04`, still emits artifacts
+  under `/opt/build`, installs `ghcup` in-image, pins GHC `9.14.1`, and does not create
+  symlinked Haskell tool shims.
+- `prodbox.cabal` and `cabal.project` are explicitly upgraded for the pinned GHC `9.14.1`
+  toolchain, including any required cabal-bound changes.
 - The public command surface remains `prodbox` and preserves the full supported command matrix from
   [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md).
 
 ### Validation
 
 1. `prodbox check-code`
-2. `prodbox test integration cli`
-3. Host build proof: the canonical `cabal build --builddir=.build exe:prodbox` invocation plus
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. Host build proof: the canonical `cabal build --builddir=.build exe:prodbox` invocation plus
    the `.build/prodbox` copy step yields a runnable `./.build/prodbox`
-4. Container build proof: the canonical frontend Dockerfile under `docker/` emits artifacts under
-   `/opt/build`
-5. Repository path proof: no supported root-level `Dockerfile` remains
+6. Container build proof: the canonical frontend Dockerfile under `docker/` emits artifacts under
+   `/opt/build` through in-image `ghcup`-managed GHC `9.14.1` with no symlinked Haskell tool
+   shims
+7. Repository path proof: no supported root-level `Dockerfile` remains
+8. Aggregate reruns: `prodbox test integration all` and `prodbox test all`
 
 ### Current Validation State
 
@@ -96,18 +107,31 @@ artifact plus container-build topology contract.
 - The host build contract is implemented through `cabal build --builddir=.build exe:prodbox` plus
   the `.build/prodbox` copy step in `src/Prodbox/BuildSupport.hs`.
 - `docker/prodbox.Dockerfile` is the canonical frontend image definition, lives under `docker/`,
-  and is single-stage `ubuntu:24.04` while preserving `/opt/build` through the mounted
-  `haskell:9.6.7-slim` toolchain context.
+  and is still single-stage `ubuntu:24.04`, but it currently preserves `/opt/build` through the
+  mounted `haskell:9.6.7-slim` toolchain context and symlinked GHC tool shims rather than the
+  reopened `ghcup`-managed GHC `9.14.1`, no-symlink doctrine.
+- `prodbox.cabal` still carries `base ^>=4.18.2.1`, so the explicit repo upgrade required by the
+  revised doctrine is not yet implemented.
 - `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
 - On April 25, 2026, fresh local reruns passed `cabal build --builddir=.build exe:prodbox`, sync
   of `./.build/prodbox`, `./.build/prodbox check-code`, and
   `./.build/prodbox test integration cli`.
+- Those April 25, 2026 reruns prove the pre-upgrade frontend container path only; full canonical
+  validation remains to be rerun after the `ghcup`-managed GHC `9.14.1` upgrade lands.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
   canonical Dockerfile location.
 ### Remaining Work
 
-None.
+- Replace the mounted `haskell:9.6.7-slim` frontend toolchain context in
+  `docker/prodbox.Dockerfile` with in-image `ghcup` pinned to GHC `9.14.1`.
+- Remove symlinked Haskell tool shims from the frontend Dockerfile path.
+- Update `prodbox.cabal`, `cabal.project`, and related tests for the explicit GHC `9.14.1` repo
+  upgrade, including any required cabal-bound changes.
+- Rerun `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
+  `./.build/prodbox test integration all`, and `./.build/prodbox test all` on the upgraded
+  toolchain.
 
 ## Sprint 1.2: Dhall Settings, Command ADTs, and Haskell Test Harness ✅
 
@@ -249,7 +273,7 @@ None.
 - `documents/engineering/haskell_code_guide.md` - hard-gate Haskell quality doctrine and
   review-guidance split.
 - `documents/engineering/dependency_management.md` - non-Python build and dependency posture,
-  including the canonical Dockerfile location and base-image doctrine.
+  including the canonical Dockerfile location, `ghcup` toolchain pin, and no-symlink doctrine.
 - `documents/engineering/effect_interpreter.md` - Haskell interpreter contract.
 - `documents/engineering/effectful_dag_architecture.md` - Haskell DAG model and layering.
 - `documents/engineering/integration_fixture_doctrine.md` - integration setup and cleanup doctrine.

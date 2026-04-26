@@ -255,22 +255,45 @@ fetchPublicIpv4 = do
                             else pure (Left ("unexpected public IP response: " ++ ip))
                 ExitFailure _ -> pure (Left ("curl failed: " ++ trim (processStderr output)))
 
-pulumiEksBaseEnv :: Int -> String -> String -> IO [(String, String)]
-pulumiEksBaseEnv localPort minioAccessKey minioSecretKey = do
-    currentEnv <- getEnvironment
-    let path = maybe "" id (lookup "PATH" currentEnv)
-        home = maybe "" id (lookup "HOME" currentEnv)
-    pure
-        [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
-        , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
-        , ("AWS_REGION", "us-east-1")
-        , ("AWS_DEFAULT_REGION", "us-east-1")
-        , ("AWS_EC2_METADATA_DISABLED", "true")
-        , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
-        , ("PULUMI_CONFIG_PASSPHRASE", "")
-        , ("PATH", path)
-        , ("HOME", home)
-        , ("LANG", "C.UTF-8")
+pulumiEksBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
+pulumiEksBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left err -> pure (Left err)
+        Right settings -> do
+            currentEnv <- getEnvironment
+            let path = maybe "" id (lookup "PATH" currentEnv)
+                home = maybe "" id (lookup "HOME" currentEnv)
+                providerEnv = pulumiAwsProviderEnv (aws (validatedConfig settings))
+            pure
+                ( Right
+                    ( [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
+                      , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
+                      , ("AWS_REGION", "us-east-1")
+                      , ("AWS_DEFAULT_REGION", "us-east-1")
+                      , ("AWS_EC2_METADATA_DISABLED", "true")
+                      , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+                      , ("PULUMI_CONFIG_PASSPHRASE", "")
+                      , ("PATH", path)
+                      , ("HOME", home)
+                      , ("LANG", "C.UTF-8")
+                      ]
+                        ++ providerEnv
+                    )
+                )
+
+pulumiAwsProviderEnv :: Credentials -> [(String, String)]
+pulumiAwsProviderEnv creds =
+    baseEntries
+        ++ case session_token creds of
+            Just token -> [("PRODBOX_PULUMI_AWS_SESSION_TOKEN", Text.unpack token)]
+            Nothing -> []
+  where
+    baseEntries =
+        [ ("PRODBOX_PULUMI_AWS_ACCESS_KEY_ID", Text.unpack (access_key_id creds))
+        , ("PRODBOX_PULUMI_AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key creds))
+        , ("PRODBOX_PULUMI_AWS_REGION", Text.unpack (region creds))
+        , ("PRODBOX_PULUMI_AWS_DEFAULT_REGION", Text.unpack (region creds))
         ]
 
 resolveAwsEksTestStackConfig :: IO (Either String AwsEksTestStackConfig)
@@ -303,35 +326,28 @@ syncAwsEksTestStackConfig projectDir environment stackConfig =
                 ++ [key, value]
             )
 
-syncAwsProviderConfig :: FilePath -> FilePath -> [(String, String)] -> IO ExitCode
-syncAwsProviderConfig repoRoot projectDir environment = do
-    settingsResult <- validateAndLoadSettings repoRoot
-    case settingsResult of
-        Left _ -> pure (ExitFailure 1)
-        Right settings ->
-            foldM runConfigSet ExitSuccess (providerConfigEntries (aws (validatedConfig settings)))
+clearLegacyAwsProviderConfig :: FilePath -> [(String, String)] -> IO (Either String ())
+clearLegacyAwsProviderConfig projectDir environment =
+    foldM runConfigRm (Right ()) legacyConfigKeys
   where
-    providerConfigEntries creds =
-        [ (False, "aws:region", Text.unpack (region creds))
-        , (True, "aws:accessKey", Text.unpack (access_key_id creds))
-        , (True, "aws:secretKey", Text.unpack (secret_access_key creds))
-        , (True, "aws:token", maybe "" Text.unpack (session_token creds))
-        , (False, "awsRegion", Text.unpack (region creds))
-        , (True, "awsAccessKeyId", Text.unpack (access_key_id creds))
-        , (True, "awsSecretAccessKey", Text.unpack (secret_access_key creds))
-        , (True, "awsSessionToken", maybe "" Text.unpack (session_token creds))
+    legacyConfigKeys =
+        [ "aws:region"
+        , "aws:accessKey"
+        , "aws:secretKey"
+        , "aws:token"
+        , "awsRegion"
+        , "awsAccessKeyId"
+        , "awsSecretAccessKey"
+        , "awsSessionToken"
         ]
 
-    runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
-    runConfigSet failure@(ExitFailure _) _ = pure failure
-    runConfigSet ExitSuccess (secretValue, key, value) =
-        runPulumiCommand
+    runConfigRm :: Either String () -> String -> IO (Either String ())
+    runConfigRm (Left err) _ = pure (Left err)
+    runConfigRm (Right ()) key =
+        runPulumiCommandQuiet
             projectDir
             environment
-            ( ["config", "set", "--stack", awsEksTestStackName]
-                ++ ["--secret" | secretValue]
-                ++ [key, value]
-            )
+            ["config", "rm", "--stack", awsEksTestStackName, key]
 
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiLogin projectDir environment =
@@ -569,44 +585,48 @@ ensureAwsEksTestStackResources repoRoot = do
                                 case configResult of
                                     Left err -> pure (Left err)
                                     Right stackConfig -> do
-                                        baseEnvironment <- pulumiEksBaseEnv localPort accessKey secretKey
-                                        loginExit <- pulumiLogin projectDir baseEnvironment
-                                        case loginExit of
-                                            ExitFailure _ -> pure (Left "pulumi login failed")
-                                            ExitSuccess -> do
-                                                selectExit <- pulumiStackSelect projectDir baseEnvironment True
-                                                case selectExit of
-                                                    PulumiStackSelected -> do
-                                                        providerSyncExit <- syncAwsProviderConfig repoRoot projectDir baseEnvironment
-                                                        case providerSyncExit of
-                                                            ExitFailure _ -> pure (Left "pulumi provider config set failed")
-                                                            ExitSuccess -> do
-                                                                syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
-                                                                case syncExit of
-                                                                    ExitFailure _ -> pure (Left "pulumi config set failed")
-                                                                    ExitSuccess -> do
-                                                                        upExit <- pulumiUp projectDir baseEnvironment
-                                                                        case upExit of
-                                                                            ExitFailure _ -> pure (Left "pulumi up failed")
+                                        baseEnvironmentResult <- pulumiEksBaseEnv repoRoot localPort accessKey secretKey
+                                        case baseEnvironmentResult of
+                                            Left err -> pure (Left err)
+                                            Right baseEnvironment -> do
+                                                loginExit <- pulumiLogin projectDir baseEnvironment
+                                                case loginExit of
+                                                    ExitFailure _ -> pure (Left "pulumi login failed")
+                                                    ExitSuccess -> do
+                                                        selectExit <- pulumiStackSelect projectDir baseEnvironment True
+                                                        case selectExit of
+                                                            PulumiStackSelected -> do
+                                                                clearLegacyResult <- clearLegacyAwsProviderConfig projectDir baseEnvironment
+                                                                case clearLegacyResult of
+                                                                    Left err ->
+                                                                        pure (Left ("pulumi provider config cleanup failed: " ++ err))
+                                                                    Right () -> do
+                                                                        syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
+                                                                        case syncExit of
+                                                                            ExitFailure _ -> pure (Left "pulumi config set failed")
                                                                             ExitSuccess -> do
-                                                                                outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                                                                                case outputsResult of
-                                                                                    Left err -> pure (Left err)
-                                                                                    Right outputs ->
-                                                                                        case snapshotFromOutputs outputs of
+                                                                                upExit <- pulumiUp projectDir baseEnvironment
+                                                                                case upExit of
+                                                                                    ExitFailure _ -> pure (Left "pulumi up failed")
+                                                                                    ExitSuccess -> do
+                                                                                        outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+                                                                                        case outputsResult of
                                                                                             Left err -> pure (Left err)
-                                                                                            Right snapshot -> do
-                                                                                                saveAwsEksTestStackSnapshot repoRoot snapshot
-                                                                                                objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                                                                case objectCountResult of
+                                                                                            Right outputs ->
+                                                                                                case snapshotFromOutputs outputs of
                                                                                                     Left err -> pure (Left err)
-                                                                                                    Right objectCount -> do
-                                                                                                        putStr (renderAwsEksTestStackReport snapshot objectCount)
-                                                                                                        pure (Right ())
-                                                    PulumiStackMissing ->
-                                                        pure (Left "pulumi stack select reported a missing stack after --create")
-                                                    PulumiStackSelectFailed detail ->
-                                                        pure (Left ("pulumi stack select failed: " ++ detail))
+                                                                                                    Right snapshot -> do
+                                                                                                        saveAwsEksTestStackSnapshot repoRoot snapshot
+                                                                                                        objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                                                                                                        case objectCountResult of
+                                                                                                            Left err -> pure (Left err)
+                                                                                                            Right objectCount -> do
+                                                                                                                putStr (renderAwsEksTestStackReport snapshot objectCount)
+                                                                                                                pure (Right ())
+                                                            PulumiStackMissing ->
+                                                                pure (Left "pulumi stack select reported a missing stack after --create")
+                                                            PulumiStackSelectFailed detail ->
+                                                                pure (Left ("pulumi stack select failed: " ++ detail))
             case portForwardResult of
                 Left err -> failWith err
                 Right (Left err) -> failWith err
@@ -634,43 +654,47 @@ destroyAwsEksTestStackStatus repoRoot = do
                 case bucketResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                        baseEnvironment <- pulumiEksBaseEnv localPort accessKey secretKey
-                        loginResult <- pulumiLoginQuiet projectDir baseEnvironment
-                        case loginResult of
-                            Left err -> pure (Left ("pulumi login failed: " ++ err))
-                            Right () -> do
-                                selectExit <- pulumiStackSelect projectDir baseEnvironment False
-                                case selectExit of
-                                    PulumiStackSelected -> do
-                                        configResult <- resolveAwsEksTestStackConfig
-                                        case configResult of
-                                            Left err -> pure (Left err)
-                                            Right stackConfig -> do
-                                                providerSyncExit <- syncAwsProviderConfig repoRoot projectDir baseEnvironment
-                                                case providerSyncExit of
-                                                    ExitFailure _ -> pure (Left "pulumi provider config set failed")
-                                                    ExitSuccess -> do
-                                                        syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
-                                                        case syncExit of
-                                                            ExitFailure _ -> pure (Left "pulumi config set failed")
-                                                            ExitSuccess -> do
-                                                                destroyResult <- pulumiDestroyQuiet projectDir baseEnvironment
-                                                                case destroyResult of
-                                                                    Left _ -> do
-                                                                        _ <- pulumiRefreshQuiet projectDir baseEnvironment
-                                                                        retryResult <- pulumiDestroyQuiet projectDir baseEnvironment
-                                                                        case retryResult of
-                                                                            Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
-                                                                            Right () -> completeDestroy repoRoot projectDir baseEnvironment currentSnapshot
-                                                                    Right () ->
-                                                                        completeDestroy repoRoot projectDir baseEnvironment currentSnapshot
-                                    PulumiStackMissing -> do
-                                        case currentSnapshot of
-                                            Nothing ->
-                                                pure (Right "already absent from the local Pulumi backend")
-                                            Just _ -> finalizeDestroy repoRoot currentSnapshot
-                                    PulumiStackSelectFailed detail ->
-                                        pure (Left ("pulumi stack select failed: " ++ detail))
+                        baseEnvironmentResult <- pulumiEksBaseEnv repoRoot localPort accessKey secretKey
+                        case baseEnvironmentResult of
+                            Left err -> pure (Left err)
+                            Right baseEnvironment -> do
+                                loginResult <- pulumiLoginQuiet projectDir baseEnvironment
+                                case loginResult of
+                                    Left err -> pure (Left ("pulumi login failed: " ++ err))
+                                    Right () -> do
+                                        selectExit <- pulumiStackSelect projectDir baseEnvironment False
+                                        case selectExit of
+                                            PulumiStackSelected -> do
+                                                configResult <- resolveAwsEksTestStackConfig
+                                                case configResult of
+                                                    Left err -> pure (Left err)
+                                                    Right stackConfig -> do
+                                                        clearLegacyResult <- clearLegacyAwsProviderConfig projectDir baseEnvironment
+                                                        case clearLegacyResult of
+                                                            Left err ->
+                                                                pure (Left ("pulumi provider config cleanup failed: " ++ err))
+                                                            Right () -> do
+                                                                syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
+                                                                case syncExit of
+                                                                    ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                                    ExitSuccess -> do
+                                                                        destroyResult <- pulumiDestroyQuiet projectDir baseEnvironment
+                                                                        case destroyResult of
+                                                                            Left _ -> do
+                                                                                _ <- pulumiRefreshQuiet projectDir baseEnvironment
+                                                                                retryResult <- pulumiDestroyQuiet projectDir baseEnvironment
+                                                                                case retryResult of
+                                                                                    Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
+                                                                                    Right () -> completeDestroy repoRoot projectDir baseEnvironment currentSnapshot
+                                                                            Right () ->
+                                                                                completeDestroy repoRoot projectDir baseEnvironment currentSnapshot
+                                            PulumiStackMissing -> do
+                                                case currentSnapshot of
+                                                    Nothing ->
+                                                        pure (Right "already absent from the local Pulumi backend")
+                                                    Just _ -> finalizeDestroy repoRoot currentSnapshot
+                                            PulumiStackSelectFailed detail ->
+                                                pure (Left ("pulumi stack select failed: " ++ detail))
     case portForwardResult of
         Left err ->
             case currentSnapshot of

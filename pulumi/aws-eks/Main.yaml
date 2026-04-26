@@ -1,20 +1,4 @@
 config:
-  aws:region:
-    type: string
-    default: us-east-1
-  awsRegion:
-    type: string
-    default: us-east-1
-  awsAccessKeyId:
-    type: string
-    secret: true
-  awsSecretAccessKey:
-    type: string
-    secret: true
-  awsSessionToken:
-    type: string
-    secret: true
-    default: ""
   operatorCidr:
     type: string
 
@@ -33,11 +17,13 @@ resources:
   awsProvider:
     type: pulumi:providers:aws
     defaultProvider: true
-    properties:
-      region: ${awsRegion}
-      accessKey: ${awsAccessKeyId}
-      secretKey: ${awsSecretAccessKey}
-      token: ${awsSessionToken}
+    options:
+      envVarMappings:
+        PRODBOX_PULUMI_AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID
+        PRODBOX_PULUMI_AWS_SECRET_ACCESS_KEY: AWS_SECRET_ACCESS_KEY
+        PRODBOX_PULUMI_AWS_SESSION_TOKEN: AWS_SESSION_TOKEN
+        PRODBOX_PULUMI_AWS_REGION: AWS_REGION
+        PRODBOX_PULUMI_AWS_DEFAULT_REGION: AWS_DEFAULT_REGION
 
   vpc:
     type: aws:ec2:Vpc

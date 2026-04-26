@@ -167,9 +167,10 @@ For `aws-eks`, `pulumi`, and `ha-rke2-aws`, permission sufficiency is proven onl
 host can reach its RKE2-backed MinIO backend and the relevant named `prodbox pulumi` surface can
 select, inspect, or create the canonical AWS test stack using settings-defined AWS auth.
 
-The supported path synchronizes operator-CIDR and SSH-public-key inputs into the stack with
-`pulumi config set`; the YAML Pulumi programs must not depend on `std:getenv` support from the
-runtime provider.
+The supported path synchronizes only non-secret validation inputs such as operator-CIDR and
+SSH-public-key into the stack with `pulumi config set`. AWS provider credentials must remain in
+repository-root `prodbox-config.dhall` and be projected into Pulumi through the Haskell-owned
+subprocess environment, not copied into stack-local config files.
 
 ## 4. Environment Creation Rules
 
@@ -206,8 +207,9 @@ Minimum rule:
    HA stack
 5. `prodbox pulumi test-destroy --yes` is the only supported surface for destroying that stack
 6. `prodbox rke2 delete --yes` must invoke both destroy paths before backend teardown
-7. the AWS validation Pulumi programs take operator-CIDR and SSH-public-key inputs through
-   explicit stack config synchronized by the Haskell orchestration layer
+7. the AWS validation Pulumi programs take non-secret operator-CIDR and SSH-public-key inputs
+   through explicit stack config synchronized by the Haskell orchestration layer, while AWS
+   provider credentials stay in the Haskell-owned subprocess environment
 
 ### 4.4 Test-Only Elevated IAM Harness
 

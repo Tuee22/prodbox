@@ -62,6 +62,8 @@ cabal.project.local
 # Pulumi
 .pulumi/
 Pulumi.*.yaml.bak
+pulumi/aws-eks/Pulumi.aws-eks-test.yaml
+pulumi/aws-test/Pulumi.aws-test.yaml
 
 # Environment
 .env

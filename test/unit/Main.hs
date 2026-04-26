@@ -530,6 +530,34 @@ main = hspec $ do
             interpreterSource `shouldContain` "ensureMinioBackendBucket"
             interpreterSource `shouldContain` "PULUMI_BACKEND_URL"
 
+        it "keeps Pulumi AWS provider credentials out of stack-local config" $ do
+            repoRoot <- getCurrentDirectory
+            eksProgram <- readFile (repoRoot </> "pulumi" </> "aws-eks" </> "Main.yaml")
+            testProgram <- readFile (repoRoot </> "pulumi" </> "aws-test" </> "Main.yaml")
+            eksStackSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsEksTestStack.hs")
+            testStackSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+
+            eksProgram `shouldContain` "envVarMappings"
+            eksProgram `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+            eksProgram `shouldNotContain` "awsAccessKeyId:"
+            eksProgram `shouldNotContain` "awsSecretAccessKey:"
+            eksProgram `shouldNotContain` "awsSessionToken:"
+            testProgram `shouldContain` "envVarMappings"
+            testProgram `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+            testProgram `shouldNotContain` "awsAccessKeyId:"
+            testProgram `shouldNotContain` "awsSecretAccessKey:"
+            testProgram `shouldNotContain` "awsSessionToken:"
+            eksStackSource `shouldContain` "clearLegacyAwsProviderConfig"
+            eksStackSource `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+            eksStackSource `shouldNotContain` "(True, \"awsAccessKeyId\""
+            eksStackSource `shouldNotContain` "(True, \"awsSecretAccessKey\""
+            eksStackSource `shouldNotContain` "(True, \"awsSessionToken\""
+            testStackSource `shouldContain` "clearLegacyAwsProviderConfig"
+            testStackSource `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+            testStackSource `shouldNotContain` "(True, \"awsAccessKeyId\""
+            testStackSource `shouldNotContain` "(True, \"awsSecretAccessKey\""
+            testStackSource `shouldNotContain` "(True, \"awsSessionToken\""
+
         it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
             case testExecutionPlan (TestIntegration IntegrationCli) of
                 testPlan -> do

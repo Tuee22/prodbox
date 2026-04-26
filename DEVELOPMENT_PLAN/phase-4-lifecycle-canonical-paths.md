@@ -14,19 +14,22 @@ local lifecycle, the narrowed Harbor bootstrap doctrine, AWS-only Pulumi scope, 
 Pulumi stack format, and the repository-wide Python removal that leaves the supported path
 Haskell-only.
 
-As of April 25, 2026, this phase is closed again on its aggregate-validation ownership. A direct
-`./.build/prodbox rke2 install` surfaced a Harbor `401 Unauthorized` response while the lifecycle
-inspected a missing `prodbox-nginx-oidc` target, so the custom-image path failed before
-rebuilding and publishing that image. The fix now lives in `src/Prodbox/CLI/Rke2.hs`, which
-treats that Harbor probe as a build-required miss; fresh reruns then passed
-`./.build/prodbox test integration all`, `./.build/prodbox test all`, and a final direct
-`./.build/prodbox host public-edge` rerun.
+As of April 25, 2026, Sprint `4.2` and Sprint `4.3` remain closed, but Sprint `4.1` is active
+again. The current lifecycle still publishes Haskell-build custom images through the named
+BuildKit `haskell-toolchain` context pinned to `haskell:9.6.7-slim`, and the fresh aggregate
+reruns were executed on that pre-upgrade toolchain path. Reopened Sprint `4.1` keeps the
+Harbor-first lifecycle and bootstrap doctrine intact while moving lifecycle-managed custom-image
+publication to the `ubuntu:24.04` plus in-image `ghcup` pinned GHC `9.14.1` doctrine with no
+symlinked Haskell tool shims and a full canonical validation rerun.
 
 ## Current Baseline In Worktree
 
 - `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
 - `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
   inventory, and ordered upstream-candidate lists used during Harbor publication.
+- `src/Prodbox/CLI/Rke2.hs` currently still defines the named BuildKit context
+  `haskell-toolchain` and pins it to `haskell:9.6.7-slim` for frontend and gateway custom-image
+  publication.
 - `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
@@ -35,9 +38,9 @@ treats that Harbor probe as a build-required miss; fresh reruns then passed
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
-## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
+## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack 🔄
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -54,11 +57,16 @@ contract without reintroducing Python or duplicate runtime paths.
   healthy and externally serving.
 - `prodbox` idempotently ensures required public images and all custom images are present in
   Harbor after Harbor bootstrap and before later Helm deployments run.
+- Lifecycle-managed Haskell-build custom images stay single-stage `ubuntu:24.04`, install
+  `ghcup` in-image, pin GHC `9.14.1`, and do not depend on mounted `haskell:9.6.7-slim`
+  BuildKit contexts or symlinked Haskell tool shims.
 - Every later Helm deployment obtains its images from Harbor.
 - The lifecycle publishes or mirrors both `amd64` and `arm64` variants or manifests irrespective
   of the host architecture running `prodbox`.
 - Harbor mirror publication retries alternate configured upstreams when a preferred source fails
   after manifest inspection.
+- The explicit repo upgrade to GHC `9.14.1`, including required cabal-bound changes, closes with
+  full canonical validation reruns on the upgraded toolchain path.
 
 ### Validation
 
@@ -86,7 +94,9 @@ contract without reintroducing Python or duplicate runtime paths.
   sources and retrying alternate upstreams when Harbor publication fails after manifest
   inspection.
 - `ensureCustomImageVariants` keeps the custom Haskell images single-stage while publishing
-  `linux/amd64` and `linux/arm64` variants and composing the final manifest tag in Harbor.
+  `linux/amd64` and `linux/arm64` variants and composing the final manifest tag in Harbor, but
+  the current implementation still drives frontend and gateway builds through the named BuildKit
+  `haskell-toolchain` context pinned to `haskell:9.6.7-slim`.
 - `inspectRawImageManifest` in `src/Prodbox/CLI/Rke2.hs` now treats Harbor's `401 Unauthorized`
   response for a missing custom-image target as a build-required miss instead of a fatal inspect
   failure, so `prodbox rke2 install` rebuilds and publishes `prodbox-nginx-oidc` before later
@@ -100,10 +110,21 @@ contract without reintroducing Python or duplicate runtime paths.
   `src/Prodbox/CLI/Rke2.hs`.
 - On April 25, 2026, a final direct rerun of `./.build/prodbox host public-edge` again reached
   `CLASSIFICATION=ready-for-external-proof`.
+- Those April 25, 2026 reruns prove the pre-upgrade `9.6.7` container publication path only.
 
 ### Remaining Work
 
-None.
+- Remove the lifecycle-owned `haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim`
+  custom-image publish path from `src/Prodbox/CLI/Rke2.hs` and the related tests.
+- Align lifecycle-managed custom-image publication on the `ubuntu:24.04` plus in-image `ghcup`
+  pinned GHC `9.14.1` doctrine with no symlinked Haskell tool shims.
+- Land the explicit repo upgrade to GHC `9.14.1`, including required `prodbox.cabal` and related
+  cabal-bound changes, before closing the lifecycle rerun record.
+- Rerun `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration lifecycle`,
+  `./.build/prodbox dns check`, `./.build/prodbox rke2 install`,
+  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
+  `./.build/prodbox test all` on the upgraded toolchain path.
 
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
@@ -140,8 +161,10 @@ local-cluster supported ownership from the Pulumi path.
   plus `pulumi/aws-test/Main.yaml` are the retained AWS IaC programs.
 - `src/Prodbox/CLI/Pulumi.hs` no longer exposes `up|preview|destroy|refresh|stack-init` for local
   cluster ownership; the public Pulumi surface is AWS-only.
-- The AWS validation stack inputs are synchronized through explicit Pulumi stack config written by
-  the Haskell infra modules rather than `std:getenv` lookups inside the YAML runtime.
+- The AWS validation stack inputs are split by sensitivity: non-secret operator-CIDR and
+  SSH-public-key values are synchronized through explicit Pulumi stack config written by the
+  Haskell infra modules, while AWS provider credentials stay in `prodbox-config.dhall` and are
+  projected into Pulumi through the Haskell-owned subprocess environment.
 - On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
   `./.build/prodbox test all`.
 - Those reruns re-exercised `./.build/prodbox test integration pulumi`,
@@ -206,7 +229,7 @@ None.
   surface.
 - `documents/engineering/code_quality.md` - final non-Python quality gate.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
-  inventory.
+  inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.
 - `documents/engineering/local_registry_pipeline.md` - Harbor-first lifecycle ordering and
   bootstrap doctrine.
 - `documents/engineering/prerequisite_doctrine.md` - lifecycle and Pulumi prerequisite checks.

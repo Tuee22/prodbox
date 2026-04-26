@@ -6,7 +6,8 @@
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
-> Haskell stack and a final cleanup ledger with no unresolved supported-path residue.
+> Haskell stack and a cleanup ledger where any surviving supported-path residue is explicitly
+> owned by its originating phase.
 
 ## Phase Summary
 
@@ -15,9 +16,12 @@ repository. Sprint `6.1` keeps the destructive operator flow closed on Haskell c
 Sprint `6.2` remains closed as well: the Phase `7` onboarding and AWS administration surfaces are
 closed on Haskell-only paths, the Python artifact cleanup is complete, and the earlier temporary
 Phase `4` aggregate-validation reopen is closed again after the Harbor custom-image inspection
-repair plus fresh aggregate reruns. This phase owns the destructive rerun contract, the final
-zero-Python handoff criteria, and the dependency between those surfaces and the earlier
-lifecycle, gateway, chart, and AWS phases.
+repair plus fresh aggregate reruns. The legacy ledger is no longer empty because Sprint `3.3` is
+reopened on the Patroni operator surface and Sprints `1.1`, `2.1`, and `4.1` are reopened on the
+Haskell build-container doctrine, but that remaining non-Python cleanup is explicitly owned by
+Phases `1-4` rather than this phase. This phase owns the destructive rerun contract, the final
+zero-Python handoff criteria, and the dependency between those surfaces and the earlier lifecycle,
+gateway, chart, and AWS phases.
 
 ## Current Baseline In Worktree
 
@@ -102,9 +106,9 @@ None.
 
 ### Objective
 
-Close the rewrite with no supported-path Python artifacts left in the repository and no remaining
-cleanup residue left in the legacy ledger after the Phase `7` onboarding and AWS administration
-surfaces close on Haskell-only paths.
+Close the rewrite with no supported-path Python artifacts left in the repository while leaving any
+surviving non-Python cleanup explicitly owned by its originating phase in the legacy ledger after
+the Phase `7` onboarding and AWS administration surfaces close on Haskell-only paths.
 
 ### Deliverables
 

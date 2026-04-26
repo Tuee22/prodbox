@@ -20,25 +20,28 @@ module Prodbox.Settings (
 )
 where
 
-import Control.Exception (
-    SomeException,
-    displayException,
-    try,
- )
+import Data.Aeson (FromJSON, eitherDecode)
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Dhall (FromDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Repo (
     ConfigPaths (..),
     canonicalConfigPaths,
  )
+import Prodbox.Result (Result (..))
+import Prodbox.Subprocess (
+    CommandSpec (..),
+    ProcessOutput (..),
+    captureCommand,
+ )
 import System.Directory (
     doesFileExist,
     makeAbsolute,
  )
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 
 data Credentials = Credentials
@@ -47,19 +50,19 @@ data Credentials = Credentials
     , session_token :: Maybe Text
     , region :: Text
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data Route53Section = Route53Section
     { zone_id :: Text
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data DomainSection = DomainSection
     { demo_fqdn :: Text
     , demo_ttl :: Natural
     , vscode_fqdn :: Maybe Text
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data AcmeSection = AcmeSection
     { email :: Text
@@ -67,19 +70,19 @@ data AcmeSection = AcmeSection
     , eab_key_id :: Maybe Text
     , eab_hmac_key :: Maybe Text
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data DeploymentSection = DeploymentSection
     { dev_mode :: Bool
     , bootstrap_public_ip_override :: Maybe Text
     , pulumi_enable_dns_bootstrap :: Bool
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data StorageSection = StorageSection
     { manual_pv_host_root :: Text
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data ConfigFile = ConfigFile
     { aws :: Credentials
@@ -90,7 +93,7 @@ data ConfigFile = ConfigFile
     , deployment :: DeploymentSection
     , storage :: StorageSection
     }
-    deriving (Eq, Show, Generic, FromDhall)
+    deriving (Eq, Show, Generic, FromJSON)
 
 data ValidatedSettings = ValidatedSettings
     { validatedConfig :: ConfigFile
@@ -140,10 +143,37 @@ loadConfigFile repoRoot = do
     if not configExists
         then pure (Left (missingConfigMessage configPath))
         else do
-            decoded <- try (inputFile auto configPath) :: IO (Either SomeException ConfigFile)
-            pure $ case decoded of
-                Left err -> Left (displayException err)
-                Right config -> Right config
+            outputResult <-
+                captureCommand
+                    CommandSpec
+                        { commandPath = "dhall-to-json"
+                        , commandArguments = ["--file", configPath, "--compact", "--preserve-null"]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+            pure $
+                case outputResult of
+                    Failure err ->
+                        Left
+                            ( "Failed to run `dhall-to-json` for `"
+                                ++ configPath
+                                ++ "`: "
+                                ++ err
+                            )
+                    Success output ->
+                        case processExitCode output of
+                            ExitFailure _ ->
+                                Left (processStderr output ++ processStdout output)
+                            ExitSuccess ->
+                                case eitherDecode (BL8.pack (processStdout output)) of
+                                    Left err ->
+                                        Left
+                                            ( "Failed to decode JSON from `dhall-to-json` for `"
+                                                ++ configPath
+                                                ++ "`: "
+                                                ++ err
+                                            )
+                                    Right config -> Right config
 
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do

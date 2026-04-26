@@ -3,10 +3,11 @@ FROM ubuntu:24.04
 
 WORKDIR /opt/build
 
-ARG GHC_VERSION=9.6.7
+ARG GHC_VERSION=9.14.1
+ARG CABAL_VERSION=3.16.1.0
 ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
-ENV PATH=/opt/ghc/${GHC_VERSION}/bin:/usr/local/bin:$PATH
+ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -15,6 +16,7 @@ RUN apt-get update \
         curl \
         file \
         git \
+        gnupg \
         libffi-dev \
         libgmp-dev \
         libncurses-dev \
@@ -37,20 +39,17 @@ RUN case "${TARGETARCH}" in \
     && /tmp/aws/install \
     && rm -rf /tmp/aws /tmp/awscliv2.zip
 
-RUN --mount=type=bind,from=haskell-toolchain,src=/opt/ghc,target=/mnt/ghc,ro \
-    --mount=type=bind,from=haskell-toolchain,src=/usr/local/bin/cabal,target=/mnt/cabal,ro \
-    mkdir -p /opt/ghc /usr/local/bin \
-    && cp -a /mnt/ghc/. /opt/ghc/ \
-    && cp /mnt/cabal /usr/local/bin/cabal \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/ghc-${GHC_VERSION} /usr/local/bin/ghc \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/ghc-pkg-${GHC_VERSION} /usr/local/bin/ghc-pkg \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/ghci-${GHC_VERSION} /usr/local/bin/ghci \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/runghc-${GHC_VERSION} /usr/local/bin/runghc \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/runhaskell-${GHC_VERSION} /usr/local/bin/runhaskell \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/hsc2hs-ghc-${GHC_VERSION} /usr/local/bin/hsc2hs \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/haddock-ghc-${GHC_VERSION} /usr/local/bin/haddock \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/hp2ps-ghc-${GHC_VERSION} /usr/local/bin/hp2ps \
-    && ln -sf /opt/ghc/${GHC_VERSION}/bin/hpc-ghc-${GHC_VERSION} /usr/local/bin/hpc
+RUN curl --proto '=https' --tlsv1.2 -fsSL https://get-ghcup.haskell.org -o /tmp/ghcup.sh \
+    && chmod +x /tmp/ghcup.sh \
+    && BOOTSTRAP_HASKELL_NONINTERACTIVE=1 \
+       BOOTSTRAP_HASKELL_MINIMAL=1 \
+       BOOTSTRAP_HASKELL_ADJUST_BASHRC=0 \
+       /tmp/ghcup.sh \
+    && ghcup install ghc "${GHC_VERSION}" \
+    && ghcup set ghc "${GHC_VERSION}" \
+    && ghcup install cabal "${CABAL_VERSION}" \
+    && ghcup set cabal "${CABAL_VERSION}" \
+    && rm -f /tmp/ghcup.sh
 
 COPY prodbox.cabal cabal.project LICENSE README.md ./
 COPY app ./app

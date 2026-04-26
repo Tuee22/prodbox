@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Control.Monad (when)
+import Data.List (isInfixOf)
 import Prodbox.BuildSupport (
     addBuildSupportEnvironment,
     canonicalOperatorBinaryPath,
@@ -179,16 +180,24 @@ main = hspec $ do
                 deployStdout `shouldContain` "CHART_DEPLOYMENT"
                 deployStdout `shouldContain` "ROOT_CHART=vscode"
 
-                appliedManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply.json")
+                appliedManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-1.json")
                 appliedManifest `shouldContain` "PersistentVolumeClaim"
                 appliedManifest `shouldContain` "vscode-data-0"
+                patroniManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-2.json")
+                patroniManifest `shouldContain` "PersistentVolume"
+                patroniManifest `shouldContain` "prodbox-vscode-pg-instance1-0-pgdata"
+                patroniManifest `shouldNotContain` "PersistentVolumeClaim"
 
                 upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
                 upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|keycloak"
                 upgradeRecord `shouldContain` "upgrade|--install|--wait|--atomic|--timeout|30m0s|vscode"
 
-                execRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-exec.txt")
-                execRecord `shouldContain` "exec|prodbox-vscode-postgres-0|--namespace|vscode|--|patronictl|list|-f|json"
+                kubectlRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl.txt")
+                kubectlRecord `shouldContain` "get|crd|perconapgclusters.pgv2.percona.com|-o|name"
+                kubectlRecord `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|-o|name"
+                kubectlRecord `shouldContain` "get|pvc|--namespace|vscode|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres|-o|json"
+                kubectlRecord `shouldContain` "get|perconapgclusters.pgv2.percona.com|prodbox-vscode-pg|-n|vscode|-o|jsonpath={.status.state}"
+                kubectlRecord `shouldContain` "get|perconapgclusters.pgv2.percona.com|prodbox-vscode-pg|-n|vscode|-o|jsonpath={.status.postgres.ready}"
 
                 (deleteExitCode, deleteStdout, deleteStderr) <-
                     readCreateProcessWithExitCode
@@ -205,9 +214,49 @@ main = hspec $ do
                 uninstallRecord `shouldContain` "uninstall|keycloak|--namespace|vscode"
 
                 deleteRecord <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-delete.txt")
+                deleteRecord `shouldContain` "delete|pod|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres|--namespace|vscode|--ignore-not-found=true|--wait=true"
+                deleteRecord `shouldContain` "delete|pvc|--selector|postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres|--namespace|vscode|--ignore-not-found=true|--wait=true"
+                deleteRecord `shouldContain` "delete|pv|prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-0-data"
                 deleteRecord `shouldContain` "delete|pvc|vscode-data-0|--namespace|vscode"
                 deleteRecord `shouldContain` "delete|pv|prodbox-chart-vscode-vscode-vscode-0-data"
                 deleteRecord `shouldContain` "delete|namespace|vscode"
+
+        it "restores retained Patroni state through a staged bootstrap before scaling back to three replicas" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+                envVars <- fakeChartEnvironment tmpDir
+                let stagedEnvVars = ("PRODBOX_FAKE_PATRONI_STAGED_RESTORE", "true") : envVars
+                    stateDir = tmpDir </> ".prodbox-state" </> "vscode"
+                createDirectoryIfMissing True stateDir
+                writeFile
+                    (stateDir </> ".patroni-anchor-volume")
+                    "prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data\n"
+
+                (deployExitCode, deployStdout, deployStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["charts", "deploy", "vscode"]){cwd = Just tmpDir, env = Just stagedEnvVars}
+                        ""
+
+                deployExitCode `shouldBe` ExitSuccess
+                deployStderr `shouldBe` ""
+                deployStdout `shouldContain` "CHART_DEPLOYMENT"
+
+                bootstrapPatroniManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-2.json")
+                bootstrapPatroniManifest `shouldContain` "prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data"
+                bootstrapPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-0-pgdata"
+                bootstrapPatroniManifest `shouldNotContain` "prodbox-vscode-pg-instance1-1-pgdata"
+                bootstrapPatroniManifest `shouldNotContain` "prodbox-vscode-pg-instance1-2-pgdata"
+
+                fullPatroniManifest <- readFile (tmpDir </> "fake-chart-state" </> "kubectl-apply-3.json")
+                fullPatroniManifest `shouldContain` "prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data"
+                fullPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-0-pgdata"
+                fullPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-1-pgdata"
+                fullPatroniManifest `shouldContain` "prodbox-vscode-pg-instance1-2-pgdata"
+
+                upgradeRecord <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
+                length (filter (isInfixOf "|keycloak-postgres|") (lines upgradeRecord)) `shouldBe` 2
 
         it "runs native rke2 status, start, and logs through the built frontend with fake systemctl and journalctl" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -320,6 +369,7 @@ main = hspec $ do
                 kubectlRecord `shouldContain` "get|nodes|-o|name"
                 kubectlRecord `shouldContain` "wait|--for=condition=Ready|node|--all|--timeout=300s"
                 kubectlRecord `shouldContain` "get|storageclass|-o|name"
+                kubectlRecord `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|-o|jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}"
                 kubectlRecord `shouldContain` "delete|storageclass|storageclass.storage.k8s.io/local-path|--ignore-not-found=true"
                 kubectlRecord `shouldContain` "patch|deployment|harbor-nginx|-n|harbor|--type|strategic|--patch|"
                 kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
@@ -352,8 +402,9 @@ main = hspec $ do
                 helmRecord `shouldContain` "upgrade|--install|traefik|traefik/traefik"
                 helmRecord `shouldContain` "repo|add|jetstack|https://charts.jetstack.io"
                 helmRecord `shouldContain` "upgrade|--install|cert-manager|jetstack/cert-manager"
-                helmRecord `shouldContain` "repo|add|postgres-operator-charts|https://opensource.zalando.com/postgres-operator/charts/postgres-operator"
-                helmRecord `shouldContain` "upgrade|--install|postgres-operator|postgres-operator-charts/postgres-operator"
+                helmRecord `shouldContain` "repo|add|percona|https://percona.github.io/percona-helm-charts/"
+                helmRecord `shouldContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
+                helmRecord `shouldContain` "upgrade|--install|postgres-operator|percona/pg-operator"
 
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
@@ -361,18 +412,23 @@ main = hspec $ do
                 dockerRecord `shouldContain` "buildx|stop|prodbox-multiarch-hostnet"
                 dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"
                 dockerRecord `shouldNotContain` "docker/bitnami-pgpool.Dockerfile"
-                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|ghcr.io/zalando/postgres-operator:v1.15.1"
-                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|ghcr.io/zalando/spilo-17:4.0-p3"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/percona/percona-postgresql-operator:2.9.0"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/percona/percona-distribution-postgresql:17.9-1"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/percona/percona-pgbackrest:2.58.0-1"
+                dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/percona/percona-pgbouncer:1.25.1-1"
                 dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|ghcr.io/coder/code-server:4.98.2"
                 dockerRecord `shouldContain` "buildx|imagetools|inspect|--raw|docker.io/codercom/code-server:4.98.2"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0|docker.io/percona/percona-postgresql-operator@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/percona/percona-postgresql-operator@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1|docker.io/percona/percona-distribution-postgresql@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/percona/percona-distribution-postgresql@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/percona-pgbackrest-mirror:2.58.0-1|docker.io/percona/percona-pgbackrest@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/percona/percona-pgbackrest@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/percona-pgbouncer-mirror:1.25.1-1|docker.io/percona/percona-pgbouncer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/percona/percona-pgbouncer@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2|ghcr.io/coder/code-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|ghcr.io/coder/code-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
                 dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/code-server-mirror:4.98.2|docker.io/codercom/code-server@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|docker.io/codercom/code-server@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-                dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64|--build-context|haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim"
-                dockerRecord `shouldContain` "|--push|-f|docker/gateway.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-gateway:prodbox-"
-                dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-amd64|."
-                dockerRecord `shouldContain` "buildx|build|--platform|linux/arm64|--build-context|haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim"
-                dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-arm64|."
-                dockerRecord `shouldContain` "buildx|imagetools|create|--tag|127.0.0.1:30080/prodbox/prodbox-gateway:latest|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-amd64|127.0.0.1:30080/prodbox/prodbox-gateway:latest-linux-arm64"
+                dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64,linux/arm64|--push|-f|docker/gateway.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-gateway:prodbox-"
+                dockerRecord `shouldContain` "-t|127.0.0.1:30080/prodbox/prodbox-gateway:latest|."
+                dockerRecord `shouldNotContain` "--build-context|haskell-toolchain"
+                dockerRecord `shouldNotContain` "latest-linux-amd64"
+                dockerRecord `shouldNotContain` "latest-linux-arm64"
                 dockerRecord `shouldContain` "buildx|build|--platform|linux/amd64,linux/arm64|--push|-f|docker/nginx-oidc.Dockerfile|-t|127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest|."
                 dockerRecord `shouldContain` "save|-o|"
 
@@ -691,7 +747,12 @@ fakeChartEnvironment repoRoot = do
         updatedPath = fakeBin ++ ":" ++ existingPath
         baseEnvironment =
             filter
-                (\(key, _) -> key /= "PATH" && key /= "PRODBOX_FAKE_CHART_RECORD_DIR" && key /= "PRODBOX_FAKE_HELM_LIST_JSON")
+                ( \(key, _) ->
+                    key /= "PATH"
+                        && key /= "PRODBOX_FAKE_CHART_RECORD_DIR"
+                        && key /= "PRODBOX_FAKE_HELM_LIST_JSON"
+                        && key /= "PRODBOX_FAKE_PATRONI_STAGED_RESTORE"
+                )
                 currentEnvironment
     pure
         ( [ ("PATH", updatedPath)
@@ -772,6 +833,27 @@ fakeKubectlScript =
         , "  done"
         , "  printf '\\n' >> \"$target\""
         , "}"
+        , "next_apply_target() {"
+        , "  local counter_file=\"$record_dir/kubectl-apply.count\""
+        , "  local count=0"
+        , "  if [[ -f \"$counter_file\" ]]; then"
+        , "    count=$(/bin/cat \"$counter_file\")"
+        , "  fi"
+        , "  count=$((count + 1))"
+        , "  printf '%s' \"$count\" > \"$counter_file\""
+        , "  printf '%s/kubectl-apply-%s.json' \"$record_dir\" \"$count\""
+        , "}"
+        , "next_counter() {"
+        , "  local counter_file=$1"
+        , "  local count=0"
+        , "  if [[ -f \"$counter_file\" ]]; then"
+        , "    count=$(/bin/cat \"$counter_file\")"
+        , "  fi"
+        , "  count=$((count + 1))"
+        , "  printf '%s' \"$count\" > \"$counter_file\""
+        , "  printf '%s' \"$count\""
+        , "}"
+        , "append_args \"$record_dir/kubectl.txt\" \"$@\""
         , "case \"${1:-} ${2:-}\" in"
         , "  'get nodes')"
         , "    cat <<'JSON'"
@@ -779,8 +861,8 @@ fakeKubectlScript =
         , "JSON"
         , "    ;;"
         , "  'get crd')"
-        , "    if [[ \"${3:-}\" == 'postgresqls.acid.zalan.do' ]]; then"
-        , "      printf 'customresourcedefinition.apiextensions.k8s.io/postgresqls.acid.zalan.do\\n'"
+        , "    if [[ \"${3:-}\" == 'perconapgclusters.pgv2.percona.com' ]]; then"
+        , "      printf 'customresourcedefinition.apiextensions.k8s.io/perconapgclusters.pgv2.percona.com\\n'"
         , "    else"
         , "      printf 'Error from server (NotFound): customresourcedefinitions \"%s\" not found\\n' \"${3:-crd}\" >&2"
         , "      exit 1"
@@ -794,17 +876,57 @@ fakeKubectlScript =
         , "      exit 1"
         , "    fi"
         , "    ;;"
-        , "  'get postgresql')"
-        , "    if [[ \"$*\" == *'jsonpath={.status.PostgresClusterStatus}'* ]]; then"
-        , "      printf 'Running\\n'"
+        , "  'get perconapgclusters.pgv2.percona.com')"
+        , "    if [[ \"$*\" == *'jsonpath={.status.state}'* ]]; then"
+        , "      printf 'ready\\n'"
+        , "    elif [[ \"$*\" == *'jsonpath={.status.postgres.ready}'* ]]; then"
+        , "      if [[ \"${PRODBOX_FAKE_PATRONI_STAGED_RESTORE:-}\" == 'true' ]]; then"
+        , "        ready_count=$(next_counter \"$record_dir/patroni-ready.count\")"
+        , "        if [[ \"$ready_count\" -eq 1 ]]; then"
+        , "          printf '1\\n'"
+        , "        else"
+        , "          printf '3\\n'"
+        , "        fi"
+        , "      else"
+        , "        printf '3\\n'"
+        , "      fi"
         , "    else"
-        , "      printf 'Error from server (NotFound): postgresqls \"%s\" not found\\n' \"${3:-postgresql}\" >&2"
+        , "      printf 'Error from server (NotFound): perconapgclusters \"%s\" not found\\n' \"${3:-perconapgclusters.pgv2.percona.com}\" >&2"
         , "      exit 1"
         , "    fi"
         , "    ;;"
-        , "  'exec prodbox-vscode-postgres-0')"
-        , "    append_args \"$record_dir/kubectl-exec.txt\" \"$@\""
-        , "    printf '%s\\n' '[{\"Cluster\":\"prodbox-vscode-postgres\",\"Member\":\"prodbox-vscode-postgres-0\",\"Role\":\"Leader\",\"State\":\"running\"},{\"Cluster\":\"prodbox-vscode-postgres\",\"Member\":\"prodbox-vscode-postgres-1\",\"Role\":\"Replica\",\"State\":\"running\"},{\"Cluster\":\"prodbox-vscode-postgres\",\"Member\":\"prodbox-vscode-postgres-2\",\"Role\":\"Replica\",\"State\":\"running\"}]'"
+        , "  'get endpoints')"
+        , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-ha' && \"$*\" == *'jsonpath={.subsets[0].addresses[0].targetRef.name}'* ]]; then"
+        , "      printf 'prodbox-vscode-pg-instance1-0\\n'"
+        , "    else"
+        , "      printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
+        , "      exit 1"
+        , "    fi"
+        , "    ;;"
+        , "  'get pvc')"
+        , "    if [[ \"${3:-}\" == 'prodbox-vscode-pg-instance1-0-pgdata' && \"$*\" == *'jsonpath={.spec.volumeName}'* ]]; then"
+        , "      printf 'prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-0-data\\n'"
+        , "    elif [[ \"$*\" == *'postgres-operator.crunchydata.com/cluster=prodbox-vscode-pg,postgres-operator.crunchydata.com/data=postgres'* ]]; then"
+        , "      if [[ \"${PRODBOX_FAKE_PATRONI_STAGED_RESTORE:-}\" == 'true' ]]; then"
+        , "        pvc_count=$(next_counter \"$record_dir/patroni-pvc-list.count\")"
+        , "        if [[ \"$pvc_count\" -eq 1 ]]; then"
+        , "          cat <<'JSON'"
+        , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}}]}"
+        , "JSON"
+        , "        else"
+        , "          cat <<'JSON'"
+        , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"},\"spec\":{\"volumeName\":\"prodbox-chart-vscode-keycloak-postgres-prodbox-vscode-pg-1-data\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-1-pgdata\"},\"spec\":{}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-2-pgdata\"},\"spec\":{}}]}"
+        , "JSON"
+        , "        fi"
+        , "      else"
+        , "        cat <<'JSON'"
+        , "{\"items\":[{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-0-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-1-pgdata\"}},{\"metadata\":{\"name\":\"prodbox-vscode-pg-instance1-2-pgdata\"}}]}"
+        , "JSON"
+        , "      fi"
+        , "    else"
+        , "      printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
+        , "      exit 1"
+        , "    fi"
         , "    ;;"
         , "  'get secret')"
         , "    if [[ \"$*\" == *'go-template={{index .data \"password\" | base64decode}}'* ]]; then"
@@ -820,7 +942,8 @@ fakeKubectlScript =
         , "    exit 1"
         , "    ;;"
         , "  'apply -f')"
-        , "    cp \"${3:?}\" \"$record_dir/kubectl-apply.json\""
+        , "    target=$(next_apply_target)"
+        , "    cp \"${3:?}\" \"$target\""
         , "    ;;"
         , "  'delete pod'|'delete pvc'|'delete pv'|'delete namespace')"
         , "    append_args \"$record_dir/kubectl-delete.txt\" \"$@\""
@@ -1121,6 +1244,14 @@ fakeRke2KubectlScript =
         , "      deployments.apps)"
         , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
         , "          printf 'deployment.apps/prodbox-api\\n'"
+        , "        fi"
+        , "        ;;"
+        , "      deployment)"
+        , "        if [[ \"${3:-}\" == 'postgres-operator' && \"$*\" == *'--namespace postgres-operator'* && \"$*\" == *'jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}'* ]]; then"
+        , "          printf 'postgres-operator'"
+        , "        else"
+        , "          printf 'Error from server (NotFound): deployments \"%s\" not found\\n' \"${3:-deployment}\" >&2"
+        , "          exit 1"
         , "        fi"
         , "        ;;"
         , "      configmaps)"

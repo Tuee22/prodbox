@@ -39,11 +39,10 @@ The native Haskell lifecycle reconciles Harbor state in order:
 6. Harbor project reconcile for `prodbox`
 7. MinIO bootstrap install from public `quay.io/minio/*` image refs
 8. Docker login plus required public-image mirror into Harbor
-9. Per-platform custom-image publish, manifest compose, and host-arch import for the gateway and
-   `vscode-nginx`
+9. Multi-platform custom-image publish and host-arch import for the gateway and `vscode-nginx`
 10. `registries.yaml` reconcile and conditional RKE2 restart
-11. Harbor-backed platform-runtime install for MetalLB, Traefik, cert-manager, and the
-   `postgres-operator`
+11. Harbor-backed platform-runtime install for MetalLB, Traefik, cert-manager, and the Percona
+   PostgreSQL operator
 12. Optional Route 53 bootstrap A-record reconcile
 13. MinIO steady-state reconcile onto Harbor-backed image refs
 
@@ -84,9 +83,9 @@ Policy:
 - `prodbox-id` source: `/etc/machine-id`
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
 - additional custom image ref: `127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest`
-- supported mirrored public refs include Harbor-backed `postgres-operator`, `spilo-17`,
-  `code-server`, `keycloak`, `minio`, `minio-mc`, `traefik`, `metallb`, `frr`,
-  `kube-rbac-proxy`, and `cert-manager` images under the Harbor `prodbox` project
+- supported mirrored public refs include Harbor-backed Percona operator, PostgreSQL, `pgBouncer`,
+  and `pgBackRest` images, `code-server`, `keycloak`, `minio`, `minio-mc`, `traefik`, `metallb`,
+  `frr`, `kube-rbac-proxy`, and `cert-manager` images under the Harbor `prodbox` project
 
 Platform-runtime and chart-runtime workloads consume those Harbor-backed refs after bootstrap.
 
@@ -129,17 +128,15 @@ Container build requirements:
 
 1. use single-stage `ubuntu:24.04` for repository-owned Haskell images
 2. build the Haskell gateway binary under `/opt/build`
-3. keep the final Haskell images single-stage by mounting `haskell:9.6.7-slim` as the named
-   BuildKit toolchain context during publication
-4. publish `linux/amd64` plus `linux/arm64` variants separately through
-   `docker buildx build --platform ... --push`
-5. compose the final multi-arch Harbor tag with `docker buildx imagetools create`
-6. create or reuse the `docker-container` buildx builder with host networking so Harbor pushes to
+3. install `ghcup` in-image, pin GHC `9.14.1`, and do not create symlinked Haskell tool shims
+4. publish `linux/amd64` plus `linux/arm64` together through
+   `docker buildx build --platform linux/amd64,linux/arm64 --push`
+5. create or reuse the `docker-container` buildx builder with host networking so Harbor pushes to
    `127.0.0.1:30080` succeed from inside the builder
-7. keep `.dockerignore` synchronized with the intended build inputs
-8. use `tini` as PID 1 in the runtime image
-9. invoke the canonical CLI startup path through the Haskell gateway entrypoint
-10. install the official AWS CLI bundle per `TARGETARCH` so the in-pod Route 53 subprocess path
+6. keep `.dockerignore` synchronized with the intended build inputs
+7. use `tini` as PID 1 in the runtime image
+8. invoke the canonical CLI startup path through the Haskell gateway entrypoint
+9. install the official AWS CLI bundle per `TARGETARCH` so the in-pod Route 53 subprocess path
     remains available inside the single-stage gateway image
 
 ## 7. Operator Runbook

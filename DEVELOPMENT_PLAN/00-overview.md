@@ -104,18 +104,14 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository state as of April 25, 2026 remains closed on Phase `0` and Phases `5-7`, but
-Phases `1-4` are active. The supported public surface is still Haskell-only, the earlier
-unsupported cleanup residue outside the reopened work is removed, and the current checkout
-includes operator-authored repository-root `prodbox-config.dhall`. The current implementation
-still mounts `haskell:9.6.7-slim` as the BuildKit toolchain context in the frontend, gateway, and
-lifecycle-managed custom-image paths, still creates symlinked GHC tool shims in the frontend and
-gateway build images, still carries `base ^>=4.18.2.1` in `prodbox.cabal`, and still installs
-Zalando `postgres-operator` while mirroring Zalando operator images and targeting
-`postgresqls.acid.zalan.do`. The target architecture now requires every supported Patroni surface
-to use the Percona operator and every Haskell-build container to stay on `ubuntu:24.04`, install
-`ghcup`, pin GHC `9.14.1`, and avoid symlinked Haskell tool shims, with explicit repo package-
-bound updates and full canonical validation on that toolchain.
+The repository state as of April 26, 2026 is closed on every phase in this plan. The supported
+public surface is Haskell-only, the earlier unsupported cleanup residue is removed, and the
+current checkout includes operator-authored repository-root `prodbox-config.dhall`. The current
+implementation now uses in-image `ghcup` with pinned GHC `9.14.1` in the frontend, gateway, and
+lifecycle-managed custom-image paths, removes symlinked GHC tool shims from the supported
+Dockerfiles, aligns `prodbox.cabal` and `cabal.project` with the explicit `ghc-9.14.1` path,
+installs the Percona operator while mirroring Percona operator and PostgreSQL sidecar images, and
+targets `perconapgclusters.pgv2.percona.com`.
 
 ### Supported Haskell Surface
 
@@ -136,17 +132,14 @@ bound updates and full canonical validation on that toolchain.
 - `src/Prodbox/CLI/Rke2.hs` owns the Harbor-first lifecycle, readiness gates, Harbor population,
   post-bootstrap Harbor-backed workload reconcile, dual-arch custom-image publication, and
   alternate-source retry during Harbor mirror publication.
-- `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `src/Prodbox/CLI/Rke2.hs`
-  currently still close on the mounted `haskell:9.6.7-slim` toolchain-context path with
-  symlinked GHC tool shims. Reopened Sprints `1.1`, `2.1`, and `4.1` replace that path with
-  in-image `ghcup` pinned GHC `9.14.1`, no symlinked tool shims, aligned cabal bounds, and full
-  canonical validation.
+- `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `src/Prodbox/CLI/Rke2.hs` now
+  close on the `ghcup` plus `ghc-9.14.1` toolchain path with no symlinked GHC shims and no
+  mounted `haskell:9.6.7-slim` BuildKit context.
 - `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
-  `charts/keycloak-postgres/` currently close on namespace-local Patroni PostgreSQL HA through
-  the Zalando `postgres-operator` surface. Reopened Sprint `3.3` keeps the three-replica,
-  synchronous-replication, retained-credential, deterministic manual-PV rebinding, retained
-  secret rendering, convergence gate, retained-follower reinitialization, and no-embedded-
-  PostgreSQL guarantees while replacing that operator surface with the Percona operator.
+  `charts/keycloak-postgres/` now close on namespace-local Patroni PostgreSQL HA through the
+  Percona operator while preserving the three-replica, synchronous-replication,
+  retained-credential, deterministic manual-PV rebinding, retained secret rendering,
+  convergence gate, retained-follower reinitialization, and no-embedded-PostgreSQL guarantees.
 - `src/Prodbox/CLI/Pulumi.hs` plus the stack-local YAML Pulumi definitions under
   `pulumi/aws-eks/` and `pulumi/aws-test/` retain Pulumi only for AWS validation IaC.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
@@ -156,33 +149,31 @@ bound updates and full canonical validation on that toolchain.
 ### Post-Cleanup Validation Gate
 
 - The current workspace now contains repository-root `prodbox-config.dhall`.
-- On April 25, 2026, local reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
+- On April 26, 2026, fresh reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
   `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
-  `./.build/prodbox tla-check`, `./.build/prodbox dns check`,
-  `./.build/prodbox test integration aws-iam`, `./.build/prodbox rke2 install`, and
-  `./.build/prodbox host public-edge`.
-- On April 25, 2026, a direct retained-state rerun also passed
-  `./.build/prodbox charts delete vscode --yes` followed by
-  `./.build/prodbox charts deploy vscode`.
-- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
-  `./.build/prodbox test all` after the Harbor custom-image inspection repair in
-  `src/Prodbox/CLI/Rke2.hs`.
-- On April 25, 2026, a final direct rerun of `./.build/prodbox host public-edge` again reached
-  `CLASSIFICATION=ready-for-external-proof`.
-- Those April 25, 2026 reruns prove the pre-upgrade `9.6.7` container path and the Zalando-based
-  chart path only; equivalent proof on the `ghcup`-managed GHC `9.14.1`, no-symlink, and
-  Percona-operator paths remains open.
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
+  `./.build/prodbox tla-check`.
+- On April 26, 2026, further direct reruns passed `./.build/prodbox dns check`,
+  `./.build/prodbox host public-edge`, `./.build/prodbox test integration aws-iam`,
+  `./.build/prodbox test integration public-dns`, `./.build/prodbox test integration charts-platform`,
+  `./.build/prodbox charts delete vscode --yes`, `./.build/prodbox charts deploy vscode`, and
+  `./.build/prodbox test integration charts-vscode`.
+- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
+  `./.build/prodbox test integration aws-eks`, and a second
+  `./.build/prodbox pulumi eks-destroy --yes` passed after unmanaged canonical EKS residue purge
+  landed in `src/Prodbox/Infra/AwsEksTestStack.hs`.
+- On April 26, 2026, the authoritative `./.build/prodbox test all` rerun passed. It re-exercised
+  unit, built-frontend CLI/env, supported-runtime restore, `charts-vscode`, `public-dns`,
+  `dns-aws`, `aws-iam`, `aws-eks`, `pulumi`, AWS HA-RKE2 create/destroy, `gateway-daemon`,
+  `gateway-pods`, `gateway-partition`, `charts-platform`, `charts-storage`, the destructive
+  lifecycle proof, and the final public-edge restore to `CLASSIFICATION=ready-for-external-proof`.
 
 ### Interpretation
 
 The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
-application database ownership, or a broader-than-target Harbor bootstrap exception. The
-repository guidance is aligned with that state, but final handoff is not yet complete because the
-current Haskell-build container doctrine still uses the mounted `haskell:9.6.7-slim` toolchain
-context plus symlinked GHC tool shims instead of the reopened `ghcup`-managed GHC `9.14.1`
-target, and because the current Patroni operator surface still uses Zalando `postgres-operator`
-rather than the reopened Phase `3` Percona operator target.
+application database ownership, the mounted `haskell:9.6.7-slim` toolchain-context path, or the
+Zalando `postgres-operator` surface. Repository guidance is aligned with that state, and final
+handoff is complete.
 
 ## Haskell-Only Architecture by Surface
 
@@ -203,30 +194,23 @@ rather than the reopened Phase `3` Percona operator target.
 
 ## Current Execution State
 
-Phase `0` and Phases `5-7` are `Done` on their supported surfaces; Phases `1-4` are `Active`:
+All phases are `Done` on their supported surfaces:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, and the
-  Haskell test and quality framework. Sprint `1.2` and Sprint `1.3` remain closed, but Sprint
-  `1.1` is reopened to replace the mounted `haskell:9.6.7-slim` frontend toolchain context and
-  symlinked GHC tool shims with in-image `ghcup`, pinned GHC `9.14.1`, aligned cabal bounds, and
-  full canonical validation.
-- Phase 2 owns the gateway runtime, DNS inspection surface, and TLA+ validation entrypoint.
-  Sprint `2.2` remains closed, but Sprint `2.1` is reopened to replace the mounted
-  `haskell:9.6.7-slim` gateway toolchain context and symlinked GHC tool shims with in-image
-  `ghcup` pinned GHC `9.14.1`.
+  Haskell test and quality framework; it is closed on the `ghcup` plus `ghc-9.14.1` path.
+- Phase 2 owns the gateway runtime, DNS inspection surface, and TLA+ validation entrypoint; it is
+  closed on the `gateway-daemon`, `gateway-pods`, and `gateway-partition` proof set.
 - Phase 3 owns the chart platform, retained state model, supported cluster-backed `vscode`
   delivery path, and the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed
-  workloads. Sprint `3.1` and Sprint `3.2` remain closed, but Sprint `3.3` is reopened to
-  replace the current Zalando `postgres-operator` surface with the Percona operator for all
-  supported Patroni use.
+  workloads; it is closed on the Harbor-backed chart proofs, including the staged retained-state
+  `1 -> 3` restore flow.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
-  bootstrap exception, AWS-only Pulumi scope, and Python removal. Sprint `4.2` and Sprint `4.3`
-  remain closed, but Sprint `4.1` is reopened to remove the lifecycle-managed
-  `haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim` custom-image publish
-  path and rerun full aggregate validation on the explicit GHC `9.14.1` repo upgrade.
+  bootstrap exception, AWS-only Pulumi scope, and Python removal; it is closed on the successful
+  destructive delete/install/postflight lifecycle proof and unmanaged EKS-residue cleanup.
 - Phase 5 owns public-edge diagnostics and external proof.
-- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria.
+- Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria; it is
+  closed on the successful authoritative aggregate rerun.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
   credential proof harness.
 

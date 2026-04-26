@@ -319,10 +319,9 @@ state.
 Containerization is first-class for integration/runtime image publishing:
 
 - `prodbox rke2 install` builds the gateway image from `docker/gateway.Dockerfile`
-- the publish path runs separate `docker buildx build --platform linux/amd64 --push` and
-  `docker buildx build --platform linux/arm64 --push` commands while mounting
-  `haskell:9.6.7-slim` as the named BuildKit toolchain context
-- the final multi-arch Harbor tag is composed with `docker buildx imagetools create`
+- the publish path runs one `docker buildx build --platform linux/amd64,linux/arm64 --push`
+  command from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
+  pinned GHC `9.14.1`
 - Harbor is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache
 - Kubernetes pod integration tests run against that Harbor-published image by default

@@ -130,7 +130,7 @@ toolSystemctl :: EffectNode
 toolSystemctl = toolNode "tool_systemctl" "Validate systemctl is available" "systemctl" ["--version"] ["systemd_available"]
 
 toolDhall :: EffectNode
-toolDhall = toolNode "tool_dhall" "Validate dhall is installed" "dhall" ["version"] []
+toolDhall = toolNode "tool_dhall" "Validate dhall-to-json is installed" "dhall-to-json" ["--version"] []
 
 settingsLoaded :: EffectNode
 settingsLoaded =

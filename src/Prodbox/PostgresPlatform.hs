@@ -29,7 +29,7 @@ patroniOperatorDeploymentName :: String
 patroniOperatorDeploymentName = patroniOperatorReleaseName
 
 patroniPostgresqlCrdName :: String
-patroniPostgresqlCrdName = "postgresqls.acid.zalan.do"
+patroniPostgresqlCrdName = "perconapgclusters.pgv2.percona.com"
 
 patroniTeamId :: String
 patroniTeamId = "prodbox"
@@ -44,40 +44,33 @@ patroniStorageSize :: String
 patroniStorageSize = "20Gi"
 
 patroniRunAsUser :: Int
-patroniRunAsUser = 101
+patroniRunAsUser = 1001
 
 patroniRunAsGroup :: Int
-patroniRunAsGroup = 103
+patroniRunAsGroup = 1001
 
 patroniFsGroup :: Int
-patroniFsGroup = 103
+patroniFsGroup = 1001
 
 patroniClusterName :: String -> String
-patroniClusterName rootChart = patroniTeamId ++ "-" ++ rootChart ++ "-postgres"
+patroniClusterName rootChart = patroniTeamId ++ "-" ++ rootChart ++ "-pg"
 
 patroniPrimaryServiceHost :: String -> String -> String
 patroniPrimaryServiceHost namespace rootChart =
-    patroniClusterName rootChart ++ "." ++ namespace ++ ".svc.cluster.local"
+    patroniClusterName rootChart ++ "-ha." ++ namespace ++ ".svc.cluster.local"
 
 patroniReplicaServiceHost :: String -> String -> String
 patroniReplicaServiceHost namespace rootChart =
-    patroniClusterName rootChart ++ "-repl." ++ namespace ++ ".svc.cluster.local"
+    patroniClusterName rootChart ++ "-replicas." ++ namespace ++ ".svc.cluster.local"
 
 patroniCredentialsSecretName :: String -> String
 patroniCredentialsSecretName rootChart =
-    patroniUsername
-        ++ "."
-        ++ patroniClusterName rootChart
-        ++ ".credentials.postgresql.acid.zalan.do"
+    patroniClusterName rootChart ++ "-pguser-" ++ patroniUsername
 
 patroniSuperuserSecretName :: String -> String
 patroniSuperuserSecretName rootChart =
-    "postgres."
-        ++ patroniClusterName rootChart
-        ++ ".credentials.postgresql.acid.zalan.do"
+    patroniClusterName rootChart ++ "-pguser-postgres"
 
 patroniStandbySecretName :: String -> String
 patroniStandbySecretName rootChart =
-    "standby."
-        ++ patroniClusterName rootChart
-        ++ ".credentials.postgresql.acid.zalan.do"
+    patroniClusterName rootChart ++ "-primaryuser"

@@ -15,10 +15,10 @@ Haskell, preserves the formal model entrypoint, and keeps Route 53 write ownersh
 in-cluster gateway workload. It owns the gateway image packaging contract, Harbor-backed image
 delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint.
 
-As of April 25, 2026, Sprint `2.2` remains closed, but Sprint `2.1` is active again. The target
-gateway container doctrine keeps `ubuntu:24.04` as the base image while replacing the mounted
-`haskell:9.6.7-slim` toolchain context with in-image `ghcup` pinned to GHC `9.14.1`, removing
-symlinked Haskell tool shims, and preserving the in-image AWS CLI bundle.
+As of April 26, 2026, this phase is fully closed. Sprint `2.1` and Sprint `2.2` now pass on the
+updated toolchain path. The gateway container doctrine is implemented on `ubuntu:24.04` with
+in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and the retained
+in-image AWS CLI bundle.
 
 ## Current Baseline In Worktree
 
@@ -26,11 +26,10 @@ symlinked Haskell tool shims, and preserving the in-image AWS CLI bundle.
   surfaces. `gateway start` runs through the native Haskell daemon runtime in
   `src/Prodbox/Gateway/Daemon.hs` and `src/Prodbox/Gateway/Types.hs`. All Python gateway code has
   been removed.
-- The gateway container build lives in `docker/gateway.Dockerfile` and is still single-stage
-  `ubuntu:24.04`, but it currently preserves the Haskell toolchain through the mounted
-  `haskell:9.6.7-slim` BuildKit context and symlinked GHC tool shims. Reopened Sprint `2.1`
-  replaces that path with in-image `ghcup` pinned to GHC `9.14.1`, no symlinked Haskell tool
-  shims, and the retained official AWS CLI bundle per `TARGETARCH`.
+- The gateway container build lives in `docker/gateway.Dockerfile`, is single-stage
+  `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, retains the official AWS CLI
+  bundle per `TARGETARCH`, and does not depend on the old mounted `haskell:9.6.7-slim` toolchain
+  context or symlinked GHC tool shims.
 - The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
   repo-rootless `gateway start|status`, and `charts/gateway/` injects AWS credentials through the
   `gateway-aws-credentials` secret while probing `/v1/state` over HTTP on the in-pod REST port.
@@ -44,9 +43,9 @@ symlinked Haskell tool shims, and preserving the in-image AWS CLI bundle.
 - The canonical closure gates for this phase are `prodbox dns check`, the named gateway
   integration validations, and `prodbox tla-check`.
 
-## Sprint 2.1: Haskell Gateway Runtime and Command Surface 🔄
+## Sprint 2.1: Haskell Gateway Runtime and Command Surface ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `charts/gateway/`, `docker/gateway.Dockerfile`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -98,38 +97,28 @@ container doctrine.
 - The named validation commands in this sprint (`prodbox test integration gateway-daemon` and
   `prodbox test integration gateway-pods`) run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
-- `docker/gateway.Dockerfile` is still single-stage `ubuntu:24.04`, but it currently preserves
-  the Haskell toolchain through the mounted `haskell:9.6.7-slim` BuildKit context and symlinked
-  GHC tool shims rather than the reopened `ghcup`-managed GHC `9.14.1`, no-symlink doctrine.
+- `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs `ghcup`, pins GHC
+  `9.14.1`, and no longer uses the mounted `haskell:9.6.7-slim` BuildKit context or symlinked
+  GHC tool shims.
 - `docker/gateway.Dockerfile` already installs the official AWS CLI bundle per `TARGETARCH`; that
   requirement stays in place after the toolchain doctrine changes.
-- `src/Prodbox/CLI/Rke2.hs` now publishes the gateway image through the supported Harbor-backed
-  per-platform `buildx` flow, composes the final multi-arch manifest with
-  `docker buildx imagetools create`, creates the buildx builder with host networking so pushes to
-  `127.0.0.1:30080` succeed from inside the builder container, and re-imports the
-  host-architecture variant for RKE2.
+- `src/Prodbox/CLI/Rke2.hs` now publishes the gateway image through a single Harbor-backed
+  `docker buildx build --platform linux/amd64,linux/arm64 --push` flow with no mounted
+  `haskell-toolchain` context.
 - `src/Prodbox/Lib/ChartPlatform.hs` resolves the supported gateway chart image through Harbor.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, and `./.build/prodbox dns check`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, re-exercising the infrastructure-backed gateway and DNS
-  closure surfaces after the Harbor custom-image inspection repair in
-  `src/Prodbox/CLI/Rke2.hs`.
-- Those April 25, 2026 reruns prove the pre-upgrade gateway container path only.
+- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+  `./.build/prodbox tla-check`, and `./.build/prodbox dns check`.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  re-exercising supported-runtime restore, `gateway-daemon`, and `gateway-pods` on the updated
+  toolchain path.
 
 ### Remaining Work
 
-- Replace the mounted `haskell:9.6.7-slim` gateway toolchain context in
-  `docker/gateway.Dockerfile` with in-image `ghcup` pinned to GHC `9.14.1`.
-- Remove symlinked Haskell tool shims from the gateway Dockerfile path while preserving the AWS
-  CLI bundle and single-stage `ubuntu:24.04` doctrine.
-- Rerun `./.build/prodbox check-code`, `./.build/prodbox test unit`, `./.build/prodbox dns check`,
-  `./.build/prodbox test integration gateway-daemon`,
-  `./.build/prodbox test integration gateway-pods`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all` on the upgraded toolchain path.
+None.
 
 ## Sprint 2.2: Formal Verification and DNS-Write Ownership Parity ✅
 
@@ -164,10 +153,9 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
   failover behavior.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to an executable
   native validation flow in `src/Prodbox/TestValidation.hs`.
-- On April 25, 2026, a fresh local rerun passed `./.build/prodbox tla-check`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, re-exercising the gateway partition and pod validations on the
-  supported Haskell gateway surface.
+- On April 26, 2026, a fresh local rerun passed `./.build/prodbox tla-check`.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  re-exercising `gateway-partition` and `gateway-pods` on the supported Haskell gateway surface.
 
 ### Remaining Work
 

@@ -19,10 +19,10 @@ keycloak:
   realmName: prodbox
 
 postgres:
-  host: prodbox-keycloak-postgres.default.svc.cluster.local
+  host: prodbox-keycloak-pg-ha.default.svc.cluster.local
   database: keycloak
   username: keycloak
-  passwordSecretName: keycloak.prodbox-keycloak-postgres.credentials.postgresql.acid.zalan.do
+  passwordSecretName: prodbox-keycloak-pg-pguser-keycloak
 
 nginx:
   clientId: vscode-nginx

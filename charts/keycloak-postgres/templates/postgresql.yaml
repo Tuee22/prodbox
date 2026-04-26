@@ -1,27 +1,56 @@
-apiVersion: acid.zalan.do/v1
-kind: postgresql
+apiVersion: pgv2.percona.com/v2
+kind: PerconaPGCluster
 metadata:
   name: {{ .Values.cluster.name }}
   labels:
     {{- include "keycloak-postgres.labels" . | nindent 4 }}
 spec:
-  teamId: {{ .Values.cluster.teamId | quote }}
-  numberOfInstances: {{ .Values.cluster.instances }}
-  dockerImage: "{{ .Values.image.spilo.repository }}:{{ .Values.image.spilo.tag }}"
-  volume:
-    size: {{ .Values.storage.size | quote }}
-    storageClass: {{ .Values.storage.className | quote }}
+  crVersion: {{ .Values.cluster.crVersion | quote }}
+  image: "{{ .Values.image.postgres.repository }}:{{ .Values.image.postgres.tag }}"
+  imagePullPolicy: IfNotPresent
+  postgresVersion: {{ .Values.postgres.version }}
   users:
-    {{ .Values.postgres.username }}:
-      - login
-  databases:
-    {{ .Values.postgres.database }}: {{ .Values.postgres.username }}
-  postgresql:
-    version: {{ .Values.postgres.version | quote }}
-  spiloRunAsUser: {{ .Values.security.runAsUser }}
-  spiloRunAsGroup: {{ .Values.security.runAsGroup }}
-  spiloFSGroup: {{ .Values.security.fsGroup }}
+    - name: {{ .Values.postgres.username | quote }}
+      databases:
+        - {{ .Values.postgres.database | quote }}
+      secretName: {{ .Values.secrets.application.name | quote }}
+    - name: postgres
+      secretName: {{ .Values.secrets.superuser.name | quote }}
+  instances:
+    - name: instance1
+      replicas: {{ .Values.cluster.instances }}
+      {{- if .Values.podAntiAffinity.enabled }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              podAffinityTerm:
+                labelSelector:
+                  matchLabels:
+                    postgres-operator.crunchydata.com/data: postgres
+                topologyKey: kubernetes.io/hostname
+      {{- end }}
+      securityContext:
+        fsGroup: {{ .Values.security.fsGroup }}
+        runAsUser: {{ .Values.security.runAsUser }}
+        runAsNonRoot: true
+        runAsGroup: {{ .Values.security.runAsGroup }}
+      dataVolumeClaimSpec:
+        storageClassName: {{ .Values.storage.className | quote }}
+        accessModes:
+          - ReadWriteOnce
+        resources:
+          requests:
+            storage: {{ .Values.storage.size | quote }}
+  proxy:
+    pgBouncer:
+      replicas: {{ .Values.proxy.pgBouncerReplicas }}
+      image: "{{ .Values.image.pgBouncer.repository }}:{{ .Values.image.pgBouncer.tag }}"
+  backups:
+    enabled: {{ .Values.backups.enabled }}
+    pgbackrest:
+      image: "{{ .Values.image.pgBackRest.repository }}:{{ .Values.image.pgBackRest.tag }}"
   patroni:
-    synchronous_mode: true
-    synchronous_mode_strict: true
-    synchronous_node_count: 2
+    dynamicConfiguration:
+      synchronous_mode: "on"
+      synchronous_node_count: 2

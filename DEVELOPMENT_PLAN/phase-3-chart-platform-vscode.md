@@ -16,11 +16,12 @@ retained storage, Harbor-backed image sourcing for the supported chart stack, th
 `vscode-nginx` image exception under the repository Docker doctrine, and the PostgreSQL doctrine
 for every Helm-managed application stack.
 
-As of April 25, 2026, Sprint `3.1` and Sprint `3.2` remain closed, but Sprint `3.3` is active
-again. The supported chart platform remains Haskell-owned, the `vscode` stack stays on
-Harbor-backed images after Harbor bootstrap, and the target PostgreSQL doctrine for every
-Helm-managed application stack is external Percona-operator-backed Patroni HA: exactly three
-replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
+As of April 26, 2026, this phase is fully closed. Sprint `3.1`, Sprint `3.2`, and Sprint `3.3`
+all pass on the updated lifecycle path. The supported chart platform remains Haskell-owned, the
+`vscode` stack stays on Harbor-backed images after Harbor bootstrap, and the PostgreSQL doctrine
+for every Helm-managed application stack is now the implemented Percona-operator-backed Patroni
+HA path: exactly three replicas, synchronous replication, and no embedded chart-local PostgreSQL
+subchart.
 
 ## Current Baseline In Worktree
 
@@ -33,12 +34,12 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 - The supported app dependency graph remains `keycloak-postgres -> keycloak -> vscode`, with
   `keycloak-postgres` owning the namespace-local application-database release for the root chart
   namespace.
-- The current worktree still installs the Zalando `postgres-operator` Helm release, mirrors
-  Zalando operator images, and renders the `postgresqls.acid.zalan.do` custom resource for
-  `keycloak-postgres`.
-- Reopened Sprint `3.3` keeps the namespace-local release shape, deterministic manual-PV
-  bindings, retained-secret contract, and dependent-chart sequencing while replacing that
-  operator surface with the Percona operator.
+- The current worktree now installs the Percona `pg-operator` Helm release, mirrors the Percona
+  operator and PostgreSQL images, renders `PerconaPGCluster` resources for
+  `keycloak-postgres`, and removes the incompatible legacy Zalando operator release before the
+  Percona install proceeds on a live cluster.
+- Sprint `3.3` keeps the namespace-local release shape, deterministic manual-PV bindings,
+  retained-secret contract, and dependent-chart sequencing on the Percona operator surface.
 - `keycloak` now consumes the namespace-local retained Patroni credentials secret and the namespace-local
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
@@ -74,11 +75,8 @@ platform doctrine.
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
 - `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code` and
-  `./.build/prodbox test unit`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, re-exercising the cluster-backed chart-platform closure
-  surfaces after the Harbor custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs`.
+- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, and `./.build/prodbox test integration charts-platform`.
 
 ### Remaining Work
 
@@ -120,20 +118,22 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestRunner.hs` waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` before the external `charts-vscode` curl proof
   continues.
-- On April 25, 2026, a direct retained-state rerun passed
+- On April 26, 2026, a direct retained-state rerun passed
   `./.build/prodbox charts delete vscode --yes` followed by
   `./.build/prodbox charts deploy vscode`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, re-exercising the Harbor-backed
+- On April 26, 2026, a fresh live rerun passed
+  `./.build/prodbox test integration charts-vscode`, re-exercising the Harbor-backed
   `keycloak-postgres -> keycloak -> vscode` path and the public-edge redirect proof.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  re-exercising the `charts-vscode` proof surface on the final clean-room reinstall path.
 
 ### Remaining Work
 
 None.
 
-## Sprint 3.3: Percona-Operator-Backed Patroni PostgreSQL Doctrine for Helm Workloads 🔄
+## Sprint 3.3: Percona-Operator-Backed Patroni PostgreSQL Doctrine for Helm Workloads ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/ContainerImage.hs`, `charts/`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -173,46 +173,47 @@ dependency.
 
 ### Current Validation State
 
-- `src/Prodbox/CLI/Rke2.hs` still installs the Zalando
-  `postgres-operator-charts/postgres-operator` Helm release from
-  `https://opensource.zalando.com/postgres-operator/charts/postgres-operator`.
-- `src/Prodbox/PostgresPlatform.hs` still defines the current Zalando operator namespace, release,
-  deployment, CRD, service, and secret naming contract, including `postgresqls.acid.zalan.do`.
-- `src/Prodbox/Lib/ChartPlatform.hs` still renders `keycloak-postgres`, injects the
-  namespace-local retained Patroni credentials secret into `keycloak`, validates the current
-  cluster-wide Patroni platform before chart deploy, waits for the Patroni cluster to converge to
-  one running leader plus two ready replicas before releasing dependent charts, reinitializes
-  retained Patroni follower roots before redeploy so replicas can cleanly rejoin from the
-  preserved cluster anchor, and prefers recovered live Patroni passwords when stale retained
-  state is present.
-- `src/Prodbox/ContainerImage.hs` still mirrors `ghcr.io/zalando/postgres-operator:v1.15.1` and
-  `ghcr.io/zalando/spilo-17:4.0-p3` into Harbor and no longer carries Bitnami `repmgr` or
-  `pgpool` targets on the supported path.
-- `charts/keycloak-postgres/` still renders the retained application, superuser, and standby
-  credentials secrets before the current Zalando Patroni cluster resource, alongside three
-  replicas, synchronous mode, explicit Spilo security IDs, and deterministic manual-PV bindings.
+- `src/Prodbox/CLI/Rke2.hs` now installs the Percona `percona/pg-operator` Helm release from
+  `https://percona.github.io/percona-helm-charts/` and removes the incompatible legacy
+  `postgres-operator` release before that install when needed.
+- `src/Prodbox/PostgresPlatform.hs` now defines the Percona operator namespace, release,
+  deployment, CRD, service, and secret naming contract, including
+  `perconapgclusters.pgv2.percona.com`, the `-ha` primary service, the `-replicas` service, and
+  the Percona secret names for the application, superuser, and standby credentials.
+- `src/Prodbox/Lib/ChartPlatform.hs` now renders `keycloak-postgres` through
+  `PerconaPGCluster`, waits for `.status.state=ready` plus `.status.postgres.ready=3`, discovers
+  the operator-created PVC names before binding deterministic retained PVs, preserves the
+  retained Patroni credential flow into `keycloak`, preserves the ordinal-0 retained anchor PV,
+  restores retained clusters first at one replica, and then scales them back to three replicas
+  after readiness before reinitializing follower roots when needed.
+- `src/Prodbox/ContainerImage.hs` now mirrors
+  `docker.io/percona/percona-postgresql-operator:2.9.0`,
+  `docker.io/percona/percona-distribution-postgresql:17.9-1`,
+  `docker.io/percona/percona-pgbouncer:1.25.1-1`, and
+  `docker.io/percona/percona-pgbackrest:2.58.0-1` into Harbor and no longer carries any Zalando
+  operator image targets on the supported path.
+- `charts/keycloak-postgres/` now renders the retained application, superuser, and standby
+  credentials secrets before the Percona cluster resource, alongside three replicas,
+  synchronous mode, explicit security IDs `1001`, and deterministic manual-PV bindings.
 - `charts/keycloak/` now consumes the namespace-local retained database secret and the namespace-local
   primary service endpoint.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox test unit` and a direct
-  retained-state `./.build/prodbox charts delete vscode --yes` plus
-  `./.build/prodbox charts deploy vscode` cycle.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, re-exercising the existing Zalando-operator-backed chart stack
-  proof on the supported path.
+- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`, which together
+  re-exercised the Percona chart values, CRD, image mirrors, secret names, and PVC-discovery
+  path through the unit and built-frontend suites.
+- On April 26, 2026, fresh live reruns passed `./.build/prodbox test integration charts-platform`,
+  `./.build/prodbox charts delete vscode --yes`, `./.build/prodbox charts deploy vscode`, and
+  `./.build/prodbox test integration charts-vscode`.
+- Those live reruns re-established the Percona migrate-and-install path, Harbor-backed Patroni
+  image sourcing, and retained-state redeploy through the staged `1 -> 3` replica restore flow
+  on the supported `keycloak-postgres -> keycloak -> vscode` path.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  re-exercising `charts-platform`, `charts-storage`, `charts-vscode`, and the final
+  supported-runtime restore to `CLASSIFICATION=ready-for-external-proof`.
 
 ### Remaining Work
 
-- Replace the lifecycle-owned Helm repository, release, readiness, and image assumptions in
-  `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/PostgresPlatform.hs`,
-  and the related tests so the cluster-wide Patroni platform is the Percona operator rather than
-  Zalando `postgres-operator`.
-- Update `charts/keycloak-postgres/`, `charts/keycloak/`, and
-  `src/Prodbox/Lib/ChartPlatform.hs` so namespace-local application PostgreSQL is rendered only
-  through Percona-operator-managed custom resources, secrets, and service endpoints.
-- Rerun `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration charts-platform`, `./.build/prodbox test integration charts-vscode`,
-  and the direct retained-state `./.build/prodbox charts delete vscode --yes` plus
-  `./.build/prodbox charts deploy vscode` cycle against the Percona operator path.
+None.
 
 ## Documentation Requirements
 

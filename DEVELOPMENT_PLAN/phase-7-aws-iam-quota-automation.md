@@ -16,17 +16,17 @@ service-quota automation, and the test-only elevated credential harness. The Has
 closes the intended credential boundary: public onboarding and public AWS administration prompt for
 temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
 validation harness. The targeted AWS-backed reruns on its owned surfaces now pass on the
-implemented repository surfaces, and the current aggregate rerun refresh is Phase `4` closure
-work after the Harbor custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs`. This phase is
-closed on its owned credential and IAM boundaries.
+implemented repository surfaces, and the authoritative aggregate rerun also passes again on April
+26, 2026. This phase is closed on its owned credential and IAM boundaries.
 
 ## Current Baseline In Worktree
 
 - The public onboarding and standalone AWS administration surfaces are Haskell-owned in
   `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs`. All Python
   command wrappers and IAM helpers have been removed.
-- The settings path is fully Haskell-owned in `src/Prodbox/Settings.hs` for direct Dhall decode,
-  display, and validation with no supported JSON materialization path.
+- The settings path is fully Haskell-owned in `src/Prodbox/Settings.hs` for the direct
+  `Dhall -> Haskell types` contract through the `dhall-to-json` bridge, display, and validation
+  with no supported JSON materialization path.
 - Haskell proof exists in `test/unit/Main.hs`, and the intended built-frontend fake-AWS proof
   lives in `test/integration/cli/Main.hs`. The real IAM lifecycle named proof runs through the
   native validation harness in `src/Prodbox/TestValidation.hs`.
@@ -74,11 +74,10 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 26, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, continuing to exercise the public onboarding surfaces on the
-  supported Haskell path.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
+  continuing to exercise the public onboarding surfaces on the supported Haskell path.
 
 ### Remaining Work
 
@@ -123,11 +122,10 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   setup/teardown and quota flows.
 - `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 26, 2026, fresh local reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, continuing to exercise the public AWS administration
-  surfaces.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
+  continuing to exercise the public AWS administration surfaces on the supported Haskell path.
 
 ### Remaining Work
 
@@ -177,19 +175,19 @@ credential harness.
 - `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
   repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
   stale ambient Pulumi host-login state.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox test unit`,
+- On April 26, 2026, fresh local reruns passed `./.build/prodbox test unit`,
   `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
   `./.build/prodbox test integration aws-iam`.
-- On April 25, 2026, fresh aggregate reruns again passed `./.build/prodbox test integration all`
-  and `./.build/prodbox test all`, re-establishing the aggregate IAM closure proof on supported
-  repo-root operational `aws.*` credentials.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
+  re-establishing the aggregate IAM closure proof on supported repo-root operational `aws.*`
+  credentials.
 - The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather
   than failing at prerequisite validation.
 
 ### Remaining Work
 
-None. The IAM harness and aggregate reruns now pass again on supported repo-root operational
-`aws.*` credentials, and no remaining Phase `7` implementation work survives.
+None. The IAM harness remains closed on supported repo-root operational `aws.*` credentials, and
+no remaining Phase `7` implementation work survives.
 
 ## Documentation Requirements
 

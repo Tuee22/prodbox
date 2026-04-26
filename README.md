@@ -35,8 +35,8 @@ The current repository baseline deploys and manages:
   image pipeline
 - **MinIO** for the local-cluster-first Pulumi backend
 - **MetalLB**, **Traefik**, and **cert-manager** for the cluster edge
-- **Zalando Patroni PostgreSQL** for Helm-managed application databases, with namespace-local
-  three-replica synchronous clusters
+- **Percona Operator for PostgreSQL** for Helm-managed application databases, with namespace-local
+  three-replica synchronous Patroni clusters and Harbor-backed PostgreSQL sidecar images
 - **Route 53** for explicit per-subdomain DNS ownership
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
@@ -71,8 +71,8 @@ Router port forwarding:
 
 ### Prerequisites
 
-- GHC `9.6.x`
-- `cabal-install` `3.14.x`
+- GHC `9.14.1`
+- `cabal-install` `3.16.1.0`
 - A linkable GMP development package such as `libgmp-dev`
 - Ubuntu `24.04 LTS` with systemd for the supported host runtime
 - `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `pulumi`, `aws`, `curl`, `dig`, `ssh`

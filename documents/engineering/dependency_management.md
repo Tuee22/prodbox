@@ -18,17 +18,18 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - `prodbox.cabal` defines the Haskell library, the `prodbox` executable, and the Haskell test
   suites under `test/`.
 - `cabal.project` defines the repository Cabal package set.
+- `cabal.project` pins `with-compiler: ghc-9.14.1` and carries the temporary
+  `allow-newer: *:base, *:template-haskell` escape hatch required by the current package set.
 - Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
   intentionally command-line owned.
 - Repository-owned container builds live under `docker/`. `docker/prodbox.Dockerfile` builds the
   Haskell frontend under `/opt/build`, `docker/gateway.Dockerfile` builds the gateway image under
   the same root, and both custom Haskell images follow the single-stage `ubuntu:24.04` doctrine
-  while mounting the official `haskell:9.6.7-slim` image as a BuildKit toolchain context during
-  publication. `docker/gateway.Dockerfile` also installs the official AWS CLI bundle per
-  `TARGETARCH` because the in-cluster gateway daemon shells out to `aws route53 ...` for DNS
-  writes. The supported custom-image publish path uses a host-network `docker-container` buildx
-  builder so pushes to the canonical Harbor endpoint `127.0.0.1:30080` work from inside the
-  builder.
+  with in-image `ghcup`, pinned GHC `9.14.1`, and no symlinked Haskell tool shims.
+  `docker/gateway.Dockerfile` also installs the official AWS CLI bundle per `TARGETARCH` because
+  the in-cluster gateway daemon shells out to `aws route53 ...` for DNS writes. The supported
+  custom-image publish path uses a host-network `docker-container` buildx builder so pushes to
+  the canonical Harbor endpoint `127.0.0.1:30080` work from inside the builder.
 - Pulumi programs are YAML-based under `pulumi/aws-eks/` and `pulumi/aws-test/` only and do not
   introduce a Python runtime dependency.
 
@@ -70,8 +71,11 @@ cabal build --builddir=.build exe:prodbox
 
 ### Haskell Repository Surface
 
-- Core CLI and runtime: `base`, `text`, `bytestring`, `aeson`, `dhall`, `optparse-applicative`,
+- Core CLI and runtime: `base`, `text`, `bytestring`, `aeson`, `optparse-applicative`,
   `process`, `directory`, `filepath`
+- Repository config decoding remains operator-authored `Dhall -> Haskell types`, but the runtime
+  now bridges that contract through the external `dhall-to-json` command instead of linking the
+  in-process `dhall` library
 - Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
   `src/Prodbox/Gateway/`
 - Test suites: `hspec`, `temporary`, and the same core runtime packages needed to exercise the
@@ -80,6 +84,7 @@ cabal build --builddir=.build exe:prodbox
 ### External Command Dependencies
 
 - Haskell quality tools: `fourmolu`, `hlint`
+- Config decode bridge: `dhall-to-json`
 - Host/runtime tools: `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `systemctl`
 - Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
 - Infrastructure tooling: `pulumi`

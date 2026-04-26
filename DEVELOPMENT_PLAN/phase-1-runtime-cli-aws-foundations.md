@@ -17,11 +17,10 @@ under `docker/`, the direct-Dhall config contract, the native validation harness
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here.
 
-As of April 25, 2026, Sprint `1.2` and Sprint `1.3` remain closed, but Sprint `1.1` is active
-again. The target frontend container doctrine keeps `ubuntu:24.04` as the base image while
-replacing the mounted `haskell:9.6.7-slim` toolchain context with in-image `ghcup` pinned to GHC
-`9.14.1`, removing symlinked Haskell tool shims, and requiring explicit repo package-bound
-updates plus full canonical validation before closure.
+As of April 26, 2026, this phase is fully closed. Sprint `1.1`, Sprint `1.2`, and Sprint `1.3`
+all pass on the updated toolchain path. The frontend container doctrine is now implemented on
+`ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
+explicit repo package-bound updates.
 
 ## Current Baseline In Worktree
 
@@ -43,12 +42,12 @@ updates plus full canonical validation before closure.
 - The host build contract copies the operator-facing binary to `.build/prodbox` after the
   canonical `cabal build --builddir=.build exe:prodbox` invocation.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
-- `docker/prodbox.Dockerfile` currently preserves the `/opt/build` artifact contract through a
-  mounted `haskell:9.6.7-slim` BuildKit toolchain context and symlinked GHC tool shims. Reopened
-  Sprint `1.1` replaces that path with in-image `ghcup` pinned to GHC `9.14.1` and no symlinked
-  Haskell tool shims.
-- `prodbox.cabal` currently carries `base ^>=4.18.2.1`, so the explicit repo upgrade to GHC
-  `9.14.1` with aligned package bounds is not yet closed.
+- `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
+  `ghcup` with pinned GHC `9.14.1` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
+  BuildKit toolchain context or symlinked Haskell tool shims remain on the supported path.
+- `prodbox.cabal` and `cabal.project` now close on the explicit `ghc-9.14.1` path, including the
+  repo-level `with-compiler: ghc-9.14.1` pin and the temporary `allow-newer: *:base,
+  *:template-haskell` allowance required by the current package set.
 - `test/integration/env/Main.hs` proves built-frontend config masking and validation directly
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
@@ -58,9 +57,9 @@ updates plus full canonical validation before closure.
 - The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
-## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface 🔄
+## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `docker/prodbox.Dockerfile`, `docker/`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`
 
@@ -107,31 +106,24 @@ artifact plus container-build topology contract.
 - The host build contract is implemented through `cabal build --builddir=.build exe:prodbox` plus
   the `.build/prodbox` copy step in `src/Prodbox/BuildSupport.hs`.
 - `docker/prodbox.Dockerfile` is the canonical frontend image definition, lives under `docker/`,
-  and is still single-stage `ubuntu:24.04`, but it currently preserves `/opt/build` through the
-  mounted `haskell:9.6.7-slim` toolchain context and symlinked GHC tool shims rather than the
-  reopened `ghcup`-managed GHC `9.14.1`, no-symlink doctrine.
-- `prodbox.cabal` still carries `base ^>=4.18.2.1`, so the explicit repo upgrade required by the
-  revised doctrine is not yet implemented.
+  is single-stage `ubuntu:24.04`, preserves `/opt/build`, installs `ghcup` in-image, pins GHC
+  `9.14.1`, and does not create symlinked Haskell tool shims.
+- `prodbox.cabal` and `cabal.project` now implement the explicit repo upgrade required by the
+  revised doctrine.
 - `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
-- On April 25, 2026, fresh local reruns passed `cabal build --builddir=.build exe:prodbox`, sync
-  of `./.build/prodbox`, `./.build/prodbox check-code`, and
-  `./.build/prodbox test integration cli`.
-- Those April 25, 2026 reruns prove the pre-upgrade frontend container path only; full canonical
-  validation remains to be rerun after the `ghcup`-managed GHC `9.14.1` upgrade lands.
-- Root guidance docs and the governed docs listed in `Docs to update` are aligned with the
-  canonical Dockerfile location.
+- On April 26, 2026, fresh reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
+  `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, and `./.build/prodbox test integration env`.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed on the
+  updated toolchain path after clearing the former Phase `1/2` AWS prerequisite gate and
+  re-exercising the built-frontend CLI and env proof surfaces.
+- Root guidance docs and the governed docs listed in `Docs to update` are aligned in this change
+  with the canonical Dockerfile location and the implemented `ghcup` plus `ghc-9.14.1` doctrine.
+
 ### Remaining Work
 
-- Replace the mounted `haskell:9.6.7-slim` frontend toolchain context in
-  `docker/prodbox.Dockerfile` with in-image `ghcup` pinned to GHC `9.14.1`.
-- Remove symlinked Haskell tool shims from the frontend Dockerfile path.
-- Update `prodbox.cabal`, `cabal.project`, and related tests for the explicit GHC `9.14.1` repo
-  upgrade, including any required cabal-bound changes.
-- Rerun `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
-  `./.build/prodbox test integration all`, and `./.build/prodbox test all` on the upgraded
-  toolchain.
+None.
 
 ## Sprint 1.2: Dhall Settings, Command ADTs, and Haskell Test Harness ✅
 
@@ -146,7 +138,8 @@ modules.
 
 ### Deliverables
 
-- `prodbox-config.dhall` is decoded natively from Haskell into typed settings values.
+- `prodbox-config.dhall` is decoded into typed Haskell settings values through the Haskell-owned
+  `dhall-to-json` bridge.
 - The shared Dhall schema in `prodbox-config-types.dhall` remains aligned with the Haskell
   decoder.
 - No supported command or validation path materializes `prodbox-config.json`.
@@ -199,7 +192,7 @@ modules.
   cluster-backed readiness roots used by the named validation flows.
 - `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
   proof surfaces for the Haskell-owned command surface.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox check-code`,
+- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
   `./.build/prodbox test integration env`.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
@@ -253,11 +246,14 @@ the same supported product scope.
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- On April 25, 2026, fresh local reruns passed `./.build/prodbox rke2 install` and
-  `./.build/prodbox test integration aws-iam`.
-- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`, re-exercising the native lifecycle and AWS-backed validation
-  foundations after the Harbor custom-image inspection repair in `src/Prodbox/CLI/Rke2.hs`.
+- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
+  `./.build/prodbox test integration aws-eks`, and a second
+  `./.build/prodbox pulumi eks-destroy --yes` passed after
+  `src/Prodbox/Infra/AwsEksTestStack.hs` gained canonical unmanaged-residue purge before create
+  and destroy when no saved snapshot exists.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  re-exercising the `aws-eks`, `pulumi`, and AWS HA-RKE2 create/destroy surfaces plus the final
+  destructive postflight teardown.
 
 ### Remaining Work
 

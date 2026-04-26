@@ -3,47 +3,54 @@ global:
   rootChart: keycloak
 
 cluster:
-  name: prodbox-keycloak-postgres
-  teamId: prodbox
+  name: prodbox-keycloak-pg
   instances: 3
+  crVersion: "2.9.0"
 
 image:
-  spilo:
-    repository: 127.0.0.1:30080/prodbox/spilo-17-mirror
-    tag: "4.0-p3"
+  postgres:
+    repository: 127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror
+    tag: "17.9-1"
+  pgBouncer:
+    repository: 127.0.0.1:30080/prodbox/percona-pgbouncer-mirror
+    tag: "1.25.1-1"
+  pgBackRest:
+    repository: 127.0.0.1:30080/prodbox/percona-pgbackrest-mirror
+    tag: "2.58.0-1"
 
 postgres:
-  version: "17"
+  version: 17
   database: keycloak
   username: keycloak
-  credentialsSecretName: keycloak.prodbox-keycloak-postgres.credentials.postgresql.acid.zalan.do
 
 secrets:
   application:
-    name: keycloak.prodbox-keycloak-postgres.credentials.postgresql.acid.zalan.do
+    name: prodbox-keycloak-pg-pguser-keycloak
     username: keycloak
     password: change-me
   superuser:
-    name: postgres.prodbox-keycloak-postgres.credentials.postgresql.acid.zalan.do
+    name: prodbox-keycloak-pg-pguser-postgres
     username: postgres
     password: change-me
   standby:
-    name: standby.prodbox-keycloak-postgres.credentials.postgresql.acid.zalan.do
-    username: standby
+    name: prodbox-keycloak-pg-primaryuser
+    username: primaryuser
     password: change-me
 
 storage:
   className: manual
   size: 20Gi
-  bindings:
-    - ordinal: 0
-      pvcName: pgdata-prodbox-keycloak-postgres-0
-    - ordinal: 1
-      pvcName: pgdata-prodbox-keycloak-postgres-1
-    - ordinal: 2
-      pvcName: pgdata-prodbox-keycloak-postgres-2
 
 security:
-  runAsUser: 101
-  runAsGroup: 103
-  fsGroup: 103
+  runAsUser: 1001
+  runAsGroup: 1001
+  fsGroup: 1001
+
+proxy:
+  pgBouncerReplicas: 0
+
+backups:
+  enabled: false
+
+podAntiAffinity:
+  enabled: true

@@ -18,28 +18,25 @@
 
 ## Ledger Status
 
-As of April 25, 2026, the cleanup ledger is reopened on four non-Python items owned by Sprint
-`1.1`, Sprint `2.1`, Sprint `3.3`, and Sprint `4.1`. The Python-removal portion remains
-complete, and the later non-Python cleanup owned by Sprint `4.2` has already landed with the
-retired root Pulumi-home residue removed from the worktree. The remaining open items are the
-current `9.6.7` Haskell build-container toolchain-context and symlink surfaces plus the current
-Zalando Patroni operator surface.
+As of April 26, 2026, the cleanup ledger is closed again on the supported path. The previously
+reopened non-Python items owned by Sprint `1.1`, Sprint `2.1`, Sprint `3.3`, and Sprint `4.1`
+have landed, the authoritative aggregate rerun now passes, the Python-removal portion remains
+complete, and the later non-Python cleanup owned by Sprint `4.2` remains closed as well.
 
 ## Pending Removal
 
-| Item | Owner | Notes |
-|------|-------|-------|
-| Frontend Haskell-build container doctrine in `docker/prodbox.Dockerfile` and related tests/docs that still mounts `haskell:9.6.7-slim` and creates symlinked GHC tool shims | Sprint `1.1` reopened on April 25, 2026 | The revised target architecture keeps `ubuntu:24.04` as the base image for Haskell-build containers but requires in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, aligned cabal bounds, and full canonical validation. |
-| Gateway Haskell-build container doctrine in `docker/gateway.Dockerfile` and related tests/docs that still mounts `haskell:9.6.7-slim` and creates symlinked GHC tool shims | Sprint `2.1` reopened on April 25, 2026 | The revised target architecture keeps `ubuntu:24.04` plus the in-image AWS CLI bundle for the gateway image, but requires in-image `ghcup`, pinned GHC `9.14.1`, and no symlinked Haskell tool shims. |
-| Cluster-wide Zalando `postgres-operator` Helm release, `ghcr.io/zalando/postgres-operator`, `ghcr.io/zalando/spilo-17`, and `postgresqls.acid.zalan.do` chart/runtime assumptions | Sprint `3.3` reopened on April 25, 2026 | The revised target architecture requires all supported Patroni use to flow through the Percona operator. `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/keycloak-postgres/`, and related tests still target the Zalando operator surface and must be replaced together. |
-| Lifecycle-managed Haskell-build custom-image publication in `src/Prodbox/CLI/Rke2.hs` and related tests that still injects the named BuildKit `haskell-toolchain` context pinned to `haskell:9.6.7-slim` | Sprint `4.1` reopened on April 25, 2026 | The revised lifecycle doctrine keeps the Harbor-first `ubuntu:24.04` custom-image path but removes the mounted `haskell:9.6.7-slim` toolchain context, requires the explicit GHC `9.14.1` repo upgrade with any needed cabal-bound changes, and requires full canonical validation reruns on that toolchain. |
+None.
 
 ## Completed
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| Frontend Haskell-build container doctrine in `docker/prodbox.Dockerfile` and related tests/docs that mounted `haskell:9.6.7-slim` and created symlinked GHC tool shims | Sprint `1.1` implementation closure on April 26, 2026 | Replaced with a single-stage `ubuntu:24.04` frontend image that installs `ghcup` in-image, pins GHC `9.14.1`, preserves `/opt/build`, and removes the symlinked tool-shim path. |
+| Gateway Haskell-build container doctrine in `docker/gateway.Dockerfile` and related tests/docs that mounted `haskell:9.6.7-slim` and created symlinked GHC tool shims | Sprint `2.1` implementation closure on April 26, 2026 | Replaced with a single-stage `ubuntu:24.04` gateway image that installs `ghcup` in-image, pins GHC `9.14.1`, preserves the official AWS CLI bundle keyed by `TARGETARCH`, and removes the symlinked tool-shim path. |
+| Cluster-wide Zalando `postgres-operator` Helm release, `ghcr.io/zalando/postgres-operator`, `ghcr.io/zalando/spilo-17`, and `postgresqls.acid.zalan.do` chart/runtime assumptions | Sprint `3.3` implementation closure on April 26, 2026 | Replaced by the Percona operator surface in `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/keycloak-postgres/`, and related tests. The live lifecycle now removes the incompatible legacy operator release and namespace before installing Percona. |
+| Lifecycle-managed Haskell-build custom-image publication in `src/Prodbox/CLI/Rke2.hs` and related tests that injected the named BuildKit `haskell-toolchain` context pinned to `haskell:9.6.7-slim` | Sprint `4.1` implementation closure on April 26, 2026 | Replaced by direct `docker buildx build --platform linux/amd64,linux/arm64 --push` publication from the repo-owned Dockerfiles, with no mounted Haskell toolchain context and the explicit `ghc-9.14.1` repo upgrade in place. |
 | Local-cluster supported ownership in `pulumi/home/Main.yaml` and the public `prodbox pulumi up|destroy|preview|refresh|stack-init` surface | Sprint `4.2` closure on April 23, 2026 | Pulumi is now reserved for true IaC surfaces such as the AWS validation resources; local-cluster platform and application deployment are fully owned by the Haskell lifecycle and chart runtime. The residual root `Pulumi.yaml` and `Pulumi.home.yaml` files were deleted in the Phase `6` cleanup closure on April 23, 2026. |
-| Shared Bitnami `postgresql-ha` / `postgresql-repmgr` plus `pgpool` application-database doctrine | Sprint `3.3` closure on April 23, 2026 | Replaced by namespace-local Patroni-based Helm-managed PostgreSQL HA with exactly three replicas, synchronous replication, retained credentials, and no embedded chart-local PostgreSQL subcharts. The later operator swap from Zalando `postgres-operator` to the Percona operator is tracked separately in `Pending Removal`. The residual Bitnami Docker build artifacts were deleted in the Phase `6` cleanup closure on April 23, 2026. |
+| Shared Bitnami `postgresql-ha` / `postgresql-repmgr` plus `pgpool` application-database doctrine | Sprint `3.3` closure on April 23, 2026 | Replaced by namespace-local Patroni-based Helm-managed PostgreSQL HA with exactly three replicas, synchronous replication, retained credentials, and no embedded chart-local PostgreSQL subcharts. The residual Bitnami Docker build artifacts were deleted in the Phase `6` cleanup closure on April 23, 2026. |
 | Broader-than-target direct-public bootstrap image set in the lifecycle/runtime/docs | Sprint `4.1` closure on April 23, 2026 | The bootstrap exception now covers Harbor and Harbor's storage backend only before later Helm deployments switch to Harbor-backed image refs. |
 | Harbor-first bootstrap ordering in `src/Prodbox/CLI/Rke2.hs` that mirrored required public images before the backend was healthy and deployed MinIO from Harbor-backed refs | Sprint 4.1 implementation closure on April 21, 2026 | Replaced by public-registry MinIO bootstrap, post-bootstrap Harbor populate, and a Harbor-backed MinIO steady-state reconcile |
 | Python-era clean-room backlog through April 15, 2026 | Pre-rewrite baseline | Closed before the Haskell rewrite reopened this ledger on April 16, 2026 |

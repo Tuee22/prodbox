@@ -1,4 +1,6 @@
 packages: .
+with-compiler: ghc-9.14.1
+allow-newer: *:base, *:template-haskell
 
 package prodbox
     extra-lib-dirs: /home/matthewnowak/prodbox/.build/support

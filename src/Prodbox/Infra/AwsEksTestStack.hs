@@ -71,6 +71,18 @@ awsEksTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksTestStackN
 awsEksTestSnapshotPath :: FilePath -> FilePath
 awsEksTestSnapshotPath repoRoot = awsEksTestStateDir repoRoot </> "stack-snapshot.json"
 
+awsEksCanonicalClusterName :: String
+awsEksCanonicalClusterName = awsEksTestStackName ++ "-cluster"
+
+awsEksCanonicalNodeGroupName :: String
+awsEksCanonicalNodeGroupName = awsEksTestStackName ++ "-node-group"
+
+awsEksCanonicalIgwTagName :: String
+awsEksCanonicalIgwTagName = awsEksTestStackName ++ "-igw"
+
+awsEksCanonicalPublicRouteTableTagName :: String
+awsEksCanonicalPublicRouteTableTagName = awsEksTestStackName ++ "-public-rt"
+
 data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
     { eksSnapshotStackName :: String
     , eksSnapshotBackendBucket :: String
@@ -86,6 +98,15 @@ data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
 
 newtype AwsEksTestStackConfig = AwsEksTestStackConfig
     { eksStackOperatorCidr :: String
+    }
+    deriving (Eq, Show)
+
+data AwsEksCanonicalResidue = AwsEksCanonicalResidue
+    { canonicalResidueClusterRoleName :: String
+    , canonicalResidueNodeRoleName :: Maybe String
+    , canonicalResidueVpcId :: String
+    , canonicalResidueSubnetIds :: [String]
+    , canonicalResidueClusterSecurityGroupId :: String
     }
     deriving (Eq, Show)
 
@@ -200,6 +221,112 @@ requireStringList obj key =
                 )
                 (Vector.toList arr)
         _ -> Left ("missing list output " ++ key)
+
+discoverCanonicalAwsEksResidue :: FilePath -> IO (Either String (Maybe AwsEksCanonicalResidue))
+discoverCanonicalAwsEksResidue repoRoot = do
+    clusterValueResult <-
+        runAwsJsonCommandMaybeMissing
+            repoRoot
+            ["eks", "describe-cluster", "--name", awsEksCanonicalClusterName, "--output", "json"]
+    case clusterValueResult of
+        Left err -> pure (Left err)
+        Right Nothing -> pure (Right Nothing)
+        Right (Just clusterValue) ->
+            case parseCanonicalResidueFromCluster clusterValue of
+                Left err -> pure (Left err)
+                Right clusterResidue -> do
+                    nodeRoleResult <-
+                        runAwsJsonCommandMaybeMissing
+                            repoRoot
+                            [ "eks"
+                            , "describe-nodegroup"
+                            , "--cluster-name"
+                            , awsEksCanonicalClusterName
+                            , "--nodegroup-name"
+                            , awsEksCanonicalNodeGroupName
+                            , "--output"
+                            , "json"
+                            ]
+                    pure $
+                        case nodeRoleResult of
+                            Left err -> Left err
+                            Right Nothing -> Right (Just clusterResidue)
+                            Right (Just nodeGroupValue) ->
+                                case parseNodeRoleNameFromNodeGroup nodeGroupValue of
+                                    Left err -> Left err
+                                    Right nodeRoleName ->
+                                        Right
+                                            ( Just
+                                                clusterResidue
+                                                    { canonicalResidueNodeRoleName = Just nodeRoleName
+                                                    }
+                                            )
+
+parseCanonicalResidueFromCluster :: Value -> Either String AwsEksCanonicalResidue
+parseCanonicalResidueFromCluster (Object payload) = do
+    clusterValue <- requireObjectValue payload "cluster"
+    roleArn <- requireNestedString clusterValue ["roleArn"]
+    vpcId <- requireNestedString clusterValue ["resourcesVpcConfig", "vpcId"]
+    subnetIds <- requireNestedStringList clusterValue ["resourcesVpcConfig", "subnetIds"]
+    clusterSecurityGroupId <- requireNestedString clusterValue ["resourcesVpcConfig", "clusterSecurityGroupId"]
+    pure
+        AwsEksCanonicalResidue
+            { canonicalResidueClusterRoleName = roleNameFromArn roleArn
+            , canonicalResidueNodeRoleName = Nothing
+            , canonicalResidueVpcId = vpcId
+            , canonicalResidueSubnetIds = subnetIds
+            , canonicalResidueClusterSecurityGroupId = clusterSecurityGroupId
+            }
+parseCanonicalResidueFromCluster _ = Left "aws eks describe-cluster returned a non-object payload"
+
+parseNodeRoleNameFromNodeGroup :: Value -> Either String String
+parseNodeRoleNameFromNodeGroup (Object payload) = do
+    nodeGroupValue <- requireObjectValue payload "nodegroup"
+    roleArn <- requireNestedString nodeGroupValue ["nodeRole"]
+    pure (roleNameFromArn roleArn)
+parseNodeRoleNameFromNodeGroup _ = Left "aws eks describe-nodegroup returned a non-object payload"
+
+requireObjectValue :: KeyMap.KeyMap Value -> String -> Either String Value
+requireObjectValue payload key =
+    case KeyMap.lookup (Key.fromString key) payload of
+        Just value@(Object _) -> Right value
+        _ -> Left ("missing object field " ++ key)
+
+requireNestedString :: Value -> [String] -> Either String String
+requireNestedString value [] =
+    case value of
+        String text ->
+            let rendered = Text.unpack text
+             in if null rendered then Left "encountered empty string field" else Right rendered
+        _ -> Left "expected string field"
+requireNestedString (Object payload) (field : fields) =
+    case KeyMap.lookup (Key.fromString field) payload of
+        Just nextValue -> requireNestedString nextValue fields
+        Nothing -> Left ("missing nested field " ++ field)
+requireNestedString _ _ = Left "expected nested object while decoding AWS EKS residue"
+
+requireNestedStringList :: Value -> [String] -> Either String [String]
+requireNestedStringList value [] =
+    case value of
+        Array entries ->
+            mapM
+                ( \entry -> case entry of
+                    String text ->
+                        let rendered = Text.unpack text
+                         in if null rendered then Left "encountered empty string inside list field" else Right rendered
+                    _ -> Left "expected string entries in list field"
+                )
+                (Vector.toList entries)
+        _ -> Left "expected list field"
+requireNestedStringList (Object payload) (field : fields) =
+    case KeyMap.lookup (Key.fromString field) payload of
+        Just nextValue -> requireNestedStringList nextValue fields
+        Nothing -> Left ("missing nested list field " ++ field)
+requireNestedStringList _ _ = Left "expected nested object while decoding AWS EKS list field"
+
+roleNameFromArn :: String -> String
+roleNameFromArn arn =
+    reverse (takeWhile (/= '/') (reverse arn))
 
 renderAwsEksTestStackReport :: AwsEksTestStackSnapshot -> Int -> String
 renderAwsEksTestStackReport snapshot objectCount =
@@ -467,8 +594,8 @@ runPulumiCommandQuiet projectDir environment arguments = do
                     ExitSuccess -> Right ()
                     ExitFailure _ -> Left (renderProcessDetail output)
 
-resourceStillExists :: FilePath -> [String] -> IO (Either String Bool)
-resourceStillExists repoRoot command = do
+runAwsCommandWithSettings :: FilePath -> [String] -> IO (Either String ProcessOutput)
+runAwsCommandWithSettings repoRoot arguments = do
     envResult <- settingsAwsEnv repoRoot
     case envResult of
         Left err -> pure (Left err)
@@ -476,8 +603,267 @@ resourceStillExists repoRoot command = do
             result <-
                 captureCommand
                     CommandSpec
-                        { commandPath = head command
-                        , commandArguments = tail command
+                        { commandPath = "aws"
+                        , commandArguments = arguments
+                        , commandEnvironment = Just environment
+                        , commandWorkingDirectory = Nothing
+                        }
+            pure $
+                case result of
+                    Failure err -> Left err
+                    Success output -> Right output
+
+runAwsJsonCommandMaybeMissing :: FilePath -> [String] -> IO (Either String (Maybe Value))
+runAwsJsonCommandMaybeMissing repoRoot arguments = do
+    outputResult <- runAwsCommandWithSettings repoRoot arguments
+    pure $
+        case outputResult of
+            Left err -> Left err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess ->
+                        case eitherDecode (BL8.pack (processStdout output)) of
+                            Left err -> Left ("failed to parse AWS JSON response: " ++ err)
+                            Right value -> Right (Just value)
+                    ExitFailure _ ->
+                        let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
+                         in if isResourceMissing detail
+                                then Right Nothing
+                                else Left ("aws " ++ unwords arguments ++ " failed: " ++ detail)
+
+runAwsTextCommandMaybeMissing :: FilePath -> [String] -> IO (Either String (Maybe String))
+runAwsTextCommandMaybeMissing repoRoot arguments = do
+    outputResult <- runAwsCommandWithSettings repoRoot arguments
+    pure $
+        case outputResult of
+            Left err -> Left err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess ->
+                        let rendered = trim (processStdout output)
+                         in if null rendered || rendered == "None" || rendered == "null"
+                                then Right Nothing
+                                else Right (Just rendered)
+                    ExitFailure _ ->
+                        let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
+                         in if isResourceMissing detail
+                                then Right Nothing
+                                else Left ("aws " ++ unwords arguments ++ " failed: " ++ detail)
+
+runAwsCommandAllowMissing :: FilePath -> [String] -> IO (Either String ())
+runAwsCommandAllowMissing repoRoot arguments = do
+    outputResult <- runAwsCommandWithSettings repoRoot arguments
+    pure $
+        case outputResult of
+            Left err -> Left err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess -> Right ()
+                    ExitFailure _ ->
+                        let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
+                         in if isResourceMissing detail
+                                then Right ()
+                                else Left ("aws " ++ unwords arguments ++ " failed: " ++ detail)
+
+purgeCanonicalAwsEksResidueIfPresent :: FilePath -> IO (Either String ())
+purgeCanonicalAwsEksResidueIfPresent repoRoot = do
+    residueResult <- discoverCanonicalAwsEksResidue repoRoot
+    case residueResult of
+        Left err -> pure (Left err)
+        Right Nothing -> pure (Right ())
+        Right (Just residue) -> do
+            nodeGroupDeleteResult <-
+                runAwsCommandAllowMissing
+                    repoRoot
+                    [ "eks"
+                    , "delete-nodegroup"
+                    , "--cluster-name"
+                    , awsEksCanonicalClusterName
+                    , "--nodegroup-name"
+                    , awsEksCanonicalNodeGroupName
+                    ]
+            case nodeGroupDeleteResult of
+                Left err -> pure (Left err)
+                Right () -> do
+                    nodeGroupWaitResult <-
+                        runAwsCommandAllowMissing
+                            repoRoot
+                            [ "eks"
+                            , "wait"
+                            , "nodegroup-deleted"
+                            , "--cluster-name"
+                            , awsEksCanonicalClusterName
+                            , "--nodegroup-name"
+                            , awsEksCanonicalNodeGroupName
+                            ]
+                    case nodeGroupWaitResult of
+                        Left err -> pure (Left err)
+                        Right () -> do
+                            clusterDeleteResult <-
+                                runAwsCommandAllowMissing
+                                    repoRoot
+                                    ["eks", "delete-cluster", "--name", awsEksCanonicalClusterName]
+                            case clusterDeleteResult of
+                                Left err -> pure (Left err)
+                                Right () -> do
+                                    clusterWaitResult <-
+                                        runAwsCommandAllowMissing
+                                            repoRoot
+                                            ["eks", "wait", "cluster-deleted", "--name", awsEksCanonicalClusterName]
+                                    case clusterWaitResult of
+                                        Left err -> pure (Left err)
+                                        Right () -> deleteVpcScopedResidue repoRoot residue
+
+deleteVpcScopedResidue :: FilePath -> AwsEksCanonicalResidue -> IO (Either String ())
+deleteVpcScopedResidue repoRoot residue = do
+    deleteClusterSecurityGroupResult <-
+        runAwsCommandAllowMissing
+            repoRoot
+            ["ec2", "delete-security-group", "--group-id", canonicalResidueClusterSecurityGroupId residue]
+    case deleteClusterSecurityGroupResult of
+        Left err -> pure (Left err)
+        Right () -> do
+            subnetDeleteResult <-
+                foldM
+                    ( \acc subnetId ->
+                        case acc of
+                            Left err -> pure (Left err)
+                            Right () ->
+                                runAwsCommandAllowMissing repoRoot ["ec2", "delete-subnet", "--subnet-id", subnetId]
+                    )
+                    (Right ())
+                    (canonicalResidueSubnetIds residue)
+            case subnetDeleteResult of
+                Left err -> pure (Left err)
+                Right () -> do
+                    routeTableIdResult <-
+                        runAwsTextCommandMaybeMissing
+                            repoRoot
+                            [ "ec2"
+                            , "describe-route-tables"
+                            , "--filters"
+                            , "Name=tag:Name,Values=" ++ awsEksCanonicalPublicRouteTableTagName
+                            , "Name=vpc-id,Values=" ++ canonicalResidueVpcId residue
+                            , "--query"
+                            , "RouteTables[0].RouteTableId"
+                            , "--output"
+                            , "text"
+                            ]
+                    case routeTableIdResult of
+                        Left err -> pure (Left err)
+                        Right maybeRouteTableId -> do
+                            routeTableDeleteResult <-
+                                case maybeRouteTableId of
+                                    Nothing -> pure (Right ())
+                                    Just routeTableId ->
+                                        runAwsCommandAllowMissing repoRoot ["ec2", "delete-route-table", "--route-table-id", routeTableId]
+                            case routeTableDeleteResult of
+                                Left err -> pure (Left err)
+                                Right () -> do
+                                    igwIdResult <-
+                                        runAwsTextCommandMaybeMissing
+                                            repoRoot
+                                            [ "ec2"
+                                            , "describe-internet-gateways"
+                                            , "--filters"
+                                            , "Name=tag:Name,Values=" ++ awsEksCanonicalIgwTagName
+                                            , "Name=attachment.vpc-id,Values=" ++ canonicalResidueVpcId residue
+                                            , "--query"
+                                            , "InternetGateways[0].InternetGatewayId"
+                                            , "--output"
+                                            , "text"
+                                            ]
+                                    case igwIdResult of
+                                        Left err -> pure (Left err)
+                                        Right maybeIgwId -> do
+                                            igwDeleteResult <-
+                                                case maybeIgwId of
+                                                    Nothing -> pure (Right ())
+                                                    Just igwId -> do
+                                                        detachResult <-
+                                                            runAwsCommandAllowMissing
+                                                                repoRoot
+                                                                [ "ec2"
+                                                                , "detach-internet-gateway"
+                                                                , "--internet-gateway-id"
+                                                                , igwId
+                                                                , "--vpc-id"
+                                                                , canonicalResidueVpcId residue
+                                                                ]
+                                                        case detachResult of
+                                                            Left err -> pure (Left err)
+                                                            Right () ->
+                                                                runAwsCommandAllowMissing
+                                                                    repoRoot
+                                                                    ["ec2", "delete-internet-gateway", "--internet-gateway-id", igwId]
+                                            case igwDeleteResult of
+                                                Left err -> pure (Left err)
+                                                Right () -> do
+                                                    vpcDeleteResult <-
+                                                        runAwsCommandAllowMissing
+                                                            repoRoot
+                                                            ["ec2", "delete-vpc", "--vpc-id", canonicalResidueVpcId residue]
+                                                    case vpcDeleteResult of
+                                                        Left err -> pure (Left err)
+                                                        Right () -> deleteIamRoleResidue repoRoot residue
+
+deleteIamRoleResidue :: FilePath -> AwsEksCanonicalResidue -> IO (Either String ())
+deleteIamRoleResidue repoRoot residue = do
+    clusterRoleDeleteResult <-
+        deleteRoleWithPolicies
+            repoRoot
+            (canonicalResidueClusterRoleName residue)
+            ["arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"]
+    case clusterRoleDeleteResult of
+        Left err -> pure (Left err)
+        Right () ->
+            case canonicalResidueNodeRoleName residue of
+                Nothing -> pure (Right ())
+                Just nodeRoleName ->
+                    deleteRoleWithPolicies
+                        repoRoot
+                        nodeRoleName
+                        [ "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+                        , "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
+                        , "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
+                        ]
+
+deleteRoleWithPolicies :: FilePath -> String -> [String] -> IO (Either String ())
+deleteRoleWithPolicies repoRoot roleName policyArns = do
+    detachResult <-
+        foldM
+            ( \acc policyArn ->
+                case acc of
+                    Left err -> pure (Left err)
+                    Right () ->
+                        runAwsCommandAllowMissing
+                            repoRoot
+                            [ "iam"
+                            , "detach-role-policy"
+                            , "--role-name"
+                            , roleName
+                            , "--policy-arn"
+                            , policyArn
+                            ]
+            )
+            (Right ())
+            policyArns
+    case detachResult of
+        Left err -> pure (Left err)
+        Right () -> runAwsCommandAllowMissing repoRoot ["iam", "delete-role", "--role-name", roleName]
+
+resourceStillExists :: FilePath -> [String] -> IO (Either String Bool)
+resourceStillExists _ [] = pure (Left "resource existence check requires a command")
+resourceStillExists repoRoot (commandPath : commandArguments) = do
+    envResult <- settingsAwsEnv repoRoot
+    case envResult of
+        Left err -> pure (Left err)
+        Right environment -> do
+            result <-
+                captureCommand
+                    CommandSpec
+                        { commandPath = commandPath
+                        , commandArguments = commandArguments
                         , commandEnvironment = Just environment
                         , commandWorkingDirectory = Nothing
                         }
@@ -490,7 +876,7 @@ resourceStillExists repoRoot command = do
                             let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
                              in if isResourceMissing detail
                                     then pure (Right False)
-                                    else pure (Left (unwords command ++ " failed: " ++ detail))
+                                    else pure (Left (unwords (commandPath : commandArguments) ++ " failed: " ++ detail))
 
 isResourceMissing :: String -> Bool
 isResourceMissing detail =
@@ -528,7 +914,14 @@ assertNoAwsEksTestStackResidue repoRoot maybeSnapshot = do
         Just s -> pure (Just s)
         Nothing -> loadAwsEksTestStackSnapshot repoRoot
     case snapshot of
-        Nothing -> pure (Right ())
+        Nothing -> do
+            discoveredResidueResult <- discoverCanonicalAwsEksResidue repoRoot
+            pure $
+                case discoveredResidueResult of
+                    Left err -> Left err
+                    Right Nothing -> Right ()
+                    Right (Just _) ->
+                        Left ("AWS EKS test stack residue remains: cluster=" ++ awsEksCanonicalClusterName)
         Just current -> do
             remaining <- checkResidueItems repoRoot current
             case remaining of
@@ -567,70 +960,80 @@ checkResidueItems repoRoot snapshot = do
 
 ensureAwsEksTestStackResources :: FilePath -> IO ExitCode
 ensureAwsEksTestStackResources repoRoot = do
-    let projectDir = awsEksTestPulumiProjectDir repoRoot
-    projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
-    if not projectExists
-        then failWith ("Pulumi AWS EKS test project missing: " ++ projectDir)
-        else do
-            portForwardResult <- withMinioPortForward $ \localPort -> do
-                credsResult <- readMinioCredentials
-                case credsResult of
-                    Left err -> pure (Left err)
-                    Right (accessKey, secretKey) -> do
-                        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-                        case bucketResult of
-                            Left err -> pure (Left err)
-                            Right () -> do
-                                configResult <- resolveAwsEksTestStackConfig
-                                case configResult of
-                                    Left err -> pure (Left err)
-                                    Right stackConfig -> do
-                                        baseEnvironmentResult <- pulumiEksBaseEnv repoRoot localPort accessKey secretKey
-                                        case baseEnvironmentResult of
-                                            Left err -> pure (Left err)
-                                            Right baseEnvironment -> do
-                                                loginExit <- pulumiLogin projectDir baseEnvironment
-                                                case loginExit of
-                                                    ExitFailure _ -> pure (Left "pulumi login failed")
-                                                    ExitSuccess -> do
-                                                        selectExit <- pulumiStackSelect projectDir baseEnvironment True
-                                                        case selectExit of
-                                                            PulumiStackSelected -> do
-                                                                clearLegacyResult <- clearLegacyAwsProviderConfig projectDir baseEnvironment
-                                                                case clearLegacyResult of
-                                                                    Left err ->
-                                                                        pure (Left ("pulumi provider config cleanup failed: " ++ err))
-                                                                    Right () -> do
-                                                                        syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
-                                                                        case syncExit of
-                                                                            ExitFailure _ -> pure (Left "pulumi config set failed")
-                                                                            ExitSuccess -> do
-                                                                                upExit <- pulumiUp projectDir baseEnvironment
-                                                                                case upExit of
-                                                                                    ExitFailure _ -> pure (Left "pulumi up failed")
-                                                                                    ExitSuccess -> do
-                                                                                        outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                                                                                        case outputsResult of
-                                                                                            Left err -> pure (Left err)
-                                                                                            Right outputs ->
-                                                                                                case snapshotFromOutputs outputs of
-                                                                                                    Left err -> pure (Left err)
-                                                                                                    Right snapshot -> do
-                                                                                                        saveAwsEksTestStackSnapshot repoRoot snapshot
-                                                                                                        objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                                                                        case objectCountResult of
-                                                                                                            Left err -> pure (Left err)
-                                                                                                            Right objectCount -> do
-                                                                                                                putStr (renderAwsEksTestStackReport snapshot objectCount)
-                                                                                                                pure (Right ())
-                                                            PulumiStackMissing ->
-                                                                pure (Left "pulumi stack select reported a missing stack after --create")
-                                                            PulumiStackSelectFailed detail ->
-                                                                pure (Left ("pulumi stack select failed: " ++ detail))
-            case portForwardResult of
+    snapshot <- loadAwsEksTestStackSnapshot repoRoot
+    case snapshot of
+        Nothing -> do
+            purgeResult <- purgeCanonicalAwsEksResidueIfPresent repoRoot
+            case purgeResult of
                 Left err -> failWith err
-                Right (Left err) -> failWith err
-                Right (Right ()) -> pure ExitSuccess
+                Right () -> continueEnsure
+        Just _ -> continueEnsure
+  where
+    continueEnsure = do
+        let projectDir = awsEksTestPulumiProjectDir repoRoot
+        projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
+        if not projectExists
+            then failWith ("Pulumi AWS EKS test project missing: " ++ projectDir)
+            else do
+                portForwardResult <- withMinioPortForward $ \localPort -> do
+                    credsResult <- readMinioCredentials
+                    case credsResult of
+                        Left err -> pure (Left err)
+                        Right (accessKey, secretKey) -> do
+                            bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
+                            case bucketResult of
+                                Left err -> pure (Left err)
+                                Right () -> do
+                                    configResult <- resolveAwsEksTestStackConfig
+                                    case configResult of
+                                        Left err -> pure (Left err)
+                                        Right stackConfig -> do
+                                            baseEnvironmentResult <- pulumiEksBaseEnv repoRoot localPort accessKey secretKey
+                                            case baseEnvironmentResult of
+                                                Left err -> pure (Left err)
+                                                Right baseEnvironment -> do
+                                                    loginExit <- pulumiLogin projectDir baseEnvironment
+                                                    case loginExit of
+                                                        ExitFailure _ -> pure (Left "pulumi login failed")
+                                                        ExitSuccess -> do
+                                                            selectExit <- pulumiStackSelect projectDir baseEnvironment True
+                                                            case selectExit of
+                                                                PulumiStackSelected -> do
+                                                                    clearLegacyResult <- clearLegacyAwsProviderConfig projectDir baseEnvironment
+                                                                    case clearLegacyResult of
+                                                                        Left err ->
+                                                                            pure (Left ("pulumi provider config cleanup failed: " ++ err))
+                                                                        Right () -> do
+                                                                            syncExit <- syncAwsEksTestStackConfig projectDir baseEnvironment stackConfig
+                                                                            case syncExit of
+                                                                                ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                                                ExitSuccess -> do
+                                                                                    upExit <- pulumiUp projectDir baseEnvironment
+                                                                                    case upExit of
+                                                                                        ExitFailure _ -> pure (Left "pulumi up failed")
+                                                                                        ExitSuccess -> do
+                                                                                            outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+                                                                                            case outputsResult of
+                                                                                                Left err -> pure (Left err)
+                                                                                                Right outputs ->
+                                                                                                    case snapshotFromOutputs outputs of
+                                                                                                        Left err -> pure (Left err)
+                                                                                                        Right snapshot -> do
+                                                                                                            saveAwsEksTestStackSnapshot repoRoot snapshot
+                                                                                                            objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                                                                                                            case objectCountResult of
+                                                                                                                Left err -> pure (Left err)
+                                                                                                                Right objectCount -> do
+                                                                                                                    putStr (renderAwsEksTestStackReport snapshot objectCount)
+                                                                                                                    pure (Right ())
+                                                                PulumiStackMissing ->
+                                                                    pure (Left "pulumi stack select reported a missing stack after --create")
+                                                                PulumiStackSelectFailed detail ->
+                                                                    pure (Left ("pulumi stack select failed: " ++ detail))
+                case portForwardResult of
+                    Left err -> failWith err
+                    Right (Left err) -> failWith err
+                    Right (Right ()) -> pure ExitSuccess
 
 destroyAwsEksTestStack :: FilePath -> IO ExitCode
 destroyAwsEksTestStack repoRoot = do
@@ -711,12 +1114,16 @@ completeDestroy repoRoot projectDir environment currentSnapshot = do
 
 finalizeDestroy :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO (Either String String)
 finalizeDestroy repoRoot currentSnapshot = do
-    residueResult <- assertNoAwsEksTestStackResidue repoRoot currentSnapshot
-    case residueResult of
+    purgeResult <- purgeCanonicalAwsEksResidueIfPresent repoRoot
+    case purgeResult of
         Left err -> pure (Left err)
         Right () -> do
-            clearAwsEksTestStackSnapshot repoRoot
-            pure (Right "destroyed and residue check passed")
+            residueResult <- assertNoAwsEksTestStackResidue repoRoot currentSnapshot
+            case residueResult of
+                Left err -> pure (Left err)
+                Right () -> do
+                    clearAwsEksTestStackSnapshot repoRoot
+                    pure (Right "destroyed and residue check passed")
 
 failWith :: String -> IO ExitCode
 failWith message = do

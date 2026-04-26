@@ -14,22 +14,20 @@ local lifecycle, the narrowed Harbor bootstrap doctrine, AWS-only Pulumi scope, 
 Pulumi stack format, and the repository-wide Python removal that leaves the supported path
 Haskell-only.
 
-As of April 25, 2026, Sprint `4.2` and Sprint `4.3` remain closed, but Sprint `4.1` is active
-again. The current lifecycle still publishes Haskell-build custom images through the named
-BuildKit `haskell-toolchain` context pinned to `haskell:9.6.7-slim`, and the fresh aggregate
-reruns were executed on that pre-upgrade toolchain path. Reopened Sprint `4.1` keeps the
-Harbor-first lifecycle and bootstrap doctrine intact while moving lifecycle-managed custom-image
-publication to the `ubuntu:24.04` plus in-image `ghcup` pinned GHC `9.14.1` doctrine with no
-symlinked Haskell tool shims and a full canonical validation rerun.
+As of April 26, 2026, this phase is fully closed. Sprint `4.1`, Sprint `4.2`, and Sprint `4.3`
+all pass on the updated lifecycle path. The lifecycle now keeps the Harbor-first bootstrap
+doctrine intact while publishing lifecycle-managed custom images through the repo-owned
+`ubuntu:24.04` Dockerfiles with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool
+shims, and no mounted `haskell-toolchain` BuildKit context.
 
 ## Current Baseline In Worktree
 
 - `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
 - `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
   inventory, and ordered upstream-candidate lists used during Harbor publication.
-- `src/Prodbox/CLI/Rke2.hs` currently still defines the named BuildKit context
-  `haskell-toolchain` and pins it to `haskell:9.6.7-slim` for frontend and gateway custom-image
-  publication.
+- `src/Prodbox/CLI/Rke2.hs` now publishes frontend and gateway custom images directly through
+  `docker buildx build --platform linux/amd64,linux/arm64 --push` and no longer defines the
+  named BuildKit context `haskell-toolchain`.
 - `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
@@ -38,9 +36,9 @@ symlinked Haskell tool shims and a full canonical validation rerun.
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
-## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack 🔄
+## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -93,38 +91,36 @@ contract without reintroducing Python or duplicate runtime paths.
   already-running non-Harbor cluster images into Harbor, selecting from configured candidate
   sources and retrying alternate upstreams when Harbor publication fails after manifest
   inspection.
-- `ensureCustomImageVariants` keeps the custom Haskell images single-stage while publishing
-  `linux/amd64` and `linux/arm64` variants and composing the final manifest tag in Harbor, but
-  the current implementation still drives frontend and gateway builds through the named BuildKit
-  `haskell-toolchain` context pinned to `haskell:9.6.7-slim`.
+- `ensureCustomImageVariants` now keeps the custom Haskell images single-stage while publishing
+  `linux/amd64` and `linux/arm64` variants directly from the repo-owned Dockerfiles with no named
+  `haskell-toolchain` context.
+- `ensurePostgresOperatorRuntime` now removes an incompatible legacy Zalando
+  `postgres-operator` release and deletes the dedicated operator namespace before installing the
+  Percona operator, so retained clusters can transition onto the supported operator surface
+  without hitting Helm's immutable Deployment selector error.
 - `inspectRawImageManifest` in `src/Prodbox/CLI/Rke2.hs` now treats Harbor's `401 Unauthorized`
   response for a missing custom-image target as a build-required miss instead of a fatal inspect
   failure, so `prodbox rke2 install` rebuilds and publishes `prodbox-nginx-oidc` before later
   chart work resumes.
-- On April 25, 2026, fresh direct reruns passed `./.build/prodbox check-code`,
+- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration lifecycle`, `./.build/prodbox dns check`,
-  `./.build/prodbox rke2 install`, and `./.build/prodbox host public-edge`.
-- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
-  `./.build/prodbox test all` after the Harbor custom-image inspection repair in
-  `src/Prodbox/CLI/Rke2.hs`.
-- On April 25, 2026, a final direct rerun of `./.build/prodbox host public-edge` again reached
+  `./.build/prodbox dns check`, and `./.build/prodbox host public-edge`.
+- On April 26, 2026, direct live chart and public-host reruns passed
+  `./.build/prodbox test integration charts-platform`,
+  `./.build/prodbox charts delete vscode --yes`,
+  `./.build/prodbox charts deploy vscode`,
+  `./.build/prodbox test integration charts-vscode`, and
+  `./.build/prodbox test integration public-dns`, confirming that the lifecycle-owned cluster now
+  closes again through Harbor bootstrap, Percona operator install, Route 53 bootstrap, and
+  public-edge readiness.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  completing destructive delete, supported-runtime restore, `Validation: lifecycle`,
+  destructive postflight teardown, and the final supported-runtime restore to
   `CLASSIFICATION=ready-for-external-proof`.
-- Those April 25, 2026 reruns prove the pre-upgrade `9.6.7` container publication path only.
 
 ### Remaining Work
 
-- Remove the lifecycle-owned `haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim`
-  custom-image publish path from `src/Prodbox/CLI/Rke2.hs` and the related tests.
-- Align lifecycle-managed custom-image publication on the `ubuntu:24.04` plus in-image `ghcup`
-  pinned GHC `9.14.1` doctrine with no symlinked Haskell tool shims.
-- Land the explicit repo upgrade to GHC `9.14.1`, including required `prodbox.cabal` and related
-  cabal-bound changes, before closing the lifecycle rerun record.
-- Rerun `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration lifecycle`,
-  `./.build/prodbox dns check`, `./.build/prodbox rke2 install`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all` on the upgraded toolchain path.
+None.
 
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
@@ -165,12 +161,14 @@ local-cluster supported ownership from the Pulumi path.
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
   Haskell infra modules, while AWS provider credentials stay in `prodbox-config.dhall` and are
   projected into Pulumi through the Haskell-owned subprocess environment.
-- On April 25, 2026, fresh aggregate reruns passed `./.build/prodbox test integration all` and
-  `./.build/prodbox test all`.
-- Those reruns re-exercised `./.build/prodbox test integration pulumi`,
-  `./.build/prodbox test integration aws-eks`, and
-  `./.build/prodbox test integration ha-rke2-aws` through the supported AWS IaC create/destroy
-  surfaces after the SSH-readiness repair in `src/Prodbox/TestValidation.hs`.
+- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
+  `./.build/prodbox test integration aws-eks`, and a second
+  `./.build/prodbox pulumi eks-destroy --yes` passed after
+  `src/Prodbox/Infra/AwsEksTestStack.hs` gained canonical unmanaged-residue purge before create
+  and destroy when no saved snapshot exists.
+- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
+  re-exercising the `aws-eks`, `pulumi`, and AWS HA-RKE2 create/destroy surfaces plus the final
+  destructive postflight teardown.
 
 ### Remaining Work
 

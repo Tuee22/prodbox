@@ -40,24 +40,30 @@ import Control.Monad (
  )
 import Data.Aeson (
     FromJSON (parseJSON),
-    Value,
+    Value (..),
     eitherDecode,
     object,
+    toJSON,
     withObject,
     (.:),
+    (.:?),
     (.=),
  )
 import Data.Aeson.Encode.Pretty qualified as Pretty
-import Data.Aeson.Types (parseEither)
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Aeson.Types (Parser, parseEither)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (isHexDigit, toLower)
+import Data.Char (isDigit, isHexDigit, toLower)
 import Data.List (
+    find,
     intercalate,
     isInfixOf,
     nub,
     sort,
+    sortOn,
+    stripPrefix,
  )
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -68,6 +74,7 @@ import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Lib.Storage (
     ChartStorageBinding (..),
     ChartStorageSpec (..),
+    chartPersistentVolumeManifest,
     chartStorageClassName,
     chartStorageManifest,
     defaultChartDataRootRelative,
@@ -88,7 +95,6 @@ import Prodbox.PostgresPlatform (
     patroniStandbySecretName,
     patroniStorageSize,
     patroniSuperuserSecretName,
-    patroniTeamId,
     patroniUsername,
  )
 import Prodbox.Result (
@@ -205,16 +211,15 @@ data ChartInstallSnapshot = ChartInstallSnapshot
     }
     deriving (Eq, Show)
 
-data PatroniClusterMember = PatroniClusterMember
-    { patroniClusterMemberName :: String
-    , patroniClusterMemberRole :: String
-    , patroniClusterMemberState :: String
-    }
-    deriving (Eq, Show)
-
 data PatroniClusterReadiness
     = PatroniClusterReady
     | PatroniClusterPending String
+    deriving (Eq, Show)
+
+data PerconaPatroniClaim = PerconaPatroniClaim
+    { perconaPatroniClaimName :: String
+    , perconaPatroniClaimVolumeName :: Maybe String
+    }
     deriving (Eq, Show)
 
 instance FromJSON ChartInstallSnapshot where
@@ -223,13 +228,6 @@ instance FromJSON ChartInstallSnapshot where
             <$> obj .: "name"
             <*> obj .: "namespace"
             <*> obj .: "status"
-
-instance FromJSON PatroniClusterMember where
-    parseJSON = withObject "patronictl list member" $ \obj ->
-        PatroniClusterMember
-            <$> obj .: "Member"
-            <*> obj .: "Role"
-            <*> obj .: "State"
 
 supportedChartNames :: [String]
 supportedChartNames = ["keycloak", "vscode", "gateway"]
@@ -451,11 +449,85 @@ deployChartPlan plan = do
   where
     deployRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
     deployRelease (Left err) _ = pure (Left err)
-    deployRelease (Right ()) release = do
-        installResult <- helmUpgradeInstall release
-        case installResult of
-            Left err -> pure (Left err)
-            Right () -> validateReleaseReady release
+    deployRelease (Right ()) release
+        | chartReleasePlanReleaseName release == "keycloak-postgres" =
+            deployPatroniRelease release
+        | otherwise = do
+            installResult <- helmUpgradeInstall release
+            case installResult of
+                Left err -> pure (Left err)
+                Right () -> do
+                    storageResult <- ensureReleaseStorageBindings release
+                    case storageResult of
+                        Left err -> pure (Left err)
+                        Right () -> validateReleaseReady release
+
+    deployPatroniRelease :: ChartReleasePlan -> IO (Either String ())
+    deployPatroniRelease release = do
+        maybeBootstrapAnchorBinding <- readOptionalPatroniBootstrapAnchorBinding release
+        case maybeBootstrapAnchorBinding of
+            Nothing -> do
+                installResult <- helmUpgradeInstall release
+                case installResult of
+                    Left err -> pure (Left err)
+                    Right () -> do
+                        storageResult <- ensureReleaseStorageBindings release
+                        case storageResult of
+                            Left err -> pure (Left err)
+                            Right () -> validateReleaseReady release
+            Just anchorBinding ->
+                case chartReleaseWithPatroniInstanceCount 1 release of
+                    Left err -> pure (Left err)
+                    Right bootstrapRelease -> do
+                        installBootstrapResult <- helmUpgradeInstall bootstrapRelease
+                        case installBootstrapResult of
+                            Left err -> pure (Left err)
+                            Right () -> do
+                                bootstrapStorageResult <-
+                                    ensurePerconaPatroniStorageBindingsWithExpectedClaims
+                                        (chartReleasePlanNamespace release)
+                                        (chartDeploymentPlanRootChart plan)
+                                        [anchorBinding]
+                                        1
+                                        (Just (chartStorageBindingPersistentVolumeName anchorBinding))
+                                case bootstrapStorageResult of
+                                    Left err -> pure (Left err)
+                                    Right () -> do
+                                        bootstrapReadyResult <-
+                                            waitForPatroniClusterReadyWithReplicaCount
+                                                (chartReleasePlanNamespace release)
+                                                1
+                                        case bootstrapReadyResult of
+                                            Left err -> pure (Left err)
+                                            Right () -> do
+                                                installFullResult <- helmUpgradeInstall release
+                                                case installFullResult of
+                                                    Left err -> pure (Left err)
+                                                    Right () -> do
+                                                        storageResult <- ensureReleaseStorageBindings release
+                                                        case storageResult of
+                                                            Left err -> pure (Left err)
+                                                            Right () -> validateReleaseReady release
+
+    readOptionalPatroniBootstrapAnchorBinding :: ChartReleasePlan -> IO (Maybe ChartStorageBinding)
+    readOptionalPatroniBootstrapAnchorBinding release = do
+        let namespaceDir = chartStateDir (chartDeploymentPlanRepoRoot plan) (chartReleasePlanNamespace release)
+        maybeAnchorVolumeName <- readOptionalPatroniAnchorVolumeName namespaceDir
+        pure $
+            maybeAnchorVolumeName >>= \anchorVolumeName ->
+                find
+                    ((== anchorVolumeName) . chartStorageBindingPersistentVolumeName)
+                    (chartReleasePlanStorageBindings release)
+
+    ensureReleaseStorageBindings :: ChartReleasePlan -> IO (Either String ())
+    ensureReleaseStorageBindings release
+        | chartReleasePlanReleaseName release == "keycloak-postgres" =
+            ensurePerconaPatroniStorageBindings
+                (chartDeploymentPlanRepoRoot plan)
+                (chartDeploymentPlanNamespace plan)
+                (chartDeploymentPlanRootChart plan)
+                (chartReleasePlanStorageBindings release)
+        | otherwise = pure (Right ())
 
 validateReleaseReady :: ChartReleasePlan -> IO (Either String ())
 validateReleaseReady release
@@ -472,6 +544,234 @@ validateExternalRequirements plan =
     validateRequirement (Right ()) requirement =
         case requirement of
             ChartRequiresPatroniPlatform -> validatePatroniPlatformReady
+
+ensurePerconaPatroniStorageBindings ::
+    FilePath ->
+    String ->
+    String ->
+    [ChartStorageBinding] ->
+    IO (Either String ())
+ensurePerconaPatroniStorageBindings repoRoot namespace rootChart logicalBindings = do
+    let namespaceDir = chartStateDir repoRoot namespace
+    maybeAnchorVolumeName <- readOptionalPatroniAnchorVolumeName namespaceDir
+    ensurePerconaPatroniStorageBindingsWithExpectedClaims
+        namespace
+        rootChart
+        logicalBindings
+        (length logicalBindings)
+        maybeAnchorVolumeName
+
+ensurePerconaPatroniStorageBindingsWithExpectedClaims ::
+    String ->
+    String ->
+    [ChartStorageBinding] ->
+    Int ->
+    Maybe String ->
+    IO (Either String ())
+ensurePerconaPatroniStorageBindingsWithExpectedClaims namespace rootChart logicalBindings expectedClaimCount maybeAnchorVolumeName = do
+    claimsResult <- waitForPerconaPatroniClaims namespace expectedClaimCount
+    case claimsResult of
+        Left err -> pure (Left err)
+        Right claims
+            | length claims /= length logicalBindings ->
+                pure
+                    ( Left
+                        ( "Percona Patroni storage reconcile expected "
+                            ++ show (length logicalBindings)
+                            ++ " PostgreSQL PVCs but discovered "
+                            ++ show (length claims)
+                            ++ "."
+                        )
+                    )
+            | otherwise -> do
+                nodeHostnameResult <- singleNodeHostname
+                case nodeHostnameResult of
+                    Left err -> pure (Left err)
+                    Right nodeHostname -> do
+                        let runtimeBindingsResult =
+                                resolvePerconaPatroniRuntimeBindings logicalBindings claims maybeAnchorVolumeName
+                        case runtimeBindingsResult of
+                            Left err -> pure (Left err)
+                            Right runtimeBindings -> do
+                                prepareResult <- foldM prepareStorageBinding (Right ()) runtimeBindings
+                                case prepareResult of
+                                    Left err -> pure (Left err)
+                                    Right () ->
+                                        applyManifest
+                                            ( chartPersistentVolumeManifest
+                                                namespace
+                                                rootChart
+                                                runtimeBindings
+                                                nodeHostname
+                                            )
+
+waitForPerconaPatroniClaims :: String -> Int -> IO (Either String [PerconaPatroniClaim])
+waitForPerconaPatroniClaims namespace expectedClaimCount =
+    wait perconaPatroniClaimAttempts
+  where
+    clusterName = patroniClusterName namespace
+
+    wait :: Int -> IO (Either String [PerconaPatroniClaim])
+    wait attemptsLeft = do
+        claimsResult <- discoverPerconaPatroniClaims namespace
+        case claimsResult of
+            Left err ->
+                if attemptsLeft <= 1
+                    then pure (Left err)
+                    else do
+                        threadDelay perconaPatroniClaimDelayMicros
+                        wait (attemptsLeft - 1)
+            Right claims
+                | length claims == expectedClaimCount ->
+                    pure (Right (sortOn perconaPatroniClaimName claims))
+                | attemptsLeft <= 1 ->
+                    pure
+                        ( Left
+                            ( "Percona Patroni cluster "
+                                ++ clusterName
+                                ++ " did not create the expected PostgreSQL PVC set. "
+                                ++ "Discovered claims: "
+                                ++ if null claims
+                                    then "<none>"
+                                    else
+                                        intercalate ", " (sort (map perconaPatroniClaimName claims))
+                                            ++ "."
+                            )
+                        )
+                | otherwise -> do
+                    threadDelay perconaPatroniClaimDelayMicros
+                    wait (attemptsLeft - 1)
+
+discoverPerconaPatroniClaims :: String -> IO (Either String [PerconaPatroniClaim])
+discoverPerconaPatroniClaims namespace = do
+    let clusterName = patroniClusterName namespace
+        selector =
+            "postgres-operator.crunchydata.com/cluster="
+                ++ clusterName
+                ++ ",postgres-operator.crunchydata.com/data=postgres"
+    outputResult <-
+        runCaptured
+            "kubectl get Percona PostgreSQL PVCs"
+            "kubectl"
+            ["get", "pvc", "--namespace", namespace, "--selector", selector, "-o", "json"]
+    pure $ do
+        output <- outputResult
+        case processExitCode output of
+            ExitFailure _ ->
+                Left
+                    ( "kubectl get pvc failed: "
+                        ++ processStderr output
+                        ++ processStdout output
+                    )
+            ExitSuccess ->
+                either
+                    (Left . ("kubectl get pvc returned unexpected JSON payload: " ++))
+                    Right
+                    (eitherDecode (BL8.pack (processStdout output)) >>= parseEither parsePerconaPatroniClaims)
+
+parsePerconaPatroniClaims :: Value -> Parser [PerconaPatroniClaim]
+parsePerconaPatroniClaims =
+    withObject "pvc list" $ \obj -> do
+        items <- obj .: "items"
+        forM items $
+            withObject "pvc item" $ \item -> do
+                metadata <- item .: "metadata"
+                claimName <- metadata .: "name"
+                maybeSpec <- item .:? "spec"
+                volumeName <-
+                    case maybeSpec of
+                        Nothing -> pure Nothing
+                        Just specValue ->
+                            withObject "pvc spec" (\specObj -> specObj .:? "volumeName") specValue
+                pure
+                    PerconaPatroniClaim
+                        { perconaPatroniClaimName = claimName
+                        , perconaPatroniClaimVolumeName = volumeName
+                        }
+
+resolvePerconaPatroniRuntimeBindings ::
+    [ChartStorageBinding] ->
+    [PerconaPatroniClaim] ->
+    Maybe String ->
+    Either String [ChartStorageBinding]
+resolvePerconaPatroniRuntimeBindings logicalBindings claims maybeAnchorVolumeName =
+    case maybeAnchorVolumeName >>= \anchorVolumeName -> find ((== anchorVolumeName) . chartStorageBindingPersistentVolumeName) logicalBindings of
+        Nothing -> assignBindingsBySortedClaims logicalBindings claims
+        Just anchorBinding ->
+            let anchorVolumeName = chartStorageBindingPersistentVolumeName anchorBinding
+                maybeAnchorClaimName =
+                    perconaPatroniClaimName
+                        <$> find ((== Just anchorVolumeName) . perconaPatroniClaimVolumeName) claims
+                sortedClaimNames = sort (map perconaPatroniClaimName claims)
+                anchorClaimName =
+                    case maybeAnchorClaimName of
+                        Just claimName -> Right claimName
+                        Nothing ->
+                            case sortedClaimNames of
+                                [] -> Left "Percona Patroni PVC discovery returned no claims for the preserved cluster anchor."
+                                claimName : _ -> Right claimName
+                remainingBindings =
+                    [ binding
+                    | binding <- logicalBindings
+                    , chartStorageBindingPersistentVolumeName binding /= anchorVolumeName
+                    ]
+             in do
+                    assignedAnchorClaimName <- anchorClaimName
+                    let remainingClaimNames =
+                            [ claimName
+                            | claimName <- sortedClaimNames
+                            , claimName /= assignedAnchorClaimName
+                            ]
+                    if length remainingBindings /= length remainingClaimNames
+                        then
+                            Left
+                                ( "Percona Patroni PVC discovery did not leave the expected follower claims after preserving anchor volume "
+                                    ++ anchorVolumeName
+                                    ++ "."
+                                )
+                        else
+                            Right
+                                ( runtimeStorageBindingForClaim anchorBinding assignedAnchorClaimName
+                                    : zipWith runtimeStorageBindingForClaim remainingBindings remainingClaimNames
+                                )
+
+assignBindingsBySortedClaims ::
+    [ChartStorageBinding] ->
+    [PerconaPatroniClaim] ->
+    Either String [ChartStorageBinding]
+assignBindingsBySortedClaims logicalBindings claims =
+    let sortedClaimNames = sort (map perconaPatroniClaimName claims)
+     in if length logicalBindings /= length sortedClaimNames
+            then
+                Left
+                    ( "Percona Patroni storage reconcile expected "
+                        ++ show (length logicalBindings)
+                        ++ " claims but discovered "
+                        ++ show (length sortedClaimNames)
+                        ++ "."
+                    )
+            else Right (zipWith runtimeStorageBindingForClaim logicalBindings sortedClaimNames)
+
+runtimeStorageBindingForClaim :: ChartStorageBinding -> String -> ChartStorageBinding
+runtimeStorageBindingForClaim binding claimName =
+    binding
+        { chartStorageBindingStatefulSetName = perconaStatefulSetNameFromClaim claimName
+        , chartStorageBindingPersistentVolumeClaimName = claimName
+        }
+
+perconaStatefulSetNameFromClaim :: String -> String
+perconaStatefulSetNameFromClaim claimName =
+    maybe claimName id (dropSuffix "-pgdata" claimName)
+
+dropSuffix :: (Eq a) => [a] -> [a] -> Maybe [a]
+dropSuffix suffix value =
+    reverse <$> stripPrefix (reverse suffix) (reverse value)
+
+perconaPatroniClaimAttempts :: Int
+perconaPatroniClaimAttempts = 60
+
+perconaPatroniClaimDelayMicros :: Int
+perconaPatroniClaimDelayMicros = 5 * 1000000
 
 validatePatroniPlatformReady :: IO (Either String ())
 validatePatroniPlatformReady = do
@@ -518,6 +818,10 @@ validatePatroniPlatformReady = do
 
 waitForPatroniClusterReady :: String -> IO (Either String ())
 waitForPatroniClusterReady namespace =
+    waitForPatroniClusterReadyWithReplicaCount namespace 3
+
+waitForPatroniClusterReadyWithReplicaCount :: String -> Int -> IO (Either String ())
+waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
     wait patroniClusterReadyAttempts
   where
     clusterName = patroniClusterName namespace
@@ -525,7 +829,7 @@ waitForPatroniClusterReady namespace =
 
     wait :: Int -> IO (Either String ())
     wait attemptsLeft = do
-        readinessResult <- patroniClusterReadiness namespace
+        readinessResult <- patroniClusterReadiness namespace expectedReadyReplicas
         case readinessResult of
             Left err ->
                 if attemptsLeft <= 1
@@ -558,83 +862,35 @@ patroniClusterReadyAttempts = 180
 patroniClusterReadyDelayMicros :: Int
 patroniClusterReadyDelayMicros = 10 * 1000000
 
-patroniClusterReadiness :: String -> IO (Either String PatroniClusterReadiness)
-patroniClusterReadiness namespace = do
+patroniClusterReadiness :: String -> Int -> IO (Either String PatroniClusterReadiness)
+patroniClusterReadiness namespace expectedReadyReplicas = do
     clusterStatus <- readOptionalPatroniClusterStatus namespace
-    if clusterStatus /= Just "Running"
-        then
-            pure
-                ( Right
+    readyPostgresCount <- readOptionalPatroniReadyPostgresCount namespace
+    pure $
+        case normalizedPatroniClusterStatus clusterStatus of
+            Just "ready" ->
+                if readyPostgresCount == Just expectedReadyReplicas
+                    then Right PatroniClusterReady
+                    else
+                        Right
+                            ( PatroniClusterPending
+                                ( "status=ready,postgres.ready="
+                                    ++ maybe "<missing>" show readyPostgresCount
+                                    ++ ",expected.postgres.ready="
+                                    ++ show expectedReadyReplicas
+                                )
+                            )
+            _ ->
+                Right
                     ( PatroniClusterPending
-                        ( "PostgresClusterStatus="
-                            ++ maybe "<missing>" id clusterStatus
+                        ( "status="
+                            ++ maybe "<missing>" id (normalizedPatroniClusterStatus clusterStatus)
+                            ++ ",postgres.ready="
+                            ++ maybe "<missing>" show readyPostgresCount
+                            ++ ",expected.postgres.ready="
+                            ++ show expectedReadyReplicas
                         )
                     )
-                )
-        else do
-            membersResult <- patroniClusterMembers namespace
-            pure $
-                case membersResult of
-                    Left err -> Left err
-                    Right members ->
-                        let normalizedState member = map toLower (trimWhitespace (patroniClusterMemberState member))
-                            normalizedRole member = map toLower (trimWhitespace (patroniClusterMemberRole member))
-                            readyMember member
-                                | normalizedRole member == "leader" = normalizedState member == "running"
-                                | otherwise = normalizedState member `elem` ["running", "streaming"]
-                            leaderCount =
-                                length
-                                    [ ()
-                                    | member <- members
-                                    , normalizedRole member == "leader"
-                                    , normalizedState member == "running"
-                                    ]
-                            readyReplicaCount =
-                                length
-                                    [ ()
-                                    | member <- members
-                                    , normalizedRole member /= "leader"
-                                    , normalizedState member `elem` ["running", "streaming"]
-                                    ]
-                            memberSummary = renderPatroniClusterMembers members
-                         in if length members == 3 && all readyMember members && leaderCount == 1 && readyReplicaCount == 2
-                                then Right PatroniClusterReady
-                                else Right (PatroniClusterPending memberSummary)
-
-patroniClusterMembers :: String -> IO (Either String [PatroniClusterMember])
-patroniClusterMembers namespace = do
-    let clusterName = patroniClusterName namespace
-        primaryPodName = clusterName ++ "-0"
-    outputResult <-
-        runCaptured
-            "kubectl exec patronictl list"
-            "kubectl"
-            ["exec", primaryPodName, "--namespace", namespace, "--", "patronictl", "list", "-f", "json"]
-    pure $ do
-        output <- outputResult
-        case processExitCode output of
-            ExitSuccess ->
-                either
-                    (Left . ("kubectl exec patronictl list returned unexpected JSON payload: " ++))
-                    Right
-                    (eitherDecode (BL8.pack (processStdout output)) :: Either String [PatroniClusterMember])
-            ExitFailure _ ->
-                Left
-                    ( "kubectl exec patronictl list failed: "
-                        ++ processStderr output
-                        ++ processStdout output
-                    )
-
-renderPatroniClusterMembers :: [PatroniClusterMember] -> String
-renderPatroniClusterMembers members =
-    "members=" ++ intercalate "," (map renderMember members)
-  where
-    renderMember member =
-        patroniClusterMemberName member
-            ++ ":"
-            ++ map toLower (trimWhitespace (patroniClusterMemberRole member))
-            ++ "/"
-            ++ map toLower (trimWhitespace (patroniClusterMemberState member))
 
 deleteChartPlan :: ChartDeploymentPlan -> IO (Either String String)
 deleteChartPlan plan = do
@@ -642,6 +898,7 @@ deleteChartPlan plan = do
     case preserveResult of
         Left err -> pure (Left err)
         Right () -> do
+            persistPatroniAnchorBindingBeforeDelete
             uninstallResult <- foldM uninstallRelease (Right ()) (chartDeploymentPlanReleases plan)
             case uninstallResult of
                 Left err -> pure (Left err)
@@ -667,6 +924,25 @@ deleteChartPlan plan = do
             pure (secretsResult >> Right ())
         | otherwise = pure (Right ())
 
+    persistPatroniAnchorBindingBeforeDelete :: IO ()
+    persistPatroniAnchorBindingBeforeDelete =
+        case find ((== "keycloak-postgres") . chartReleasePlanReleaseName) (chartDeploymentPlanReleases plan) of
+            Nothing -> pure ()
+            Just release -> do
+                maybeAnchorVolumeName <- discoverPatroniAnchorPersistentVolumeName (chartReleasePlanNamespace release)
+                case maybeAnchorVolumeName of
+                    Nothing -> pure ()
+                    Just anchorVolumeName -> do
+                        let namespaceDir = chartStateDir (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
+                        ensureResult <- ensureChartStateDir namespaceDir
+                        case ensureResult of
+                            Left _ -> pure ()
+                            Right () -> do
+                                _ <-
+                                    try (writeFile (namespaceDir </> patroniAnchorVolumeFileName) (anchorVolumeName ++ "\n")) ::
+                                        IO (Either IOException ())
+                                pure ()
+
     uninstallRelease :: Either String () -> ChartReleasePlan -> IO (Either String ())
     uninstallRelease (Left err) _ = pure (Left err)
     uninstallRelease (Right ()) release = do
@@ -688,7 +964,9 @@ deleteChartPlan plan = do
     deleteReleaseBindings :: Either String () -> ChartReleasePlan -> IO (Either String ())
     deleteReleaseBindings (Left err) _ = pure (Left err)
     deleteReleaseBindings (Right ()) release =
-        foldM deleteBinding (Right ()) (chartReleasePlanStorageBindings release)
+        if chartReleasePlanReleaseName release == "keycloak-postgres"
+            then deletePerconaPatroniBindings release
+            else foldM deleteBinding (Right ()) (chartReleasePlanStorageBindings release)
 
     deleteBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
     deleteBinding (Left err) _ = pure (Left err)
@@ -728,6 +1006,57 @@ deleteChartPlan plan = do
                                 , "--wait=true"
                                 ]
 
+    deletePerconaPatroniBindings :: ChartReleasePlan -> IO (Either String ())
+    deletePerconaPatroniBindings release = do
+        let namespace = chartReleasePlanNamespace release
+            selector =
+                "postgres-operator.crunchydata.com/cluster="
+                    ++ patroniClusterName namespace
+                    ++ ",postgres-operator.crunchydata.com/data=postgres"
+        podResult <-
+            deleteKubectlObject
+                [ "delete"
+                , "pod"
+                , "--selector"
+                , selector
+                , "--namespace"
+                , namespace
+                , "--ignore-not-found=true"
+                , "--wait=true"
+                ]
+        case podResult of
+            Left err -> pure (Left err)
+            Right () -> do
+                pvcResult <-
+                    deleteKubectlObject
+                        [ "delete"
+                        , "pvc"
+                        , "--selector"
+                        , selector
+                        , "--namespace"
+                        , namespace
+                        , "--ignore-not-found=true"
+                        , "--wait=true"
+                        ]
+                case pvcResult of
+                    Left err -> pure (Left err)
+                    Right () ->
+                        foldM
+                            deleteDeterministicPersistentVolume
+                            (Right ())
+                            (chartReleasePlanStorageBindings release)
+
+    deleteDeterministicPersistentVolume :: Either String () -> ChartStorageBinding -> IO (Either String ())
+    deleteDeterministicPersistentVolume (Left err) _ = pure (Left err)
+    deleteDeterministicPersistentVolume (Right ()) binding =
+        deleteKubectlObject
+            [ "delete"
+            , "pv"
+            , chartStorageBindingPersistentVolumeName binding
+            , "--ignore-not-found=true"
+            , "--wait=true"
+            ]
+
 resolveChartSecrets :: FilePath -> String -> IO (Either String (Map String String))
 resolveChartSecrets repoRoot namespace = do
     let namespaceDir = chartStateDir repoRoot namespace
@@ -747,9 +1076,9 @@ resolveChartSecrets repoRoot namespace = do
                         Right values -> values
             clusterStatus <- readOptionalPatroniClusterStatus namespace
             recoveredValues <-
-                case clusterStatus of
-                    Just "CreateFailed" -> pure Map.empty
-                    _ -> recoverPatroniSecretValues namespace
+                if patroniClusterStatusIndicatesFailure clusterStatus
+                    then pure Map.empty
+                    else recoverPatroniSecretValues namespace
             resetRequired <- shouldResetPatroniStorage repoRoot namespace existingValues recoveredValues clusterStatus
             when resetRequired (writePatroniResetMarker namespaceDir)
             mergeRequiredKeys
@@ -791,12 +1120,12 @@ readOptionalPatroniClusterStatus namespace = do
                 { commandPath = "kubectl"
                 , commandArguments =
                     [ "get"
-                    , "postgresql"
+                    , patroniPostgresqlCrdName
                     , patroniClusterName namespace
                     , "-n"
                     , namespace
                     , "-o"
-                    , "jsonpath={.status.PostgresClusterStatus}"
+                    , "jsonpath={.status.state}"
                     ]
                 , commandEnvironment = Nothing
                 , commandWorkingDirectory = Nothing
@@ -811,15 +1140,55 @@ readOptionalPatroniClusterStatus namespace = do
                         let value = trimWhitespace (processStdout output)
                          in if null value then Nothing else Just value
 
+readOptionalPatroniReadyPostgresCount :: String -> IO (Maybe Int)
+readOptionalPatroniReadyPostgresCount namespace = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "get"
+                    , patroniPostgresqlCrdName
+                    , patroniClusterName namespace
+                    , "-n"
+                    , namespace
+                    , "-o"
+                    , "jsonpath={.status.postgres.ready}"
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
+                }
+    pure $
+        case result of
+            Failure _ -> Nothing
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ -> Nothing
+                    ExitSuccess ->
+                        case reads (trimWhitespace (processStdout output)) of
+                            [(value, "")] -> Just value
+                            _ -> Nothing
+
+normalizedPatroniClusterStatus :: Maybe String -> Maybe String
+normalizedPatroniClusterStatus = fmap (map toLower . trimWhitespace)
+
+patroniClusterStatusIndicatesFailure :: Maybe String -> Bool
+patroniClusterStatusIndicatesFailure clusterStatus =
+    case normalizedPatroniClusterStatus clusterStatus of
+        Just "failed" -> True
+        Just "createfailed" -> True
+        Just "invalid" -> True
+        _ -> False
+
 shouldResetPatroniStorage :: FilePath -> String -> Map String String -> Map String String -> Maybe String -> IO Bool
 shouldResetPatroniStorage repoRoot namespace existingValues recoveredValues clusterStatus = do
     storageExists <- patroniStorageExists repoRoot namespace
     pure $
         not (requiredKeysPresent requiredPatroniSecretKeys existingValues)
             && storageExists
-            && case clusterStatus of
-                Just "CreateFailed" -> True
-                _ -> not (requiredKeysPresent requiredPatroniSecretKeys recoveredValues)
+            && ( patroniClusterStatusIndicatesFailure clusterStatus
+                    || not (requiredKeysPresent requiredPatroniSecretKeys recoveredValues)
+               )
 
 patroniStorageExists :: FilePath -> String -> IO Bool
 patroniStorageExists repoRoot namespace =
@@ -833,6 +1202,125 @@ writePatroniResetMarker namespaceDir = do
 
 patroniResetMarkerFileName :: FilePath
 patroniResetMarkerFileName = ".patroni-reset-required"
+
+patroniAnchorVolumeFileName :: FilePath
+patroniAnchorVolumeFileName = ".patroni-anchor-volume"
+
+discoverPatroniAnchorPersistentVolumeName :: String -> IO (Maybe String)
+discoverPatroniAnchorPersistentVolumeName namespace = do
+    maybePrimaryPodName <- readOptionalPatroniPrimaryPodName namespace
+    case maybePrimaryPodName >>= patroniClaimNameFromPodName of
+        Nothing -> pure Nothing
+        Just claimName -> readOptionalPersistentVolumeNameForClaim namespace claimName
+
+readOptionalPatroniPrimaryPodName :: String -> IO (Maybe String)
+readOptionalPatroniPrimaryPodName namespace = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "get"
+                    , "endpoints"
+                    , patroniClusterName namespace ++ "-ha"
+                    , "--namespace"
+                    , namespace
+                    , "-o"
+                    , "jsonpath={.subsets[0].addresses[0].targetRef.name}"
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
+                }
+    pure $
+        case result of
+            Failure _ -> Nothing
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ -> Nothing
+                    ExitSuccess ->
+                        let value = trimWhitespace (processStdout output)
+                         in if null value then Nothing else Just value
+
+patroniClaimNameFromPodName :: String -> Maybe String
+patroniClaimNameFromPodName podName = do
+    instanceName <- dropPodOrdinal podName
+    pure (instanceName ++ "-pgdata")
+
+dropPodOrdinal :: String -> Maybe String
+dropPodOrdinal podName =
+    case break (== '-') (reverse podName) of
+        (reversedOrdinal, '-' : reversedPrefix)
+            | not (null reversedOrdinal) && all isDigit reversedOrdinal -> Just (reverse reversedPrefix)
+        _ -> Nothing
+
+readOptionalPersistentVolumeNameForClaim :: String -> String -> IO (Maybe String)
+readOptionalPersistentVolumeNameForClaim namespace claimName = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "get"
+                    , "pvc"
+                    , claimName
+                    , "--namespace"
+                    , namespace
+                    , "-o"
+                    , "jsonpath={.spec.volumeName}"
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
+                }
+    pure $
+        case result of
+            Failure _ -> Nothing
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ -> Nothing
+                    ExitSuccess ->
+                        let value = trimWhitespace (processStdout output)
+                         in if null value then Nothing else Just value
+
+readOptionalPatroniAnchorVolumeName :: FilePath -> IO (Maybe String)
+readOptionalPatroniAnchorVolumeName namespaceDir = do
+    let markerPath = namespaceDir </> patroniAnchorVolumeFileName
+    markerExists <- doesFileExist markerPath
+    if not markerExists
+        then pure Nothing
+        else do
+            readResult <- try (readFile markerPath) :: IO (Either IOException String)
+            pure $
+                case readResult of
+                    Left _ -> Nothing
+                    Right rawValue ->
+                        let value = trimWhitespace rawValue
+                         in if null value then Nothing else Just value
+
+chartReleaseWithPatroniInstanceCount :: Int -> ChartReleasePlan -> Either String ChartReleasePlan
+chartReleaseWithPatroniInstanceCount instanceCount release = do
+    updatedValuesJson <- setPatroniClusterInstanceCount instanceCount (chartReleasePlanValuesJson release)
+    pure release{chartReleasePlanValuesJson = updatedValuesJson}
+
+setPatroniClusterInstanceCount :: Int -> String -> Either String String
+setPatroniClusterInstanceCount instanceCount valuesJson = do
+    values <- eitherDecode (BL8.pack valuesJson) :: Either String Value
+    updatedValues <- updatePatroniClusterInstanceCount instanceCount values
+    pure (BL8.unpack (Pretty.encodePretty updatedValues))
+
+updatePatroniClusterInstanceCount :: Int -> Value -> Either String Value
+updatePatroniClusterInstanceCount instanceCount (Object valuesObject) =
+    case KeyMap.lookup "cluster" valuesObject of
+        Just (Object clusterObject) ->
+            Right
+                ( Object
+                    ( KeyMap.insert
+                        "cluster"
+                        (Object (KeyMap.insert "instances" (toJSON instanceCount) clusterObject))
+                        valuesObject
+                    )
+                )
+        _ -> Left "keycloak-postgres values payload does not contain a cluster object."
+updatePatroniClusterInstanceCount _ _ = Left "keycloak-postgres values payload must be a JSON object."
 
 readOptionalSecretPassword :: String -> String -> IO (Maybe String)
 readOptionalSecretPassword namespace secretName = do
@@ -956,21 +1444,21 @@ patroniStorageSpecs :: String -> String -> [ChartStorageSpec]
 patroniStorageSpecs rootChart _releaseName =
     [ ChartStorageSpec
         { chartStorageSpecStatefulSetName = clusterName
-        , chartStorageSpecPersistentVolumeClaimName = "pgdata-" ++ clusterName ++ "-0"
+        , chartStorageSpecPersistentVolumeClaimName = clusterName ++ "-instance1-0-pgdata"
         , chartStorageSpecStorageSize = patroniStorageSize
         , chartStorageSpecOrdinal = 0
         , chartStorageSpecClaimSuffix = "data"
         }
     , ChartStorageSpec
         { chartStorageSpecStatefulSetName = clusterName
-        , chartStorageSpecPersistentVolumeClaimName = "pgdata-" ++ clusterName ++ "-1"
+        , chartStorageSpecPersistentVolumeClaimName = clusterName ++ "-instance1-1-pgdata"
         , chartStorageSpecStorageSize = patroniStorageSize
         , chartStorageSpecOrdinal = 1
         , chartStorageSpecClaimSuffix = "data"
         }
     , ChartStorageSpec
         { chartStorageSpecStatefulSetName = clusterName
-        , chartStorageSpecPersistentVolumeClaimName = "pgdata-" ++ clusterName ++ "-2"
+        , chartStorageSpecPersistentVolumeClaimName = clusterName ++ "-instance1-2-pgdata"
         , chartStorageSpecStorageSize = patroniStorageSize
         , chartStorageSpecOrdinal = 2
         , chartStorageSpecClaimSuffix = "data"
@@ -1095,36 +1583,44 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
             , "cluster"
                 .= object
                     [ "name" .= clusterName
-                    , "teamId" .= patroniTeamId
                     , "instances" .= (3 :: Int)
+                    , "crVersion" .= ("2.9.0" :: String)
                     ]
             , "image"
                 .= object
-                    [ "operator"
+                    [ "postgres"
                         .= object
                             [ "repository"
-                                .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresOperatorImage
+                                .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresDatabaseImage
                                         ++ "/"
-                                        ++ ContainerImage.imageRepository ContainerImage.harborPostgresOperatorImage
+                                        ++ ContainerImage.imageRepository ContainerImage.harborPostgresDatabaseImage
                                    )
-                            , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresOperatorImage
+                            , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresDatabaseImage
                             ]
-                    , "spilo"
+                    , "pgBackRest"
                         .= object
                             [ "repository"
-                                .= ( ContainerImage.imageRegistry ContainerImage.harborSpiloImage
+                                .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresPgbackrestImage
                                         ++ "/"
-                                        ++ ContainerImage.imageRepository ContainerImage.harborSpiloImage
+                                        ++ ContainerImage.imageRepository ContainerImage.harborPostgresPgbackrestImage
                                    )
-                            , "tag" .= ContainerImage.imageTag ContainerImage.harborSpiloImage
+                            , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresPgbackrestImage
+                            ]
+                    , "pgBouncer"
+                        .= object
+                            [ "repository"
+                                .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresPgbouncerImage
+                                        ++ "/"
+                                        ++ ContainerImage.imageRepository ContainerImage.harborPostgresPgbouncerImage
+                                   )
+                            , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresPgbouncerImage
                             ]
                     ]
             , "postgres"
                 .= object
-                    [ "version" .= ("17" :: String)
+                    [ "version" .= (17 :: Int)
                     , "database" .= patroniDatabaseName
                     , "username" .= patroniUsername
-                    , "credentialsSecretName" .= patroniCredentialsSecretName rootChart
                     ]
             , "secrets"
                 .= object
@@ -1137,7 +1633,7 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
                     , "standby"
                         .= object
                             [ "name" .= patroniStandbySecretName rootChart
-                            , "username" .= ("standby" :: String)
+                            , "username" .= ("primaryuser" :: String)
                             , "password" .= standbyPassword
                             ]
                     , "superuser"
@@ -1151,19 +1647,20 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
                 .= object
                     [ "className" .= chartStorageClassName
                     , "size" .= patroniStorageSize
-                    , "bindings"
-                        .= [ object
-                            [ "ordinal" .= chartStorageBindingOrdinal binding
-                            , "pvcName" .= chartStorageBindingPersistentVolumeClaimName binding
-                            ]
-                           | binding <- storageBindings
-                           ]
                     ]
             , "security"
                 .= object
                     [ "runAsUser" .= patroniRunAsUser
                     , "runAsGroup" .= patroniRunAsGroup
                     , "fsGroup" .= patroniFsGroup
+                    ]
+            , "proxy"
+                .= object
+                    [ "pgBouncerReplicas" .= (0 :: Int)
+                    ]
+            , "backups"
+                .= object
+                    [ "enabled" .= False
                     ]
             , "podAntiAffinity" .= podAntiAffinityValue settings
             ]
@@ -1368,6 +1865,12 @@ renderDeleteReport plan =
 ensureChartStorage :: ChartDeploymentPlan -> IO (Either String ())
 ensureChartStorage plan = do
     let bindings = concatMap chartReleasePlanStorageBindings (chartDeploymentPlanReleases plan)
+        eagerBindings =
+            [ binding
+            | release <- chartDeploymentPlanReleases plan
+            , chartReleasePlanReleaseName release /= "keycloak-postgres"
+            , binding <- chartReleasePlanStorageBindings release
+            ]
     if null bindings
         then applyManifest (namespaceManifest (chartDeploymentPlanNamespace plan) (chartDeploymentPlanRootChart plan))
         else do
@@ -1378,22 +1881,31 @@ ensureChartStorage plan = do
                     replicaResetResult <- resetRetainedPatroniReplicaBindings
                     case replicaResetResult of
                         Left err -> pure (Left err)
-                        Right () -> do
-                            nodeHostnameResult <- singleNodeHostname
-                            case nodeHostnameResult of
-                                Left err -> pure (Left err)
-                                Right nodeHostname -> do
-                                    prepareResult <- foldM prepareBinding (Right ()) bindings
-                                    case prepareResult of
-                                        Left err -> pure (Left err)
-                                        Right () ->
-                                            applyManifest
-                                                ( chartStorageManifest
-                                                    (chartDeploymentPlanNamespace plan)
-                                                    (chartDeploymentPlanRootChart plan)
-                                                    bindings
-                                                    nodeHostname
-                                                )
+                        Right ()
+                            | null eagerBindings ->
+                                applyManifest
+                                    ( chartStorageManifest
+                                        (chartDeploymentPlanNamespace plan)
+                                        (chartDeploymentPlanRootChart plan)
+                                        []
+                                        ""
+                                    )
+                            | otherwise -> do
+                                nodeHostnameResult <- singleNodeHostname
+                                case nodeHostnameResult of
+                                    Left err -> pure (Left err)
+                                    Right nodeHostname -> do
+                                        prepareResult <- foldM prepareStorageBinding (Right ()) eagerBindings
+                                        case prepareResult of
+                                            Left err -> pure (Left err)
+                                            Right () ->
+                                                applyManifest
+                                                    ( chartStorageManifest
+                                                        (chartDeploymentPlanNamespace plan)
+                                                        (chartDeploymentPlanRootChart plan)
+                                                        eagerBindings
+                                                        nodeHostname
+                                                    )
   where
     resetPatroniStorageIfRequested :: IO (Either String ())
     resetPatroniStorageIfRequested = do
@@ -1424,36 +1936,51 @@ ensureChartStorage plan = do
 
     resetRetainedPatroniReplicaBindings :: IO (Either String ())
     resetRetainedPatroniReplicaBindings = do
-        let replicaBindings =
+        let patroniBindings =
                 [ binding
                 | release <- chartDeploymentPlanReleases plan
                 , chartReleasePlanReleaseName release == "keycloak-postgres"
                 , binding <- chartReleasePlanStorageBindings release
-                , chartStorageBindingOrdinal binding > 0
                 ]
-        existingReplicaBindings <- filterM (doesDirectoryExist . chartStorageBindingHostPath) replicaBindings
+            namespaceDir = chartStateDir (chartDeploymentPlanRepoRoot plan) (chartDeploymentPlanNamespace plan)
+        maybeAnchorVolumeName <- readOptionalPatroniAnchorVolumeName namespaceDir
+        let preservedBinding =
+                case maybeAnchorVolumeName of
+                    Just anchorVolumeName ->
+                        find ((== anchorVolumeName) . chartStorageBindingPersistentVolumeName) patroniBindings
+                    Nothing ->
+                        find ((== 0) . chartStorageBindingOrdinal) patroniBindings
+            bindingsToReset =
+                case preservedBinding of
+                    Just binding ->
+                        [ candidate
+                        | candidate <- patroniBindings
+                        , chartStorageBindingPersistentVolumeName candidate /= chartStorageBindingPersistentVolumeName binding
+                        ]
+                    Nothing -> []
+        existingReplicaBindings <- filterM (doesDirectoryExist . chartStorageBindingHostPath) bindingsToReset
         foldM resetBinding (Right ()) existingReplicaBindings
 
-    prepareBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
-    prepareBinding (Left err) _ = pure (Left err)
-    prepareBinding (Right ()) binding = do
-        ensureResult <- ensureStorageHostDir (chartStorageBindingHostPath binding)
-        case ensureResult of
-            Left err -> pure (Left err)
-            Right () -> do
-                phaseResult <- persistentVolumePhase (chartStorageBindingPersistentVolumeName binding)
-                case phaseResult of
-                    Left err -> pure (Left err)
-                    Right (Just phase)
-                        | phase == "Released" || phase == "Failed" ->
-                            deleteKubectlObject
-                                [ "delete"
-                                , "pv"
-                                , chartStorageBindingPersistentVolumeName binding
-                                , "--ignore-not-found=true"
-                                , "--wait=true"
-                                ]
-                    Right _ -> pure (Right ())
+prepareStorageBinding :: Either String () -> ChartStorageBinding -> IO (Either String ())
+prepareStorageBinding (Left err) _ = pure (Left err)
+prepareStorageBinding (Right ()) binding = do
+    ensureResult <- ensureStorageHostDir (chartStorageBindingHostPath binding)
+    case ensureResult of
+        Left err -> pure (Left err)
+        Right () -> do
+            phaseResult <- persistentVolumePhase (chartStorageBindingPersistentVolumeName binding)
+            case phaseResult of
+                Left err -> pure (Left err)
+                Right (Just phase)
+                    | phase == "Released" || phase == "Failed" ->
+                        deleteKubectlObject
+                            [ "delete"
+                            , "pv"
+                            , chartStorageBindingPersistentVolumeName binding
+                            , "--ignore-not-found=true"
+                            , "--wait=true"
+                            ]
+                Right _ -> pure (Right ())
 
 namespaceManifest :: String -> String -> Value
 namespaceManifest namespace rootChart =

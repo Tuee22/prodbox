@@ -24,7 +24,9 @@ module Prodbox.ContainerImage (
     harborMirrorTargetForSource,
     harborPostgresOperatorImage,
     harborRegistryEndpoint,
-    harborSpiloImage,
+    harborPostgresDatabaseImage,
+    harborPostgresPgbackrestImage,
+    harborPostgresPgbouncerImage,
     harborTraefikImage,
     harborVscodeNginxImage,
     normalizeImageRefText,
@@ -63,10 +65,19 @@ harborVscodeNginxImage =
 
 harborPostgresOperatorImage :: ImageRef
 harborPostgresOperatorImage =
-    harborImageRefFromRepository "postgres-operator-mirror" "v1.15.1"
+    harborImageRefFromRepository "percona-postgresql-operator-mirror" "2.9.0"
 
-harborSpiloImage :: ImageRef
-harborSpiloImage = harborImageRefFromRepository "spilo-17-mirror" "4.0-p3"
+harborPostgresDatabaseImage :: ImageRef
+harborPostgresDatabaseImage =
+    harborImageRefFromRepository "percona-distribution-postgresql-mirror" "17.9-1"
+
+harborPostgresPgbackrestImage :: ImageRef
+harborPostgresPgbackrestImage =
+    harborImageRefFromRepository "percona-pgbackrest-mirror" "2.58.0-1"
+
+harborPostgresPgbouncerImage :: ImageRef
+harborPostgresPgbouncerImage =
+    harborImageRefFromRepository "percona-pgbouncer-mirror" "1.25.1-1"
 
 harborCodeServerImage :: ImageRef
 harborCodeServerImage = harborImageRefFromRepository "code-server-mirror" "4.98.2"
@@ -149,13 +160,21 @@ requiredPublicImageCandidatePairs =
 requiredPublicImageMirrors :: [PublicImageMirror]
 requiredPublicImageMirrors =
     [ mirroredPublicImage
-        (ImageRef "ghcr.io" "zalando/postgres-operator" "v1.15.1")
+        (ImageRef "docker.io" "percona/percona-postgresql-operator" "2.9.0")
         []
         harborPostgresOperatorImage
     , mirroredPublicImage
-        (ImageRef "ghcr.io" "zalando/spilo-17" "4.0-p3")
+        (ImageRef "docker.io" "percona/percona-distribution-postgresql" "17.9-1")
         []
-        harborSpiloImage
+        harborPostgresDatabaseImage
+    , mirroredPublicImage
+        (ImageRef "docker.io" "percona/percona-pgbackrest" "2.58.0-1")
+        []
+        harborPostgresPgbackrestImage
+    , mirroredPublicImage
+        (ImageRef "docker.io" "percona/percona-pgbouncer" "1.25.1-1")
+        []
+        harborPostgresPgbouncerImage
     , mirroredPublicImage
         (ImageRef "ghcr.io" "coder/code-server" "4.98.2")
         [ImageRef "docker.io" "codercom/code-server" "4.98.2"]

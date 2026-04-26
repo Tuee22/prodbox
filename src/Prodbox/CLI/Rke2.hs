@@ -259,16 +259,19 @@ certManagerChartVersion :: String
 certManagerChartVersion = "v1.16.2"
 
 postgresOperatorRepositoryName :: String
-postgresOperatorRepositoryName = "postgres-operator-charts"
+postgresOperatorRepositoryName = "percona"
 
 postgresOperatorRepositoryUrl :: String
-postgresOperatorRepositoryUrl = "https://opensource.zalando.com/postgres-operator/charts/postgres-operator"
+postgresOperatorRepositoryUrl = "https://percona.github.io/percona-helm-charts/"
 
 postgresOperatorChartRef :: String
-postgresOperatorChartRef = "postgres-operator-charts/postgres-operator"
+postgresOperatorChartRef = "percona/pg-operator"
 
 postgresOperatorChartVersion :: String
-postgresOperatorChartVersion = "1.15.1"
+postgresOperatorChartVersion = "2.9.0"
+
+perconaPostgresOperatorAppName :: String
+perconaPostgresOperatorAppName = "pg-operator"
 
 chartClusterIssuer :: String
 chartClusterIssuer = "letsencrypt-http01"
@@ -285,11 +288,6 @@ acmeEabSecretKey = "secret"
 buildxBuilderName :: String
 buildxBuilderName = "prodbox-multiarch-hostnet"
 
-data CustomImageBuildMode
-    = CustomImageBuildDirect
-    | CustomImageBuildWithHaskellToolchain
-    deriving (Eq, Show)
-
 data MinioImageSource
     = MinioBootstrapPublic
     | MinioSteadyStateHarbor
@@ -297,15 +295,8 @@ data MinioImageSource
 
 data CustomImageBuildPlan = CustomImageBuildPlan
     { customImageDockerfile :: FilePath
-    , customImageBuildMode :: CustomImageBuildMode
     }
     deriving (Eq, Show)
-
-haskellToolchainBuildContextName :: String
-haskellToolchainBuildContextName = "haskell-toolchain"
-
-haskellToolchainImageRef :: String
-haskellToolchainImageRef = "haskell:9.6.7-slim"
 
 minioPersistentVolume :: String
 minioPersistentVolume = "prodbox-minio-pv-0"
@@ -351,7 +342,8 @@ doctrineCrdSuffixes =
     , ".acme.cert-manager.io"
     , ".traefik.io"
     , ".containo.us"
-    , ".acid.zalan.do"
+    , ".pgv2.percona.com"
+    , ".postgres-operator.crunchydata.com"
     ]
 
 runRke2Command :: FilePath -> Rke2Command -> IO ExitCode
@@ -1571,54 +1563,115 @@ acmeClusterIssuerSpec settings =
 
 ensurePostgresOperatorRuntime :: FilePath -> String -> String -> IO ExitCode
 ensurePostgresOperatorRuntime repoRoot prodboxId labelValue = do
-    repoExit <- ensureHelmRepoAdded repoRoot postgresOperatorRepositoryName postgresOperatorRepositoryUrl
-    case repoExit of
-        ExitFailure _ -> pure repoExit
+    removeLegacyExit <- removeLegacyPostgresOperatorIfPresent repoRoot
+    case removeLegacyExit of
+        ExitFailure _ -> pure removeLegacyExit
         ExitSuccess -> do
-            installExit <-
-                helmUpgradeInstallWithJsonValues
-                    repoRoot
-                    patroniOperatorReleaseName
-                    postgresOperatorChartRef
-                    postgresOperatorChartVersion
-                    patroniOperatorNamespace
-                    (postgresOperatorHelmValues prodboxId labelValue)
-            case installExit of
-                ExitFailure _ -> pure installExit
-                ExitSuccess ->
-                    runSequentially
-                        [ waitForCrdEstablished repoRoot patroniPostgresqlCrdName
-                        , waitForDeployment repoRoot patroniOperatorNamespace patroniOperatorDeploymentName
-                        ]
+            repoExit <- ensureHelmRepoAdded repoRoot postgresOperatorRepositoryName postgresOperatorRepositoryUrl
+            case repoExit of
+                ExitFailure _ -> pure repoExit
+                ExitSuccess -> do
+                    installExit <-
+                        helmUpgradeInstallWithJsonValues
+                            repoRoot
+                            patroniOperatorReleaseName
+                            postgresOperatorChartRef
+                            postgresOperatorChartVersion
+                            patroniOperatorNamespace
+                            (postgresOperatorHelmValues prodboxId labelValue)
+                    case installExit of
+                        ExitFailure _ -> pure installExit
+                        ExitSuccess ->
+                            runSequentially
+                                [ waitForCrdEstablished repoRoot patroniPostgresqlCrdName
+                                , waitForDeployment repoRoot patroniOperatorNamespace patroniOperatorDeploymentName
+                                ]
 
 postgresOperatorHelmValues :: String -> String -> Value
-postgresOperatorHelmValues prodboxId labelValue =
+postgresOperatorHelmValues prodboxId _labelValue =
     object
-        [ "image"
-            .= object
-                [ "registry" .= ContainerImage.imageRegistry ContainerImage.harborPostgresOperatorImage
-                , "repository" .= ContainerImage.imageRepository ContainerImage.harborPostgresOperatorImage
-                , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresOperatorImage
-                ]
-        , "configGeneral"
-            .= object
-                [ "enable_crd_registration" .= True
-                , "docker_image" .= ContainerImage.renderImageRef ContainerImage.harborSpiloImage
-                ]
-        , "configKubernetes"
-            .= object
-                [ "watched_namespace" .= ("*" :: String)
-                , "enable_pod_antiaffinity" .= False
-                ]
-        , "configLoadBalancer"
-            .= object
-                [ "enable_master_load_balancer" .= False
-                , "enable_replica_load_balancer" .= False
-                ]
-        , "commonLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
-        , "podLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+        [ "operatorImageRepository"
+            .= renderImageRefWithoutTag ContainerImage.harborPostgresOperatorImage
+        , "imagePullPolicy" .= ("IfNotPresent" :: String)
+        , "watchAllNamespaces" .= True
+        , "disableTelemetry" .= True
+        , "fullnameOverride" .= patroniOperatorDeploymentName
         , "podAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
         ]
+
+removeLegacyPostgresOperatorIfPresent :: FilePath -> IO ExitCode
+removeLegacyPostgresOperatorIfPresent repoRoot = do
+    deploymentResult <-
+        captureKubectl
+            repoRoot
+            [ "get"
+            , "deployment"
+            , patroniOperatorDeploymentName
+            , "--namespace"
+            , patroniOperatorNamespace
+            , "-o"
+            , "jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}"
+            ]
+    case deploymentResult of
+        Left err -> failWith err
+        Right output ->
+            case processExitCode output of
+                ExitFailure _
+                    | isNotFoundMessage (outputDetail output) -> pure ExitSuccess
+                    | otherwise ->
+                        failWith
+                            ( "Failed to inspect existing PostgreSQL operator deployment: "
+                                ++ outputDetail output
+                            )
+                ExitSuccess ->
+                    let appName = trimWhitespace (processStdout output)
+                     in if appName == "" || appName == perconaPostgresOperatorAppName
+                            then pure ExitSuccess
+                            else removeLegacyPostgresOperator repoRoot appName
+
+removeLegacyPostgresOperator :: FilePath -> String -> IO ExitCode
+removeLegacyPostgresOperator repoRoot appName = do
+    uninstallResult <-
+        captureToolOutput
+            repoRoot
+            "helm"
+            ["uninstall", patroniOperatorReleaseName, "--namespace", patroniOperatorNamespace, "--wait"]
+    case uninstallResult of
+        Left err -> failWith err
+        Right output -> do
+            emitCapturedProcessOutput output
+            case processExitCode output of
+                ExitSuccess -> deleteLegacyOperatorNamespace repoRoot
+                ExitFailure _
+                    | isMissingHelmReleaseError (outputDetail output) -> deleteLegacyOperatorNamespace repoRoot
+                    | otherwise ->
+                        failWith
+                            ( "Failed to remove incompatible PostgreSQL operator deployment `"
+                                ++ patroniOperatorReleaseName
+                                ++ "` labeled as `"
+                                ++ appName
+                                ++ "` before installing `"
+                                ++ perconaPostgresOperatorAppName
+                                ++ "`: "
+                                ++ outputDetail output
+                            )
+
+deleteLegacyOperatorNamespace :: FilePath -> IO ExitCode
+deleteLegacyOperatorNamespace repoRoot =
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl"
+            , commandArguments =
+                [ "delete"
+                , "namespace"
+                , patroniOperatorNamespace
+                , "--ignore-not-found=true"
+                , "--wait=true"
+                , "--timeout=300s"
+                ]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
+            }
 
 reconcileDnsBootstrapRecord :: FilePath -> ValidatedSettings -> IO ExitCode
 reconcileDnsBootstrapRecord repoRoot settings =
@@ -1909,7 +1962,6 @@ ensureGatewayImages repoRoot prodboxId = do
         repoRoot
         CustomImageBuildPlan
             { customImageDockerfile = "docker/gateway.Dockerfile"
-            , customImageBuildMode = CustomImageBuildWithHaskellToolchain
             }
         [gatewayImage, latestImage]
         gatewayImage
@@ -1921,7 +1973,6 @@ ensureVscodeNginxImage repoRoot = do
         repoRoot
         CustomImageBuildPlan
             { customImageDockerfile = "docker/nginx-oidc.Dockerfile"
-            , customImageBuildMode = CustomImageBuildDirect
             }
         [imageRef]
         imageRef
@@ -1953,103 +2004,23 @@ ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
 
 buildMissingCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
 buildMissingCustomImageVariants repoRoot buildPlan taggedRefs =
-    case customImageBuildMode buildPlan of
-        CustomImageBuildDirect ->
-            runCommand
-                CommandSpec
-                    { commandPath = "docker"
-                    , commandArguments =
-                        [ "buildx"
-                        , "build"
-                        , "--platform"
-                        , canonicalPlatformArgument
-                        , "--push"
-                        , "-f"
-                        , customImageDockerfile buildPlan
-                        ]
-                            ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
-                            ++ ["."]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
-                    }
-        CustomImageBuildWithHaskellToolchain ->
-            buildCustomImageVariantsWithHaskellToolchain repoRoot buildPlan taggedRefs
-
-buildCustomImageVariantsWithHaskellToolchain :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
-buildCustomImageVariantsWithHaskellToolchain repoRoot buildPlan taggedRefs =
-    let manifestSourcesResult =
-            sequence
-                [ do
-                    platformRefs <- traverse (`stagedImageRefForPlatform` tagRef) ContainerImage.canonicalImagePlatforms
-                    pure (tagRef, platformRefs)
-                | tagRef <- taggedRefs
+    runCommand
+        CommandSpec
+            { commandPath = "docker"
+            , commandArguments =
+                [ "buildx"
+                , "build"
+                , "--platform"
+                , canonicalPlatformArgument
+                , "--push"
+                , "-f"
+                , customImageDockerfile buildPlan
                 ]
-     in case manifestSourcesResult of
-            Left err -> failWith err
-            Right manifestSources -> do
-                buildExit <-
-                    runSequentially
-                        [ buildSinglePlatformCustomImage repoRoot buildPlan platform taggedRefs
-                        | platform <- ContainerImage.canonicalImagePlatforms
-                        ]
-                case buildExit of
-                    ExitFailure _ -> pure buildExit
-                    ExitSuccess ->
-                        runSequentially
-                            [ runCommand
-                                CommandSpec
-                                    { commandPath = "docker"
-                                    , commandArguments = ["buildx", "imagetools", "create", "--tag", targetRef] ++ platformRefs
-                                    , commandEnvironment = Nothing
-                                    , commandWorkingDirectory = Just repoRoot
-                                    }
-                            | (targetRef, platformRefs) <- manifestSources
-                            ]
-
-buildSinglePlatformCustomImage :: FilePath -> CustomImageBuildPlan -> (String, String) -> [String] -> IO ExitCode
-buildSinglePlatformCustomImage repoRoot buildPlan platform taggedRefs =
-    case traverse (stagedImageRefForPlatform platform) taggedRefs of
-        Left err -> failWith err
-        Right stagedRefs ->
-            runCommand
-                CommandSpec
-                    { commandPath = "docker"
-                    , commandArguments =
-                        [ "buildx"
-                        , "build"
-                        , "--platform"
-                        , renderPlatformArgument platform
-                        , "--build-context"
-                        , haskellToolchainBuildContextName ++ "=docker-image://docker.io/library/" ++ haskellToolchainImageRef
-                        , "--push"
-                        , "-f"
-                        , customImageDockerfile buildPlan
-                        ]
-                            ++ concat [["-t", tagRef] | tagRef <- stagedRefs]
-                            ++ ["."]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
-                    }
-
-stagedImageRefForPlatform :: (String, String) -> String -> Either String String
-stagedImageRefForPlatform platform targetRef = do
-    imageRef <- ContainerImage.parseImageRef targetRef
-    pure
-        ( ContainerImage.renderImageRef
-            imageRef
-                { ContainerImage.imageTag =
-                    ContainerImage.imageTag imageRef ++ renderPlatformTagSuffix platform
-                }
-        )
-
-renderPlatformArgument :: (String, String) -> String
-renderPlatformArgument (osName, architecture) = osName ++ "/" ++ architecture
-
-renderPlatformLabel :: (String, String) -> String
-renderPlatformLabel (osName, architecture) = osName ++ "-" ++ architecture
-
-renderPlatformTagSuffix :: (String, String) -> String
-renderPlatformTagSuffix platform = "-" ++ renderPlatformLabel platform
+                    ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
+                    ++ ["."]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
+            }
 
 inspectImagePlatforms :: FilePath -> String -> IO (Either String (Maybe [(String, String)]))
 inspectImagePlatforms repoRoot imageRef = do
@@ -3257,6 +3228,12 @@ isIgnorableAnnotationError detail =
     let lowered = map toLower detail
      in "does not allow this method" `isInfixOf` lowered
             || "methodnotallowed" `isInfixOf` lowered
+
+isMissingHelmReleaseError :: String -> Bool
+isMissingHelmReleaseError detail =
+    let lowered = map toLower detail
+     in "release: not found" `isInfixOf` lowered
+            || "release not loaded" `isInfixOf` lowered
 
 outputDetail :: ProcessOutput -> String
 outputDetail output =

@@ -32,7 +32,7 @@ Typical prerequisite categories include:
 - supported host properties such as `Ubuntu 24.04 LTS`
 - required host tools such as `aws`, `curl`, `dig`, `docker`, `helm`, `kubectl`, `pulumi`, and
   `ssh`
-- repository configuration readiness through direct Dhall decoding
+- repository configuration readiness through the Haskell-owned `dhall-to-json` decode bridge
 - cluster-backed runtime readiness
 - AWS- and Route-53-backed readiness
 
@@ -53,6 +53,7 @@ Examples of supported prerequisite IDs in the current repository include:
 - `settings_object`
 - `tool_aws`
 - `tool_curl`
+- `tool_dhall`
 - `tool_dig`
 - `tool_docker`
 - `tool_helm`

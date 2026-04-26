@@ -274,6 +274,8 @@ main = hspec $ do
             cabalProject <- readFile (repoRoot </> "cabal.project")
 
             cabalProject `shouldContain` "packages: ."
+            cabalProject `shouldContain` "with-compiler: ghc-9.14.1"
+            cabalProject `shouldContain` "allow-newer: *:base, *:template-haskell"
             cabalProject `shouldNotContain` "builddir:"
 
         it "builds the container frontend under /opt/build" $ do
@@ -282,8 +284,13 @@ main = hspec $ do
 
             dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
             dockerfile `shouldContain` "FROM ubuntu:24.04"
+            dockerfile `shouldContain` "ARG GHC_VERSION=9.14.1"
+            dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
             dockerfile `shouldContain` "WORKDIR /opt/build"
-            dockerfile `shouldContain` "--mount=type=bind,from=haskell-toolchain"
+            dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
+            dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
+            dockerfile `shouldContain` "ghcup install cabal \"${CABAL_VERSION}\""
+            dockerfile `shouldNotContain` "--mount=type=bind,from=haskell-toolchain"
             dockerfile `shouldContain` "cabal build --builddir=.build exe:prodbox"
             dockerfile `shouldContain` "cabal list-bin --builddir=.build exe:prodbox"
 
@@ -316,7 +323,7 @@ main = hspec $ do
             awsSecretTemplate `shouldContain` "name: gateway-aws-credentials"
             awsSecretTemplate `shouldNotContain` "prodbox-config.json"
 
-        it "renders retained Patroni credential secrets before the PostgreSQL cluster resource" $ do
+        it "renders retained PostgreSQL credential secrets before the Percona cluster resource" $ do
             repoRoot <- getCurrentDirectory
             secretsTemplate <- readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "00-secrets.yaml")
             postgresTemplate <- readFile (repoRoot </> "charts" </> "keycloak-postgres" </> "templates" </> "postgresql.yaml")
@@ -325,8 +332,10 @@ main = hspec $ do
             secretsTemplate `shouldContain` ".Values.secrets.application.name"
             secretsTemplate `shouldContain` ".Values.secrets.superuser.name"
             secretsTemplate `shouldContain` ".Values.secrets.standby.name"
-            secretsTemplate `shouldContain` "application: spilo"
-            postgresTemplate `shouldContain` "kind: postgresql"
+            secretsTemplate `shouldContain` "postgres-operator.crunchydata.com/cluster"
+            secretsTemplate `shouldNotContain` "application: spilo"
+            postgresTemplate `shouldContain` "kind: PerconaPGCluster"
+            postgresTemplate `shouldContain` "apiVersion: pgv2.percona.com/v2"
 
         it "gates Keycloak liveness behind a startup probe during cold restores" $ do
             repoRoot <- getCurrentDirectory
@@ -343,9 +352,14 @@ main = hspec $ do
 
             dockerfile `shouldContain` "# syntax=docker/dockerfile:1.7"
             dockerfile `shouldContain` "FROM ubuntu:24.04"
+            dockerfile `shouldContain` "ARG GHC_VERSION=9.14.1"
+            dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
             dockerfile `shouldContain` "awscli.amazonaws.com"
             dockerfile `shouldContain` "TARGETARCH"
-            dockerfile `shouldContain` "--mount=type=bind,from=haskell-toolchain"
+            dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
+            dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
+            dockerfile `shouldContain` "ghcup install cabal \"${CABAL_VERSION}\""
+            dockerfile `shouldNotContain` "--mount=type=bind,from=haskell-toolchain"
             dockerfile `shouldContain` "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/prodbox\", \"gateway\", \"start\"]"
 
         it "keeps AWS validation Pulumi YAML stacks on explicit stack config inputs" $ do
@@ -516,11 +530,14 @@ main = hspec $ do
             rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
             rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
 
-        it "keeps postgres-operator anti-affinity disabled on the supported single-node runtime" $ do
+        it "keeps postgres-operator runtime on explicit Percona chart values" $ do
             repoRoot <- getCurrentDirectory
             rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
 
-            rke2Source `shouldContain` "\"enable_pod_antiaffinity\" .= False"
+            rke2Source `shouldContain` "\"operatorImageRepository\""
+            rke2Source `shouldContain` "\"watchAllNamespaces\" .= True"
+            rke2Source `shouldContain` "\"disableTelemetry\" .= True"
+            rke2Source `shouldContain` "\"fullnameOverride\" .= patroniOperatorDeploymentName"
 
         it "checks Pulumi login against the local MinIO backend path" $ do
             repoRoot <- getCurrentDirectory
@@ -672,7 +689,7 @@ main = hspec $ do
             lookupPrerequisiteEffect "tool_kubectl" `shouldBe` Validate (RequireTool "kubectl" ["version", "--client=true"])
             lookupPrerequisiteEffect "tool_ctr" `shouldBe` Validate (RequireTool "ctr" ["--help"])
             lookupPrerequisiteEffect "tool_rke2" `shouldBe` Validate (RequireTool "/usr/local/bin/rke2" ["--version"])
-            lookupPrerequisiteEffect "tool_dhall" `shouldBe` Validate (RequireTool "dhall" ["version"])
+            lookupPrerequisiteEffect "tool_dhall" `shouldBe` Validate (RequireTool "dhall-to-json" ["--version"])
             lookupPrerequisiteEffect "settings_loaded" `shouldBe` Validate RequireSettings
             lookupPrerequisiteEffect "settings_object" `shouldBe` Validate RequireSettings
             lookupPrerequisiteEffect "aws_iam_harness_ready" `shouldBe` Validate RequireAwsIamHarnessReady
@@ -782,41 +799,83 @@ main = hspec $ do
                             case KeyMap.lookup (Key.fromString "cluster") payload of
                                 Just (Object clusterPayload) -> do
                                     KeyMap.lookup (Key.fromString "name") clusterPayload
-                                        `shouldBe` Just (String "prodbox-vscode-postgres")
+                                        `shouldBe` Just (String "prodbox-vscode-pg")
                                     KeyMap.lookup (Key.fromString "instances") clusterPayload
                                         `shouldBe` Just (Number 3)
+                                    KeyMap.lookup (Key.fromString "crVersion") clusterPayload
+                                        `shouldBe` Just (String "2.9.0")
                                 _ -> expectationFailure "expected keycloak-postgres cluster payload"
+                            case KeyMap.lookup (Key.fromString "image") payload of
+                                Just (Object imagePayload) -> do
+                                    case KeyMap.lookup (Key.fromString "postgres") imagePayload of
+                                        Just (Object postgresImagePayload) -> do
+                                            KeyMap.lookup (Key.fromString "repository") postgresImagePayload
+                                                `shouldBe` Just (String "127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror")
+                                            KeyMap.lookup (Key.fromString "tag") postgresImagePayload
+                                                `shouldBe` Just (String "17.9-1")
+                                        _ -> expectationFailure "expected keycloak-postgres postgres image payload"
+                                    case KeyMap.lookup (Key.fromString "pgBackRest") imagePayload of
+                                        Just (Object pgbackrestImagePayload) -> do
+                                            KeyMap.lookup (Key.fromString "repository") pgbackrestImagePayload
+                                                `shouldBe` Just (String "127.0.0.1:30080/prodbox/percona-pgbackrest-mirror")
+                                            KeyMap.lookup (Key.fromString "tag") pgbackrestImagePayload
+                                                `shouldBe` Just (String "2.58.0-1")
+                                        _ -> expectationFailure "expected keycloak-postgres pgBackRest image payload"
+                                    case KeyMap.lookup (Key.fromString "pgBouncer") imagePayload of
+                                        Just (Object pgbouncerImagePayload) -> do
+                                            KeyMap.lookup (Key.fromString "repository") pgbouncerImagePayload
+                                                `shouldBe` Just (String "127.0.0.1:30080/prodbox/percona-pgbouncer-mirror")
+                                            KeyMap.lookup (Key.fromString "tag") pgbouncerImagePayload
+                                                `shouldBe` Just (String "1.25.1-1")
+                                        _ -> expectationFailure "expected keycloak-postgres pgBouncer image payload"
+                                _ -> expectationFailure "expected keycloak-postgres image payload"
                             case KeyMap.lookup (Key.fromString "postgres") payload of
-                                Just (Object postgresPayload) ->
-                                    KeyMap.lookup (Key.fromString "credentialsSecretName") postgresPayload
-                                        `shouldBe` Just (String "keycloak.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                Just (Object postgresPayload) -> do
+                                    KeyMap.lookup (Key.fromString "version") postgresPayload
+                                        `shouldBe` Just (Number 17)
+                                    KeyMap.lookup (Key.fromString "database") postgresPayload
+                                        `shouldBe` Just (String "keycloak")
+                                    KeyMap.lookup (Key.fromString "username") postgresPayload
+                                        `shouldBe` Just (String "keycloak")
                                 _ -> expectationFailure "expected keycloak-postgres postgres payload"
                             case KeyMap.lookup (Key.fromString "secrets") payload of
                                 Just (Object secretsPayload) -> do
                                     case KeyMap.lookup (Key.fromString "application") secretsPayload of
                                         Just (Object applicationPayload) ->
                                             KeyMap.lookup (Key.fromString "name") applicationPayload
-                                                `shouldBe` Just (String "keycloak.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                                `shouldBe` Just (String "prodbox-vscode-pg-pguser-keycloak")
                                         _ -> expectationFailure "expected keycloak-postgres application secret payload"
                                     case KeyMap.lookup (Key.fromString "superuser") secretsPayload of
                                         Just (Object superuserPayload) ->
                                             KeyMap.lookup (Key.fromString "name") superuserPayload
-                                                `shouldBe` Just (String "postgres.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                                `shouldBe` Just (String "prodbox-vscode-pg-pguser-postgres")
                                         _ -> expectationFailure "expected keycloak-postgres superuser secret payload"
                                     case KeyMap.lookup (Key.fromString "standby") secretsPayload of
-                                        Just (Object standbyPayload) ->
+                                        Just (Object standbyPayload) -> do
                                             KeyMap.lookup (Key.fromString "name") standbyPayload
-                                                `shouldBe` Just (String "standby.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                                `shouldBe` Just (String "prodbox-vscode-pg-primaryuser")
+                                            KeyMap.lookup (Key.fromString "username") standbyPayload
+                                                `shouldBe` Just (String "primaryuser")
                                         _ -> expectationFailure "expected keycloak-postgres standby secret payload"
                                 _ -> expectationFailure "expected keycloak-postgres secrets payload"
                             case KeyMap.lookup (Key.fromString "security") payload of
                                 Just (Object securityPayload) -> do
                                     KeyMap.lookup (Key.fromString "runAsUser") securityPayload
-                                        `shouldBe` Just (Number 101)
+                                        `shouldBe` Just (Number 1001)
                                     KeyMap.lookup (Key.fromString "runAsGroup") securityPayload
-                                        `shouldBe` Just (Number 103)
+                                        `shouldBe` Just (Number 1001)
                                     KeyMap.lookup (Key.fromString "fsGroup") securityPayload
-                                        `shouldBe` Just (Number 103)
+                                        `shouldBe` Just (Number 1001)
+                                _ -> expectationFailure "expected keycloak-postgres security payload"
+                            case KeyMap.lookup (Key.fromString "proxy") payload of
+                                Just (Object proxyPayload) ->
+                                    KeyMap.lookup (Key.fromString "pgBouncerReplicas") proxyPayload
+                                        `shouldBe` Just (Number 0)
+                                _ -> expectationFailure "expected keycloak-postgres proxy payload"
+                            case KeyMap.lookup (Key.fromString "backups") payload of
+                                Just (Object backupsPayload) ->
+                                    KeyMap.lookup (Key.fromString "enabled") backupsPayload
+                                        `shouldBe` Just (Bool False)
                                 _ -> expectationFailure "expected keycloak-postgres security payload"
                         _ -> expectationFailure "expected keycloak-postgres values payload"
 
@@ -831,11 +890,11 @@ main = hspec $ do
                             case KeyMap.lookup (Key.fromString "postgres") payload of
                                 Just (Object postgresPayload) -> do
                                     KeyMap.lookup (Key.fromString "host") postgresPayload
-                                        `shouldBe` Just (String "prodbox-vscode-postgres.vscode.svc.cluster.local")
+                                        `shouldBe` Just (String "prodbox-vscode-pg-ha.vscode.svc.cluster.local")
                                     KeyMap.lookup (Key.fromString "database") postgresPayload `shouldBe` Just (String "keycloak")
                                     KeyMap.lookup (Key.fromString "username") postgresPayload `shouldBe` Just (String "keycloak")
                                     KeyMap.lookup (Key.fromString "passwordSecretName") postgresPayload
-                                        `shouldBe` Just (String "keycloak.prodbox-vscode-postgres.credentials.postgresql.acid.zalan.do")
+                                        `shouldBe` Just (String "prodbox-vscode-pg-pguser-keycloak")
                                 _ -> expectationFailure "expected keycloak postgres payload"
                         _ -> expectationFailure "expected keycloak values payload"
                     case Map.lookup "vscode" releaseValues of
@@ -995,18 +1054,24 @@ main = hspec $ do
                 ]
 
         it "maps supported public-image aliases to stable Harbor targets only for mirrored upstreams" $ do
-            ContainerImage.harborMirrorTargetForSource "ghcr.io/zalando/postgres-operator:v1.15.1"
-                `shouldBe` Just "127.0.0.1:30080/prodbox/postgres-operator-mirror:v1.15.1"
-            ContainerImage.harborMirrorTargetForSource "ghcr.io/zalando/spilo-17:4.0-p3"
-                `shouldBe` Just "127.0.0.1:30080/prodbox/spilo-17-mirror:4.0-p3"
+            ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-postgresql-operator:2.9.0"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
+            ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-distribution-postgresql:17.9-1"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
+            ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-pgbackrest:2.58.0-1"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/percona-pgbackrest-mirror:2.58.0-1"
+            ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-pgbouncer:1.25.1-1"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/percona-pgbouncer-mirror:1.25.1-1"
             ContainerImage.harborMirrorTargetForSource "docker.io/codercom/code-server:4.98.2"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
             ContainerImage.harborMirrorTargetForSource "docker.io/library/traefik:v3.1.4"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4"
 
         it "orders public-image mirror candidates with the discovered source first" $ do
-            ContainerImage.harborMirrorSourceCandidates "ghcr.io/zalando/postgres-operator:v1.15.1"
-                `shouldBe` Just ["ghcr.io/zalando/postgres-operator:v1.15.1"]
+            ContainerImage.harborMirrorSourceCandidates "docker.io/percona/percona-postgresql-operator:2.9.0"
+                `shouldBe` Just ["docker.io/percona/percona-postgresql-operator:2.9.0"]
+            ContainerImage.harborMirrorSourceCandidates "docker.io/percona/percona-pgbackrest:2.58.0-1"
+                `shouldBe` Just ["docker.io/percona/percona-pgbackrest:2.58.0-1"]
             ContainerImage.harborMirrorSourceCandidates "ghcr.io/coder/code-server:4.98.2"
                 `shouldBe` Just ["ghcr.io/coder/code-server:4.98.2", "docker.io/codercom/code-server:4.98.2"]
 

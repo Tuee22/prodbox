@@ -154,7 +154,7 @@ awsIamHarnessReady :: EffectNode
 awsIamHarnessReady =
     EffectNode
         { effectNodeId = "aws_iam_harness_ready"
-        , effectNodeDescription = "Validate native IAM harness config and aws_admin credentials"
+        , effectNodeDescription = "Validate native IAM harness config and test-simulation admin credentials"
         , effectNodePrerequisites = []
         , effectNodeEffect = Validate RequireAwsIamHarnessReady
         }

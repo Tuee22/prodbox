@@ -23,7 +23,8 @@ synchronous replication, and no embedded chart-local PostgreSQL subchart.
 ## Current Baseline In Worktree
 
 - The public `prodbox charts ...` runtime lives in `src/Prodbox/CLI/Charts.hs`,
-  `src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/Lib/Storage.hs`.
+  `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, and
+  `src/Prodbox/PostgresPlatform.hs`.
 - Retained roots remain the configured manual PV root (default `.data/`) and `.prodbox-state/`;
   chart secret resolution and gateway event-key handling are Haskell-owned.
 - `docker/nginx-oidc.Dockerfile` remains the permitted `nginx:1.25-alpine` exception and is

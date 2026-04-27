@@ -362,11 +362,11 @@ runValidation context validation =
                     case validateAwsBootstrapConfig config of
                         Left err -> Failure err
                         Right () ->
-                            if hasHarnessAdminCredentials (aws_admin config)
+                            if hasHarnessAdminCredentials (aws_admin_for_test_simulation config)
                                 then Success ()
                                 else
                                     Failure
-                                        "Native IAM validation requires aws_admin.access_key_id, aws_admin.secret_access_key, and aws_admin.region in prodbox-config.dhall."
+                                        "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region in prodbox-config.dhall."
 
     requireRoute53Access :: IO (Result ())
     requireRoute53Access = do

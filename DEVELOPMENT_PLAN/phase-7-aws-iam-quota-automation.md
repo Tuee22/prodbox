@@ -14,8 +14,10 @@
 This phase owns interactive config authoring, policy generation, IAM user management,
 service-quota automation, and the test-only elevated credential harness. The implemented
 credential boundary is now Haskell-owned: public onboarding and public AWS administration prompt
-for temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
-validation harness. This phase is closed on its repository-owned credential and IAM boundaries.
+for temporary elevated credentials, and stored `aws_admin_for_test_simulation.*` exists only for
+test-suite simulation of that ephemeral prompt input, with the native IAM validation harness as
+the only supported runtime consumer. This phase is closed on its repository-owned credential and
+IAM boundaries.
 
 ## Current Baseline In Worktree
 
@@ -30,8 +32,8 @@ validation harness. This phase is closed on its repository-owned credential and 
   native validation harness in `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/EffectInterpreter.hs` now gate `aws-iam` on an
   explicit native IAM harness readiness check before the validation body runs, while
-  `src/Prodbox/SupportedRuntime.hs` no longer carries the retired non-test `aws_admin.*` repair
-  path.
+  `src/Prodbox/SupportedRuntime.hs` no longer carries the retired non-test
+  `aws_admin_for_test_simulation.*` repair path.
 - The aggregate runner now reuses the canonical repo-backed Pulumi backend during prerequisite
   checks, so the IAM teardown-and-restore proof no longer depends on ambient host Pulumi login
   state.
@@ -53,7 +55,7 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - The guided flow preserves AWS account, Route 53 zone, ACME provider, and manual PV-root prompts.
 - The wizard writes and validates `prodbox-config.dhall` without Python helpers.
 - The supported public bootstrap path prompts the operator for one temporary elevated credential set
-  and does not depend on stored `aws_admin.*`.
+  and does not depend on stored `aws_admin_for_test_simulation.*`.
 
 ### Validation
 
@@ -71,7 +73,8 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
-  elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
+  elevated credentials only; stored `aws_admin_for_test_simulation.*` is not read on the
+  supported public path.
 ### Remaining Work
 
 None.
@@ -93,7 +96,7 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 - IAM user lifecycle remains idempotent.
 - Quota inspection and request automation preserve the supported quota set.
 - Public `prodbox aws ...` commands obtain temporary elevated credentials interactively rather than
-  from stored `aws_admin.*`.
+  from stored `aws_admin_for_test_simulation.*`.
 
 ### Validation
 
@@ -114,7 +117,8 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 - `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
   setup/teardown and quota flows.
 - `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
-  `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
+  `aws_admin_for_test_simulation.*` config and use the interactively supplied temporary elevated
+  credential instead.
 ### Remaining Work
 
 None.
@@ -127,17 +131,20 @@ None.
 
 ### Objective
 
-Prove the real IAM lifecycle end to end using the Haskell rewrite and the isolated `aws_admin`
-credential harness.
+Prove the real IAM lifecycle end to end using the Haskell rewrite and the isolated
+`aws_admin_for_test_simulation` credential harness.
 
 ### Deliverables
 
-- `aws_admin` remains isolated from the normal operational `aws.*` section.
+- `aws_admin_for_test_simulation` remains isolated from the normal operational `aws.*` section.
 - Real IAM setup and teardown validation closes on the Haskell stack.
-- Stored `aws_admin.*` remains the single exception to the no-stored-admin-credentials rule and is
-  read only by the native IAM validation harness.
-- The aggregate runner preserves the supported credential rules without consuming `aws_admin.*`
-  outside the test harness.
+- Stored `aws_admin_for_test_simulation.*` remains the single exception to the
+  no-stored-admin-credentials rule and exists only for test-suite simulation of the ephemeral
+  elevated credential prompt.
+- The native IAM validation harness remains the only supported runtime consumer of
+  `aws_admin_for_test_simulation.*`.
+- The aggregate runner preserves the supported credential rules without consuming
+  `aws_admin_for_test_simulation.*` outside the test harness.
 - The operator docs for account setup, ACME provider choice, and elevated credential handling are
   aligned with the Haskell implementation.
 
@@ -151,15 +158,15 @@ credential harness.
 
 ### Current Validation State
 
-- The isolated `aws_admin` config contract and the Haskell IAM runtime surface are implemented in
-  `src/Prodbox/Settings.hs` and `src/Prodbox/Aws.hs`.
+- The isolated `aws_admin_for_test_simulation` config contract and the Haskell IAM runtime surface
+  are implemented in `src/Prodbox/Settings.hs` and `src/Prodbox/Aws.hs`.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/EffectInterpreter.hs`
   now gate `prodbox test integration aws-iam` on native IAM harness readiness before the
   validation body runs.
 - `src/Prodbox/TestValidation.hs` now re-establishes the operational IAM user after teardown proof
   so the aggregate validation harness can continue on supported `aws.*` credentials.
 - `src/Prodbox/SupportedRuntime.hs` now contains only the retained supported-runtime helpers; the
-  retired non-test `aws_admin.*` recovery path has been removed.
+  retired non-test `aws_admin_for_test_simulation.*` recovery path has been removed.
 - `src/Prodbox/EffectInterpreter.hs` now checks bounded `pulumi login ... --non-interactive`
   against the canonical repo-backed MinIO backend during prerequisites, and the shared
   `src/Prodbox/Infra/MinioBackend.hs` helper recreates a deleted MinIO export host path plus
@@ -178,7 +185,8 @@ None. No remaining Phase `7` repository implementation work survives.
 
 - `documents/engineering/aws_account_setup_guide.md` - Haskell onboarding and temporary elevated
   credential workflow.
-- `documents/engineering/aws_admin_credentials.md` - Haskell `aws_admin` harness and cleanup rules.
+- `documents/engineering/aws_admin_credentials.md` - Haskell `aws_admin_for_test_simulation`
+  harness and cleanup rules.
 - `documents/engineering/acme_provider_guide.md` - ACME provider choice in the rewritten setup
   flow.
 - `documents/engineering/cli_command_surface.md` - `config setup` and `aws *` command matrix.

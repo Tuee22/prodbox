@@ -496,7 +496,7 @@ showAwsAccountGuidance = do
     putStrLn "1. Sign up at https://aws.amazon.com and choose the Free Tier."
     putStrLn "2. Add a payment method; AWS requires it even for Free Tier usage."
     putStrLn "3. Complete identity verification and keep the Basic (free) support plan."
-    putStrLn "4. Create one temporary elevated access key from IAM or root security credentials."
+    putStrLn "4. Create one temporary elevated access key from a temporary admin IAM user."
     putStrLn "5. Use that key only for onboarding, then delete it after `prodbox config setup`."
     putStrLn "Free Tier notes: 750 hours/month of t2.micro or t3.micro for 12 months,"
     putStrLn "5 GiB of S3 standard storage, and Route 53 usage billed separately."
@@ -507,13 +507,11 @@ showAdminCredentialsGuidance = do
     putStrLn "Temporary elevated AWS credential guidance:"
     putStrLn "1. Sign in to the AWS console with an identity that can manage IAM users, access keys,"
     putStrLn "   Route 53 hosted zones, and Service Quotas."
-    putStrLn "2. Preferred path: IAM -> Users -> <temporary admin user> -> Security credentials ->"
-    putStrLn "   Create access key."
-    putStrLn "3. Root fallback only when intentional: account menu -> Security credentials ->"
-    putStrLn "   Access keys -> Create access key."
-    putStrLn "4. Paste the access key ID and secret below. If AWS gave you temporary STS"
+    putStrLn "2. Create one temporary access key on a temporary admin IAM user:"
+    putStrLn "   IAM -> Users -> <temporary admin user> -> Security credentials -> Create access key."
+    putStrLn "3. Paste the access key ID and secret below. If AWS gave you temporary STS"
     putStrLn "   credentials, also paste the session token; otherwise leave it blank."
-    putStrLn "5. `prodbox` never persists this elevated key. Delete it in the AWS console after"
+    putStrLn "4. `prodbox` never persists this elevated key. Delete it in the AWS console after"
     putStrLn "   the command completes."
     putStrLn ""
 
@@ -602,12 +600,12 @@ loadHarnessAdminCredentials repoRoot = do
             case validateAwsBootstrapConfig config of
                 Left err -> throwAws err
                 Right () -> do
-                    let credentials = aws_admin config
+                    let credentials = aws_admin_for_test_simulation config
                     if harnessAdminCredentialsConfigured credentials
                         then validateAdminCredentialsInput credentials
                         else
                             throwAws
-                                "Native IAM validation requires aws_admin.access_key_id, aws_admin.secret_access_key, and aws_admin.region in prodbox-config.dhall."
+                                "Native IAM validation requires aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region in prodbox-config.dhall."
 
 harnessAdminCredentialsConfigured :: Credentials -> Bool
 harnessAdminCredentialsConfigured credentials =
@@ -1269,7 +1267,7 @@ renderConfigSetupResult result =
         , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result)
         , "CONFIG_PATH=" ++ configSetupDhallPath result
         , "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (configSetupQuotaStatuses result)))
-        , "POST_SETUP_GUIDANCE=Delete the temporary elevated/root access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
+        , "POST_SETUP_GUIDANCE=Delete the temporary elevated access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
         ]
 
 renderQuotaTable :: String -> [QuotaStatus] -> String

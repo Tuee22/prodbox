@@ -37,10 +37,12 @@ explicit repo package-bound updates.
   `tla-check`.
 - The tracked schema artifact is `prodbox-config-types.dhall`; the operator-authored repo-root
   config is `prodbox-config.dhall`, written by `prodbox config setup` and ignored from version
-  control. `src/Prodbox/Settings.hs` owns decoding, display, and validation without materializing
+  control. `src/Prodbox/Settings.hs` and `src/Prodbox/Repo.hs` own decoding, display,
+  repository-root discovery, and canonical config-path resolution without materializing
   `prodbox-config.json`.
 - The host build contract copies the operator-facing binary to `.build/prodbox` after the
-  canonical `cabal build --builddir=.build exe:prodbox` invocation.
+  canonical `cabal build --builddir=.build exe:prodbox` invocation and preserves the shared
+  `.build/support` linker shim for supported local runs.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
 - `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
   `ghcup` with pinned GHC `9.14.1` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
@@ -159,9 +161,9 @@ modules.
 
 ### Current Validation State
 
-- `src/Prodbox/Settings.hs` decodes `prodbox-config.dhall`, validates the required config
-  contract, and renders masked `prodbox config show` output without materializing
-  `prodbox-config.json`.
+- `src/Prodbox/Settings.hs` and `src/Prodbox/Repo.hs` decode `prodbox-config.dhall`, locate the
+  canonical repository-root config paths, validate the required config contract, and render masked
+  `prodbox config show` output without materializing `prodbox-config.json`.
 - Missing repo-root config now fails fast with explicit `./.build/prodbox config setup` guidance
   instead of surfacing a raw file-open exception from the Dhall loader.
 - `src/Prodbox/BuildSupport.hs` owns the shared `.build/support` linker shim and the

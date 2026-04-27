@@ -108,8 +108,9 @@ schema in `prodbox-config-types.dhall`.
 
 The wizard guides AWS account setup, Route 53 zone selection, ACME provider choice, operational IAM
 bootstrap, and repository-root Dhall authoring. On the supported public path it prompts for one
-temporary elevated AWS credential set when needed; `aws_admin.*` remains reserved for the native
-IAM lifecycle test harness.
+temporary elevated AWS credential set when needed; `aws_admin_for_test_simulation.*` is reserved
+only for test-suite simulation of that ephemeral prompt input, with the native IAM lifecycle test
+harness as the only supported runtime consumer.
 
 ### Required Config Fields
 
@@ -132,7 +133,7 @@ Required when using the chart platform and public `vscode` flow:
 |-------------|-------------|
 | `aws.region` | Operational AWS region |
 | `aws.session_token` | Optional AWS session token |
-| `aws_admin.*` | Test-harness-only elevated admin credential exception for `prodbox test integration aws-iam` |
+| `aws_admin_for_test_simulation.*` | Test-suite-only stored simulation of the ephemeral elevated admin credential prompt; only `prodbox test integration aws-iam` consumes it at runtime |
 | `domain.demo_fqdn` | Gateway/public-edge FQDN |
 | `domain.demo_ttl` | DNS TTL in seconds |
 | `acme.server` | ACME server URL |

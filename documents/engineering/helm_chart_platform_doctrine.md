@@ -14,6 +14,7 @@ The chart platform is owned by the native Haskell runtime in:
 - `src/Prodbox/CLI/Charts.hs`
 - `src/Prodbox/Lib/ChartPlatform.hs`
 - `src/Prodbox/Lib/Storage.hs`
+- `src/Prodbox/PostgresPlatform.hs`
 
 The supported chart doctrine is:
 
@@ -72,6 +73,8 @@ The supported contract is:
 - The primary service endpoint is `prodbox-<root-chart>-pg-ha.<namespace>.svc.cluster.local`.
 - The replica-read service endpoint is
   `prodbox-<root-chart>-pg-replicas.<namespace>.svc.cluster.local`.
+- The canonical Percona operator namespace, release, CRD, service, and secret naming contract
+  lives in `src/Prodbox/PostgresPlatform.hs`.
 
 The chart runtime validates the platform prerequisite by requiring both:
 

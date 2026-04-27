@@ -74,7 +74,7 @@ Build a clean-room Haskell `prodbox` repository with:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | Lifecycle parity closes, Harbor bootstrap narrows to Harbor plus its storage backend, broad local-cluster Pulumi ownership is removed, and Python residue is removed |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | Public DNS, TLS, ingress, and external proof are owned by Haskell-only command paths |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes with no supported Python dependency; any surviving non-Python cleanup remains phase-owned in the ledger |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with `aws_admin.*` reserved for the native IAM test harness |
+| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input |
 
 ## Architecture Summary
 
@@ -123,9 +123,13 @@ remain attached to those commands rather than restated here as a fresh rerun log
   Python bridge modules are removed from the repository.
 - The supported config contract is direct `Dhall -> Haskell types`; `prodbox-config.json` is not
   materialized on the supported path.
+- `src/Prodbox/BuildSupport.hs` owns the `.build/prodbox` copy step and `.build/support`
+  linker-support shim, while `src/Prodbox/Repo.hs` owns repository-root discovery plus canonical
+  config-path resolution for the direct-Dhall command surface.
 - `src/Prodbox/Aws.hs` owns both the public onboarding flow and the standalone AWS administration
   command family, with prompt-driven temporary elevated credentials on public paths and stored
-  `aws_admin.*` reserved for the native IAM validation harness.
+  `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that prompt input,
+  with the native IAM validation harness as the only supported runtime consumer.
 - `src/Prodbox/AwsEnvironment.hs` now isolates supported AWS subprocesses from ambient host AWS
   auth and profile state before projecting repository-root credentials into the supported command
   paths.
@@ -183,17 +187,17 @@ than by ad hoc notes in this overview.
 | Surface | Implementation | Completed In |
 |---------|----------------|--------------|
 | CLI frontend and command surface | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 1 |
-| Configuration and settings | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
+| Configuration and settings | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
 | Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
-| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `charts/`, `.prodbox-state/`; Sprint `3.3` reopens the Patroni operator surface so Helm-managed application PostgreSQL uses the Percona operator | Phase 3 |
+| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, `.prodbox-state/`; Sprint `3.3` reopens the Patroni operator surface so Helm-managed application PostgreSQL uses the Percona operator | Phase 3 |
 | Public-edge diagnostics | `src/Prodbox/Host.hs` | Phase 5 |
 | Onboarding and AWS administration | `src/Prodbox/Aws.hs` | Phase 7 |
-| Test harness and quality gate | `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1 and 4 |
+| Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1 and 4 |
 
 ## Current Execution State
 
@@ -249,8 +253,9 @@ validation contracts:
   needed AWS credentials from scratch by prompting the operator for one temporary elevated
   credential set.
 - Stored admin credentials are otherwise disallowed. The one supported exception is
-  `prodbox-config.dhall` `aws_admin.*`, and that exception exists only for the native IAM test
-  harness.
+  `prodbox-config.dhall` `aws_admin_for_test_simulation.*`, and that section exists only for
+  test-suite simulation of the ephemeral elevated credential prompt, with the native IAM test
+  harness as the only supported runtime consumer.
 - Full cluster delete preserves exactly two retained host roots: the configured manual PV root and
   the repo-local `.prodbox-state/` root.
 - Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's

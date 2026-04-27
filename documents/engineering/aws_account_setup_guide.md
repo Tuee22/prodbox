@@ -60,19 +60,15 @@ The simplest supported operator workflow is:
 
 1. Preferred path: open AWS console -> IAM -> Users -> your temporary admin user ->
    Security credentials -> Create access key.
-2. Root fallback only when intentionally using a break-glass path: account menu ->
-   Security credentials -> Access keys -> Create access key.
-3. Paste the access key ID and secret access key into the `prodbox` prompts; include the session
+2. Paste the access key ID and secret access key into the `prodbox` prompts; include the session
    token too if AWS gave you one.
-4. Keep the key only long enough to finish the interactive `prodbox` command you are running.
-5. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
+3. Keep the key only long enough to finish the interactive `prodbox` command you are running.
+4. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
 
-If your account or organization forbids root access keys, use a temporary admin IAM user instead.
-The repository contract is the same: the elevated key exists only for setup and teardown
-operations, not for steady-state `prodbox` runtime.
-
-Do not treat `aws_admin.*` as the ordinary operator path for this workflow. The one supported
-stored-admin-credential exception is the native IAM lifecycle test harness described in
+Do not treat `aws_admin_for_test_simulation.*` as the ordinary operator path for this workflow.
+That section exists only for test-suite simulation of the ephemeral elevated credential prompt,
+with the native IAM lifecycle test harness as the only supported runtime consumer. The canonical
+rules live in
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
 ---
@@ -113,7 +109,7 @@ The wizard walks through:
 6. `prodbox-config.dhall` write and direct-Dhall validation
 
 The supported public setup path prompts for the temporary elevated credential when needed. It does
-not require pre-populating `aws_admin.*`.
+not require pre-populating `aws_admin_for_test_simulation.*`.
 
 ---
 
@@ -123,8 +119,9 @@ After the wizard succeeds:
 
 1. delete the temporary elevated access key you used for setup
 2. keep the generated `aws.*` operational credentials in `prodbox-config.dhall`
-3. leave `aws_admin.*` empty unless you are intentionally preparing the native IAM lifecycle test
-   harness
+3. leave `aws_admin_for_test_simulation.*` empty unless you are intentionally preparing the native
+   IAM lifecycle test harness or another repository test that simulates the interactive elevated
+   credential prompt
 
 Normal `prodbox` runtime uses only the operational `aws.*` section.
 

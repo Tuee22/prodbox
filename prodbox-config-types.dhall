@@ -13,7 +13,7 @@
         , session_token : Optional Text
         , region : Text
         }
-    , aws_admin :
+    , aws_admin_for_test_simulation :
         { access_key_id : Text
         , secret_access_key : Text
         , session_token : Optional Text
@@ -47,7 +47,7 @@
         , session_token = None Text
         , region = "us-east-1"
         }
-    , aws_admin =
+    , aws_admin_for_test_simulation =
         { access_key_id = ""
         , secret_access_key = ""
         , session_token = None Text

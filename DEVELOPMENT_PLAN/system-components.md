@@ -17,18 +17,18 @@ separately from this canonical target inventory.
 | Surface | Owner | Paths |
 |---------|-------|-------|
 | CLI frontend and command surface | Haskell parser, native-only request ADT, and native command entrypoints for the full supported command matrix | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project` |
-| Configuration and settings | Haskell-owned Dhall-to-JSON decode bridge, typed settings model, masked display, and validation over the operator-authored repo-root config | `src/Prodbox/Settings.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` |
-| Settings and command runtime | Haskell effect, DAG, interpreter, prerequisite, result, subprocess, isolated AWS environment projection, and domain modules | `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
+| Configuration and settings | Haskell-owned Dhall-to-JSON decode bridge, repo-root config-path resolution, typed settings model, masked display, and validation over the operator-authored repo-root config | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` |
+| Settings and command runtime | Haskell build-support, effect, DAG, interpreter, prerequisite, result, subprocess, isolated AWS environment projection, and domain modules | `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
 | Host and Kubernetes helpers | Haskell host and k8s modules | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` |
 | Container packaging and registry doctrine | Dockerfiles under `docker/`, Haskell-build containers that stay single-stage `ubuntu:24.04`, install `ghcup` in-image, pin GHC `9.14.1`, avoid symlinked Haskell tool shims, Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, ordered public-image candidate retry during Harbor mirror publish, per-platform dual-arch publication plus manifest reconcile, and mixed-arch cluster reconcile | `docker/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` |
 | Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions for the public AWS validation stacks, including stack-config synchronization for AWS validation inputs. Local-lifecycle bootstrap DNS reconcile and ACME `ClusterIssuer` projection stay outside the public `prodbox pulumi ...` stack-program surface. | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` |
 | DNS inspection | Haskell DNS check module | `src/Prodbox/Dns.hs` |
 | Gateway runtime | Haskell daemon runtime with heartbeat, ownership, DNS write loops, REST server, HMAC signing, and single-stage `ubuntu:24.04` packaging with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and an official AWS CLI bundle per target architecture | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` |
 | Formal verification | Haskell TLA+ wrapper | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` |
-| Chart platform and retained state | Haskell chart registry, retained-storage reconciler, CLI runtime, and the Percona-operator-backed application-database contract | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `charts/`, `.prodbox-state/` |
+| Chart platform and retained state | Haskell chart registry, PostgreSQL platform constants, retained-storage reconciler, CLI runtime, and the Percona-operator-backed application-database contract | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, `.prodbox-state/` |
 | Public-edge diagnostics | Haskell host diagnostic | `src/Prodbox/Host.hs` |
-| Onboarding and AWS administration | Haskell interactive onboarding plus AWS CLI subprocess orchestration for prompt-driven temporary elevated flows, with `aws_admin.*` reserved for the native IAM test harness and supported AWS subprocess auth isolated from ambient host AWS state | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` |
-| Test harness and quality gate | Haskell test runner, named real-world validation harness, and check-code entrypoints | `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/` |
+| Onboarding and AWS administration | Haskell interactive onboarding plus AWS CLI subprocess orchestration for prompt-driven temporary elevated flows, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input and supported AWS subprocess auth isolated from ambient host AWS state | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` |
+| Test harness and quality gate | Haskell build-support, check-code, aggregate suite ordering, supported-runtime bootstrap, and named real-world validation harness | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/` |
 
 ## Infrastructure Layer
 
@@ -55,7 +55,7 @@ separately from this canonical target inventory.
 | External application PostgreSQL HA | Percona-operator-backed Patroni PostgreSQL clusters with exactly three PostgreSQL replicas and synchronous replication, rendered from namespace-local application chart inputs and reconciled by the cluster-wide operator | RKE2 workloads | Haskell chart platform plus Harbor-backed steady-state image sourcing | Cluster resources plus retained roots |
 | Namespace-local auth stack | `keycloak`, `vscode-nginx` | RKE2 workloads | Haskell chart platform plus external Percona-operator-backed Patroni PostgreSQL dependency | Cluster resources plus retained roots |
 | Namespace-local app stack | `vscode` | RKE2 workload | Haskell chart platform | Cluster resources plus retained roots |
-| AWS admin credential isolation | Dhall config `aws_admin` section reserved for the native IAM validation harness only | Repository config plus integration tests | Haskell config and IAM validation harness | Repository root |
+| AWS admin credential isolation | Dhall config `aws_admin_for_test_simulation` section that stores only test-suite simulation of the ephemeral elevated prompt input; the native IAM validation harness is the only supported runtime consumer | Repository config plus integration tests | Haskell config and IAM validation harness | Repository root |
 
 ## CLI and Runtime Layer
 
@@ -95,7 +95,7 @@ separately from this canonical target inventory.
 | Chart platform | `prodbox test integration charts-storage`, `prodbox test integration charts-platform`, `prodbox test integration charts-vscode`, plus manifest and lifecycle proof that supported Patroni use flows through the Percona operator-backed platform |
 | Public-host proof | `prodbox host public-edge`, `prodbox test integration public-dns` |
 | Clean-room handoff | `prodbox rke2 delete --yes`, a rerun that starts and finishes with no supported-path `prodbox-config.json` artifact, `prodbox rke2 install`, `prodbox config show`, `prodbox config validate`, AWS-backed validation, `prodbox test all`, `prodbox host public-edge`, and a zero-Python repository file-search proof |
-| AWS IAM lifecycle | `prodbox test integration aws-iam`, using the test-harness-only `aws_admin.*` exception in `prodbox-config.dhall` |
+| AWS IAM lifecycle | `prodbox test integration aws-iam`, using the test-suite-only `aws_admin_for_test_simulation.*` section in `prodbox-config.dhall` |
 | Static and doctrine gate | `prodbox check-code` |
 
 ## Authority and State Locations
@@ -117,7 +117,7 @@ separately from this canonical target inventory.
 | Pulumi backend state | Local-cluster MinIO | `prodbox-test-pulumi-backends` bucket | The local cluster must exist before remote AWS resources are created; backend validation recreates a deleted MinIO export host path and restarts `deployment/minio` before retrying login |
 | Certificate material | Kubernetes | Secrets issued by cert-manager | ACME server URL comes from repository config, and ZeroSSL EAB material is projected into `cert-manager/acme-eab-credentials` when configured |
 | Gateway continuity state | Kubernetes plus retained chart state | Cluster resources plus `.prodbox-state/` | Used for ownership projection, DNS-write state, and event-key continuity |
-| AWS admin credentials | `prodbox-config.dhall` `aws_admin` section | Operator-authored repository root | Test-harness-only stored-admin-credential exception; not a supported public command or runtime credential source |
+| AWS admin credentials | `prodbox-config.dhall` `aws_admin_for_test_simulation` section | Operator-authored repository root | Test-suite-only stored simulation of the ephemeral elevated prompt input; the native IAM harness is the only supported runtime consumer, and the public command surface never reads it |
 
 ## Artifact Locations
 

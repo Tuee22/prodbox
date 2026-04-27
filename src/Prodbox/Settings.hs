@@ -86,7 +86,7 @@ data StorageSection = StorageSection
 
 data ConfigFile = ConfigFile
     { aws :: Credentials
-    , aws_admin :: Credentials
+    , aws_admin_for_test_simulation :: Credentials
     , route53 :: Route53Section
     , domain :: DomainSection
     , acme :: AcmeSection
@@ -115,10 +115,10 @@ renderSettingsDisplay showSecrets settings =
         , "aws.access_key_id=" ++ renderSensitive showSecrets (access_key_id (aws config))
         , "aws.secret_access_key=" ++ renderSensitive showSecrets (secret_access_key (aws config))
         , "aws.session_token=" ++ renderSensitiveMaybe showSecrets (session_token (aws config))
-        , "aws_admin.access_key_id=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (access_key_id (aws_admin config)))
-        , "aws_admin.secret_access_key=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (secret_access_key (aws_admin config)))
-        , "aws_admin.session_token=" ++ renderSensitiveMaybe showSecrets (normalizeMaybeText (session_token (aws_admin config)))
-        , "aws_admin.region=" ++ renderMaybeText (normalizeOptionalText (region (aws_admin config)))
+        , "aws_admin_for_test_simulation.access_key_id=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (access_key_id (aws_admin_for_test_simulation config)))
+        , "aws_admin_for_test_simulation.secret_access_key=" ++ renderSensitiveMaybe showSecrets (normalizeOptionalText (secret_access_key (aws_admin_for_test_simulation config)))
+        , "aws_admin_for_test_simulation.session_token=" ++ renderSensitiveMaybe showSecrets (normalizeMaybeText (session_token (aws_admin_for_test_simulation config)))
+        , "aws_admin_for_test_simulation.region=" ++ renderMaybeText (normalizeOptionalText (region (aws_admin_for_test_simulation config)))
         , "route53.zone_id=" ++ renderText (zone_id (route53 config))
         , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
         , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
@@ -194,7 +194,7 @@ validateAwsBootstrapConfig config = do
     requireNonEmpty "acme.email" (email (acme config))
     validateDemoTtl (demo_ttl (domain config))
     validateAcmeBinding (acme config)
-    validateAdminCredentials (aws_admin config)
+    validateTestSimulationAdminCredentials (aws_admin_for_test_simulation config)
 
 requireNonEmpty :: String -> Text -> Either String ()
 requireNonEmpty fieldName value =
@@ -217,8 +217,8 @@ validateAcmeBinding acmeSection
         Left "acme.eab_key_id and acme.eab_hmac_key must either both be set or both be empty"
     | otherwise = Right ()
 
-validateAdminCredentials :: Credentials -> Either String ()
-validateAdminCredentials adminSection =
+validateTestSimulationAdminCredentials :: Credentials -> Either String ()
+validateTestSimulationAdminCredentials adminSection =
     case ( normalizeOptionalText (access_key_id adminSection)
          , normalizeOptionalText (secret_access_key adminSection)
          , normalizeOptionalText (region adminSection)
@@ -227,7 +227,7 @@ validateAdminCredentials adminSection =
         (Just _, Just _, Just _) -> Right ()
         _ ->
             Left
-                "aws_admin.access_key_id, aws_admin.secret_access_key, and aws_admin.region must either all be set or all be empty"
+                "aws_admin_for_test_simulation.access_key_id, aws_admin_for_test_simulation.secret_access_key, and aws_admin_for_test_simulation.region must either all be set or all be empty"
 
 normalizeOptionalText :: Text -> Maybe Text
 normalizeOptionalText value =
@@ -294,7 +294,7 @@ defaultConfigFile =
                 , session_token = Nothing
                 , region = "us-east-1"
                 }
-        , aws_admin =
+        , aws_admin_for_test_simulation =
             Credentials
                 { access_key_id = ""
                 , secret_access_key = ""
@@ -336,11 +336,11 @@ renderConfigDhall config =
         , "        , session_token = " ++ dhallOptionalText (session_token (aws config))
         , "        , region = " ++ dhallText (region (aws config))
         , "        }"
-        , "    , aws_admin = Config.default.aws_admin // {"
-        , "        , access_key_id = " ++ dhallText (access_key_id (aws_admin config))
-        , "        , secret_access_key = " ++ dhallText (secret_access_key (aws_admin config))
-        , "        , session_token = " ++ dhallOptionalText (session_token (aws_admin config))
-        , "        , region = " ++ dhallText (region (aws_admin config))
+        , "    , aws_admin_for_test_simulation = Config.default.aws_admin_for_test_simulation // {"
+        , "        , access_key_id = " ++ dhallText (access_key_id (aws_admin_for_test_simulation config))
+        , "        , secret_access_key = " ++ dhallText (secret_access_key (aws_admin_for_test_simulation config))
+        , "        , session_token = " ++ dhallOptionalText (session_token (aws_admin_for_test_simulation config))
+        , "        , region = " ++ dhallText (region (aws_admin_for_test_simulation config))
         , "        }"
         , "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }"
         , "    , domain = Config.default.domain // {"

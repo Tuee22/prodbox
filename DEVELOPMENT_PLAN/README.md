@@ -70,8 +70,9 @@ The repository now contains:
   `prodbox-config.dhall`
 - one isolated supported AWS subprocess-auth projection path that ignores ambient host AWS auth
   state and uses only repository-root credentials on supported flows
-- one test-harness-only stored-admin-credential exception under `prodbox-config.dhall`
-  `aws_admin.*`
+- one test-suite-only stored admin-credential simulation section under `prodbox-config.dhall`
+  `aws_admin_for_test_simulation.*`, modeling the ephemeral elevated credential that a human
+  would otherwise enter interactively
 - one native validation harness for the named real-world proof surfaces behind
   `prodbox test integration ...`
 - two stack-local YAML Pulumi validation paths under `pulumi/aws-eks/` and `pulumi/aws-test/`
@@ -150,12 +151,17 @@ surfaces:
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
   `prodbox-config.json`.
+- `src/Prodbox/BuildSupport.hs`, `src/Prodbox/Repo.hs`, and `test/integration/env/Main.hs`
+  preserve the operator-facing `.build/prodbox` artifact contract, repository-root config-path
+  resolution, and the built-frontend env proof for the direct-Dhall settings surface.
 - The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
 - The supported config contract is direct `Dhall -> Haskell types`; `prodbox-config.json` and
   `prodbox config compile` are not part of the supported path.
 - The public `config setup` and public `aws ...` surfaces use prompt-driven temporary elevated AWS
-  credentials, while stored `aws_admin.*` remains reserved for the native IAM validation harness.
+  credentials, while stored `aws_admin_for_test_simulation.*` remains reserved for test-suite
+  simulation of that prompt input, with the native IAM validation harness as the only supported
+  runtime consumer.
 - Supported AWS subprocesses now strip ambient AWS auth and profile variables before projecting
   repository-root credentials into the subprocess environment, so supported paths cannot fall back
   to host AWS auth state.
@@ -172,9 +178,10 @@ surfaces:
   `helm repo update` and `helm upgrade --install`, so clean-room restore does not fail terminally
   on intermittent upstream `5xx` or timeout errors.
 - The chart-platform end state is Haskell-owned and renders namespace-local
-  Percona-operator-backed Patroni PostgreSQL HA with exactly three replicas, synchronous
-  replication, deterministic retained PV bindings, retained secret state, and no embedded
-  chart-local PostgreSQL subcharts.
+  Percona-operator-backed Patroni PostgreSQL HA through `src/Prodbox/PostgresPlatform.hs` and
+  `src/Prodbox/Lib/ChartPlatform.hs`, with exactly three replicas, synchronous replication,
+  deterministic retained PV bindings, retained secret state, and no embedded chart-local
+  PostgreSQL subcharts.
 - The public `prodbox pulumi ...` surface is limited to the AWS validation stacks under
   `pulumi/aws-eks/` and `pulumi/aws-test/`. Non-secret validation inputs are synchronized through
   stack config, while AWS provider credentials stay only in `prodbox-config.dhall` and the
@@ -212,8 +219,10 @@ This plan is complete only when all of the following are true:
 4. Public `prodbox config setup` and public `prodbox aws ...` paths can bootstrap all required AWS
    credentials from scratch using temporary elevated credentials entered interactively by the
    operator.
-5. `aws_admin.*` may be stored in `prodbox-config.dhall` only as the native IAM test-harness
-   exception. No supported non-test command or runtime helper may read or use that section.
+5. `aws_admin_for_test_simulation.*` may be stored in `prodbox-config.dhall` only as the
+   test-suite simulation of the ephemeral elevated credential prompt. The native IAM validation
+   harness is the only supported runtime consumer of that section, and no supported non-test
+   command or runtime helper may read or use it.
 6. The operator-facing binary lives at `.build/prodbox` (runnable as `./.build/prodbox`),
    produced by the canonical `cabal build --builddir=.build exe:prodbox` invocation plus a copy
    step.

@@ -69,7 +69,8 @@ Top-level commands:
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
 `config validate`. `prodbox config compile` is not part of the supported command surface. The
 supported public `config setup` path prompts for one temporary elevated AWS credential set when
-needed; stored `aws_admin.*` remains reserved for the native IAM test harness.
+needed; stored `aws_admin_for_test_simulation.*` remains reserved for test-suite simulation of
+that prompt input, with the native IAM test harness as the only supported runtime consumer.
 
 ### `prodbox aws`
 
@@ -82,8 +83,8 @@ needed; stored `aws_admin.*` remains reserved for the native IAM test harness.
 | `prodbox aws request-quotas` | none | `--tier` |
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
-is prompt-driven for temporary elevated AWS credentials; stored `aws_admin.*` is not part of the
-intended public operator flow.
+is prompt-driven for temporary elevated AWS credentials; stored
+`aws_admin_for_test_simulation.*` is not part of the intended public operator flow.
 
 ### `prodbox host`
 
@@ -169,8 +170,9 @@ owns the daemon runtime.
 | `prodbox charts deploy` | `CHART` | none |
 | `prodbox charts delete` | `CHART` | `--yes`, `-y` |
 
-`src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and
-`src/Prodbox/Lib/Storage.hs` own the public chart surface.
+`src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
+`src/Prodbox/Lib/Storage.hs`, and `src/Prodbox/PostgresPlatform.hs` own the public chart surface
+and its canonical external Patroni naming contract.
 
 The supported chart doctrine does not permit embedded chart-local PostgreSQL subcharts.
 `keycloak-postgres` is an internal namespace-local Patroni dependency release, and chart deploy
@@ -217,8 +219,8 @@ Named suite commands:
 - runs Haskell suites through `cabal test`
 - enforces prerequisite gates and runbook steps
 - applies the canonical aggregate ordering
-- keeps stored `aws_admin.*` confined to the native `aws-iam` harness rather than the public
-  command surface
+- keeps stored `aws_admin_for_test_simulation.*` confined to test-suite simulation and the native
+  `aws-iam` harness rather than the public command surface
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode` proof continues on the supported-runtime path

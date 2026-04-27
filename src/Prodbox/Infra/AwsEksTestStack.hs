@@ -35,6 +35,7 @@ import Prodbox.AwsEnvironment (
 import Prodbox.Infra.MinioBackend (
     bucketObjectCount,
     ensureMinioBackendBucket,
+    pulumiBackendLoginTimeoutSeconds,
     pulumiBackendUrl,
     readMinioCredentials,
     withMinioPortForward,
@@ -395,6 +396,7 @@ pulumiEksBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
                       , ("AWS_EC2_METADATA_DISABLED", "true")
                       , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
                       , ("PULUMI_CONFIG_PASSPHRASE", "")
+                      , ("PULUMI_SKIP_UPDATE_CHECK", "true")
                       , ("PATH", path)
                       , ("HOME", home)
                       , ("LANG", "C.UTF-8")
@@ -471,8 +473,13 @@ clearLegacyAwsProviderConfig projectDir environment =
             ["config", "rm", "--stack", awsEksTestStackName, key]
 
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
-pulumiLogin projectDir environment =
-    runPulumiCommand projectDir environment ["login", maybe "" id (lookup "PULUMI_BACKEND_URL" environment)]
+pulumiLogin projectDir environment = do
+    loginResult <- pulumiLoginQuiet projectDir environment
+    case loginResult of
+        Right () -> pure ExitSuccess
+        Left err -> do
+            hPutStrLn stderr ("pulumi login failed: " ++ err)
+            pure (ExitFailure 1)
 
 pulumiLoginQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
 pulumiLoginQuiet projectDir environment =
@@ -575,8 +582,20 @@ runPulumiCommandQuiet projectDir environment arguments = do
     result <-
         captureCommand
             CommandSpec
-                { commandPath = "pulumi"
-                , commandArguments = arguments
+                { commandPath =
+                    if isPulumiLoginCommand arguments
+                        then "timeout"
+                        else "pulumi"
+                , commandArguments =
+                    if isPulumiLoginCommand arguments
+                        then
+                            [ "--kill-after=10s"
+                            , show pulumiBackendLoginTimeoutSeconds
+                            , "pulumi"
+                            ]
+                                ++ arguments
+                                ++ ["--non-interactive"]
+                        else arguments
                 , commandEnvironment = Just environment
                 , commandWorkingDirectory = Just projectDir
                 }
@@ -586,7 +605,20 @@ runPulumiCommandQuiet projectDir environment arguments = do
             Success output ->
                 case processExitCode output of
                     ExitSuccess -> Right ()
+                    ExitFailure 124
+                        | isPulumiLoginCommand arguments ->
+                            Left
+                                ( "timed out after "
+                                    ++ show pulumiBackendLoginTimeoutSeconds
+                                    ++ " seconds while running `pulumi login` against the MinIO backend"
+                                )
                     ExitFailure _ -> Left (renderProcessDetail output)
+
+isPulumiLoginCommand :: [String] -> Bool
+isPulumiLoginCommand arguments =
+    case arguments of
+        "login" : _ -> True
+        _ -> False
 
 runAwsCommandWithSettings :: FilePath -> [String] -> IO (Either String ProcessOutput)
 runAwsCommandWithSettings repoRoot arguments = do

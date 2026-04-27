@@ -160,16 +160,17 @@ credential harness.
   so the aggregate validation harness can continue on supported `aws.*` credentials.
 - `src/Prodbox/SupportedRuntime.hs` now contains only the retained supported-runtime helpers; the
   retired non-test `aws_admin.*` recovery path has been removed.
-- `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
-  repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
-  stale ambient Pulumi host-login state.
-- The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather
-  than failing at prerequisite validation.
+- `src/Prodbox/EffectInterpreter.hs` now checks bounded `pulumi login ... --non-interactive`
+  against the canonical repo-backed MinIO backend during prerequisites, and the shared
+  `src/Prodbox/Infra/MinioBackend.hs` helper recreates a deleted MinIO export host path plus
+  restarts `deployment/minio` before retrying that proof, so the aggregate IAM run no longer
+  depends on stale ambient Pulumi host-login state or a detached retained-storage mount.
+- The aggregate IAM proof is sequenced before downstream AWS-backed suites through the named
+  prerequisite DAG rather than through ambient host Pulumi login state.
 
 ### Remaining Work
 
-None. The IAM harness remains closed on supported repo-root operational `aws.*` credentials, and
-no remaining Phase `7` implementation work survives.
+None. No remaining Phase `7` repository implementation work survives.
 
 ## Documentation Requirements
 

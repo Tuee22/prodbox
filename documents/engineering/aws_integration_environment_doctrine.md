@@ -172,6 +172,12 @@ SSH-public-key into the stack with `pulumi config set`. AWS provider credentials
 repository-root `prodbox-config.dhall` and be projected into Pulumi through the Haskell-owned
 subprocess environment, not copied into stack-local config files.
 
+The prerequisite proof for that backend is a bounded `pulumi login ... --non-interactive` against
+the repo-backed MinIO backend after the Haskell helper confirms bucket existence and listability.
+If the running MinIO pod still points at a deleted retained host-path mount, the helper recreates
+the declared host path, reapplies the ownership and mode contract, restarts `deployment/minio`,
+and then reruns the login proof before stack operations continue.
+
 ## 4. Environment Creation Rules
 
 ### 4.1 Brand-New Resources Only

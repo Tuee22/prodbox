@@ -15,8 +15,8 @@ This phase defines the clean-room and zero-Python handoff criteria for the Haske
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
 The supported repository surfaces are Haskell-only, and the cleanup ledger currently has no
-pending-removal items. Sprint `6.1` and Sprint `6.2` are now closed on the destructive rerun,
-postflight restore, and final zero-Python handoff state.
+pending-removal items. Sprint `6.1` and Sprint `6.2` are closed on their repository-owned rerun
+orchestration and final zero-Python handoff criteria.
 
 ## Current Baseline In Worktree
 
@@ -83,12 +83,11 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   `prodbox test all` and `prodbox test integration all` run the native validation set that
   includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
   lifecycle suite is missing from the repository.
-- The current canonical rerun passes `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`, and `./.build/prodbox test all`.
-- The destructive rerun restores the supported public edge to
-  `CLASSIFICATION=ready-for-external-proof`, and postflight cleanup leaves both AWS validation
-  stacks absent on the supported path.
+- `src/Prodbox/TestRunner.hs` encodes the supported-runtime postflight contract: after aggregate
+  native validation, it re-installs the supported stack, waits for `prodbox host public-edge` to
+  report the required readiness classification, and then destroys both AWS validation stacks.
+- Environment-dependent rerun success for this phase remains owned by the named `prodbox`
+  commands rather than restated here as a fresh execution log.
 ### Remaining Work
 
 None.
@@ -137,8 +136,8 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   removal history while keeping `Pending Removal` empty, and the root guidance set named in
   `Docs to update` is realigned to the current repository state.
 - The legacy ledger remains clear on Python-removal items.
-- Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` is now
-  re-closed by the passing destructive rerun.
+- Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` continues to
+  own the destructive rerun contract.
 ### Remaining Work
 
 None.

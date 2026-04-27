@@ -21,6 +21,10 @@
 - Retained non-PV chart state lives under the repo-local `.prodbox-state/<namespace>/` root.
 - `prodbox rke2 delete --yes` must destroy both Pulumi-managed AWS validation stacks before local
   backend teardown removes the MinIO host that stores Pulumi state.
+- When the MinIO-backed Pulumi backend is still running but kubelet reports its `/export` mount as
+  deleted, the Haskell backend helper recreates the declared retained host path, reapplies the
+  `1000:1000` plus `0770` contract, and restarts `deployment/minio` before backend validation or
+  stack operations continue.
 
 ## 2. Scope
 
@@ -33,6 +37,7 @@ This doctrine governs:
 4. the boundary between the PV-only manual host root and the repo-local `.prodbox-state/` retained
    chart-state root
 5. MinIO persistence behavior on the supported single-node RKE2 machine
+6. deleted-export-mount repair for the repo-backed Pulumi backend
 
 Harbor registry details remain in [Local Registry Pipeline](./local_registry_pipeline.md).
 
@@ -59,6 +64,8 @@ The retained-storage effect must reconcile:
 5. host storage directories rooted at `storage.manual_pv_host_root`
 6. Harbor external readiness plus stable `/readyz` and `/v2/` probes before image writes and
    Harbor-backed steady-state workload reconcile continue
+7. deleted MinIO export-mount detection and a bounded recreate-plus-restart repair before
+   MinIO-backed Pulumi validation continues
 
 `rke2 delete` must preserve:
 
@@ -105,6 +112,8 @@ Lifecycle-oriented validation should prove:
 7. temporary validation resources are fully removed at test end
 8. baseline runtime after test completion matches the post-install state defined by
    `prodbox rke2 install`
+9. a deleted MinIO export host-path mount is repaired back onto the declared retained directory
+   before Pulumi backend login or stack operations continue
 
 Cleanup ownership is defined in [Integration Fixture Doctrine](./integration_fixture_doctrine.md).
 

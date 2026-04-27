@@ -4,6 +4,7 @@ module Prodbox.Infra.MinioBackend (
     minioBackendBucket,
     minioBackendLocalPort,
     minioBackendRegion,
+    pulumiBackendLoginTimeoutSeconds,
     minioNamespace,
     minioSecretName,
     minioServiceName,
@@ -15,6 +16,7 @@ module Prodbox.Infra.MinioBackend (
     minioEndpointUrl,
     resolveLocalKubeconfig,
     minioAwsEnv,
+    parseDeletedMinioExportHostPath,
 )
 where
 
@@ -31,6 +33,7 @@ import Data.Aeson (
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.List (isSuffixOf)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess (
     CommandSpec (..),
@@ -61,14 +64,29 @@ minioBackendLocalPort = 39000
 minioBackendRegion :: String
 minioBackendRegion = "us-east-1"
 
+pulumiBackendLoginTimeoutSeconds :: Int
+pulumiBackendLoginTimeoutSeconds = 30
+
+minioRolloutTimeoutSeconds :: Int
+minioRolloutTimeoutSeconds = 120
+
 minioNamespace :: String
 minioNamespace = "prodbox"
+
+minioDeploymentName :: String
+minioDeploymentName = "minio"
 
 minioSecretName :: String
 minioSecretName = "minio"
 
 minioServiceName :: String
 minioServiceName = "minio"
+
+minioExportMountPath :: String
+minioExportMountPath = "/export"
+
+deletedMountSuffix :: String
+deletedMountSuffix = "//deleted"
 
 minioEndpointUrl :: Int -> String
 minioEndpointUrl localPort = "http://127.0.0.1:" ++ show localPort
@@ -131,42 +149,219 @@ withMinioPortForward action = do
     case envResult of
         Left err -> pure (Left err)
         Right environment -> do
-            let localPort = minioBackendLocalPort
-                portForwardProc =
-                    ( proc
-                        "kubectl"
-                        [ "port-forward"
+            repairResult <- repairDeletedMinioExportMountIfNeeded environment
+            case repairResult of
+                Left err -> pure (Left err)
+                Right () -> do
+                    let localPort = minioBackendLocalPort
+                        portForwardProc =
+                            ( proc
+                                "kubectl"
+                                [ "port-forward"
+                                , "-n"
+                                , minioNamespace
+                                , "svc/" ++ minioServiceName
+                                , show localPort ++ ":9000"
+                                ]
+                            )
+                                { std_out = CreatePipe
+                                , std_err = CreatePipe
+                                , env = Just environment
+                                , delegate_ctlc = False
+                                }
+                    bracket
+                        (try (createProcess portForwardProc) :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle)))
+                        ( \result ->
+                            case result of
+                                Left _ -> pure ()
+                                Right (_, stdoutHandle, stderrHandle, processHandle) -> do
+                                    terminateProcess processHandle
+                                    _ <- try (waitForProcess processHandle) :: IO (Either IOException ExitCode)
+                                    maybe (pure ()) hClose stdoutHandle
+                                    maybe (pure ()) hClose stderrHandle
+                        )
+                        ( \result ->
+                            case result of
+                                Left exc -> pure (Left ("failed to start kubectl port-forward: " ++ show exc))
+                                Right (_, _, _, _) -> do
+                                    ready <- waitForPort localPort 60
+                                    if ready
+                                        then Right <$> action localPort
+                                        else pure (Left "timed out waiting for MinIO port-forward readiness")
+                        )
+
+repairDeletedMinioExportMountIfNeeded :: [(String, String)] -> IO (Either String ())
+repairDeletedMinioExportMountIfNeeded environment = do
+    mountInfoResult <- readMinioMountInfo environment
+    case mountInfoResult of
+        Left err -> pure (Left ("failed to inspect MinIO export mount: " ++ err))
+        Right mountInfo ->
+            case parseDeletedMinioExportHostPath mountInfo of
+                Nothing -> pure (Right ())
+                Just hostPath -> do
+                    putStrLn
+                        ( "Detected deleted MinIO export mount at "
+                            ++ hostPath
+                            ++ "; recreating the host path and restarting deployment/minio."
+                        )
+                    recreateResult <- recreateDeletedMinioExportHostPath hostPath
+                    case recreateResult of
+                        Left err -> pure (Left err)
+                        Right () -> do
+                            restartResult <- restartMinioDeployment environment
+                            case restartResult of
+                                Left err -> pure (Left err)
+                                Right () -> do
+                                    refreshedMountInfoResult <- readMinioMountInfo environment
+                                    case refreshedMountInfoResult of
+                                        Left err ->
+                                            pure
+                                                ( Left
+                                                    ( "restarted MinIO after repairing "
+                                                        ++ hostPath
+                                                        ++ " but failed to re-check the export mount: "
+                                                        ++ err
+                                                    )
+                                                )
+                                        Right refreshedMountInfo ->
+                                            case parseDeletedMinioExportHostPath refreshedMountInfo of
+                                                Nothing -> pure (Right ())
+                                                Just _ ->
+                                                    pure
+                                                        ( Left
+                                                            ( "MinIO export mount still points to a deleted host path after restart: "
+                                                                ++ hostPath
+                                                            )
+                                                        )
+
+readMinioMountInfo :: [(String, String)] -> IO (Either String String)
+readMinioMountInfo environment = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "exec"
+                    , "-n"
+                    , minioNamespace
+                    , "deployment/" ++ minioDeploymentName
+                    , "--"
+                    , "cat"
+                    , "/proc/self/mountinfo"
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Nothing
+                }
+    pure $
+        case result of
+            Failure err -> Left err
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ ->
+                        Left (renderCommandFailure "kubectl exec deployment/minio -- cat /proc/self/mountinfo" output)
+                    ExitSuccess -> Right (processStdout output)
+
+recreateDeletedMinioExportHostPath :: FilePath -> IO (Either String ())
+recreateDeletedMinioExportHostPath hostPath = do
+    mkdirResult <-
+        runCheckedCommand
+            "failed to recreate deleted MinIO host path"
+            CommandSpec
+                { commandPath = "sudo"
+                , commandArguments = ["mkdir", "-p", hostPath]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
+                }
+    case mkdirResult of
+        Left err -> pure (Left err)
+        Right () -> do
+            chownResult <-
+                runCheckedCommand
+                    "failed to set MinIO host-path ownership"
+                    CommandSpec
+                        { commandPath = "sudo"
+                        , commandArguments = ["chown", "-R", "1000:1000", hostPath]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Nothing
+                        }
+            case chownResult of
+                Left err -> pure (Left err)
+                Right () ->
+                    runCheckedCommand
+                        "failed to set MinIO host-path permissions"
+                        CommandSpec
+                            { commandPath = "sudo"
+                            , commandArguments = ["chmod", "0770", hostPath]
+                            , commandEnvironment = Nothing
+                            , commandWorkingDirectory = Nothing
+                            }
+
+restartMinioDeployment :: [(String, String)] -> IO (Either String ())
+restartMinioDeployment environment = do
+    rolloutRestartResult <-
+        runCheckedCommand
+            "failed to restart deployment/minio"
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments = ["rollout", "restart", "deployment/" ++ minioDeploymentName, "-n", minioNamespace]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Nothing
+                }
+    case rolloutRestartResult of
+        Left err -> pure (Left err)
+        Right () ->
+            runCheckedCommand
+                "deployment/minio did not become ready after restart"
+                CommandSpec
+                    { commandPath = "kubectl"
+                    , commandArguments =
+                        [ "rollout"
+                        , "status"
+                        , "deployment/" ++ minioDeploymentName
                         , "-n"
                         , minioNamespace
-                        , "svc/" ++ minioServiceName
-                        , show localPort ++ ":9000"
+                        , "--timeout"
+                        , show minioRolloutTimeoutSeconds ++ "s"
                         ]
-                    )
-                        { std_out = CreatePipe
-                        , std_err = CreatePipe
-                        , env = Just environment
-                        , delegate_ctlc = False
-                        }
-            bracket
-                (try (createProcess portForwardProc) :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle)))
-                ( \result ->
-                    case result of
-                        Left _ -> pure ()
-                        Right (_, stdoutHandle, stderrHandle, processHandle) -> do
-                            terminateProcess processHandle
-                            _ <- try (waitForProcess processHandle) :: IO (Either IOException ExitCode)
-                            maybe (pure ()) hClose stdoutHandle
-                            maybe (pure ()) hClose stderrHandle
-                )
-                ( \result ->
-                    case result of
-                        Left exc -> pure (Left ("failed to start kubectl port-forward: " ++ show exc))
-                        Right (_, _, _, _) -> do
-                            ready <- waitForPort localPort 60
-                            if ready
-                                then Right <$> action localPort
-                                else pure (Left "timed out waiting for MinIO port-forward readiness")
-                )
+                    , commandEnvironment = Just environment
+                    , commandWorkingDirectory = Nothing
+                    }
+
+parseDeletedMinioExportHostPath :: String -> Maybe FilePath
+parseDeletedMinioExportHostPath mountInfo =
+    firstDeletedPath (lines mountInfo)
+  where
+    firstDeletedPath [] = Nothing
+    firstDeletedPath (line : rest) =
+        case words line of
+            (_ : _ : _ : mountRoot : mountPath : _)
+                | mountPath == minioExportMountPath ->
+                    case stripDeletedMountSuffix mountRoot of
+                        Just hostPath -> Just hostPath
+                        Nothing -> firstDeletedPath rest
+            _ -> firstDeletedPath rest
+
+stripDeletedMountSuffix :: FilePath -> Maybe FilePath
+stripDeletedMountSuffix mountRoot
+    | deletedMountSuffix `isSuffixOf` mountRoot =
+        Just (take (length mountRoot - length deletedMountSuffix) mountRoot)
+    | otherwise = Nothing
+
+runCheckedCommand :: String -> CommandSpec -> IO (Either String ())
+runCheckedCommand failurePrefix spec = do
+    result <- captureCommand spec
+    pure $
+        case result of
+            Failure err -> Left (failurePrefix ++ ": " ++ err)
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ -> Left (failurePrefix ++ ": " ++ renderCommandFailure (commandPath spec) output)
+                    ExitSuccess -> Right ()
+
+renderCommandFailure :: String -> ProcessOutput -> String
+renderCommandFailure label output =
+    let rendered = trim (processStderr output ++ "\n" ++ processStdout output)
+     in if null rendered then label ++ " exited unsuccessfully" else rendered
 
 waitForPort :: Int -> Int -> IO Bool
 waitForPort port attemptsLeft
@@ -255,7 +450,7 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
         Failure err -> pure (Left ("failed to check MinIO bucket: " ++ err))
         Success headOutput ->
             case processExitCode headOutput of
-                ExitSuccess -> pure (Right ())
+                ExitSuccess -> verifyMinioBackendBucketListable endpoint environment
                 ExitFailure _ -> do
                     createResult <-
                         captureCommand
@@ -276,9 +471,37 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
                         Failure err -> pure (Left ("failed to create MinIO bucket: " ++ err))
                         Success createOutput ->
                             case processExitCode createOutput of
-                                ExitSuccess -> pure (Right ())
+                                ExitSuccess -> verifyMinioBackendBucketListable endpoint environment
                                 ExitFailure _ ->
                                     pure (Left ("aws s3api create-bucket failed: " ++ trim (processStderr createOutput)))
+
+verifyMinioBackendBucketListable :: String -> [(String, String)] -> IO (Either String ())
+verifyMinioBackendBucketListable endpoint environment = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "aws"
+                , commandArguments =
+                    [ "--endpoint-url"
+                    , endpoint
+                    , "s3api"
+                    , "list-objects-v2"
+                    , "--bucket"
+                    , minioBackendBucket
+                    , "--max-keys"
+                    , "1"
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Nothing
+                }
+    pure $
+        case result of
+            Failure err -> Left ("failed to verify MinIO bucket listing: " ++ err)
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ ->
+                        Left ("MinIO backend bucket is not listable: " ++ trim (processStderr output))
+                    ExitSuccess -> Right ()
 
 bucketObjectCount :: Int -> String -> String -> IO (Either String Int)
 bucketObjectCount localPort accessKey secretKey = do

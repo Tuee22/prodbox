@@ -34,6 +34,7 @@ import Prodbox.EffectDAG (
 import Prodbox.Infra.MinioBackend (
     ensureMinioBackendBucket,
     minioBackendRegion,
+    pulumiBackendLoginTimeoutSeconds,
     pulumiBackendUrl,
     readMinioCredentials,
     withMinioPortForward,
@@ -398,15 +399,50 @@ runValidation context validation =
                             Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
                             Right () -> do
                                 environment <- pulumiPrerequisiteEnvironment localPort accessKey secretKey
-                                requireCapturedCommandSuccess
-                                    False
-                                    "Pulumi login check failed"
-                                    CommandSpec
-                                        { commandPath = "pulumi"
-                                        , commandArguments = ["whoami"]
-                                        , commandEnvironment = Just environment
-                                        , commandWorkingDirectory = Just (interpreterRepoRoot context)
-                                        }
+                                outputResult <-
+                                    captureCommand
+                                        CommandSpec
+                                            { commandPath = "timeout"
+                                            , commandArguments =
+                                                [ "--kill-after=10s"
+                                                , show pulumiBackendLoginTimeoutSeconds
+                                                , "pulumi"
+                                                , "login"
+                                                , pulumiBackendUrl localPort
+                                                , "--non-interactive"
+                                                ]
+                                            , commandEnvironment = Just environment
+                                            , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                                            }
+                                pure $
+                                    case outputResult of
+                                        Failure err ->
+                                            Failure
+                                                ( "Pulumi login check failed for `pulumi login "
+                                                    ++ pulumiBackendUrl localPort
+                                                    ++ " --non-interactive`: "
+                                                    ++ err
+                                                )
+                                        Success output ->
+                                            case processExitCode output of
+                                                ExitSuccess -> Success ()
+                                                ExitFailure 124 ->
+                                                    Failure
+                                                        ( "Pulumi login check failed: `pulumi login "
+                                                            ++ pulumiBackendUrl localPort
+                                                            ++ " --non-interactive` timed out after "
+                                                            ++ show pulumiBackendLoginTimeoutSeconds
+                                                            ++ " seconds."
+                                                        )
+                                                ExitFailure code ->
+                                                    Failure
+                                                        ( "Pulumi login check failed for `pulumi login "
+                                                            ++ pulumiBackendUrl localPort
+                                                            ++ " --non-interactive` (exit code "
+                                                            ++ show code
+                                                            ++ ")"
+                                                            ++ toolOutputSuffix output
+                                                        )
         case portForwardResult of
             Left err -> pure (Failure ("Pulumi login check failed: " ++ err))
             Right result -> pure result
@@ -451,6 +487,7 @@ pulumiPrerequisiteEnvironment localPort accessKey secretKey = do
         , ("AWS_EC2_METADATA_DISABLED", "true")
         , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
         , ("PULUMI_CONFIG_PASSPHRASE", "")
+        , ("PULUMI_SKIP_UPDATE_CHECK", "true")
         , ("PATH", path)
         , ("HOME", home)
         , ("LANG", "C.UTF-8")

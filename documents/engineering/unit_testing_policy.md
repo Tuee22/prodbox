@@ -72,6 +72,11 @@ When Phase `1.6/2` restores a cluster-backed supported runtime for external proo
 `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before the payload
 starts.
 
+When a Phase `1/2` prerequisite owns a deterministic local backend proof, it may perform a
+visible, bounded repair of repository-managed state before re-running the same readiness check. The
+canonical current example is the MinIO-backed Pulumi prerequisite recreating a deleted retained
+export host path and restarting `deployment/minio` before retrying backend login.
+
 If Phase 1 fails, Phase 2 is not started. This is an all-or-nothing gate, not a skip.
 
 ### Phase Banner Rendering Contract

@@ -26,9 +26,8 @@ govern this plan suite.
 
 ## Closure Status
 
-All phases are currently closed on their owned repository surfaces. The codebase state that
-re-closed the previously reopened implementation work in Phases `1-4` and Phase `6` is present
-in the worktree:
+All phases are currently closed on their owned repository surfaces. The codebase state that those
+closures describe is present in the worktree:
 
 - `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` install `ghcup` in-image and pin
   GHC `9.14.1`
@@ -46,15 +45,15 @@ Percona-operator-backed Patroni PostgreSQL HA for Helm-managed application data,
 bootstrap exception remains limited to Harbor plus Harbor's storage backend before later Helm
 deployments switch to Harbor-backed image refs.
 
-A fresh canonical rerun now passes `./.build/prodbox check-code`,
-`./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-`./.build/prodbox test integration env`, and `./.build/prodbox test all`. The rerun restores the
-supported public edge to `CLASSIFICATION=ready-for-external-proof`, and the postflight cleanup
-leaves both AWS validation stacks absent as confirmed by `./.build/prodbox pulumi eks-destroy
---yes` and `./.build/prodbox pulumi test-destroy --yes`.
+The canonical validation contract is expressed through the `prodbox` commands documented by this
+plan: `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+`./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, the named
+native validations behind `./.build/prodbox test integration ...`, and the clean-room rerun owned
+by Phase `6`. Environment-dependent AWS and public-edge proof remain attached to those commands
+rather than recorded here as a fresh execution log.
 
-Phases `1-7` are closed on their owned repository surfaces. The overall handoff is complete on
-the supported Haskell command surface described by this plan.
+Phases `1-7` are closed on their owned repository surfaces. The repository exposes the complete
+supported Haskell command surface described by this plan.
 
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
@@ -76,6 +75,9 @@ The repository now contains:
 - one native validation harness for the named real-world proof surfaces behind
   `prodbox test integration ...`
 - two stack-local YAML Pulumi validation paths under `pulumi/aws-eks/` and `pulumi/aws-test/`
+- one repo-backed MinIO Pulumi prerequisite and stack-runtime path that uses bounded
+  `pulumi login ... --non-interactive` checks and repairs deleted MinIO export host-path mounts
+  before validation continues
 - zero Python implementation, Python toolchain, or Python bridge artifacts in the repository
 - one cleanup ledger with no pending-removal items on the supported path
 
@@ -134,9 +136,9 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: Phase `1` and Phase `6` have re-closed on live validation, and
-Phases `2-5` plus Phase `7` remain done on their owned repository surfaces. The current plan
-state is fully closed on the supported Haskell command surface.
+**Status interpretation**: All phases are marked `Done` for their repository-owned surfaces. Each
+phase document names the canonical `prodbox` validation commands for its surface; this top-level
+plan does not duplicate a live execution log for environment-dependent AWS or public-edge proof.
 
 ## Current Plan Status
 
@@ -177,6 +179,10 @@ surfaces:
   `pulumi/aws-eks/` and `pulumi/aws-test/`. Non-secret validation inputs are synchronized through
   stack config, while AWS provider credentials stay only in `prodbox-config.dhall` and the
   Haskell-owned subprocess environment.
+- The current gateway runtime surface is Haskell-owned and code-backed in `src/Prodbox/Gateway.hs`,
+  `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`: config generation,
+  heartbeat recording, in-memory ownership projection, DNS-write gating, REST status, and HMAC
+  event signing are implemented there today.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile and ACME
   `ClusterIssuer` projection; those helpers do not expand the public `prodbox pulumi ...` command
   family.
@@ -187,13 +193,8 @@ surfaces:
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- The current canonical rerun passes `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`, and `./.build/prodbox test all`.
-- The current repository-root operational `aws.*` credentials satisfy
-  `aws sts get-caller-identity --output json` on the supported path, `./.build/prodbox host
-  public-edge` reports `CLASSIFICATION=ready-for-external-proof`, and the AWS validation stacks
-  remain absent after rerun cleanup.
+- Environment-dependent AWS IAM, Route 53, public-edge, EKS, and HA-RKE2 proof are implemented
+  as named `prodbox` validation commands rather than asserted here as a fresh run result.
 - The legacy ledger has no pending items on the supported path.
 
 ## Exit Definition

@@ -18,7 +18,7 @@ root guidance or engineering docs listed by its sprints. Later retirement of loc
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`
 and Sprint `1.2` are closed on their repository-owned surfaces. Sprint `1.3` is also closed,
 including isolated supported AWS subprocess auth projection through `src/Prodbox/AwsEnvironment.hs`
-and the live AWS-backed validation gates. The implemented frontend container doctrine uses
+and the canonical AWS-backed validation entrypoints. The implemented frontend container doctrine uses
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
 explicit repo package-bound updates.
 
@@ -174,7 +174,7 @@ modules.
   `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,
   and executes the named real-world validations through `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/TestPlan.hs` now maps AWS-backed named suites through prerequisite gates that
-  validate live AWS credentials, Route 53 access, and Pulumi login before the validation bodies
+  validate configured AWS credentials, Route 53 access, and Pulumi login before the validation bodies
   run, so blocked environments fail during Phase `1/2` rather than inside later validation logic.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke native CLI
   subcommands through the canonical `./.build/prodbox` path, so aggregate validation remains
@@ -243,17 +243,17 @@ the same supported product scope.
   credentials.
 - `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, and
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
+- The repo-backed Pulumi prerequisite and AWS validation-stack helpers now use bounded
+  `pulumi login ... --non-interactive` checks against the MinIO backend and recreate a deleted
+  MinIO export host-path mount before restarting `deployment/minio`, so aggregate validation fails
+  fast on real backend errors instead of hanging on stale retained-storage mounts.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
-  `./.build/prodbox test all` now pass on the implemented toolchain path.
-- The current repository-root operational `aws.*` credentials satisfy
-  `aws sts get-caller-identity --output json` on the supported path, and the aggregate rerun
-  closes the live `aws_credentials_valid` prerequisite before entering the AWS-backed validation
-  bodies.
-- The aggregate clean-room rerun exercises the lifecycle, Pulumi, EKS, and HA-RKE2 AWS validation
-  surfaces, then leaves both AWS validation stacks absent after postflight cleanup.
+- The canonical local validation surfaces for this phase remain `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
+  `./.build/prodbox test integration env`.
+- Environment-dependent AWS proof for this phase is owned by the named `prodbox pulumi ...` and
+  `prodbox test integration ...` commands rather than recorded here as a fresh run result.
 ### Remaining Work
 
 None.

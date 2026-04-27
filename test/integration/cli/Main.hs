@@ -344,8 +344,8 @@ main = hspec $ do
                 deleteExitCode `shouldBe` ExitSuccess
                 deleteStderr `shouldBe` ""
                 deleteStdout `shouldContain` "Deleting local RKE2 environment..."
-                deleteStdout `shouldContain` "AWS EKS test stack: already absent from the local Pulumi backend"
-                deleteStdout `shouldContain` "AWS test stack: already absent from the local Pulumi backend"
+                deleteStdout `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+                deleteStdout `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
                 deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
                 deleteStdout `shouldContain` "Managed kubeconfig: removed"
                 deleteStdout `shouldContain` "Preserved host state:"
@@ -444,10 +444,8 @@ main = hspec $ do
                 curlRecord `shouldContain` "http://127.0.0.1:30080/v2/"
                 curlRecord `shouldContain` "/api/v2.0/projects"
 
-                pulumiRecord <- readFile (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
-                pulumiRecord `shouldContain` "login|s3://prodbox-test-pulumi-backends?region=us-east-1&endpoint=127.0.0.1:39000&disableSSL=true&s3ForcePathStyle=true"
-                pulumiRecord `shouldContain` "stack|select|aws-eks-test"
-                pulumiRecord `shouldContain` "stack|select|aws-test"
+                pulumiRecordExists <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
+                pulumiRecordExists `shouldBe` False
 
         it "summarizes noisy uninstall-script cleanup instead of streaming raw delete traces" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -476,8 +474,8 @@ main = hspec $ do
                 deleteExitCode `shouldBe` ExitSuccess
                 deleteStderr `shouldBe` ""
                 deleteStdout `shouldContain` "Deleting local RKE2 environment..."
-                deleteStdout `shouldContain` "AWS EKS test stack: already absent from the local Pulumi backend"
-                deleteStdout `shouldContain` "AWS test stack: already absent from the local Pulumi backend"
+                deleteStdout `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+                deleteStdout `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
                 deleteStdout `shouldContain` "Local RKE2 substrate: cleanup complete"
                 deleteStdout `shouldContain` "Managed kubeconfig: removed"
                 deleteStdout `shouldContain` "Preserved host state:"

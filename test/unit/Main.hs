@@ -69,6 +69,9 @@ import Prodbox.Host (
     renderPortAvailabilityReport,
  )
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
+import Prodbox.Infra.MinioBackend (
+    parseDeletedMinioExportHostPath,
+ )
 import Prodbox.K8s (
     parseKubectlObjectNames,
  )
@@ -546,10 +549,15 @@ main = hspec $ do
         it "checks Pulumi login against the local MinIO backend path" $ do
             repoRoot <- getCurrentDirectory
             interpreterSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "EffectInterpreter.hs")
+            minioSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "MinioBackend.hs")
 
             interpreterSource `shouldContain` "withMinioPortForward"
             interpreterSource `shouldContain` "ensureMinioBackendBucket"
+            interpreterSource `shouldContain` "\"login\""
+            interpreterSource `shouldContain` "\"--non-interactive\""
             interpreterSource `shouldContain` "PULUMI_BACKEND_URL"
+            minioSource `shouldContain` "parseDeletedMinioExportHostPath"
+            minioSource `shouldContain` "\"rollout\", \"restart\", \"deployment/\" ++ minioDeploymentName"
 
         it "keeps Pulumi AWS provider credentials out of stack-local config" $ do
             repoRoot <- getCurrentDirectory
@@ -746,6 +754,15 @@ main = hspec $ do
                     ]
 
     describe "native chart platform helpers" $ do
+        it "extracts deleted MinIO export host paths from mountinfo" $ do
+            parseDeletedMinioExportHostPath
+                "14443 14435 8:2 /home/matthewnowak/prodbox/.data/prodbox-123/prodbox-minio-pv-0//deleted /export rw,relatime - ext4 /dev/sda2 rw\n"
+                `shouldBe` Just "/home/matthewnowak/prodbox/.data/prodbox-123/prodbox-minio-pv-0"
+
+            parseDeletedMinioExportHostPath
+                "14443 14435 8:2 /home/matthewnowak/prodbox/.data/prodbox-123/prodbox-minio-pv-0 /export rw,relatime - ext4 /dev/sda2 rw\n"
+                `shouldBe` Nothing
+
         it "derives deterministic storage bindings" $ do
             let spec =
                     ChartStorageSpec

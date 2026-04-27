@@ -41,12 +41,12 @@ separately from this canonical target inventory.
 | Harbor-first registry pipeline | Harbor plus Docker CLI image reconcile, Harbor-plus-storage-backend public-registry bootstrap exception until Harbor is externally ready, post-bootstrap Harbor populate with ordered candidate retry on publish-time failure, and dual-arch publish | RKE2 workload plus host Docker runtime | `prodbox rke2 install` plus Harbor-first steady-state workload-image doctrine | Cluster resources, Harbor registry data, host Docker cache, and RKE2 registry config |
 | AWS-backed EKS validation cluster | Amazon EKS | AWS | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | EKS resources in AWS |
 | AWS-backed HA RKE2 test nodes | `Ubuntu 24.04 LTS` EC2 instances | AWS | `prodbox pulumi test-resources|test-destroy --yes` plus Haskell SSH orchestration | EC2, VPC, subnet, security-group, IAM, and Route 53 state |
-| Pulumi test backend | MinIO | Local RKE2 workload | Local-cluster-first bootstrap plus Pulumi backend configuration | S3-compatible objects in `prodbox-test-pulumi-backends` |
+| Pulumi test backend | MinIO | Local RKE2 workload | Local-cluster-first bootstrap plus Pulumi backend configuration, bounded backend login, and deleted-export-mount repair | S3-compatible objects in `prodbox-test-pulumi-backends` |
 | Load balancer IPs | MetalLB | RKE2 workload | Haskell lifecycle plus chart runtime | Cluster resources |
 | Public edge ingress | Traefik | RKE2 workload | Haskell lifecycle plus chart runtime | Cluster resources |
 | TLS issuance | cert-manager plus ACME provider selected from config, with ZeroSSL EAB projection when configured | RKE2 workload | Haskell lifecycle plus chart runtime, including lifecycle-owned `ClusterIssuer` projection | Kubernetes secrets |
 | DNS control plane | Route 53 hosted zone | AWS | Haskell AWS orchestration plus in-cluster gateway `dns_write_gate` | Route 53 |
-| Gateway mesh | Haskell distributed gateway daemon | In-cluster Kubernetes workload | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources, `gateway-aws-credentials`, and Route 53 |
+| Gateway workload | Haskell gateway daemon | In-cluster Kubernetes workload | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources, `gateway-aws-credentials`, and Route 53 |
 | Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | `prodbox rke2 install` | Cluster-scoped resource |
 | Manual PV root | Configured host path, default `.data/` | Host filesystem | `prodbox-config.dhall` plus cluster and chart lifecycle commands | PV contents only |
 | Retained chart-state root | `.prodbox-state/` | Host filesystem | `prodbox charts` helpers plus `prodbox rke2 delete --yes` preservation contract | Generated secrets and gateway event keys |
@@ -84,7 +84,7 @@ separately from this canonical target inventory.
 |---------|----------------------|
 | Build artifact contract | Runnable `./.build/prodbox`, produced by the canonical build-plus-copy flow; container build proof closes when the canonical Dockerfiles under `docker/` emit artifacts under `/opt/build` through in-image `ghcup`-managed GHC `9.14.1` with no symlinked Haskell tool shims |
 | CLI and env contract | `prodbox test integration cli` and `prodbox test integration env` run built-frontend Haskell suites against the direct-Dhall config contract without recreating `prodbox-config.json` |
-| Named validation harness | `prodbox test integration public-dns`, `dns-aws`, `aws-iam`, `gateway-daemon`, `gateway-pods`, `gateway-partition`, `lifecycle`, `pulumi`, `aws-eks`, `ha-rke2-aws`, `charts-platform`, `charts-storage`, and `charts-vscode` run executable native Haskell validation flows through `src/Prodbox/TestValidation.hs`, with the Phase `1/2` prerequisite DAG validating repository-root AWS credentials, Route 53 access, Pulumi login, and native IAM harness readiness before AWS-backed suites enter their validation bodies and without ambient AWS-auth fallback |
+| Named validation harness | `prodbox test integration public-dns`, `dns-aws`, `aws-iam`, `gateway-daemon`, `gateway-pods`, `gateway-partition`, `lifecycle`, `pulumi`, `aws-eks`, `ha-rke2-aws`, `charts-platform`, `charts-storage`, and `charts-vscode` run executable native Haskell validation flows through `src/Prodbox/TestValidation.hs`, with the Phase `1/2` prerequisite DAG validating repository-root AWS credentials, Route 53 access, bounded MinIO-backed Pulumi login, and native IAM harness readiness before AWS-backed suites enter their validation bodies and without ambient AWS-auth fallback |
 | Supported host gate and local cluster lifecycle | `prodbox test integration lifecycle`, fresh-host `prodbox rke2 install`, and destructive `prodbox rke2 delete --yes` proof with summary-oriented cleanup reporting |
 | Harbor-first registry pipeline | `prodbox rke2 install`, bootstrap-source proof for the Harbor plus storage-backend direct-public exception before Harbor is externally ready, Harbor inventory proof for required images after bootstrap, stable `/readyz` plus `/v2/` proof before image writes, and dual-arch manifest proof for `amd64` and `arm64` |
 | AWS Route 53 validation | `prodbox test integration dns-aws` |
@@ -114,9 +114,9 @@ separately from this canonical target inventory.
 | Remote HA RKE2 AWS test stack | Pulumi plus Haskell orchestration | EC2 and supporting AWS resources | Exactly three Ubuntu 24.04 EC2 instances in separate AZs |
 | Cluster resource state | Kubernetes | RKE2 datastore | Managed through canonical Haskell CLI flows |
 | DNS ownership | AWS Route 53 | Hosted zone records | Explicit per-FQDN records only |
-| Pulumi backend state | Local-cluster MinIO | `prodbox-test-pulumi-backends` bucket | The local cluster must exist before remote AWS resources are created |
+| Pulumi backend state | Local-cluster MinIO | `prodbox-test-pulumi-backends` bucket | The local cluster must exist before remote AWS resources are created; backend validation recreates a deleted MinIO export host path and restarts `deployment/minio` before retrying login |
 | Certificate material | Kubernetes | Secrets issued by cert-manager | ACME server URL comes from repository config, and ZeroSSL EAB material is projected into `cert-manager/acme-eab-credentials` when configured |
-| Gateway continuity state | Kubernetes plus retained chart state | Cluster resources plus `.prodbox-state/` | Used for leader election and event-key continuity |
+| Gateway continuity state | Kubernetes plus retained chart state | Cluster resources plus `.prodbox-state/` | Used for ownership projection, DNS-write state, and event-key continuity |
 | AWS admin credentials | `prodbox-config.dhall` `aws_admin` section | Operator-authored repository root | Test-harness-only stored-admin-credential exception; not a supported public command or runtime credential source |
 
 ## Artifact Locations

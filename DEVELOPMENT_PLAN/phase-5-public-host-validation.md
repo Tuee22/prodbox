@@ -4,15 +4,15 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md)
 
-> **Purpose**: Capture the live public-host closure work and the named external proof path after the
+> **Purpose**: Capture the public-host diagnostic and named external proof path after the
 > gateway, chart, and infrastructure ownership have moved to Haskell.
 
 ## Phase Summary
 
-This phase proves the public DNS, TLS, ingress, and external auth path through Haskell-only
-surfaces. It preserves the existing public-host doctrine: external proof remains external-only,
-explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based closure remains
-unsupported. This phase is closed on its owned proof surfaces.
+This phase defines the public DNS, TLS, ingress, and external auth proof surfaces on the
+Haskell stack. It preserves the existing public-host doctrine: external proof remains
+external-only, explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based
+closure remains unsupported. This phase is closed on its owned repository surfaces.
 
 ## Current Baseline In Worktree
 
@@ -36,8 +36,8 @@ Close the public DNS and ingress path on the Haskell runtime that owns it.
 
 - `prodbox host public-edge` is implemented in Haskell and preserves the supported diagnostic
   classification contract.
-- Public DNS delegation, live HTTPS reachability, TLS issuance, and auth redirects are proven on
-  the Haskell stack.
+- Public DNS delegation, live HTTPS reachability, TLS issuance, and auth redirects are proven
+  through Haskell-owned command surfaces.
 - The external proof path remains cluster-external and does not depend on manual kubeconfig
   workflows.
 - Wildcard public DNS remains unsupported.
@@ -60,6 +60,8 @@ Close the public DNS and ingress path on the Haskell runtime that owns it.
 - The named validation commands `prodbox test integration charts-vscode` and
   `prodbox test integration public-dns` now run executable native Haskell validation flows via
   `src/Prodbox/TestValidation.hs`.
+- Environment-dependent public-edge success remains owned by those commands rather than asserted
+  here as a fresh run result.
 ### Remaining Work
 
 None.

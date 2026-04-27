@@ -16,7 +16,9 @@ in-cluster gateway workload. It owns the gateway image packaging contract, Harbo
 delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. This phase is closed
 on its repository-owned surfaces. The gateway container doctrine is implemented on
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
-the retained in-image AWS CLI bundle.
+the retained in-image AWS CLI bundle. The current daemon surface implements config generation,
+heartbeat recording, in-memory ownership projection, DNS-write gating, REST status, and HMAC
+event signing; the broader distributed protocol remains captured in the TLA+ and doctrine docs.
 
 ## Current Baseline In Worktree
 
@@ -111,7 +113,7 @@ container doctrine.
 
 None.
 
-## Sprint 2.2: Formal Verification and DNS-Write Ownership Parity ✅
+## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
 
 **Status**: Done
 **Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`
@@ -119,14 +121,16 @@ None.
 
 ### Objective
 
-Retain the formal verification and single-writer DNS ownership guarantees after the gateway port.
+Retain the formal verification entrypoint and the explicit DNS-write-gate contract after the
+gateway port.
 
 ### Deliverables
 
 - `prodbox tla-check` remains part of the supported validation surface.
 - Gateway config generation still emits `dns_write_gate` for explicit public hostnames.
-- Route 53 write ownership remains single-writer under leader election.
-- Partition-heal and failover behavior are proved on the Haskell gateway.
+- The TLA+ model remains the authoritative formal surface for Route 53 write-ownership semantics.
+- Gateway partition and ownership reasoning remain documented through the TLA+ spec and the
+  modelling-assumptions correspondence notes.
 
 ### Validation
 
@@ -140,10 +144,10 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
   TLC workflow plus `documents/engineering/tla/tlc_last_run.txt` result persistence.
 - `test/unit/Main.hs` proves parser routing for native `tla-check`.
 - Native Haskell `gateway config-gen` preserves `dns_write_gate` emission. All Python TLA+ and
-  gateway wrappers have been removed. The Haskell gateway daemon runtime owns partition-heal and
-  failover behavior.
-- `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to an executable
-  native validation flow in `src/Prodbox/TestValidation.hs`.
+  gateway wrappers have been removed. The current runtime-to-model boundary is documented in
+  `documents/engineering/tla_modelling_assumptions.md`.
+- `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to the Haskell
+  `tla-check` validation surface through `src/Prodbox/TestValidation.hs`.
 ### Remaining Work
 
 None.

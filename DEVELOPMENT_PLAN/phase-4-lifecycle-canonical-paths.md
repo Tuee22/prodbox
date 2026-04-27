@@ -10,15 +10,10 @@
 ## Phase Summary
 
 This phase closes the hard migration gap between parity and replacement. It owns the Harbor-first
-local lifecycle, the narrowed Harbor bootstrap doctrine, AWS-only Pulumi scope, the non-Python
-Pulumi stack format, and the repository-wide Python removal that leaves the supported path
-Haskell-only.
-
-As of April 26, 2026, this phase is fully closed. Sprint `4.1`, Sprint `4.2`, and Sprint `4.3`
-all pass on the updated lifecycle path. The lifecycle now keeps the Harbor-first bootstrap
-doctrine intact while publishing lifecycle-managed custom images through the repo-owned
-`ubuntu:24.04` Dockerfiles with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool
-shims, and no mounted `haskell-toolchain` BuildKit context.
+local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
+the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
+supported path Haskell-only. This phase is closed on its repository-owned surfaces, including the
+lifecycle-owned bootstrap DNS and ACME `ClusterIssuer` reconcile in `src/Prodbox/CLI/Rke2.hs`.
 
 ## Current Baseline In Worktree
 
@@ -31,8 +26,11 @@ shims, and no mounted `haskell-toolchain` BuildKit context.
 - `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
-  plus `pulumi/aws-test/Main.yaml` are the only supported Pulumi stack programs; no supported
-  local-cluster platform or application deployment depends on Pulumi.
+  plus `pulumi/aws-test/Main.yaml` are the only supported public Pulumi stack programs; broad
+  local-cluster platform or application ownership no longer depends on Pulumi.
+- `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
+  `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
+  not expand the public `prodbox pulumi ...` surface.
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
@@ -84,6 +82,9 @@ contract without reintroducing Python or duplicate runtime paths.
 - `runNativeInstall` now performs the supported split explicitly: Harbor install and readiness
   first, Harbor-storage-backend bootstrap second, Harbor population and custom-image publication
   third, later Harbor-backed platform and chart workloads afterward.
+- The shared Helm repo-update and upgrade/install helpers in `src/Prodbox/CLI/Rke2.hs` now retry
+  transient upstream chart-fetch failures before surfacing a hard lifecycle failure, so the
+  supported clean-room rerun can absorb intermittent upstream `5xx` and timeout errors.
 - The Harbor readiness gate now requires both the external `/readyz` endpoint and the registry
   `/v2/` endpoint on `127.0.0.1:30080`, with six consecutive successful probe rounds before Docker
   login, mirror, or custom-image publication proceeds on a fresh cluster.
@@ -102,22 +103,6 @@ contract without reintroducing Python or duplicate runtime paths.
   response for a missing custom-image target as a build-required miss instead of a fatal inspect
   failure, so `prodbox rke2 install` rebuilds and publishes `prodbox-nginx-oidc` before later
   chart work resumes.
-- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox dns check`, and `./.build/prodbox host public-edge`.
-- On April 26, 2026, direct live chart and public-host reruns passed
-  `./.build/prodbox test integration charts-platform`,
-  `./.build/prodbox charts delete vscode --yes`,
-  `./.build/prodbox charts deploy vscode`,
-  `./.build/prodbox test integration charts-vscode`, and
-  `./.build/prodbox test integration public-dns`, confirming that the lifecycle-owned cluster now
-  closes again through Harbor bootstrap, Percona operator install, Route 53 bootstrap, and
-  public-edge readiness.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  completing destructive delete, supported-runtime restore, `Validation: lifecycle`,
-  destructive postflight teardown, and the final supported-runtime restore to
-  `CLASSIFICATION=ready-for-external-proof`.
-
 ### Remaining Work
 
 None.
@@ -130,15 +115,16 @@ None.
 
 ### Objective
 
-Retain Pulumi as the IaC engine for AWS validation resources while removing Python and
-local-cluster supported ownership from the Pulumi path.
+Retain Pulumi as the IaC engine for AWS validation resources while removing Python and broad
+local-cluster supported ownership from the public Pulumi path.
 
 ### Deliverables
 
 - Supported Pulumi stack programs are non-Python.
 - Haskell owns Pulumi stack selection, config rendering, output parsing, and failure reporting.
 - The AWS validation-stack paths continue to close through `prodbox pulumi ...`.
-- No supported local-cluster platform or application deployment depends on Pulumi.
+- No supported root `Pulumi.yaml`, `pulumi/home`, or broad local-cluster public operator flow
+  depends on Pulumi.
 - No supported Pulumi program depends on Python.
 
 ### Validation
@@ -156,20 +142,13 @@ local-cluster supported ownership from the Pulumi path.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the retained AWS IaC programs.
 - `src/Prodbox/CLI/Pulumi.hs` no longer exposes `up|preview|destroy|refresh|stack-init` for local
-  cluster ownership; the public Pulumi surface is AWS-only.
+  cluster ownership; the public Pulumi surface is AWS-validation-only.
+- `src/Prodbox/CLI/Rke2.hs` retains bootstrap DNS reconcile and ACME `ClusterIssuer` projection
+  on the lifecycle path rather than on the public `prodbox pulumi ...` surface.
 - The AWS validation stack inputs are split by sensitivity: non-secret operator-CIDR and
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
   Haskell infra modules, while AWS provider credentials stay in `prodbox-config.dhall` and are
   projected into Pulumi through the Haskell-owned subprocess environment.
-- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
-  `./.build/prodbox test integration aws-eks`, and a second
-  `./.build/prodbox pulumi eks-destroy --yes` passed after
-  `src/Prodbox/Infra/AwsEksTestStack.hs` gained canonical unmanaged-residue purge before create
-  and destroy when no saved snapshot exists.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising the `aws-eks`, `pulumi`, and AWS HA-RKE2 create/destroy surfaces plus the final
-  destructive postflight teardown.
-
 ### Remaining Work
 
 None.
@@ -221,10 +200,10 @@ None.
 **Engineering docs to create/update:**
 
 - `documents/engineering/aws_integration_environment_doctrine.md` - AWS validation environment and
-  Pulumi boundary after local-cluster decoupling.
+  Pulumi boundary after broad local-cluster decoupling.
 - `documents/engineering/aws_test_environment.md` - retained AWS validation environment doctrine.
-- `documents/engineering/cli_command_surface.md` - canonical Haskell lifecycle and AWS-only Pulumi
-  surface.
+- `documents/engineering/cli_command_surface.md` - canonical Haskell lifecycle and public
+  AWS-validation Pulumi surface.
 - `documents/engineering/code_quality.md` - final non-Python quality gate.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
   inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.

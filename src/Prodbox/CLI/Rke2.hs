@@ -40,6 +40,9 @@ import Data.List (
     nub,
  )
 import Data.Text qualified as Text
+import Prodbox.AwsEnvironment (
+    overlayAwsCredentials,
+ )
 import Prodbox.CLI.Command (
     PulumiCommand (..),
     Rke2Command (..),
@@ -81,7 +84,6 @@ import Prodbox.Settings (
     route53,
     secret_access_key,
     server,
-    session_token,
     validateAndLoadSettings,
     validatedConfig,
     zone_id,
@@ -710,58 +712,47 @@ ensureMinioRuntime repoRoot imageSource = do
     continue =
         let (minioImage, minioMcImage) = minioChartImages imageSource
          in runSequentially
-                [ runCommand
-                    CommandSpec
-                        { commandPath = "helm"
-                        , commandArguments = ["repo", "update"]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
-                        }
-                , runCommand
-                    CommandSpec
-                        { commandPath = "helm"
-                        , commandArguments =
-                            [ "upgrade"
-                            , "--install"
-                            , minioReleaseName
-                            , minioChartRef
-                            , "--version"
-                            , minioChartVersion
-                            , "--namespace"
-                            , minioNamespace
-                            , "--create-namespace"
-                            , "--set"
-                            , "mode=standalone"
-                            , "--set"
-                            , "replicas=1"
-                            , "--set"
-                            , "persistence.enabled=true"
-                            , "--set"
-                            , "persistence.existingClaim=minio"
-                            , "--set"
-                            , "image.repository=" ++ renderImageRefWithoutTag minioImage
-                            , "--set"
-                            , "image.tag=" ++ ContainerImage.imageTag minioImage
-                            , "--set"
-                            , "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage
-                            , "--set"
-                            , "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage
-                            , "--set"
-                            , "persistence.size=200Gi"
-                            , "--set"
-                            , "service.type=ClusterIP"
-                            , "--set"
-                            , "consoleService.type=ClusterIP"
-                            , "--set"
-                            , "resources.requests.memory=256Mi"
-                            , "--set"
-                            , "resources.requests.cpu=100m"
-                            , "--set"
-                            , "resources.limits.memory=512Mi"
-                            ]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
-                        }
+                [ runHelmCommandWithRetries repoRoot ["repo", "update"]
+                , runHelmCommandWithRetries
+                    repoRoot
+                    [ "upgrade"
+                    , "--install"
+                    , minioReleaseName
+                    , minioChartRef
+                    , "--version"
+                    , minioChartVersion
+                    , "--namespace"
+                    , minioNamespace
+                    , "--create-namespace"
+                    , "--set"
+                    , "mode=standalone"
+                    , "--set"
+                    , "replicas=1"
+                    , "--set"
+                    , "persistence.enabled=true"
+                    , "--set"
+                    , "persistence.existingClaim=minio"
+                    , "--set"
+                    , "image.repository=" ++ renderImageRefWithoutTag minioImage
+                    , "--set"
+                    , "image.tag=" ++ ContainerImage.imageTag minioImage
+                    , "--set"
+                    , "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage
+                    , "--set"
+                    , "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage
+                    , "--set"
+                    , "persistence.size=200Gi"
+                    , "--set"
+                    , "service.type=ClusterIP"
+                    , "--set"
+                    , "consoleService.type=ClusterIP"
+                    , "--set"
+                    , "resources.requests.memory=256Mi"
+                    , "--set"
+                    , "resources.requests.cpu=100m"
+                    , "--set"
+                    , "resources.limits.memory=512Mi"
+                    ]
                 , runCommand
                     CommandSpec
                         { commandPath = "kubectl"
@@ -805,40 +796,29 @@ ensureHarborRegistryRuntime repoRoot = do
                 then pure ExitSuccess
                 else
                     runSequentially
-                        [ runCommand
-                            CommandSpec
-                                { commandPath = "helm"
-                                , commandArguments = ["repo", "update"]
-                                , commandEnvironment = Nothing
-                                , commandWorkingDirectory = Just repoRoot
-                                }
-                        , runCommand
-                            CommandSpec
-                                { commandPath = "helm"
-                                , commandArguments =
-                                    [ "upgrade"
-                                    , "--install"
-                                    , harborReleaseName
-                                    , harborRepositoryName ++ "/harbor"
-                                    , "--namespace"
-                                    , harborNamespace
-                                    , "--create-namespace"
-                                    , "--set"
-                                    , "expose.type=nodePort"
-                                    , "--set"
-                                    , "expose.tls.enabled=false"
-                                    , "--set"
-                                    , "expose.nodePort.ports.http.nodePort=30080"
-                                    , "--set"
-                                    , "externalURL=http://" ++ harborRegistryEndpoint
-                                    , "--set"
-                                    , "harborAdminPassword=Harbor12345"
-                                    , "--set"
-                                    , "persistence.enabled=false"
-                                    ]
-                                , commandEnvironment = Nothing
-                                , commandWorkingDirectory = Just repoRoot
-                                }
+                        [ runHelmCommandWithRetries repoRoot ["repo", "update"]
+                        , runHelmCommandWithRetries
+                            repoRoot
+                            [ "upgrade"
+                            , "--install"
+                            , harborReleaseName
+                            , harborRepositoryName ++ "/harbor"
+                            , "--namespace"
+                            , harborNamespace
+                            , "--create-namespace"
+                            , "--set"
+                            , "expose.type=nodePort"
+                            , "--set"
+                            , "expose.tls.enabled=false"
+                            , "--set"
+                            , "expose.nodePort.ports.http.nodePort=30080"
+                            , "--set"
+                            , "externalURL=http://" ++ harborRegistryEndpoint
+                            , "--set"
+                            , "harborAdminPassword=Harbor12345"
+                            , "--set"
+                            , "persistence.enabled=false"
+                            ]
                         ]
         case installExit of
             ExitFailure _ -> pure installExit
@@ -864,14 +844,7 @@ ensureHarborRegistryRuntime repoRoot = do
                                 case harborEndpointExit of
                                     ExitFailure _ -> pure harborEndpointExit
                                     ExitSuccess -> do
-                                        loginExit <-
-                                            runCommand
-                                                CommandSpec
-                                                    { commandPath = "docker"
-                                                    , commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
-                                                    , commandEnvironment = Nothing
-                                                    , commandWorkingDirectory = Just repoRoot
-                                                    }
+                                        loginExit <- ensureHarborDockerLogin repoRoot
                                         case loginExit of
                                             ExitFailure _ -> pure loginExit
                                             ExitSuccess ->
@@ -1749,36 +1722,74 @@ ensureHelmRepoAdded repoRoot repoName repoUrl = do
                 ExitSuccess -> updateRepo
   where
     updateRepo =
-        runCommand
-            CommandSpec
-                { commandPath = "helm"
-                , commandArguments = ["repo", "update", repoName]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
-                }
+        runHelmCommandWithRetries repoRoot ["repo", "update", repoName]
 
 helmUpgradeInstallWithJsonValues :: FilePath -> String -> String -> String -> String -> Value -> IO ExitCode
 helmUpgradeInstallWithJsonValues repoRoot releaseName chartRef chartVersion namespace values =
     withTemporaryJsonBytes ("prodbox-helm-values-" ++ releaseName) (encode values) $ \valuesPath ->
-        runCommand
-            CommandSpec
-                { commandPath = "helm"
-                , commandArguments =
-                    [ "upgrade"
-                    , "--install"
-                    , releaseName
-                    , chartRef
-                    , "--version"
-                    , chartVersion
-                    , "--namespace"
-                    , namespace
-                    , "--create-namespace"
-                    , "-f"
-                    , valuesPath
-                    ]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
-                }
+        runHelmCommandWithRetries
+            repoRoot
+            [ "upgrade"
+            , "--install"
+            , releaseName
+            , chartRef
+            , "--version"
+            , chartVersion
+            , "--namespace"
+            , namespace
+            , "--create-namespace"
+            , "-f"
+            , valuesPath
+            ]
+
+runHelmCommandWithRetries :: FilePath -> [String] -> IO ExitCode
+runHelmCommandWithRetries repoRoot arguments = go helmTransientRetryAttempts
+  where
+    go attemptsRemaining = do
+        outputResult <- captureToolOutput repoRoot "helm" arguments
+        case outputResult of
+            Left err -> failWith err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess -> do
+                        emitCapturedProcessOutput output
+                        pure ExitSuccess
+                    failure@(ExitFailure _)
+                        | attemptsRemaining > 1 && isRetryableHelmFailure output -> do
+                            hPutStrLn
+                                stderr
+                                ( "Retrying helm "
+                                    ++ unwords arguments
+                                    ++ " after transient upstream failure ("
+                                    ++ show (helmTransientRetryAttempts - attemptsRemaining + 1)
+                                    ++ "/"
+                                    ++ show helmTransientRetryAttempts
+                                    ++ "): "
+                                    ++ outputDetail output
+                                )
+                            threadDelay helmTransientRetryDelayMicroseconds
+                            go (attemptsRemaining - 1)
+                        | otherwise -> do
+                            emitCapturedProcessOutput output
+                            pure failure
+
+isRetryableHelmFailure :: ProcessOutput -> Bool
+isRetryableHelmFailure output =
+    let detail = map toLower (outputDetail output)
+     in any
+            (`isInfixOf` detail)
+            [ "502 bad gateway"
+            , "503 service unavailable"
+            , "504 gateway timeout"
+            , "429 too many requests"
+            , "failed to fetch"
+            , "failed to download"
+            , "connection reset by peer"
+            , "tls handshake timeout"
+            , "i/o timeout"
+            , "context deadline exceeded"
+            , "temporary failure"
+            ]
 
 waitForCrdEstablished :: FilePath -> String -> IO ExitCode
 waitForCrdEstablished repoRoot crdName =
@@ -1825,24 +1836,7 @@ kubectlApplyJsonManifest repoRoot prefix items =
 
 awsCommandEnvironment :: [(String, String)] -> ValidatedSettings -> IO [(String, String)]
 awsCommandEnvironment baseEnvironment settings =
-    pure (mergeEnvironmentEntries (awsEnvironmentEntries (aws (validatedConfig settings))) baseEnvironment)
-
-awsEnvironmentEntries :: Credentials -> [(String, String)]
-awsEnvironmentEntries credentials =
-    [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials))
-    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials))
-    , ("AWS_REGION", Text.unpack (region credentials))
-    , ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
-    ]
-        ++ case session_token credentials of
-            Nothing -> []
-            Just token -> [("AWS_SESSION_TOKEN", Text.unpack token)]
-
-mergeEnvironmentEntries :: [(String, String)] -> [(String, String)] -> [(String, String)]
-mergeEnvironmentEntries updates baseEnvironment =
-    updates ++ filter (not . (`elem` updatedKeys) . fst) baseEnvironment
-  where
-    updatedKeys = map fst updates
+    pure (overlayAwsCredentials baseEnvironment (aws (validatedConfig settings)))
 
 lookupNonEmptyEnv :: String -> IO (Maybe String)
 lookupNonEmptyEnv name = do
@@ -1987,7 +1981,15 @@ ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
             buildExit <-
                 if allTargetsReady
                     then pure ExitSuccess
-                    else withDockerBuildxBuilder repoRoot (buildMissingCustomImageVariants repoRoot buildPlan taggedRefs)
+                    else
+                        withDockerBuildxBuilder
+                            repoRoot
+                            ( do
+                                loginExit <- ensureHarborDockerLogin repoRoot
+                                case loginExit of
+                                    ExitFailure _ -> pure loginExit
+                                    ExitSuccess -> buildMissingCustomImageVariants repoRoot buildPlan taggedRefs
+                            )
             case buildExit of
                 ExitFailure _ -> pure buildExit
                 ExitSuccess ->
@@ -2265,6 +2267,16 @@ mergeMirrorCandidatePairs = foldl mergePair []
 renderDigestedImageRef :: ContainerImage.ImageRef -> String -> String
 renderDigestedImageRef imageRef digest =
     ContainerImage.imageRegistry imageRef ++ "/" ++ ContainerImage.imageRepository imageRef ++ "@" ++ digest
+
+ensureHarborDockerLogin :: FilePath -> IO ExitCode
+ensureHarborDockerLogin repoRoot =
+    runCommand
+        CommandSpec
+            { commandPath = "docker"
+            , commandArguments = ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
+            }
 
 ensureDockerBuildxBuilder :: FilePath -> IO ExitCode
 ensureDockerBuildxBuilder repoRoot = do
@@ -3278,6 +3290,12 @@ harborEndpointStabilitySuccesses = 6
 
 harborEndpointStabilityDelayMicroseconds :: Int
 harborEndpointStabilityDelayMicroseconds = 5000000
+
+helmTransientRetryAttempts :: Int
+helmTransientRetryAttempts = 3
+
+helmTransientRetryDelayMicroseconds :: Int
+helmTransientRetryDelayMicroseconds = 10000000
 
 runCommand :: CommandSpec -> IO ExitCode
 runCommand spec = do

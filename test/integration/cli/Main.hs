@@ -408,6 +408,12 @@ main = hspec $ do
 
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
+                length
+                    ( filter
+                        (== "login|127.0.0.1:30080|--username|admin|--password|Harbor12345")
+                        (lines dockerRecord)
+                    )
+                    `shouldSatisfy` (>= 2)
                 dockerRecord `shouldContain` "buildx|create|--name|prodbox-multiarch-hostnet|--driver|docker-container|--driver-opt|network=host|--use"
                 dockerRecord `shouldContain` "buildx|stop|prodbox-multiarch-hostnet"
                 dockerRecord `shouldNotContain` "docker/bitnami-postgresql-repmgr.Dockerfile"

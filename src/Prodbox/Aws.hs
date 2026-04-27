@@ -44,6 +44,9 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Numeric.Natural (Natural)
+import Prodbox.AwsEnvironment (
+    overlayAwsCredentials,
+ )
 import Prodbox.CLI.Command (
     AwsCommand (..),
     PolicyTier (..),
@@ -1327,37 +1330,15 @@ subprocessBaseEnvironment :: IO [(String, String)]
 subprocessBaseEnvironment = do
     environment <- getEnvironment
     let keep key = maybe [] (\value -> [(key, value)]) (lookup key environment)
-        base = concatMap keep ["PATH", "HOME", "LANG", "TERM", "USER"]
-    pure (upsertEnv "AWS_EC2_METADATA_DISABLED" "true" (upsertEnv "AWS_PAGER" "" base))
+    pure (concatMap keep ["PATH", "HOME", "LANG", "TERM", "USER"])
 
 adminAwsEnvironment :: Credentials -> IO [(String, String)]
 adminAwsEnvironment credentials = do
     base <- subprocessBaseEnvironment
-    pure
-        ( upsertEnv
-            "AWS_DEFAULT_REGION"
-            (Text.unpack (region credentials))
-            ( upsertEnv
-                "AWS_REGION"
-                (Text.unpack (region credentials))
-                ( maybe
-                    id
-                    (upsertEnv "AWS_SESSION_TOKEN" . Text.unpack)
-                    (session_token credentials)
-                    ( upsertEnv
-                        "AWS_SECRET_ACCESS_KEY"
-                        (Text.unpack (secret_access_key credentials))
-                        (upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id credentials)) base)
-                    )
-                )
-            )
-        )
+    pure (overlayAwsCredentials base credentials)
 
 operationalAwsEnvironment :: Credentials -> IO [(String, String)]
 operationalAwsEnvironment = adminAwsEnvironment
-
-upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
-upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
 
 runAwsCliCompleted :: FilePath -> Credentials -> [String] -> IO ProcessOutput
 runAwsCliCompleted repoRoot adminCredentials arguments = do

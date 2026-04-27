@@ -25,6 +25,10 @@ import Options.Applicative (
 import Prodbox.Aws (
     buildIamPolicyDocument,
  )
+import Prodbox.AwsEnvironment (
+    isolatedAwsEnvironment,
+    overlayAwsCredentials,
+ )
 import Prodbox.CLI.Command (
     AwsCommand (..),
     ChartsCommand (..),
@@ -1144,6 +1148,46 @@ main = hspec $ do
                                         _ -> expectationFailure "expected deployment resources array"
                                 _ -> expectationFailure "expected deployment object"
                         _ -> expectationFailure "expected exported object"
+
+    describe "AWS environment helpers" $ do
+        let credentialsWithoutSession =
+                Credentials
+                    { access_key_id = "config-access-key"
+                    , secret_access_key = "config-secret-key"
+                    , session_token = Nothing
+                    , region = "us-west-2"
+                    }
+            credentialsWithSession =
+                credentialsWithoutSession{session_token = Just "config-session-token"}
+
+        it "replaces ambient AWS auth sources with repo-owned credentials" $ do
+            let environment =
+                    [ ("PATH", "/usr/bin")
+                    , ("AWS_PROFILE", "default")
+                    , ("AWS_SHARED_CREDENTIALS_FILE", "/tmp/creds")
+                    , ("AWS_ACCESS_KEY_ID", "ambient-access-key")
+                    , ("AWS_SECRET_ACCESS_KEY", "ambient-secret-key")
+                    , ("AWS_SESSION_TOKEN", "ambient-session-token")
+                    ]
+                updatedEnvironment = overlayAwsCredentials environment credentialsWithoutSession
+            lookup "PATH" updatedEnvironment `shouldBe` Just "/usr/bin"
+            lookup "AWS_ACCESS_KEY_ID" updatedEnvironment `shouldBe` Just "config-access-key"
+            lookup "AWS_SECRET_ACCESS_KEY" updatedEnvironment `shouldBe` Just "config-secret-key"
+            lookup "AWS_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+            lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+            lookup "AWS_EC2_METADATA_DISABLED" updatedEnvironment `shouldBe` Just "true"
+            lookup "AWS_PAGER" updatedEnvironment `shouldBe` Just ""
+            lookup "AWS_PROFILE" updatedEnvironment `shouldBe` Nothing
+            lookup "AWS_SHARED_CREDENTIALS_FILE" updatedEnvironment `shouldBe` Nothing
+            lookup "AWS_SESSION_TOKEN" updatedEnvironment `shouldBe` Nothing
+
+        it "projects an explicit session token when the repo config provides one" $ do
+            let updatedEnvironment = isolatedAwsEnvironment credentialsWithSession
+            lookup "AWS_ACCESS_KEY_ID" updatedEnvironment `shouldBe` Just "config-access-key"
+            lookup "AWS_SECRET_ACCESS_KEY" updatedEnvironment `shouldBe` Just "config-secret-key"
+            lookup "AWS_SESSION_TOKEN" updatedEnvironment `shouldBe` Just "config-session-token"
+            lookup "AWS_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+            lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
 
     describe "native validation helpers" $ do
         it "retries AWS test-stack SSH validation until a node accepts connections" $

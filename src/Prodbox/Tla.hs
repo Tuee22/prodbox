@@ -32,7 +32,7 @@ runTlaCheck repoRoot = do
                 captureCommand
                     CommandSpec
                         { commandPath = "docker"
-                        , commandArguments = tail command
+                        , commandArguments = drop 1 command
                         , commandEnvironment = Nothing
                         , commandWorkingDirectory = Just repoRoot
                         }

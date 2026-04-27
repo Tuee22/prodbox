@@ -12,12 +12,10 @@
 ## Phase Summary
 
 This phase owns interactive config authoring, policy generation, IAM user management,
-service-quota automation, and the test-only elevated credential harness. The Haskell worktree now
-closes the intended credential boundary: public onboarding and public AWS administration prompt for
-temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
-validation harness. The targeted AWS-backed reruns on its owned surfaces now pass on the
-implemented repository surfaces, and the authoritative aggregate rerun also passes again on April
-26, 2026. This phase is closed on its owned credential and IAM boundaries.
+service-quota automation, and the test-only elevated credential harness. The implemented
+credential boundary is now Haskell-owned: public onboarding and public AWS administration prompt
+for temporary elevated credentials, and stored `aws_admin.*` is consumed only by the native IAM
+validation harness. This phase is closed on its repository-owned credential and IAM boundaries.
 
 ## Current Baseline In Worktree
 
@@ -74,14 +72,9 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   elevated credentials only; stored `aws_admin.*` is not read on the supported public path.
-- On April 26, 2026, fresh local reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
-  continuing to exercise the public onboarding surfaces on the supported Haskell path.
-
 ### Remaining Work
 
-- None.
+None.
 
 ## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 
@@ -122,14 +115,9 @@ Move the standalone AWS administration commands to Haskell while preserving the 
   setup/teardown and quota flows.
 - `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin.*` config and use the interactively supplied temporary elevated credential instead.
-- On April 26, 2026, fresh local reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
-  continuing to exercise the public AWS administration surfaces on the supported Haskell path.
-
 ### Remaining Work
 
-- None.
+None.
 
 ## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ✅
 
@@ -175,12 +163,6 @@ credential harness.
 - `src/Prodbox/EffectInterpreter.hs` now checks `pulumi whoami` against the canonical
   repo-backed MinIO backend during prerequisites, so the aggregate IAM proof no longer depends on
   stale ambient Pulumi host-login state.
-- On April 26, 2026, fresh local reruns passed `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
-  `./.build/prodbox test integration aws-iam`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
-  re-establishing the aggregate IAM closure proof on supported repo-root operational `aws.*`
-  credentials.
 - The aggregate IAM proof now executes successfully before the downstream AWS-backed suites rather
   than failing at prerequisite validation.
 

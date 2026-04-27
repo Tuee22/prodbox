@@ -15,10 +15,10 @@ repository-root Dhall config loader, the Haskell command runtime and test harnes
 foundations for true IaC plus AWS validation. It also owns the canonical frontend image placement
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
-Pulumi ownership is Phase `4` work, not a change to the foundations closed here.
-
-As of April 26, 2026, this phase is fully closed. Sprint `1.1`, Sprint `1.2`, and Sprint `1.3`
-all pass on the updated toolchain path. The frontend container doctrine is now implemented on
+Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`
+and Sprint `1.2` are closed on their repository-owned surfaces. Sprint `1.3` is also closed,
+including isolated supported AWS subprocess auth projection through `src/Prodbox/AwsEnvironment.hs`
+and the live AWS-backed validation gates. The implemented frontend container doctrine uses
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
 explicit repo package-bound updates.
 
@@ -52,8 +52,11 @@ explicit repo package-bound updates.
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
   Haskell validation flows through `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/EffectInterpreter.hs`, and the AWS-backed
+  runtime modules now strip ambient AWS auth and profile variables before projecting
+  repository-root credentials into supported subprocesses.
 - The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
-  `pulumi/aws-test/Main.yaml`. The AWS validation stacks match the target Pulumi boundary.
+  `pulumi/aws-test/Main.yaml`. The public AWS validation stacks match the target Pulumi boundary.
 - The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
@@ -112,12 +115,6 @@ artifact plus container-build topology contract.
   revised doctrine.
 - `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
-- On April 26, 2026, fresh reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
-  `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, and `./.build/prodbox test integration env`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed on the
-  updated toolchain path after clearing the former Phase `1/2` AWS prerequisite gate and
-  re-exercising the built-frontend CLI and env proof surfaces.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned in this change
   with the canonical Dockerfile location and the implemented `ghcup` plus `ghc-9.14.1` doctrine.
 
@@ -192,9 +189,6 @@ modules.
   cluster-backed readiness roots used by the named validation flows.
 - `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
   proof surfaces for the Haskell-owned command surface.
-- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
-  `./.build/prodbox test integration env`.
 - Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
   repository and current validation harness.
 ### Remaining Work
@@ -204,7 +198,7 @@ None.
 ## Sprint 1.3: Local Lifecycle and AWS Validation Foundations on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestRunner.hs`, `pulumi/`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestRunner.hs`, `pulumi/`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -242,19 +236,24 @@ the same supported product scope.
   runtime surfaces for `prodbox rke2 ...` and `prodbox pulumi ...`.
 - `src/Prodbox/TestRunner.hs` aggregate bootstrap and postflight invoke native Haskell
   `prodbox rke2`, `prodbox pulumi`, and `prodbox charts` surfaces.
+- `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/CLI/Rke2.hs`,
+  `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, and
+  `src/Prodbox/TestValidation.hs` now isolate supported AWS subprocess auth from ambient host AWS
+  environment or shared-profile discovery, so supported paths consume only repository-root
+  credentials.
 - `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, and
   `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
-  `./.build/prodbox test integration aws-eks`, and a second
-  `./.build/prodbox pulumi eks-destroy --yes` passed after
-  `src/Prodbox/Infra/AwsEksTestStack.hs` gained canonical unmanaged-residue purge before create
-  and destroy when no saved snapshot exists.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising the `aws-eks`, `pulumi`, and AWS HA-RKE2 create/destroy surfaces plus the final
-  destructive postflight teardown.
-
+- `./.build/prodbox check-code`, `./.build/prodbox test unit`,
+  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
+  `./.build/prodbox test all` now pass on the implemented toolchain path.
+- The current repository-root operational `aws.*` credentials satisfy
+  `aws sts get-caller-identity --output json` on the supported path, and the aggregate rerun
+  closes the live `aws_credentials_valid` prerequisite before entering the AWS-backed validation
+  bodies.
+- The aggregate clean-room rerun exercises the lifecycle, Pulumi, EKS, and HA-RKE2 AWS validation
+  surfaces, then leaves both AWS validation stacks absent after postflight cleanup.
 ### Remaining Work
 
 None.

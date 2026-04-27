@@ -14,14 +14,11 @@ This phase ports the chart platform and retained-storage orchestration to Haskel
 deterministic PV/PVC rebinding and the supported cluster-backed `vscode` delivery model. It owns
 retained storage, Harbor-backed image sourcing for the supported chart stack, the
 `vscode-nginx` image exception under the repository Docker doctrine, and the PostgreSQL doctrine
-for every Helm-managed application stack.
-
-As of April 26, 2026, this phase is fully closed. Sprint `3.1`, Sprint `3.2`, and Sprint `3.3`
-all pass on the updated lifecycle path. The supported chart platform remains Haskell-owned, the
-`vscode` stack stays on Harbor-backed images after Harbor bootstrap, and the PostgreSQL doctrine
-for every Helm-managed application stack is now the implemented Percona-operator-backed Patroni
-HA path: exactly three replicas, synchronous replication, and no embedded chart-local PostgreSQL
-subchart.
+for every Helm-managed application stack. This phase is closed on its repository-owned surfaces.
+The supported chart platform remains Haskell-owned, the `vscode` stack stays on Harbor-backed
+images after Harbor bootstrap, and the PostgreSQL doctrine for every Helm-managed application
+stack is the implemented Percona-operator-backed Patroni HA path: exactly three replicas,
+synchronous replication, and no embedded chart-local PostgreSQL subchart.
 
 ## Current Baseline In Worktree
 
@@ -75,9 +72,6 @@ platform doctrine.
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
 - `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`.
-- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, and `./.build/prodbox test integration charts-platform`.
-
 ### Remaining Work
 
 None.
@@ -118,15 +112,6 @@ image sourcing to the canonical Harbor-first doctrine.
 - `src/Prodbox/TestRunner.hs` waits for `prodbox host public-edge` to report
   `CLASSIFICATION=ready-for-external-proof` before the external `charts-vscode` curl proof
   continues.
-- On April 26, 2026, a direct retained-state rerun passed
-  `./.build/prodbox charts delete vscode --yes` followed by
-  `./.build/prodbox charts deploy vscode`.
-- On April 26, 2026, a fresh live rerun passed
-  `./.build/prodbox test integration charts-vscode`, re-exercising the Harbor-backed
-  `keycloak-postgres -> keycloak -> vscode` path and the public-edge redirect proof.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising the `charts-vscode` proof surface on the final clean-room reinstall path.
-
 ### Remaining Work
 
 None.
@@ -197,20 +182,6 @@ dependency.
   synchronous mode, explicit security IDs `1001`, and deterministic manual-PV bindings.
 - `charts/keycloak/` now consumes the namespace-local retained database secret and the namespace-local
   primary service endpoint.
-- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, and `./.build/prodbox test integration cli`, which together
-  re-exercised the Percona chart values, CRD, image mirrors, secret names, and PVC-discovery
-  path through the unit and built-frontend suites.
-- On April 26, 2026, fresh live reruns passed `./.build/prodbox test integration charts-platform`,
-  `./.build/prodbox charts delete vscode --yes`, `./.build/prodbox charts deploy vscode`, and
-  `./.build/prodbox test integration charts-vscode`.
-- Those live reruns re-established the Percona migrate-and-install path, Harbor-backed Patroni
-  image sourcing, and retained-state redeploy through the staged `1 -> 3` replica restore flow
-  on the supported `keycloak-postgres -> keycloak -> vscode` path.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising `charts-platform`, `charts-storage`, `charts-vscode`, and the final
-  supported-runtime restore to `CLASSIFICATION=ready-for-external-proof`.
-
 ### Remaining Work
 
 None.

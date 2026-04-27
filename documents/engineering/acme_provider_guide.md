@@ -50,8 +50,8 @@ Supported cluster projection:
 2. `acme.eab_hmac_key` is rendered into the `cert-manager` namespace as the
    `acme-eab-credentials` secret and referenced from
    `spec.acme.externalAccountBinding.keySecretRef`.
-3. The Haskell Pulumi custom-resource reconcile omits `externalAccountBinding` entirely when the
-   selected provider does not use EAB.
+3. The Haskell lifecycle reconcile omits `externalAccountBinding` entirely when the selected
+   provider does not use EAB.
 
 ---
 

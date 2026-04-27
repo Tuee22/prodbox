@@ -26,26 +26,35 @@ govern this plan suite.
 
 ## Closure Status
 
-As of April 26, 2026, all phases in this plan are complete on their supported repository
-surfaces. The previously reopened implementation work in Phases `1-4` and Phase `6` now closes on
-the successful authoritative aggregate clean-room rerun `./.build/prodbox test all`. The current
-worktree uses in-image `ghcup` with
-pinned GHC `9.14.1` in
-`docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile`, removes the lifecycle-managed
-`haskell-toolchain=docker-image://docker.io/library/haskell:9.6.7-slim` publish path from
-`src/Prodbox/CLI/Rke2.hs`, upgrades `prodbox.cabal` and `cabal.project` for the explicit
-`ghc-9.14.1` path, and replaces the Zalando `postgres-operator` runtime, image, CRD, and chart
-assumptions with the Percona operator surface.
+All phases are currently closed on their owned repository surfaces. The codebase state that
+re-closed the previously reopened implementation work in Phases `1-4` and Phase `6` is present
+in the worktree:
 
-The supported architecture remains Haskell-only, Pulumi remains reserved for AWS validation IaC
-only, and the revised Haskell-build container doctrine keeps `ubuntu:24.04` as the base image
-while requiring in-image `ghcup`, a pinned GHC `9.14.1`, and no symlinked Haskell tool shims in
-containers that need Haskell builds. The chart-platform end state remains namespace-local
-Percona-operator-backed Patroni PostgreSQL HA for Helm-managed application data. The Harbor
+- `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` install `ghcup` in-image and pin
+  GHC `9.14.1`
+- `src/Prodbox/CLI/Rke2.hs` no longer uses the lifecycle-managed `haskell-toolchain` BuildKit
+  context
+- `prodbox.cabal` and `cabal.project` are aligned to the explicit `ghc-9.14.1` path
+- the chart and lifecycle surfaces now use the Percona operator rather than the retired Zalando
+  operator assumptions
+
+The supported architecture is Haskell-only. The public `prodbox pulumi ...` surface is limited to
+the AWS validation stacks under `pulumi/aws-eks/` and `pulumi/aws-test/`, while local-cluster
+lifecycle, bootstrap DNS reconcile, and ACME `ClusterIssuer` projection remain owned by
+`src/Prodbox/CLI/Rke2.hs`. The chart-platform end state remains namespace-local
+Percona-operator-backed Patroni PostgreSQL HA for Helm-managed application data, and the Harbor
 bootstrap exception remains limited to Harbor plus Harbor's storage backend before later Helm
-deployments switch to Harbor-backed image refs. The destructive clean-room rerun, public-host
-proof, and onboarding/IAM ownership surfaces are all revalidated and closed again on April 26,
-2026.
+deployments switch to Harbor-backed image refs.
+
+A fresh canonical rerun now passes `./.build/prodbox check-code`,
+`./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+`./.build/prodbox test integration env`, and `./.build/prodbox test all`. The rerun restores the
+supported public edge to `CLASSIFICATION=ready-for-external-proof`, and the postflight cleanup
+leaves both AWS validation stacks absent as confirmed by `./.build/prodbox pulumi eks-destroy
+--yes` and `./.build/prodbox pulumi test-destroy --yes`.
+
+Phases `1-7` are closed on their owned repository surfaces. The overall handoff is complete on
+the supported Haskell command surface described by this plan.
 
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
@@ -60,15 +69,17 @@ The repository now contains:
   surface
 - one direct `Dhall -> Haskell types` config contract rooted at operator-authored repository-root
   `prodbox-config.dhall`
+- one isolated supported AWS subprocess-auth projection path that ignores ambient host AWS auth
+  state and uses only repository-root credentials on supported flows
 - one test-harness-only stored-admin-credential exception under `prodbox-config.dhall`
   `aws_admin.*`
 - one native validation harness for the named real-world proof surfaces behind
   `prodbox test integration ...`
 - two stack-local YAML Pulumi validation paths under `pulumi/aws-eks/` and `pulumi/aws-test/`
 - zero Python implementation, Python toolchain, or Python bridge artifacts in the repository
-- one cleanup ledger that is empty on the supported path
+- one cleanup ledger with no pending-removal items on the supported path
 
-The rewrite now closes on the canonical phase model required by
+The rewrite remains on the canonical phase model required by
 [development_plan_standards.md](development_plan_standards.md).
 
 ## Document Index
@@ -123,26 +134,19 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: All phases are currently `Done`. Phase `1` closes on the updated
-frontend toolchain, direct-Dhall config contract, and native validation harness. Phase `2`
-closes on gateway packaging, DNS inspection, and the gateway proof set. Phase `3` closes on the
-Harbor-backed chart platform and the Percona retained-state restore path. Phase `4` closes on
-the Harbor-first lifecycle, AWS-only Pulumi scope, dual-arch publication, mixed-arch support,
-and unmanaged EKS-residue cleanup. Phase `5` closes on public-host proof. Phase `6` closes on the
-successful destructive clean-room rerun and zero-Python handoff. Phase `7` closes on onboarding,
-IAM, quota automation, and the elevated-credential proof harness.
+**Status interpretation**: Phase `1` and Phase `6` have re-closed on live validation, and
+Phases `2-5` plus Phase `7` remain done on their owned repository surfaces. The current plan
+state is fully closed on the supported Haskell command surface.
 
 ## Current Plan Status
 
-As of April 26, 2026, the development plan is current against the repository worktree:
+The development plan is current against the repository worktree on the following implemented
+surfaces:
 
-- Sprint `1.1`, Sprint `2.1`, Sprint `3.3`, and Sprint `4.1` have implemented their reopened
-  code changes: `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` now install `ghcup`
-  in-image and pin GHC `9.14.1`, `src/Prodbox/CLI/Rke2.hs` no longer uses the mounted
-  `haskell-toolchain` BuildKit context, `prodbox.cabal` and `cabal.project` are aligned to the
-  explicit `ghc-9.14.1` path, and the chart/runtime surface now uses the Percona operator.
-- `src/Prodbox/Settings.hs` now preserves the supported direct `Dhall -> Haskell types` contract
-  by decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
+- Sprint `1.1`, Sprint `2.1`, Sprint `3.3`, and Sprint `4.1` reopened container, toolchain,
+  lifecycle, and PostgreSQL operator surfaces and are now implemented in code.
+- `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
+  decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
   `prodbox-config.json`.
 - The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
@@ -150,6 +154,9 @@ As of April 26, 2026, the development plan is current against the repository wor
   `prodbox config compile` are not part of the supported path.
 - The public `config setup` and public `aws ...` surfaces use prompt-driven temporary elevated AWS
   credentials, while stored `aws_admin.*` remains reserved for the native IAM validation harness.
+- Supported AWS subprocesses now strip ambient AWS auth and profile variables before projecting
+  repository-root credentials into the subprocess environment, so supported paths cannot fall back
+  to host AWS auth state.
 - The supported container topology lives entirely under `docker/`. Every Haskell-build Dockerfile
   stays single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, and does not
   create symlinked Haskell tool shims; the permitted `docker/nginx-oidc.Dockerfile` Alpine-based
@@ -159,19 +166,20 @@ As of April 26, 2026, the development plan is current against the repository wor
   present in Harbor before later Helm deployments proceed.
 - The Harbor mirror path retries alternate configured upstreams when publication fails after
   manifest inspection.
+- The Haskell-owned lifecycle now retries transient upstream Helm fetch failures during
+  `helm repo update` and `helm upgrade --install`, so clean-room restore does not fail terminally
+  on intermittent upstream `5xx` or timeout errors.
 - The chart-platform end state is Haskell-owned and renders namespace-local
   Percona-operator-backed Patroni PostgreSQL HA with exactly three replicas, synchronous
   replication, deterministic retained PV bindings, retained secret state, and no embedded
   chart-local PostgreSQL subcharts.
-- The reopened Sprint `3.3` keeps the retained Patroni application, standby, and superuser
-  secret flow, readiness gate, retained-follower reinitialization, and Keycloak cold-restore
-  startup sizing while replacing the current Zalando operator, CRD, image, and Helm repository
-  assumptions with the Percona operator surface.
-- The supported Pulumi path is Haskell-orchestrated and retained only for the AWS validation
-  stacks under `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and
-  `pulumi/aws-test/Pulumi.yaml` plus `pulumi/aws-test/Main.yaml`. Non-secret validation inputs are
-  synchronized through stack config, while AWS provider credentials stay only in
-  `prodbox-config.dhall` and the Haskell-owned subprocess environment.
+- The public `prodbox pulumi ...` surface is limited to the AWS validation stacks under
+  `pulumi/aws-eks/` and `pulumi/aws-test/`. Non-secret validation inputs are synchronized through
+  stack config, while AWS provider credentials stay only in `prodbox-config.dhall` and the
+  Haskell-owned subprocess environment.
+- `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile and ACME
+  `ClusterIssuer` projection; those helpers do not expand the public `prodbox pulumi ...` command
+  family.
 - The earlier unsupported root `Pulumi.yaml` and `Pulumi.home.yaml` residue for the retired
   local-cluster `pulumi/home` path is removed.
 - The canonical validation surfaces are `./.build/prodbox check-code`,
@@ -179,33 +187,14 @@ As of April 26, 2026, the development plan is current against the repository wor
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- On April 26, 2026, fresh reruns passed `cabal build --builddir=.build exe:prodbox`, sync of
-  `./.build/prodbox`, `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, and
-  `./.build/prodbox tla-check`.
-- On April 26, 2026, direct live reruns showed that the updated local lifecycle now removes the
-  incompatible legacy `postgres-operator` release, deletes the dedicated `postgres-operator`
-  namespace, and then installs the Percona operator successfully before later bootstrap steps
-  continue.
-- On April 26, 2026, additional direct reruns passed `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, `./.build/prodbox test integration aws-iam`,
-  `./.build/prodbox test integration public-dns`, `./.build/prodbox test integration charts-platform`,
-  `./.build/prodbox charts delete vscode --yes`, `./.build/prodbox charts deploy vscode`, and
-  `./.build/prodbox test integration charts-vscode`.
-- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
-  `./.build/prodbox test integration aws-eks`, and a second
-  `./.build/prodbox pulumi eks-destroy --yes` passed after
-  `src/Prodbox/Infra/AwsEksTestStack.hs` gained canonical unmanaged-residue purge before create
-  and destroy when no saved snapshot exists.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed. It
-  re-exercised unit, built-frontend CLI/env, supported-runtime restore, `charts-vscode`,
-  `public-dns`, `dns-aws`, `aws-iam`, `aws-eks`, `pulumi`, AWS HA-RKE2 create/destroy,
-  `gateway-daemon`, `gateway-pods`, `gateway-partition`, `charts-platform`, `charts-storage`, the
-  destructive lifecycle proof, and the final public-edge restore to
-  `CLASSIFICATION=ready-for-external-proof`.
-- The legacy ledger is closed again because the earlier `9.6.7` toolchain-context, symlinked GHC
-  shim, Zalando operator, and lifecycle `haskell-toolchain` publish residue are removed from the
-  supported path.
+- The current canonical rerun passes `./.build/prodbox check-code`,
+  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
+  `./.build/prodbox test integration env`, and `./.build/prodbox test all`.
+- The current repository-root operational `aws.*` credentials satisfy
+  `aws sts get-caller-identity --output json` on the supported path, `./.build/prodbox host
+  public-edge` reports `CLASSIFICATION=ready-for-external-proof`, and the AWS validation stacks
+  remain absent after rerun cleanup.
+- The legacy ledger has no pending items on the supported path.
 
 ## Exit Definition
 
@@ -246,8 +235,10 @@ This plan is complete only when all of the following are true:
 15. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
    cluster-wide Percona operator, and runs Patroni HA with exactly three PostgreSQL replicas,
    synchronous replication, and no embedded chart-local PostgreSQL subchart.
-16. Pulumi remains part of the supported architecture only for true IaC and AWS validation
-   resources, and no supported local-cluster platform or application deployment depends on Pulumi.
+16. Pulumi remains part of the supported architecture for true IaC and AWS validation resources.
+   The public `prodbox pulumi ...` surface stays limited to those stacks, while local-cluster
+   lifecycle, bootstrap DNS reconcile, and ACME `ClusterIssuer` projection remain owned by
+   `src/Prodbox/CLI/Rke2.hs` rather than by a public Pulumi operator flow.
 17. No supported Pulumi program depends on Python.
 18. The strongest clean-room rerun passes from full local delete through final AWS teardown using
    the Haskell stack.

@@ -30,6 +30,9 @@ import Prodbox.Aws (
     runAwsIamHarnessSetup,
     runAwsIamHarnessTeardown,
  )
+import Prodbox.AwsEnvironment (
+    overlayAwsCredentials,
+ )
 import Prodbox.BuildSupport (
     canonicalOperatorBinaryPath,
  )
@@ -41,13 +44,10 @@ import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
-    Credentials (..),
     Route53Section (..),
     ValidatedSettings (..),
     aws,
-    region,
     route53,
-    session_token,
     validateAndLoadSettings,
  )
 import Prodbox.Subprocess (
@@ -733,22 +733,6 @@ settingsAwsEnvironment repoRoot = do
                     )
                 )
 
-overlayAwsCredentials :: [(String, String)] -> Credentials -> [(String, String)]
-overlayAwsCredentials environment credentials =
-    addSessionToken
-        (session_token credentials)
-        ( upsertEnv "AWS_REGION" (textValue (region credentials)) $
-            upsertEnv "AWS_DEFAULT_REGION" (textValue (region credentials)) $
-                upsertEnv "AWS_SECRET_ACCESS_KEY" (textValue (secret_access_key credentials)) $
-                    upsertEnv "AWS_ACCESS_KEY_ID" (textValue (access_key_id credentials)) environment
-        )
-
-addSessionToken :: Maybe Text.Text -> [(String, String)] -> [(String, String)]
-addSessionToken maybeToken environment =
-    case maybeToken of
-        Nothing -> filter ((/= "AWS_SESSION_TOKEN") . fst) environment
-        Just token -> upsertEnv "AWS_SESSION_TOKEN" (textValue token) environment
-
 hostedZoneDelegation :: Value -> Either String (String, [String])
 hostedZoneDelegation payload =
     case payload of
@@ -802,9 +786,6 @@ trimTrailingDot value =
     if not (null value) && last value == '.'
         then init value
         else value
-
-upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
-upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
 
 trim :: String -> String
 trim = reverse . dropWhile (`elem` [' ', '\n', '\r', '\t']) . reverse . dropWhile (`elem` [' ', '\n', '\r', '\t'])

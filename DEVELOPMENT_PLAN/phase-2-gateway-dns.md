@@ -13,12 +13,10 @@
 This phase ports the gateway daemon, DNS inspection command, and related command surfaces to
 Haskell, preserves the formal model entrypoint, and keeps Route 53 write ownership inside the
 in-cluster gateway workload. It owns the gateway image packaging contract, Harbor-backed image
-delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint.
-
-As of April 26, 2026, this phase is fully closed. Sprint `2.1` and Sprint `2.2` now pass on the
-updated toolchain path. The gateway container doctrine is implemented on `ubuntu:24.04` with
-in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and the retained
-in-image AWS CLI bundle.
+delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. This phase is closed
+on its repository-owned surfaces. The gateway container doctrine is implemented on
+`ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
+the retained in-image AWS CLI bundle.
 
 ## Current Baseline In Worktree
 
@@ -109,13 +107,6 @@ container doctrine.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
-- On April 26, 2026, fresh reruns passed `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox tla-check`, and `./.build/prodbox dns check`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising supported-runtime restore, `gateway-daemon`, and `gateway-pods` on the updated
-  toolchain path.
-
 ### Remaining Work
 
 None.
@@ -153,10 +144,6 @@ Retain the formal verification and single-writer DNS ownership guarantees after 
   failover behavior.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to an executable
   native validation flow in `src/Prodbox/TestValidation.hs`.
-- On April 26, 2026, a fresh local rerun passed `./.build/prodbox tla-check`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising `gateway-partition` and `gateway-pods` on the supported Haskell gateway surface.
-
 ### Remaining Work
 
 None.

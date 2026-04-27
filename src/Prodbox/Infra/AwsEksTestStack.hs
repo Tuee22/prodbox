@@ -29,6 +29,9 @@ import Data.Char (isAsciiUpper, toLower)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Prodbox.AwsEnvironment (
+    overlayAwsCredentials,
+ )
 import Prodbox.Infra.MinioBackend (
     bucketObjectCount,
     ensureMinioBackendBucket,
@@ -350,16 +353,7 @@ settingsAwsEnv repoRoot = do
         Left err -> pure (Left err)
         Right settings -> do
             baseEnv <- getEnvironment
-            let creds = aws (validatedConfig settings)
-                withKeys =
-                    upsertEnv "AWS_ACCESS_KEY_ID" (Text.unpack (access_key_id creds)) $
-                        upsertEnv "AWS_SECRET_ACCESS_KEY" (Text.unpack (secret_access_key creds)) $
-                            upsertEnv "AWS_REGION" (Text.unpack (region creds)) $
-                                upsertEnv "AWS_DEFAULT_REGION" (Text.unpack (region creds)) baseEnv
-                withToken = case session_token creds of
-                    Just token -> upsertEnv "AWS_SESSION_TOKEN" (Text.unpack token) withKeys
-                    Nothing -> filter ((/= "AWS_SESSION_TOKEN") . fst) withKeys
-            pure (Right withToken)
+            pure (Right (overlayAwsCredentials baseEnv (aws (validatedConfig settings))))
 
 fetchPublicIpv4 :: IO (Either String String)
 fetchPublicIpv4 = do
@@ -1133,9 +1127,6 @@ failWith message = do
 joinComma :: [String] -> String
 joinComma [] = ""
 joinComma items = foldr1 (\a b -> a ++ "," ++ b) items
-
-upsertEnv :: String -> String -> [(String, String)] -> [(String, String)]
-upsertEnv key value environment = (key, value) : filter ((/= key) . fst) environment
 
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse

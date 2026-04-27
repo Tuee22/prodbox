@@ -17,6 +17,9 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Prodbox.AwsEnvironment (
+    isolatedAwsEnvironment,
+ )
 import Prodbox.CLI.Command (DnsCommand (..))
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
@@ -171,20 +174,7 @@ ensureTrailingDot :: String -> String
 ensureTrailingDot value = if null value || last value == '.' then value else value ++ "."
 
 awsCliEnvironment :: Credentials -> [(String, String)]
-awsCliEnvironment credentials =
-    addSessionToken
-        (session_token credentials)
-        [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials))
-        , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials))
-        , ("AWS_REGION", Text.unpack (region credentials))
-        , ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
-        ]
-
-addSessionToken :: Maybe Text.Text -> [(String, String)] -> [(String, String)]
-addSessionToken maybeToken environment =
-    case maybeToken of
-        Nothing -> environment
-        Just token -> ("AWS_SESSION_TOKEN", Text.unpack token) : environment
+awsCliEnvironment = isolatedAwsEnvironment
 
 outputDetail :: ProcessOutput -> String
 outputDetail output =

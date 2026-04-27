@@ -20,6 +20,9 @@ import Data.Set (
  )
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Prodbox.AwsEnvironment (
+    overlayAwsCredentials,
+ )
 import Prodbox.Effect (
     Effect (..),
     Validation (..),
@@ -489,28 +492,9 @@ echoProcessOutput output = do
     hPutStr stderr (processStderr output)
 
 awsCommandEnvironment :: ValidatedSettings -> IO [(String, String)]
-awsCommandEnvironment settings =
-    mergeEnvironment (awsEnvironmentEntries (aws (validatedConfig settings))) <$> getEnvironment
-
-awsEnvironmentEntries :: Credentials -> [(String, String)]
-awsEnvironmentEntries credentials =
-    [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id credentials))
-    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key credentials))
-    , ("AWS_REGION", Text.unpack (region credentials))
-    , ("AWS_DEFAULT_REGION", Text.unpack (region credentials))
-    ]
-        ++ sessionTokenEntry
-  where
-    sessionTokenEntry =
-        case session_token credentials of
-            Nothing -> []
-            Just token -> [("AWS_SESSION_TOKEN", Text.unpack token)]
-
-mergeEnvironment :: [(String, String)] -> [(String, String)] -> [(String, String)]
-mergeEnvironment updates baseEnvironment =
-    updates ++ filter (not . (`elem` updatedKeys) . fst) baseEnvironment
-  where
-    updatedKeys = map fst updates
+awsCommandEnvironment settings = do
+    currentEnvironment <- getEnvironment
+    pure (overlayAwsCredentials currentEnvironment (aws (validatedConfig settings)))
 
 parseOsRelease :: String -> [(String, String)]
 parseOsRelease contents =

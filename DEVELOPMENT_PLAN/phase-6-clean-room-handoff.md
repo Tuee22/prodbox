@@ -12,13 +12,11 @@
 ## Phase Summary
 
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
-repository. Sprint `6.1` now passes the authoritative destructive rerun on April 26, 2026.
-Sprint `6.2` remains closed as well: the Phase `7` onboarding and AWS administration surfaces are
-closed on Haskell-only paths, the Python artifact cleanup is complete, and the non-Python cleanup
-ledger is closed again after the `ghcup` plus `ghc-9.14.1` container-path and Percona-operator
-implementation work landed on April 26, 2026. This phase owns the destructive rerun contract,
-the final zero-Python handoff criteria, and the dependency between those surfaces and the earlier
-lifecycle, gateway, chart, and AWS phases.
+repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
+the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
+The supported repository surfaces are Haskell-only, and the cleanup ledger currently has no
+pending-removal items. Sprint `6.1` and Sprint `6.2` are now closed on the destructive rerun,
+postflight restore, and final zero-Python handoff state.
 
 ## Current Baseline In Worktree
 
@@ -30,7 +28,7 @@ lifecycle, gateway, chart, and AWS phases.
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for any remaining repository
-  residue; it is now empty on the supported path.
+  residue; it now has no pending-removal items on the supported path.
 - Root guidance now aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -78,35 +76,19 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   suites refresh the operator binary.
 - Validation steps `2`, `4`, and `5` close on the direct-Dhall config contract: no supported
   command materializes `prodbox-config.json`, and `prodbox config compile` is removed.
-- Validation steps `7`, `9`, and `12` close honestly on the native validation harness because the
+- Validation steps `7`, `9`, and `12` remain mapped to the native validation harness because the
   named integration payloads in `src/Prodbox/TestPlan.hs` map to executable native Haskell
   validation flows.
 - `src/Prodbox/TestPlan.hs` already defines the aggregate end-to-end lifecycle proof surface:
   `prodbox test all` and `prodbox test integration all` run the native validation set that
   includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
   lifecycle suite is missing from the repository.
-- On April 26, 2026, fresh host-side reruns passed `cabal build --builddir=.build exe:prodbox`,
-  sync of `./.build/prodbox`, `./.build/prodbox check-code`,
+- The current canonical rerun passes `./.build/prodbox check-code`,
   `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`, `./.build/prodbox tla-check`,
-  `./.build/prodbox dns check`, `./.build/prodbox host public-edge`, and
-  `./.build/prodbox test integration aws-iam`.
-- On April 26, 2026, direct live reruns passed `./.build/prodbox test integration charts-platform`,
-  `./.build/prodbox charts delete vscode --yes`,
-  `./.build/prodbox charts deploy vscode`, and
-  `./.build/prodbox test integration charts-vscode`.
-- On April 26, 2026, `./.build/prodbox pulumi eks-destroy --yes`, a fresh
-  `./.build/prodbox test integration aws-eks`, and a second
-  `./.build/prodbox pulumi eks-destroy --yes` passed after
-  `src/Prodbox/Infra/AwsEksTestStack.hs` gained canonical unmanaged-residue purge before create
-  and destroy when no saved snapshot exists.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed after
-  re-exercising unit, built-frontend CLI and env, supported-runtime restore, `charts-vscode`,
-  `public-dns`, `dns-aws`, `aws-iam`, `aws-eks`, `pulumi`, AWS HA-RKE2 create/destroy,
-  `gateway-daemon`, `gateway-pods`, `gateway-partition`, `charts-platform`, `charts-storage`, the
-  destructive lifecycle proof, destructive postflight teardown, and the final supported-runtime
-  restore to `CLASSIFICATION=ready-for-external-proof`.
-
+  `./.build/prodbox test integration env`, and `./.build/prodbox test all`.
+- The destructive rerun restores the supported public edge to
+  `CLASSIFICATION=ready-for-external-proof`, and postflight cleanup leaves both AWS validation
+  stacks absent on the supported path.
 ### Remaining Work
 
 None.
@@ -151,24 +133,12 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   `supportedRuntimePythonPath` field are removed from `app/` and `src/`, so the zero-Python
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is now empty, and the root
-  guidance set named in `Docs to update` is realigned to the current repository state.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
+  removal history while keeping `Pending Removal` empty, and the root guidance set named in
+  `Docs to update` is realigned to the current repository state.
 - The legacy ledger remains clear on Python-removal items.
-- On April 26, 2026, fresh local reruns on the current configured checkout passed
-  `cabal build --builddir=.build exe:prodbox`, sync of `./.build/prodbox`,
-  `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-  `./.build/prodbox test integration cli`, `./.build/prodbox test integration env`,
-  `./.build/prodbox tla-check`, `./.build/prodbox dns check`,
-  `./.build/prodbox host public-edge`, and `./.build/prodbox test integration aws-iam`.
-- On April 26, 2026, a direct retained-state rerun also passed
-  `./.build/prodbox charts delete vscode --yes` followed by
-  `./.build/prodbox charts deploy vscode`.
-- The current workspace contains repository-root `prodbox-config.dhall`.
-- On April 26, 2026, the authoritative aggregate rerun `./.build/prodbox test all` passed,
-  re-establishing the infrastructure-backed aggregate closure evidence for the zero-Python
-  handoff on the updated lifecycle, gateway, chart, and AWS surfaces.
-
-
+- Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` is now
+  re-closed by the passing destructive rerun.
 ### Remaining Work
 
 None.

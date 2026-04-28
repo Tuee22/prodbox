@@ -245,7 +245,7 @@ pulumiLoggedIn =
     EffectNode
         { effectNodeId = "pulumi_logged_in"
         , effectNodeDescription = "Validate Pulumi is logged in"
-        , effectNodePrerequisites = ["tool_pulumi"]
+        , effectNodePrerequisites = ["tool_pulumi", "k8s_cluster_reachable"]
         , effectNodeEffect = Validate RequirePulumiLogin
         }
 

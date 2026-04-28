@@ -417,6 +417,26 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "all"
+                            nativeInitialIntegrationGatePrerequisites suitePlan
+                                `shouldBe` [ "supported_ubuntu_2404"
+                                           , "tool_docker"
+                                           , "tool_ctr"
+                                           , "tool_helm"
+                                           , "tool_kubectl"
+                                           , "tool_sudo"
+                                           , "tool_systemctl"
+                                           , "settings_object"
+                                           , "aws_credentials_valid"
+                                           , "tool_pulumi"
+                                           , "tool_curl"
+                                           , "route53_accessible"
+                                           , "tool_dig"
+                                           , "aws_iam_harness_ready"
+                                           , "tool_aws"
+                                           , "tool_ssh"
+                                           ]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["pulumi_logged_in"]
                             nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
@@ -444,6 +464,26 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-all"
+                            nativeInitialIntegrationGatePrerequisites suitePlan
+                                `shouldBe` [ "supported_ubuntu_2404"
+                                           , "tool_docker"
+                                           , "tool_ctr"
+                                           , "tool_helm"
+                                           , "tool_kubectl"
+                                           , "tool_sudo"
+                                           , "tool_systemctl"
+                                           , "settings_object"
+                                           , "aws_credentials_valid"
+                                           , "tool_pulumi"
+                                           , "tool_curl"
+                                           , "route53_accessible"
+                                           , "tool_dig"
+                                           , "aws_iam_harness_ready"
+                                           , "tool_aws"
+                                           , "tool_ssh"
+                                           ]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["pulumi_logged_in"]
                             nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
@@ -459,7 +499,7 @@ main = hspec $ do
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-aws-eks"
                             nativeValidations suitePlan `shouldBe` [ValidationAwsEks]
-                            nativeIntegrationGatePrerequisites suitePlan
+                            nativeInitialIntegrationGatePrerequisites suitePlan
                                 `shouldBe` [ "supported_ubuntu_2404"
                                            , "tool_docker"
                                            , "tool_ctr"
@@ -469,8 +509,10 @@ main = hspec $ do
                                            , "tool_systemctl"
                                            , "settings_object"
                                            , "aws_credentials_valid"
-                                           , "pulumi_logged_in"
+                                           , "tool_pulumi"
                                            ]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["pulumi_logged_in"]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
@@ -478,25 +520,28 @@ main = hspec $ do
             case testExecutionPlan (TestIntegration IntegrationPublicDns) of
                 testPlan ->
                     case testPlanExecutionMode testPlan of
-                        NativeSuite suitePlan ->
-                            nativeIntegrationGatePrerequisites suitePlan
+                        NativeSuite suitePlan -> do
+                            nativeInitialIntegrationGatePrerequisites suitePlan
                                 `shouldBe` ["route53_accessible", "tool_dig"]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                         DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
 
             case testExecutionPlan (TestIntegration IntegrationDnsAws) of
                 testPlan ->
                     case testPlanExecutionMode testPlan of
-                        NativeSuite suitePlan ->
-                            nativeIntegrationGatePrerequisites suitePlan
+                        NativeSuite suitePlan -> do
+                            nativeInitialIntegrationGatePrerequisites suitePlan
                                 `shouldBe` ["route53_accessible"]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                         DelegatedSuite _ -> expectationFailure "expected native dns-aws plan"
 
             case testExecutionPlan (TestIntegration IntegrationAwsIam) of
                 testPlan ->
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
-                            nativeIntegrationGatePrerequisites suitePlan
+                            nativeInitialIntegrationGatePrerequisites suitePlan
                                 `shouldBe` ["aws_iam_harness_ready", "tool_aws"]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                             nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                         DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
 
@@ -507,7 +552,7 @@ main = hspec $ do
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-charts-vscode"
                             nativeValidations suitePlan `shouldBe` [ValidationChartsVscode]
-                            nativeIntegrationGatePrerequisites suitePlan
+                            nativeInitialIntegrationGatePrerequisites suitePlan
                                 `shouldBe` [ "supported_ubuntu_2404"
                                            , "tool_docker"
                                            , "tool_ctr"
@@ -517,9 +562,11 @@ main = hspec $ do
                                            , "tool_systemctl"
                                            , "settings_object"
                                            , "aws_credentials_valid"
-                                           , "pulumi_logged_in"
+                                           , "tool_pulumi"
                                            , "tool_curl"
                                            ]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["pulumi_logged_in"]
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native charts-vscode plan"
@@ -539,6 +586,16 @@ main = hspec $ do
             rke2Source `shouldContain` "waitForHarborStableEndpoints repoRoot"
             rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
             rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
+
+        it "retries transient Harbor push failures during custom image publication" $ do
+            repoRoot <- getCurrentDirectory
+            rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
+
+            rke2Source `shouldContain` "customImagePushRetryAttempts = 3"
+            rke2Source `shouldContain` "customImagePushRetryDelayMicroseconds = 5000000"
+            rke2Source `shouldContain` "isRetryableCustomImageBuildFailure"
+            rke2Source `shouldContain` "\"unexpected eof\""
+            rke2Source `shouldContain` "\"unexpected status from put request\""
 
         it "keeps postgres-operator runtime on explicit Percona chart values" $ do
             repoRoot <- getCurrentDirectory
@@ -598,7 +655,8 @@ main = hspec $ do
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-cli"
                             nativeValidations suitePlan `shouldBe` []
-                            nativeIntegrationGatePrerequisites suitePlan `shouldBe` []
+                            nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` []
+                            nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
                         DelegatedSuite _ -> expectationFailure "expected native integration-cli plan"
 
@@ -610,7 +668,8 @@ main = hspec $ do
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-env"
                             nativeValidations suitePlan `shouldBe` []
-                            nativeIntegrationGatePrerequisites suitePlan `shouldBe` []
+                            nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` []
+                            nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
                         DelegatedSuite _ -> expectationFailure "expected native integration-env plan"
 
@@ -689,6 +748,8 @@ main = hspec $ do
                 `shouldBe` ["rke2_service_exists"]
             effectNodePrerequisites (lookupPrerequisiteNode "k8s_cluster_reachable")
                 `shouldBe` ["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]
+            effectNodePrerequisites (lookupPrerequisiteNode "pulumi_logged_in")
+                `shouldBe` ["tool_pulumi", "k8s_cluster_reachable"]
             effectNodePrerequisites (lookupPrerequisiteNode "k8s_ready")
                 `shouldBe` ["k8s_cluster_reachable", "rke2_service_active"]
             effectNodePrerequisites (lookupPrerequisiteNode "infra_ready")
@@ -737,6 +798,20 @@ main = hspec $ do
                     , "route53_accessible"
                     , "settings_loaded"
                     , "tool_aws"
+                    ]
+            transitiveClosureIds ["pulumi_logged_in"] prerequisiteRegistry
+                `shouldBe` Right
+                    [ "k8s_cluster_reachable"
+                    , "kubeconfig_exists"
+                    , "platform_linux"
+                    , "pulumi_logged_in"
+                    , "rke2_installed"
+                    , "rke2_service_active"
+                    , "rke2_service_exists"
+                    , "supported_ubuntu_2404"
+                    , "systemd_available"
+                    , "tool_kubectl"
+                    , "tool_pulumi"
                     ]
             transitiveClosureIds ["infra_ready"] prerequisiteRegistry
                 `shouldBe` Right

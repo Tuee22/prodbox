@@ -36,7 +36,8 @@ data NativeValidation
 data NativeSuitePlan = NativeSuitePlan
     { nativeSuiteId :: String
     , nativeValidations :: [NativeValidation]
-    , nativeIntegrationGatePrerequisites :: [String]
+    , nativeInitialIntegrationGatePrerequisites :: [String]
+    , nativeDeferredIntegrationGatePrerequisites :: [String]
     , nativeManagedAwsHarnessPolicyTier :: Maybe PolicyTier
     , nativeRequiresIntegrationRunbook :: Bool
     , nativeRequiresSupportedRuntimeBootstrap :: Bool
@@ -69,7 +70,8 @@ testExecutionPlan scope =
                 NativeSuitePlan
                     { nativeSuiteId = "all"
                     , nativeValidations = canonicalNativeValidations
-                    , nativeIntegrationGatePrerequisites = allIntegrationPrerequisites
+                    , nativeInitialIntegrationGatePrerequisites = allInitialIntegrationPrerequisites
+                    , nativeDeferredIntegrationGatePrerequisites = allDeferredIntegrationPrerequisites
                     , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
                     , nativeRequiresIntegrationRunbook = True
                     , nativeRequiresSupportedRuntimeBootstrap = True
@@ -82,7 +84,8 @@ testExecutionPlan scope =
                 NativeSuitePlan
                     { nativeSuiteId = "unit"
                     , nativeValidations = []
-                    , nativeIntegrationGatePrerequisites = []
+                    , nativeInitialIntegrationGatePrerequisites = []
+                    , nativeDeferredIntegrationGatePrerequisites = []
                     , nativeManagedAwsHarnessPolicyTier = Nothing
                     , nativeRequiresIntegrationRunbook = False
                     , nativeRequiresSupportedRuntimeBootstrap = False
@@ -99,7 +102,8 @@ testExecutionPlan scope =
                         NativeSuitePlan
                             { nativeSuiteId = "integration-all"
                             , nativeValidations = canonicalNativeValidations
-                            , nativeIntegrationGatePrerequisites = allIntegrationPrerequisites
+                            , nativeInitialIntegrationGatePrerequisites = allInitialIntegrationPrerequisites
+                            , nativeDeferredIntegrationGatePrerequisites = allDeferredIntegrationPrerequisites
                             , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
                             , nativeRequiresIntegrationRunbook = True
                             , nativeRequiresSupportedRuntimeBootstrap = True
@@ -112,6 +116,7 @@ testExecutionPlan scope =
                         "integration-cli"
                         []
                         []
+                        []
                         False
                         Nothing
                 IntegrationAwsIam ->
@@ -119,7 +124,8 @@ testExecutionPlan scope =
                         "integration aws-iam"
                         "integration-aws-iam"
                         [ValidationAwsIam]
-                        awsIamPrerequisites
+                        awsIamInitialPrerequisites
+                        []
                         False
                         (Just PolicyFull)
                 IntegrationDnsAws ->
@@ -128,6 +134,7 @@ testExecutionPlan scope =
                         "integration-dns-aws"
                         [ValidationDnsAws]
                         dnsAwsPrerequisites
+                        []
                         False
                         Nothing
                 IntegrationAwsEks ->
@@ -135,7 +142,8 @@ testExecutionPlan scope =
                         "integration aws-eks"
                         "integration-aws-eks"
                         [ValidationAwsEks]
-                        awsEksPrerequisites
+                        awsEksInitialPrerequisites
+                        awsEksDeferredPrerequisites
                         True
                         Nothing
                 IntegrationEnv ->
@@ -143,6 +151,7 @@ testExecutionPlan scope =
                         "integration env"
                         ["test:prodbox-integration-env"]
                         "integration-env"
+                        []
                         []
                         []
                         False
@@ -153,6 +162,7 @@ testExecutionPlan scope =
                         "integration-gateway-daemon"
                         [ValidationGatewayDaemon]
                         gatewayDaemonPrerequisites
+                        []
                         True
                         Nothing
                 IntegrationGatewayPods ->
@@ -161,6 +171,7 @@ testExecutionPlan scope =
                         "integration-gateway-pods"
                         [ValidationGatewayPods]
                         gatewayPodsPrerequisites
+                        []
                         True
                         Nothing
                 IntegrationGatewayPartition ->
@@ -169,6 +180,7 @@ testExecutionPlan scope =
                         "integration-gateway-partition"
                         [ValidationGatewayPartition]
                         gatewayPartitionPrerequisites
+                        []
                         False
                         Nothing
                 IntegrationHaRke2Aws ->
@@ -176,7 +188,8 @@ testExecutionPlan scope =
                         "integration ha-rke2-aws"
                         "integration-ha-rke2-aws"
                         [ValidationHaRke2Aws]
-                        awsHaRke2Prerequisites
+                        awsHaRke2InitialPrerequisites
+                        awsHaRke2DeferredPrerequisites
                         True
                         Nothing
                 IntegrationLifecycle ->
@@ -185,6 +198,7 @@ testExecutionPlan scope =
                         "integration-lifecycle"
                         [ValidationLifecycle]
                         lifecyclePrerequisites
+                        []
                         True
                         Nothing
                 IntegrationPulumi ->
@@ -192,7 +206,8 @@ testExecutionPlan scope =
                         "integration pulumi"
                         "integration-pulumi"
                         [ValidationPulumi]
-                        pulumiPrerequisites
+                        pulumiInitialPrerequisites
+                        pulumiDeferredPrerequisites
                         True
                         Nothing
                 IntegrationChartsStorage ->
@@ -201,6 +216,7 @@ testExecutionPlan scope =
                         "integration-charts-storage"
                         [ValidationChartsStorage]
                         chartsStoragePrerequisites
+                        []
                         True
                         Nothing
                 IntegrationChartsPlatform ->
@@ -209,6 +225,7 @@ testExecutionPlan scope =
                         "integration-charts-platform"
                         [ValidationChartsPlatform]
                         chartsPlatformPrerequisites
+                        []
                         True
                         Nothing
                 IntegrationChartsVscode ->
@@ -218,7 +235,8 @@ testExecutionPlan scope =
                         NativeSuitePlan
                             { nativeSuiteId = "integration-charts-vscode"
                             , nativeValidations = [ValidationChartsVscode]
-                            , nativeIntegrationGatePrerequisites = chartsVscodePrerequisites
+                            , nativeInitialIntegrationGatePrerequisites = chartsVscodeInitialPrerequisites
+                            , nativeDeferredIntegrationGatePrerequisites = chartsVscodeDeferredPrerequisites
                             , nativeManagedAwsHarnessPolicyTier = Nothing
                             , nativeRequiresIntegrationRunbook = True
                             , nativeRequiresSupportedRuntimeBootstrap = True
@@ -230,25 +248,27 @@ testExecutionPlan scope =
                         "integration-public-dns"
                         [ValidationPublicDns]
                         publicDnsPrerequisites
+                        []
                         False
                         Nothing
   where
-    nativeIntegrationPlan label haskellSuites suiteId validations prerequisites requiresRunbook managedAwsHarnessPolicyTier =
+    nativeIntegrationPlan label haskellSuites suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier =
         nativeExecutionPlan
             label
             haskellSuites
             NativeSuitePlan
                 { nativeSuiteId = suiteId
                 , nativeValidations = validations
-                , nativeIntegrationGatePrerequisites = prerequisites
+                , nativeInitialIntegrationGatePrerequisites = initialPrerequisites
+                , nativeDeferredIntegrationGatePrerequisites = deferredPrerequisites
                 , nativeManagedAwsHarnessPolicyTier = managedAwsHarnessPolicyTier
                 , nativeRequiresIntegrationRunbook = requiresRunbook
                 , nativeRequiresSupportedRuntimeBootstrap = False
                 , nativeRequiresSupportedRuntimePostflight = False
                 }
 
-    nativeNamedSuite label suiteId validations prerequisites requiresRunbook managedAwsHarnessPolicyTier =
-        nativeIntegrationPlan label [] suiteId validations prerequisites requiresRunbook managedAwsHarnessPolicyTier
+    nativeNamedSuite label suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier =
+        nativeIntegrationPlan label [] suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier
 
 canonicalNativeValidations :: [NativeValidation]
 canonicalNativeValidations =
@@ -267,23 +287,32 @@ canonicalNativeValidations =
     , ValidationLifecycle
     ]
 
-allIntegrationPrerequisites :: [String]
-allIntegrationPrerequisites =
+allInitialIntegrationPrerequisites :: [String]
+allInitialIntegrationPrerequisites =
     orderedUnion
-        [ chartsVscodePrerequisites
+        [ chartsVscodeInitialPrerequisites
         , publicDnsPrerequisites
         , dnsAwsPrerequisites
         , ["aws_iam_harness_ready"]
-        , awsIamPrerequisites
-        , awsEksPrerequisites
-        , pulumiPrerequisites
-        , awsHaRke2Prerequisites
+        , awsIamInitialPrerequisites
+        , awsEksInitialPrerequisites
+        , pulumiInitialPrerequisites
+        , awsHaRke2InitialPrerequisites
         , gatewayDaemonPrerequisites
         , gatewayPodsPrerequisites
         , chartsPlatformPrerequisites
         , chartsStoragePrerequisites
         , lifecyclePrerequisites
         , gatewayPartitionPrerequisites
+        ]
+
+allDeferredIntegrationPrerequisites :: [String]
+allDeferredIntegrationPrerequisites =
+    orderedUnion
+        [ chartsVscodeDeferredPrerequisites
+        , awsEksDeferredPrerequisites
+        , pulumiDeferredPrerequisites
+        , awsHaRke2DeferredPrerequisites
         ]
 
 clusterPrerequisites :: [String]
@@ -298,8 +327,11 @@ clusterPrerequisites =
     , "settings_object"
     ]
 
-chartsVscodePrerequisites :: [String]
-chartsVscodePrerequisites = orderedUnion [pulumiPrerequisites, ["tool_curl"]]
+chartsVscodeInitialPrerequisites :: [String]
+chartsVscodeInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
+
+chartsVscodeDeferredPrerequisites :: [String]
+chartsVscodeDeferredPrerequisites = pulumiDeferredPrerequisites
 
 publicDnsPrerequisites :: [String]
 publicDnsPrerequisites = ["route53_accessible", "tool_dig"]
@@ -307,17 +339,26 @@ publicDnsPrerequisites = ["route53_accessible", "tool_dig"]
 dnsAwsPrerequisites :: [String]
 dnsAwsPrerequisites = ["route53_accessible"]
 
-pulumiPrerequisites :: [String]
-pulumiPrerequisites = orderedUnion [clusterPrerequisites, ["aws_credentials_valid", "pulumi_logged_in"]]
+pulumiInitialPrerequisites :: [String]
+pulumiInitialPrerequisites = orderedUnion [clusterPrerequisites, ["aws_credentials_valid", "tool_pulumi"]]
 
-awsIamPrerequisites :: [String]
-awsIamPrerequisites = ["aws_iam_harness_ready", "tool_aws"]
+pulumiDeferredPrerequisites :: [String]
+pulumiDeferredPrerequisites = ["pulumi_logged_in"]
 
-awsEksPrerequisites :: [String]
-awsEksPrerequisites = pulumiPrerequisites
+awsIamInitialPrerequisites :: [String]
+awsIamInitialPrerequisites = ["aws_iam_harness_ready", "tool_aws"]
 
-awsHaRke2Prerequisites :: [String]
-awsHaRke2Prerequisites = orderedUnion [pulumiPrerequisites, ["tool_ssh"]]
+awsEksInitialPrerequisites :: [String]
+awsEksInitialPrerequisites = pulumiInitialPrerequisites
+
+awsEksDeferredPrerequisites :: [String]
+awsEksDeferredPrerequisites = pulumiDeferredPrerequisites
+
+awsHaRke2InitialPrerequisites :: [String]
+awsHaRke2InitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_ssh"]]
+
+awsHaRke2DeferredPrerequisites :: [String]
+awsHaRke2DeferredPrerequisites = pulumiDeferredPrerequisites
 
 gatewayDaemonPrerequisites :: [String]
 gatewayDaemonPrerequisites = clusterPrerequisites

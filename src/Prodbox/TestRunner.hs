@@ -153,17 +153,27 @@ runNativeSuite repoRoot environment suitePlan = do
 
 runNativeSuiteBody :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
 runNativeSuiteBody repoRoot environment suitePlan = do
-    prerequisitesExit <- runPhaseOnePrerequisites repoRoot suitePlan
-    case prerequisitesExit of
+    initialPrerequisitesExit <- runPhaseOneInitialPrerequisites repoRoot suitePlan
+    case initialPrerequisitesExit of
         failure@(ExitFailure _) -> pure failure
-        ExitSuccess -> runNativeWorkflow repoRoot environment suitePlan
+        ExitSuccess -> do
+            preparationExit <-
+                runSequentially
+                    ( runbookActions repoRoot environment suitePlan
+                        ++ supportedRuntimeBootstrapActions repoRoot environment suitePlan
+                    )
+            case preparationExit of
+                failure@(ExitFailure _) -> pure failure
+                ExitSuccess -> do
+                    deferredPrerequisitesExit <- runPhaseOneDeferredPrerequisites repoRoot suitePlan
+                    case deferredPrerequisitesExit of
+                        failure@(ExitFailure _) -> pure failure
+                        ExitSuccess -> runNativeWorkflow repoRoot environment suitePlan
 
 runNativeWorkflow :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
 runNativeWorkflow repoRoot environment suitePlan =
     runSequentially
-        ( runbookActions repoRoot environment suitePlan
-            ++ supportedRuntimeBootstrapActions repoRoot environment suitePlan
-            ++ [emitLineAction phaseTwoMessage, runNativeValidations repoRoot environment suitePlan]
+        ( [emitLineAction phaseTwoMessage, runNativeValidations repoRoot environment suitePlan]
             ++ supportedRuntimePostflightActions repoRoot environment suitePlan
         )
 
@@ -238,9 +248,25 @@ runNativeValidations repoRoot environment suitePlan =
     runValidation failure@(ExitFailure _) _ = pure failure
     runValidation ExitSuccess validation = runNativeValidation repoRoot environment validation
 
-runPhaseOnePrerequisites :: FilePath -> NativeSuitePlan -> IO ExitCode
-runPhaseOnePrerequisites repoRoot suitePlan =
-    case nativeIntegrationGatePrerequisites suitePlan of
+runPhaseOneInitialPrerequisites :: FilePath -> NativeSuitePlan -> IO ExitCode
+runPhaseOneInitialPrerequisites repoRoot suitePlan =
+    case nativeInitialIntegrationGatePrerequisites suitePlan of
+        [] -> pure ExitSuccess
+        prerequisites ->
+            case fromRootIds prerequisites prerequisiteRegistry of
+                Left err -> failWith err
+                Right dag -> do
+                    result <-
+                        runEffectDAG
+                            InterpreterContext{interpreterRepoRoot = repoRoot}
+                            dag
+                    case result of
+                        Failure err -> failWith err
+                        Success () -> pure ExitSuccess
+
+runPhaseOneDeferredPrerequisites :: FilePath -> NativeSuitePlan -> IO ExitCode
+runPhaseOneDeferredPrerequisites repoRoot suitePlan =
+    case nativeDeferredIntegrationGatePrerequisites suitePlan of
         [] -> pure ExitSuccess
         prerequisites ->
             case fromRootIds prerequisites prerequisiteRegistry of
@@ -256,7 +282,8 @@ runPhaseOnePrerequisites repoRoot suitePlan =
 
 phaseOneMessage :: NativeSuitePlan -> String
 phaseOneMessage suitePlan =
-    if null (nativeIntegrationGatePrerequisites suitePlan)
+    if null (nativeInitialIntegrationGatePrerequisites suitePlan)
+        && null (nativeDeferredIntegrationGatePrerequisites suitePlan)
         then phaseOneNoPrereqMessage
         else phaseOneGateMessage
 

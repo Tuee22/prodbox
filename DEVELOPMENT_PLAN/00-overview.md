@@ -109,10 +109,11 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree implements the closed surfaces from Phases `0-6` and the repository-owned
-surfaces from Phase `7`, but Phase `7` remains blocked on April 27, 2026 by the external local
-RKE2 prerequisite needed for aggregate reruns. The supported public surface is Haskell-only, the
-earlier unsupported cleanup residue is removed, and the implementation uses
+The repository worktree implements the closed surfaces from Phases `0-7`, and the April 28, 2026
+canonical `./.build/prodbox test all` rerun closes the remaining Phase `7` aggregate proof after
+the earlier pre-runbook `pulumi_logged_in` failure was removed from the supported runner path. The
+supported public surface is Haskell-only, the earlier unsupported cleanup residue is removed, and
+the implementation uses
 in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, removes
 symlinked GHC tool shims and the lifecycle-managed `haskell-toolchain` BuildKit path, aligns
 `prodbox.cabal` and `cabal.project` with the explicit `ghc-9.14.1` path, installs the Percona
@@ -145,8 +146,9 @@ attached to those commands rather than restated here as a fresh rerun log.
   IAM user associated with those credentials, materializes operational `aws.*` only from
   `aws_admin_for_test_simulation.*`, and clears `aws.*` from `prodbox-config.dhall` before
   returning even when later prerequisites fail.
-- Phase `7` is blocked only by the external local-cluster prerequisite that aggregate reruns still
-  need for `pulumi_logged_in`; the stale-`aws.*` leak itself is no longer the open surface.
+- Phase `7` now keeps `pulumi_logged_in` behind the visible local runbook on aggregate and
+  cluster-backed suite paths, so the stale-`aws.*` leak and the pre-runbook local-cluster blocker
+  are no longer the open surfaces.
 - `src/Prodbox/AwsEnvironment.hs` now isolates supported AWS subprocesses from ambient host AWS
   auth and profile state before projecting repository-root credentials into the supported command
   paths.
@@ -199,8 +201,8 @@ attached to those commands rather than restated here as a fresh rerun log.
 The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
 application database ownership, the mounted `haskell:9.6.7-slim` toolchain-context path, or the
 Zalando `postgres-operator` surface. Repository guidance is aligned with that state, and the
-remaining environment-dependent proof is owned by the canonical Haskell validation commands rather
-than by ad hoc notes in this overview.
+canonical Haskell validation commands now have a clean April 28, 2026 closure rerun rather than a
+remaining open proof obligation.
 
 ## Haskell-Only Architecture by Surface
 
@@ -221,8 +223,8 @@ than by ad hoc notes in this overview.
 
 ## Current Execution State
 
-Phases `0-6` are currently represented by closed repository-owned surfaces and canonical
-validation contracts. Phase `7` is blocked:
+Phases `0-7` are currently represented by closed repository-owned surfaces and canonical
+validation contracts:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, and the
@@ -245,11 +247,14 @@ validation contracts. Phase `7` is blocked:
   Sprint `6.1` and Sprint `6.2` are closed on the full destructive rerun, postflight restore, and
   zero-Python handoff contract.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
-  credential proof harness. Sprint `7.3` is blocked only by the local RKE2 prerequisite that the
-  aggregate reruns still need for `pulumi_logged_in`; the shared IAM validation harness for
-  `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
-  already owns the idempotent preflight, temporary operational-credential lifetime, and teardown
-  contract that prevents dedicated `prodbox` IAM-user leaks and clears test-created `aws.*`.
+  credential proof harness. Sprint `7.3` now keeps the `pulumi_logged_in` proof behind the
+  visible local runbook on aggregate and cluster-backed suite paths, while the shared IAM
+  validation harness for `prodbox test integration aws-iam`,
+  `prodbox test integration all`, and `prodbox test all` owns the idempotent preflight,
+  temporary operational-credential lifetime, and teardown contract that prevents dedicated
+  `prodbox` IAM-user leaks and clears test-created `aws.*`. The canonical `./.build/prodbox test all`
+  rerun completed cleanly on April 28, 2026, including final public-edge certificate convergence
+  and post-run operational-credential cleanup.
 
 ## Hard Constraints
 

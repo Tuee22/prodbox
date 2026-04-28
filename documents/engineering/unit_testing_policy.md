@@ -61,6 +61,9 @@ In the current repository:
 Integration-selected `prodbox test` commands execute in two phases:
 
 1. **Phase 1 - prerequisite gate**: validate integration prerequisites before deeper work starts.
+   Suites may split this gate into an initial fail-fast prerequisite pass plus a deferred
+   cluster-backed backend proof when the deferred proof depends on a visible runbook-created local
+   runtime such as the RKE2-backed MinIO Pulumi backend.
 2. **Phase 1.5 - integration runbook gate**: cluster-backed suites may enforce
    `prodbox rke2 install`.
 3. **Phase 1.6 - supported runtime bootstrap**: aggregate or destructive flows may repair the
@@ -87,7 +90,8 @@ the command contract.
 1. Visible banner order is exact: `Phase 1/2`, optional `Phase 1.5/2`, optional `Phase 1.6/2`,
    then `Phase 2/2`.
 2. Each phase banner is emitted as its own stdout line.
-3. `Phase 2/2` is emitted only after earlier gates succeed.
+3. Deferred Phase `1/2` checks may run after Phase `1.5/2` or `1.6/2`, but `Phase 2/2` is
+   emitted only after every Phase `1` gate succeeds.
 4. Post-test repair banners are also part of the visible contract when aggregate runtime repair is
    required.
 
@@ -97,12 +101,15 @@ the command contract.
 
 1. The selected suite determines the root prerequisite set.
 2. Unit-only scope bypasses integration gates.
-3. `charts-vscode` is a supported-runtime cluster-backed suite and therefore enforces the cluster
+3. Cluster-backed suites may keep initial host, tool, config, and AWS checks in the front half of
+   Phase `1/2`, then defer cluster-backed backend proofs such as `pulumi_logged_in` until after
+   the visible runbook has created or repaired the local runtime they depend on.
+4. `charts-vscode` is a supported-runtime cluster-backed suite and therefore enforces the cluster
    runbook plus supported-runtime bootstrap before its external proof, and that bootstrap waits
    for `prodbox host public-edge` readiness rather than using a one-shot assertion. Public-host
    suites such as `public-dns` may avoid the cluster runbook only when their test plan does not
    require it.
-4. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
+5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

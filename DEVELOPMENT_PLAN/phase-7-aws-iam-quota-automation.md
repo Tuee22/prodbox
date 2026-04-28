@@ -17,8 +17,9 @@ credential boundary is now Haskell-owned: public onboarding and public AWS admin
 for temporary elevated credentials, and stored `aws_admin_for_test_simulation.*` exists only for
 test-suite simulation of that ephemeral prompt input, with the native IAM validation harness as
 the only supported runtime consumer. The reopened repository-owned Sprint `7.3` implementation is
-now present in the worktree, and the remaining closure blocker is the external local-cluster
-prerequisite needed for the aggregate rerun that exercises the now-clean suite-level harness.
+now present in the worktree, the earlier pre-runbook `pulumi_logged_in` aggregate blocker is
+closed in code, and the canonical aggregate rerun now completes cleanly on the supported
+local-cluster path end to end.
 
 ## Current Baseline In Worktree
 
@@ -46,9 +47,9 @@ prerequisite needed for the aggregate rerun that exercises the now-clean suite-l
 - `src/Prodbox/TestRunner.hs` now keeps the managed operational `aws.*` credentials alive for the
   duration of `prodbox test integration aws-iam`, `prodbox test integration all`, and
   `prodbox test all`, then clears those credentials again even when later prerequisites fail.
-- The aggregate runner now reuses the canonical repo-backed Pulumi backend during prerequisite
-  checks, so the reopened IAM scope is isolated to AWS-user and config cleanup rather than to
-  ambient host Pulumi login state.
+- The aggregate runner now reuses the canonical repo-backed Pulumi backend during deferred
+  cluster-backed prerequisite checks, so the reopened IAM scope is isolated to AWS-user and config
+  cleanup rather than to ambient host Pulumi login state.
 
 ## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
 
@@ -135,12 +136,11 @@ Move the standalone AWS administration commands to Haskell while preserving the 
 
 None.
 
-## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ⏸️
+## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ✅
 
-**Status**: Blocked
+**Status**: Done
 **Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
-**Blocked by**: A supported local RKE2 cluster and kubeconfig so the `pulumi_logged_in` prerequisite can complete during aggregate reruns
 
 ### Objective
 
@@ -200,22 +200,29 @@ or operational `aws.*` credentials behind.
   completion.
 - `src/Prodbox/SupportedRuntime.hs` now contains only the retained supported-runtime helpers; the
   retired non-test `aws_admin_for_test_simulation.*` recovery path has been removed.
+- `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/Prerequisite.hs` now
+  split the aggregate and cluster-backed suite prerequisite contract into an initial fail-fast
+  gate plus a deferred backend proof, so `pulumi_logged_in` no longer runs before the visible
+  `rke2 install` phase has created or repaired the supported local MinIO backend.
 - `src/Prodbox/EffectInterpreter.hs` now checks bounded `pulumi login ... --non-interactive`
-  against the canonical repo-backed MinIO backend during prerequisites, and the shared
+  against the canonical repo-backed MinIO backend during deferred prerequisites, and the shared
   `src/Prodbox/Infra/MinioBackend.hs` helper recreates a deleted MinIO export host path plus
   restarts `deployment/minio` before retrying that proof, so the aggregate IAM run no longer
   depends on stale ambient Pulumi host-login state or a detached retained-storage mount.
 - The aggregate IAM proof is sequenced before downstream AWS-backed suites through the named
   prerequisite DAG rather than through ambient host Pulumi login state.
-- `./.build/prodbox test integration aws-iam` now passes live with the shared harness, and
-  `./.build/prodbox test all` now gets past the earlier stale-`aws.*` / deleted-user failure,
-  provisions plus clears temporary operational credentials correctly, and stops later at the
-  unrelated `pulumi_logged_in` prerequisite because no supported local RKE2 kubeconfig is present.
+- `./.build/prodbox test integration aws-iam` now passes live with the shared harness, and the
+  April 28, 2026 canonical `./.build/prodbox test all` rerun completed cleanly on the same native
+  aggregate suite path that powers `./.build/prodbox test integration all`, so the named aggregate
+  closure gate, destructive lifecycle tail, public-edge postflight restore, and IAM cleanup
+  contract all close on the supported local-cluster path.
+- `src/Prodbox/CLI/Rke2.hs` now retries transient Harbor `502` / `unexpected EOF` failures during
+  custom multi-arch `docker buildx --push` publication so destructive reruns do not fail
+  terminally on a single short-lived Harbor registry write error.
 
 ### Remaining Work
 
-None on the repository-owned harness surface. Aggregate closure is blocked only by the external
-local-cluster prerequisite named above.
+None.
 
 ## Documentation Requirements
 

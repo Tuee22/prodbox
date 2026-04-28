@@ -2016,24 +2016,62 @@ ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
                         ]
 
 buildMissingCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
-buildMissingCustomImageVariants repoRoot buildPlan taggedRefs =
-    runCommand
-        CommandSpec
-            { commandPath = "docker"
-            , commandArguments =
-                [ "buildx"
-                , "build"
-                , "--platform"
-                , canonicalPlatformArgument
-                , "--push"
-                , "-f"
-                , customImageDockerfile buildPlan
-                ]
-                    ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
-                    ++ ["."]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
-            }
+buildMissingCustomImageVariants repoRoot buildPlan taggedRefs = go customImagePushRetryAttempts
+  where
+    arguments =
+        [ "buildx"
+        , "build"
+        , "--platform"
+        , canonicalPlatformArgument
+        , "--push"
+        , "-f"
+        , customImageDockerfile buildPlan
+        ]
+            ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
+            ++ ["."]
+
+    go attemptsRemaining = do
+        outputResult <- captureToolOutput repoRoot "docker" arguments
+        case outputResult of
+            Left err -> failWith err
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess -> do
+                        emitCapturedProcessOutput output
+                        pure ExitSuccess
+                    failure@(ExitFailure _)
+                        | attemptsRemaining > 1 && isRetryableCustomImageBuildFailure output -> do
+                            hPutStrLn
+                                stderr
+                                ( "Retrying docker buildx build after transient Harbor push failure ("
+                                    ++ show (customImagePushRetryAttempts - attemptsRemaining + 1)
+                                    ++ "/"
+                                    ++ show customImagePushRetryAttempts
+                                    ++ "): "
+                                    ++ outputDetail output
+                                )
+                            threadDelay customImagePushRetryDelayMicroseconds
+                            go (attemptsRemaining - 1)
+                        | otherwise -> do
+                            emitCapturedProcessOutput output
+                            pure failure
+
+isRetryableCustomImageBuildFailure :: ProcessOutput -> Bool
+isRetryableCustomImageBuildFailure output =
+    let detail = map toLower (outputDetail output)
+     in any
+            (`isInfixOf` detail)
+            [ "502 bad gateway"
+            , "503 service unavailable"
+            , "504 gateway timeout"
+            , "429 too many requests"
+            , "connection reset by peer"
+            , "tls handshake timeout"
+            , "i/o timeout"
+            , "temporary failure"
+            , "unexpected eof"
+            , "unexpected status from put request"
+            ]
 
 inspectImagePlatforms :: FilePath -> String -> IO (Either String (Maybe [(String, String)]))
 inspectImagePlatforms repoRoot imageRef = do
@@ -3307,6 +3345,12 @@ helmTransientRetryAttempts = 3
 
 helmTransientRetryDelayMicroseconds :: Int
 helmTransientRetryDelayMicroseconds = 10000000
+
+customImagePushRetryAttempts :: Int
+customImagePushRetryAttempts = 3
+
+customImagePushRetryDelayMicroseconds :: Int
+customImagePushRetryDelayMicroseconds = 5000000
 
 runCommand :: CommandSpec -> IO ExitCode
 runCommand spec = do

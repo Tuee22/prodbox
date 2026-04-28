@@ -217,7 +217,8 @@ Named suite commands:
 `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint. It:
 
 - runs Haskell suites through `cabal test`
-- enforces prerequisite gates and runbook steps
+- enforces an initial fail-fast prerequisite gate, visible runbook/bootstrap steps when required,
+  and deferred cluster-backed backend proofs such as `pulumi_logged_in` before payload execution
 - provisions the shared IAM harness for `prodbox test integration aws-iam`,
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
   begin, then clears operational `aws.*` again before the suite returns

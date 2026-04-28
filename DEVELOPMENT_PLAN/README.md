@@ -26,8 +26,10 @@ govern this plan suite.
 
 ## Closure Status
 
-Phase `7` remains open on April 27, 2026, but it is now blocked by an external aggregate-suite
-prerequisite rather than by remaining repository-owned IAM harness work. Phases `0-6` remain
+All phases are closed on April 28, 2026. The earlier aggregate-suite failure at
+`pulumi_logged_in` before local runtime preparation is closed in code, and the canonical
+`./.build/prodbox test all` rerun now completes cleanly on the supported local-cluster path
+through final public-edge restore, AWS teardown, and IAM credential cleanup. Phases `0-7` are
 closed on their owned repository surfaces, and the codebase state that those closures describe is
 present in the worktree:
 
@@ -54,10 +56,9 @@ native validations behind `./.build/prodbox test integration ...`, and the clean
 by Phase `6`. Environment-dependent AWS and public-edge proof remain attached to those commands
 rather than recorded here as a fresh execution log.
 
-Phases `0-6` remain closed on their owned repository surfaces. Phase `7` is blocked only by the
-local-cluster prerequisite needed for the aggregate rerun that now exercises the implemented
-shared AWS IAM harness. The repository otherwise exposes the supported Haskell command surface
-described by this plan.
+Phases `0-7` are closed on their owned repository surfaces. The repository exposes the supported
+Haskell command surface described by this plan, including the runner change that creates or repairs
+the supported local runtime before it executes the deferred `pulumi_logged_in` proof.
 
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
@@ -143,14 +144,13 @@ A sprint can move to `Done` only when all of the following are true:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ⏸️ Blocked | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
+| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: Phases `0-6` are marked `Done` for their repository-owned surfaces.
-Phase `7` is `Blocked` because the shared IAM validation-harness cleanup contract is implemented,
-but the aggregate rerun still waits on a supported local RKE2 kubeconfig for the Pulumi
-prerequisite. Each phase document names the canonical `prodbox` validation commands for its
-surface; this top-level plan does not duplicate a live execution log for environment-dependent AWS
-or public-edge proof.
+**Status interpretation**: Phases `0-7` are marked `Done` for their repository-owned surfaces.
+The shared IAM validation-harness cleanup contract, the post-runbook `pulumi_logged_in` runner
+fix, and the canonical aggregate rerun all close on April 28, 2026. Each phase document names the
+canonical `prodbox` validation commands for its surface; this top-level plan records closure
+results but does not duplicate full environment-dependent execution logs.
 
 ## Current Plan Status
 
@@ -178,10 +178,14 @@ surfaces:
   `prodbox test all` through one shared suite-level IAM harness that provisions temporary
   operational `aws.*` before prerequisite-driven AWS validation begins and clears those
   credentials again before the suite returns.
-- Phase `7` is now blocked only by the local-cluster prerequisite for aggregate reruns: the
-  shared IAM harness deletes any pre-existing dedicated `prodbox` IAM user and that user's access
-  keys, uses any pre-existing `aws.*` only to discover and delete the IAM user associated with
-  those credentials, materializes operational `aws.*` only from
+- `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/Prerequisite.hs`, and
+  `src/Prodbox/EffectInterpreter.hs` now split the aggregate prerequisite model into an initial
+  fail-fast gate plus a deferred cluster-backed backend proof, so `prodbox test integration all`
+  and `prodbox test all` no longer fail at `pulumi_logged_in` before the visible `rke2 install`
+  phase has created or repaired the supported MinIO-backed Pulumi backend.
+- The shared IAM harness deletes any pre-existing dedicated `prodbox` IAM user and that user's
+  access keys, uses any pre-existing `aws.*` only to discover and delete the IAM user associated
+  with those credentials, materializes operational `aws.*` only from
   `aws_admin_for_test_simulation.*`, and clears `aws.*` from `prodbox-config.dhall` before
   returning even on later prerequisite failure.
 - Supported AWS subprocesses now strip ambient AWS auth and profile variables before projecting
@@ -225,8 +229,9 @@ surfaces:
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- Environment-dependent AWS IAM, Route 53, public-edge, EKS, and HA-RKE2 proof are implemented
-  as named `prodbox` validation commands rather than asserted here as a fresh run result.
+- The April 28, 2026 canonical `./.build/prodbox test all` rerun completed cleanly through the
+  shared aggregate suite plan, including AWS IAM, Route 53, public-edge, EKS, HA-RKE2, destructive
+  lifecycle, post-test restore, final certificate convergence, and operational `aws.*` cleanup.
 - The legacy ledger has no pending items on the supported path.
 
 ## Exit Definition

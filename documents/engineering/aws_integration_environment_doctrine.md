@@ -187,6 +187,11 @@ If the running MinIO pod still points at a deleted retained host-path mount, the
 the declared host path, reapplies the ownership and mode contract, restarts `deployment/minio`,
 and then reruns the login proof before stack operations continue.
 
+On aggregate or cluster-backed suite paths, the public test runner may satisfy the local backend
+contract by running the visible `prodbox rke2 install` phase before it executes the deferred
+`pulumi_logged_in` prerequisite proof. The local-cluster-first rule still holds: remote AWS stack
+creation does not begin until that post-runbook backend proof succeeds.
+
 ## 4. Environment Creation Rules
 
 ### 4.1 Brand-New Resources Only

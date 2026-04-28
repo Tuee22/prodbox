@@ -53,7 +53,10 @@ Build a clean-room Haskell `prodbox` repository with:
     in-memory ownership projection, DNS-write gating, REST status, and HMAC-signed event state.
 15. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
-16. One retained non-PV chart-state root under `.prodbox-state/<namespace>/`.
+16. One retained repo-local state root under `.prodbox-state/`, including namespace-local
+    chart state under `.prodbox-state/<namespace>/`, AWS stack snapshots under
+    `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the HA-RKE2 validation
+    SSH key under `.prodbox-state/aws-test/`.
 17. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -74,7 +77,7 @@ Build a clean-room Haskell `prodbox` repository with:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | Lifecycle parity closes, Harbor bootstrap narrows to Harbor plus its storage backend, broad local-cluster Pulumi ownership is removed, and Python residue is removed |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | Public DNS, TLS, ingress, and external proof are owned by Haskell-only command paths |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes with no supported Python dependency; any surviving non-Python cleanup remains phase-owned in the ledger |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input |
+| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input and a shared suite-level IAM harness owning temporary operational credentials during AWS-backed reruns |
 
 ## Architecture Summary
 
@@ -92,6 +95,7 @@ Build a clean-room Haskell `prodbox` repository with:
 | AWS-backed EKS validation | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | Haskell orchestration plus Pulumi |
 | AWS-backed HA RKE2 validation | `prodbox pulumi test-resources|test-destroy --yes` plus `prodbox test integration ha-rke2-aws` | Haskell orchestration plus Pulumi |
 | Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
+| Retained repo-local validation state | `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Haskell Pulumi orchestration and AWS validation helpers |
 | Gateway startup | `prodbox gateway start` | Haskell gateway runtime |
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate |
 | DNS check | `prodbox dns check` | Haskell CLI |
@@ -99,20 +103,23 @@ Build a clean-room Haskell `prodbox` repository with:
 | Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI |
 | Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary elevated AWS credentials and AWS CLI subprocesses |
 | AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses |
+| AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup |
 | Formal verification | `prodbox tla-check` | Haskell CLI invoking the TLA+ toolchain |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |
 
 ## Current Repository State
 
-The repository worktree currently implements every phase surface described by this plan. The
-supported public surface is Haskell-only, the earlier unsupported cleanup residue is removed, and
-the implementation uses in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway
-Dockerfiles, removes symlinked GHC tool shims and the lifecycle-managed `haskell-toolchain`
-BuildKit path, aligns `prodbox.cabal` and `cabal.project` with the explicit `ghc-9.14.1` path,
-installs the Percona operator while mirroring Percona operator and PostgreSQL sidecar images, and
-targets `perconapgclusters.pgv2.percona.com`. The canonical validation contract for this worktree
-is the `prodbox` command surface documented below; environment-dependent AWS and public-edge proof
-remain attached to those commands rather than restated here as a fresh rerun log.
+The repository worktree implements the closed surfaces from Phases `0-6` and the repository-owned
+surfaces from Phase `7`, but Phase `7` remains blocked on April 27, 2026 by the external local
+RKE2 prerequisite needed for aggregate reruns. The supported public surface is Haskell-only, the
+earlier unsupported cleanup residue is removed, and the implementation uses
+in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, removes
+symlinked GHC tool shims and the lifecycle-managed `haskell-toolchain` BuildKit path, aligns
+`prodbox.cabal` and `cabal.project` with the explicit `ghc-9.14.1` path, installs the Percona
+operator while mirroring Percona operator and PostgreSQL sidecar images, and targets
+`perconapgclusters.pgv2.percona.com`. The canonical validation contract for this worktree is the
+`prodbox` command surface documented below; environment-dependent AWS and public-edge proof remain
+attached to those commands rather than restated here as a fresh rerun log.
 
 ### Supported Haskell Surface
 
@@ -130,6 +137,16 @@ remain attached to those commands rather than restated here as a fresh rerun log
   command family, with prompt-driven temporary elevated credentials on public paths and stored
   `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that prompt input,
   with the native IAM validation harness as the only supported runtime consumer.
+- `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/TestValidation.hs`
+  now route `prodbox test integration aws-iam`, `prodbox test integration all`, and
+  `prodbox test all` through one suite-level Haskell IAM harness.
+- That shared harness now deletes any pre-existing dedicated `prodbox` IAM user and that user's
+  access keys before provisioning, uses any pre-existing `aws.*` only to discover and delete the
+  IAM user associated with those credentials, materializes operational `aws.*` only from
+  `aws_admin_for_test_simulation.*`, and clears `aws.*` from `prodbox-config.dhall` before
+  returning even when later prerequisites fail.
+- Phase `7` is blocked only by the external local-cluster prerequisite that aggregate reruns still
+  need for `pulumi_logged_in`; the stale-`aws.*` leak itself is no longer the open surface.
 - `src/Prodbox/AwsEnvironment.hs` now isolates supported AWS subprocesses from ambient host AWS
   auth and profile state before projecting repository-root credentials into the supported command
   paths.
@@ -159,6 +176,9 @@ remain attached to those commands rather than restated here as a fresh rerun log
   repo-backed Pulumi backend on a bounded `pulumi login ... --non-interactive` path and repair a
   deleted MinIO export host-path mount by recreating the declared retained directory plus
   restarting `deployment/minio` before backend validation continues.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain AWS
+  validation stack snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`,
+  with the HA-RKE2 validation SSH key stored under `.prodbox-state/aws-test/`.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
   own the aggregate reruns, named native validation flows, and destructive postflight restore
   path.
@@ -190,7 +210,7 @@ than by ad hoc notes in this overview.
 | Configuration and settings | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
-| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` | Phase 4 |
+| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, `.prodbox-state/aws-test/`, `.prodbox-state/aws-eks-test/` | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
@@ -201,8 +221,8 @@ than by ad hoc notes in this overview.
 
 ## Current Execution State
 
-Phases `1-7` are currently represented by closed repository-owned surfaces and canonical
-validation contracts:
+Phases `0-6` are currently represented by closed repository-owned surfaces and canonical
+validation contracts. Phase `7` is blocked:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, and the
@@ -225,7 +245,11 @@ validation contracts:
   Sprint `6.1` and Sprint `6.2` are closed on the full destructive rerun, postflight restore, and
   zero-Python handoff contract.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
-  credential proof harness.
+  credential proof harness. Sprint `7.3` is blocked only by the local RKE2 prerequisite that the
+  aggregate reruns still need for `pulumi_logged_in`; the shared IAM validation harness for
+  `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
+  already owns the idempotent preflight, temporary operational-credential lifetime, and teardown
+  contract that prevents dedicated `prodbox` IAM-user leaks and clears test-created `aws.*`.
 
 ## Hard Constraints
 
@@ -256,6 +280,12 @@ validation contracts:
   `prodbox-config.dhall` `aws_admin_for_test_simulation.*`, and that section exists only for
   test-suite simulation of the ephemeral elevated credential prompt, with the native IAM test
   harness as the only supported runtime consumer.
+- The named and aggregate IAM validation surfaces share one joint idempotent harness that deletes
+  any pre-existing dedicated `prodbox` IAM user and all of that user's access keys before
+  provisioning, uses any pre-existing `aws.*` only to discover and delete the IAM user associated
+  with those credentials, materializes operational `aws.*` only from
+  `aws_admin_for_test_simulation.*` to simulate the interactive public CLI workflow, and clears
+  operational `aws.*` from `prodbox-config.dhall` before returning.
 - Full cluster delete preserves exactly two retained host roots: the configured manual PV root and
   the repo-local `.prodbox-state/` root.
 - Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's

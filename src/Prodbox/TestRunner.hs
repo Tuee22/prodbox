@@ -4,26 +4,29 @@ module Prodbox.TestRunner (
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (
+    SomeException,
+    displayException,
+    try,
+ )
 import Control.Monad (foldM, unless)
 import Data.List (isInfixOf)
-import Data.Map.Strict qualified as Map
+import Prodbox.Aws (
+    runAwsIamHarnessSetup,
+    runAwsIamHarnessTeardown,
+ )
 import Prodbox.BuildSupport (
     addBuildSupportEnvironment,
     canonicalOperatorBinaryPath,
     syncBuiltOperatorBinary,
  )
 import Prodbox.CLI.Command (
+    PolicyTier,
     TestCommand (..),
     validateCoverage,
  )
-import Prodbox.Effect (
-    Effect (EmitLine),
- )
 import Prodbox.EffectDAG (
-    EffectDAG,
-    EffectNode (..),
     fromRootIds,
-    transitiveClosureIds,
  )
 import Prodbox.EffectInterpreter (
     InterpreterContext (..),
@@ -79,9 +82,6 @@ phaseTwoMessage = "Phase 2/2: running test suites"
 postTestRestoreMessage :: String
 postTestRestoreMessage = "Post-test: restoring supported runtime"
 
-phaseOneHeaderId :: String
-phaseOneHeaderId = "test_phase_one_header"
-
 publicEdgeReadyClassification :: String
 publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
 
@@ -136,17 +136,27 @@ runHaskellSuites repoRoot environment suites = do
 
 runNativeSuite :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
 runNativeSuite repoRoot environment suitePlan = do
-    case buildPhaseOneDag suitePlan of
-        Left err -> failWith err
-        Right dag -> do
-            result <-
-                runEffectDAG
-                    InterpreterContext{interpreterRepoRoot = repoRoot}
-                    dag
-            case result of
-                Failure err -> failWith err
-                Success () ->
-                    runNativeWorkflow repoRoot environment suitePlan
+    bannerExit <- emitLineAction (phaseOneMessage suitePlan)
+    case bannerExit of
+        failure@(ExitFailure _) -> pure failure
+        ExitSuccess ->
+            case nativeManagedAwsHarnessPolicyTier suitePlan of
+                Nothing -> runNativeSuiteBody repoRoot environment suitePlan
+                Just policyTier -> do
+                    setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
+                    case setupExit of
+                        failure@(ExitFailure _) -> pure failure
+                        ExitSuccess -> do
+                            suiteExit <- runNativeSuiteBody repoRoot environment suitePlan
+                            cleanupExit <- runManagedAwsHarnessTeardown repoRoot
+                            pure (preferEarlierFailure suiteExit cleanupExit)
+
+runNativeSuiteBody :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
+runNativeSuiteBody repoRoot environment suitePlan = do
+    prerequisitesExit <- runPhaseOnePrerequisites repoRoot suitePlan
+    case prerequisitesExit of
+        failure@(ExitFailure _) -> pure failure
+        ExitSuccess -> runNativeWorkflow repoRoot environment suitePlan
 
 runNativeWorkflow :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
 runNativeWorkflow repoRoot environment suitePlan =
@@ -228,54 +238,59 @@ runNativeValidations repoRoot environment suitePlan =
     runValidation failure@(ExitFailure _) _ = pure failure
     runValidation ExitSuccess validation = runNativeValidation repoRoot environment validation
 
-buildPhaseOneDag :: NativeSuitePlan -> Either String EffectDAG
-buildPhaseOneDag suitePlan = do
-    registryWithPhaseOne <- addPhaseOneHeader suitePlan
-    fromRootIds (phaseOneDependencies suitePlan) registryWithPhaseOne
-
-addPhaseOneHeader :: NativeSuitePlan -> Either String (Map.Map String EffectNode)
-addPhaseOneHeader suitePlan
-    | null (nativeIntegrationGatePrerequisites suitePlan) =
-        Right (Map.insert phaseOneHeaderId (phaseOneHeaderNode suitePlan) prerequisiteRegistry)
-    | otherwise = do
-        let baseRegistry =
-                Map.insert phaseOneHeaderId (phaseOneHeaderNode suitePlan) prerequisiteRegistry
-        closureIds <-
-            transitiveClosureIds
-                (nativeIntegrationGatePrerequisites suitePlan)
-                baseRegistry
-        pure (foldr addHeaderDependency baseRegistry closureIds)
-  where
-    addHeaderDependency :: String -> Map.Map String EffectNode -> Map.Map String EffectNode
-    addHeaderDependency effectId =
-        Map.adjust
-            ( \node ->
-                node
-                    { effectNodePrerequisites =
-                        orderedPrepend phaseOneHeaderId (effectNodePrerequisites node)
-                    }
-            )
-            effectId
-
-phaseOneHeaderNode :: NativeSuitePlan -> EffectNode
-phaseOneHeaderNode suitePlan =
-    EffectNode
-        { effectNodeId = phaseOneHeaderId
-        , effectNodeDescription = "Phase 1 header"
-        , effectNodePrerequisites = []
-        , effectNodeEffect = EmitLine gateMessage
-        }
-  where
-    gateMessage =
-        if null (nativeIntegrationGatePrerequisites suitePlan)
-            then phaseOneNoPrereqMessage
-            else phaseOneGateMessage
-
-phaseOneDependencies :: NativeSuitePlan -> [String]
-phaseOneDependencies suitePlan =
+runPhaseOnePrerequisites :: FilePath -> NativeSuitePlan -> IO ExitCode
+runPhaseOnePrerequisites repoRoot suitePlan =
     case nativeIntegrationGatePrerequisites suitePlan of
-        [] -> [phaseOneHeaderId]
-        prerequisites -> prerequisites
+        [] -> pure ExitSuccess
+        prerequisites ->
+            case fromRootIds prerequisites prerequisiteRegistry of
+                Left err -> failWith err
+                Right dag -> do
+                    result <-
+                        runEffectDAG
+                            InterpreterContext{interpreterRepoRoot = repoRoot}
+                            dag
+                    case result of
+                        Failure err -> failWith err
+                        Success () -> pure ExitSuccess
+
+phaseOneMessage :: NativeSuitePlan -> String
+phaseOneMessage suitePlan =
+    if null (nativeIntegrationGatePrerequisites suitePlan)
+        then phaseOneNoPrereqMessage
+        else phaseOneGateMessage
+
+runManagedAwsHarnessSetup :: FilePath -> PolicyTier -> IO ExitCode
+runManagedAwsHarnessSetup repoRoot policyTier = do
+    setupResult <- try (runAwsIamHarnessSetup repoRoot policyTier) :: IO (Either SomeException String)
+    case setupResult of
+        Left err ->
+            failWith
+                ( "Managed AWS IAM harness setup failed: "
+                    ++ displayException err
+                )
+        Right output -> do
+            putStr output
+            pure ExitSuccess
+
+runManagedAwsHarnessTeardown :: FilePath -> IO ExitCode
+runManagedAwsHarnessTeardown repoRoot = do
+    teardownResult <- try (runAwsIamHarnessTeardown repoRoot) :: IO (Either SomeException String)
+    case teardownResult of
+        Left err ->
+            failWith
+                ( "Managed AWS IAM harness teardown failed: "
+                    ++ displayException err
+                )
+        Right output -> do
+            putStr output
+            pure ExitSuccess
+
+preferEarlierFailure :: ExitCode -> ExitCode -> ExitCode
+preferEarlierFailure earlierResult cleanupResult =
+    case earlierResult of
+        failure@(ExitFailure _) -> failure
+        ExitSuccess -> cleanupResult
 
 runCommandForExitCode :: CommandSpec -> IO ExitCode
 runCommandForExitCode spec = do
@@ -349,9 +364,6 @@ ensureCanonicalOperatorBinary repoRoot environment = do
                     ( "canonical operator binary synced to unexpected path: "
                         ++ binaryPath
                     )
-
-orderedPrepend :: String -> [String] -> [String]
-orderedPrepend value existing = value : filter (/= value) existing
 
 failWith :: String -> IO ExitCode
 failWith message = do

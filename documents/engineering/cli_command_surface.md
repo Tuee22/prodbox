@@ -218,6 +218,9 @@ Named suite commands:
 
 - runs Haskell suites through `cabal test`
 - enforces prerequisite gates and runbook steps
+- provisions the shared IAM harness for `prodbox test integration aws-iam`,
+  `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
+  begin, then clears operational `aws.*` again before the suite returns
 - applies the canonical aggregate ordering
 - keeps stored `aws_admin_for_test_simulation.*` confined to test-suite simulation and the native
   `aws-iam` harness rather than the public command surface

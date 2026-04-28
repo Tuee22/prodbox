@@ -631,6 +631,38 @@ main = hspec $ do
                 teardownAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_delete_user_access_key_id")
                 teardownAdminKey `shouldContain` "ADMINKEY"
 
+        it "runs native aws-iam validation through the shared harness and clears leaked operational credentials" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                repoRoot <- getCurrentDirectory
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                copySchema repoRoot tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithLeakedOperationalAwsAndConfiguredAdmin
+                seedFakeAwsHarnessState tmpDir
+                envVars <- fakeAwsHarnessEnvironment tmpDir binary
+
+                (exitCode, stdoutText, stderrText) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["test", "integration", "aws-iam"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                exitCode `shouldBe` ExitSuccess
+                stderrText `shouldBe` ""
+                stdoutText `shouldContain` "Phase 1/2: validating integration prerequisites"
+                stdoutText `shouldContain` "Phase 2/2: running test suites"
+                stdoutText `shouldContain` "Validation: aws-iam"
+                stdoutText `shouldContain` "PREEXISTING_OPERATIONAL_USER=leaked-user"
+                stdoutText `shouldContain` "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED=true"
+                stdoutText `shouldContain` "IAM_USER=prodbox"
+                stdoutText `shouldContain` "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true"
+
+                configAfterHarness <- readFile (tmpDir </> "prodbox-config.dhall")
+                configAfterHarness `shouldContain` "access_key_id = \"\""
+                configAfterHarness `shouldContain` "secret_access_key = \"\""
+
+                deletedUsers <- fmap lines (readFile (tmpDir </> "fake-aws-state" </> "iam_deleted_users"))
+                deletedUsers `shouldBe` ["prodbox", "leaked-user", "prodbox"]
+
         it "runs native aws quota inspection and request flows through the built frontend with a fake AWS CLI" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
                 binary <- resolveBinaryPath
@@ -724,6 +756,15 @@ fakeCurlScript =
 fakeAwsEnvironment :: FilePath -> IO [(String, String)]
 fakeAwsEnvironment repoRoot = do
     fakeBin <- writeFakeAwsScript repoRoot
+    currentEnvironment <- getEnvironment
+    let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
+        updatedPath = fakeBin ++ ":" ++ existingPath
+    pure (("PATH", updatedPath) : filter ((/= "PATH") . fst) currentEnvironment)
+
+fakeAwsHarnessEnvironment :: FilePath -> FilePath -> IO [(String, String)]
+fakeAwsHarnessEnvironment repoRoot binaryPath = do
+    fakeBin <- writeFakeAwsScript repoRoot
+    writeExecutable (fakeBin </> "cabal") (fakeCabalListBinScript binaryPath)
     currentEnvironment <- getEnvironment
     let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
         updatedPath = fakeBin ++ ":" ++ existingPath
@@ -1552,6 +1593,32 @@ fakeAwsScript stateDir =
         , "set -euo pipefail"
         , "STATE_DIR=\"" ++ stateDir ++ "\""
         , "/bin/mkdir -p \"$STATE_DIR\""
+        , "user_exists_file() {"
+        , "  printf '%s/user-%s-exists' \"$STATE_DIR\" \"$1\""
+        , "}"
+        , "user_policy_file() {"
+        , "  printf '%s/user-%s-policy' \"$STATE_DIR\" \"$1\""
+        , "}"
+        , "user_key_file() {"
+        , "  printf '%s/user-%s-access-key-id' \"$STATE_DIR\" \"$1\""
+        , "}"
+        , "identity_file() {"
+        , "  printf '%s/identity-%s' \"$STATE_DIR\" \"$1\""
+        , "}"
+        , "append_line() {"
+        , "  printf '%s\\n' \"$2\" >> \"$1\""
+        , "}"
+        , "aws_error() {"
+        , "  local code=${1:?}"
+        , "  local operation=${2:?}"
+        , "  local message=${3:?}"
+        , "  printf 'An error occurred (%s) when calling the %s operation: %s\\n' \"$code\" \"$operation\" \"$message\" >&2"
+        , "  exit 254"
+        , "}"
+        , "if [[ \"${1:-}\" == \"--version\" ]]; then"
+        , "  printf 'aws-cli/2.17.0 Python/3.12.0 Linux/6.8.0 exe/x86_64\\n'"
+        , "  exit 0"
+        , "fi"
         , "if [[ $# -ge 2 && \"${@: -2:1}\" == \"--output\" ]]; then"
         , "  set -- \"${@:1:$#-2}\""
         , "fi"
@@ -1569,38 +1636,69 @@ fakeAwsScript stateDir =
         , "JSON"
         , "    ;;"
         , "  \"iam create-user\")"
+        , "    user_name=${4:-}"
+        , "    if [[ -f \"$(user_exists_file \"$user_name\")\" ]]; then"
+        , "      aws_error 'EntityAlreadyExists' 'CreateUser' \"User with name $user_name already exists.\""
+        , "    fi"
         , "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_create_user_access_key_id\""
-        , "    touch \"$STATE_DIR/user_exists\""
+        , "    touch \"$(user_exists_file \"$user_name\")\""
         , "    printf '{}\\n'"
         , "    ;;"
         , "  \"iam list-access-keys\")"
-        , "    if [[ -f \"$STATE_DIR/access_key_id\" ]]; then"
-        , "      access_key_id=$(cat \"$STATE_DIR/access_key_id\")"
+        , "    user_name=${4:-}"
+        , "    if [[ ! -f \"$(user_exists_file \"$user_name\")\" ]]; then"
+        , "      aws_error 'NoSuchEntity' 'ListAccessKeys' \"The user with name $user_name cannot be found.\""
+        , "    fi"
+        , "    if [[ -f \"$(user_key_file \"$user_name\")\" ]]; then"
+        , "      access_key_id=$(cat \"$(user_key_file \"$user_name\")\")"
         , "      printf '{\"AccessKeyMetadata\":[{\"AccessKeyId\":\"%s\"}]}\\n' \"$access_key_id\""
         , "    else"
         , "      printf '{\"AccessKeyMetadata\":[]}\\n'"
         , "    fi"
         , "    ;;"
         , "  \"iam delete-access-key\")"
-        , "    rm -f \"$STATE_DIR/access_key_id\""
+        , "    user_name=${4:-}"
+        , "    access_key_id=${6:-}"
+        , "    append_line \"$STATE_DIR/iam_deleted_access_keys\" \"$user_name:$access_key_id\""
+        , "    rm -f \"$(user_key_file \"$user_name\")\""
+        , "    rm -f \"$(identity_file \"$access_key_id\")\""
         , "    printf '{}\\n'"
         , "    ;;"
         , "  \"iam put-user-policy\")"
+        , "    user_name=${4:-}"
+        , "    touch \"$(user_policy_file \"$user_name\")\""
         , "    printf '{}\\n'"
         , "    ;;"
         , "  \"iam create-access-key\")"
-        , "    printf 'AKIAFAKESETUP' > \"$STATE_DIR/access_key_id\""
+        , "    user_name=${4:-}"
+        , "    printf 'AKIAFAKESETUP' > \"$(user_key_file \"$user_name\")\""
+        , "    printf '%s' \"$user_name\" > \"$(identity_file 'AKIAFAKESETUP')\""
         , "    cat <<'JSON'"
         , "{\"AccessKey\":{\"AccessKeyId\":\"AKIAFAKESETUP\",\"SecretAccessKey\":\"fake-secret-access-key\"}}"
         , "JSON"
         , "    ;;"
         , "  \"iam delete-user-policy\")"
-        , "    printf '{}\\n'"
+        , "    user_name=${4:-}"
+        , "    if [[ -f \"$(user_policy_file \"$user_name\")\" ]]; then"
+        , "      rm -f \"$(user_policy_file \"$user_name\")\""
+        , "      printf '{}\\n'"
+        , "    else"
+        , "      aws_error 'NoSuchEntity' 'DeleteUserPolicy' \"The policy with name prodbox-inline cannot be found.\""
+        , "    fi"
         , "    ;;"
         , "  \"iam delete-user\")"
-        , "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_delete_user_access_key_id\""
-        , "    rm -f \"$STATE_DIR/user_exists\""
+        , "    user_name=${4:-}"
+        , "    if [[ ! -f \"$(user_exists_file \"$user_name\")\" ]]; then"
+        , "      aws_error 'NoSuchEntity' 'DeleteUser' \"The user with name $user_name cannot be found.\""
+        , "    fi"
         , "    printf '{}\\n'"
+        , "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_delete_user_access_key_id\""
+        , "    append_line \"$STATE_DIR/iam_deleted_users\" \"$user_name\""
+        , "    if [[ -f \"$(user_key_file \"$user_name\")\" ]]; then"
+        , "      existing_access_key=$(cat \"$(user_key_file \"$user_name\")\")"
+        , "      rm -f \"$(identity_file \"$existing_access_key\")\""
+        , "    fi"
+        , "    rm -f \"$(user_exists_file \"$user_name\")\" \"$(user_policy_file \"$user_name\")\" \"$(user_key_file \"$user_name\")\""
         , "    ;;"
         , "  \"service-quotas get-service-quota\")"
         , "    cat <<'JSON'"
@@ -1618,9 +1716,17 @@ fakeAwsScript stateDir =
         , "JSON"
         , "    ;;"
         , "  \"sts get-caller-identity\")"
-        , "    cat <<'JSON'"
-        , "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDAFake\"}"
+        , "    access_key_id=${AWS_ACCESS_KEY_ID:-}"
+        , "    if [[ -f \"$(identity_file \"$access_key_id\")\" ]]; then"
+        , "      user_name=$(cat \"$(identity_file \"$access_key_id\")\")"
+        , "      printf '{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/%s\",\"UserId\":\"AIDAFake\"}\\n' \"$user_name\""
+        , "    elif [[ \"$access_key_id\" == 'ADMINKEY' || \"$access_key_id\" == 'CONFIGADMINKEY' ]]; then"
+        , "      cat <<'JSON'"
+        , "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/temp-admin\",\"UserId\":\"AIDADmin\"}"
         , "JSON"
+        , "    else"
+        , "      aws_error 'InvalidClientTokenId' 'GetCallerIdentity' 'The security token included in the request is invalid.'"
+        , "    fi"
         , "    ;;"
         , "  *)"
         , "    printf 'unsupported fake aws command: %s %s\\n' \"$service\" \"$action\" >&2"
@@ -1628,6 +1734,32 @@ fakeAwsScript stateDir =
         , "    ;;"
         , "esac"
         ]
+
+fakeCabalListBinScript :: FilePath -> String
+fakeCabalListBinScript binaryPath =
+    unlines
+        [ "#!/usr/bin/env bash"
+        , "set -euo pipefail"
+        , "if [[ \"$*\" == 'list-bin --builddir=.build exe:prodbox' ]]; then"
+        , "  printf '%s\\n' '" ++ binaryPath ++ "'"
+        , "else"
+        , "  printf 'unsupported fake cabal command: %s\\n' \"$*\" >&2"
+        , "  exit 1"
+        , "fi"
+        ]
+
+seedFakeAwsHarnessState :: FilePath -> IO ()
+seedFakeAwsHarnessState repoRoot = do
+    let stateDir = repoRoot </> "fake-aws-state"
+    createDirectoryIfMissing True stateDir
+    writeFile (stateDir </> "user-prodbox-exists") ""
+    writeFile (stateDir </> "user-prodbox-policy") ""
+    writeFile (stateDir </> "user-prodbox-access-key-id") "AKIAOLDPRODBOX"
+    writeFile (stateDir </> "identity-AKIAOLDPRODBOX") "prodbox"
+    writeFile (stateDir </> "user-leaked-user-exists") ""
+    writeFile (stateDir </> "user-leaked-user-policy") ""
+    writeFile (stateDir </> "user-leaked-user-access-key-id") "AKIALEAKED"
+    writeFile (stateDir </> "identity-AKIALEAKED") "leaked-user"
 
 gatewayStatusConfig :: String
 gatewayStatusConfig =
@@ -1681,6 +1813,19 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin :: String
 validConfigWithBlankOperationalAwsAndConfiguredAdmin =
     unlines
         [ "{ aws = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"us-east-1\" }"
+        , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
+        , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }"
+        , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+        , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+        , ", storage = { manual_pv_host_root = \".data\" }"
+        , "}"
+        ]
+
+validConfigWithLeakedOperationalAwsAndConfiguredAdmin :: String
+validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
+    unlines
+        [ "{ aws = { access_key_id = \"AKIALEAKED\", secret_access_key = \"leaked-secret\", session_token = None Text, region = \"us-west-2\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
         , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }"

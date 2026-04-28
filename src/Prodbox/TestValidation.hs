@@ -27,17 +27,13 @@ import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
 import Prodbox.Aws (
-    runAwsIamHarnessSetup,
-    runAwsIamHarnessTeardown,
+    runAwsIamHarnessInspect,
  )
 import Prodbox.AwsEnvironment (
     overlayAwsCredentials,
  )
 import Prodbox.BuildSupport (
     canonicalOperatorBinaryPath,
- )
-import Prodbox.CLI.Command (
-    PolicyTier (PolicyFull),
  )
 import Prodbox.Dns (preferredPublicHostFqdn)
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
@@ -99,20 +95,10 @@ runNativeValidation repoRoot environment validation = do
         ValidationPublicDns -> runPublicDnsValidation repoRoot
         ValidationDnsAws -> runDnsAwsValidation repoRoot
         ValidationAwsIam ->
-            runSequentially
-                [ assertProducedOutputContainsAll
-                    "aws-iam harness setup --tier full"
-                    (runAwsIamHarnessSetup repoRoot PolicyFull)
-                    ["IAM_USER=prodbox", "POLICY_TIER=full"]
-                , assertProducedOutputContainsAll
-                    "aws-iam harness teardown"
-                    (runAwsIamHarnessTeardown repoRoot)
-                    ["IAM_USER=prodbox", "USER_DELETED="]
-                , assertProducedOutputContainsAll
-                    "aws-iam harness setup --tier full"
-                    (runAwsIamHarnessSetup repoRoot PolicyFull)
-                    ["IAM_USER=prodbox", "POLICY_TIER=full"]
-                ]
+            assertProducedOutputContainsAll
+                "aws-iam harness inspection"
+                (runAwsIamHarnessInspect repoRoot)
+                ["IAM_USER=prodbox", "CONFIG_PATH="]
         ValidationAwsEks ->
             runSequentially
                 [ assertNativeCommandOutputContainsAll

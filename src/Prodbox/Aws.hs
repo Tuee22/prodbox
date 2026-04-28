@@ -4,6 +4,7 @@ module Prodbox.Aws (
     buildIamPolicyDocument,
     buildIamPolicyJson,
     runAwsCommand,
+    runAwsIamHarnessInspect,
     runAwsIamHarnessSetup,
     runAwsIamHarnessTeardown,
     runInteractiveConfigSetup,
@@ -149,6 +150,20 @@ data IamTeardownResult = IamTeardownResult
     , iamTeardownUserDeleted :: Bool
     , iamTeardownDhallPath :: FilePath
     }
+    deriving (Eq, Show)
+
+data IamUserCleanupResult = IamUserCleanupResult
+    { iamUserCleanupUserName :: Text
+    , iamUserCleanupDeletedAccessKeys :: [Text]
+    , iamUserCleanupUserDeleted :: Bool
+    }
+    deriving (Eq, Show)
+
+data OperationalIdentityProbe
+    = OperationalCredentialsMissing
+    | OperationalIdentityProbeFailed String
+    | OperationalIdentityNonUserArn Text
+    | OperationalIdentityIamUser Text
     deriving (Eq, Show)
 
 data ConfigSetupResult = ConfigSetupResult
@@ -571,6 +586,23 @@ promptAdminCredentialsWithRegionChoice repoRoot = do
 runAwsIamHarnessSetup :: FilePath -> PolicyTier -> IO String
 runAwsIamHarnessSetup repoRoot policyTier = do
     credentials <- loadHarnessAdminCredentials repoRoot
+    existingIdentity <- probeConfiguredOperationalIdentity repoRoot
+    preflightTeardown <-
+        applyAwsTeardown
+            repoRoot
+            AwsTeardownInput
+                { awsTeardownAdminCredentials = credentials
+                }
+    preflightAssociatedCleanup <-
+        case existingIdentity of
+            OperationalIdentityIamUser userName
+                | userName /= prodboxIamUserName ->
+                    Just <$> cleanupIamUserResidue repoRoot credentials userName
+            _ -> pure Nothing
+    preflightConfigCleared <- operationalCredentialsCleared repoRoot
+    unless
+        preflightConfigCleared
+        (throwAws "AWS IAM harness preflight cleanup did not clear operational aws.* credentials from prodbox-config.dhall.")
     result <-
         applyAwsSetup
             repoRoot
@@ -578,7 +610,43 @@ runAwsIamHarnessSetup repoRoot policyTier = do
                 { awsSetupAdminCredentials = credentials
                 , awsSetupPolicyTierInput = policyTier
                 }
-    pure (renderAwsSetupResult result)
+    pure
+        ( renderAwsIamHarnessSetupReport
+            existingIdentity
+            preflightTeardown
+            preflightAssociatedCleanup
+            preflightConfigCleared
+            result
+        )
+
+runAwsIamHarnessInspect :: FilePath -> IO String
+runAwsIamHarnessInspect repoRoot = do
+    config <- loadConfigForWrite repoRoot
+    if not (operationalCredentialsConfigured (aws config))
+        then throwAws "AWS IAM harness inspection requires populated operational aws.* credentials."
+        else do
+            identity <- probeOperationalIdentity repoRoot (aws config)
+            case identity of
+                OperationalCredentialsMissing ->
+                    throwAws "AWS IAM harness inspection did not find populated operational aws.* credentials."
+                OperationalIdentityProbeFailed err ->
+                    throwAws
+                        ( "AWS IAM harness inspection failed to validate operational aws.* credentials via `aws sts get-caller-identity`: "
+                            ++ err
+                        )
+                OperationalIdentityNonUserArn arn ->
+                    throwAws
+                        ( "AWS IAM harness inspection expected an IAM user identity for operational aws.* credentials but received ARN `"
+                            ++ Text.unpack arn
+                            ++ "`."
+                        )
+                OperationalIdentityIamUser userName ->
+                    pure
+                        ( unlines
+                            [ "IAM_USER=" ++ Text.unpack userName
+                            , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+                            ]
+                        )
 
 runAwsIamHarnessTeardown :: FilePath -> IO String
 runAwsIamHarnessTeardown repoRoot = do
@@ -589,7 +657,11 @@ runAwsIamHarnessTeardown repoRoot = do
             AwsTeardownInput
                 { awsTeardownAdminCredentials = credentials
                 }
-    pure (renderAwsTeardownResult result)
+    configCleared <- operationalCredentialsCleared repoRoot
+    unless
+        configCleared
+        (throwAws "AWS IAM harness teardown did not clear operational aws.* credentials from prodbox-config.dhall.")
+    pure (renderAwsTeardownResult result ++ "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true\n")
 
 loadHarnessAdminCredentials :: FilePath -> IO Credentials
 loadHarnessAdminCredentials repoRoot = do
@@ -1138,7 +1210,11 @@ parseHostedZoneChoice value = do
             }
 
 listOperationalAccessKeys :: FilePath -> Credentials -> IO [Text]
-listOperationalAccessKeys repoRoot adminCredentials = do
+listOperationalAccessKeys repoRoot adminCredentials =
+    listUserAccessKeys repoRoot adminCredentials prodboxIamUserName
+
+listUserAccessKeys :: FilePath -> Credentials -> Text -> IO [Text]
+listUserAccessKeys repoRoot adminCredentials userName = do
     listKeysOutput <-
         runAwsCliCompleted
             repoRoot
@@ -1146,7 +1222,7 @@ listOperationalAccessKeys repoRoot adminCredentials = do
             [ "iam"
             , "list-access-keys"
             , "--user-name"
-            , Text.unpack prodboxIamUserName
+            , Text.unpack userName
             ]
     listPayloadText <- requireCommandSuccess "aws iam list-access-keys" listKeysOutput
     listPayloadValue <- decodeJsonPayload "list-access-keys" listPayloadText
@@ -1157,7 +1233,11 @@ listOperationalAccessKeys repoRoot adminCredentials = do
         requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
 
 deleteExistingOperationalKeys :: FilePath -> Credentials -> IO [Text]
-deleteExistingOperationalKeys repoRoot adminCredentials = do
+deleteExistingOperationalKeys repoRoot adminCredentials =
+    deleteExistingUserKeys repoRoot adminCredentials prodboxIamUserName
+
+deleteExistingUserKeys :: FilePath -> Credentials -> Text -> IO [Text]
+deleteExistingUserKeys repoRoot adminCredentials userName = do
     listKeysOutput <-
         runAwsCliCompleted
             repoRoot
@@ -1165,7 +1245,7 @@ deleteExistingOperationalKeys repoRoot adminCredentials = do
             [ "iam"
             , "list-access-keys"
             , "--user-name"
-            , Text.unpack prodboxIamUserName
+            , Text.unpack userName
             ]
     if processExitCode listKeysOutput == ExitSuccess
         then do
@@ -1175,14 +1255,18 @@ deleteExistingOperationalKeys repoRoot adminCredentials = do
             forM (Vector.toList accessKeysArray) $ \item -> do
                 metadataObject <- requireObject "AccessKeyMetadata" item
                 accessKeyIdValue <- requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
-                deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue
+                deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue
                 pure accessKeyIdValue
         else case awsErrorCode (errorDetail listKeysOutput) of
             Just "NoSuchEntity" -> pure []
             _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
 
 deleteOperationalAccessKey :: FilePath -> Credentials -> Text -> IO ()
-deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue = do
+deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue =
+    deleteUserAccessKey repoRoot adminCredentials prodboxIamUserName accessKeyIdValue
+
+deleteUserAccessKey :: FilePath -> Credentials -> Text -> Text -> IO ()
+deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue = do
     deleteKeyOutput <-
         runAwsCliCompleted
             repoRoot
@@ -1190,7 +1274,7 @@ deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue = do
             [ "iam"
             , "delete-access-key"
             , "--user-name"
-            , Text.unpack prodboxIamUserName
+            , Text.unpack userName
             , "--access-key-id"
             , Text.unpack accessKeyIdValue
             ]
@@ -1198,7 +1282,11 @@ deleteOperationalAccessKey repoRoot adminCredentials accessKeyIdValue = do
     pure ()
 
 deleteUserPolicyIfPresent :: FilePath -> Credentials -> IO ()
-deleteUserPolicyIfPresent repoRoot adminCredentials = do
+deleteUserPolicyIfPresent repoRoot adminCredentials =
+    deleteNamedUserPolicyIfPresent repoRoot adminCredentials prodboxIamUserName
+
+deleteNamedUserPolicyIfPresent :: FilePath -> Credentials -> Text -> IO ()
+deleteNamedUserPolicyIfPresent repoRoot adminCredentials userName = do
     deletePolicyOutput <-
         runAwsCliCompleted
             repoRoot
@@ -1206,7 +1294,7 @@ deleteUserPolicyIfPresent repoRoot adminCredentials = do
             [ "iam"
             , "delete-user-policy"
             , "--user-name"
-            , Text.unpack prodboxIamUserName
+            , Text.unpack userName
             , "--policy-name"
             , Text.unpack prodboxIamInlinePolicyName
             ]
@@ -1214,7 +1302,11 @@ deleteUserPolicyIfPresent repoRoot adminCredentials = do
         throwAws ("aws iam delete-user-policy failed: " ++ errorDetail deletePolicyOutput)
 
 deleteOperationalUserIfPresent :: FilePath -> Credentials -> IO Bool
-deleteOperationalUserIfPresent repoRoot adminCredentials = do
+deleteOperationalUserIfPresent repoRoot adminCredentials =
+    deleteUserIfPresent repoRoot adminCredentials prodboxIamUserName
+
+deleteUserIfPresent :: FilePath -> Credentials -> Text -> IO Bool
+deleteUserIfPresent repoRoot adminCredentials userName = do
     deleteUserOutput <-
         runAwsCliCompleted
             repoRoot
@@ -1222,7 +1314,7 @@ deleteOperationalUserIfPresent repoRoot adminCredentials = do
             [ "iam"
             , "delete-user"
             , "--user-name"
-            , Text.unpack prodboxIamUserName
+            , Text.unpack userName
             ]
     case processExitCode deleteUserOutput of
         ExitSuccess -> pure True
@@ -1230,6 +1322,72 @@ deleteOperationalUserIfPresent repoRoot adminCredentials = do
             case awsErrorCode (errorDetail deleteUserOutput) of
                 Just "NoSuchEntity" -> pure False
                 _ -> throwAws ("aws iam delete-user failed: " ++ errorDetail deleteUserOutput)
+
+cleanupIamUserResidue :: FilePath -> Credentials -> Text -> IO IamUserCleanupResult
+cleanupIamUserResidue repoRoot adminCredentials userName = do
+    deletedAccessKeys <- deleteExistingUserKeys repoRoot adminCredentials userName
+    deleteNamedUserPolicyIfPresent repoRoot adminCredentials userName
+    userDeleted <- deleteUserIfPresent repoRoot adminCredentials userName
+    pure
+        IamUserCleanupResult
+            { iamUserCleanupUserName = userName
+            , iamUserCleanupDeletedAccessKeys = deletedAccessKeys
+            , iamUserCleanupUserDeleted = userDeleted
+            }
+
+probeConfiguredOperationalIdentity :: FilePath -> IO OperationalIdentityProbe
+probeConfiguredOperationalIdentity repoRoot = do
+    config <- loadConfigForWrite repoRoot
+    probeOperationalIdentity repoRoot (aws config)
+
+probeOperationalIdentity :: FilePath -> Credentials -> IO OperationalIdentityProbe
+probeOperationalIdentity repoRoot credentials =
+    if not (operationalCredentialsConfigured credentials)
+        then pure OperationalCredentialsMissing
+        else do
+            environment <- operationalAwsEnvironment credentials
+            stsOutput <-
+                runAwsCliCompletedWithEnvironment
+                    repoRoot
+                    environment
+                    ["sts", "get-caller-identity"]
+            case processExitCode stsOutput of
+                ExitFailure _ ->
+                    pure (OperationalIdentityProbeFailed (errorDetail stsOutput))
+                ExitSuccess -> do
+                    payload <- decodeJsonPayload "aws sts get-caller-identity" (processStdout stsOutput)
+                    payloadObject <- requireObject "aws sts get-caller-identity" payload
+                    arn <- requireTextField "aws sts get-caller-identity" "Arn" payloadObject
+                    pure $
+                        case iamUserNameFromArn arn of
+                            Just userName -> OperationalIdentityIamUser userName
+                            Nothing -> OperationalIdentityNonUserArn arn
+
+operationalCredentialsConfigured :: Credentials -> Bool
+operationalCredentialsConfigured credentials =
+    not (Text.null (Text.strip (access_key_id credentials)))
+        && not (Text.null (Text.strip (secret_access_key credentials)))
+        && not (Text.null (Text.strip (region credentials)))
+
+operationalCredentialsCleared :: FilePath -> IO Bool
+operationalCredentialsCleared repoRoot = do
+    config <- loadConfigForWrite repoRoot
+    let credentials = aws config
+    pure
+        ( Text.null (Text.strip (access_key_id credentials))
+            && Text.null (Text.strip (secret_access_key credentials))
+            && session_token credentials == Nothing
+        )
+
+iamUserNameFromArn :: Text -> Maybe Text
+iamUserNameFromArn arn = do
+    resource <- case reverse (Text.splitOn ":" arn) of
+        resourceValue : _ -> Just resourceValue
+        [] -> Nothing
+    resourceSuffix <- Text.stripPrefix "user/" resource
+    case reverse (filter (/= "") (Text.splitOn "/" resourceSuffix)) of
+        userName : _ -> Just userName
+        [] -> Nothing
 
 quotaSpecsForTier :: PolicyTier -> [QuotaSpec]
 quotaSpecsForTier policyTier =
@@ -1255,6 +1413,56 @@ renderAwsTeardownResult result =
         , "DELETED_ACCESS_KEYS=" ++ show (length (iamTeardownDeletedAccessKeys result))
         , "CONFIG_PATH=" ++ iamTeardownDhallPath result
         ]
+
+renderAwsIamHarnessSetupReport ::
+    OperationalIdentityProbe ->
+    IamTeardownResult ->
+    Maybe IamUserCleanupResult ->
+    Bool ->
+    IamSetupResult ->
+    String
+renderAwsIamHarnessSetupReport identityProbe preflightTeardown preflightAssociatedCleanup preflightConfigCleared setupResult =
+    concat
+        [ renderOperationalIdentityProbe identityProbe
+        , renderAwsTeardownResult preflightTeardown
+        , renderAssociatedCleanup preflightAssociatedCleanup
+        , "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED="
+            ++ map toLower (show preflightConfigCleared)
+            ++ "\n"
+        , renderAwsSetupResult setupResult
+        ]
+  where
+    renderAssociatedCleanup :: Maybe IamUserCleanupResult -> String
+    renderAssociatedCleanup Nothing = "PREEXISTING_ASSOCIATED_USER_DELETED=false\n"
+    renderAssociatedCleanup (Just cleanupResult) =
+        unlines
+            [ "PREEXISTING_ASSOCIATED_USER=" ++ Text.unpack (iamUserCleanupUserName cleanupResult)
+            , "PREEXISTING_ASSOCIATED_USER_DELETED=" ++ map toLower (show (iamUserCleanupUserDeleted cleanupResult))
+            , "PREEXISTING_ASSOCIATED_USER_DELETED_ACCESS_KEYS=" ++ show (length (iamUserCleanupDeletedAccessKeys cleanupResult))
+            ]
+
+renderOperationalIdentityProbe :: OperationalIdentityProbe -> String
+renderOperationalIdentityProbe probe =
+    case probe of
+        OperationalCredentialsMissing ->
+            "PREEXISTING_OPERATIONAL_USER=\nPREEXISTING_OPERATIONAL_PROBE=missing\n"
+        OperationalIdentityProbeFailed err ->
+            unlines
+                [ "PREEXISTING_OPERATIONAL_USER="
+                , "PREEXISTING_OPERATIONAL_PROBE=error"
+                , "PREEXISTING_OPERATIONAL_PROBE_DETAIL=" ++ err
+                ]
+        OperationalIdentityNonUserArn arn ->
+            unlines
+                [ "PREEXISTING_OPERATIONAL_USER="
+                , "PREEXISTING_OPERATIONAL_PROBE=non-user"
+                , "PREEXISTING_OPERATIONAL_ARN=" ++ Text.unpack arn
+                ]
+        OperationalIdentityIamUser userName ->
+            unlines
+                [ "PREEXISTING_OPERATIONAL_USER=" ++ Text.unpack userName
+                , "PREEXISTING_OPERATIONAL_PROBE=iam-user"
+                ]
 
 renderConfigSetupResult :: ConfigSetupResult -> String
 renderConfigSetupResult result =

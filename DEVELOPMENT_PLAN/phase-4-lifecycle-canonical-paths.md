@@ -28,6 +28,9 @@ lifecycle-owned bootstrap DNS and ACME `ClusterIssuer` reconcile in `src/Prodbox
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the only supported public Pulumi stack programs; broad
   local-cluster platform or application ownership no longer depends on Pulumi.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain AWS
+  validation stack snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`,
+  with the HA-RKE2 validation SSH key stored under `.prodbox-state/aws-test/`.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.
@@ -123,6 +126,9 @@ local-cluster supported ownership from the public Pulumi path.
 - Supported Pulumi stack programs are non-Python.
 - Haskell owns Pulumi stack selection, config rendering, output parsing, and failure reporting.
 - The AWS validation-stack paths continue to close through `prodbox pulumi ...`.
+- AWS validation local state remains repo-local under `.prodbox-state/aws-test/` and
+  `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
+  `.prodbox-state/aws-test/`.
 - No supported root `Pulumi.yaml`, `pulumi/home`, or broad local-cluster public operator flow
   depends on Pulumi.
 - No supported Pulumi program depends on Python.
@@ -149,6 +155,9 @@ local-cluster supported ownership from the public Pulumi path.
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
   Haskell infra modules, while AWS provider credentials stay in `prodbox-config.dhall` and are
   projected into Pulumi through the Haskell-owned subprocess environment.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain stack
+  snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the
+  HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`.
 ### Remaining Work
 
 None.

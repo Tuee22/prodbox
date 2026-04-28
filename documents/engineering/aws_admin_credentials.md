@@ -19,8 +19,9 @@ otherwise type interactively.
 The `aws_admin_for_test_simulation` section exists only for:
 
 1. `./.build/prodbox test integration aws-iam`
-2. `./.build/prodbox test all` when the aggregate runner reaches the native IAM suite
-3. repository tests that simulate the interactive elevated-credential workflow
+2. `./.build/prodbox test integration all`
+3. `./.build/prodbox test all` when the aggregate runner reaches the native IAM suite
+4. repository tests that simulate the interactive elevated-credential workflow
 
 Normal runtime commands use `aws.*`. Public `prodbox config setup` and public `prodbox aws ...`
 commands obtain temporary elevated credentials interactively and must not treat
@@ -58,15 +59,15 @@ Rules:
 
 ## 3. How To Populate It
 
-Populate `aws_admin_for_test_simulation.*` only when preparing the native IAM lifecycle test
-harness or another repository test that needs to simulate the interactive elevated-credential
-workflow:
+Populate `aws_admin_for_test_simulation.*` only when preparing the suite-level native IAM
+lifecycle harness or another repository test that needs to simulate the interactive elevated-
+credential workflow:
 
 1. preferred path: AWS console -> IAM -> Users -> temporary admin user -> Security credentials ->
    Create access key
 2. open `prodbox-config.dhall`
 3. place the elevated key in `aws_admin_for_test_simulation.*`
-4. keep the normal operational key in `aws.*`
+4. leave `aws.*` blank or treat any pre-existing value there as disposable suite residue
 5. run `./.build/prodbox config validate`
 6. run `./.build/prodbox test integration aws-iam`
 
@@ -89,6 +90,16 @@ This split is deliberate:
 ## 4. Cleanup Rule
 
 Do not treat `aws_admin_for_test_simulation.*` as the default working credential source.
+
+When `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, or
+`./.build/prodbox test all` runs with the native IAM harness, `prodbox` now:
+
+1. deletes any pre-existing dedicated `prodbox` IAM user and that user's access keys before fresh
+   provisioning
+2. uses any pre-existing operational `aws.*` only to discover and delete the IAM user associated
+   with those credentials when that identity can still be resolved through STS
+3. materializes fresh operational `aws.*` only for the duration of the managed suite run
+4. clears operational `aws.*` again before the suite returns, including prerequisite failure paths
 
 After you finish the native IAM validation task:
 

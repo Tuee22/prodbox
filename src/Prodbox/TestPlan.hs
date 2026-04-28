@@ -13,6 +13,7 @@ import Data.List (
  )
 import Prodbox.CLI.Command (
     IntegrationSuite (..),
+    PolicyTier (..),
     TestScope (..),
  )
 
@@ -36,6 +37,7 @@ data NativeSuitePlan = NativeSuitePlan
     { nativeSuiteId :: String
     , nativeValidations :: [NativeValidation]
     , nativeIntegrationGatePrerequisites :: [String]
+    , nativeManagedAwsHarnessPolicyTier :: Maybe PolicyTier
     , nativeRequiresIntegrationRunbook :: Bool
     , nativeRequiresSupportedRuntimeBootstrap :: Bool
     , nativeRequiresSupportedRuntimePostflight :: Bool
@@ -68,6 +70,7 @@ testExecutionPlan scope =
                     { nativeSuiteId = "all"
                     , nativeValidations = canonicalNativeValidations
                     , nativeIntegrationGatePrerequisites = allIntegrationPrerequisites
+                    , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
                     , nativeRequiresIntegrationRunbook = True
                     , nativeRequiresSupportedRuntimeBootstrap = True
                     , nativeRequiresSupportedRuntimePostflight = True
@@ -80,6 +83,7 @@ testExecutionPlan scope =
                     { nativeSuiteId = "unit"
                     , nativeValidations = []
                     , nativeIntegrationGatePrerequisites = []
+                    , nativeManagedAwsHarnessPolicyTier = Nothing
                     , nativeRequiresIntegrationRunbook = False
                     , nativeRequiresSupportedRuntimeBootstrap = False
                     , nativeRequiresSupportedRuntimePostflight = False
@@ -96,6 +100,7 @@ testExecutionPlan scope =
                             { nativeSuiteId = "integration-all"
                             , nativeValidations = canonicalNativeValidations
                             , nativeIntegrationGatePrerequisites = allIntegrationPrerequisites
+                            , nativeManagedAwsHarnessPolicyTier = Just PolicyFull
                             , nativeRequiresIntegrationRunbook = True
                             , nativeRequiresSupportedRuntimeBootstrap = True
                             , nativeRequiresSupportedRuntimePostflight = True
@@ -108,6 +113,7 @@ testExecutionPlan scope =
                         []
                         []
                         False
+                        Nothing
                 IntegrationAwsIam ->
                     nativeNamedSuite
                         "integration aws-iam"
@@ -115,6 +121,7 @@ testExecutionPlan scope =
                         [ValidationAwsIam]
                         awsIamPrerequisites
                         False
+                        (Just PolicyFull)
                 IntegrationDnsAws ->
                     nativeNamedSuite
                         "integration dns-aws"
@@ -122,6 +129,7 @@ testExecutionPlan scope =
                         [ValidationDnsAws]
                         dnsAwsPrerequisites
                         False
+                        Nothing
                 IntegrationAwsEks ->
                     nativeNamedSuite
                         "integration aws-eks"
@@ -129,6 +137,7 @@ testExecutionPlan scope =
                         [ValidationAwsEks]
                         awsEksPrerequisites
                         True
+                        Nothing
                 IntegrationEnv ->
                     nativeIntegrationPlan
                         "integration env"
@@ -137,6 +146,7 @@ testExecutionPlan scope =
                         []
                         []
                         False
+                        Nothing
                 IntegrationGatewayDaemon ->
                     nativeNamedSuite
                         "integration gateway-daemon"
@@ -144,6 +154,7 @@ testExecutionPlan scope =
                         [ValidationGatewayDaemon]
                         gatewayDaemonPrerequisites
                         True
+                        Nothing
                 IntegrationGatewayPods ->
                     nativeNamedSuite
                         "integration gateway-pods"
@@ -151,6 +162,7 @@ testExecutionPlan scope =
                         [ValidationGatewayPods]
                         gatewayPodsPrerequisites
                         True
+                        Nothing
                 IntegrationGatewayPartition ->
                     nativeNamedSuite
                         "integration gateway-partition"
@@ -158,6 +170,7 @@ testExecutionPlan scope =
                         [ValidationGatewayPartition]
                         gatewayPartitionPrerequisites
                         False
+                        Nothing
                 IntegrationHaRke2Aws ->
                     nativeNamedSuite
                         "integration ha-rke2-aws"
@@ -165,6 +178,7 @@ testExecutionPlan scope =
                         [ValidationHaRke2Aws]
                         awsHaRke2Prerequisites
                         True
+                        Nothing
                 IntegrationLifecycle ->
                     nativeNamedSuite
                         "integration lifecycle"
@@ -172,6 +186,7 @@ testExecutionPlan scope =
                         [ValidationLifecycle]
                         lifecyclePrerequisites
                         True
+                        Nothing
                 IntegrationPulumi ->
                     nativeNamedSuite
                         "integration pulumi"
@@ -179,6 +194,7 @@ testExecutionPlan scope =
                         [ValidationPulumi]
                         pulumiPrerequisites
                         True
+                        Nothing
                 IntegrationChartsStorage ->
                     nativeNamedSuite
                         "integration charts-storage"
@@ -186,6 +202,7 @@ testExecutionPlan scope =
                         [ValidationChartsStorage]
                         chartsStoragePrerequisites
                         True
+                        Nothing
                 IntegrationChartsPlatform ->
                     nativeNamedSuite
                         "integration charts-platform"
@@ -193,6 +210,7 @@ testExecutionPlan scope =
                         [ValidationChartsPlatform]
                         chartsPlatformPrerequisites
                         True
+                        Nothing
                 IntegrationChartsVscode ->
                     nativeExecutionPlan
                         "integration charts-vscode"
@@ -201,6 +219,7 @@ testExecutionPlan scope =
                             { nativeSuiteId = "integration-charts-vscode"
                             , nativeValidations = [ValidationChartsVscode]
                             , nativeIntegrationGatePrerequisites = chartsVscodePrerequisites
+                            , nativeManagedAwsHarnessPolicyTier = Nothing
                             , nativeRequiresIntegrationRunbook = True
                             , nativeRequiresSupportedRuntimeBootstrap = True
                             , nativeRequiresSupportedRuntimePostflight = False
@@ -212,8 +231,9 @@ testExecutionPlan scope =
                         [ValidationPublicDns]
                         publicDnsPrerequisites
                         False
+                        Nothing
   where
-    nativeIntegrationPlan label haskellSuites suiteId validations prerequisites requiresRunbook =
+    nativeIntegrationPlan label haskellSuites suiteId validations prerequisites requiresRunbook managedAwsHarnessPolicyTier =
         nativeExecutionPlan
             label
             haskellSuites
@@ -221,13 +241,14 @@ testExecutionPlan scope =
                 { nativeSuiteId = suiteId
                 , nativeValidations = validations
                 , nativeIntegrationGatePrerequisites = prerequisites
+                , nativeManagedAwsHarnessPolicyTier = managedAwsHarnessPolicyTier
                 , nativeRequiresIntegrationRunbook = requiresRunbook
                 , nativeRequiresSupportedRuntimeBootstrap = False
                 , nativeRequiresSupportedRuntimePostflight = False
                 }
 
-    nativeNamedSuite label suiteId validations prerequisites requiresRunbook =
-        nativeIntegrationPlan label [] suiteId validations prerequisites requiresRunbook
+    nativeNamedSuite label suiteId validations prerequisites requiresRunbook managedAwsHarnessPolicyTier =
+        nativeIntegrationPlan label [] suiteId validations prerequisites requiresRunbook managedAwsHarnessPolicyTier
 
 canonicalNativeValidations :: [NativeValidation]
 canonicalNativeValidations =
@@ -252,6 +273,7 @@ allIntegrationPrerequisites =
         [ chartsVscodePrerequisites
         , publicDnsPrerequisites
         , dnsAwsPrerequisites
+        , ["aws_iam_harness_ready"]
         , awsIamPrerequisites
         , awsEksPrerequisites
         , pulumiPrerequisites

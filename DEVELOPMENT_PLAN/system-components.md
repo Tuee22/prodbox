@@ -21,14 +21,14 @@ separately from this canonical target inventory.
 | Settings and command runtime | Haskell build-support, effect, DAG, interpreter, prerequisite, result, subprocess, isolated AWS environment projection, and domain modules | `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs` |
 | Host and Kubernetes helpers | Haskell host and k8s modules | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` |
 | Container packaging and registry doctrine | Dockerfiles under `docker/`, Haskell-build containers that stay single-stage `ubuntu:24.04`, install `ghcup` in-image, pin GHC `9.14.1`, avoid symlinked Haskell tool shims, Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, ordered public-image candidate retry during Harbor mirror publish, per-platform dual-arch publication plus manifest reconcile, and mixed-arch cluster reconcile | `docker/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` |
-| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions for the public AWS validation stacks, including stack-config synchronization for AWS validation inputs. Local-lifecycle bootstrap DNS reconcile and ACME `ClusterIssuer` projection stay outside the public `prodbox pulumi ...` stack-program surface. | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` |
+| Pulumi orchestration and YAML stack programs | Haskell Pulumi orchestration over YAML Pulumi definitions for the public AWS validation stacks, including stack-config synchronization for AWS validation inputs, retained stack snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the HA-RKE2 validation SSH key under `.prodbox-state/aws-test/`. Local-lifecycle bootstrap DNS reconcile and ACME `ClusterIssuer` projection stay outside the public `prodbox pulumi ...` stack-program surface. | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, `.prodbox-state/` |
 | DNS inspection | Haskell DNS check module | `src/Prodbox/Dns.hs` |
 | Gateway runtime | Haskell daemon runtime with heartbeat, ownership, DNS write loops, REST server, HMAC signing, and single-stage `ubuntu:24.04` packaging with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and an official AWS CLI bundle per target architecture | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` |
 | Formal verification | Haskell TLA+ wrapper | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` |
 | Chart platform and retained state | Haskell chart registry, PostgreSQL platform constants, retained-storage reconciler, CLI runtime, and the Percona-operator-backed application-database contract | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, `.prodbox-state/` |
 | Public-edge diagnostics | Haskell host diagnostic | `src/Prodbox/Host.hs` |
 | Onboarding and AWS administration | Haskell interactive onboarding plus AWS CLI subprocess orchestration for prompt-driven temporary elevated flows, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input and supported AWS subprocess auth isolated from ambient host AWS state | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` |
-| Test harness and quality gate | Haskell build-support, check-code, aggregate suite ordering, supported-runtime bootstrap, and named real-world validation harness | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/` |
+| Test harness and quality gate | Haskell build-support, check-code, aggregate suite ordering, supported-runtime bootstrap, and named real-world validation harness, including one shared suite-level AWS IAM harness that provisions temporary operational `aws.*` before aggregate AWS validation and clears those credentials again before suite return | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/` |
 
 ## Infrastructure Layer
 
@@ -49,13 +49,13 @@ separately from this canonical target inventory.
 | Gateway workload | Haskell gateway daemon | In-cluster Kubernetes workload | `prodbox charts deploy gateway` plus `prodbox gateway status` | Cluster resources, `gateway-aws-credentials`, and Route 53 |
 | Cluster storage class | `manual` (`kubernetes.io/no-provisioner`) | RKE2 cluster | `prodbox rke2 install` | Cluster-scoped resource |
 | Manual PV root | Configured host path, default `.data/` | Host filesystem | `prodbox-config.dhall` plus cluster and chart lifecycle commands | PV contents only |
-| Retained chart-state root | `.prodbox-state/` | Host filesystem | `prodbox charts` helpers plus `prodbox rke2 delete --yes` preservation contract | Generated secrets and gateway event keys |
+| Retained repo-local state root | `.prodbox-state/` | Host filesystem | `prodbox charts`, `prodbox pulumi ...`, AWS validation helpers, and `prodbox rke2 delete --yes` preservation contract | Generated chart secrets, gateway event keys, AWS validation stack snapshots, and the HA-RKE2 validation SSH key |
 | Chart platform | Helm plus Haskell orchestration | RKE2 workloads | `prodbox charts ...` | Cluster resources plus retained roots |
 | Cluster-wide Patroni operator platform | Percona operator for PostgreSQL installed by the canonical Helm lifecycle | RKE2 workload | `prodbox rke2 install` plus Harbor-backed steady-state image sourcing | Cluster resources |
 | External application PostgreSQL HA | Percona-operator-backed Patroni PostgreSQL clusters with exactly three PostgreSQL replicas and synchronous replication, rendered from namespace-local application chart inputs and reconciled by the cluster-wide operator | RKE2 workloads | Haskell chart platform plus Harbor-backed steady-state image sourcing | Cluster resources plus retained roots |
 | Namespace-local auth stack | `keycloak`, `vscode-nginx` | RKE2 workloads | Haskell chart platform plus external Percona-operator-backed Patroni PostgreSQL dependency | Cluster resources plus retained roots |
 | Namespace-local app stack | `vscode` | RKE2 workload | Haskell chart platform | Cluster resources plus retained roots |
-| AWS admin credential isolation | Dhall config `aws_admin_for_test_simulation` section that stores only test-suite simulation of the ephemeral elevated prompt input; the native IAM validation harness is the only supported runtime consumer | Repository config plus integration tests | Haskell config and IAM validation harness | Repository root |
+| AWS admin credential isolation | Dhall config `aws_admin_for_test_simulation` section that stores only test-suite simulation of the ephemeral elevated prompt input; the native IAM validation harness is the only supported runtime consumer, and the shared named-and-aggregate IAM harness materializes operational `aws.*` from it only for the duration of a validation run | Repository config plus integration tests | Haskell config and IAM validation harness | Repository root |
 
 ## CLI and Runtime Layer
 
@@ -75,7 +75,7 @@ separately from this canonical target inventory.
 | Interactive onboarding | `prodbox config setup` | Guided Dhall authoring plus live AWS and operator prompts for one temporary elevated credential set |
 | AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Generate policies, manage IAM users, and manage AWS quotas through prompt-driven public admin flows |
 | TLA+ validation | `prodbox tla-check` | Run formal verification |
-| Test runner | `prodbox test ...` | Run named unit and integration suites on the Haskell stack |
+| Test runner | `prodbox test ...` | Run named unit and integration suites on the Haskell stack, including the shared idempotent AWS IAM harness used by the named and aggregate IAM validation surfaces |
 | Code quality | `prodbox check-code` | Run the required doctrine, formatting, lint, and type-check gate |
 
 ## Validation Layer
@@ -95,20 +95,21 @@ separately from this canonical target inventory.
 | Chart platform | `prodbox test integration charts-storage`, `prodbox test integration charts-platform`, `prodbox test integration charts-vscode`, plus manifest and lifecycle proof that supported Patroni use flows through the Percona operator-backed platform |
 | Public-host proof | `prodbox host public-edge`, `prodbox test integration public-dns` |
 | Clean-room handoff | `prodbox rke2 delete --yes`, a rerun that starts and finishes with no supported-path `prodbox-config.json` artifact, `prodbox rke2 install`, `prodbox config show`, `prodbox config validate`, AWS-backed validation, `prodbox test all`, `prodbox host public-edge`, and a zero-Python repository file-search proof |
-| AWS IAM lifecycle | `prodbox test integration aws-iam`, using the test-suite-only `aws_admin_for_test_simulation.*` section in `prodbox-config.dhall` |
+| AWS IAM lifecycle | `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all` use one shared idempotent harness driven by the test-suite-only `aws_admin_for_test_simulation.*` section in `prodbox-config.dhall`; that harness deletes any pre-existing dedicated `prodbox` IAM user and keys before provisioning, uses any pre-existing `aws.*` only to discover and delete the IAM user associated with those credentials, and clears operational `aws.*` before returning |
 | Static and doctrine gate | `prodbox check-code` |
 
 ## Authority and State Locations
 
 | State Class | Authority | Durable Home | Notes |
 |-------------|-----------|--------------|-------|
-| Repository configuration | Operator-authored repository root | `prodbox-config.dhall` | Written by `prodbox config setup`, ignored from VCS, and decoded directly into Haskell types |
+| Repository configuration | Operator-authored repository root | `prodbox-config.dhall` | Written by `prodbox config setup`, ignored from VCS, decoded directly into Haskell types, and temporarily materialized plus cleared by the shared IAM validation harness when it simulates the public interactive flow |
 | Host build artifacts | Canonical `cabal build --builddir=.build exe:prodbox` plus copy to `.build/prodbox` | `.build/prodbox` | Operator-facing binary; run as `./.build/prodbox` |
 | Container build artifacts | Dockerfiles under `docker/` | `/opt/build` | Canonical container build root |
 | Harbor image state | Harbor plus Haskell lifecycle reconcile | Harbor project storage | Custom images and mirrored public images for both `amd64` and `arm64` |
 | CLI and doctrine source | Repository worktree | `app/`, `src/`, `documents/`, `DEVELOPMENT_PLAN/` | Version-controlled source of truth |
 | Manual PV content root | Host filesystem | Configured path, default `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>` | PV contents only |
 | Retained non-PV chart state | Chart platform helpers | `.prodbox-state/<namespace>/` | Generated secrets and gateway event keys |
+| AWS validation local state | Haskell Pulumi orchestration and AWS validation helpers | `.prodbox-state/aws-test/`, `.prodbox-state/aws-eks-test/` | Pulumi stack snapshots plus the HA-RKE2 validation SSH key |
 | Local RKE2 host state | Host lifecycle commands | RKE2 data dirs, kubeconfig files, systemd state | Deleted by `prodbox rke2 delete --yes` except retained roots, with expected-absence cleanup rendered as normal delete disposition |
 | Remote EKS AWS test stack | Pulumi plus Haskell orchestration | EKS resources in AWS | Created and destroyed only through named `prodbox pulumi` surfaces |
 | Remote HA RKE2 AWS test stack | Pulumi plus Haskell orchestration | EC2 and supporting AWS resources | Exactly three Ubuntu 24.04 EC2 instances in separate AZs |
@@ -139,7 +140,8 @@ separately from this canonical target inventory.
 | Engineering doctrine | `documents/engineering/` | Architecture and operator docs |
 | Development plan | `DEVELOPMENT_PLAN/` | Status, sequencing, and cleanup ownership |
 | Manual PV content root | Configured path, default `.data/` | PV contents only |
-| Retained chart-state root | `.prodbox-state/` | Generated secrets and gateway event keys |
+| Retained repo-local state root | `.prodbox-state/` | Namespace-local chart state plus AWS validation snapshots and HA-RKE2 SSH key material |
+| AWS validation local state | `.prodbox-state/aws-test/`, `.prodbox-state/aws-eks-test/` | Pulumi stack snapshots plus the HA-RKE2 validation SSH key |
 
 ## Related Documents
 

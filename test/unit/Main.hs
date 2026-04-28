@@ -417,6 +417,7 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "all"
+                            nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
@@ -443,6 +444,7 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeSuiteId suitePlan `shouldBe` "integration-all"
+                            nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
                             take 2 (map nativeValidationId (nativeValidations suitePlan))
@@ -492,9 +494,10 @@ main = hspec $ do
             case testExecutionPlan (TestIntegration IntegrationAwsIam) of
                 testPlan ->
                     case testPlanExecutionMode testPlan of
-                        NativeSuite suitePlan ->
+                        NativeSuite suitePlan -> do
                             nativeIntegrationGatePrerequisites suitePlan
                                 `shouldBe` ["aws_iam_harness_ready", "tool_aws"]
+                            nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                         DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
 
         it "keeps charts-vscode on the supported runtime bootstrap path" $ do

@@ -19,6 +19,9 @@
 - `aws_admin_for_test_simulation.*` is the single stored-admin-credential exception and exists
   only for test-suite simulation of that ephemeral prompt input; the native `aws-iam` validation
   harness is the only supported runtime consumer.
+- `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
+  share one suite-level IAM harness that provisions operational `aws.*` before prerequisite-driven
+  AWS validation begins and clears those credentials again before the suite returns.
 - Stateful AWS validation uses explicit credentials rebuilt from decoded settings, not ambient host
   AWS CLI state or shared profile discovery.
 - Existing AWS resources are never valid mutation targets for supported `prodbox` integration
@@ -230,7 +233,8 @@ credential section:
 
 1. `aws.*` remains the normal operational identity
 2. `aws_admin_for_test_simulation.*` is the stored simulation of the ephemeral elevated identity
-   used only by `prodbox test integration aws-iam`
+   used only by `prodbox test integration aws-iam`, `prodbox test integration all`, and
+   `prodbox test all`
 3. the validation must fail fast when `aws_admin_for_test_simulation.*` is missing or partial
 4. public `prodbox config setup` and public `prodbox aws ...` commands remain outside this
    config-backed test harness and use interactive temporary elevated credentials instead
@@ -261,6 +265,8 @@ Required patterns:
 1. Route 53 lifecycle code attempts teardown after mid-validation failure when safe
 2. Pulumi-backed validations use the public destroy surfaces
 3. Aggregate-suite postflight repair is owned by `prodbox test all`
+4. The shared IAM harness still attempts teardown and `aws.*` clearing when prerequisite
+   validation fails after harness setup has already materialized operational credentials
 
 ### 5.4 Cleanup Failure Handling
 

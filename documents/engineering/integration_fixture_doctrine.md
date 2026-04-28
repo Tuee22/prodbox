@@ -32,7 +32,10 @@ Ownership rules:
 2. Command-level postflight repair in `src/Prodbox/TestRunner.hs` owns aggregate supported-runtime
    restoration for destructive suites.
 3. AWS-mutating validation flows must clean up resources they create before reporting success.
-4. Cleanup failures must be surfaced explicitly to the operator.
+4. The suite-level IAM harness in `src/Prodbox/TestRunner.hs` owns setup and teardown of
+   temporary operational `aws.*` for `prodbox test integration aws-iam`,
+   `prodbox test integration all`, and `prodbox test all`.
+5. Cleanup failures must be surfaced explicitly to the operator.
 
 ## 3. Isolation Modes
 

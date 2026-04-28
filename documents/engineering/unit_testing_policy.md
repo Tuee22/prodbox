@@ -111,6 +111,9 @@ Session-style hidden setup is not the supported orchestration model for command-
 - prerequisite behavior belongs in the native DAG and runner
 - resource setup and cleanup ownership for real validations belongs in
   `src/Prodbox/TestValidation.hs` and the relevant infrastructure modules
+- the suite-level managed IAM credential harness for `prodbox test integration aws-iam`,
+  `prodbox test integration all`, and `prodbox test all` belongs in
+  `src/Prodbox/TestRunner.hs` plus `src/Prodbox/Aws.hs`
 - cleanup doctrine is defined by [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 
 ### Timeout Budget Separation

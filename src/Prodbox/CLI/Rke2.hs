@@ -73,17 +73,21 @@ import Prodbox.Settings (
     acme,
     aws,
     bootstrap_public_ip_override,
+    defaultConfigFile,
     demo_fqdn,
     demo_ttl,
     domain,
     eab_hmac_key,
     eab_key_id,
     email,
+    loadConfigFile,
+    manual_pv_host_root,
     pulumi_enable_dns_bootstrap,
     region,
     route53,
     secret_access_key,
     server,
+    storage,
     validateAndLoadSettings,
     validatedConfig,
     zone_id,
@@ -100,6 +104,7 @@ import System.Directory (
     getHomeDirectory,
     getTemporaryDirectory,
     listDirectory,
+    makeAbsolute,
     removeFile,
  )
 import System.Environment (getEnvironment, lookupEnv)
@@ -460,19 +465,25 @@ runNativeInstall repoRoot = do
 
 runNativeDelete :: FilePath -> IO ExitCode
 runNativeDelete repoRoot = do
-    settingsResult <- validateAndLoadSettings repoRoot
-    case settingsResult of
-        Left err -> failWith err
-        Right settings -> do
-            putStrLn "Deleting local RKE2 environment..."
-            runSequentially
-                [ runPulumiCommand repoRoot (PulumiEksDestroy True)
-                , runPulumiCommand repoRoot (PulumiTestDestroy True)
-                , deleteRke2ClusterSubstrate repoRoot
-                , removeCalicoEndpointStatusResidue
-                , removeManagedKubeconfig
-                , renderRetainedStateNotice repoRoot settings
-                ]
+    retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
+    putStrLn "Deleting local RKE2 environment..."
+    runSequentially
+        [ runPulumiCommand repoRoot (PulumiEksDestroy True)
+        , runPulumiCommand repoRoot (PulumiTestDestroy True)
+        , deleteRke2ClusterSubstrate repoRoot
+        , removeCalicoEndpointStatusResidue
+        , removeManagedKubeconfig
+        , renderRetainedStateNotice repoRoot retainedManualPvRoot
+        ]
+
+resolveRetainedManualPvRoot :: FilePath -> IO FilePath
+resolveRetainedManualPvRoot repoRoot = do
+    configResult <- loadConfigFile repoRoot
+    let configuredRoot =
+            case configResult of
+                Right config -> Text.unpack (manual_pv_host_root (storage config))
+                Left _ -> Text.unpack (manual_pv_host_root (storage defaultConfigFile))
+    makeAbsolute (repoRoot </> configuredRoot)
 
 ensureRke2ServerInstalled :: FilePath -> IO ExitCode
 ensureRke2ServerInstalled repoRoot = do
@@ -2530,10 +2541,10 @@ removeManagedKubeconfig = do
                                 "Managed kubeconfig"
                                 "left in place because it does not target the local RKE2 API"
 
-renderRetainedStateNotice :: FilePath -> ValidatedSettings -> IO ExitCode
-renderRetainedStateNotice repoRoot settings = do
+renderRetainedStateNotice :: FilePath -> FilePath -> IO ExitCode
+renderRetainedStateNotice repoRoot retainedManualPvRoot = do
     putStrLn "Preserved host state:"
-    putStrLn ("  - manual PV root: " ++ resolvedManualPvHostRoot settings)
+    putStrLn ("  - manual PV root: " ++ retainedManualPvRoot)
     putStrLn ("  - retained chart state root: " ++ repoRoot </> ".prodbox-state")
     pure ExitSuccess
 

@@ -490,6 +490,36 @@ main = hspec $ do
                 sudoRecord <- readFile (tmpDir </> "fake-rke2-state" </> "sudo.txt")
                 sudoRecord `shouldContain` "/usr/local/bin/rke2-uninstall.sh"
 
+        it "runs native rke2 delete after the IAM harness has cleared operational aws credentials" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+                envVars <- fakeRke2Environment tmpDir
+
+                createDirectoryIfMissing True (tmpDir </> ".kube")
+                writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
+
+                (deleteExitCode, deleteStdout, deleteStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["rke2", "delete", "--yes"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                let deleteOutput =
+                        unlines
+                            [ "delete stdout:"
+                            , deleteStdout
+                            , "delete stderr:"
+                            , deleteStderr
+                            ]
+                when (deleteExitCode /= ExitSuccess) (expectationFailure deleteOutput)
+                deleteExitCode `shouldBe` ExitSuccess
+                deleteStderr `shouldBe` ""
+                deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+                deleteStdout `shouldContain` "AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+                deleteStdout `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
+                deleteStdout `shouldContain` "Preserved host state:"
+
         it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
                 binary <- resolveBinaryPath

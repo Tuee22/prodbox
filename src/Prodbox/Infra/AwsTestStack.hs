@@ -47,6 +47,7 @@ import Prodbox.Settings (
     Credentials (..),
     ValidatedSettings (..),
     aws,
+    loadConfigFile,
     validateAndLoadSettings,
  )
 import Prodbox.Subprocess (
@@ -327,6 +328,25 @@ pulumiTestBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
                     )
                 )
 
+pulumiBackendBaseEnv :: Int -> String -> String -> IO [(String, String)]
+pulumiBackendBaseEnv localPort minioAccessKey minioSecretKey = do
+    currentEnv <- getEnvironment
+    let path = maybe "" id (lookup "PATH" currentEnv)
+        home = maybe "" id (lookup "HOME" currentEnv)
+    pure
+        [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
+        , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
+        , ("AWS_REGION", "us-east-1")
+        , ("AWS_DEFAULT_REGION", "us-east-1")
+        , ("AWS_EC2_METADATA_DISABLED", "true")
+        , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+        , ("PULUMI_CONFIG_PASSPHRASE", "")
+        , ("PULUMI_SKIP_UPDATE_CHECK", "true")
+        , ("PATH", path)
+        , ("HOME", home)
+        , ("LANG", "C.UTF-8")
+        ]
+
 pulumiAwsProviderEnv :: Credentials -> [(String, String)]
 pulumiAwsProviderEnv creds =
     baseEntries
@@ -340,6 +360,24 @@ pulumiAwsProviderEnv creds =
         , ("PRODBOX_PULUMI_AWS_REGION", Text.unpack (region creds))
         , ("PRODBOX_PULUMI_AWS_DEFAULT_REGION", Text.unpack (region creds))
         ]
+
+loadOperationalAwsCredentials :: FilePath -> IO (Either String Credentials)
+loadOperationalAwsCredentials repoRoot = do
+    configResult <- loadConfigFile repoRoot
+    pure $
+        case configResult of
+            Left err -> Left err
+            Right config ->
+                let creds = aws config
+                 in if credentialsConfigured creds
+                        then Right creds
+                        else Left "aws.access_key_id must not be empty"
+
+credentialsConfigured :: Credentials -> Bool
+credentialsConfigured creds =
+    not (Text.null (Text.strip (access_key_id creds)))
+        && not (Text.null (Text.strip (secret_access_key creds)))
+        && not (Text.null (Text.strip (region creds)))
 
 resolveAwsTestStackConfig :: FilePath -> IO (Either String AwsTestStackConfig)
 resolveAwsTestStackConfig repoRoot = do
@@ -815,43 +853,52 @@ destroyAwsTestStackStatus repoRoot = do
                 case bucketResult of
                     Left err -> pure (Left err)
                     Right () -> do
-                        baseEnvironmentResult <- pulumiTestBaseEnv repoRoot localPort accessKey secretKey
-                        case baseEnvironmentResult of
-                            Left err -> pure (Left err)
-                            Right baseEnvironment -> do
-                                loginResult <- pulumiLoginQuiet projectDir baseEnvironment
-                                case loginResult of
-                                    Left err -> pure (Left ("pulumi login failed: " ++ err))
-                                    Right () -> do
-                                        selectExit <- pulumiStackSelect projectDir baseEnvironment False
-                                        case selectExit of
-                                            PulumiStackSelected -> do
+                        backendEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
+                        loginResult <- pulumiLoginQuiet projectDir backendEnvironment
+                        case loginResult of
+                            Left err -> pure (Left ("pulumi login failed: " ++ err))
+                            Right () -> do
+                                selectExit <- pulumiStackSelect projectDir backendEnvironment False
+                                case selectExit of
+                                    PulumiStackSelected -> do
+                                        operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
+                                        case operationalCredentialsResult of
+                                            Left err ->
+                                                pure
+                                                    ( Left
+                                                        ( "operational AWS credentials are required to destroy the AWS test stack once a Pulumi stack exists: "
+                                                            ++ err
+                                                        )
+                                                    )
+                                            Right operationalCredentials -> do
                                                 configResult <- resolveAwsTestStackConfig repoRoot
                                                 case configResult of
                                                     Left err -> pure (Left err)
                                                     Right stackConfig -> do
-                                                        clearLegacyResult <- clearLegacyAwsProviderConfig projectDir baseEnvironment
+                                                        let providerEnvironment =
+                                                                backendEnvironment ++ pulumiAwsProviderEnv operationalCredentials
+                                                        clearLegacyResult <- clearLegacyAwsProviderConfig projectDir providerEnvironment
                                                         case clearLegacyResult of
                                                             Left err ->
                                                                 pure (Left ("pulumi provider config cleanup failed: " ++ err))
                                                             Right () -> do
-                                                                syncExit <- syncAwsTestStackConfig projectDir baseEnvironment stackConfig
+                                                                syncExit <- syncAwsTestStackConfig projectDir providerEnvironment stackConfig
                                                                 case syncExit of
                                                                     ExitFailure _ -> pure (Left "pulumi config set failed")
                                                                     ExitSuccess -> do
-                                                                        destroyResult <- pulumiDestroyQuiet projectDir baseEnvironment
+                                                                        destroyResult <- pulumiDestroyQuiet projectDir providerEnvironment
                                                                         case destroyResult of
                                                                             Left err -> pure (Left ("pulumi destroy failed: " ++ err))
                                                                             Right () -> do
-                                                                                void (pulumiStackRemoveQuiet projectDir baseEnvironment False)
+                                                                                void (pulumiStackRemoveQuiet projectDir providerEnvironment False)
                                                                                 finalizeDestroy repoRoot currentSnapshot
-                                            PulumiStackMissing -> do
-                                                case currentSnapshot of
-                                                    Nothing ->
-                                                        pure (Right ("already absent from the local Pulumi backend" :: String))
-                                                    Just _ -> finalizeDestroy repoRoot currentSnapshot
-                                            PulumiStackSelectFailed detail ->
-                                                pure (Left ("pulumi stack select failed: " ++ detail))
+                                    PulumiStackMissing -> do
+                                        case currentSnapshot of
+                                            Nothing ->
+                                                pure (Right ("already absent from the local Pulumi backend" :: String))
+                                            Just _ -> finalizeDestroy repoRoot currentSnapshot
+                                    PulumiStackSelectFailed detail ->
+                                        pure (Left ("pulumi stack select failed: " ++ detail))
     case portForwardResult of
         Left err ->
             case currentSnapshot of

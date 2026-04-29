@@ -13,15 +13,15 @@
 This phase ports the gateway daemon, DNS inspection command, and related command surfaces to
 Haskell, preserves the formal model entrypoint, and keeps Route 53 write ownership inside the
 in-cluster gateway workload. It owns the gateway image packaging contract, Harbor-backed image
-delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. Sprint `2.1` and
-Sprint `2.2` close on April 28, 2026 after the daemon, `prodbox gateway status`, the governed
+delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. The phase-owned
+repository surfaces are closed on the daemon, `prodbox gateway status`, the implemented
 HTTP `/v1/state` payload, Orders-backed interval validation, and the runtime-to-model
-correspondence docs were aligned in code and doctrine. The gateway container doctrine is
+correspondence notes. The gateway container doctrine is
 implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell
 tool shims, and the retained in-image AWS CLI bundle. The current daemon surface implements
 config generation, heartbeat recording, in-memory ownership projection, DNS-write gating, HTTP
-REST status, and HMAC event signing; the broader distributed protocol remains captured in the
-TLA+ and doctrine docs.
+REST status, and HMAC event signing. The broader peer-transport protocol remains design-owned by
+the TLA+ and gateway doctrine docs rather than by a closed repository surface.
 
 ## Current Baseline In Worktree
 
@@ -43,11 +43,16 @@ TLA+ and doctrine docs.
   operator and integration observability, including `event_hashes` and `heartbeat_age_seconds`.
 - `src/Prodbox/Gateway/Types.hs` now enforces the documented cross-field interval relationships
   from `documents/engineering/distributed_gateway_architecture.md` against the Orders timeout.
+- `src/Prodbox/Gateway/Types.hs` still parses certificate, key, CA, and socket metadata in the
+  daemon config and Orders document, but the current closed runtime surface does not materialize
+  peer transport from those fields.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
   been removed.
 - `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface. All Python TLA+ wrappers have
   been removed.
-- Gateway and TLA+ proof live in the Haskell test suites under `test/`.
+- Gateway parser, renderer, and CLI proof live in the Haskell test suites under `test/`, while
+  the TLA+ artifacts live under `documents/engineering/tla/` and are exercised through
+  `prodbox tla-check`.
 - `src/Prodbox/TestPlan.hs` maps the gateway validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
 - The canonical closure gates for this phase are `prodbox dns check`, the named gateway
@@ -75,8 +80,8 @@ container doctrine.
 - Gateway image publication produces or loads both `amd64` and `arm64` variants irrespective of
   the operator host architecture.
 - Gateway event-key continuity and state inspection move to Haskell-owned modules.
-- The daemon and `prodbox gateway status` close on the governed HTTP `/v1/state` observability
-  transport and the governed status payload.
+- The daemon and `prodbox gateway status` close on the implemented HTTP `/v1/state`
+  observability transport and payload.
 - Native gateway config parsing enforces the documented cross-field gateway-interval relationships.
 - The target steady state remains the in-cluster gateway workload; no host-side daemon is revived.
 
@@ -101,6 +106,8 @@ container doctrine.
   `src/Prodbox/Gateway/Daemon.hs` using `runGatewayDaemon`.
 - `src/Prodbox/Gateway/Types.hs` provides core gateway types: `PeerEndpoint`, `GatewayRule`,
   `Orders`, `SignedEvent`, `CommitLog`, `DaemonConfig`, `DnsWriteGate`, and config parsing.
+- The same parsing layer retains certificate, key, CA, and socket metadata in the current config
+  model even though the closed runtime surface uses the REST listener and local daemon loops only.
 - `src/Prodbox/Gateway/Daemon.hs` provides the daemon runtime: heartbeat loop, gateway ownership
   loop, DNS write loop, HTTP REST server, and HMAC event signing. The state payload now exposes
   `event_hashes`, `heartbeat_age_seconds`, and the DNS-write observability fields described by the

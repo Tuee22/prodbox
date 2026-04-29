@@ -49,10 +49,11 @@ Build a clean-room Haskell `prodbox` repository with:
 12. One mixed-arch cluster support contract.
 13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
     test-stack state in the dedicated bucket `prodbox-test-pulumi-backends`.
-14. One in-cluster Haskell gateway runtime with config generation, mutual-TLS-backed peer
-    transport, HTTP `/v1/state` observability, heartbeat recording, in-memory ownership
-    projection, DNS-write gating, governed gateway-interval validation, and HMAC-signed event
-    state.
+14. One in-cluster Haskell gateway runtime with config generation, HTTP `/v1/state`
+    observability, heartbeat recording, in-memory ownership projection, DNS-write gating,
+    Orders-backed interval validation, and HMAC-signed event state. Gateway config still carries
+    certificate and socket metadata, but the closed repository surface does not materialize
+    peer-transport behavior from those fields today.
 15. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 16. One retained repo-local state root under `.prodbox-state/`, including namespace-local
@@ -112,16 +113,16 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree now implements the full Phase `0-7` surface set. The earlier April 28,
-2026 repository review that reopened Sprint `1.2` plus Phase `2` is closed in code and docs:
-`prodbox check-code` now enforces the governed doctrine gate, and the gateway runtime plus status
-path now close on the governed HTTP `/v1/state` payload and timing contract. The supported public
-surface is Haskell-only, the earlier unsupported cleanup residue is removed, and the
-implementation uses in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway
-Dockerfiles, removes symlinked GHC tool shims and the lifecycle-managed `haskell-toolchain`
-BuildKit path, pins `ghc-9.14.1` in `cabal.project` while carrying the required package-bound
-updates in `prodbox.cabal`, installs the Percona operator while mirroring Percona operator and
-PostgreSQL sidecar images, and targets `perconapgclusters.pgv2.percona.com`.
+The repository worktree implements the full Phase `0-7` surface set. The plan closes on the
+current Haskell-owned repository surfaces: `prodbox check-code` enforces the governed doctrine
+gate, the gateway runtime plus status path close on the implemented HTTP `/v1/state` payload and
+daemon timing-validation contract, the supported public surface is Haskell-only, and the earlier
+unsupported cleanup residue is removed. The implementation uses in-image `ghcup` with pinned GHC
+`9.14.1` in the frontend and gateway Dockerfiles, removes symlinked GHC tool shims and the
+lifecycle-managed `haskell-toolchain` BuildKit path, pins `ghc-9.14.1` in `cabal.project` while
+carrying the required package-bound updates in `prodbox.cabal`, installs the Percona operator
+while mirroring Percona operator and PostgreSQL sidecar images, and targets
+`perconapgclusters.pgv2.percona.com`.
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
 than restated here as a fresh rerun log.
@@ -141,7 +142,8 @@ than restated here as a fresh rerun log.
 - `src/Prodbox/CheckCode.hs` now fails on repository-owned workflow or git-hook surfaces before it
   runs Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary sync step, closing on
   the governed doctrine-alignment contract described by
-  `documents/engineering/code_quality.md`.
+  `documents/engineering/code_quality.md`. The repo-owned policy scan excludes generated or
+  retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
 - `src/Prodbox/Aws.hs` owns both the public onboarding flow and the standalone AWS administration
   command family, with prompt-driven temporary elevated credentials on public paths and stored
   `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that prompt input,
@@ -154,9 +156,8 @@ than restated here as a fresh rerun log.
   IAM user associated with those credentials, materializes operational `aws.*` only from
   `aws_admin_for_test_simulation.*`, and clears `aws.*` from `prodbox-config.dhall` before
   returning even when later prerequisites fail.
-- Phase `7` now keeps `pulumi_logged_in` behind the visible local runbook on aggregate and
-  cluster-backed suite paths, so the stale-`aws.*` leak and the pre-runbook local-cluster blocker
-  are no longer the open surfaces.
+- Phase `7` keeps `pulumi_logged_in` behind the visible local runbook on aggregate and
+  cluster-backed suite paths.
 - `src/Prodbox/AwsEnvironment.hs` now isolates supported AWS subprocesses from ambient host AWS
   auth and profile state before projecting repository-root credentials into the supported command
   paths.
@@ -192,8 +193,9 @@ than restated here as a fresh rerun log.
   `.prodbox-state/aws-test/`.
 - `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
   own the current Haskell gateway surface, including the HTTP `/v1/state` payload with
-  `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation against the
-  governed gateway timing contract.
+  `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation. The parsed
+  certificate, key, CA, and socket metadata remain in the current model even though the closed
+  runtime surface does not yet materialize peer transport from them.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
   own the aggregate reruns, named native validation flows, and destructive postflight restore
   path.
@@ -223,14 +225,14 @@ state.
 | CLI frontend and command surface | `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 1 |
 | Configuration and settings | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
-| Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
+| Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
 | Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus generated state under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
-| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/`; Sprint `3.3` reopens the Patroni operator surface so Helm-managed application PostgreSQL uses the Percona operator | Phase 3 |
+| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/` and the Percona-operator-backed Patroni application-database contract | Phase 3 |
 | Public-edge diagnostics | `src/Prodbox/Host.hs` | Phase 5 |
-| Onboarding and AWS administration | `src/Prodbox/Aws.hs` | Phase 7 |
+| Onboarding and AWS administration | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 7 |
 | Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1 and 4 |
 
 ## Current Execution State
@@ -246,7 +248,7 @@ contracts:
   `documents/engineering/code_quality.md`.
 - Phase 2 owns the gateway runtime, DNS inspection surface, and TLA+ validation entrypoint; its
   repository surface is closed on the HTTP `/v1/state` payload, gateway status client path,
-  interval validation, and the corresponding runtime-to-model doctrine notes.
+  interval validation, and the corresponding runtime-to-model notes.
 - Phase 3 owns the chart platform, retained state model, supported cluster-backed `vscode`
   delivery path, and the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed
   workloads; it is closed on the Harbor-backed chart proofs, including the staged retained-state
@@ -255,19 +257,19 @@ contracts:
   bootstrap exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
   and ACME projection, and Python removal; it is closed on the destructive
   delete/install/postflight lifecycle proof and unmanaged EKS-residue cleanup.
-- Phase 5 owns public-edge diagnostics and external proof.
+- Phase 5 owns public-edge diagnostics and external proof; it is closed on the Haskell
+  `host public-edge` readiness-classification contract and the named `public-dns` validation
+  surface.
 - Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria.
   Sprint `6.1` and Sprint `6.2` are closed on the full destructive rerun, postflight restore, and
   zero-Python handoff contract.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
-  credential proof harness. Sprint `7.3` now keeps the `pulumi_logged_in` proof behind the
+  credential proof harness. The aggregate prerequisite DAG keeps `pulumi_logged_in` behind the
   visible local runbook on aggregate and cluster-backed suite paths, while the shared IAM
   validation harness for `prodbox test integration aws-iam`,
   `prodbox test integration all`, and `prodbox test all` owns the idempotent preflight,
   temporary operational-credential lifetime, and teardown contract that prevents dedicated
-  `prodbox` IAM-user leaks and clears test-created `aws.*`. The canonical `./.build/prodbox test all`
-  rerun completed cleanly on April 28, 2026, including final public-edge certificate convergence
-  and post-run operational-credential cleanup.
+  `prodbox` IAM-user leaks and clears test-created `aws.*`.
 
 ## Hard Constraints
 
@@ -327,9 +329,8 @@ contracts:
 - No supported Pulumi program or orchestration path may depend on Python.
 - The only supported gateway steady state is inside the cluster as a Kubernetes workload.
 - The gateway daemon, `prodbox gateway status`, and daemon config parsing must close on the
-  governed HTTP `/v1/state` and interval-validation contract documented in
-  `documents/engineering/distributed_gateway_architecture.md` and
-  `documents/engineering/tla_modelling_assumptions.md`.
+  implemented HTTP `/v1/state` surface, the Orders-backed interval-validation contract, and the
+  current runtime-to-model notes in `documents/engineering/tla_modelling_assumptions.md`.
 - The only supported DNS model is explicit per-subdomain Route 53 records; wildcard public DNS is
   not part of the supported architecture.
 - The only supported `vscode` delivery path is the cluster-backed `prodbox charts` stack.

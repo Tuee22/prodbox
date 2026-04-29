@@ -15,9 +15,8 @@ repository-root Dhall config loader, the Haskell command runtime and test harnes
 foundations for true IaC plus AWS validation. It also owns the canonical frontend image placement
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
-Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`,
-Sprint `1.2`, and Sprint `1.3` are closed on their repository-owned surfaces as of April 28,
-2026. The implemented frontend container doctrine uses
+Pulumi ownership is Phase `4` work, not a change to the foundations closed here. The phase-owned
+repository surfaces are closed. The implemented frontend container doctrine uses
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
 explicit repo package-bound updates.
 
@@ -44,7 +43,10 @@ explicit repo package-bound updates.
   `.build/support` linker shim for supported local runs.
 - `src/Prodbox/CheckCode.hs` now runs the repository-owned workflow and git-hook policy scan,
   Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary sync step, closing on the
-  governed doctrine-alignment contract described by `documents/engineering/code_quality.md`.
+  governed doctrine-alignment contract described by `documents/engineering/code_quality.md`. The
+  repo-owned policy scan excludes generated or retained runtime roots such as `.build/`,
+  `dist-newstyle/`, `.prodbox-state/`, and `.data/`, so retained PV content does not become a
+  false-positive doctrine surface.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
 - `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
   `ghcup` with pinned GHC `9.14.1` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
@@ -176,7 +178,8 @@ modules.
 - `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and now runs the repository-owned workflow
   and git-hook policy scan, Fourmolu, HLint, warning-clean
   `cabal build --builddir=.build all --ghc-options=-Werror`, then syncs the built executable to
-  `.build/prodbox`.
+  `.build/prodbox`. That policy scan now skips generated and retained runtime roots including
+  `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
 - `src/Prodbox/TestRunner.hs` owns `prodbox test ...`; it runs Haskell suites via `cabal test`,
   drives phase banners plus prerequisite and runbook gating through native
   `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,

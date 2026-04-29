@@ -54,6 +54,7 @@ import Prodbox.CLI.Parser (
 import Prodbox.CheckCode (
     DoctrineViolation (..),
     doctrineViolationsInPaths,
+    listRepoOwnedPaths,
  )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Effect (
@@ -332,6 +333,24 @@ main = hspec $ do
                            , ForbiddenHookSurface ".pre-commit-config.yaml"
                            , ForbiddenHookSurface "hooks/pre-push"
                            ]
+
+        it "skips retained runtime state roots during doctrine scanning" $
+            withSystemTempDirectory "prodbox-check-code" $ \tmpDir -> do
+                let runtimeRoot = tmpDir </> ".data"
+                    workflowRoot = tmpDir </> ".github"
+                createDirectoryIfMissing True runtimeRoot
+                createDirectoryIfMissing True workflowRoot
+                writeFile (workflowRoot </> "workflow.yml") "name: forbidden"
+
+                originalPermissions <- getPermissions runtimeRoot
+                let blockedPermissions = originalPermissions{readable = False, searchable = False, writable = False}
+                setPermissions runtimeRoot blockedPermissions
+
+                repoPaths <- listRepoOwnedPaths tmpDir `finally` setPermissions runtimeRoot originalPermissions
+
+                repoPaths `shouldContain` [".github"]
+                repoPaths `shouldSatisfy` notElem ".data"
+                doctrineViolationsInPaths repoPaths `shouldBe` [ForbiddenWorkflowDirectory ".github"]
 
         it "keeps the gateway chart on repo-rootless startup with env-based AWS auth" $ do
             repoRoot <- getCurrentDirectory

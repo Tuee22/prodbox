@@ -41,6 +41,9 @@ Current hard gates:
   `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `./.build/prodbox` after a successful quality gate
 
+The workflow or hook policy scan is scoped to repo-owned surfaces and excludes generated or
+retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+
 ### 2.2 Review Guidance
 
 Review guidance is still part of the coding standard, but it is not mechanically proven by the
@@ -85,6 +88,9 @@ The authoritative mechanical Haskell quality gate is:
 3. `hlint app src test --hint=.hlint.yaml`
 4. `cabal build --builddir=.build all --ghc-options=-Werror`
 5. sync of the built operator binary to `./.build/prodbox`
+
+The policy-scan phase ignores generated or retained runtime roots such as `.build/`,
+`dist-newstyle/`, `.prodbox-state/`, and `.data/`.
 
 The broader validation surfaces remain separate:
 

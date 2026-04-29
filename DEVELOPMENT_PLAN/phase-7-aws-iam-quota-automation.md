@@ -16,10 +16,9 @@ service-quota automation, and the test-only elevated credential harness. The imp
 credential boundary is now Haskell-owned: public onboarding and public AWS administration prompt
 for temporary elevated credentials, and stored `aws_admin_for_test_simulation.*` exists only for
 test-suite simulation of that ephemeral prompt input, with the native IAM validation harness as
-the only supported runtime consumer. The reopened repository-owned Sprint `7.3` implementation is
-now present in the worktree, the earlier pre-runbook `pulumi_logged_in` aggregate blocker is
-closed in code, and the canonical aggregate rerun now completes cleanly on the supported
-local-cluster path end to end.
+the only supported runtime consumer. The shared suite-level IAM harness keeps the aggregate
+Pulumi-backend proof behind the visible local runbook and closes the supported local-cluster
+aggregate validation path on Haskell-owned AWS-user and config cleanup.
 
 ## Current Baseline In Worktree
 
@@ -48,7 +47,7 @@ local-cluster path end to end.
   duration of `prodbox test integration aws-iam`, `prodbox test integration all`, and
   `prodbox test all`, then clears those credentials again even when later prerequisites fail.
 - The aggregate runner now reuses the canonical repo-backed Pulumi backend during deferred
-  cluster-backed prerequisite checks, so the reopened IAM scope is isolated to AWS-user and config
+  cluster-backed prerequisite checks, so the IAM scope stays isolated to AWS-user and config
   cleanup rather than to ambient host Pulumi login state.
 
 ## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
@@ -211,11 +210,10 @@ or operational `aws.*` credentials behind.
   depends on stale ambient Pulumi host-login state or a detached retained-storage mount.
 - The aggregate IAM proof is sequenced before downstream AWS-backed suites through the named
   prerequisite DAG rather than through ambient host Pulumi login state.
-- `./.build/prodbox test integration aws-iam` now passes live with the shared harness, and the
-  April 28, 2026 canonical `./.build/prodbox test all` rerun completed cleanly on the same native
-  aggregate suite path that powers `./.build/prodbox test integration all`, so the named aggregate
-  closure gate, destructive lifecycle tail, public-edge postflight restore, and IAM cleanup
-  contract all close on the supported local-cluster path.
+- The named and aggregate IAM closure gates are implemented on the same native suite path:
+  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
+  `./.build/prodbox test all`. Environment-dependent end-to-end proof remains attached to those
+  commands rather than duplicated here as an execution log.
 - `src/Prodbox/CLI/Rke2.hs` now retries transient Harbor `502` / `unexpected EOF` failures during
   custom multi-arch `docker buildx --push` publication so destructive reruns do not fail
   terminally on a single short-lived Harbor registry write error.

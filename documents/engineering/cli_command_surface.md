@@ -244,6 +244,9 @@ warning-clean `cabal build`, and the final operator binary sync. Detailed Haskel
 is defined in
 [Haskell Code Guide](./haskell_code_guide.md).
 
+The policy-scan portion is scoped to repo-owned surfaces and excludes generated or retained
+runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+
 ### `prodbox tla-check`
 
 | Command | Arguments | Options |

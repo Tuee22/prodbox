@@ -26,33 +26,26 @@ govern this plan suite.
 
 ## Closure Status
 
-All phases are closed on their owned repository surfaces as of April 28, 2026. The earlier
-same-day repository review that reopened Sprint `1.2` plus Sprint `2.1` and Sprint `2.2` is now
-resolved in code and docs:
+All phases are closed on their owned repository surfaces. The current worktree closes on the
+Haskell-only architecture described by this plan:
 
-- Sprint `1.2`: `src/Prodbox/CheckCode.hs` now enforces the repository-owned workflow and git-hook
-  policy described by `documents/engineering/code_quality.md`, then runs Fourmolu, HLint,
-  warning-clean Cabal builds, and the operator-binary sync step.
-- Sprint `2.1` and Sprint `2.2`: the gateway daemon, `prodbox gateway status`, and the governed
-  gateway docs now close on the HTTP `/v1/state` observability contract, the documented
-  status-payload fields including `event_hashes` and `heartbeat_age_seconds`, and the
-  Orders-backed interval relationships described by the gateway doctrine.
-
-The earlier
-aggregate-suite failure at `pulumi_logged_in` before local runtime preparation remains closed in
-code, and the canonical `./.build/prodbox test all` rerun from April 28, 2026 still completes
-cleanly on the supported local-cluster path through final public-edge restore, AWS teardown, and
-IAM credential cleanup. The tracked worktree still shows the repository-owned code and
-documentation for those closed later surfaces:
-
+- `src/Prodbox/CheckCode.hs` enforces the repository-owned workflow and git-hook policy described
+  by `documents/engineering/code_quality.md`, then runs Fourmolu, HLint, warning-clean Cabal
+  builds, and the operator-binary sync step.
+- `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
+  close on the implemented HTTP `/v1/state` observability payload, the documented status fields
+  including `event_hashes` and `heartbeat_age_seconds`, and the Orders-backed interval-validation
+  path enforced during config and status handling.
+- `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/Prerequisite.hs`,
+  `src/Prodbox/EffectInterpreter.hs`, and `src/Prodbox/Infra/MinioBackend.hs` keep the aggregate
+  AWS-backed validation flow behind the visible local runbook and repair the repo-backed MinIO
+  Pulumi backend before validation continues.
 - `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` install `ghcup` in-image and pin
-  GHC `9.14.1`
-- `src/Prodbox/CLI/Rke2.hs` no longer uses the lifecycle-managed `haskell-toolchain` BuildKit
-  context
-- `cabal.project` pins `ghc-9.14.1`, the frontend and gateway Dockerfiles build against that
-  toolchain, and `prodbox.cabal` carries the package-bound updates required by the current build
-- the chart and lifecycle surfaces now use the Percona operator rather than the retired Zalando
-  operator assumptions
+  GHC `9.14.1`, while `src/Prodbox/CLI/Rke2.hs` no longer uses the lifecycle-managed
+  `haskell-toolchain` BuildKit context.
+- `cabal.project` pins `ghc-9.14.1`, `prodbox.cabal` carries the package-bound updates required
+  by that toolchain, and the chart plus lifecycle surfaces use the Percona operator rather than
+  the retired Zalando operator assumptions.
 
 The supported architecture is Haskell-only. The public `prodbox pulumi ...` surface is limited to
 the AWS validation stacks under `pulumi/aws-eks/` and `pulumi/aws-test/`, while local-cluster
@@ -159,19 +152,15 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: Sprint `1.2`, Sprint `2.1`, and Sprint `2.2` close on April 28, 2026
-after the quality gate and gateway runtime or doctrine alignment work landed in the Haskell
-repository surfaces. The earlier same-day reopen/close sequence remains recorded in the phase
-documents, while this top-level plan now reflects the closed repository end state without
-duplicating environment-dependent execution logs.
+**Status interpretation**: All phase documents reflect closed Haskell repository surfaces.
+Environment-dependent AWS and public-edge proof remains attached to the canonical `prodbox`
+commands listed in this plan rather than duplicated here as execution logs.
 
 ## Current Plan Status
 
 The development plan is current against the repository worktree on the following implemented
 surfaces:
 
-- Sprint `1.1`, Sprint `2.1`, Sprint `3.3`, and Sprint `4.1` reopened container, toolchain,
-  lifecycle, and PostgreSQL operator surfaces and are now implemented in code.
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
   `prodbox-config.json`.
@@ -181,7 +170,8 @@ surfaces:
 - `src/Prodbox/CheckCode.hs` now enforces the governed doctrine-alignment contract described by
   `documents/engineering/code_quality.md`: it fails on repository-owned workflow or git-hook
   surfaces before it runs Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary
-  sync step.
+  sync step, while excluding generated or retained runtime roots such as `.build/`,
+  `dist-newstyle/`, `.prodbox-state/`, and `.data/` from the repo-owned policy scan.
 - The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
 - The supported config contract is direct `Dhall -> Haskell types`; `prodbox-config.json` and
@@ -237,9 +227,12 @@ surfaces:
   `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`: config generation,
   heartbeat recording, in-memory ownership projection, DNS-write gating, the HTTP `/v1/state`
   observability payload, HMAC event signing, and Orders-backed gateway-interval validation are all
-  implemented there today.
-- `src/Prodbox/Tla.hs` still owns `prodbox tla-check`, and the gateway runtime-to-model
-  correspondence docs now close honestly on the current Phase `2` implementation.
+  implemented there today. The parsed certificate, key, CA, and socket fields remain part of the
+  config or Orders model, but the closed repository surface does not materialize peer transport
+  from them today.
+- `src/Prodbox/Tla.hs` still owns `prodbox tla-check`, while
+  `documents/engineering/tla_modelling_assumptions.md` records the current runtime-to-model
+  correspondence and compression points for the Phase `2` surface.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile and ACME
   `ClusterIssuer` projection; those helpers do not expand the public `prodbox pulumi ...` command
   family.
@@ -250,9 +243,9 @@ surfaces:
   `./.build/prodbox test integration env`, the named native validation flows in
   `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
   plus `./.build/prodbox test all`.
-- The April 28, 2026 canonical `./.build/prodbox test all` rerun completed cleanly through the
-  shared aggregate suite plan, including AWS IAM, Route 53, public-edge, EKS, HA-RKE2, destructive
-  lifecycle, post-test restore, final certificate convergence, and operational `aws.*` cleanup.
+- The aggregate rerun contract is owned by the shared suite plan behind
+  `./.build/prodbox test integration all` and `./.build/prodbox test all`, including AWS IAM,
+  Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
 - The legacy ledger has no pending items on the supported path.
 
 ## Exit Definition
@@ -296,9 +289,9 @@ This plan is complete only when all of the following are true:
     `documents/engineering/code_quality.md`, not only formatter, linter, build, and binary-sync
     checks.
 12. The gateway runtime, `gateway status` client path, and daemon config validation close on the
-    governed contract in `documents/engineering/distributed_gateway_architecture.md` and
-    `documents/engineering/tla_modelling_assumptions.md`, including the HTTP `/v1/state`
-    observability payload and the documented gateway-interval relationships.
+    implemented HTTP `/v1/state` observability payload, the Orders-backed gateway-interval
+    relationships enforced by `src/Prodbox/Gateway/Types.hs`, and the current correspondence notes
+    in `documents/engineering/tla_modelling_assumptions.md`.
 13. Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
    storage backend during bootstrap.
 14. Every later supported Helm deployment obtains its images from Harbor.

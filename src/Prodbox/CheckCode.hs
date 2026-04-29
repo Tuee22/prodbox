@@ -1,6 +1,7 @@
 module Prodbox.CheckCode (
     DoctrineViolation (..),
     doctrineViolationsInPaths,
+    listRepoOwnedPaths,
     runCheckCode,
 )
 where
@@ -28,6 +29,7 @@ import System.FilePath (
     (</>),
  )
 import System.IO (hPutStrLn, stderr)
+import System.IO.Error (tryIOError)
 import System.Process (
     CreateProcess (
         cwd,
@@ -127,28 +129,31 @@ listRepoOwnedPaths repoRoot = scanDirectory ""
                 if null relativeRoot
                     then repoRoot
                     else repoRoot </> relativeRoot
-        entries <- sort <$> listDirectory directoryPath
-        fmap concat $
-            forM entries $ \entry -> do
-                let relativePath =
-                        if null relativeRoot
-                            then entry
-                            else relativeRoot </> entry
-                    absolutePath = repoRoot </> relativePath
-                isDirectory <- doesDirectoryExist absolutePath
-                if not isDirectory
-                    then pure [relativePath]
-                    else
-                        if entry `elem` excludedDirectories
-                            then pure []
+        entriesResult <- tryIOError (sort <$> listDirectory directoryPath)
+        case entriesResult of
+            Left _ -> pure []
+            Right entries ->
+                fmap concat $
+                    forM entries $ \entry -> do
+                        let relativePath =
+                                if null relativeRoot
+                                    then entry
+                                    else relativeRoot </> entry
+                            absolutePath = repoRoot </> relativePath
+                        isDirectory <- doesDirectoryExist absolutePath
+                        if not isDirectory
+                            then pure [relativePath]
                             else
-                                if entry `elem` forbiddenDirectories
-                                    then pure [relativePath]
-                                    else do
-                                        descendants <- scanDirectory relativePath
-                                        pure (relativePath : descendants)
+                                if entry `elem` excludedDirectories
+                                    then pure []
+                                    else
+                                        if entry `elem` forbiddenDirectories
+                                            then pure [relativePath]
+                                            else do
+                                                descendants <- scanDirectory relativePath
+                                                pure (relativePath : descendants)
 
-    excludedDirectories = [".git", ".build", "dist-newstyle", ".prodbox-state"]
+    excludedDirectories = [".git", ".build", "dist-newstyle", ".prodbox-state", ".data"]
     forbiddenDirectories = [".github", ".githooks", ".husky"]
 
 renderDoctrineViolation :: DoctrineViolation -> String

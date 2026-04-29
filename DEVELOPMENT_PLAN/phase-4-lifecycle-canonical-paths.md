@@ -28,9 +28,10 @@ lifecycle-owned bootstrap DNS and ACME `ClusterIssuer` reconcile in `src/Prodbox
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the only supported public Pulumi stack programs; broad
   local-cluster platform or application ownership no longer depends on Pulumi.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain AWS
-  validation stack snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`,
-  with the HA-RKE2 validation SSH key stored under `.prodbox-state/aws-test/`.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
+  retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
+  `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
+  `.prodbox-state/aws-test/`.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.

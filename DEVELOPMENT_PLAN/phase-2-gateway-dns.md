@@ -13,12 +13,15 @@
 This phase ports the gateway daemon, DNS inspection command, and related command surfaces to
 Haskell, preserves the formal model entrypoint, and keeps Route 53 write ownership inside the
 in-cluster gateway workload. It owns the gateway image packaging contract, Harbor-backed image
-delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. This phase is closed
-on its repository-owned surfaces. The gateway container doctrine is implemented on
-`ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
-the retained in-image AWS CLI bundle. The current daemon surface implements config generation,
-heartbeat recording, in-memory ownership projection, DNS-write gating, REST status, and HMAC
-event signing; the broader distributed protocol remains captured in the TLA+ and doctrine docs.
+delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. Sprint `2.1` and
+Sprint `2.2` close on April 28, 2026 after the daemon, `prodbox gateway status`, the governed
+HTTP `/v1/state` payload, Orders-backed interval validation, and the runtime-to-model
+correspondence docs were aligned in code and doctrine. The gateway container doctrine is
+implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell
+tool shims, and the retained in-image AWS CLI bundle. The current daemon surface implements
+config generation, heartbeat recording, in-memory ownership projection, DNS-write gating, HTTP
+REST status, and HMAC event signing; the broader distributed protocol remains captured in the
+TLA+ and doctrine docs.
 
 ## Current Baseline In Worktree
 
@@ -33,6 +36,13 @@ event signing; the broader distributed protocol remains captured in the TLA+ and
 - The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
   repo-rootless `gateway start|status`, and `charts/gateway/` injects AWS credentials through the
   `gateway-aws-credentials` secret while probing `/v1/state` over HTTP on the in-pod REST port.
+- `src/Prodbox/Gateway.hs` now queries daemon state over the governed HTTP `/v1/state`
+  observability surface, matching the chart probes and the in-pod REST listener in
+  `src/Prodbox/Gateway/Daemon.hs`.
+- `src/Prodbox/Gateway/Daemon.hs` now renders the documented `/v1/state` payload fields used for
+  operator and integration observability, including `event_hashes` and `heartbeat_age_seconds`.
+- `src/Prodbox/Gateway/Types.hs` now enforces the documented cross-field interval relationships
+  from `documents/engineering/distributed_gateway_architecture.md` against the Orders timeout.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
   been removed.
 - `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface. All Python TLA+ wrappers have
@@ -65,6 +75,9 @@ container doctrine.
 - Gateway image publication produces or loads both `amd64` and `arm64` variants irrespective of
   the operator host architecture.
 - Gateway event-key continuity and state inspection move to Haskell-owned modules.
+- The daemon and `prodbox gateway status` close on the governed HTTP `/v1/state` observability
+  transport and the governed status payload.
+- Native gateway config parsing enforces the documented cross-field gateway-interval relationships.
 - The target steady state remains the in-cluster gateway workload; no host-side daemon is revived.
 
 ### Validation
@@ -89,7 +102,15 @@ container doctrine.
 - `src/Prodbox/Gateway/Types.hs` provides core gateway types: `PeerEndpoint`, `GatewayRule`,
   `Orders`, `SignedEvent`, `CommitLog`, `DaemonConfig`, `DnsWriteGate`, and config parsing.
 - `src/Prodbox/Gateway/Daemon.hs` provides the daemon runtime: heartbeat loop, gateway ownership
-  loop, DNS write loop, REST server, and HMAC event signing.
+  loop, DNS write loop, HTTP REST server, and HMAC event signing. The state payload now exposes
+  `event_hashes`, `heartbeat_age_seconds`, and the DNS-write observability fields described by the
+  gateway doctrine.
+- `src/Prodbox/Gateway.hs` now dials daemon state over the same HTTP `/v1/state` endpoint used by
+  the in-cluster liveness and readiness probes, so the public status path and the daemon listener
+  close on one native transport contract.
+- `src/Prodbox/Gateway/Types.hs` now enforces the timeout range, interval minimums, and the
+  documented relationships `heartbeat_interval_seconds <= timeout/2`,
+  `reconnect_interval_seconds <= timeout`, and `sync_interval_seconds <= timeout*2`.
 - `test/unit/Main.hs` proves parser routing plus renderer and template behavior for native
   `dns check`, `gateway start`, `gateway status`, and `gateway config-gen`, and
   `test/integration/cli/Main.hs` proves the built frontend for native `gateway status` and
@@ -145,7 +166,8 @@ gateway port.
 - `test/unit/Main.hs` proves parser routing for native `tla-check`.
 - Native Haskell `gateway config-gen` preserves `dns_write_gate` emission. All Python TLA+ and
   gateway wrappers have been removed. The current runtime-to-model boundary is documented in
-  `documents/engineering/tla_modelling_assumptions.md`.
+  `documents/engineering/tla_modelling_assumptions.md`, including the current Haskell
+  observability payload and the remaining intentional model/runtime compression points.
 - `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to the Haskell
   `tla-check` validation surface through `src/Prodbox/TestValidation.hs`.
 ### Remaining Work

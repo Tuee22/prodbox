@@ -34,6 +34,7 @@ Hard gates are enforced mechanically. A change that fails one of these gates is 
 
 Current hard gates:
 
+- repository-owned workflow and hook policy scan through `prodbox check-code`
 - Fourmolu formatting through the checked-in [`fourmolu.toml`](../../fourmolu.toml)
 - HLint through the checked-in [`/.hlint.yaml`](../../.hlint.yaml)
 - warning-clean Haskell compilation through
@@ -79,10 +80,11 @@ The authoritative mechanical Haskell quality gate is:
 
 `src/Prodbox/CheckCode.hs` owns that command. The supported gate currently requires:
 
-1. `fourmolu --mode check app src test`
-2. `hlint app src test --hint=.hlint.yaml`
-3. `cabal build --builddir=.build all --ghc-options=-Werror`
-4. sync of the built operator binary to `./.build/prodbox`
+1. repository-owned workflow and hook policy scan
+2. `fourmolu --mode check app src test`
+3. `hlint app src test --hint=.hlint.yaml`
+4. `cabal build --builddir=.build all --ghc-options=-Werror`
+5. sync of the built operator binary to `./.build/prodbox`
 
 The broader validation surfaces remain separate:
 
@@ -99,7 +101,8 @@ the canonical formatter/linter/warning-clean gate.
 ## 5. Tooling Policy
 
 The repository uses local CLI entrypoints only. CI workflows, `.github/` automation, and git hooks
-are not part of the supported development model.
+are not part of the supported development model, and `prodbox check-code` fails on repo-owned
+workflow or hook surfaces that would violate that policy.
 
 See [Code Quality Doctrine](./code_quality.md#2a-development-tooling-policy) for the public policy
 statement.

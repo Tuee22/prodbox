@@ -51,6 +51,10 @@ import Prodbox.CLI.Parser (
     Options (..),
     parserInfo,
  )
+import Prodbox.CheckCode (
+    DoctrineViolation (..),
+    doctrineViolationsInPaths,
+ )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Effect (
     Effect (..),
@@ -63,6 +67,11 @@ import Prodbox.EffectDAG (
 import Prodbox.Gateway (
     renderGatewayConfigTemplate,
     renderGatewayStatusReport,
+ )
+import Prodbox.Gateway.Types (
+    parseDaemonConfig,
+    parseOrders,
+    validateDaemonTimingAgainstOrders,
  )
 import Prodbox.Host (
     PortStatus (..),
@@ -316,6 +325,13 @@ main = hspec $ do
             hlintConfig `shouldContain` "--cpp-simple"
             editorConfig `shouldContain` "indent_style = space"
             editorConfig `shouldContain` "indent_size = 2"
+
+        it "flags unsupported workflow and hook surfaces in the quality gate policy scan" $ do
+            doctrineViolationsInPaths [".github", ".pre-commit-config.yaml", "hooks/pre-push", "src/Prodbox/Main.hs"]
+                `shouldBe` [ ForbiddenWorkflowDirectory ".github"
+                           , ForbiddenHookSurface ".pre-commit-config.yaml"
+                           , ForbiddenHookSurface "hooks/pre-push"
+                           ]
 
         it "keeps the gateway chart on repo-rootless startup with env-based AWS auth" $ do
             repoRoot <- getCurrentDirectory
@@ -1104,6 +1120,48 @@ main = hspec $ do
                     report `shouldContain` "ACTIVE_CLAIM=true"
                     report `shouldContain` "DNS_WRITE_GATE=code.example.com@Z123 ttl=60"
                     report `shouldContain` "HEARTBEAT_NODE_B=1.5"
+
+        it "enforces gateway timing relationships against the orders timeout" $ do
+            let invalidConfig =
+                    unlines
+                        [ "{"
+                        , "  \"node_id\": \"node-a\","
+                        , "  \"cert_file\": \"node-a.crt\","
+                        , "  \"key_file\": \"node-a.key\","
+                        , "  \"ca_file\": \"ca.crt\","
+                        , "  \"orders_file\": \"orders.json\","
+                        , "  \"event_keys\": { \"node-a\": \"REPLACE_WITH_SECRET_KEY\" },"
+                        , "  \"heartbeat_interval_seconds\": 2.0,"
+                        , "  \"reconnect_interval_seconds\": 1.0,"
+                        , "  \"sync_interval_seconds\": 5.0"
+                        , "}"
+                        ]
+                ordersText =
+                    unlines
+                        [ "{"
+                        , "  \"version_utc\": 1,"
+                        , "  \"nodes\": ["
+                        , "    {"
+                        , "      \"node_id\": \"node-a\","
+                        , "      \"stable_dns_name\": \"node-a.example.test\","
+                        , "      \"rest_host\": \"0.0.0.0\","
+                        , "      \"rest_port\": 31001,"
+                        , "      \"socket_host\": \"0.0.0.0\","
+                        , "      \"socket_port\": 32001"
+                        , "    }"
+                        , "  ],"
+                        , "  \"gateway_rule\": {"
+                        , "    \"ranked_nodes\": [\"node-a\"],"
+                        , "    \"heartbeat_timeout_seconds\": 3"
+                        , "  }"
+                        , "}"
+                        ]
+            case (parseDaemonConfig invalidConfig, parseOrders ordersText) of
+                (Right config, Right orders) ->
+                    validateDaemonTimingAgainstOrders config orders
+                        `shouldBe` Left "heartbeat_interval_seconds must be <= heartbeat_timeout_seconds / 2"
+                (Left err, _) -> expectationFailure err
+                (_, Left err) -> expectationFailure err
 
         it "renders gateway config templates with dns_write_gate" $
             withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do

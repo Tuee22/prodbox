@@ -36,7 +36,10 @@ The TLA+ specification (`documents/engineering/tla/gateway_orders_rule.tla`) mod
 
 ### Communication model
 
-The spec contains both synchronous heartbeats (`Heartbeat(s, r)`) and async heartbeats via `msgQueue` (`SendHeartbeat`/`DeliverHeartbeat`). Model checking uses synchronous heartbeats for tractable state space; the async actions are retained in the spec for reference. REST is not modelled — it exists only for mTLS handshake bootstrapping.
+The spec contains both synchronous heartbeats (`Heartbeat(s, r)`) and async heartbeats via
+`msgQueue` (`SendHeartbeat`/`DeliverHeartbeat`). Model checking uses synchronous heartbeats for
+tractable state space; the async actions are retained in the spec for reference. The operator-facing
+HTTP `/v1/state` observability endpoint is not modelled.
 
 ### What the model does NOT include
 
@@ -118,6 +121,8 @@ The current Haskell daemon status surface exposes:
 1. `stateGatewayOwner` as the in-memory owner view
 2. `has_active_claim` rendered from `stateGatewayOwner state == Just (daemonNodeId config)`
 3. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
+4. `event_hashes` plus `heartbeat_age_seconds` on `/v1/state` for operator and integration
+   observability
 
 Treat the event-log lifecycle in the model as the formal safety contract and the runtime fields as
 the current operational projection. Phase closure and any remaining alignment work on that

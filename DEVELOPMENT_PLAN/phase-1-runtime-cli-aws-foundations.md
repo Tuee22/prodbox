@@ -15,10 +15,9 @@ repository-root Dhall config loader, the Haskell command runtime and test harnes
 foundations for true IaC plus AWS validation. It also owns the canonical frontend image placement
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
-Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`
-and Sprint `1.2` are closed on their repository-owned surfaces. Sprint `1.3` is also closed,
-including isolated supported AWS subprocess auth projection through `src/Prodbox/AwsEnvironment.hs`
-and the canonical AWS-backed validation entrypoints. The implemented frontend container doctrine uses
+Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`,
+Sprint `1.2`, and Sprint `1.3` are closed on their repository-owned surfaces as of April 28,
+2026. The implemented frontend container doctrine uses
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
 explicit repo package-bound updates.
 
@@ -43,13 +42,16 @@ explicit repo package-bound updates.
 - The host build contract copies the operator-facing binary to `.build/prodbox` after the
   canonical `cabal build --builddir=.build exe:prodbox` invocation and preserves the shared
   `.build/support` linker shim for supported local runs.
+- `src/Prodbox/CheckCode.hs` now runs the repository-owned workflow and git-hook policy scan,
+  Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary sync step, closing on the
+  governed doctrine-alignment contract described by `documents/engineering/code_quality.md`.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
 - `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
   `ghcup` with pinned GHC `9.14.1` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
   BuildKit toolchain context or symlinked Haskell tool shims remain on the supported path.
-- `prodbox.cabal` and `cabal.project` now close on the explicit `ghc-9.14.1` path, including the
-  repo-level `with-compiler: ghc-9.14.1` pin and the temporary `allow-newer: *:base,
-  *:template-haskell` allowance required by the current package set.
+- `cabal.project` now carries the repo-level `with-compiler: ghc-9.14.1` pin and the temporary
+  `allow-newer: *:base, *:template-haskell` allowance required by the current package set, while
+  `prodbox.cabal` carries the package-bound updates required by that toolchain.
 - `test/integration/env/Main.hs` proves built-frontend config masking and validation directly
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
@@ -66,7 +68,7 @@ explicit repo package-bound updates.
 
 **Status**: Done
 **Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `docker/prodbox.Dockerfile`, `docker/`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
-**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`
 
 ### Objective
 
@@ -147,6 +149,9 @@ modules.
 - The Haskell-owned `prodbox host ensure-tools|check-ports|info|firewall`, `prodbox k8s
   health|wait|logs`, `prodbox test`, and `prodbox check-code` command frameworks are implemented
   on a Haskell-owned entry surface.
+- `prodbox check-code` fails on governed doctrine-alignment violations described by
+  `documents/engineering/code_quality.md`, not only on formatter, linter, build, or binary-sync
+  failures.
 - The named validation payloads behind `prodbox test integration ...` are executable native
   Haskell validation flows owned by `src/Prodbox/TestValidation.hs`.
 
@@ -168,9 +173,10 @@ modules.
   instead of surfacing a raw file-open exception from the Dhall loader.
 - `src/Prodbox/BuildSupport.hs` owns the shared `.build/support` linker shim and the
   operator-facing binary sync to `.build/prodbox`.
-- `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and runs Fourmolu, HLint, and
-  warning-clean `cabal build --builddir=.build all --ghc-options=-Werror`, then syncs the built
-  executable to `.build/prodbox`.
+- `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and now runs the repository-owned workflow
+  and git-hook policy scan, Fourmolu, HLint, warning-clean
+  `cabal build --builddir=.build all --ghc-options=-Werror`, then syncs the built executable to
+  `.build/prodbox`.
 - `src/Prodbox/TestRunner.hs` owns `prodbox test ...`; it runs Haskell suites via `cabal test`,
   drives phase banners plus prerequisite and runbook gating through native
   `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,
@@ -191,8 +197,8 @@ modules.
   cluster-backed readiness roots used by the named validation flows.
 - `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
   proof surfaces for the Haskell-owned command surface.
-- Root guidance docs and the governed docs listed in `Docs to update` describe the Haskell-only
-  repository and current validation harness.
+- The root guidance docs and governed docs listed in `Docs to update` now describe the Haskell-only
+  repository, the current validation harness, and the implemented `check-code` doctrine gate.
 ### Remaining Work
 
 None.

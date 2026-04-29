@@ -21,8 +21,11 @@ import Data.Aeson (
     Value (..),
     encode,
     object,
+    toJSON,
     (.=),
  )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
@@ -59,6 +62,7 @@ import Prodbox.Gateway.Types (
     appendIfNew,
     emptyCommitLog,
     parseOrders,
+    validateDaemonTimingAgainstOrders,
  )
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess (
@@ -99,28 +103,45 @@ runGatewayDaemon config = withSocketsDo $ do
         Left err -> do
             hPutStrLn stderr ("Failed to parse orders: " ++ err)
             pure (ExitFailure 1)
-        Right orders -> do
-            stateVar <- newTVarIO initialState
-            let eventKeys = Map.fromList (daemonEventKeys config)
-
-            hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
-
-            heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
-            gatewayThread <- async (gatewayLoop config orders stateVar)
-            dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
-            restThread <- async (restServerLoop config orders stateVar)
-
-            let allThreads = [heartbeatThread, gatewayThread, dnsWriteThread, restThread]
-
-            result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
-            case result of
-                Left exc -> do
-                    hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
-                    mapM_ cancel allThreads
+        Right orders ->
+            case validateDaemonTimingAgainstOrders config orders of
+                Left err -> do
+                    hPutStrLn stderr ("Failed to validate gateway timing: " ++ err)
                     pure (ExitFailure 1)
                 Right () -> do
-                    hPutStrLn stderr "Gateway daemon stopped"
-                    pure ExitSuccess
+                    now <- getCurrentTime
+                    let localNodeId = daemonNodeId config
+                        meshPeers =
+                            [ peerNodeId peer
+                            | peer <- ordersNodes orders
+                            , peerNodeId peer /= localNodeId
+                            ]
+                        initialDaemonState =
+                            initialState
+                                { stateLastHeartbeatTimes = Map.singleton localNodeId now
+                                , stateMeshPeers = meshPeers
+                                }
+                    stateVar <- newTVarIO initialDaemonState
+                    let eventKeys = Map.fromList (daemonEventKeys config)
+
+                    hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
+
+                    heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
+                    gatewayThread <- async (gatewayLoop config orders stateVar)
+                    dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
+                    restThread <- async (restServerLoop config orders stateVar)
+
+                    let allThreads = [heartbeatThread, gatewayThread, dnsWriteThread, restThread]
+
+                    result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
+                    case result of
+                        Left exc -> do
+                            hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
+                            mapM_ cancel allThreads
+                            pure (ExitFailure 1)
+                        Right () -> do
+                            hPutStrLn stderr "Gateway daemon stopped"
+                            pure ExitSuccess
 
 heartbeatLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map.Map String String -> IO ()
 heartbeatLoop config _orders stateVar eventKeys = forever $ do
@@ -175,6 +196,7 @@ dnsWriteLoop config _orders stateVar = forever $ do
                 case publicIpResult of
                     Left err -> hPutStrLn stderr ("DNS write skipped: " ++ err)
                     Right currentIp -> do
+                        atomically $ modifyTVar' stateVar $ \s -> s{stateLastPublicIp = Just currentIp}
                         let shouldWrite = case stateLastDnsWriteIp state of
                                 Nothing -> True
                                 Just lastIp -> lastIp /= currentIp
@@ -215,7 +237,8 @@ handleRestClient sock config stateVar = do
   where
     handleRequest = do
         state <- readTVarIO stateVar
-        let responseBody = renderStateJson config state
+        now <- getCurrentTime
+        let responseBody = renderStateJson now config state
             responseHeaders =
                 "HTTP/1.1 200 OK\r\n"
                     ++ "Content-Type: application/json\r\n"
@@ -227,8 +250,8 @@ handleRestClient sock config stateVar = do
         sendAll sock (BS8.pack responseHeaders)
         sendAll sock (BL.toStrict responseBody)
 
-renderStateJson :: DaemonConfig -> DaemonState -> BL.ByteString
-renderStateJson config state =
+renderStateJson :: UTCTime -> DaemonConfig -> DaemonState -> BL.ByteString
+renderStateJson now config state =
     encode $
         object
             [ "node_id" .= daemonNodeId config
@@ -236,11 +259,12 @@ renderStateJson config state =
             , "has_active_claim" .= (stateGatewayOwner state == Just (daemonNodeId config))
             , "mesh_peers" .= stateMeshPeers state
             , "event_count" .= length (commitLogEvents (stateCommitLog state))
+            , "event_hashes" .= map eventHash (commitLogEvents (stateCommitLog state))
             , "last_public_ip_observed" .= stateLastPublicIp state
             , "last_dns_write_ip" .= stateLastDnsWriteIp state
             , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
             , "dns_write_gate" .= fmap renderDnsWriteGate (daemonDnsWriteGate config)
-            , "heartbeat_age_seconds" .= renderHeartbeatAges state
+            , "heartbeat_age_seconds" .= renderHeartbeatAges now state
             ]
 
 renderDnsWriteGate :: DnsWriteGate -> Value
@@ -252,8 +276,13 @@ renderDnsWriteGate gate =
         , "aws_region" .= dnsWriteGateAwsRegion gate
         ]
 
-renderHeartbeatAges :: DaemonState -> Value
-renderHeartbeatAges _state = object []
+renderHeartbeatAges :: UTCTime -> DaemonState -> Value
+renderHeartbeatAges now state =
+    Object $
+        KeyMap.fromList
+            [ (Key.fromString nodeId, toJSON (realToFrac (diffUTCTime now timestamp) :: Double))
+            | (nodeId, timestamp) <- Map.toList (stateLastHeartbeatTimes state)
+            ]
 
 fetchPublicIp :: IO (Either String String)
 fetchPublicIp = do

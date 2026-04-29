@@ -141,6 +141,11 @@ main = hspec $ do
                 stdoutText `shouldContain` "Gateway status"
                 stdoutText `shouldContain` "DNS_WRITE_GATE=code.example.com@Z123 ttl=60"
                 stdoutText `shouldContain` "HEARTBEAT_NODE_B=1.5"
+                curlArgs <- readFile (tmpDir </> "curl-args.txt")
+                curlArgs `shouldContain` "http://node-a.example.test:31001/v1/state"
+                curlArgs `shouldNotContain` "--cert"
+                curlArgs `shouldNotContain` "--key"
+                curlArgs `shouldNotContain` "--cacert"
 
         it "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -768,16 +773,17 @@ writeFakeCurlScript repoRoot = do
     let binDir = repoRoot </> "bin"
         scriptPath = binDir </> "curl"
     createDirectoryIfMissing True binDir
-    writeFile scriptPath fakeCurlScript
+    writeFile scriptPath (fakeCurlScript (repoRoot </> "curl-args.txt"))
     permissions <- getPermissions scriptPath
     setPermissions scriptPath permissions{executable = True}
     pure binDir
 
-fakeCurlScript :: String
-fakeCurlScript =
+fakeCurlScript :: FilePath -> String
+fakeCurlScript recordPath =
     unlines
         [ "#!/usr/bin/env bash"
         , "set -euo pipefail"
+        , "printf '%s\\n' \"$*\" > " ++ show recordPath
         , "cat <<'JSON'"
         , "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"event_count\":5,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"code.example.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
         , "JSON"

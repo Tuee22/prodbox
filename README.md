@@ -88,7 +88,8 @@ cabal build --builddir=.build exe:prodbox
 ./.build/prodbox --help
 ```
 
-`prodbox check-code` also syncs the built operator binary to `./.build/prodbox`.
+`prodbox check-code` enforces the repository-owned workflow and hook policy, then syncs the built
+operator binary to `./.build/prodbox`.
 
 ## Configuration
 

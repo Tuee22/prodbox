@@ -53,7 +53,7 @@ Top-level commands:
 | `gateway` | Group | Gateway daemon operations |
 | `charts` | Group | Bespoke Helm chart lifecycle |
 | `test` | Group | Explicit named test suites |
-| `check-code` | Command | Formatter, lint, warning-clean build, and operator-binary sync gate |
+| `check-code` | Command | Doctrine-policy, formatter, lint, warning-clean build, and operator-binary sync gate |
 | `tla-check` | Command | TLA+ model checking via Docker |
 
 ## 3. Command Matrix
@@ -159,7 +159,8 @@ No supported local-cluster platform or application deployment depends on a root 
 | `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
 
 `src/Prodbox/Gateway.hs` owns the public gateway surface and `src/Prodbox/Gateway/Daemon.hs`
-owns the daemon runtime.
+owns the daemon runtime. `prodbox gateway status` queries the daemon's operator-facing
+`/v1/state` endpoint over HTTP on the configured REST port.
 
 ### `prodbox charts`
 
@@ -238,8 +239,9 @@ Named suite commands:
 
 `src/Prodbox/CheckCode.hs` owns the public `check-code` entrypoint.
 
-The supported command runs Fourmolu, HLint, warning-clean `cabal build`, and the final operator
-binary sync. Detailed Haskell quality doctrine is defined in
+The supported command runs the repository-owned workflow or hook policy scan, Fourmolu, HLint,
+warning-clean `cabal build`, and the final operator binary sync. Detailed Haskell quality doctrine
+is defined in
 [Haskell Code Guide](./haskell_code_guide.md).
 
 ### `prodbox tla-check`

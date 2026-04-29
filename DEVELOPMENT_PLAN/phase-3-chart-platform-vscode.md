@@ -25,16 +25,17 @@ synchronous replication, and no embedded chart-local PostgreSQL subchart.
 - The public `prodbox charts ...` runtime lives in `src/Prodbox/CLI/Charts.hs`,
   `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, and
   `src/Prodbox/PostgresPlatform.hs`.
-- Retained roots remain the configured manual PV root (default `.data/`) and `.prodbox-state/`;
-  chart secret resolution and gateway event-key handling are Haskell-owned.
+- The retained-root contract remains the configured manual PV root (default `.data/`) plus
+  generated non-PV chart state under `.prodbox-state/`; chart secret resolution and gateway
+  event-key handling are Haskell-owned.
 - `docker/nginx-oidc.Dockerfile` remains the permitted `nginx:1.25-alpine` exception and is
   published to Harbor before supported deployment.
 - The supported app dependency graph remains `keycloak-postgres -> keycloak -> vscode`, with
   `keycloak-postgres` owning the namespace-local application-database release for the root chart
   namespace.
-- The current worktree now installs the Percona `pg-operator` Helm release, mirrors the Percona
-  operator and PostgreSQL images, renders `PerconaPGCluster` resources for
-  `keycloak-postgres`, and removes the incompatible legacy Zalando operator release before the
+- The current lifecycle and chart code install the Percona `pg-operator` Helm release, mirror the
+  Percona operator and PostgreSQL images, render `PerconaPGCluster` resources for
+  `keycloak-postgres`, and remove the incompatible legacy Zalando operator release before the
   Percona install proceeds on a live cluster.
 - Sprint `3.3` keeps the namespace-local release shape, deterministic manual-PV bindings,
   retained-secret contract, and dependent-chart sequencing on the Percona operator surface.

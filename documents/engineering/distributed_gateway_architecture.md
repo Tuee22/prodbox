@@ -287,6 +287,10 @@ Returns current daemon state:
     "last_public_ip_observed": "203.0.113.10",
     "last_dns_write_ip": "203.0.113.10",
     "last_dns_write_at_utc": "2026-04-06T12:00:00Z",
+    "heartbeat_age_seconds": {
+        "node-a": 0.2,
+        "node-b": 1.3
+    },
     "dns_write_gate": {
         "zone_id": "Z1234567890",
         "fqdn": "gw.example.test",
@@ -297,6 +301,10 @@ Returns current daemon state:
 ```
 
 Used by integration tests for observability and by `prodbox gateway status` CLI.
+
+The `/v1/state` observability endpoint is an operator-facing HTTP surface on the in-pod REST
+port. It is separate from the peer-to-peer mutual-TLS transport doctrine used for gateway mesh
+communication.
 
 ---
 
@@ -311,10 +319,10 @@ The chart's liveness and readiness probes query `GET /v1/state` over HTTP on the
 port.
 
 `prodbox gateway start <config.json>` is the Haskell daemon entrypoint and remains the in-pod
-startup path invoked by the gateway chart's container. `prodbox gateway status <config.json>` and
-`prodbox gateway config-gen <path> --node-id <id>` provide operator inspection and template
-generation. Direct host-process invocation remains a development mode, not the supported steady
-state.
+startup path invoked by the gateway chart's container. `prodbox gateway status <config.json>`
+queries that same HTTP `/v1/state` endpoint for operator inspection, and
+`prodbox gateway config-gen <path> --node-id <id>` provides template generation. Direct
+host-process invocation remains a development mode, not the supported steady state.
 
 Containerization is first-class for integration/runtime image publishing:
 

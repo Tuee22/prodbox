@@ -23,10 +23,11 @@ operator entrypoint:
 `src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs a fail-fast
 sequence:
 
-1. `fourmolu --mode check app src test`
-2. `hlint app src test --hint=.hlint.yaml`
-3. `cabal build --builddir=.build all --ghc-options=-Werror`
-4. Sync the built operator binary to `.build/prodbox`
+1. repository-owned workflow and hook policy scan
+2. `fourmolu --mode check app src test`
+3. `hlint app src test --hint=.hlint.yaml`
+4. `cabal build --builddir=.build all --ghc-options=-Werror`
+5. sync the built operator binary to `.build/prodbox`
 
 ## 2A. Development Tooling Policy
 
@@ -37,6 +38,14 @@ Do not add or rely on:
 
 1. `.github/` workflow automation
 2. Git hook scripts (`.git/hooks`, pre-commit, or similar)
+
+`prodbox check-code` enforces this repository-owned policy surface by failing when it finds:
+
+1. `.github/`
+2. `.githooks/` or `.husky/`
+3. `.pre-commit-config.yaml`, `.pre-commit-hooks.yaml`, or `lefthook.yml`
+4. repo-owned hook scripts such as `pre-commit`, `pre-push`, `post-commit`, or
+   `pre-merge-commit`
 
 Use local CLI entrypoints only:
 
@@ -49,6 +58,8 @@ Use local CLI entrypoints only:
 
 Current enforced quality surfaces:
 
+- repository-owned workflow and hook policy surfaces forbidden by
+  [Section 2A](#2a-development-tooling-policy)
 - Fourmolu formatting through `fourmolu.toml`
 - HLint through `.hlint.yaml`
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`

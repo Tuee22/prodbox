@@ -26,18 +26,31 @@ govern this plan suite.
 
 ## Closure Status
 
-All phases are closed on April 28, 2026. The earlier aggregate-suite failure at
-`pulumi_logged_in` before local runtime preparation is closed in code, and the canonical
-`./.build/prodbox test all` rerun now completes cleanly on the supported local-cluster path
-through final public-edge restore, AWS teardown, and IAM credential cleanup. Phases `0-7` are
-closed on their owned repository surfaces, and the codebase state that those closures describe is
-present in the worktree:
+All phases are closed on their owned repository surfaces as of April 28, 2026. The earlier
+same-day repository review that reopened Sprint `1.2` plus Sprint `2.1` and Sprint `2.2` is now
+resolved in code and docs:
+
+- Sprint `1.2`: `src/Prodbox/CheckCode.hs` now enforces the repository-owned workflow and git-hook
+  policy described by `documents/engineering/code_quality.md`, then runs Fourmolu, HLint,
+  warning-clean Cabal builds, and the operator-binary sync step.
+- Sprint `2.1` and Sprint `2.2`: the gateway daemon, `prodbox gateway status`, and the governed
+  gateway docs now close on the HTTP `/v1/state` observability contract, the documented
+  status-payload fields including `event_hashes` and `heartbeat_age_seconds`, and the
+  Orders-backed interval relationships described by the gateway doctrine.
+
+The earlier
+aggregate-suite failure at `pulumi_logged_in` before local runtime preparation remains closed in
+code, and the canonical `./.build/prodbox test all` rerun from April 28, 2026 still completes
+cleanly on the supported local-cluster path through final public-edge restore, AWS teardown, and
+IAM credential cleanup. The tracked worktree still shows the repository-owned code and
+documentation for those closed later surfaces:
 
 - `docker/prodbox.Dockerfile` and `docker/gateway.Dockerfile` install `ghcup` in-image and pin
   GHC `9.14.1`
 - `src/Prodbox/CLI/Rke2.hs` no longer uses the lifecycle-managed `haskell-toolchain` BuildKit
   context
-- `prodbox.cabal` and `cabal.project` are aligned to the explicit `ghc-9.14.1` path
+- `cabal.project` pins `ghc-9.14.1`, the frontend and gateway Dockerfiles build against that
+  toolchain, and `prodbox.cabal` carries the package-bound updates required by the current build
 - the chart and lifecycle surfaces now use the Percona operator rather than the retired Zalando
   operator assumptions
 
@@ -56,19 +69,18 @@ native validations behind `./.build/prodbox test integration ...`, and the clean
 by Phase `6`. Environment-dependent AWS and public-edge proof remain attached to those commands
 rather than recorded here as a fresh execution log.
 
-Phases `0-7` are closed on their owned repository surfaces. The repository exposes the supported
-Haskell command surface described by this plan, including the runner change that creates or repairs
-the supported local runtime before it executes the deferred `pulumi_logged_in` proof.
-
 The canonical closure gates remain the `prodbox` surfaces defined by this plan: the `.build`
 artifact contract, `prodbox check-code`, the built-frontend `cli` and `env` suites, the named
 native validation flows behind `prodbox test integration ...`, and the destructive clean-room
 rerun owned by Phase `6`. Validation details live in the phase documents and the component
 inventory rather than in an ad hoc log here.
 
-The repository now contains:
+The current tracked worktree contains:
 
-- one compiled Haskell `prodbox` binary owning the full supported command surface
+- one Haskell codebase that builds the supported `prodbox` binary and owns the full supported
+  command surface
+- one operator-facing build-artifact contract that produces `.build/prodbox` from the canonical
+  Cabal build-plus-copy flow
 - one supported Haskell-owned CLI, config, lifecycle, Pulumi, gateway, chart, AWS, and test
   surface
 - one direct `Dhall -> Haskell types` config contract rooted at operator-authored repository-root
@@ -84,9 +96,10 @@ The repository now contains:
 - one repo-backed MinIO Pulumi prerequisite and stack-runtime path that uses bounded
   `pulumi login ... --non-interactive` checks and repairs deleted MinIO export host-path mounts
   before validation continues
-- one repo-local retained validation-state path under `.prodbox-state/aws-test/` and
-  `.prodbox-state/aws-eks-test/` for AWS stack snapshots, plus the HA-RKE2 validation SSH key
-  under `.prodbox-state/aws-test/`, alongside namespace-local chart state under
+- one repo-local retained validation-state contract rooted at `.prodbox-state/`, where generated
+  runs write AWS stack snapshots under `.prodbox-state/aws-test/` and
+  `.prodbox-state/aws-eks-test/`, the HA-RKE2 validation SSH key under
+  `.prodbox-state/aws-test/`, and namespace-local chart state under
   `.prodbox-state/<namespace>/`
 - zero Python implementation, Python toolchain, or Python bridge artifacts in the repository
 - one cleanup ledger with no pending-removal items on the supported path
@@ -146,11 +159,11 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: Phases `0-7` are marked `Done` for their repository-owned surfaces.
-The shared IAM validation-harness cleanup contract, the post-runbook `pulumi_logged_in` runner
-fix, and the canonical aggregate rerun all close on April 28, 2026. Each phase document names the
-canonical `prodbox` validation commands for its surface; this top-level plan records closure
-results but does not duplicate full environment-dependent execution logs.
+**Status interpretation**: Sprint `1.2`, Sprint `2.1`, and Sprint `2.2` close on April 28, 2026
+after the quality gate and gateway runtime or doctrine alignment work landed in the Haskell
+repository surfaces. The earlier same-day reopen/close sequence remains recorded in the phase
+documents, while this top-level plan now reflects the closed repository end state without
+duplicating environment-dependent execution logs.
 
 ## Current Plan Status
 
@@ -165,6 +178,10 @@ surfaces:
 - `src/Prodbox/BuildSupport.hs`, `src/Prodbox/Repo.hs`, and `test/integration/env/Main.hs`
   preserve the operator-facing `.build/prodbox` artifact contract, repository-root config-path
   resolution, and the built-frontend env proof for the direct-Dhall settings surface.
+- `src/Prodbox/CheckCode.hs` now enforces the governed doctrine-alignment contract described by
+  `documents/engineering/code_quality.md`: it fails on repository-owned workflow or git-hook
+  surfaces before it runs Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary
+  sync step.
 - The supported public surface is Haskell-only. Python source, Python packaging, Python tests,
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
 - The supported config contract is direct `Dhall -> Haskell types`; `prodbox-config.json` and
@@ -212,13 +229,17 @@ surfaces:
   `pulumi/aws-eks/` and `pulumi/aws-test/`. Non-secret validation inputs are synchronized through
   stack config, while AWS provider credentials stay only in `prodbox-config.dhall` and the
   Haskell-owned subprocess environment.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain AWS
-  validation stack snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`,
-  with the HA-RKE2 validation SSH key stored under `.prodbox-state/aws-test/`.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
+  retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
+  `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
+  `.prodbox-state/aws-test/`.
 - The current gateway runtime surface is Haskell-owned and code-backed in `src/Prodbox/Gateway.hs`,
   `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`: config generation,
-  heartbeat recording, in-memory ownership projection, DNS-write gating, REST status, and HMAC
-  event signing are implemented there today.
+  heartbeat recording, in-memory ownership projection, DNS-write gating, the HTTP `/v1/state`
+  observability payload, HMAC event signing, and Orders-backed gateway-interval validation are all
+  implemented there today.
+- `src/Prodbox/Tla.hs` still owns `prodbox tla-check`, and the gateway runtime-to-model
+  correspondence docs now close honestly on the current Phase `2` implementation.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile and ACME
   `ClusterIssuer` projection; those helpers do not expand the public `prodbox pulumi ...` command
   family.
@@ -271,25 +292,32 @@ This plan is complete only when all of the following are true:
 10. `prodbox.cabal`, `cabal.project`, and the canonical build-and-test surfaces are explicitly
    upgraded for GHC `9.14.1`, including any required cabal-bound changes and full canonical
    validation reruns on that toolchain.
-11. Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
+11. `prodbox check-code` enforces the governed doctrine-alignment contract described by
+    `documents/engineering/code_quality.md`, not only formatter, linter, build, and binary-sync
+    checks.
+12. The gateway runtime, `gateway status` client path, and daemon config validation close on the
+    governed contract in `documents/engineering/distributed_gateway_architecture.md` and
+    `documents/engineering/tla_modelling_assumptions.md`, including the HTTP `/v1/state`
+    observability payload and the documented gateway-interval relationships.
+13. Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
    storage backend during bootstrap.
-12. Every later supported Helm deployment obtains its images from Harbor.
-13. `prodbox` idempotently ensures required public images and all custom images are present in
+14. Every later supported Helm deployment obtains its images from Harbor.
+15. `prodbox` idempotently ensures required public images and all custom images are present in
    Harbor after Harbor bootstrap and before those later deployments.
-14. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
+16. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
    irrespective of the architecture of the machine running `prodbox`.
-15. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
-16. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
+17. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
+18. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
    cluster-wide Percona operator, and runs Patroni HA with exactly three PostgreSQL replicas,
    synchronous replication, and no embedded chart-local PostgreSQL subchart.
-17. Pulumi remains part of the supported architecture for true IaC and AWS validation resources.
+19. Pulumi remains part of the supported architecture for true IaC and AWS validation resources.
    The public `prodbox pulumi ...` surface stays limited to those stacks, while local-cluster
    lifecycle, bootstrap DNS reconcile, and ACME `ClusterIssuer` projection remain owned by
    `src/Prodbox/CLI/Rke2.hs` rather than by a public Pulumi operator flow.
-18. No supported Pulumi program depends on Python.
-19. The strongest clean-room rerun passes from full local delete through final AWS teardown using
+20. No supported Pulumi program depends on Python.
+21. The strongest clean-room rerun passes from full local delete through final AWS teardown using
    the Haskell stack.
-20. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) contains no unresolved
+22. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) contains no unresolved
    cleanup.
-21. The repository has no supported-path Python implementation or Python toolchain ownership
+23. The repository has no supported-path Python implementation or Python toolchain ownership
    artifacts left.

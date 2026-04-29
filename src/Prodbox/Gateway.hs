@@ -9,23 +9,16 @@ where
 
 import Control.Exception (IOException, try)
 import Data.Aeson (
-    FromJSON (parseJSON),
     Value (..),
     eitherDecode,
     object,
-    withObject,
-    (.:),
-    (.:?),
     (.=),
  )
 import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.Aeson.Types (Parser, parseEither)
-import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toUpper)
-import Data.Foldable (for_)
 import Data.List (intercalate, sortOn)
 import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific, floatingOrInteger)
@@ -33,7 +26,15 @@ import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.CLI.Command (GatewayCommand (..))
 import Prodbox.Gateway.Daemon qualified as Daemon
-import Prodbox.Gateway.Types (parseDaemonConfig)
+import Prodbox.Gateway.Types (
+    DaemonConfig (..),
+    Orders (..),
+    PeerEndpoint (..),
+    parseDaemonConfig,
+    parseOrders,
+    peerRestUrl,
+    validateDaemonTimingAgainstOrders,
+ )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
     Credentials (..),
@@ -55,75 +56,6 @@ import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr)
 
-data GatewayDaemonConfig = GatewayDaemonConfig
-    { gatewayNodeId :: String
-    , gatewayCertFile :: FilePath
-    , gatewayKeyFile :: FilePath
-    , gatewayCaFile :: FilePath
-    , gatewayOrdersFile :: FilePath
-    }
-    deriving (Eq, Show)
-
-data Orders = Orders
-    { orderNodes :: [GatewayPeerEndpoint]
-    }
-    deriving (Eq, Show)
-
-data GatewayPeerEndpoint = GatewayPeerEndpoint
-    { peerNodeId :: String
-    , peerStableDnsName :: String
-    , peerRestHost :: String
-    , peerRestPort :: Int
-    }
-    deriving (Eq, Show)
-
-instance FromJSON GatewayDaemonConfig where
-    parseJSON = withObject "gateway daemon config" $ \obj -> do
-        nodeId <- obj .: "node_id"
-        certFile <- obj .: "cert_file"
-        keyFile <- obj .: "key_file"
-        caFile <- obj .: "ca_file"
-        ordersFile <- obj .: "orders_file"
-        eventKeys <- obj .: "event_keys"
-        requireJsonObject "event_keys" eventKeys
-        _ <- obj .:? "heartbeat_interval_seconds" :: Parser (Maybe Scientific)
-        _ <- obj .:? "reconnect_interval_seconds" :: Parser (Maybe Scientific)
-        _ <- obj .:? "sync_interval_seconds" :: Parser (Maybe Scientific)
-        maybeGate <- obj .:? "dns_write_gate" :: Parser (Maybe Value)
-        for_ maybeGate (requireJsonObject "dns_write_gate")
-        pure
-            GatewayDaemonConfig
-                { gatewayNodeId = nodeId
-                , gatewayCertFile = certFile
-                , gatewayKeyFile = keyFile
-                , gatewayCaFile = caFile
-                , gatewayOrdersFile = ordersFile
-                }
-
-instance FromJSON Orders where
-    parseJSON = withObject "orders" $ \obj -> do
-        _ <- obj .: "version_utc" :: Parser Int
-        ruleValue <- obj .: "gateway_rule"
-        requireJsonObject "gateway_rule" ruleValue
-        nodes <- obj .: "nodes"
-        pure Orders{orderNodes = nodes}
-
-instance FromJSON GatewayPeerEndpoint where
-    parseJSON = withObject "orders.nodes[]" $ \obj -> do
-        nodeId <- obj .: "node_id"
-        stableDnsName <- obj .: "stable_dns_name"
-        restHost <- obj .: "rest_host"
-        restPort <- obj .: "rest_port"
-        _ <- obj .: "socket_host" :: Parser String
-        _ <- obj .: "socket_port" :: Parser Int
-        pure
-            GatewayPeerEndpoint
-                { peerNodeId = nodeId
-                , peerStableDnsName = stableDnsName
-                , peerRestHost = restHost
-                , peerRestPort = restPort
-                }
-
 runGatewayCommand :: FilePath -> GatewayCommand -> IO ExitCode
 runGatewayCommand repoRoot command =
     case command of
@@ -133,38 +65,38 @@ runGatewayCommand repoRoot command =
 
 runGatewayStart :: FilePath -> FilePath -> IO ExitCode
 runGatewayStart _repoRoot configPath = do
-    readResult <- try (readFile configPath) :: IO (Either IOException String)
-    case readResult of
-        Left err -> failWith ("failed to read gateway daemon config: " ++ show err)
-        Right configText ->
-            case parseDaemonConfig configText of
-                Left err -> failWith err
-                Right config -> Daemon.runGatewayDaemon config
+    configResult <- loadDaemonConfig configPath
+    case configResult of
+        Left err -> failWith err
+        Right config -> Daemon.runGatewayDaemon config
 
 runGatewayStatus :: FilePath -> IO ExitCode
 runGatewayStatus configPath = do
-    configResult <- loadJsonFile configPath parseJSON "gateway daemon config"
+    configResult <- loadDaemonConfig configPath
     case configResult of
         Left err -> failWith err
         Right config -> do
             let configDirectory = takeDirectory configPath
-                ordersPath = resolveRelativePath configDirectory (gatewayOrdersFile config)
-            ordersResult <- loadJsonFile ordersPath parseJSON "gateway orders"
+                ordersPath = resolveRelativePath configDirectory (daemonOrdersFile config)
+            ordersResult <- loadOrdersFile ordersPath
             case ordersResult of
                 Left err -> failWith err
                 Right orders ->
-                    case lookupPeerEndpoint (gatewayNodeId config) orders of
-                        Nothing -> failWith ("Node " ++ gatewayNodeId config ++ " not in orders")
-                        Just endpoint -> do
-                            stateResult <- queryGatewayState configPath config endpoint
-                            case stateResult of
-                                Left err -> failWith err
-                                Right gatewayState ->
-                                    case renderGatewayStatusReport gatewayState of
+                    case validateDaemonTimingAgainstOrders config orders of
+                        Left err -> failWith err
+                        Right () ->
+                            case lookupPeerEndpoint (daemonNodeId config) orders of
+                                Nothing -> failWith ("Node " ++ daemonNodeId config ++ " not in orders")
+                                Just endpoint -> do
+                                    stateResult <- queryGatewayState configPath endpoint
+                                    case stateResult of
                                         Left err -> failWith err
-                                        Right report -> do
-                                            putStr report
-                                            pure ExitSuccess
+                                        Right gatewayState ->
+                                            case renderGatewayStatusReport gatewayState of
+                                                Left err -> failWith err
+                                                Right report -> do
+                                                    putStr report
+                                                    pure ExitSuccess
 
 runGatewayConfigGen :: FilePath -> FilePath -> String -> IO ExitCode
 runGatewayConfigGen repoRoot outputPath nodeId = do
@@ -226,8 +158,8 @@ renderGatewayStatusReport payload =
                 )
         _ -> Left "gateway state response was not a JSON object"
 
-queryGatewayState :: FilePath -> GatewayDaemonConfig -> GatewayPeerEndpoint -> IO (Either String Value)
-queryGatewayState configPath config endpoint = do
+queryGatewayState :: FilePath -> PeerEndpoint -> IO (Either String Value)
+queryGatewayState configPath endpoint = do
     curlExists <- findExecutable "curl"
     case curlExists of
         Nothing -> pure (Left "`gateway status` requires `curl` to query the daemon REST API.")
@@ -240,12 +172,6 @@ queryGatewayState configPath config endpoint = do
                             [ "-fsSL"
                             , "--max-time"
                             , "5"
-                            , "--cert"
-                            , gatewayCertFile config
-                            , "--key"
-                            , gatewayKeyFile config
-                            , "--cacert"
-                            , gatewayCaFile config
                             , gatewayStatusUrl endpoint
                             ]
                         , commandEnvironment = Nothing
@@ -262,47 +188,42 @@ queryGatewayState configPath config endpoint = do
                                     Right value -> Right value
                             ExitFailure _ -> Left ("gateway state query failed: " ++ outputDetail output)
 
-gatewayStatusUrl :: GatewayPeerEndpoint -> String
+gatewayStatusUrl :: PeerEndpoint -> String
 gatewayStatusUrl endpoint =
-    "https://"
-        ++ restDialHost endpoint
-        ++ ":"
-        ++ show (peerRestPort endpoint)
-        ++ "/v1/state"
+    peerRestUrl endpoint ++ "/v1/state"
 
-restDialHost :: GatewayPeerEndpoint -> String
-restDialHost endpoint =
-    case peerRestHost endpoint of
-        "0.0.0.0" -> peerStableDnsName endpoint
-        "::" -> peerStableDnsName endpoint
-        value -> value
-
-lookupPeerEndpoint :: String -> Orders -> Maybe GatewayPeerEndpoint
+lookupPeerEndpoint :: String -> Orders -> Maybe PeerEndpoint
 lookupPeerEndpoint nodeId orders =
-    case filter ((== nodeId) . peerNodeId) (orderNodes orders) of
+    case filter ((== nodeId) . peerNodeId) (ordersNodes orders) of
         [] -> Nothing
         endpoint : _ -> Just endpoint
 
-loadJsonFile :: (FromJSON a) => FilePath -> (Value -> Parser a) -> String -> IO (Either String a)
-loadJsonFile path parser label = do
-    fileResult <- readBinaryFile path
+loadDaemonConfig :: FilePath -> IO (Either String DaemonConfig)
+loadDaemonConfig path = do
+    fileResult <- readTextFile "gateway daemon config" path
     pure $ do
         contents <- fileResult
-        payload <- mapLeft (("invalid " ++ label ++ " JSON: ") ++) (eitherDecode contents :: Either String Value)
-        mapLeft (("invalid " ++ label ++ ": ") ++) (parseEither parser payload)
+        mapLeft id (parseDaemonConfig contents)
 
-readBinaryFile :: FilePath -> IO (Either String BL.ByteString)
-readBinaryFile path = do
-    result <- try (BL.readFile path) :: IO (Either IOException BL.ByteString)
-    pure $ mapLeft (showReadFailure path) result
+loadOrdersFile :: FilePath -> IO (Either String Orders)
+loadOrdersFile path = do
+    fileResult <- readTextFile "gateway orders" path
+    pure $ do
+        contents <- fileResult
+        mapLeft id (parseOrders contents)
+
+readTextFile :: String -> FilePath -> IO (Either String String)
+readTextFile label path = do
+    result <- try (readFile path) :: IO (Either IOException String)
+    pure $ mapLeft (showReadFailure label path) result
 
 writeTextFile :: FilePath -> String -> IO (Either String ())
 writeTextFile path contents = do
     result <- try (writeFile path contents) :: IO (Either IOException ())
     pure $ mapLeft (showWriteFailure path) result
 
-showReadFailure :: FilePath -> IOException -> String
-showReadFailure path err = "failed to read " ++ path ++ ": " ++ show err
+showReadFailure :: String -> FilePath -> IOException -> String
+showReadFailure label path err = "failed to read " ++ label ++ " " ++ path ++ ": " ++ show err
 
 showWriteFailure :: FilePath -> IOException -> String
 showWriteFailure path err = "failed to write " ++ path ++ ": " ++ show err
@@ -312,12 +233,6 @@ resolveRelativePath baseDir path =
     if isAbsolute path
         then path
         else baseDir </> path
-
-requireJsonObject :: String -> Value -> Parser ()
-requireJsonObject fieldName value =
-    case value of
-        Object _ -> pure ()
-        _ -> fail (fieldName ++ " must be a JSON object")
 
 lookupTextField :: String -> KeyMap.KeyMap Value -> Maybe String
 lookupTextField fieldName obj =

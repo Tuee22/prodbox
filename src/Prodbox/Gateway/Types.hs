@@ -19,6 +19,7 @@ module Prodbox.Gateway.Types (
     peerDialRestHost,
     peerRestUrl,
     peerDialSocketHost,
+    validateDaemonTimingAgainstOrders,
 )
 where
 
@@ -55,7 +56,7 @@ peerDialRestHost peer =
 
 peerRestUrl :: PeerEndpoint -> String
 peerRestUrl peer =
-    "https://" ++ peerDialRestHost peer ++ ":" ++ show (peerRestPort peer)
+    "http://" ++ peerDialRestHost peer ++ ":" ++ show (peerRestPort peer)
 
 peerDialSocketHost :: PeerEndpoint -> String
 peerDialSocketHost peer =
@@ -322,3 +323,19 @@ validateIntervals heartbeat reconnect sync
     | reconnect < 0.1 = Left "reconnect_interval_seconds must be >= 0.1"
     | sync < 0.1 = Left "sync_interval_seconds must be >= 0.1"
     | otherwise = Right ()
+
+validateDaemonTimingAgainstOrders :: DaemonConfig -> Orders -> Either String ()
+validateDaemonTimingAgainstOrders config orders =
+    let timeout = fromIntegral (heartbeatTimeoutSeconds (ordersGatewayRule orders)) :: Double
+        heartbeat = daemonHeartbeatInterval config
+        reconnect = daemonReconnectInterval config
+        sync = daemonSyncInterval config
+     in if heartbeat > timeout / 2
+            then Left "heartbeat_interval_seconds must be <= heartbeat_timeout_seconds / 2"
+            else
+                if reconnect > timeout
+                    then Left "reconnect_interval_seconds must be <= heartbeat_timeout_seconds"
+                    else
+                        if sync > timeout * 2
+                            then Left "sync_interval_seconds must be <= heartbeat_timeout_seconds * 2"
+                            else Right ()

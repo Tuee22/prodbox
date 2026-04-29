@@ -199,7 +199,7 @@ parity exists.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
-  is now fully closed with no remaining pending-removal items.
+  now tracks only non-Python Envoy-migration residue owned by reopened earlier phases.
 
 ### Remaining Work
 

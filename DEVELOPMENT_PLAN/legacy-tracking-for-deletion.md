@@ -18,13 +18,19 @@
 
 ## Ledger Status
 
-The cleanup ledger is closed on the supported path. The Python-removal portion remains complete,
-the later non-Python cleanup owned by Sprint `4.2` remains closed, and the completed items below
-capture the removed compatibility surfaces and repository residue.
+The cleanup ledger remains closed on Python-removal work and the earlier non-Python cleanup owned
+by Sprint `4.2`, but it is reopened on the self-managed public-edge migration to Envoy Gateway.
+The pending items below capture the current Traefik, `Ingress`, and `vscode-nginx` compatibility
+surfaces that no longer match the target doctrine.
 
 ## Pending Removal
 
-None.
+| Item | Owner | Notes |
+|------|-------|-------|
+| Traefik lifecycle ownership, Harbor mirror assumptions, and `traefik-system` inventory surfaces in `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/K8s.hs`, `documents/engineering/local_registry_pipeline.md`, `README.md`, and plan control docs | Sprint `1.4` | Replace the self-managed public edge with Envoy Gateway and Gateway API while keeping MetalLB and cert-manager on the local-cluster path. |
+| `Ingress`-based public-edge readiness classification in `src/Prodbox/Host.hs`, `charts/vscode/templates/ingress.yaml`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, and the public-edge doctrine docs | Sprint `5.2` | Replace Traefik `IngressClass` and `Ingress` readiness with Gateway API, Envoy Gateway, certificate, and Route 53 classification. |
+| App-local `vscode-nginx` browser-auth proxy surfaces in `docker/nginx-oidc.Dockerfile`, `charts/vscode/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `documents/engineering/helm_chart_platform_doctrine.md`, and related README or plan references | Sprint `3.4` | Remove the nginx OIDC proxy, its Harbor image, and `keycloak_nginx_client_secret` from the supported `vscode` path once Envoy Gateway `SecurityPolicy` owns browser auth. |
+| Shared-host `domain.vscode_fqdn` plus `/auth` public-host doctrine in `src/Prodbox/Settings.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `README.md`, and the reopened public-edge docs | Sprint `1.4` / Sprint `3.4` | Introduce the dedicated identity and app hostname model required by the Envoy Gateway public edge. |
 
 ## Completed
 

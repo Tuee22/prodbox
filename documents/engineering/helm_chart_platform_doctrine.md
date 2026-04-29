@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../README.md](../../README.md), [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md), [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
+**Referenced by**: [../../README.md](../../README.md), [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md), [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md), [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
 
 > **Purpose**: Define the singleton chart identity, namespace isolation, external Patroni
 > PostgreSQL dependency model, storage lifecycle, and delete semantics for `prodbox charts`.
@@ -23,9 +23,10 @@ The supported chart doctrine is:
 3. Helm-managed application PostgreSQL is namespace-local and Patroni-based: the internal
    `keycloak-postgres` release renders a `pgv2.percona.com/v2` `PerconaPGCluster` resource in the
    root chart namespace, and the cluster-wide Percona operator reconciles it.
-4. `keycloak` depends on that namespace-local Patroni cluster. `vscode` depends on `keycloak` and
-   does not talk directly to PostgreSQL.
-5. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
+4. `keycloak` depends on that namespace-local Patroni cluster.
+5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, and targets an
+   Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy.
+6. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
    path is `./.build/prodbox rke2 install`.
 
 ## 2. Singleton Chart Identity Rule
@@ -166,21 +167,28 @@ Root charts:
 - `keycloak` deploys `keycloak-postgres` plus `keycloak` into the `keycloak` namespace.
 - `vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
 
-## 9. Supported Auth Model For `vscode`
+## 9. Target Public Auth Model For `vscode`
 
-The supported `vscode` auth path is:
+The target supported `vscode` public path is:
 
-1. nginx handles the OIDC authorization-code flow
-2. Keycloak serves the login page under `/auth`
-3. code-server is reachable only behind the nginx auth wall
-4. Keycloak stores its data in the namespace-local Patroni cluster for the root chart
-5. supported image refs are Harbor-only for `keycloak`, `vscode-nginx`, `code-server`, the
-   Percona operator, and the Percona PostgreSQL workload after Harbor bootstrap
+1. Envoy Gateway owns TLS termination, Gateway API routing, and browser-facing edge auth
+   enforcement.
+2. Keycloak remains the OIDC identity provider.
+3. `code-server` is reachable only through the Envoy-authenticated public route.
+4. Keycloak stores its data in the namespace-local Patroni cluster for the root chart.
+5. Supported image refs are Harbor-only for `keycloak`, `code-server`, the Envoy Gateway public
+   edge image set, the Percona operator, and the Percona PostgreSQL workload after Harbor
+   bootstrap.
 
-Unsupported legacy paths remain:
+Current worktree baseline:
 
-- embedded PostgreSQL chart subcomponents
-- standalone local `docker-compose` delivery outside `prodbox charts`
+1. `vscode-nginx` still fronts the browser-facing `vscode` route.
+2. Keycloak still serves the login flow through the shared-host `/auth` path.
+3. `keycloak_nginx_client_secret` remains migration residue until the reopened Envoy edge phases
+   close.
+
+The canonical public-edge doctrine and Redis or WebSocket guidance live in
+[Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
 
 ## 10. Required Settings and Auto-Generated Secrets
 
@@ -188,17 +196,21 @@ The following repository configuration value is required for the public `vscode`
 
 | Setting | Purpose |
 |---------|---------|
-| `domain.vscode_fqdn` | Public FQDN for VS Code and Keycloak ingress |
+| `domain.vscode_fqdn` | Public FQDN for the `vscode` route; the current worktree still also uses it for the shared-host Keycloak path |
 
 Namespace-local chart secrets live in `.prodbox-state/<namespace>/.secrets.json`:
 
 | Secret | Purpose |
 |--------|---------|
 | `keycloak_admin_password` | Keycloak admin credentials |
-| `keycloak_nginx_client_secret` | nginx OIDC client secret |
+| `keycloak_nginx_client_secret` | current-worktree `vscode-nginx` OIDC client secret; slated for removal once Envoy owns edge auth |
 | `patroni_app_password` | retained Patroni application-user password for the namespace-local cluster |
 | `patroni_superuser_password` | retained Patroni `postgres` superuser password for the namespace-local cluster |
 | `patroni_standby_password` | retained Patroni standby-user password for the namespace-local cluster |
+
+The target public-edge doctrine expands this settings model with a dedicated Keycloak public
+hostname. Until the reopened Envoy edge phases close, the current worktree still shares
+`domain.vscode_fqdn` and `/auth` for the browser login path.
 
 The chart platform renders the three corresponding Kubernetes secrets before the Patroni cluster
 resource so retained PVC rebinding does not rotate credentials underneath preserved PostgreSQL
@@ -218,6 +230,7 @@ Delivery sequencing, completion status, remaining work, and cleanup ownership ar
 ## Cross-References
 
 - [CLI Command Surface](./cli_command_surface.md)
+- [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)

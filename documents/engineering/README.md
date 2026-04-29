@@ -14,8 +14,10 @@ content.
 Clean-room build order, sprint status, blockers, validation closure, and cleanup ownership are
 tracked only in [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
-The documents in this directory are stable doctrine and architecture references. They describe the
-current Haskell-only repository contract rather than a mixed migration baseline.
+The documents in this directory are stable doctrine and architecture references. When the
+development plan reopens an earlier phase because the target architecture expands, the affected
+documents may carry explicit current-baseline notes so they do not overclaim implementation while
+still defining the canonical target doctrine.
 
 Pulumi doctrine in this directory applies only to the AWS validation stacks under
 `pulumi/aws-eks/` and `pulumi/aws-test/`.
@@ -32,6 +34,7 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
+| [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Target MetalLB + Envoy Gateway + Keycloak public-edge doctrine |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine and review-guidance split |
@@ -63,11 +66,20 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 ### Distributed Gateway
 
 - [Architecture](./distributed_gateway_architecture.md)
+- [Public Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)
 - [Gateway Container Build Doctrine](./local_registry_pipeline.md#6-gateway-container-build-doctrine)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [TLA+ Models](./tla/README.md)
 - [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md)
+
+### Public Edge
+
+- [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
+- [CLI Command Surface](./cli_command_surface.md)
+- [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
+- [Local Registry Pipeline](./local_registry_pipeline.md)
+- [Unit Testing Policy](./unit_testing_policy.md)
 
 ### Prerequisites
 

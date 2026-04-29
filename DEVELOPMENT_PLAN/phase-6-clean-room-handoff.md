@@ -14,9 +14,10 @@
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
-The supported repository surfaces are Haskell-only, and the cleanup ledger currently has no
-pending-removal items. Sprint `6.1` and Sprint `6.2` are closed on their repository-owned rerun
-orchestration and final zero-Python handoff criteria.
+The supported repository surfaces are Haskell-only, and the cleanup ledger remains closed on Python
+removal while carrying reopened non-Python Envoy-migration residue owned by earlier phases. Sprint
+`6.1` and Sprint `6.2` remain closed on their repository-owned rerun orchestration and final
+zero-Python handoff criteria.
 
 ## Current Baseline In Worktree
 
@@ -28,7 +29,7 @@ orchestration and final zero-Python handoff criteria.
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for any remaining repository
-  residue; it now has no pending-removal items on the supported path.
+  residue; it now carries only non-Python Envoy-migration residue owned by earlier phases.
 - Root guidance now aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -133,8 +134,8 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
-  removal history while keeping `Pending Removal` empty, and the root guidance set named in
-  `Docs to update` is realigned to the current repository state.
+  removal history, keeps Python-removal residue at zero, and records the reopened non-Python Envoy
+  migration owned by earlier phases.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` continues to
   own the destructive rerun contract.

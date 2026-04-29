@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
 > `prodbox`.
@@ -73,7 +73,9 @@ Integration-selected `prodbox test` commands execute in two phases:
 
 When Phase `1.6/2` restores a cluster-backed supported runtime for external proof, it may wait for
 `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before the payload
-starts.
+starts. The target doctrine for that readiness is Gateway API plus Envoy Gateway state; the
+current Traefik and `Ingress` implementation remains migration residue owned by the reopened plan
+phases.
 
 When a Phase `1/2` prerequisite owns a deterministic local backend proof, it may perform a
 visible, bounded repair of repository-managed state before re-running the same readiness check. The
@@ -110,6 +112,9 @@ the command contract.
    suites such as `public-dns` may avoid the cluster runbook only when their test plan does not
    require it.
 5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
+
+If future workloads expose WebSockets behind the supported public edge, named validations must
+prove connection-time auth, reconnect handling, and any required shared-state backend assumptions.
 
 ### Session Fixtures vs Test DAG (SSoT)
 
@@ -194,5 +199,6 @@ This SSoT co-owns the public testing doctrine.
 
 - [CLI Command Surface](./cli_command_surface.md)
 - [Code Quality Doctrine](./code_quality.md)
+- [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Integration Fixture Doctrine](./integration_fixture_doctrine.md)
 - [Streaming Doctrine](./streaming_doctrine.md)

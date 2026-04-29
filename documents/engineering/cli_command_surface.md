@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define the explicit, no-passthrough command surface for `prodbox`.
 
@@ -98,6 +98,10 @@ is prompt-driven for temporary elevated AWS credentials; stored
 
 `src/Prodbox/Host.hs` owns the full public `prodbox host ...` surface.
 
+The target public-edge doctrine for that surface is defined in
+[Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). The current implementation still
+classifies Traefik and `Ingress` state until the reopened edge phases close.
+
 ### `prodbox rke2`
 
 | Command | Arguments | Options |
@@ -161,6 +165,9 @@ No supported local-cluster platform or application deployment depends on a root 
 `src/Prodbox/Gateway.hs` owns the public gateway surface and `src/Prodbox/Gateway/Daemon.hs`
 owns the daemon runtime. `prodbox gateway status` queries the daemon's operator-facing
 `/v1/state` endpoint over HTTP on the configured REST port.
+
+This `gateway` command group refers to the Haskell distributed gateway daemon, not to the
+Kubernetes Gateway API or Envoy Gateway controller.
 
 ### `prodbox charts`
 
@@ -260,4 +267,5 @@ runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Code Quality Doctrine](./code_quality.md)
+- [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Haskell Code Guide](./haskell_code_guide.md)

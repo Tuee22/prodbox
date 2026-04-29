@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Define how `prodbox` provisions Harbor, bootstraps Harbor storage-backend
 > prerequisites, publishes dual-arch custom images, mirrors required public images, and keeps
@@ -20,7 +20,8 @@ This document is the SSoT for the local image-registry doctrine:
 4. Required public images are mirrored into Harbor idempotently after Harbor and its storage
    backend are healthy and before the later workloads that need them are deployed.
 5. Custom `prodbox` images are built outside the cluster via Docker CLI and published to Harbor as
-   `linux/amd64` plus `linux/arm64` manifests.
+   `linux/amd64` plus `linux/arm64` manifests, and the long-term supported edge does not require a
+   permanent app-local `vscode-nginx` image.
 
 Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
@@ -39,9 +40,11 @@ The native Haskell lifecycle reconciles Harbor state in order:
 6. Harbor project reconcile for `prodbox`
 7. MinIO bootstrap install from public `quay.io/minio/*` image refs
 8. Docker login plus required public-image mirror into Harbor
-9. Multi-platform custom-image publish and host-arch import for the gateway and `vscode-nginx`
+9. Multi-platform custom-image publish and host-arch import for the Haskell gateway and the
+   current-worktree `vscode-nginx` migration-residue image
 10. `registries.yaml` reconcile and conditional RKE2 restart
-11. Harbor-backed platform-runtime install for MetalLB, Traefik, cert-manager, and the Percona
+11. Harbor-backed platform-runtime install for MetalLB, the current Traefik baseline or the target
+   Envoy Gateway edge controller, cert-manager, and the Percona
    PostgreSQL operator
 12. Optional Route 53 bootstrap A-record reconcile
 13. MinIO steady-state reconcile onto Harbor-backed image refs
@@ -88,6 +91,18 @@ Policy:
   `frr`, `kube-rbac-proxy`, and `cert-manager` images under the Harbor `prodbox` project
 
 Platform-runtime and chart-runtime workloads consume those Harbor-backed refs after bootstrap.
+
+### 3.1 Target Edge Image Implications
+
+The target public-edge doctrine changes the expected image set:
+
+1. Traefik images become removable migration residue.
+2. The supported edge image set becomes the Envoy Gateway control-plane image plus the Envoy data
+   plane images that back Gateway API listeners.
+3. `prodbox-nginx-oidc` becomes removable once Envoy Gateway `SecurityPolicy` owns the browser
+   auth flow.
+4. The Haskell distributed gateway image remains a separate repository-owned image and is not
+   replaced by Envoy Gateway.
 
 ## 4. RKE2 Mirror Behavior
 
@@ -158,6 +173,7 @@ PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> ./.build/prodbox test integration gat
 
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)
+- [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md)
 - [Distributed Gateway Architecture](./distributed_gateway_architecture.md)
 - [Documentation Standards](../documentation_standards.md)

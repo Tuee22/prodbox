@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -15,6 +15,10 @@ Partition semantics for gateway leadership and DNS write gating must be formally
 For this Byzantine-generals-class failure mode, TLA+ model checking is the primary completeness tool; runtime tests validate model-to-code fidelity but are not exhaustive proofs.
 
 Gateway timing contract is explicit: heartbeat_timeout_seconds in [3, 60], isolation_timeout_seconds = heartbeat_timeout_seconds, heartbeat_interval_seconds <= timeout/2, reconnect_interval_seconds <= timeout, and sync_interval_seconds <= timeout*2.
+
+This doctrine covers the Haskell distributed gateway daemon only. The Kubernetes Gateway API
+public-edge controller target is owned separately by
+[Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
 
 ---
 

@@ -1,0 +1,10 @@
+global:
+  namespace: default
+  rootChart: websocket
+
+image:
+  repository: 127.0.0.1:30080/prodbox/redis-mirror
+  tag: "7.4.2"
+
+redis:
+  port: 6379

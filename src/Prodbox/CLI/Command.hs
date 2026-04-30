@@ -15,6 +15,7 @@ module Prodbox.CLI.Command (
     Rke2Command (..),
     TestCommand (..),
     TestScope (..),
+    WorkloadCommand (..),
     validateCoverage,
 )
 where
@@ -35,6 +36,7 @@ data NativeCommand
     | NativeRke2 Rke2Command
     | NativeTest TestCommand
     | NativeTlaCheck
+    | NativeWorkload WorkloadCommand
     deriving (Eq, Show)
 
 data ChartsCommand
@@ -60,6 +62,10 @@ data GatewayCommand
     = GatewayStart FilePath
     | GatewayStatus FilePath
     | GatewayConfigGen FilePath String
+    deriving (Eq, Show)
+
+data WorkloadCommand
+    = WorkloadStart
     deriving (Eq, Show)
 
 data K8sCommand
@@ -132,6 +138,8 @@ data IntegrationSuite
     | IntegrationChartsStorage
     | IntegrationChartsPlatform
     | IntegrationChartsVscode
+    | IntegrationChartsApi
+    | IntegrationChartsWebsocket
     | IntegrationPublicDns
     deriving (Eq, Show)
 

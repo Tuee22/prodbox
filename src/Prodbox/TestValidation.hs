@@ -23,6 +23,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper)
 import Data.List (isInfixOf, nub, sort)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
@@ -38,12 +39,15 @@ import Prodbox.BuildSupport (
 import Prodbox.Dns (
     configuredPublicHostFqdns,
     fetchPublicIp,
+    preferredApiHostFqdn,
     preferredIdentityHostFqdn,
     preferredPublicHostFqdn,
+    preferredWebsocketHostFqdn,
     queryRoute53Record,
  )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
+import Prodbox.Lib.ChartPlatform (resolveChartSecrets)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
     Route53Section (..),
@@ -93,6 +97,12 @@ chartsVscodeCurlAttempts = 10
 chartsVscodeCurlDelayMicroseconds :: Int
 chartsVscodeCurlDelayMicroseconds = 5000000
 
+tokenFetchAttempts :: Int
+tokenFetchAttempts = 12
+
+tokenFetchDelayMicroseconds :: Int
+tokenFetchDelayMicroseconds = 5000000
+
 awsTestSshReadyAttempts :: Int
 awsTestSshReadyAttempts = 18
 
@@ -104,6 +114,8 @@ runNativeValidation repoRoot environment validation = do
     putStrLn ("Validation: " ++ nativeValidationId validation)
     case validation of
         ValidationChartsVscode -> runChartsVscodeValidation repoRoot
+        ValidationChartsApi -> runChartsApiValidation repoRoot
+        ValidationChartsWebsocket -> runChartsWebsocketValidation repoRoot environment
         ValidationPublicDns -> runPublicDnsValidation repoRoot
         ValidationDnsAws -> runDnsAwsValidation repoRoot
         ValidationAwsIam ->
@@ -201,6 +213,262 @@ runChartsVscodeValidation repoRoot = do
                         ["HTTP/", "location: https://" ++ identityFqdn ++ "/"]
                         chartsVscodeCurlAttempts
                         chartsVscodeCurlDelayMicroseconds
+
+runChartsApiValidation :: FilePath -> IO ExitCode
+runChartsApiValidation repoRoot = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left err -> failWith err
+        Right settings -> do
+            readyExit <- waitForPublicEdgeReady repoRoot
+            case readyExit of
+                ExitFailure _ -> pure readyExit
+                ExitSuccess -> do
+                    apiTokenResult <- waitForAccessToken repoRoot settings "keycloak_api_client_secret" "prodbox-api"
+                    websocketTokenResult <- waitForAccessToken repoRoot settings "keycloak_websocket_client_secret" "prodbox-websocket"
+                    case (apiTokenResult, websocketTokenResult) of
+                        (Left err, _) -> failWith err
+                        (_, Left err) -> failWith err
+                        (Right apiToken, Right websocketToken) ->
+                            runSequentially
+                                [ assertHttpStatusIn
+                                    (statusOnlyCurlSpec repoRoot [] ("https://" ++ preferredApiHostFqdn settings))
+                                    ["401", "403"]
+                                , assertHttpStatusIn
+                                    (statusOnlyCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] ("https://" ++ preferredApiHostFqdn settings))
+                                    ["401", "403"]
+                                , assertCommandOutputContainsAll
+                                    (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ apiToken] ("https://" ++ preferredApiHostFqdn settings))
+                                    ["\"mode\":\"api\"", "\"pod\":\""]
+                                ]
+
+runChartsWebsocketValidation :: FilePath -> [(String, String)] -> IO ExitCode
+runChartsWebsocketValidation repoRoot environment = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left err -> failWith err
+        Right settings -> do
+            readyExit <- waitForPublicEdgeReady repoRoot
+            case readyExit of
+                ExitFailure _ -> pure readyExit
+                ExitSuccess -> do
+                    apiTokenResult <- waitForAccessToken repoRoot settings "keycloak_api_client_secret" "prodbox-api"
+                    websocketTokenResult <- waitForAccessToken repoRoot settings "keycloak_websocket_client_secret" "prodbox-websocket"
+                    case (apiTokenResult, websocketTokenResult) of
+                        (Left err, _) -> failWith err
+                        (_, Left err) -> failWith err
+                        (Right apiToken, Right websocketToken) -> do
+                            nonce <- validationNonce
+                            let sessionId = "ws-" ++ nonce
+                                messageBody = "message-" ++ nonce
+                                websocketHost = preferredWebsocketHostFqdn settings
+                            initialStateExit <-
+                                runSequentially
+                                    [ assertHttpStatusIn
+                                        (statusOnlyCurlSpec repoRoot [] (websocketUrl websocketHost sessionId))
+                                        ["401", "403"]
+                                    , assertHttpStatusIn
+                                        (statusOnlyCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ apiToken] (websocketUrl websocketHost sessionId))
+                                        ["401", "403"]
+                                    , assertCommandOutputContainsAll
+                                        (jsonCurlSpec repoRoot ["-X", "POST", "-H", "Authorization: Bearer " ++ websocketToken] (websocketUrl websocketHost sessionId ++ "&reset=true"))
+                                        ["\"mode\":\"websocket\"", "\"session\":\"" ++ sessionId ++ "\""]
+                                    , assertCommandOutputContainsAll
+                                        (jsonCurlSpec repoRoot ["-X", "POST", "-H", "Authorization: Bearer " ++ websocketToken, "--data", messageBody] (publishUrl websocketHost sessionId))
+                                        ["\"messageCount\":1", "\"session\":\"" ++ sessionId ++ "\""]
+                                    ]
+                            case initialStateExit of
+                                ExitFailure _ -> pure initialStateExit
+                                ExitSuccess -> do
+                                    initialStateResult <-
+                                        runJsonCommand
+                                            (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] (stateUrl websocketHost sessionId))
+                                    case initialStateResult of
+                                        Left err -> failWith err
+                                        Right payload ->
+                                            case websocketStateSnapshot payload of
+                                                Left err -> failWith err
+                                                Right (initialPod, messages) ->
+                                                    if messageBody `elem` messages
+                                                        then do
+                                                            deleteExit <-
+                                                                runCommandForExitCode
+                                                                    CommandSpec
+                                                                        { commandPath = "kubectl"
+                                                                        , commandArguments = ["delete", "pod", initialPod, "--namespace", "websocket", "--wait=true"]
+                                                                        , commandEnvironment = Nothing
+                                                                        , commandWorkingDirectory = Just repoRoot
+                                                                        }
+                                                            case deleteExit of
+                                                                ExitFailure _ -> pure deleteExit
+                                                                ExitSuccess -> do
+                                                                    rolloutExit <-
+                                                                        runNativeCliCommandForExitCode
+                                                                            repoRoot
+                                                                            environment
+                                                                            ["k8s", "wait", "--namespace", "websocket"]
+                                                                    case rolloutExit of
+                                                                        ExitFailure _ -> pure rolloutExit
+                                                                        ExitSuccess -> do
+                                                                            followupStateResult <-
+                                                                                runJsonCommand
+                                                                                    (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] (stateUrl websocketHost sessionId))
+                                                                            case followupStateResult of
+                                                                                Left err -> failWith err
+                                                                                Right followupPayload ->
+                                                                                    case websocketStateSnapshot followupPayload of
+                                                                                        Left err -> failWith err
+                                                                                        Right (followupPod, followupMessages) ->
+                                                                                            if messageBody `elem` followupMessages && followupPod /= initialPod
+                                                                                                then pure ExitSuccess
+                                                                                                else
+                                                                                                    failWith
+                                                                                                        ( "websocket validation expected Redis-backed state on a different pod after turnover; "
+                                                                                                            ++ "initial pod="
+                                                                                                            ++ initialPod
+                                                                                                            ++ ", followup pod="
+                                                                                                            ++ followupPod
+                                                                                                            ++ ", messages="
+                                                                                                            ++ show followupMessages
+                                                                                                        )
+                                                        else
+                                                            failWith
+                                                                ( "websocket validation did not observe the published message in Redis-backed state: "
+                                                                    ++ show messages
+                                                                )
+
+waitForAccessToken :: FilePath -> ValidatedSettings -> String -> String -> IO (Either String String)
+waitForAccessToken repoRoot settings secretKey clientId = go tokenFetchAttempts
+  where
+    go :: Int -> IO (Either String String)
+    go attemptsLeft = do
+        tokenResult <- fetchAccessToken repoRoot settings secretKey clientId
+        case tokenResult of
+            Right token -> pure (Right token)
+            Left err
+                | attemptsLeft <= 1 -> pure (Left err)
+                | otherwise -> do
+                    hPutStrLn stderr ("Waiting for Keycloak token endpoint readiness before retry: " ++ err)
+                    threadDelay tokenFetchDelayMicroseconds
+                    go (attemptsLeft - 1)
+
+fetchAccessToken :: FilePath -> ValidatedSettings -> String -> String -> IO (Either String String)
+fetchAccessToken repoRoot settings secretKey clientId = do
+    secretsResult <- resolveChartSecrets repoRoot "vscode"
+    case secretsResult of
+        Left err -> pure (Left err)
+        Right secrets ->
+            case (Map.lookup secretKey secrets, Map.lookup "keycloak_demo_user_password" secrets) of
+                (Just clientSecret, Just demoPassword) -> do
+                    payloadResult <-
+                        runJsonCommand
+                            CommandSpec
+                                { commandPath = "curl"
+                                , commandArguments =
+                                    [ "-sS"
+                                    , "--fail-with-body"
+                                    , "-X"
+                                    , "POST"
+                                    , "--data-urlencode"
+                                    , "grant_type=password"
+                                    , "--data-urlencode"
+                                    , "client_id=" ++ clientId
+                                    , "--data-urlencode"
+                                    , "client_secret=" ++ clientSecret
+                                    , "--data-urlencode"
+                                    , "username=demo-user"
+                                    , "--data-urlencode"
+                                    , "password=" ++ demoPassword
+                                    , "https://"
+                                        ++ preferredIdentityHostFqdn settings
+                                        ++ "/realms/prodbox/protocol/openid-connect/token"
+                                    ]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                    case payloadResult of
+                        Left err -> pure (Left err)
+                        Right payload -> pure (accessTokenFromPayload payload)
+                _ ->
+                    pure
+                        ( Left
+                            ( "missing required Keycloak secrets for external validation: "
+                                ++ secretKey
+                                ++ " and keycloak_demo_user_password"
+                            )
+                        )
+
+accessTokenFromPayload :: Value -> Either String String
+accessTokenFromPayload payload =
+    case payload of
+        Object obj ->
+            case KeyMap.lookup "access_token" obj of
+                Just (String tokenText) -> Right (Text.unpack tokenText)
+                _ -> Left "token endpoint response did not contain access_token"
+        _ -> Left "token endpoint response was not a JSON object"
+
+statusOnlyCurlSpec :: FilePath -> [String] -> String -> CommandSpec
+statusOnlyCurlSpec repoRoot extraArgs url =
+    CommandSpec
+        { commandPath = "curl"
+        , commandArguments = ["-sS", "-o", "/dev/null", "-w", "%{http_code}"] ++ extraArgs ++ [url]
+        , commandEnvironment = Nothing
+        , commandWorkingDirectory = Just repoRoot
+        }
+
+jsonCurlSpec :: FilePath -> [String] -> String -> CommandSpec
+jsonCurlSpec repoRoot extraArgs url =
+    CommandSpec
+        { commandPath = "curl"
+        , commandArguments = ["-sS", "--fail-with-body"] ++ extraArgs ++ [url]
+        , commandEnvironment = Nothing
+        , commandWorkingDirectory = Just repoRoot
+        }
+
+assertHttpStatusIn :: CommandSpec -> [String] -> IO ExitCode
+assertHttpStatusIn spec allowedStatuses = do
+    result <- runTextCommand spec
+    case result of
+        Left err -> failWith err
+        Right statusText ->
+            if trim statusText `elem` allowedStatuses
+                then pure ExitSuccess
+                else
+                    failWith
+                        ( "`"
+                            ++ commandDisplay spec
+                            ++ "` returned unexpected HTTP status "
+                            ++ trim statusText
+                            ++ "; expected one of "
+                            ++ show allowedStatuses
+                        )
+
+websocketUrl :: String -> String -> String
+websocketUrl host sessionId =
+    "https://" ++ host ++ "/ws/connect?session=" ++ sessionId
+
+publishUrl :: String -> String -> String
+publishUrl host sessionId =
+    "https://" ++ host ++ "/ws/publish?session=" ++ sessionId
+
+stateUrl :: String -> String -> String
+stateUrl host sessionId =
+    "https://" ++ host ++ "/ws/state?session=" ++ sessionId
+
+websocketStateSnapshot :: Value -> Either String (String, [String])
+websocketStateSnapshot payload =
+    case payload of
+        Object obj ->
+            case (KeyMap.lookup "pod" obj, KeyMap.lookup "messages" obj) of
+                (Just (String podText), Just (Array messageValues)) ->
+                    Right
+                        ( Text.unpack podText
+                        , [ Text.unpack value
+                          | String value <- Vector.toList messageValues
+                          ]
+                        )
+                _ -> Left "websocket state payload did not include pod and messages fields"
+        _ -> Left "websocket state payload was not a JSON object"
 
 waitForPublicEdgeReady :: FilePath -> IO ExitCode
 waitForPublicEdgeReady repoRoot = do

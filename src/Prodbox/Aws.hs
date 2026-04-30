@@ -63,6 +63,7 @@ import Prodbox.Settings (
     Credentials (..),
     DeploymentSection (..),
     DomainSection (..),
+    MetallbBgpPeer (..),
     Route53Section (..),
     StorageSection (..),
     defaultConfigFile,
@@ -172,6 +173,8 @@ data ConfigSetupResult = ConfigSetupResult
     , configSetupDemoFqdn :: Text
     , configSetupVscodeFqdn :: Maybe Text
     , configSetupKeycloakFqdn :: Maybe Text
+    , configSetupApiFqdn :: Maybe Text
+    , configSetupWebsocketFqdn :: Maybe Text
     , configSetupPolicyTier :: PolicyTier
     , configSetupAccessKeyId :: Text
     , configSetupQuotaStatuses :: [QuotaStatus]
@@ -208,6 +211,8 @@ data ConfigSetupInput = ConfigSetupInput
     , configSetupDemoTtlInput :: Natural
     , configSetupVscodeFqdnInput :: Maybe Text
     , configSetupKeycloakFqdnInput :: Maybe Text
+    , configSetupApiFqdnInput :: Maybe Text
+    , configSetupWebsocketFqdnInput :: Maybe Text
     , configSetupAcmeEmailInput :: Text
     , configSetupAcmeServerInput :: Text
     , configSetupAcmeEabKeyIdInput :: Maybe Text
@@ -215,6 +220,12 @@ data ConfigSetupInput = ConfigSetupInput
     , configSetupDevModeInput :: Bool
     , configSetupBootstrapPublicIpOverrideInput :: Maybe Text
     , configSetupPulumiEnableDnsBootstrapInput :: Bool
+    , configSetupPublicEdgeAdvertisementModeInput :: Maybe Text
+    , configSetupPublicEdgeBgpPeersInput :: Maybe [MetallbBgpPeer]
+    , configSetupEnvoyGatewayControllerReplicasInput :: Maybe Natural
+    , configSetupEnvoyGatewayDataPlaneReplicasInput :: Maybe Natural
+    , configSetupApiReplicasInput :: Maybe Natural
+    , configSetupWebsocketReplicasInput :: Maybe Natural
     , configSetupManualPvHostRootInput :: Text
     , configSetupPolicyTierInput :: PolicyTier
     }
@@ -444,6 +455,8 @@ interactiveConfigSetupInput repoRoot = do
     demoTtl <- promptInt "Demo DNS TTL seconds" 60
     vscodeFqdnRaw <- promptText "VS Code public FQDN (blank uses the demo FQDN; for example vscode.example.com)" Nothing
     keycloakFqdnRaw <- promptText "Keycloak public FQDN (blank uses auth.<zone>; for example auth.example.com)" (Just ("auth." ++ Text.unpack zoneName))
+    apiFqdnRaw <- promptText "API public FQDN (blank uses api.<zone>; for example api.example.com)" (Just ("api." ++ Text.unpack zoneName))
+    websocketFqdnRaw <- promptText "WebSocket public FQDN (blank uses ws.<zone>; for example ws.example.com)" (Just ("ws." ++ Text.unpack zoneName))
     showAcmeProviderGuidance
     providerIndex <- promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 0
     acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
@@ -459,6 +472,15 @@ interactiveConfigSetupInput repoRoot = do
     devMode <- promptConfirm "Enable dev mode? (recommended for local or single-node work)" True
     bootstrapOverrideRaw <- promptText "Bootstrap public IP override (optional; leave blank unless public-edge auto-detection is wrong)" Nothing
     pulumiEnableDnsBootstrap <- promptConfirm "Enable Pulumi DNS bootstrap? (recommended; creates or reconciles the initial demo Route 53 record)" True
+    advertisementModeIndex <- promptNumberedChoice "Choose the MetalLB advertisement mode number" ["l2", "bgp"] 0
+    bgpPeersRaw <-
+        if advertisementModeIndex == 1
+            then promptBgpPeers
+            else pure Nothing
+    envoyGatewayControllerReplicas <- promptInt "Envoy Gateway controller replicas" 1
+    envoyGatewayDataPlaneReplicas <- promptInt "Envoy Gateway data-plane replicas" 1
+    apiReplicas <- promptInt "Public API replicas" 2
+    websocketReplicas <- promptInt "Public WebSocket replicas" 2
     manualPvHostRootRaw <- promptText "Manual PV host root (host path reserved for retained PV contents)" (Just ".data")
     validateConfigSetupInput
         credentials
@@ -467,6 +489,8 @@ interactiveConfigSetupInput repoRoot = do
         demoTtl
         vscodeFqdnRaw
         keycloakFqdnRaw
+        apiFqdnRaw
+        websocketFqdnRaw
         acmeEmailRaw
         acmeServerValue
         eabKeyIdRaw
@@ -474,6 +498,12 @@ interactiveConfigSetupInput repoRoot = do
         devMode
         bootstrapOverrideRaw
         pulumiEnableDnsBootstrap
+        (if advertisementModeIndex == 0 then "l2" else "bgp")
+        bgpPeersRaw
+        envoyGatewayControllerReplicas
+        envoyGatewayDataPlaneReplicas
+        apiReplicas
+        websocketReplicas
         manualPvHostRootRaw
         (if policyIndex == 0 then PolicyFull else PolicyCore)
 
@@ -544,7 +574,8 @@ showRegionChoiceGuidance = do
 showHostedZoneChoiceGuidance :: IO ()
 showHostedZoneChoiceGuidance = do
     putStrLn "Route 53 hosted zone guidance:"
-    putStrLn "Choose the public hosted zone that should own the demo and vscode records."
+    putStrLn "Choose the public hosted zone that should own the demo, vscode, keycloak, api,"
+    putStrLn "and websocket records."
     putStrLn "If the desired zone is missing, open AWS console -> Route 53 -> Hosted zones,"
     putStrLn "create or delegate the zone, then rerun this command."
     putStrLn ""
@@ -564,6 +595,28 @@ showPolicyTierGuidance = do
     putStrLn "1. full (recommended): Route 53, EC2 HA validation, and quota-management permissions."
     putStrLn "2. core: Route 53 runtime permissions only."
     putStrLn ""
+
+promptBgpPeers :: IO (Maybe [MetallbBgpPeer])
+promptBgpPeers = do
+    peerCount <- promptInt "BGP peer count" 1
+    peers <- mapM promptBgpPeer [1 .. peerCount]
+    pure (Just peers)
+  where
+    promptBgpPeer :: Int -> IO MetallbBgpPeer
+    promptBgpPeer index = do
+        peerNameRaw <- promptText ("BGP peer " ++ show index ++ " name") (Just ("peer-" ++ show index))
+        peerAddressRaw <- promptText ("BGP peer " ++ show index ++ " address") Nothing
+        peerAsn <- promptInt ("BGP peer " ++ show index ++ " ASN") 64501
+        myAsn <- promptInt ("Local ASN for BGP peer " ++ show index) 64500
+        multiHop <- promptConfirm ("Enable eBGP multihop for peer " ++ show index ++ "?") False
+        pure
+            MetallbBgpPeer
+                { peer_name = Text.pack (trim peerNameRaw)
+                , peer_address = Text.pack (trim peerAddressRaw)
+                , peer_asn = fromIntegral peerAsn
+                , my_asn = fromIntegral myAsn
+                , ebgp_multi_hop = Just multiHop
+                }
 
 promptAdminCredentials :: Text -> IO Credentials
 promptAdminCredentials defaultRegion = do
@@ -826,6 +879,8 @@ validateConfigSetupInput ::
     String ->
     String ->
     String ->
+    String ->
+    String ->
     Text ->
     String ->
     String ->
@@ -833,18 +888,27 @@ validateConfigSetupInput ::
     String ->
     Bool ->
     String ->
+    Maybe [MetallbBgpPeer] ->
+    Int ->
+    Int ->
+    Int ->
+    Int ->
+    String ->
     PolicyTier ->
     IO ConfigSetupInput
-validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnRaw keycloakFqdnRaw acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap manualPvHostRootRaw policyTier = do
+validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnRaw keycloakFqdnRaw apiFqdnRaw websocketFqdnRaw acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
     normalizedAdminCredentials <- validateAdminCredentialsInput adminCredentials
     let normalizedZoneId = Text.strip zoneId
         normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
         normalizedVscodeFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack vscodeFqdnRaw))
         normalizedKeycloakFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack keycloakFqdnRaw))
+        normalizedApiFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack apiFqdnRaw))
+        normalizedWebsocketFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack websocketFqdnRaw))
         normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
         normalizedEabKeyId = normalizeOptionalText (Text.pack eabKeyIdRaw)
         normalizedEabHmacKey = normalizeOptionalText (Text.pack eabHmacKeyRaw)
         normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
+        normalizedAdvertisementMode = normalizeOptionalText (Text.toLower (Text.strip (Text.pack advertisementModeRaw)))
         normalizedManualPvHostRoot = Text.strip (Text.pack manualPvHostRootRaw)
     unless (isValidRoute53ZoneId normalizedZoneId) $ throwAws "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
     unless (isValidFqdn normalizedDemoFqdn) $ throwAws "demo_fqdn must be a valid fully qualified domain name"
@@ -854,10 +918,30 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
     case normalizedKeycloakFqdn of
         Nothing -> pure ()
         Just value -> unless (isValidFqdn value) (throwAws "keycloak_fqdn must be a valid fully qualified domain name")
+    case normalizedApiFqdn of
+        Nothing -> pure ()
+        Just value -> unless (isValidFqdn value) (throwAws "api_fqdn must be a valid fully qualified domain name")
+    case normalizedWebsocketFqdn of
+        Nothing -> pure ()
+        Just value -> unless (isValidFqdn value) (throwAws "websocket_fqdn must be a valid fully qualified domain name")
     when (demoTtl < 30 || demoTtl > 86400) (throwAws "demo_ttl must be between 30 and 86400 seconds")
     unless (hasValidEmailShape normalizedAcmeEmail) (throwAws "acme_email must be a valid email address")
     unless ("https://" `Text.isPrefixOf` Text.toLower acmeServer) (throwAws "acme_server must be an https:// URL")
     when ((normalizedEabKeyId == Nothing) /= (normalizedEabHmacKey == Nothing)) $ throwAws "acme_eab_key_id and acme_eab_hmac_key must either both be set or both be empty"
+    case normalizedAdvertisementMode of
+        Just "l2" -> pure ()
+        Just "bgp" ->
+            case bgpPeersRaw of
+                Just peers
+                    | not (null peers)
+                        && all (\peer -> Text.strip (peer_name peer) /= "" && Text.strip (peer_address peer) /= "") peers ->
+                        pure ()
+                _ -> throwAws "BGP mode requires at least one BGP peer with non-empty name and address"
+        _ -> throwAws "public_edge_advertisement_mode must be l2 or bgp"
+    when (envoyGatewayControllerReplicasRaw < 1) (throwAws "envoy_gateway_controller_replicas must be at least 1")
+    when (envoyGatewayDataPlaneReplicasRaw < 1) (throwAws "envoy_gateway_data_plane_replicas must be at least 1")
+    when (apiReplicasRaw < 1) (throwAws "api_replicas must be at least 1")
+    when (websocketReplicasRaw < 1) (throwAws "websocket_replicas must be at least 1")
     pure
         ConfigSetupInput
             { configSetupAdminCredentialsInput = normalizedAdminCredentials
@@ -866,6 +950,8 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
             , configSetupDemoTtlInput = fromIntegral demoTtl
             , configSetupVscodeFqdnInput = normalizedVscodeFqdn
             , configSetupKeycloakFqdnInput = normalizedKeycloakFqdn
+            , configSetupApiFqdnInput = normalizedApiFqdn
+            , configSetupWebsocketFqdnInput = normalizedWebsocketFqdn
             , configSetupAcmeEmailInput = normalizedAcmeEmail
             , configSetupAcmeServerInput = Text.strip acmeServer
             , configSetupAcmeEabKeyIdInput = normalizedEabKeyId
@@ -873,6 +959,12 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
             , configSetupDevModeInput = devMode
             , configSetupBootstrapPublicIpOverrideInput = normalizedBootstrapOverride
             , configSetupPulumiEnableDnsBootstrapInput = pulumiEnableDnsBootstrap
+            , configSetupPublicEdgeAdvertisementModeInput = normalizedAdvertisementMode
+            , configSetupPublicEdgeBgpPeersInput = bgpPeersRaw
+            , configSetupEnvoyGatewayControllerReplicasInput = Just (fromIntegral envoyGatewayControllerReplicasRaw)
+            , configSetupEnvoyGatewayDataPlaneReplicasInput = Just (fromIntegral envoyGatewayDataPlaneReplicasRaw)
+            , configSetupApiReplicasInput = Just (fromIntegral apiReplicasRaw)
+            , configSetupWebsocketReplicasInput = Just (fromIntegral websocketReplicasRaw)
             , configSetupManualPvHostRootInput = normalizedManualPvHostRoot
             , configSetupPolicyTierInput = policyTier
             }
@@ -975,6 +1067,8 @@ applyConfigSetup repoRoot input = do
                         , demo_ttl = configSetupDemoTtlInput input
                         , vscode_fqdn = configSetupVscodeFqdnInput input
                         , keycloak_fqdn = configSetupKeycloakFqdnInput input
+                        , api_fqdn = configSetupApiFqdnInput input
+                        , websocket_fqdn = configSetupWebsocketFqdnInput input
                         }
                 , acme =
                     AcmeSection
@@ -988,6 +1082,12 @@ applyConfigSetup repoRoot input = do
                         { dev_mode = configSetupDevModeInput input
                         , bootstrap_public_ip_override = configSetupBootstrapPublicIpOverrideInput input
                         , pulumi_enable_dns_bootstrap = configSetupPulumiEnableDnsBootstrapInput input
+                        , public_edge_advertisement_mode = configSetupPublicEdgeAdvertisementModeInput input
+                        , public_edge_bgp_peers = configSetupPublicEdgeBgpPeersInput input
+                        , envoy_gateway_controller_replicas = configSetupEnvoyGatewayControllerReplicasInput input
+                        , envoy_gateway_data_plane_replicas = configSetupEnvoyGatewayDataPlaneReplicasInput input
+                        , api_replicas = configSetupApiReplicasInput input
+                        , websocket_replicas = configSetupWebsocketReplicasInput input
                         }
                 , storage = StorageSection{manual_pv_host_root = configSetupManualPvHostRootInput input}
                 }
@@ -1004,6 +1104,8 @@ applyConfigSetup repoRoot input = do
                     , configSetupDemoFqdn = configSetupDemoFqdnInput input
                     , configSetupVscodeFqdn = configSetupVscodeFqdnInput input
                     , configSetupKeycloakFqdn = configSetupKeycloakFqdnInput input
+                    , configSetupApiFqdn = configSetupApiFqdnInput input
+                    , configSetupWebsocketFqdn = configSetupWebsocketFqdnInput input
                     , configSetupPolicyTier = configSetupPolicyTierInput input
                     , configSetupAccessKeyId = newAccessKeyId
                     , configSetupQuotaStatuses = quotaStatuses
@@ -1484,6 +1586,8 @@ renderConfigSetupResult result =
         , "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result)
         , "VSCODE_FQDN=" ++ maybe "" Text.unpack (configSetupVscodeFqdn result)
         , "KEYCLOAK_FQDN=" ++ maybe "" Text.unpack (configSetupKeycloakFqdn result)
+        , "API_FQDN=" ++ maybe "" Text.unpack (configSetupApiFqdn result)
+        , "WEBSOCKET_FQDN=" ++ maybe "" Text.unpack (configSetupWebsocketFqdn result)
         , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result)
         , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result)
         , "CONFIG_PATH=" ++ configSetupDhallPath result

@@ -47,6 +47,7 @@ library
         Prodbox.TestRunner
         Prodbox.TestValidation
         Prodbox.Tla
+        Prodbox.Workload
     build-depends:
         aeson ^>=2.2.3.0,
         aeson-pretty ^>=0.8.10,

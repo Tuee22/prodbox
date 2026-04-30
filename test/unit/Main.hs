@@ -479,6 +479,8 @@ main = hspec $ do
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
                             map nativeValidationId (nativeValidations suitePlan)
                                 `shouldBe` [ "charts-vscode"
+                                           , "charts-api"
+                                           , "charts-websocket"
                                            , "public-dns"
                                            , "dns-aws"
                                            , "aws-iam"
@@ -523,8 +525,8 @@ main = hspec $ do
                             nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
-                            take 2 (map nativeValidationId (nativeValidations suitePlan))
-                                `shouldBe` ["charts-vscode", "public-dns"]
+                            take 3 (map nativeValidationId (nativeValidations suitePlan))
+                                `shouldBe` ["charts-vscode", "charts-api", "charts-websocket"]
                             last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
                         DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
@@ -898,7 +900,7 @@ main = hspec $ do
                 `shouldBe` "/tmp/prodbox/.data/vscode/vscode/vscode/0/data"
 
         it "lists supported charts in canonical order" $ do
-            supportedChartNames `shouldBe` ["keycloak", "vscode", "gateway"]
+            supportedChartNames `shouldBe` ["keycloak", "vscode", "api", "websocket", "gateway"]
 
         it "builds delete plans in reverse dependency order" $ do
             case buildChartDeletePlan "/tmp/prodbox" Nothing "vscode" of
@@ -1590,12 +1592,20 @@ testValidatedSettings manualRoot =
                         , demo_ttl = 60
                         , vscode_fqdn = Just "vscode.example.com"
                         , keycloak_fqdn = Just "auth.example.com"
+                        , api_fqdn = Just "api.example.com"
+                        , websocket_fqdn = Just "ws.example.com"
                         }
                 , deployment =
                     DeploymentSection
                         { dev_mode = True
                         , bootstrap_public_ip_override = Nothing
                         , pulumi_enable_dns_bootstrap = True
+                        , public_edge_advertisement_mode = Just "l2"
+                        , public_edge_bgp_peers = Nothing
+                        , envoy_gateway_controller_replicas = Just 1
+                        , envoy_gateway_data_plane_replicas = Just 1
+                        , api_replicas = Just 2
+                        , websocket_replicas = Just 2
                         }
                 , storage = StorageSection{manual_pv_host_root = ".data"}
                 }
@@ -1607,6 +1617,9 @@ testChartSecrets =
     Map.fromList
         [ ("keycloak_admin_password", "adminpass")
         , ("keycloak_vscode_client_secret", "vscodesecret")
+        , ("keycloak_api_client_secret", "apiclientsecret")
+        , ("keycloak_websocket_client_secret", "websocketclientsecret")
+        , ("keycloak_demo_user_password", "demouserpassword")
         , ("patroni_app_password", "patroniapppassword")
         , ("patroni_standby_password", "patronistandbypassword")
         , ("patroni_superuser_password", "patronisuperuserpassword")

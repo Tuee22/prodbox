@@ -15,10 +15,13 @@ repository-root Dhall config loader, the Haskell command runtime and test harnes
 foundations for true IaC plus AWS validation. It also owns the canonical frontend image placement
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
-Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`,
-Sprint `1.2`, Sprint `1.3`, and Sprint `1.4` now close on the Haskell-only rewrite baseline. The implemented
-frontend container doctrine uses `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no
-symlinked Haskell tool shims, and explicit repo package-bound updates.
+Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprints `1.1`,
+`1.2`, `1.3`, and `1.4` remain closed on the Haskell-only rewrite baseline. Sprint `1.5` now
+implements the config-selected MetalLB BGP support, dedicated API plus WebSocket public-host
+inputs, and explicit public-edge scaling controls that still need aggregate validation closure in
+the foundational config and lifecycle surfaces. The implemented frontend container doctrine uses
+`ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
+explicit repo package-bound updates.
 
 ## Current Baseline In Worktree
 
@@ -64,8 +67,10 @@ symlinked Haskell tool shims, and explicit repo package-bound updates.
 - The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
   `pulumi/aws-test/Main.yaml`. The public AWS validation stacks match the target Pulumi boundary.
 - The self-managed local edge now installs MetalLB, Envoy Gateway, cert-manager, and the Percona
-  PostgreSQL operator, while the config contract exposes dedicated app and identity public
-  hostnames through `domain.vscode_fqdn` and `domain.keycloak_fqdn`.
+  PostgreSQL operator, while the config contract exposes dedicated identity, browser, API, and
+  WebSocket public hostnames through repo-owned Dhall settings.
+- The foundational edge surface now supports config-selected L2 or BGP MetalLB rendering plus
+  settings-backed Envoy Gateway controller, Envoy data-plane, API, and WebSocket replica counts.
 - The canonical closure gates for this phase are the host artifact contract at `.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
@@ -285,8 +290,8 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
 ### Deliverables
 
 - `prodbox rke2 install` targets Envoy Gateway as the self-managed public-edge controller.
-- The current supported MetalLB implementation path is L2; the broader doctrine may accommodate
-  BGP later without changing the public-edge control-plane split.
+- The closed sprint baseline keeps the public-edge control-plane split intact, while Sprint `1.5`
+  extends that baseline with config-selected MetalLB BGP support.
 - The local lifecycle mirrors or publishes the Envoy Gateway target image set and no longer treats
   Traefik as the supported edge controller.
 - The config contract expresses dedicated identity and app hostnames for the public edge through
@@ -317,8 +322,8 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
   resources required by the self-managed public edge.
 - `src/Prodbox/K8s.hs` now treats `envoy-gateway-system` as canonical infrastructure inventory.
 - `src/Prodbox/CLI/Rke2.hs` now renders MetalLB through `IPAddressPool` plus `L2Advertisement`,
-  establishing the current L2-supported path while leaving BGP as future doctrine rather than a
-  current implementation claim.
+  establishing the current L2-supported path that Sprint `1.5` expands with repo-owned BGP
+  rendering.
 - `src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
   `src/Prodbox/Aws.hs` now carry the dedicated `domain.keycloak_fqdn` setting through schema,
   display, onboarding, and authored config output.
@@ -328,6 +333,65 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
 ### Remaining Work
 
 None.
+
+## Sprint 1.5: MetalLB BGP and Public-Edge Runtime Expansion 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Docs to update**: `README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Close the foundational config and lifecycle surface on the full self-managed public-edge
+architecture rather than the earlier L2-only browser baseline.
+
+### Deliverables
+
+- The repository config surface expands from dedicated identity plus browser hosts to dedicated
+  identity, browser-app, API, and WebSocket public hosts.
+- `prodbox rke2 install` supports config-selected MetalLB L2 or BGP rendering on the supported
+  self-managed path.
+- The BGP path renders the required peer and advertisement resources from repo-owned settings
+  rather than relying on manual cluster-side edits.
+- Envoy Gateway controller and Envoy data-plane replica counts become explicit lifecycle inputs
+  rather than hardcoded singletons.
+- The built-frontend config and lifecycle validation surfaces cover the expanded host,
+  advertisement, and scaling contract.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox test integration lifecycle`
+6. Manifest proof: the lifecycle renders valid L2 resources when L2 mode is selected and valid
+   BGP resources when BGP mode is selected
+7. Config proof: the built-frontend config surfaces expose the dedicated API plus WebSocket hosts
+   and the public-edge advertisement or scaling inputs without recreating `prodbox-config.json`
+
+### Current Validation State
+
+- `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, and `prodbox-config-types.dhall` now expose
+  `domain.api_fqdn`, `domain.websocket_fqdn`, `deployment.public_edge_advertisement_mode`,
+  `deployment.public_edge_bgp_peers`, `deployment.envoy_gateway_controller_replicas`,
+  `deployment.envoy_gateway_data_plane_replicas`, `deployment.api_replicas`, and
+  `deployment.websocket_replicas`.
+- `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
+  public-edge replica counts into validated settings, and builds or imports both the gateway image
+  and the shared public-edge workload image during `prodbox rke2 install`.
+- `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
+  `prodbox test integration env` now pass with the expanded config surface.
+- The latest `prodbox test all` run reached the real `rke2 install` path, completed Harbor
+  bootstrap plus image publication through the gateway image build, and remained active in the
+  dual-arch `docker/prodbox.Dockerfile` arm64 toolchain bootstrap for the shared public-edge
+  workload image before it was stopped.
+
+### Remaining Work
+
+- Complete the aggregate lifecycle validation path so `prodbox test integration lifecycle` and
+  `prodbox test all` can finish past the dual-arch `docker/prodbox.Dockerfile` arm64 toolchain
+  bootstrap for the shared public-edge workload image.
 
 ## Documentation Requirements
 

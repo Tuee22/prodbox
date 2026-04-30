@@ -18,6 +18,9 @@
 - Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks use
   deterministic CLI-owned PVs rooted at
   `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/<ordinal>/data/`.
+- The shipped `api`, `redis`, and `websocket` workloads do not add new manual-PV contracts; the
+  Redis-backed WebSocket path keeps shared state at the application layer rather than extending the
+  retained PV inventory.
 - Retained non-PV chart state lives under the repo-local `.prodbox-state/<namespace>/` root.
 - `prodbox rke2 delete --yes` must destroy both Pulumi-managed AWS validation stacks before local
   backend teardown removes the MinIO host that stores Pulumi state.
@@ -134,12 +137,14 @@ Rules:
 5. `.prodbox-state/<namespace>/.secrets.json` retains chart secrets plus the Patroni application,
    superuser, and standby passwords that must remain stable when preserved PostgreSQL volumes are
    rebound.
-6. The retained Patroni anchor path is `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/0/data/`;
+6. The `api`, `redis`, and `websocket` workloads do not currently allocate deterministic
+   `.data/` roots on the supported path.
+7. The retained Patroni anchor path is `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/0/data/`;
    follower paths for ordinals `1` and `2` are preserved on disk but must be reset before those
    replicas rejoin a restored cluster.
-7. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes either retained
+8. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes either retained
    host-state root.
-8. Full cluster delete preserves both retained roots so reinstall can reconnect stateful services.
+9. Full cluster delete preserves both retained roots so reinstall can reconnect stateful services.
 
 ## Cross-References
 

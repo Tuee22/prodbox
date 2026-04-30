@@ -25,6 +25,8 @@
         , demo_ttl : Natural
         , vscode_fqdn : Optional Text
         , keycloak_fqdn : Optional Text
+        , api_fqdn : Optional Text
+        , websocket_fqdn : Optional Text
         }
     , acme :
         { email : Text
@@ -36,6 +38,21 @@
         { dev_mode : Bool
         , bootstrap_public_ip_override : Optional Text
         , pulumi_enable_dns_bootstrap : Bool
+        , public_edge_advertisement_mode : Optional Text
+        , public_edge_bgp_peers :
+            Optional
+              ( List
+                  { peer_name : Text
+                  , peer_address : Text
+                  , peer_asn : Natural
+                  , my_asn : Natural
+                  , ebgp_multi_hop : Optional Bool
+                  }
+              )
+        , envoy_gateway_controller_replicas : Optional Natural
+        , envoy_gateway_data_plane_replicas : Optional Natural
+        , api_replicas : Optional Natural
+        , websocket_replicas : Optional Natural
         }
     , storage :
         { manual_pv_host_root : Text
@@ -60,6 +77,8 @@
         , demo_ttl = 60
         , vscode_fqdn = None Text
         , keycloak_fqdn = Some "auth.example.com"
+        , api_fqdn = Some "api.example.com"
+        , websocket_fqdn = Some "ws.example.com"
         }
     , acme =
         { email = ""
@@ -71,6 +90,21 @@
         { dev_mode = True
         , bootstrap_public_ip_override = None Text
         , pulumi_enable_dns_bootstrap = True
+        , public_edge_advertisement_mode = Some "l2"
+        , public_edge_bgp_peers =
+            None
+              ( List
+                  { peer_name : Text
+                  , peer_address : Text
+                  , peer_asn : Natural
+                  , my_asn : Natural
+                  , ebgp_multi_hop : Optional Bool
+                  }
+              )
+        , envoy_gateway_controller_replicas = Some 1
+        , envoy_gateway_data_plane_replicas = Some 1
+        , api_replicas = Some 2
+        , websocket_replicas = Some 2
         }
     , storage =
         { manual_pv_host_root = ".data"

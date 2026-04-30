@@ -1,4 +1,4 @@
-# Phase 3: Haskell Chart Platform and Cluster-Backed `vscode` Delivery
+# Phase 3: Haskell Chart Platform and Public Workload Delivery
 
 **Status**: Authoritative source
 **Supersedes**: N/A
@@ -6,18 +6,20 @@
 [system-components.md](system-components.md)
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, and the
-> supported cluster-backed `vscode` delivery path.
+> supported public workload delivery path.
 
 ## Phase Summary
 
 This phase owns the Haskell chart platform and retained-storage orchestration while preserving
-deterministic PV/PVC rebinding and the supported cluster-backed `vscode` delivery model. It owns
-retained storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway
-browser-auth path for `vscode`, and the PostgreSQL doctrine for every Helm-managed application
-stack. Sprint `3.1`, Sprint `3.2`, Sprint `3.3`, and Sprint `3.4` now close on the Haskell-owned
-chart platform. The supported `vscode` stack stays on Harbor-backed images after Harbor bootstrap,
-uses Gateway API plus Envoy Gateway `SecurityPolicy` for the public route, and keeps the
-Percona-operator-backed Patroni HA path for every Helm-managed application stack: exactly three
+deterministic PV/PVC rebinding and the supported public workload delivery model. It owns retained
+storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway browser-auth
+path for `vscode`, the JWT-only API and Redis-backed WebSocket workload surfaces, and the
+PostgreSQL doctrine for every Helm-managed application stack. Sprints `3.1`, `3.2`, `3.3`, and
+`3.4` remain closed on the current chart platform. Sprints `3.5` and `3.6` now implement the
+API, Redis, WebSocket, and scaling expansion while remaining active on aggregate validation
+closure. The supported `vscode` stack stays on Harbor-backed images after Harbor
+bootstrap, uses Gateway API plus Envoy Gateway `SecurityPolicy` for the public route, and keeps
+the Percona-operator-backed Patroni HA path for every Helm-managed application stack: exactly three
 replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
 
 ## Current Baseline In Worktree
@@ -28,9 +30,10 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 - The retained-root contract remains the configured manual PV root (default `.data/`) plus
   generated non-PV chart state under `.prodbox-state/`; chart secret resolution and gateway
   event-key handling are Haskell-owned.
-- The supported app dependency graph remains `keycloak-postgres -> keycloak -> vscode`, with
-  `keycloak-postgres` owning the namespace-local application-database release for the root chart
-  namespace.
+- The supported chart catalog now includes `keycloak`, `vscode`, `api`, `websocket`, and
+  `gateway`, with `keycloak-postgres` plus `redis` as internal dependency releases.
+- The current supported app dependency graph now includes `keycloak-postgres -> keycloak -> vscode`
+  for the browser stack and `redis -> websocket` for the shared-state realtime stack.
 - The current lifecycle and chart code install the Percona `pg-operator` Helm release, mirror the
   Percona operator and PostgreSQL images, and render `PerconaPGCluster` resources for
   `keycloak-postgres`.
@@ -40,9 +43,11 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
-- The current worktree renders the `vscode` browser path through Gateway API `HTTPRoute`
-  resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the shared public-edge
-  `Gateway`, certificate, and identity route.
+- The current worktree renders the `vscode`, `api`, and `websocket` public paths through Gateway
+  API `HTTPRoute` resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the
+  shared public-edge `Gateway`, certificate, and identity route.
+- The current worktree ships repo-owned API, Redis, and WebSocket chart stacks, with settings-
+  backed replica controls for the public API and WebSocket workloads.
 
 ## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage ✅
 
@@ -81,7 +86,7 @@ None.
 ## Sprint 3.2: Haskell `vscode` Stack Delivery and Auth Path ✅
 
 **Status**: Done
-**Implementation**: `charts/`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/TestPlan.hs`
+**Implementation**: `charts/`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -203,10 +208,9 @@ Keycloak as the identity provider.
 - `keycloak_nginx_client_secret` is removed from the long-term chart secret contract.
 - The current chart platform closes on Envoy-managed browser OIDC for `vscode`, not on a general
   catalog of JWT-only API routes.
-- Optional Redis remains out of scope for the current `vscode` stack unless a future workload
-  needs shared realtime state.
-- Future WebSocket or JWT-only API workloads must follow the shared Envoy Gateway doctrine and add
-  named validations rather than introducing chart-local auth proxies.
+- Optional Redis remains out of scope for the closed `vscode` sprint surface; Sprints `3.5` and
+  `3.6` now carry the repo-owned API plus WebSocket workloads instead of chart-local auth proxies,
+  and remain active only on aggregate validation closure.
 
 ### Validation
 
@@ -229,13 +233,119 @@ Keycloak as the identity provider.
   values contract, and the chart-secret contract now uses `keycloak_vscode_client_secret`.
 - `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, and the built-frontend suites no
   longer carry the nginx proxy image or image-publication path.
-- The current shipped chart surface remains `keycloak` plus `vscode`; JWT-only API routes,
-  Redis-backed workloads, and WebSocket-specific public chart stacks remain future doctrine
-  shapes, not current delivered charts.
+- The shipped chart surface now extends beyond `keycloak` plus `vscode` to the dedicated `api`
+  and `websocket` workloads, while Sprints `3.5` and `3.6` remain active only on aggregate
+  validation closure.
 
 ### Remaining Work
 
 None.
+
+## Sprint 3.5: JWT-Protected API Workload Delivery 🔄
+
+**Status**: Active
+**Implementation**: `charts/`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Add a supported JWT-protected API workload to the Haskell chart platform so the public edge proves
+local token validation and route claims rather than browser-only OIDC enforcement.
+
+### Deliverables
+
+- The supported chart catalog adds a dedicated API workload with its own public hostname and Haskell
+  deploy, status, and delete ownership.
+- Envoy authenticates the API route locally from Keycloak issuer metadata and signing keys rather
+  than through per-request Keycloak lookups or Redis.
+- The API route carries explicit issuer, audience, and route-claim requirements through repo-owned
+  chart values and templates.
+- The chart secret and Keycloak client contract expands as needed for the supported API route
+  without reintroducing any app-local auth proxy surface.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration charts-platform`
+4. `prodbox test integration charts-api`
+5. Manifest proof: the API route attaches dedicated Gateway API and Envoy auth policy resources on
+   the supported public edge
+6. Auth proof: unauthenticated or wrong-claim requests are denied, while valid tokens from the
+   configured Keycloak issuer are accepted
+
+### Current Validation State
+
+- `src/Prodbox/Lib/ChartPlatform.hs` and `charts/api/` now render the dedicated API workload,
+  public hostname, JWT provider configuration, audience, and route-claim requirements through
+  repo-owned Gateway API and Envoy resources.
+- `src/Prodbox/TestPlan.hs` and `src/Prodbox/TestValidation.hs` now expose `charts-api` as a
+  named external validation surface that proves unauthenticated rejection, wrong-claim rejection,
+  and valid-token acceptance.
+- `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
+  `prodbox test integration env` now pass with the API workload surface in place.
+- The latest `prodbox test all` run reached the supported-runtime bootstrap and stalled during the
+  shared public-edge workload image build before `charts-api` could execute under the aggregate
+  suite.
+
+### Remaining Work
+
+- Complete aggregate runtime validation so `prodbox test integration charts-api` and
+  `prodbox test all` can finish through the shared public-edge workload image build and reach the
+  named API proof.
+
+## Sprint 3.6: Redis-Backed WebSocket Delivery and Scale-Out 🔄
+
+**Status**: Active
+**Implementation**: `charts/`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Add a supported WebSocket workload and its Redis backing service to the Haskell chart platform so
+the public edge closes on reconnect-safe realtime delivery instead of a single-replica browser-only
+stack.
+
+### Deliverables
+
+- The supported chart catalog adds repo-owned Redis and WebSocket workloads with dedicated public
+  WebSocket routing on the shared Envoy edge.
+- Reconnect-safe or restart-safe WebSocket state lives in Redis rather than in one pod's memory.
+- The supported public workload surface expands from single-replica `vscode` only to explicit
+  multi-replica API or WebSocket workload scaling where the doctrine requires it.
+- The chart runtime keeps Redis scoped to shared application state and never to Envoy JWT
+  validation.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration charts-platform`
+4. `prodbox test integration charts-websocket`
+5. Manifest proof: the WebSocket route and Redis backing service render through repo-owned charts
+   and dedicated public-edge hostnames
+6. Behavioral proof: authenticated connection setup, reconnect-safe state, and cross-replica
+   message delivery work through the supported Redis-backed path
+
+### Current Validation State
+
+- The current chart catalog now includes repo-owned `redis` and `websocket` stacks, and
+  `src/Prodbox/Workload.hs` provides the shared public-edge workload runtime selected through
+  `PRODBOX_WORKLOAD_MODE=websocket`.
+- `deployment.websocket_replicas` and `deployment.api_replicas` now carry the settings-backed
+  scale-out contract for the public workload surface.
+- `src/Prodbox/TestPlan.hs` and `src/Prodbox/TestValidation.hs` now expose `charts-websocket` as
+  a named external validation surface that proves authenticated setup, shared-state continuity,
+  and post-pod-restart state survival.
+- The latest `prodbox test all` run reached the supported-runtime bootstrap and stalled during the
+  shared public-edge workload image build before `charts-websocket` could execute under the
+  aggregate suite.
+
+### Remaining Work
+
+- Complete aggregate runtime validation so `prodbox test integration charts-websocket` and
+  `prodbox test all` can finish through the shared public-edge workload image build and reach the
+  named WebSocket proof.
 
 ## Documentation Requirements
 
@@ -257,7 +367,7 @@ None.
 
 **Cross-references to add:**
 
-- Keep the engineering index aligned with the cluster-backed `vscode` path.
+- Keep the engineering index aligned with the browser, API, and WebSocket public workload paths.
 
 ## Related Documents
 

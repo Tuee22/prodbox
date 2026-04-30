@@ -39,6 +39,7 @@ import Data.List (
     isPrefixOf,
     nub,
  )
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Prodbox.AwsEnvironment (
     overlayAwsCredentials,
@@ -68,6 +69,7 @@ import Prodbox.Settings (
     Credentials (..),
     DeploymentSection (..),
     DomainSection (..),
+    MetallbBgpPeer (..),
     Route53Section (..),
     ValidatedSettings (..),
     access_key_id,
@@ -452,6 +454,7 @@ runNativeInstall repoRoot = do
                             , ensureMinioRuntime repoRoot MinioBootstrapPublic
                             , mirrorClusterImagesOnce repoRoot
                             , ensureGatewayImages repoRoot prodboxId
+                            , ensurePublicEdgeWorkloadImage repoRoot prodboxId
                             , ensureRke2RegistriesConfig repoRoot
                             , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
                             , reconcileDnsBootstrapRecord repoRoot settings
@@ -1156,8 +1159,8 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
         Left err -> failWith err
         Right (metallbPool, edgeLbIp) ->
             runSequentially
-                [ ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool
-                , ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp
+                [ ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool
+                , ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp
                 , ensureCertManagerRuntime repoRoot prodboxId labelValue
                 , ensureAcmeRuntime repoRoot settings prodboxId labelValue
                 , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
@@ -1185,8 +1188,8 @@ resolveClusterPlatformLanDefaults = do
                 )
                 detectLanAddressing
 
-ensureMetalLbRuntime :: FilePath -> String -> String -> String -> IO ExitCode
-ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool = do
+ensureMetalLbRuntime :: FilePath -> ValidatedSettings -> String -> String -> String -> IO ExitCode
+ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool = do
     repoExit <- ensureHelmRepoAdded repoRoot metallbRepositoryName metallbRepositoryUrl
     case repoExit of
         ExitFailure _ -> pure repoExit
@@ -1202,20 +1205,28 @@ ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool = do
             case installExit of
                 ExitFailure _ -> pure installExit
                 ExitSuccess -> do
+                    let advertisementMode = configuredPublicEdgeAdvertisementMode settings
                     waitExit <-
                         runSequentially
-                            [ rolloutStatus repoRoot metallbNamespace "deployment/metallb-controller"
-                            , rolloutStatus repoRoot metallbNamespace "daemonset/metallb-speaker"
-                            , waitForCrdEstablished repoRoot "ipaddresspools.metallb.io"
-                            , waitForCrdEstablished repoRoot "l2advertisements.metallb.io"
-                            ]
+                            ( [ rolloutStatus repoRoot metallbNamespace "deployment/metallb-controller"
+                              , rolloutStatus repoRoot metallbNamespace "daemonset/metallb-speaker"
+                              , waitForCrdEstablished repoRoot "ipaddresspools.metallb.io"
+                              ]
+                                ++ case advertisementMode of
+                                    "bgp" ->
+                                        [ waitForCrdEstablished repoRoot "bgppeers.metallb.io"
+                                        , waitForCrdEstablished repoRoot "bgpadvertisements.metallb.io"
+                                        ]
+                                    _ ->
+                                        [waitForCrdEstablished repoRoot "l2advertisements.metallb.io"]
+                            )
                     case waitExit of
                         ExitFailure _ -> pure waitExit
                         ExitSuccess ->
                             kubectlApplyJsonManifest
                                 repoRoot
                                 "prodbox-metallb-resources"
-                                (metallbRuntimeManifest prodboxId labelValue metallbPool)
+                                (metallbRuntimeManifest settings prodboxId labelValue metallbPool)
 
 firstNonEmptyEnv :: [String] -> IO (Maybe String)
 firstNonEmptyEnv variableNames = go variableNames
@@ -1258,9 +1269,9 @@ metallbHelmValues prodboxId labelValue =
         , "commonAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
         ]
 
-metallbRuntimeManifest :: String -> String -> String -> [Value]
-metallbRuntimeManifest prodboxId labelValue metallbPool =
-    [ object
+metallbRuntimeManifest :: ValidatedSettings -> String -> String -> String -> [Value]
+metallbRuntimeManifest settings prodboxId labelValue metallbPool =
+    object
         [ "apiVersion" .= ("metallb.io/v1beta1" :: String)
         , "kind" .= ("IPAddressPool" :: String)
         , "metadata"
@@ -1272,7 +1283,15 @@ metallbRuntimeManifest prodboxId labelValue metallbPool =
                 ]
         , "spec" .= object ["addresses" .= [metallbPool]]
         ]
-    , object
+        : case configuredPublicEdgeAdvertisementMode settings of
+            "bgp" ->
+                map (metallbBgpPeerManifest prodboxId labelValue) (configuredPublicEdgeBgpPeers settings)
+                    ++ [metallbBgpAdvertisementManifest prodboxId labelValue]
+            _ -> [metallbL2AdvertisementManifest prodboxId labelValue]
+
+metallbL2AdvertisementManifest :: String -> String -> Value
+metallbL2AdvertisementManifest prodboxId labelValue =
+    object
         [ "apiVersion" .= ("metallb.io/v1beta1" :: String)
         , "kind" .= ("L2Advertisement" :: String)
         , "metadata"
@@ -1284,10 +1303,48 @@ metallbRuntimeManifest prodboxId labelValue metallbPool =
                 ]
         , "spec" .= object ["ipAddressPools" .= ["default-pool" :: String]]
         ]
-    ]
 
-ensureEnvoyGatewayRuntime :: FilePath -> String -> String -> String -> IO ExitCode
-ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp = do
+metallbBgpPeerManifest :: String -> String -> MetallbBgpPeer -> Value
+metallbBgpPeerManifest prodboxId labelValue peer =
+    object
+        [ "apiVersion" .= ("metallb.io/v1beta2" :: String)
+        , "kind" .= ("BGPPeer" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= Text.unpack (peer_name peer)
+                , "namespace" .= metallbNamespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec"
+            .= object
+                ( [ "peerAddress" .= Text.unpack (peer_address peer)
+                  , "peerASN" .= (fromIntegral (peer_asn peer) :: Int)
+                  , "myASN" .= (fromIntegral (my_asn peer) :: Int)
+                  ]
+                    ++ case ebgp_multi_hop peer of
+                        Just enabled -> ["ebgpMultiHop" .= enabled]
+                        Nothing -> []
+                )
+        ]
+
+metallbBgpAdvertisementManifest :: String -> String -> Value
+metallbBgpAdvertisementManifest prodboxId labelValue =
+    object
+        [ "apiVersion" .= ("metallb.io/v1beta1" :: String)
+        , "kind" .= ("BGPAdvertisement" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= ("default-advertisement" :: String)
+                , "namespace" .= metallbNamespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec" .= object ["ipAddressPools" .= ["default-pool" :: String]]
+        ]
+
+ensureEnvoyGatewayRuntime :: FilePath -> ValidatedSettings -> String -> String -> String -> IO ExitCode
+ensureEnvoyGatewayRuntime repoRoot settings prodboxId labelValue edgeLbIp = do
     installExit <-
         helmUpgradeInstallWithJsonValues
             repoRoot
@@ -1295,7 +1352,7 @@ ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp = do
             envoyGatewayChartRef
             envoyGatewayChartVersion
             envoyGatewayNamespace
-            (envoyGatewayHelmValues labelValue)
+            (envoyGatewayHelmValues settings labelValue)
     case installExit of
         ExitFailure _ -> pure installExit
         ExitSuccess -> do
@@ -1314,14 +1371,14 @@ ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp = do
                     kubectlApplyJsonManifest
                         repoRoot
                         "prodbox-envoy-gateway-runtime"
-                        (envoyGatewayRuntimeManifest prodboxId labelValue edgeLbIp)
+                        (envoyGatewayRuntimeManifest settings prodboxId labelValue edgeLbIp)
 
-envoyGatewayHelmValues :: String -> Value
-envoyGatewayHelmValues labelValue =
+envoyGatewayHelmValues :: ValidatedSettings -> String -> Value
+envoyGatewayHelmValues settings labelValue =
     object
         [ "deployment"
             .= object
-                [ "replicas" .= (1 :: Int)
+                [ "replicas" .= configuredEnvoyGatewayControllerReplicas settings
                 , "pod"
                     .= object
                         [ "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
@@ -1347,8 +1404,8 @@ envoyGatewayHelmValues labelValue =
                 ]
         ]
 
-envoyGatewayRuntimeManifest :: String -> String -> String -> [Value]
-envoyGatewayRuntimeManifest prodboxId labelValue edgeLbIp =
+envoyGatewayRuntimeManifest :: ValidatedSettings -> String -> String -> String -> [Value]
+envoyGatewayRuntimeManifest settings prodboxId labelValue edgeLbIp =
     [ object
         [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
         , "kind" .= ("EnvoyProxy" :: String)
@@ -1368,7 +1425,7 @@ envoyGatewayRuntimeManifest prodboxId labelValue edgeLbIp =
                             .= object
                                 [ "envoyDeployment"
                                     .= object
-                                        [ "replicas" .= (1 :: Int)
+                                        [ "replicas" .= configuredEnvoyGatewayDataPlaneReplicas settings
                                         , "container"
                                             .= object
                                                 [ "image"
@@ -1409,6 +1466,26 @@ envoyGatewayRuntimeManifest prodboxId labelValue edgeLbIp =
                 ]
         ]
     ]
+
+configuredPublicEdgeAdvertisementMode :: ValidatedSettings -> String
+configuredPublicEdgeAdvertisementMode settings =
+    case fmap (map toLower . trimWhitespace . Text.unpack) (public_edge_advertisement_mode deploymentSection) of
+        Just "bgp" -> "bgp"
+        _ -> "l2"
+  where
+    deploymentSection = deployment (validatedConfig settings)
+
+configuredPublicEdgeBgpPeers :: ValidatedSettings -> [MetallbBgpPeer]
+configuredPublicEdgeBgpPeers settings =
+    fromMaybe [] (public_edge_bgp_peers (deployment (validatedConfig settings)))
+
+configuredEnvoyGatewayControllerReplicas :: ValidatedSettings -> Int
+configuredEnvoyGatewayControllerReplicas settings =
+    maybe 1 fromIntegral (envoy_gateway_controller_replicas (deployment (validatedConfig settings)))
+
+configuredEnvoyGatewayDataPlaneReplicas :: ValidatedSettings -> Int
+configuredEnvoyGatewayDataPlaneReplicas settings =
+    maybe 1 fromIntegral (envoy_gateway_data_plane_replicas (deployment (validatedConfig settings)))
 
 ensureCertManagerRuntime :: FilePath -> String -> String -> IO ExitCode
 ensureCertManagerRuntime repoRoot prodboxId labelValue = do
@@ -1982,6 +2059,19 @@ ensureGatewayImages repoRoot prodboxId = do
             }
         [gatewayImage, latestImage]
         gatewayImage
+
+ensurePublicEdgeWorkloadImage :: FilePath -> String -> IO ExitCode
+ensurePublicEdgeWorkloadImage repoRoot prodboxId = do
+    let workloadTag = prodboxIdToLabelValue prodboxId
+        workloadImage = ContainerImage.harborPublicEdgeWorkloadImageRepository ++ ":" ++ workloadTag
+        latestImage = ContainerImage.harborPublicEdgeWorkloadImageRepository ++ ":latest"
+    ensureCustomImageVariants
+        repoRoot
+        CustomImageBuildPlan
+            { customImageDockerfile = "docker/prodbox.Dockerfile"
+            }
+        [workloadImage, latestImage]
+        workloadImage
 
 ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
 ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do

@@ -40,7 +40,8 @@ The native Haskell lifecycle reconciles Harbor state in order:
 6. Harbor project reconcile for `prodbox`
 7. MinIO bootstrap install from public `quay.io/minio/*` image refs
 8. Docker login plus required public-image mirror into Harbor
-9. Multi-platform custom-image publish and host-arch import for the Haskell gateway image
+9. Multi-platform custom-image publish and host-arch import for the Haskell gateway image and the
+   shared public-edge workload image
 10. `registries.yaml` reconcile and conditional RKE2 restart
 11. Harbor-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator
@@ -83,8 +84,10 @@ Policy:
 
 - `prodbox-id` source: `/etc/machine-id`
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
+- shared public-edge workload ref form:
+  `127.0.0.1:30080/prodbox/prodbox-public-edge-workload:<prodbox-id-label>`
 - supported mirrored public refs include Harbor-backed Percona operator, PostgreSQL, `pgBouncer`,
-  and `pgBackRest` images, `code-server`, `keycloak`, `minio`, `minio-mc`,
+  and `pgBackRest` images, `code-server`, `keycloak`, `redis`, `minio`, `minio-mc`,
   `envoy-gateway-mirror`, `envoy-proxy-mirror`, `metallb`, `frr`, `kube-rbac-proxy`, and
   `cert-manager` images under the Harbor `prodbox` project
 
@@ -96,8 +99,10 @@ The supported public-edge doctrine uses this image set:
 
 1. The supported edge image set includes the Envoy Gateway control-plane image plus the Envoy data
    plane images that back Gateway API listeners.
-2. No supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
-3. The Haskell distributed gateway image remains a separate repository-owned image and is not
+2. The supported public API and WebSocket workloads run from the shared repository-owned image
+   `prodbox-public-edge-workload`.
+3. No supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
+4. The Haskell distributed gateway image remains a separate repository-owned image and is not
    replaced by Envoy Gateway.
 
 ## 4. RKE2 Mirror Behavior
@@ -154,17 +159,20 @@ Container build requirements:
 
 ## 7. Operator Runbook
 
-Recommended flow before gateway pod integration tests:
+Recommended flow before gateway or public-edge workload integration tests:
 
 ```bash
 ./.build/prodbox rke2 install
 ./.build/prodbox test integration gateway-pods
+./.build/prodbox test integration charts-api
+./.build/prodbox test integration charts-websocket
 ```
 
-Image override remains available for explicit testing:
+Image overrides remain available for explicit testing:
 
 ```bash
 PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> ./.build/prodbox test integration gateway-pods
+PRODBOX_PUBLIC_EDGE_WORKLOAD_IMAGE=<explicit-image-ref> ./.build/prodbox test integration charts-api
 ```
 
 ## Cross-References

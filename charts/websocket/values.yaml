@@ -1,0 +1,35 @@
+global:
+  namespace: default
+  rootChart: websocket
+
+replicaCount: 2
+
+podAntiAffinity:
+  enabled: true
+
+image:
+  repository: 127.0.0.1:30080/prodbox/prodbox-public-edge-workload
+  tag: latest
+
+gateway:
+  name: public-edge
+  namespace: vscode
+  listenerName: websocket-https
+  host: ws.example.com
+
+jwt:
+  securityPolicyName: websocket-jwt
+  providerName: keycloak
+  issuer: https://auth.example.com/realms/prodbox
+  audience: prodbox-websocket
+  jwksUri: https://auth.example.com/realms/prodbox/protocol/openid-connect/certs
+  routeClaimName: prodbox_route
+  routeClaimValue: websocket
+
+redis:
+  host: redis
+  port: 6379
+
+websocket:
+  port: 8080
+  path: /ws

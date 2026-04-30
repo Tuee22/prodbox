@@ -202,10 +202,14 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
         then
             [ emitLineAction phaseOnePointSixMessage
             , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
             , runWaitForNativeCommandOutputContains
                 repoRoot
                 environment
@@ -222,10 +226,14 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
         then
             [ emitLineAction postTestRestoreMessage
             , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
+            , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
             , runWaitForNativeCommandOutputContains
                 repoRoot
                 environment

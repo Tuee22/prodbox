@@ -26,8 +26,9 @@ validation environments.
 - The target self-managed public edge is documented in
   [documents/engineering/envoy_gateway_edge_doctrine.md](./documents/engineering/envoy_gateway_edge_doctrine.md):
   MetalLB exposes an Envoy Gateway `LoadBalancer`, Gateway API owns Layer 7 routing, Keycloak
-  remains the identity provider, Envoy Gateway `SecurityPolicy` owns the current browser-auth
-  path, and the future JWT, Redis, and WebSocket boundaries are defined there.
+  remains the identity provider, Envoy Gateway `SecurityPolicy` owns the browser-auth path, Envoy
+  validates the shipped JWT API routes locally, and the Redis plus WebSocket boundaries are
+  defined there.
 - The supported configuration contract is repository-root `prodbox-config.dhall` decoded directly
   into Haskell types. `prodbox-config.json` and `prodbox config compile` are not part of the
   supported interface.
@@ -35,9 +36,9 @@ validation environments.
   `pulumi/aws-test/`; local-cluster platform ownership does not use a root Pulumi project.
 - This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
   stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
-- The current shipped edge workloads are the dedicated Keycloak identity route and the
-  Envoy-protected `vscode` browser route. JWT-only API routes, Redis-backed workloads, and
-  WebSocket-specific public services are future doctrine shapes, not current shipped surfaces.
+- The current shipped edge workloads are the dedicated Keycloak identity route, the
+  Envoy-protected `vscode` browser route, a JWT-protected API route, and a Redis-backed WebSocket
+  workload on dedicated public hostnames.
 - The Haskell `prodbox gateway ...` command group and `charts deploy gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
 
@@ -47,7 +48,7 @@ The development-plan target architecture centers the local public edge on:
 - **Envoy Gateway** and **Gateway API** for public HTTP(S) routing
 - **cert-manager** for listener TLS
 - **Keycloak** as the OIDC identity provider
-- **Optional Redis** only for future shared realtime state, not for Envoy JWT caching
+- **Redis** only for shared realtime or rate-limit state, never for Envoy JWT caching
 
 The current codebase baseline still deploys and manages:
 
@@ -64,7 +65,8 @@ The current codebase baseline still deploys and manages:
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
 - **AWS validation stacks** through `prodbox pulumi eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`
-- **Bespoke charts** for `gateway`, `keycloak`, and `vscode`
+- **Bespoke charts** for `gateway`, `keycloak`, `vscode`, `api`, and `websocket`, with internal
+  `redis` and `keycloak-postgres` dependency releases
 
 Implementation status, remaining work, and legacy-path removal are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under
@@ -84,6 +86,8 @@ Internet
 Dedicated public hosts:
   auth.<zone>   -> Keycloak identity flow
   vscode.<zone> -> Envoy-protected browser app
+  api.<zone>    -> JWT-protected API
+  ws.<zone>     -> JWT-protected WebSocket workload
 ```
 
 ### Network Design
@@ -105,10 +109,14 @@ The current worktree closes on the supported edge architecture. Today:
 - local `rke2 install` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
   Percona PostgreSQL operator
 - the public `vscode` path uses Gateway API `HTTPRoute` plus Envoy Gateway `SecurityPolicy`
+- the public `api` route uses Gateway API `HTTPRoute` plus Envoy-local JWT validation and
+  claim-based authorization
+- the public `websocket` route uses Gateway API `HTTPRoute`, Envoy-local JWT validation, and a
+  Redis-backed shared-state workload
 - Keycloak uses the dedicated public identity hostname from `domain.keycloak_fqdn`
-- MetalLB currently closes on the L2 path through `IPAddressPool` plus `L2Advertisement`
-- JWT-only API routes, Redis-backed app stacks, and WebSocket-specific public-edge validations are
-  not yet part of the shipped repository surface
+- MetalLB supports config-selected L2 or BGP advertisement through repo-owned settings
+- `host public-edge`, `charts-api`, and `charts-websocket` extend the external proof surface to
+  the dedicated API and WebSocket hosts
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
@@ -147,10 +155,11 @@ operator path is the explicit `prodbox` command surface documented here and in
   work.
 - `prodbox rke2 install` is the idempotent local lifecycle entrypoint. Use it to create or
   reconcile the supported local cluster.
-- `prodbox charts ...` manages only the supported root chart stacks: `gateway`, `keycloak`, and
-  `vscode`.
-- `keycloak` and `vscode` are the current public-edge chart surfaces. The `gateway` chart is the
-  separate in-cluster Haskell distributed gateway daemon, not the Envoy Gateway controller.
+- `prodbox charts ...` manages the supported root chart stacks: `gateway`, `keycloak`, `vscode`,
+  `api`, and `websocket`.
+- `api` and `websocket` are public-edge chart surfaces alongside `keycloak` and `vscode`. The
+  internal `redis` release is owned by the `websocket` stack. The `gateway` chart is the separate
+  in-cluster Haskell distributed gateway daemon, not the Envoy Gateway controller.
 - `prodbox pulumi ...` manages only the AWS validation stacks. It does not manage the local
   cluster or the application chart stacks.
 - The AWS validation stacks use the repo-backed MinIO backend in the local RKE2 cluster, so
@@ -176,6 +185,8 @@ cabal build --builddir=.build exe:prodbox
 ./.build/prodbox rke2 status
 
 ./.build/prodbox charts deploy vscode
+./.build/prodbox charts deploy api
+./.build/prodbox charts deploy websocket
 
 ./.build/prodbox host public-edge
 ./.build/prodbox charts status vscode
@@ -192,8 +203,11 @@ What this does:
 - `charts deploy vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
   by Envoy Gateway and Keycloak on its dedicated identity hostname.
+- `charts deploy api` deploys the dedicated public API workload on the shared public edge.
+- `charts deploy websocket` deploys the dedicated public WebSocket workload plus its internal
+  Redis dependency on the shared public edge.
 - `host public-edge` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
-  the implemented edge path.
+  the browser, API, and WebSocket edge paths.
 - `charts deploy gateway` is optional for the separate Haskell distributed gateway daemon and is
   not required to bring up the Envoy Gateway public edge.
 
@@ -238,6 +252,13 @@ These fields are not all parser-required, but they matter for normal operation:
 | `domain.demo_fqdn` | Primary public FQDN used by DNS inspection, public-edge diagnostics, and the gateway/public host flow |
 | `domain.vscode_fqdn` | Optional public FQDN override for the `vscode` app route |
 | `domain.keycloak_fqdn` | Optional public FQDN override for the Keycloak identity route |
+| `domain.api_fqdn` | Optional public FQDN override for the API route |
+| `domain.websocket_fqdn` | Optional public FQDN override for the WebSocket route |
+| `deployment.public_edge_advertisement_mode` | Optional MetalLB advertisement mode: `l2` or `bgp` |
+| `deployment.envoy_gateway_controller_replicas` | Optional Envoy Gateway controller replica count |
+| `deployment.envoy_gateway_data_plane_replicas` | Optional Envoy data-plane replica count |
+| `deployment.api_replicas` | Optional API workload replica count |
+| `deployment.websocket_replicas` | Optional WebSocket workload replica count |
 | `aws.region` | Operational AWS region; the default config value is `us-east-1` |
 | `storage.manual_pv_host_root` | Host root reserved for retained PV contents; defaults to `.data` under the repo |
 
@@ -251,6 +272,7 @@ These fields are not all parser-required, but they matter for normal operation:
 | `acme.server` | ACME server URL |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
 | `deployment.pulumi_enable_dns_bootstrap` | Bootstrap toggle for DNS reconciliation during the supported flow |
+| `deployment.public_edge_bgp_peers` | Optional BGP peer list when `deployment.public_edge_advertisement_mode = Some "bgp"` |
 
 Validate the repository config:
 

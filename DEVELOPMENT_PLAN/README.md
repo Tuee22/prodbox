@@ -27,9 +27,22 @@ govern this plan suite.
 
 ## Closure Status
 
-All phases `0-7` are closed on their owned repository surfaces. The earlier Phase `4`
-compatibility-cleanup work is closed after removing the retained lifecycle and AWS-validation
-Pulumi migration shims from the supported path.
+Phases `1`, `3`, and `5` remain active only on aggregate validation closure. The worktree now
+implements MetalLB BGP support, a JWT-protected API route, a Redis-backed WebSocket workload,
+dedicated API plus WebSocket public hostnames, and the scaling plus proof surfaces required to
+validate that stack end to end.
+
+The remaining phases stay closed on their owned repository surfaces:
+
+- Phase `0` remains closed on plan topology and ownership.
+- Phase `2` remains closed on the separate Haskell gateway daemon, DNS inspection, and TLA+
+  validation surface.
+- Phase `4` remains closed on Harbor-first lifecycle hardening, Pulumi narrowing, and Python
+  removal.
+- Phase `6` remains closed on the current destructive rerun contract, but the overall handoff is
+  incomplete until the active public-edge phases close on aggregate validation.
+- Phase `7` remains closed on interactive onboarding, IAM automation, quota management, and the
+  shared elevated-credential validation harness.
 
 The current worktree closes on:
 
@@ -40,11 +53,12 @@ The current worktree closes on:
 - one Harbor-first local lifecycle that reconciles MetalLB, Envoy Gateway, cert-manager, and the
   Percona PostgreSQL operator on the supported self-managed cluster path
 - one Gateway API public edge where MetalLB exposes Envoy Gateway, Keycloak owns the dedicated
-  public identity route, and Envoy Gateway `SecurityPolicy` protects the currently shipped
-  browser-facing `vscode` path
-- one explicit current-boundary statement: the repository doctrine permits future JWT-only API
-  routes plus optional Redis-backed WebSocket or rate-limit workloads, but the current worktree
-  does not yet ship those public workloads or their named validations
+  public identity route, Envoy Gateway `SecurityPolicy` protects the browser-facing `vscode`
+  path, and Envoy validates the shipped API plus WebSocket routes locally from Keycloak issuer
+  metadata and signing keys
+- one active validation-closure work package owned by Phase `1` Sprint `1.5`, Phase `3` Sprints
+  `3.5/3.6`, and Phase `5` Sprint `5.3` for the now-implemented BGP, hostname, JWT, Redis,
+  scaling, and external-proof surfaces
 - one explicit distinction between the Envoy Gateway public edge and the separate Haskell
   distributed gateway daemon shipped through `prodbox gateway ...` and `prodbox charts deploy gateway`
 - one explicit Route 53 public-host doctrine with dedicated app and identity hostnames
@@ -71,7 +85,7 @@ The rewrite remains on the canonical phase model required by
 | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) | Phase 0: Planning and documentation topology for the rewrite |
 | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) | Phase 1: Haskell runtime, CLI, config, and Pulumi foundations |
 | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) | Phase 2: Haskell gateway runtime and DNS ownership |
-| [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) | Phase 3: Haskell chart platform and cluster-backed `vscode` delivery |
+| [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) | Phase 3: Haskell chart platform and public workload delivery |
 | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) | Phase 4: Lifecycle hardening, Pulumi decoupling, and Python removal |
 | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) | Phase 5: Public hostname closure and external proof on the Haskell stack |
 | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) | Phase 6: Final clean-room rerun and zero-Python handoff |
@@ -105,17 +119,17 @@ A sprint can move to `Done` only when all of the following are true:
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
-| 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
+| 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 Active | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
+| 5 | Public Hostname Closure and External Proof on the Haskell Stack | 🔄 Active | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: the Haskell-only rewrite and the later self-managed public-edge
-expansion are closed on every phase-owned repository surface, including the Phase `4` lifecycle
-and AWS-validation cleanup work.
+**Status interpretation**: the Haskell-only rewrite baseline and the public-edge implementation are
+in place, but the final handoff is incomplete until Phase `1`, Phase `3`, and Phase `5` close on
+the aggregate validation contract for those surfaces.
 
 ## Current Plan Status
 
@@ -206,15 +220,15 @@ surfaces:
 - The self-managed public edge now installs Envoy Gateway, renders Gateway API resources, protects
   the browser path through Envoy Gateway `SecurityPolicy`, and keeps Keycloak on a dedicated
   identity hostname.
-- `src/Prodbox/CLI/Rke2.hs` currently renders MetalLB through `IPAddressPool` plus
-  `L2Advertisement`; the broader doctrine may accommodate BGP later, but the supported worktree
-  path closes on L2 today.
-- `charts/keycloak/`, `charts/vscode/`, and `src/Prodbox/Lib/ChartPlatform.hs` currently close on
-  the dedicated identity-and-app-hostname browser path: Keycloak remains the OIDC provider and
-  Envoy Gateway `SecurityPolicy` owns browser-facing auth for `vscode`.
-- The current repository does not yet ship JWT-only API route manifests, Redis-backed application
-  stacks, or WebSocket-specific public-edge validations. Those remain governed future workload
-  shapes under `documents/engineering/envoy_gateway_edge_doctrine.md`.
+- `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
+  Envoy Gateway controller and data-plane replica counts into settings, and builds or imports both
+  the gateway image and the shared public-edge workload image during `rke2 install`.
+- `charts/keycloak/`, `charts/api/`, `charts/redis/`, `charts/websocket/`, `charts/vscode/`, and
+  `src/Prodbox/Lib/ChartPlatform.hs` now render the dedicated identity, browser, API, and
+  WebSocket host contract, including JWT-only API delivery, Redis-backed WebSocket delivery, and
+  settings-backed workload scaling.
+- `src/Prodbox/Host.hs` and `src/Prodbox/TestValidation.hs` now classify and validate the
+  Keycloak identity, `vscode`, `api`, and `websocket` routes through named external validations.
 - `charts/gateway/` and `prodbox gateway start|status|config-gen` remain the separate Haskell
   distributed gateway daemon surface; they are not the Envoy Gateway public edge.
 - The earlier unsupported root `Pulumi.yaml` and `Pulumi.home.yaml` residue for the retired
@@ -226,6 +240,11 @@ surfaces:
 - The aggregate rerun contract is owned by the shared suite plan behind
   `prodbox test integration all` and `prodbox test all`, including AWS IAM,
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
+- The latest `prodbox test all` attempt passed `prodbox test unit`, `prodbox test integration cli`,
+  `prodbox test integration env`, the shared IAM harness, real `rke2 install`, Harbor bootstrap,
+  required public-image mirroring, and the dual-arch gateway image build. It remained active in
+  the dual-arch `docker/prodbox.Dockerfile` arm64 toolchain bootstrap for the shared
+  public-edge workload image and was stopped there so this plan suite could be updated honestly.
 - The legacy ledger remains closed on Python-removal and non-Python supported-path residue while
   preserving completed cleanup history.
 
@@ -276,21 +295,23 @@ This plan is complete only when all of the following are true:
     cert-manager rather than Traefik plus `Ingress`.
 14. Public browser-facing auth for supported apps is enforced at the Envoy edge with Keycloak as
     the identity provider; no supported `vscode` path depends on `vscode-nginx`.
-15. The supported public-host doctrine prefers dedicated identity and app hostnames rather than the
-    shared-host `/auth` model, while preserving explicit per-FQDN Route 53 ownership and rejecting
-    wildcard public DNS.
-16. `prodbox host public-edge`, `prodbox test integration charts-vscode`, and
-    `prodbox test integration public-dns` close on Gateway, `HTTPRoute`, certificate, and Route 53
-    state rather than `IngressClass` or `Ingress` state.
-17. MetalLB currently closes on the L2 implementation path in the supported worktree; future BGP
-    support is doctrinally compatible but not part of today's implemented path.
-18. Future JWT-only API routes must validate tokens locally at Envoy from Keycloak issuer metadata
-    and signing keys rather than through Redis or per-request identity-provider lookups.
-19. Redis is optional app-level shared state only for future realtime or rate-limit workloads; it
-    is not part of Envoy JWT validation.
-20. Future WebSocket workloads must authenticate at connection setup, keep reconnect-safe state
-    outside the pod, and add named validations for reconnect, token-expiry, and shared-state
-    assumptions.
+15. The supported public-host doctrine prefers dedicated identity, browser-app, API, and WebSocket
+    hostnames rather than the shared-host `/auth` model, while preserving explicit per-FQDN
+    Route 53 ownership and rejecting wildcard public DNS.
+16. `prodbox host public-edge`, `prodbox test integration charts-vscode`,
+    `prodbox test integration charts-api`, `prodbox test integration charts-websocket`, and
+    `prodbox test integration public-dns` close on Gateway, `HTTPRoute`, auth policy,
+    certificate, and Route 53 state rather than `IngressClass` or `Ingress` state.
+17. MetalLB supports both the L2 implementation path and a config-selected BGP implementation path
+    on the supported self-managed cluster surface.
+18. Supported JWT-only API routes validate tokens locally at Envoy from Keycloak issuer metadata
+    and signing keys, including issuer, audience, and route-required claims, rather than through
+    Redis or per-request identity-provider lookups.
+19. Redis appears only as repo-owned app-level shared state for supported realtime or rate-limit
+    workloads; it is never part of Envoy JWT validation.
+20. Supported WebSocket workloads authenticate at connection setup, keep reconnect-safe state
+    outside the pod, scale horizontally behind Envoy, and add named validations for reconnect,
+    token-expiry handling, and shared-state assumptions.
 21. Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
     storage backend during bootstrap.
 22. Every later supported Helm deployment obtains its images from Harbor.

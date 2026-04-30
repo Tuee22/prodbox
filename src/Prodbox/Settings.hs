@@ -8,6 +8,7 @@ module Prodbox.Settings (
     Credentials (..),
     DeploymentSection (..),
     DomainSection (..),
+    MetallbBgpPeer (..),
     Route53Section (..),
     StorageSection (..),
     ValidatedSettings (..),
@@ -62,6 +63,17 @@ data DomainSection = DomainSection
     , demo_ttl :: Natural
     , vscode_fqdn :: Maybe Text
     , keycloak_fqdn :: Maybe Text
+    , api_fqdn :: Maybe Text
+    , websocket_fqdn :: Maybe Text
+    }
+    deriving (Eq, Show, Generic, FromJSON)
+
+data MetallbBgpPeer = MetallbBgpPeer
+    { peer_name :: Text
+    , peer_address :: Text
+    , peer_asn :: Natural
+    , my_asn :: Natural
+    , ebgp_multi_hop :: Maybe Bool
     }
     deriving (Eq, Show, Generic, FromJSON)
 
@@ -77,6 +89,12 @@ data DeploymentSection = DeploymentSection
     { dev_mode :: Bool
     , bootstrap_public_ip_override :: Maybe Text
     , pulumi_enable_dns_bootstrap :: Bool
+    , public_edge_advertisement_mode :: Maybe Text
+    , public_edge_bgp_peers :: Maybe [MetallbBgpPeer]
+    , envoy_gateway_controller_replicas :: Maybe Natural
+    , envoy_gateway_data_plane_replicas :: Maybe Natural
+    , api_replicas :: Maybe Natural
+    , websocket_replicas :: Maybe Natural
     }
     deriving (Eq, Show, Generic, FromJSON)
 
@@ -125,6 +143,8 @@ renderSettingsDisplay showSecrets settings =
         , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
         , "domain.vscode_fqdn=" ++ renderMaybeText (vscode_fqdn (domain config))
         , "domain.keycloak_fqdn=" ++ renderMaybeText (keycloak_fqdn (domain config))
+        , "domain.api_fqdn=" ++ renderMaybeText (api_fqdn (domain config))
+        , "domain.websocket_fqdn=" ++ renderMaybeText (websocket_fqdn (domain config))
         , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
         , "acme.server=" ++ renderText (server (acme config))
         , "acme.eab_key_id=" ++ renderMaybeText (eab_key_id (acme config))
@@ -132,6 +152,12 @@ renderSettingsDisplay showSecrets settings =
         , "deployment.dev_mode=" ++ renderBool (dev_mode (deployment config))
         , "deployment.bootstrap_public_ip_override=" ++ renderMaybeText (bootstrap_public_ip_override (deployment config))
         , "deployment.pulumi_enable_dns_bootstrap=" ++ renderBool (pulumi_enable_dns_bootstrap (deployment config))
+        , "deployment.public_edge_advertisement_mode=" ++ renderMaybeText (public_edge_advertisement_mode (deployment config))
+        , "deployment.public_edge_bgp_peers=" ++ renderBgpPeers (public_edge_bgp_peers (deployment config))
+        , "deployment.envoy_gateway_controller_replicas=" ++ renderMaybeNatural (envoy_gateway_controller_replicas (deployment config))
+        , "deployment.envoy_gateway_data_plane_replicas=" ++ renderMaybeNatural (envoy_gateway_data_plane_replicas (deployment config))
+        , "deployment.api_replicas=" ++ renderMaybeNatural (api_replicas (deployment config))
+        , "deployment.websocket_replicas=" ++ renderMaybeNatural (websocket_replicas (deployment config))
         , "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
         ]
   where
@@ -197,6 +223,38 @@ validateAwsBootstrapConfig config = do
     validateDemoTtl (demo_ttl (domain config))
     validateAcmeBinding (acme config)
     validateTestSimulationAdminCredentials (aws_admin_for_test_simulation config)
+    validatePublicEdgeDeployment (deployment config)
+
+validatePublicEdgeDeployment :: DeploymentSection -> Either String ()
+validatePublicEdgeDeployment deploymentSection = do
+    validateAdvertisementMode
+    validateReplicas "deployment.envoy_gateway_controller_replicas" (envoy_gateway_controller_replicas deploymentSection)
+    validateReplicas "deployment.envoy_gateway_data_plane_replicas" (envoy_gateway_data_plane_replicas deploymentSection)
+    validateReplicas "deployment.api_replicas" (api_replicas deploymentSection)
+    validateReplicas "deployment.websocket_replicas" (websocket_replicas deploymentSection)
+  where
+    normalizedMode =
+        fmap (Text.toLower . Text.strip) (public_edge_advertisement_mode deploymentSection)
+    validateAdvertisementMode =
+        case normalizedMode of
+            Nothing -> Right ()
+            Just "l2" -> Right ()
+            Just "bgp" ->
+                case public_edge_bgp_peers deploymentSection of
+                    Just peers
+                        | not (null peers)
+                            && all
+                                (\peer -> Text.strip (peer_name peer) /= "" && Text.strip (peer_address peer) /= "")
+                                peers ->
+                            Right ()
+                    _ -> Left "deployment.public_edge_bgp_peers must contain at least one non-empty peer when deployment.public_edge_advertisement_mode is bgp"
+            _ -> Left "deployment.public_edge_advertisement_mode must be l2 or bgp when set"
+
+validateReplicas :: String -> Maybe Natural -> Either String ()
+validateReplicas _ Nothing = Right ()
+validateReplicas fieldName (Just value)
+    | value >= 1 = Right ()
+    | otherwise = Left (fieldName ++ " must be at least 1 when set")
 
 requireNonEmpty :: String -> Text -> Either String ()
 requireNonEmpty fieldName value =
@@ -280,6 +338,29 @@ renderBool :: Bool -> String
 renderBool value =
     map toLower (show value)
 
+renderMaybeNatural :: Maybe Natural -> String
+renderMaybeNatural maybeValue =
+    maybe "" show maybeValue
+
+renderBgpPeers :: Maybe [MetallbBgpPeer] -> String
+renderBgpPeers maybePeers =
+    case maybePeers of
+        Nothing -> ""
+        Just peers ->
+            Text.unpack
+                ( Text.intercalate
+                    ";"
+                    [ peer_name peer
+                        <> "@"
+                        <> peer_address peer
+                        <> ":peer_asn="
+                        <> Text.pack (show (peer_asn peer))
+                        <> ":my_asn="
+                        <> Text.pack (show (my_asn peer))
+                    | peer <- peers
+                    ]
+                )
+
 maskSecret :: Text -> Text
 maskSecret value =
     if Text.length value > 4
@@ -310,6 +391,8 @@ defaultConfigFile =
                 , demo_ttl = 60
                 , vscode_fqdn = Nothing
                 , keycloak_fqdn = Just "auth.example.com"
+                , api_fqdn = Just "api.example.com"
+                , websocket_fqdn = Just "ws.example.com"
                 }
         , acme =
             AcmeSection
@@ -323,6 +406,12 @@ defaultConfigFile =
                 { dev_mode = True
                 , bootstrap_public_ip_override = Nothing
                 , pulumi_enable_dns_bootstrap = True
+                , public_edge_advertisement_mode = Just "l2"
+                , public_edge_bgp_peers = Nothing
+                , envoy_gateway_controller_replicas = Just 1
+                , envoy_gateway_data_plane_replicas = Just 1
+                , api_replicas = Just 2
+                , websocket_replicas = Just 2
                 }
         , storage = StorageSection{manual_pv_host_root = ".data"}
         }
@@ -351,6 +440,8 @@ renderConfigDhall config =
         , "        , demo_ttl = " ++ show (demo_ttl (domain config))
         , "        , vscode_fqdn = " ++ dhallOptionalText (vscode_fqdn (domain config))
         , "        , keycloak_fqdn = " ++ dhallOptionalText (keycloak_fqdn (domain config))
+        , "        , api_fqdn = " ++ dhallOptionalText (api_fqdn (domain config))
+        , "        , websocket_fqdn = " ++ dhallOptionalText (websocket_fqdn (domain config))
         , "        }"
         , "    , acme = Config.default.acme // {"
         , "        , email = " ++ dhallText (email (acme config))
@@ -362,6 +453,12 @@ renderConfigDhall config =
         , "        , dev_mode = " ++ dhallBool (dev_mode (deployment config))
         , "        , bootstrap_public_ip_override = " ++ dhallOptionalText (bootstrap_public_ip_override (deployment config))
         , "        , pulumi_enable_dns_bootstrap = " ++ dhallBool (pulumi_enable_dns_bootstrap (deployment config))
+        , "        , public_edge_advertisement_mode = " ++ dhallOptionalText (public_edge_advertisement_mode (deployment config))
+        , "        , public_edge_bgp_peers = " ++ dhallOptionalBgpPeers (public_edge_bgp_peers (deployment config))
+        , "        , envoy_gateway_controller_replicas = " ++ dhallOptionalNatural (envoy_gateway_controller_replicas (deployment config))
+        , "        , envoy_gateway_data_plane_replicas = " ++ dhallOptionalNatural (envoy_gateway_data_plane_replicas (deployment config))
+        , "        , api_replicas = " ++ dhallOptionalNatural (api_replicas (deployment config))
+        , "        , websocket_replicas = " ++ dhallOptionalNatural (websocket_replicas (deployment config))
         , "        }"
         , "    , storage = Config.default.storage // {"
         , "        , manual_pv_host_root = " ++ dhallText (manual_pv_host_root (storage config))
@@ -378,6 +475,43 @@ dhallOptionalText maybeValue =
     case maybeValue of
         Nothing -> "None Text"
         Just value -> "Some " ++ dhallText value
+
+dhallOptionalNatural :: Maybe Natural -> String
+dhallOptionalNatural maybeValue =
+    case maybeValue of
+        Nothing -> "None Natural"
+        Just value -> "Some " ++ show value
+
+dhallOptionalBgpPeers :: Maybe [MetallbBgpPeer] -> String
+dhallOptionalBgpPeers maybePeers =
+    case maybePeers of
+        Nothing -> "None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
+        Just [] -> "Some ([] : List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
+        Just peers ->
+            "Some [ "
+                ++ foldr1
+                    (\left right -> left ++ ", " ++ right)
+                    (map dhallBgpPeer peers)
+                ++ " ]"
+  where
+    dhallBgpPeer peer =
+        "{ peer_name = "
+            ++ dhallText (peer_name peer)
+            ++ ", peer_address = "
+            ++ dhallText (peer_address peer)
+            ++ ", peer_asn = "
+            ++ show (peer_asn peer)
+            ++ ", my_asn = "
+            ++ show (my_asn peer)
+            ++ ", ebgp_multi_hop = "
+            ++ dhallOptionalBool (ebgp_multi_hop peer)
+            ++ " }"
+
+dhallOptionalBool :: Maybe Bool -> String
+dhallOptionalBool maybeValue =
+    case maybeValue of
+        Nothing -> "None Bool"
+        Just value -> "Some " ++ dhallBool value
 
 dhallBool :: Bool -> String
 dhallBool True = "True"

@@ -148,6 +148,12 @@ keycloakRealmName = "prodbox"
 keycloakVscodeClientId :: String
 keycloakVscodeClientId = "vscode"
 
+keycloakApiClientId :: String
+keycloakApiClientId = "prodbox-api"
+
+keycloakWebsocketClientId :: String
+keycloakWebsocketClientId = "prodbox-websocket"
+
 publicEdgeGatewayClassName :: String
 publicEdgeGatewayClassName = "prodbox-public-edge"
 
@@ -166,8 +172,23 @@ publicEdgeTlsSecretName = "public-edge-tls"
 publicEdgeVscodeListenerName :: String
 publicEdgeVscodeListenerName = "vscode-https"
 
+publicEdgeApiListenerName :: String
+publicEdgeApiListenerName = "api-https"
+
+publicEdgeWebsocketListenerName :: String
+publicEdgeWebsocketListenerName = "websocket-https"
+
 publicEdgeVscodeSecurityPolicyName :: String
 publicEdgeVscodeSecurityPolicyName = "vscode-oidc"
+
+publicEdgeApiSecurityPolicyName :: String
+publicEdgeApiSecurityPolicyName = "api-jwt"
+
+publicEdgeWebsocketSecurityPolicyName :: String
+publicEdgeWebsocketSecurityPolicyName = "websocket-jwt"
+
+publicEdgeRouteClaimName :: String
+publicEdgeRouteClaimName = "prodbox_route"
 
 gatewayNodeIds :: [String]
 gatewayNodeIds = ["node-a", "node-b", "node-c"]
@@ -176,6 +197,9 @@ requiredChartSecretKeys :: [String]
 requiredChartSecretKeys =
     [ "keycloak_admin_password"
     , "keycloak_vscode_client_secret"
+    , "keycloak_api_client_secret"
+    , "keycloak_websocket_client_secret"
+    , "keycloak_demo_user_password"
     , "patroni_app_password"
     , "patroni_standby_password"
     , "patroni_superuser_password"
@@ -251,7 +275,7 @@ instance FromJSON ChartInstallSnapshot where
             <*> obj .: "status"
 
 supportedChartNames :: [String]
-supportedChartNames = ["keycloak", "vscode", "gateway"]
+supportedChartNames = ["keycloak", "vscode", "api", "websocket", "gateway"]
 
 resolveChart :: FilePath -> String -> Either String ChartDefinition
 resolveChart repoRoot chartName =
@@ -294,6 +318,36 @@ resolveChart repoRoot chartName =
                     , chartDefinitionRequiresPublicHost = True
                     , chartDefinitionExternalRequirements = []
                     }
+        "redis" ->
+            Right
+                ChartDefinition
+                    { chartDefinitionName = "redis"
+                    , chartDefinitionChartDir = repoRoot </> "charts" </> "redis"
+                    , chartDefinitionDependencies = []
+                    , chartDefinitionStorage = []
+                    , chartDefinitionRequiresPublicHost = False
+                    , chartDefinitionExternalRequirements = []
+                    }
+        "api" ->
+            Right
+                ChartDefinition
+                    { chartDefinitionName = "api"
+                    , chartDefinitionChartDir = repoRoot </> "charts" </> "api"
+                    , chartDefinitionDependencies = []
+                    , chartDefinitionStorage = []
+                    , chartDefinitionRequiresPublicHost = True
+                    , chartDefinitionExternalRequirements = []
+                    }
+        "websocket" ->
+            Right
+                ChartDefinition
+                    { chartDefinitionName = "websocket"
+                    , chartDefinitionChartDir = repoRoot </> "charts" </> "websocket"
+                    , chartDefinitionDependencies = ["redis"]
+                    , chartDefinitionStorage = []
+                    , chartDefinitionRequiresPublicHost = True
+                    , chartDefinitionExternalRequirements = []
+                    }
         "gateway" ->
             Right
                 ChartDefinition
@@ -328,9 +382,14 @@ buildChartDeploymentPlan repoRoot settings chartName chartSecrets gatewayEventKe
                 if "gateway" `elem` releaseOrder
                     then resolveGatewayChartImage
                     else pure (Right Nothing)
+            publicEdgeWorkloadImageResult <-
+                if "api" `elem` releaseOrder || "websocket" `elem` releaseOrder
+                    then resolvePublicEdgeWorkloadChartImage
+                    else pure (Right Nothing)
             pure $ do
                 maybeGatewayImage <- gatewayImageResult
-                buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage
+                maybePublicEdgeWorkloadImage <- publicEdgeWorkloadImageResult
+                buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage maybePublicEdgeWorkloadImage
 
 buildChartDeletePlan ::
     FilePath ->
@@ -371,15 +430,19 @@ renderChartList repoRoot settings = do
     snapshotsResult <- helmReleaseSnapshots
     pure $ do
         snapshots <- snapshotsResult
-        let publicFqdn = either (const Nothing) Just (resolvePublicFqdn settings)
-            renderedLines = "CHART_LIST" : concatMap (renderChartEntry snapshots publicFqdn) supportedChartNames
+        let renderedLines = "CHART_LIST" : concatMap (renderChartEntry snapshots) supportedChartNames
         pure (unlines renderedLines)
   where
-    renderChartEntry snapshots publicFqdn chartName =
+    renderChartEntry snapshots chartName =
         case resolveChart repoRoot chartName of
             Left _ -> []
             Right definition ->
                 let snapshot = Map.lookup chartName snapshots
+                    publicFqdn =
+                        either
+                            (const Nothing)
+                            Just
+                            (resolveRootPublicFqdn settings chartName)
                     dependencies =
                         if null (chartDefinitionDependencies definition)
                             then "<none>"
@@ -1378,8 +1441,9 @@ buildChartDeploymentPlanPure ::
     Map String String ->
     Map String String ->
     Maybe (String, String) ->
+    Maybe (String, String) ->
     Either String ChartDeploymentPlan
-buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage = do
+buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage maybePublicEdgeWorkloadImage = do
     when
         (chartStorageClassName /= "manual")
         (Left "Chart platform requires StorageClass 'manual'; dynamic provisioners are not permitted")
@@ -1387,7 +1451,7 @@ buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEve
     definitions <- mapM (resolveChart repoRoot) releaseOrder
     publicFqdn <-
         if any chartDefinitionRequiresPublicHost definitions
-            then Just <$> resolvePublicFqdn settings
+            then Just <$> resolveRootPublicFqdn settings chartName
             else Right Nothing
     releases <-
         forM definitions $ \definition -> do
@@ -1406,6 +1470,7 @@ buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEve
                     storageBindings
                     publicFqdn
                     maybeGatewayImage
+                    maybePublicEdgeWorkloadImage
             pure
                 ChartReleasePlan
                     { chartReleasePlanChartName = chartDefinitionName definition
@@ -1447,8 +1512,18 @@ resolveDependencyOrder repoRoot chartName = do
                     (chartDefinitionDependencies definition)
             pure (current : visitedAfter, orderedAfter ++ [current])
 
-resolvePublicFqdn :: ValidatedSettings -> Either String String
-resolvePublicFqdn settings =
+resolveRootPublicFqdn :: ValidatedSettings -> String -> Either String String
+resolveRootPublicFqdn settings chartName =
+    case chartName of
+        "keycloak" -> resolveVscodeFqdn settings
+        "vscode" -> resolveVscodeFqdn settings
+        "api" -> resolveApiFqdn settings
+        "websocket" -> resolveWebsocketFqdn settings
+        "gateway" -> resolveVscodeFqdn settings
+        _ -> resolveVscodeFqdn settings
+
+resolveVscodeFqdn :: ValidatedSettings -> Either String String
+resolveVscodeFqdn settings =
     case maybeNonEmptyText (vscode_fqdn domainSection) of
         Just fqdn -> Right fqdn
         Nothing -> requireNonEmptyText "public FQDN" (demo_fqdn domainSection)
@@ -1463,6 +1538,22 @@ resolveIdentityFqdn settings publicFqdn =
             if publicFqdn == ""
                 then Left "identity public FQDN must not be empty"
                 else Right publicFqdn
+  where
+    domainSection = domain (validatedConfig settings)
+
+resolveApiFqdn :: ValidatedSettings -> Either String String
+resolveApiFqdn settings =
+    case maybeNonEmptyText (api_fqdn domainSection) of
+        Just fqdn -> Right fqdn
+        Nothing -> requireNonEmptyText "API public FQDN" ("api." <> demo_fqdn domainSection)
+  where
+    domainSection = domain (validatedConfig settings)
+
+resolveWebsocketFqdn :: ValidatedSettings -> Either String String
+resolveWebsocketFqdn settings =
+    case maybeNonEmptyText (websocket_fqdn domainSection) of
+        Just fqdn -> Right fqdn
+        Nothing -> requireNonEmptyText "WebSocket public FQDN" ("ws." <> demo_fqdn domainSection)
   where
     domainSection = domain (validatedConfig settings)
 
@@ -1509,8 +1600,9 @@ renderReleaseValuesJson ::
     [ChartStorageBinding] ->
     Maybe String ->
     Maybe (String, String) ->
+    Maybe (String, String) ->
     Either String String
-renderReleaseValuesJson definition namespace rootChart settings chartSecrets gatewayEventKeys storageBindings publicFqdn maybeGatewayImage = do
+renderReleaseValuesJson definition namespace rootChart settings chartSecrets gatewayEventKeys storageBindings publicFqdn maybeGatewayImage maybePublicEdgeWorkloadImage = do
     values <-
         case chartDefinitionName definition of
             "keycloak-postgres" ->
@@ -1530,6 +1622,20 @@ renderReleaseValuesJson definition namespace rootChart settings chartSecrets gat
                         valuesForVscode namespace rootChart settings chartSecrets binding fqdn identityFqdn
                     (Nothing, _) -> Left "vscode requires a public host"
                     _ -> Left "vscode requires exactly one storage binding"
+            "redis" ->
+                valuesForRedis namespace rootChart
+            "api" ->
+                case publicFqdn of
+                    Just fqdn -> do
+                        identityFqdn <- resolveIdentityFqdn settings fqdn
+                        valuesForApi namespace rootChart settings fqdn identityFqdn maybePublicEdgeWorkloadImage
+                    Nothing -> Left "api requires a public host"
+            "websocket" ->
+                case publicFqdn of
+                    Just fqdn -> do
+                        identityFqdn <- resolveIdentityFqdn settings fqdn
+                        valuesForWebsocket namespace rootChart settings fqdn identityFqdn maybePublicEdgeWorkloadImage
+                    Nothing -> Left "websocket requires a public host"
             "gateway" ->
                 case publicFqdn of
                     Just fqdn -> valuesForGateway namespace rootChart settings gatewayEventKeys fqdn maybeGatewayImage
@@ -1552,6 +1658,23 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn identityF
             "keycloak_vscode_client_secret"
             chartSecrets
             "keycloak_vscode_client_secret is required in chart secrets"
+    apiClientSecret <-
+        requireMapValue
+            "keycloak_api_client_secret"
+            chartSecrets
+            "keycloak_api_client_secret is required in chart secrets"
+    websocketClientSecret <-
+        requireMapValue
+            "keycloak_websocket_client_secret"
+            chartSecrets
+            "keycloak_websocket_client_secret is required in chart secrets"
+    demoUserPassword <-
+        requireMapValue
+            "keycloak_demo_user_password"
+            chartSecrets
+            "keycloak_demo_user_password is required in chart secrets"
+    apiFqdn <- resolveApiFqdn settings
+    websocketFqdn <- resolveWebsocketFqdn settings
     pure
         ( object
             [ "replicaCount" .= (2 :: Int)
@@ -1578,16 +1701,32 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn identityF
                     [ "className" .= publicEdgeGatewayClassName
                     , "name" .= publicEdgeGatewayName
                     , "listenerName" .= publicEdgeKeycloakListenerName
+                    , "apiListenerName" .= publicEdgeApiListenerName
+                    , "websocketListenerName" .= publicEdgeWebsocketListenerName
                     , "routeName" .= publicEdgeKeycloakRouteName
                     , "tlsSecretName" .= publicEdgeTlsSecretName
                     , "clusterIssuer" .= chartClusterIssuer
                     , "vscodePublicHost" .= publicFqdn
+                    , "apiPublicHost" .= apiFqdn
+                    , "websocketPublicHost" .= websocketFqdn
                     ]
             , "oidc"
                 .= object
                     [ "vscodeClientId" .= keycloakVscodeClientId
                     , "vscodeClientSecret" .= vscodeClientSecret
                     , "redirectUri" .= ("https://" ++ publicFqdn ++ "/oauth2/callback")
+                    , "apiClientId" .= keycloakApiClientId
+                    , "apiClientSecret" .= apiClientSecret
+                    , "apiAudience" .= keycloakApiClientId
+                    , "apiRouteClaimName" .= publicEdgeRouteClaimName
+                    , "apiRouteClaimValue" .= ("api" :: String)
+                    , "websocketClientId" .= keycloakWebsocketClientId
+                    , "websocketClientSecret" .= websocketClientSecret
+                    , "websocketAudience" .= keycloakWebsocketClientId
+                    , "websocketRouteClaimName" .= publicEdgeRouteClaimName
+                    , "websocketRouteClaimValue" .= ("websocket" :: String)
+                    , "demoUserName" .= ("demo-user" :: String)
+                    , "demoUserPassword" .= demoUserPassword
                     ]
             , "postgres"
                 .= object
@@ -1850,6 +1989,139 @@ valuesForVscode namespace rootChart settings chartSecrets binding publicFqdn ide
             ]
         )
 
+valuesForRedis :: String -> String -> Either String Value
+valuesForRedis namespace rootChart =
+    pure
+        ( object
+            [ "global"
+                .= object
+                    [ "namespace" .= namespace
+                    , "rootChart" .= rootChart
+                    ]
+            , "image"
+                .= object
+                    [ "repository"
+                        .= ( ContainerImage.imageRegistry ContainerImage.harborRedisImage
+                                ++ "/"
+                                ++ ContainerImage.imageRepository ContainerImage.harborRedisImage
+                           )
+                    , "tag" .= ContainerImage.imageTag ContainerImage.harborRedisImage
+                    ]
+            , "redis"
+                .= object
+                    [ "port" .= (6379 :: Int)
+                    ]
+            ]
+        )
+
+valuesForApi ::
+    String ->
+    String ->
+    ValidatedSettings ->
+    String ->
+    String ->
+    Maybe (String, String) ->
+    Either String Value
+valuesForApi namespace rootChart settings publicFqdn identityFqdn maybePublicEdgeWorkloadImage = do
+    (workloadRepository, workloadTag) <-
+        case maybePublicEdgeWorkloadImage of
+            Just imageInfo -> Right imageInfo
+            Nothing -> Left "api chart requires a resolved public-edge workload image reference"
+    pure
+        ( object
+            [ "replicaCount" .= (maybe 2 fromIntegral (api_replicas (deployment (validatedConfig settings))) :: Int)
+            , "podAntiAffinity" .= podAntiAffinityValue settings
+            , "global"
+                .= object
+                    [ "namespace" .= namespace
+                    , "rootChart" .= rootChart
+                    ]
+            , "image"
+                .= object
+                    [ "repository" .= workloadRepository
+                    , "tag" .= workloadTag
+                    ]
+            , "gateway"
+                .= object
+                    [ "name" .= publicEdgeGatewayName
+                    , "namespace" .= ("vscode" :: String)
+                    , "listenerName" .= publicEdgeApiListenerName
+                    , "host" .= publicFqdn
+                    ]
+            , "jwt"
+                .= object
+                    [ "securityPolicyName" .= publicEdgeApiSecurityPolicyName
+                    , "providerName" .= ("keycloak" :: String)
+                    , "issuer" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName)
+                    , "audience" .= keycloakApiClientId
+                    , "jwksUri" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect/certs")
+                    , "routeClaimName" .= publicEdgeRouteClaimName
+                    , "routeClaimValue" .= ("api" :: String)
+                    ]
+            , "api"
+                .= object
+                    [ "port" .= (8080 :: Int)
+                    ]
+            ]
+        )
+
+valuesForWebsocket ::
+    String ->
+    String ->
+    ValidatedSettings ->
+    String ->
+    String ->
+    Maybe (String, String) ->
+    Either String Value
+valuesForWebsocket namespace rootChart settings publicFqdn identityFqdn maybePublicEdgeWorkloadImage = do
+    (workloadRepository, workloadTag) <-
+        case maybePublicEdgeWorkloadImage of
+            Just imageInfo -> Right imageInfo
+            Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
+    pure
+        ( object
+            [ "replicaCount" .= (maybe 2 fromIntegral (websocket_replicas (deployment (validatedConfig settings))) :: Int)
+            , "podAntiAffinity" .= podAntiAffinityValue settings
+            , "global"
+                .= object
+                    [ "namespace" .= namespace
+                    , "rootChart" .= rootChart
+                    ]
+            , "image"
+                .= object
+                    [ "repository" .= workloadRepository
+                    , "tag" .= workloadTag
+                    ]
+            , "gateway"
+                .= object
+                    [ "name" .= publicEdgeGatewayName
+                    , "namespace" .= ("vscode" :: String)
+                    , "listenerName" .= publicEdgeWebsocketListenerName
+                    , "host" .= publicFqdn
+                    ]
+            , "jwt"
+                .= object
+                    [ "securityPolicyName" .= publicEdgeWebsocketSecurityPolicyName
+                    , "providerName" .= ("keycloak" :: String)
+                    , "issuer" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName)
+                    , "audience" .= keycloakWebsocketClientId
+                    , "jwksUri" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect/certs")
+                    , "routeClaimName" .= publicEdgeRouteClaimName
+                    , "routeClaimValue" .= ("websocket" :: String)
+                    ]
+            , "redis"
+                .= object
+                    [ "host" .= ("redis" :: String)
+                    , "port" .= (6379 :: Int)
+                    ]
+            , "websocket"
+                .= object
+                    [ "port" .= (8080 :: Int)
+                    , "path" .= ("/ws" :: String)
+                    ]
+            ]
+        )
+
 podAntiAffinityValue :: ValidatedSettings -> Value
 podAntiAffinityValue settings =
     object
@@ -1858,16 +2130,24 @@ podAntiAffinityValue settings =
 
 resolveGatewayChartImage :: IO (Either String (Maybe (String, String)))
 resolveGatewayChartImage = do
+    resolveCustomImageTag ContainerImage.harborGatewayImageRepository
+
+resolvePublicEdgeWorkloadChartImage :: IO (Either String (Maybe (String, String)))
+resolvePublicEdgeWorkloadChartImage = do
+    resolveCustomImageTag ContainerImage.harborPublicEdgeWorkloadImageRepository
+
+resolveCustomImageTag :: String -> IO (Either String (Maybe (String, String)))
+resolveCustomImageTag repository = do
     machineIdExists <- doesFileExist machineIdPath
     if not machineIdExists
-        then pure (Left ("gateway chart requires machine identity file " ++ machineIdPath))
+        then pure (Left ("custom chart image requires machine identity file " ++ machineIdPath))
         else do
             rawMachineId <- readFile machineIdPath
             let machineId = map toLower (trimWhitespace rawMachineId)
             pure
                 ( if length machineId /= 32 || any (not . isHexDigit) machineId
                     then Left ("Unexpected machine-id format in " ++ machineIdPath ++ ": " ++ show machineId)
-                    else Right (Just (ContainerImage.harborGatewayImageRepository, take 63 ("prodbox-" ++ machineId)))
+                    else Right (Just (repository, take 63 ("prodbox-" ++ machineId)))
                 )
 
 renderStatusRelease ::

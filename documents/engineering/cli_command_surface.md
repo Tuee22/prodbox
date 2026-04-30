@@ -51,6 +51,7 @@ Top-level commands:
 | `dns` | Group | Route 53 inspection |
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
+| `workload` | Group | Internal public-edge workload runtime |
 | `charts` | Group | Bespoke Helm chart lifecycle |
 | `test` | Group | Explicit named test suites |
 | `check-code` | Command | Doctrine-policy, formatter, lint, warning-clean build, and operator-binary sync gate |
@@ -101,8 +102,8 @@ is prompt-driven for temporary elevated AWS credentials; stored
 The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
 classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, `SecurityPolicy`
-attachment, certificate readiness, dedicated identity and app hostname routing, and external
-browser reachability.
+attachment, certificate readiness, dedicated identity, browser, API, and WebSocket hostname
+routing, and external reachability.
 
 ### `prodbox rke2`
 
@@ -171,6 +172,16 @@ owns the daemon runtime. `prodbox gateway status` queries the daemon's operator-
 This `gateway` command group refers to the Haskell distributed gateway daemon, not to the
 Kubernetes Gateway API or Envoy Gateway controller.
 
+### `prodbox workload`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox workload start` | none | none |
+
+`src/Prodbox/Workload.hs` owns the internal public workload runtime used by the `api` and
+`websocket` chart surfaces. It is repo-rootless and selected through environment such as
+`PRODBOX_WORKLOAD_MODE=api|websocket`.
+
 ### `prodbox charts`
 
 | Command | Arguments | Options |
@@ -193,10 +204,10 @@ The current public chart surface ships:
 
 - Keycloak on a dedicated public identity hostname
 - `vscode` on a dedicated public app hostname protected by Envoy Gateway `SecurityPolicy`
+- `api` on a dedicated public hostname protected by Envoy-local JWT validation plus route claims
+- `websocket` on a dedicated public hostname protected by Envoy-local JWT validation, with an
+  internal `redis` dependency for shared state
 - the separate Haskell distributed `gateway` chart, which is not the Envoy Gateway public edge
-
-JWT-only API routes, Redis-backed workloads, and WebSocket-specific public chart stacks are not
-yet separate supported chart surfaces.
 
 ### `prodbox test`
 
@@ -231,6 +242,8 @@ Named suite commands:
 | `prodbox test integration charts-storage` | Native chart storage validation |
 | `prodbox test integration charts-platform` | Native chart platform validation |
 | `prodbox test integration charts-vscode` | Native external `vscode` validation |
+| `prodbox test integration charts-api` | Native external API validation |
+| `prodbox test integration charts-websocket` | Native external WebSocket validation |
 | `prodbox test integration public-dns` | Native public DNS delegation validation |
 
 `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint. It:
@@ -246,11 +259,9 @@ Named suite commands:
   `aws-iam` harness rather than the public command surface
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
-  external `charts-vscode` proof continues on the supported-runtime path
+  external `charts-vscode`, `charts-api`, or `charts-websocket` proof continues on the
+  supported-runtime path
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`
-
-Future JWT-only API or WebSocket validation surfaces must be added as named suite commands rather
-than raw ad-hoc selectors.
 
 ### `prodbox check-code`
 

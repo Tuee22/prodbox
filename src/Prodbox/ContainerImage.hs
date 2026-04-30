@@ -29,8 +29,11 @@ module Prodbox.ContainerImage (
     harborPostgresDatabaseImage,
     harborPostgresPgbackrestImage,
     harborPostgresPgbouncerImage,
+    harborPublicEdgeWorkloadImageRepository,
+    harborRedisImage,
     normalizeImageRefText,
     parseImageRef,
+    publicRedisImage,
     renderImageRef,
     requiredPublicImageCandidatePairs,
     requiredPublicImagePairs,
@@ -59,6 +62,12 @@ harborGatewayRepository = harborMirrorProject ++ "/prodbox-gateway"
 harborGatewayImageRepository :: String
 harborGatewayImageRepository = harborRegistryEndpoint ++ "/" ++ harborGatewayRepository
 
+harborPublicEdgeWorkloadRepository :: String
+harborPublicEdgeWorkloadRepository = harborMirrorProject ++ "/prodbox-public-edge-workload"
+
+harborPublicEdgeWorkloadImageRepository :: String
+harborPublicEdgeWorkloadImageRepository = harborRegistryEndpoint ++ "/" ++ harborPublicEdgeWorkloadRepository
+
 harborEnvoyGatewayImage :: ImageRef
 harborEnvoyGatewayImage = harborImageRefFromRepository "envoy-gateway-mirror" "v1.7.2"
 
@@ -86,6 +95,12 @@ harborCodeServerImage = harborImageRefFromRepository "code-server-mirror" "4.98.
 
 harborKeycloakImage :: ImageRef
 harborKeycloakImage = harborImageRefFromRepository "keycloak-mirror" "26.0.0"
+
+publicRedisImage :: ImageRef
+publicRedisImage = ImageRef "docker.io" "library/redis" "7.4.2"
+
+harborRedisImage :: ImageRef
+harborRedisImage = harborImageRefFromRepository "redis-mirror" "7.4.2"
 
 publicMinioImage :: ImageRef
 publicMinioImage = ImageRef "quay.io" "minio/minio" "RELEASE.2024-12-18T13-15-44Z"
@@ -182,6 +197,10 @@ requiredPublicImageMirrors =
         (ImageRef "quay.io" "keycloak/keycloak" "26.0.0")
         []
         harborKeycloakImage
+    , mirroredPublicImage
+        publicRedisImage
+        []
+        harborRedisImage
     , mirroredPublicImage
         (ImageRef "docker.io" "envoyproxy/gateway" "v1.7.2")
         []

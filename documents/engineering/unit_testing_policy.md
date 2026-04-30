@@ -113,20 +113,20 @@ the command contract.
 3. Cluster-backed suites may keep initial host, tool, config, and AWS checks in the front half of
    Phase `1/2`, then defer cluster-backed backend proofs such as `pulumi_logged_in` until after
    the visible runbook has created or repaired the local runtime they depend on.
-4. `charts-vscode` is a supported-runtime cluster-backed suite and therefore enforces the cluster
-   runbook plus supported-runtime bootstrap before its external proof, and that bootstrap waits
-   for `prodbox host public-edge` readiness rather than using a one-shot assertion. Public-host
-   suites such as `public-dns` may avoid the cluster runbook only when their test plan does not
-   require it.
+4. `charts-vscode`, `charts-api`, and `charts-websocket` are supported-runtime cluster-backed
+   suites and therefore enforce the cluster runbook plus supported-runtime bootstrap before their
+   external proof, and that bootstrap waits for `prodbox host public-edge` readiness rather than
+   using a one-shot assertion. Public-host suites such as `public-dns` may avoid the cluster
+   runbook only when their test plan does not require it.
 5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
-If future workloads expose WebSockets behind the supported public edge, named validations must
-prove connection-time auth, reconnect handling, token-expiry expectations, revocation behavior
-when the workload requires it, and any required shared-state backend assumptions.
+Supported WebSocket validations must prove connection-time auth, reconnect-safe or restart-safe
+shared state, cross-replica behavior, token-expiry expectations when the workload requires them,
+and any required shared-state backend assumptions.
 
-If future public API routes rely on Envoy JWT validation, named validations must prove
-unauthenticated rejection plus the intended issuer, audience, and claim-enforcement contract for
-the selected token transport.
+Supported public API routes that rely on Envoy JWT validation must prove unauthenticated
+rejection, wrong-claim rejection, and the intended issuer, audience, and claim-enforcement
+contract for the selected token transport.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

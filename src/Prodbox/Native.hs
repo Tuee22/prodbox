@@ -25,6 +25,7 @@ import Prodbox.Settings (
  )
 import Prodbox.TestRunner (runTests)
 import Prodbox.Tla (runTlaCheck)
+import Prodbox.Workload (runWorkloadCommand)
 import System.Exit (
     ExitCode (ExitFailure, ExitSuccess),
  )
@@ -45,6 +46,7 @@ runNativeCommand repoRoot command =
         NativeRke2 rke2Command -> runRke2Command repoRoot rke2Command
         NativeTest testCommand -> runTests repoRoot testCommand
         NativeTlaCheck -> runTlaCheck repoRoot
+        NativeWorkload workloadCommand -> runWorkloadCommand workloadCommand
 
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode
 runConfigCommand repoRoot configCommand =

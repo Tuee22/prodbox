@@ -28,6 +28,90 @@ data:
           "webOrigins": [
             {{ printf "https://%s" .Values.gateway.vscodePublicHost | quote }}
           ]
+        },
+        {
+          "clientId": {{ .Values.oidc.apiClientId | quote }},
+          "secret": {{ .Values.oidc.apiClientSecret | quote }},
+          "enabled": true,
+          "publicClient": false,
+          "protocol": "openid-connect",
+          "standardFlowEnabled": false,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": false,
+          "protocolMappers": [
+            {
+              "name": "api-audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "config": {
+                "included.client.audience": {{ .Values.oidc.apiAudience | quote }},
+                "access.token.claim": "true",
+                "id.token.claim": "false"
+              }
+            },
+            {
+              "name": "api-route-claim",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "config": {
+                "claim.name": {{ .Values.oidc.apiRouteClaimName | quote }},
+                "claim.value": {{ .Values.oidc.apiRouteClaimValue | quote }},
+                "jsonType.label": "String",
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+                "userinfo.token.claim": "false"
+              }
+            }
+          ]
+        },
+        {
+          "clientId": {{ .Values.oidc.websocketClientId | quote }},
+          "secret": {{ .Values.oidc.websocketClientSecret | quote }},
+          "enabled": true,
+          "publicClient": false,
+          "protocol": "openid-connect",
+          "standardFlowEnabled": false,
+          "directAccessGrantsEnabled": true,
+          "serviceAccountsEnabled": false,
+          "protocolMappers": [
+            {
+              "name": "websocket-audience",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-audience-mapper",
+              "config": {
+                "included.client.audience": {{ .Values.oidc.websocketAudience | quote }},
+                "access.token.claim": "true",
+                "id.token.claim": "false"
+              }
+            },
+            {
+              "name": "websocket-route-claim",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-hardcoded-claim-mapper",
+              "config": {
+                "claim.name": {{ .Values.oidc.websocketRouteClaimName | quote }},
+                "claim.value": {{ .Values.oidc.websocketRouteClaimValue | quote }},
+                "jsonType.label": "String",
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+                "userinfo.token.claim": "false"
+              }
+            }
+          ]
+        }
+      ],
+      "users": [
+        {
+          "username": {{ .Values.oidc.demoUserName | quote }},
+          "enabled": true,
+          "emailVerified": true,
+          "credentials": [
+            {
+              "type": "password",
+              "value": {{ .Values.oidc.demoUserPassword | quote }},
+              "temporary": false
+            }
+          ]
         }
       ]
     }

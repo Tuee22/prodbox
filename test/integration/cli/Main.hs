@@ -604,9 +604,16 @@ main = hspec $ do
                             , ""
                             , ""
                             , ""
+                            , ""
+                            , ""
                             , "2"
                             , "ops@example.com"
                             , "1"
+                            , ""
+                            , ""
+                            , ""
+                            , ""
+                            , ""
                             , ""
                             , ""
                             , ""
@@ -627,6 +634,9 @@ main = hspec $ do
                 configText `shouldContain` "route53 = { zone_id = \"Z1234567890ABC\" }"
                 configText `shouldContain` "demo_fqdn = \"demo.example.com\""
                 configText `shouldContain` "keycloak_fqdn = Some \"auth.example.com\""
+                configText `shouldContain` "api_fqdn = Some \"api.example.com\""
+                configText `shouldContain` "websocket_fqdn = Some \"ws.example.com\""
+                configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
                 jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
                 jsonExists `shouldBe` False
 

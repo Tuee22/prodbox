@@ -3,8 +3,10 @@
 module Prodbox.Dns (
     configuredPublicHostFqdns,
     fetchPublicIp,
+    preferredApiHostFqdn,
     preferredIdentityHostFqdn,
     preferredPublicHostFqdn,
+    preferredWebsocketHostFqdn,
     queryRoute53Record,
     renderDnsStatusReport,
     runDnsCommand,
@@ -97,12 +99,30 @@ preferredIdentityHostFqdn settings =
   where
     config = validatedConfig settings
 
+preferredApiHostFqdn :: ValidatedSettings -> String
+preferredApiHostFqdn settings =
+    case api_fqdn (domain config) of
+        Just value -> Text.unpack value
+        Nothing -> "api." ++ Text.unpack (demo_fqdn (domain config))
+  where
+    config = validatedConfig settings
+
+preferredWebsocketHostFqdn :: ValidatedSettings -> String
+preferredWebsocketHostFqdn settings =
+    case websocket_fqdn (domain config) of
+        Just value -> Text.unpack value
+        Nothing -> "ws." ++ Text.unpack (demo_fqdn (domain config))
+  where
+    config = validatedConfig settings
+
 configuredPublicHostFqdns :: ValidatedSettings -> [String]
 configuredPublicHostFqdns settings =
     nub
         [ Text.unpack (demo_fqdn (domain config))
         , preferredPublicHostFqdn settings
         , preferredIdentityHostFqdn settings
+        , preferredApiHostFqdn settings
+        , preferredWebsocketHostFqdn settings
         ]
   where
     config = validatedConfig settings

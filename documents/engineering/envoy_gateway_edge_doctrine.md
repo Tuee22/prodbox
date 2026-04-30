@@ -61,20 +61,21 @@ This doctrine applies to the self-managed local-cluster path only. The AWS valid
 
 ## 2. Current Worktree Baseline
 
-The current repository closes on a bounded subset of this doctrine:
+The current repository closes on the implemented self-managed public-edge doctrine:
 
 1. `prodbox rke2 install` installs Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator.
-2. The current MetalLB runtime is the L2 path rendered through `IPAddressPool` plus
-   `L2Advertisement`. The broader doctrine may accommodate BGP later, but BGP is not the current
-   supported worktree path.
-3. The current shipped public browser path is `vscode`, delivered through Gateway API
-   `HTTPRoute` plus Envoy Gateway `SecurityPolicy`.
+2. The current MetalLB runtime supports config-selected L2 or BGP advertisement from repo-owned
+   settings, rendered through `IPAddressPool` plus `L2Advertisement` on the L2 path and
+   `BGPPeer` plus `BGPAdvertisement` on the BGP path.
+3. The current shipped public workloads are `vscode`, `api`, and `websocket`, each delivered
+   through dedicated Gateway API `HTTPRoute` resources.
 4. Keycloak publishes the identity flow on the dedicated hostname from `domain.keycloak_fqdn`.
 5. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
-   `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, and `LoadBalancer` state.
-6. The current repository does not yet ship JWT-only API routes, Redis-backed application stacks,
-   WebSocket-specific public workloads, or named WebSocket validation flows.
+   `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode
+   state across the browser, API, and WebSocket routes.
+6. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
+   prove the shipped JWT-only API and Redis-backed WebSocket paths externally.
 
 ## 3. Component Responsibilities
 
@@ -97,8 +98,8 @@ Its role is:
 Internet client -> MetalLB address -> Envoy service
 ```
 
-The doctrine allows either L2 or BGP advertisement models. The current implementation closes on
-L2 only.
+The doctrine allows either L2 or BGP advertisement models, and the current implementation supports
+both through repo-owned settings.
 
 ### Envoy Gateway and Envoy
 
@@ -345,9 +346,9 @@ Redis is intentionally excluded from the JWT hot path because adding it would in
 - additional failure modes
 - coordinated state that local JWT verification does not need
 
-The current repository does not yet ship public JWT-only API route manifests or named JWT-policy
-validations. When those routes are added, they must prove issuer, audience, and claim enforcement
-through named validations rather than undocumented manual checks.
+The current repository ships public JWT-only API route manifests and named JWT-policy validation.
+Those routes prove issuer, audience, and claim enforcement through `prodbox test integration charts-api`
+rather than undocumented manual checks.
 
 ## 7. Redis and WebSocket Doctrine
 
@@ -405,8 +406,9 @@ Per-message authorization remains an application concern. Envoy may enforce acce
 the workload still decides whether an authenticated user may perform privileged actions inside the
 socket protocol.
 
-The current repository does not yet ship a Redis-backed application stack or WebSocket validation
-suite. Those are future workload shapes, not current implemented surfaces.
+The current repository ships a Redis-backed WebSocket application stack and validates it through
+`prodbox test integration charts-websocket`, including connection-time auth, shared-state proof,
+and post-restart state continuity.
 
 ## 8. Scaling and Availability Doctrine
 
@@ -416,8 +418,9 @@ The doctrine is horizontally scalable, but the implementation boundary matters.
 
 Envoy is the stateless edge data plane. The doctrine allows multiple Envoy replicas.
 
-The current repository deploys one Envoy Gateway controller replica and one Envoy data-plane
-replica by default. That default is an implementation choice, not a doctrinal scaling limit.
+The current repository defaults to one Envoy Gateway controller replica and one Envoy data-plane
+replica through settings-backed inputs. Those defaults are implementation choices, not doctrinal
+scaling limits.
 
 ### Applications
 
@@ -547,10 +550,11 @@ Current named validation implications:
 
 1. `prodbox test integration charts-vscode` proves the current Envoy-protected browser path.
 2. `prodbox test integration public-dns` proves the explicit Route 53 and public-host contract.
-3. The current repository does not yet include a named JWT-only API validation suite.
-4. If future workloads expose WebSockets, named validations must prove connection-time auth,
-   reconnect behavior, token-expiry expectations, revocation behavior when the workload requires
-   it, and any required shared-state backend assumptions.
+3. `prodbox test integration charts-api` proves unauthenticated rejection, wrong-claim rejection,
+   and acceptance for the JWT-only API route.
+4. `prodbox test integration charts-websocket` proves connection-time auth, shared-state
+   continuity, and cross-replica WebSocket workload behavior, while token-expiry or revocation
+   behavior remains workload-specific doctrine when required.
 
 ## 12. Cross-References
 

@@ -48,6 +48,7 @@ import Prodbox.CLI.Command (
     Rke2Command (..),
     TestCommand (..),
     TestScope (..),
+    WorkloadCommand (..),
  )
 import Prodbox.K8s (defaultInfrastructureNamespaces)
 
@@ -99,6 +100,7 @@ commandParser =
             <> command "rke2" (info rke2Parser (progDesc "Local cluster lifecycle"))
             <> command "test" (info testParser (progDesc "Named test suites"))
             <> command "tla-check" (info (native NativeTlaCheck) (progDesc "Run TLA+ checks"))
+            <> command "workload" (info workloadParser (progDesc "Internal public workload runtime"))
         )
 
 native :: NativeCommand -> Parser CommandRequest
@@ -295,6 +297,12 @@ gatewayConfigGenParser =
                 )
         )
 
+workloadParser :: Parser CommandRequest
+workloadParser =
+    hsubparser
+        ( command "start" (info (native (NativeWorkload WorkloadStart)) (progDesc "Start the internal public workload runtime"))
+        )
+
 chartsParser :: Parser CommandRequest
 chartsParser =
     hsubparser
@@ -347,6 +355,8 @@ integrationParser =
             <> command "charts-storage" (info (withCoverage (TestIntegration IntegrationChartsStorage)) (progDesc "Run chart-storage integration tests"))
             <> command "charts-platform" (info (withCoverage (TestIntegration IntegrationChartsPlatform)) (progDesc "Run chart-platform integration tests"))
             <> command "charts-vscode" (info (withCoverage (TestIntegration IntegrationChartsVscode)) (progDesc "Run vscode stack integration tests"))
+            <> command "charts-api" (info (withCoverage (TestIntegration IntegrationChartsApi)) (progDesc "Run API stack integration tests"))
+            <> command "charts-websocket" (info (withCoverage (TestIntegration IntegrationChartsWebsocket)) (progDesc "Run WebSocket stack integration tests"))
             <> command "public-dns" (info (withCoverage (TestIntegration IntegrationPublicDns)) (progDesc "Run public DNS integration tests"))
         )
 

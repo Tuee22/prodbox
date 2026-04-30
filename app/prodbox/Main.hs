@@ -10,6 +10,7 @@ import Prodbox.CLI.Command (
     CommandRequest (..),
     GatewayCommand (..),
     NativeCommand (..),
+    WorkloadCommand (..),
  )
 import Prodbox.CLI.Parser (
     Options (..),
@@ -41,6 +42,7 @@ main = do
 canRunWithoutRepoRoot :: NativeCommand -> Bool
 canRunWithoutRepoRoot (NativeGateway (GatewayStart _)) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayStatus _)) = True
+canRunWithoutRepoRoot (NativeWorkload WorkloadStart) = True
 canRunWithoutRepoRoot _ = False
 
 failWith :: String -> IO ()

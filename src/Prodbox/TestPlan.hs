@@ -19,6 +19,8 @@ import Prodbox.CLI.Command (
 
 data NativeValidation
     = ValidationChartsVscode
+    | ValidationChartsApi
+    | ValidationChartsWebsocket
     | ValidationPublicDns
     | ValidationDnsAws
     | ValidationAwsIam
@@ -242,6 +244,34 @@ testExecutionPlan scope =
                             , nativeRequiresSupportedRuntimeBootstrap = True
                             , nativeRequiresSupportedRuntimePostflight = False
                             }
+                IntegrationChartsApi ->
+                    nativeExecutionPlan
+                        "integration charts-api"
+                        []
+                        NativeSuitePlan
+                            { nativeSuiteId = "integration-charts-api"
+                            , nativeValidations = [ValidationChartsApi]
+                            , nativeInitialIntegrationGatePrerequisites = chartsApiInitialPrerequisites
+                            , nativeDeferredIntegrationGatePrerequisites = chartsApiDeferredPrerequisites
+                            , nativeManagedAwsHarnessPolicyTier = Nothing
+                            , nativeRequiresIntegrationRunbook = True
+                            , nativeRequiresSupportedRuntimeBootstrap = True
+                            , nativeRequiresSupportedRuntimePostflight = False
+                            }
+                IntegrationChartsWebsocket ->
+                    nativeExecutionPlan
+                        "integration charts-websocket"
+                        []
+                        NativeSuitePlan
+                            { nativeSuiteId = "integration-charts-websocket"
+                            , nativeValidations = [ValidationChartsWebsocket]
+                            , nativeInitialIntegrationGatePrerequisites = chartsWebsocketInitialPrerequisites
+                            , nativeDeferredIntegrationGatePrerequisites = chartsWebsocketDeferredPrerequisites
+                            , nativeManagedAwsHarnessPolicyTier = Nothing
+                            , nativeRequiresIntegrationRunbook = True
+                            , nativeRequiresSupportedRuntimeBootstrap = True
+                            , nativeRequiresSupportedRuntimePostflight = False
+                            }
                 IntegrationPublicDns ->
                     nativeNamedSuite
                         "integration public-dns"
@@ -273,6 +303,8 @@ testExecutionPlan scope =
 canonicalNativeValidations :: [NativeValidation]
 canonicalNativeValidations =
     [ ValidationChartsVscode
+    , ValidationChartsApi
+    , ValidationChartsWebsocket
     , ValidationPublicDns
     , ValidationDnsAws
     , ValidationAwsIam
@@ -291,6 +323,8 @@ allInitialIntegrationPrerequisites :: [String]
 allInitialIntegrationPrerequisites =
     orderedUnion
         [ chartsVscodeInitialPrerequisites
+        , chartsApiInitialPrerequisites
+        , chartsWebsocketInitialPrerequisites
         , publicDnsPrerequisites
         , dnsAwsPrerequisites
         , ["aws_iam_harness_ready"]
@@ -310,6 +344,8 @@ allDeferredIntegrationPrerequisites :: [String]
 allDeferredIntegrationPrerequisites =
     orderedUnion
         [ chartsVscodeDeferredPrerequisites
+        , chartsApiDeferredPrerequisites
+        , chartsWebsocketDeferredPrerequisites
         , awsEksDeferredPrerequisites
         , pulumiDeferredPrerequisites
         , awsHaRke2DeferredPrerequisites
@@ -332,6 +368,18 @@ chartsVscodeInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["t
 
 chartsVscodeDeferredPrerequisites :: [String]
 chartsVscodeDeferredPrerequisites = pulumiDeferredPrerequisites
+
+chartsApiInitialPrerequisites :: [String]
+chartsApiInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
+
+chartsApiDeferredPrerequisites :: [String]
+chartsApiDeferredPrerequisites = pulumiDeferredPrerequisites
+
+chartsWebsocketInitialPrerequisites :: [String]
+chartsWebsocketInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
+
+chartsWebsocketDeferredPrerequisites :: [String]
+chartsWebsocketDeferredPrerequisites = pulumiDeferredPrerequisites
 
 publicDnsPrerequisites :: [String]
 publicDnsPrerequisites = ["route53_accessible", "tool_dig"]
@@ -390,6 +438,8 @@ nativeValidationId :: NativeValidation -> String
 nativeValidationId validation =
     case validation of
         ValidationChartsVscode -> "charts-vscode"
+        ValidationChartsApi -> "charts-api"
+        ValidationChartsWebsocket -> "charts-websocket"
         ValidationPublicDns -> "public-dns"
         ValidationDnsAws -> "dns-aws"
         ValidationAwsIam -> "aws-iam"

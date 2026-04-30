@@ -1,0 +1,30 @@
+global:
+  namespace: default
+  rootChart: api
+
+replicaCount: 2
+
+podAntiAffinity:
+  enabled: true
+
+image:
+  repository: 127.0.0.1:30080/prodbox/prodbox-public-edge-workload
+  tag: latest
+
+gateway:
+  name: public-edge
+  namespace: vscode
+  listenerName: api-https
+  host: api.example.com
+
+jwt:
+  securityPolicyName: api-jwt
+  providerName: keycloak
+  issuer: https://auth.example.com/realms/prodbox
+  audience: prodbox-api
+  jwksUri: https://auth.example.com/realms/prodbox/protocol/openid-connect/certs
+  routeClaimName: prodbox_route
+  routeClaimValue: api
+
+api:
+  port: 8080

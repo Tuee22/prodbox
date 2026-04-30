@@ -11,19 +11,28 @@ image:
   repository: 127.0.0.1:30080/prodbox/keycloak-mirror
   tag: "26.0.0"
 
+gateway:
+  className: prodbox-public-edge
+  name: public-edge
+  listenerName: keycloak-https
+  routeName: keycloak
+  tlsSecretName: public-edge-tls
+  clusterIssuer: letsencrypt-http01
+  vscodePublicHost: vscode.example.com
+
 keycloak:
   adminUser: admin
   adminPassword: change-me
-  publicHost: vscode.example.com
-  relativePath: /auth
+  publicHost: auth.example.com
   realmName: prodbox
+
+oidc:
+  vscodeClientId: vscode
+  vscodeClientSecret: change-me
+  redirectUri: https://vscode.example.com/oauth2/callback
 
 postgres:
   host: prodbox-keycloak-pg-ha.default.svc.cluster.local
   database: keycloak
   username: keycloak
   passwordSecretName: prodbox-keycloak-pg-pguser-keycloak
-
-nginx:
-  clientId: vscode-nginx
-  clientSecret: change-me

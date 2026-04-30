@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Dns (
+    configuredPublicHostFqdns,
     fetchPublicIp,
+    preferredIdentityHostFqdn,
     preferredPublicHostFqdn,
     queryRoute53Record,
     renderDnsStatusReport,
@@ -15,6 +17,7 @@ import Data.Aeson (
  )
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.List (nub)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment (
@@ -83,6 +86,24 @@ preferredPublicHostFqdn settings =
     case vscode_fqdn (domain config) of
         Just value -> Text.unpack value
         Nothing -> Text.unpack (demo_fqdn (domain config))
+  where
+    config = validatedConfig settings
+
+preferredIdentityHostFqdn :: ValidatedSettings -> String
+preferredIdentityHostFqdn settings =
+    case keycloak_fqdn (domain config) of
+        Just value -> Text.unpack value
+        Nothing -> preferredPublicHostFqdn settings
+  where
+    config = validatedConfig settings
+
+configuredPublicHostFqdns :: ValidatedSettings -> [String]
+configuredPublicHostFqdns settings =
+    nub
+        [ Text.unpack (demo_fqdn (domain config))
+        , preferredPublicHostFqdn settings
+        , preferredIdentityHostFqdn settings
+        ]
   where
     config = validatedConfig settings
 

@@ -16,8 +16,7 @@ foundations for true IaC plus AWS validation. It also owns the canonical fronten
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprint `1.1`,
-Sprint `1.2`, and Sprint `1.3` remain closed on the Haskell-only rewrite baseline, while
-Sprint `1.4` reopens this phase on the Envoy Gateway public-edge transition. The implemented
+Sprint `1.2`, Sprint `1.3`, and Sprint `1.4` now close on the Haskell-only rewrite baseline. The implemented
 frontend container doctrine uses `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no
 symlinked Haskell tool shims, and explicit repo package-bound updates.
 
@@ -64,9 +63,9 @@ symlinked Haskell tool shims, and explicit repo package-bound updates.
   repository-root credentials into supported subprocesses.
 - The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
   `pulumi/aws-test/Main.yaml`. The public AWS validation stacks match the target Pulumi boundary.
-- The current self-managed edge baseline still installs Traefik, renders `Ingress`, and publishes
-  the `vscode-nginx` auth-proxy image. Sprint `1.4` reopens this phase to replace those
-  foundations with Envoy Gateway and Gateway API ownership.
+- The self-managed local edge now installs MetalLB, Envoy Gateway, cert-manager, and the Percona
+  PostgreSQL operator, while the config contract exposes dedicated app and identity public
+  hostnames through `domain.vscode_fqdn` and `domain.keycloak_fqdn`.
 - The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
@@ -273,24 +272,24 @@ the same supported product scope.
 
 None.
 
-## Sprint 1.4: Envoy Gateway Edge Foundations 📋
+## Sprint 1.4: Envoy Gateway Edge Foundations ✅
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `pulumi/`, `test/`
 **Docs to update**: `README.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Reopen the lifecycle, config-foundation, and validation-entry surfaces so the self-managed public
-edge targets MetalLB + Envoy Gateway + Gateway API rather than Traefik + `Ingress`.
+Close the lifecycle, config-foundation, and validation-entry surfaces on the self-managed public
+edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and app hostnames.
 
 ### Deliverables
 
 - `prodbox rke2 install` targets Envoy Gateway as the self-managed public-edge controller.
 - The local lifecycle mirrors or publishes the Envoy Gateway target image set and no longer treats
   Traefik as the supported edge controller.
-- The current shared-host `domain.vscode_fqdn` and `/auth` assumptions are reopened so the target
-  config contract can express dedicated identity and app hostnames for the public edge.
+- The config contract expresses dedicated identity and app hostnames for the public edge through
+  `domain.keycloak_fqdn` and `domain.vscode_fqdn`.
 - The foundational namespace and readiness inventory removes `traefik-system` as a canonical edge
   dependency and replaces it with Envoy Gateway ownership.
 - AWS validation doctrine remains explicit that MetalLB is a self-managed local-cluster surface,
@@ -310,16 +309,19 @@ edge targets MetalLB + Envoy Gateway + Gateway API rather than Traefik + `Ingres
 
 ### Current Validation State
 
-- The current worktree still installs Traefik and does not yet express dedicated Keycloak or app
-  hostnames in the Dhall config contract.
-- The current `prodbox` validation harness still treats the Traefik/`Ingress` path as the
-  implemented public-edge baseline.
+- `src/Prodbox/CLI/Rke2.hs` now installs Envoy Gateway from the official OCI Helm chart, waits for
+  Gateway API plus Envoy Gateway CRDs, and applies the runtime `EnvoyProxy` plus `GatewayClass`
+  resources required by the self-managed public edge.
+- `src/Prodbox/K8s.hs` now treats `envoy-gateway-system` as canonical infrastructure inventory.
+- `src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
+  `src/Prodbox/Aws.hs` now carry the dedicated `domain.keycloak_fqdn` setting through schema,
+  display, onboarding, and authored config output.
+- `src/Prodbox/TestValidation.hs` and the built-frontend suites now align the foundational
+  validation assumptions with the Envoy Gateway and dedicated-hostname model.
 
 ### Remaining Work
 
-- Replace Traefik lifecycle ownership with Envoy Gateway ownership.
-- Reopen the config schema and onboarding flow for the dedicated public-edge hostname model.
-- Align foundational namespace, image, and validation assumptions with the Envoy target doctrine.
+None.
 
 ## Documentation Requirements
 

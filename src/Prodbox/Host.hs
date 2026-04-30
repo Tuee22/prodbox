@@ -10,17 +10,10 @@ module Prodbox.Host (
 where
 
 import Control.Monad (filterM)
-import Data.Aeson (
-    Value (..),
-    eitherDecode,
- )
+import Data.Aeson (Value (..), eitherDecode)
+import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.Bits (
-    shiftL,
-    xor,
-    (.&.),
-    (.|.),
- )
+import Data.Bits (shiftL, xor, (.&.), (.|.))
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper)
 import Data.Set (Set)
@@ -29,25 +22,14 @@ import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Numeric (readHex)
 import Prodbox.CLI.Command (HostCommand (..))
-import Prodbox.Dns (
-    fetchPublicIp,
-    preferredPublicHostFqdn,
-    queryRoute53Record,
- )
+import Prodbox.Dns (fetchPublicIp, preferredIdentityHostFqdn, preferredPublicHostFqdn, queryRoute53Record)
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.Result (Result (..))
-import Prodbox.Settings (
-    ValidatedSettings (..),
-    validateAndLoadSettings,
- )
-import Prodbox.Subprocess (
-    CommandSpec (..),
-    ProcessOutput (..),
-    captureCommand,
- )
+import Prodbox.Settings (validateAndLoadSettings)
+import Prodbox.Subprocess (CommandSpec (..), ProcessOutput (..), captureCommand)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
@@ -61,18 +43,22 @@ data PortStatus = PortStatus
 
 data EdgeRuntime = EdgeRuntime
     { edgePublicIp :: String
-    , edgeRoute53RecordIp :: Maybe String
+    , edgeAppHost :: String
+    , edgeIdentityHost :: String
+    , edgeAppRoute53RecordIp :: Maybe String
+    , edgeIdentityRoute53RecordIp :: Maybe String
     , edgeActiveLanInterface :: String
     , edgeActiveLanIpv4 :: String
     , edgeActiveLanCidr :: String
     , edgeMetallbPool :: String
-    , edgeIngressLbIp :: String
-    , edgeTraefikServiceIp :: String
-    , edgeHasTraefikClass :: Bool
-    , edgeHasNginxClass :: Bool
-    , edgeIngressNginxServices :: Int
-    , edgeVscodeIngressClass :: String
-    , edgeVscodeIngressHost :: String
+    , edgeExpectedLbIp :: String
+    , edgeEnvoyServiceIp :: String
+    , edgeEnvoyGatewayDeploymentReady :: Bool
+    , edgeGatewayClassAccepted :: Bool
+    , edgeGatewayReady :: Bool
+    , edgeVscodeRouteAccepted :: Bool
+    , edgeKeycloakRouteAccepted :: Bool
+    , edgeSecurityPolicyAttached :: Bool
     , edgeCertificateReady :: String
     }
     deriving (Eq, Show)
@@ -122,40 +108,90 @@ runHostPublicEdge repoRoot = do
             case publicIpResult of
                 Left err -> failWith err
                 Right publicIp -> do
-                    route53Result <- queryRoute53Record repoRoot settings (preferredPublicHostFqdn settings)
-                    case route53Result of
-                        Left err -> failWith err
-                        Right route53RecordIp -> do
+                    appRoute53Result <- queryRoute53Record repoRoot settings (preferredPublicHostFqdn settings)
+                    identityRoute53Result <- queryRoute53Record repoRoot settings (preferredIdentityHostFqdn settings)
+                    case firstFailure [toUnit appRoute53Result, toUnit identityRoute53Result] of
+                        Just err -> failWith err
+                        Nothing -> do
                             lanResult <- detectLanAddressing
-                            ingressClassesResult <- kubectlJson repoRoot Nothing ["get", "ingressclass", "-o", "json"]
-                            traefikServiceResult <- optionalKubectlJson repoRoot (Just "traefik-system") ["get", "svc", "-l", "app.kubernetes.io/name=traefik", "-o", "json"]
-                            ingressNginxResult <- kubectlJson repoRoot Nothing ["get", "svc", "-A", "-l", "app.kubernetes.io/name=ingress-nginx", "-o", "json"]
-                            vscodeIngressResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "ingress", "vscode", "-o", "json", "--ignore-not-found=true"]
-                            certificateResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "certificate", "vscode-tls", "-o", "json", "--ignore-not-found=true"]
-                            case firstFailure [toUnit lanResult, toUnit ingressClassesResult, toUnit traefikServiceResult, toUnit ingressNginxResult, toUnit vscodeIngressResult, toUnit certificateResult] of
+                            envoyGatewayDeploymentResult <- optionalKubectlJson repoRoot (Just "envoy-gateway-system") ["get", "deployment", "envoy-gateway", "-o", "json", "--ignore-not-found=true"]
+                            gatewayClassResult <- optionalKubectlJson repoRoot Nothing ["get", "gatewayclass", "prodbox-public-edge", "-o", "json", "--ignore-not-found=true"]
+                            envoyServiceResult <-
+                                optionalKubectlJson
+                                    repoRoot
+                                    (Just "envoy-gateway-system")
+                                    [ "get"
+                                    , "svc"
+                                    , "-l"
+                                    , "gateway.envoyproxy.io/owning-gateway-namespace=vscode,gateway.envoyproxy.io/owning-gateway-name=public-edge"
+                                    , "-o"
+                                    , "json"
+                                    ]
+                            gatewayResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "gateway", "public-edge", "-o", "json", "--ignore-not-found=true"]
+                            vscodeRouteResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "httproute", "vscode", "-o", "json", "--ignore-not-found=true"]
+                            keycloakRouteResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "httproute", "keycloak", "-o", "json", "--ignore-not-found=true"]
+                            securityPolicyResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "securitypolicy", "vscode-oidc", "-o", "json", "--ignore-not-found=true"]
+                            certificateResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "certificate", "public-edge-tls", "-o", "json", "--ignore-not-found=true"]
+                            case firstFailure
+                                [ toUnit lanResult
+                                , toUnit envoyGatewayDeploymentResult
+                                , toUnit gatewayClassResult
+                                , toUnit envoyServiceResult
+                                , toUnit gatewayResult
+                                , toUnit vscodeRouteResult
+                                , toUnit keycloakRouteResult
+                                , toUnit securityPolicyResult
+                                , toUnit certificateResult
+                                ] of
                                 Just err -> failWith err
                                 Nothing ->
-                                    case (lanResult, ingressClassesResult, traefikServiceResult, ingressNginxResult, vscodeIngressResult, certificateResult) of
-                                        (Right lan, Right ingressClassesDoc, Right traefikServiceDoc, Right ingressNginxDoc, Right vscodeIngressDoc, Right certificateDoc) -> do
-                                            let runtime =
-                                                    EdgeRuntime
-                                                        { edgePublicIp = publicIp
-                                                        , edgeRoute53RecordIp = route53RecordIp
-                                                        , edgeActiveLanInterface = lanInterfaceName lan
-                                                        , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
-                                                        , edgeActiveLanCidr = lanNetworkCidr lan
-                                                        , edgeMetallbPool = lanMetallbPool lan
-                                                        , edgeIngressLbIp = lanIngressLbIp lan
-                                                        , edgeTraefikServiceIp = traefikServiceIp traefikServiceDoc
-                                                        , edgeHasTraefikClass = ingressClassPresent ingressClassesDoc "traefik"
-                                                        , edgeHasNginxClass = ingressClassPresent ingressClassesDoc "nginx"
-                                                        , edgeIngressNginxServices = serviceCount ingressNginxDoc
-                                                        , edgeVscodeIngressClass = vscodeIngressClass vscodeIngressDoc
-                                                        , edgeVscodeIngressHost = vscodeIngressHost vscodeIngressDoc
-                                                        , edgeCertificateReady = certificateReady certificateDoc
-                                                        }
-                                            putStr (renderPublicEdgeReport settings runtime)
-                                            pure ExitSuccess
+                                    case ( appRoute53Result
+                                         , identityRoute53Result
+                                         , lanResult
+                                         , envoyGatewayDeploymentResult
+                                         , gatewayClassResult
+                                         , envoyServiceResult
+                                         , gatewayResult
+                                         , vscodeRouteResult
+                                         , keycloakRouteResult
+                                         , securityPolicyResult
+                                         , certificateResult
+                                         ) of
+                                        ( Right appRoute53RecordIp
+                                            , Right identityRoute53RecordIp
+                                            , Right lan
+                                            , Right envoyGatewayDeploymentDoc
+                                            , Right gatewayClassDoc
+                                            , Right envoyServiceDoc
+                                            , Right gatewayDoc
+                                            , Right vscodeRouteDoc
+                                            , Right keycloakRouteDoc
+                                            , Right securityPolicyDoc
+                                            , Right certificateDoc
+                                            ) -> do
+                                                let runtime =
+                                                        EdgeRuntime
+                                                            { edgePublicIp = publicIp
+                                                            , edgeAppHost = preferredPublicHostFqdn settings
+                                                            , edgeIdentityHost = preferredIdentityHostFqdn settings
+                                                            , edgeAppRoute53RecordIp = appRoute53RecordIp
+                                                            , edgeIdentityRoute53RecordIp = identityRoute53RecordIp
+                                                            , edgeActiveLanInterface = lanInterfaceName lan
+                                                            , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
+                                                            , edgeActiveLanCidr = lanNetworkCidr lan
+                                                            , edgeMetallbPool = lanMetallbPool lan
+                                                            , edgeExpectedLbIp = lanIngressLbIp lan
+                                                            , edgeEnvoyServiceIp = serviceLoadBalancerIp envoyServiceDoc
+                                                            , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
+                                                            , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
+                                                            , edgeGatewayReady = gatewayReady gatewayDoc
+                                                            , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
+                                                            , edgeKeycloakRouteAccepted = httpRouteAccepted keycloakRouteDoc
+                                                            , edgeSecurityPolicyAttached = securityPolicyAttached securityPolicyDoc
+                                                            , edgeCertificateReady = certificateReady certificateDoc
+                                                            }
+                                                putStr (renderPublicEdgeReport runtime)
+                                                pure ExitSuccess
                                         _ -> failWith "internal error: host public-edge results were incomplete"
 
 renderPortAvailabilityReport :: [PortStatus] -> String
@@ -180,48 +216,69 @@ renderStatus status =
         ++ " DETAIL="
         ++ portDetail status
 
-renderPublicEdgeReport :: ValidatedSettings -> EdgeRuntime -> String
-renderPublicEdgeReport settings runtime =
+renderPublicEdgeReport :: EdgeRuntime -> String
+renderPublicEdgeReport runtime =
     unlines
         [ "Public edge diagnostic"
-        , "FQDN=" ++ preferredPublicHostFqdn settings
+        , "APP_FQDN=" ++ edgeAppHost runtime
+        , "IDENTITY_FQDN=" ++ edgeIdentityHost runtime
         , "PUBLIC_IP=" ++ edgePublicIp runtime
-        , "ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeRoute53RecordIp runtime)
-        , "ROUTE53_STATUS=" ++ route53Status
+        , "APP_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeAppRoute53RecordIp runtime)
+        , "APP_ROUTE53_STATUS=" ++ appRoute53Status
+        , "IDENTITY_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeIdentityRoute53RecordIp runtime)
+        , "IDENTITY_ROUTE53_STATUS=" ++ identityRoute53Status
         , "ACTIVE_LAN_INTERFACE=" ++ edgeActiveLanInterface runtime
         , "ACTIVE_LAN_IPV4=" ++ edgeActiveLanIpv4 runtime
         , "ACTIVE_LAN_CIDR=" ++ edgeActiveLanCidr runtime
         , "METALLB_POOL=" ++ edgeMetallbPool runtime
-        , "INGRESS_LB_IP=" ++ edgeIngressLbIp runtime
-        , "TRAEFIK_SERVICE_IP=" ++ edgeTraefikServiceIp runtime
-        , "INGRESSCLASS_TRAEFIK=" ++ presentText (edgeHasTraefikClass runtime)
-        , "INGRESSCLASS_NGINX=" ++ presentText (edgeHasNginxClass runtime)
-        , "INGRESS_NGINX_SERVICES=" ++ show (edgeIngressNginxServices runtime)
-        , "VSCODE_INGRESS_CLASS=" ++ edgeVscodeIngressClass runtime
-        , "VSCODE_INGRESS_HOST=" ++ edgeVscodeIngressHost runtime
+        , "EDGE_LB_IP=" ++ edgeExpectedLbIp runtime
+        , "ENVOY_SERVICE_IP=" ++ edgeEnvoyServiceIp runtime
+        , "ENVOY_GATEWAY_DEPLOYMENT_READY=" ++ boolText (edgeEnvoyGatewayDeploymentReady runtime)
+        , "GATEWAYCLASS_ACCEPTED=" ++ boolText (edgeGatewayClassAccepted runtime)
+        , "GATEWAY_READY=" ++ boolText (edgeGatewayReady runtime)
+        , "VSCODE_HTTPROUTE_ACCEPTED=" ++ boolText (edgeVscodeRouteAccepted runtime)
+        , "KEYCLOAK_HTTPROUTE_ACCEPTED=" ++ boolText (edgeKeycloakRouteAccepted runtime)
+        , "SECURITY_POLICY_ATTACHED=" ++ boolText (edgeSecurityPolicyAttached runtime)
         , "CERTIFICATE_READY=" ++ edgeCertificateReady runtime
         , "PRIVATE_EDGE_READY=" ++ boolText privateEdgeReady
         , "CLASSIFICATION=" ++ classification
         ]
   where
-    route53Status
-        | edgeRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
-        | edgeRoute53RecordIp runtime == Nothing = "missing"
+    appRoute53Status
+        | edgeAppRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
+        | edgeAppRoute53RecordIp runtime == Nothing = "missing"
+        | otherwise = "mismatch"
+    identityRoute53Status
+        | edgeIdentityRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
+        | edgeIdentityRoute53RecordIp runtime == Nothing = "missing"
         | otherwise = "mismatch"
     privateEdgeReady =
-        edgeHasTraefikClass runtime
-            && not (edgeHasNginxClass runtime)
-            && edgeIngressNginxServices runtime == 0
-            && edgeVscodeIngressClass runtime == "traefik"
+        edgeEnvoyGatewayDeploymentReady runtime
+            && edgeGatewayClassAccepted runtime
+            && edgeGatewayReady runtime
+            && edgeVscodeRouteAccepted runtime
+            && edgeKeycloakRouteAccepted runtime
+            && edgeSecurityPolicyAttached runtime
             && edgeCertificateReady runtime == "true"
-            && edgeTraefikServiceIp runtime /= "<missing>"
+            && edgeEnvoyServiceIp runtime /= "<missing>"
+            && edgeLoadBalancerIpMatches runtime
     classification
-        | privateEdgeReady && route53Status /= "in-sync" = "private-edge-ready-public-dns-stale"
-        | edgeHasNginxClass runtime || edgeIngressNginxServices runtime > 0 = "competing-ingress-controller"
+        | privateEdgeReady && (appRoute53Status /= "in-sync" || identityRoute53Status /= "in-sync") = "private-edge-ready-public-dns-stale"
         | edgeCertificateReady runtime /= "true" = "certificate-not-ready"
-        | edgeVscodeIngressClass runtime /= "traefik" = "vscode-ingress-class-drift"
+        | not (edgeSecurityPolicyAttached runtime) = "auth-policy-not-ready"
+        | not (edgeVscodeRouteAccepted runtime && edgeKeycloakRouteAccepted runtime) = "gateway-route-not-ready"
+        | not (edgeGatewayReady runtime && edgeGatewayClassAccepted runtime) = "gateway-not-ready"
+        | not (edgeEnvoyGatewayDeploymentReady runtime) = "envoy-gateway-controller-not-ready"
+        | edgeEnvoyServiceIp runtime == "<missing>" = "envoy-service-not-ready"
+        | not (edgeLoadBalancerIpMatches runtime) = "load-balancer-ip-drift"
         | not privateEdgeReady = "cluster-edge-not-ready"
         | otherwise = "ready-for-external-proof"
+
+edgeLoadBalancerIpMatches :: EdgeRuntime -> Bool
+edgeLoadBalancerIpMatches runtime =
+    edgeExpectedLbIp runtime /= "<unknown>"
+        && edgeExpectedLbIp runtime /= "<missing>"
+        && edgeEnvoyServiceIp runtime == edgeExpectedLbIp runtime
 
 runHostCheckPorts :: IO ExitCode
 runHostCheckPorts = do
@@ -304,26 +361,6 @@ commandEffect commandPath commandArguments repoRoot =
             , commandWorkingDirectory = Just repoRoot
             }
 
-kubectlJson :: FilePath -> Maybe String -> [String] -> IO (Either String Value)
-kubectlJson repoRoot maybeNamespace args = do
-    outputResult <-
-        captureCommand
-            CommandSpec
-                { commandPath = "kubectl"
-                , commandArguments = namespaceArgs ++ args
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
-                }
-    pure $
-        case outputResult of
-            Failure err -> Left err
-            Success output ->
-                case processExitCode output of
-                    ExitSuccess -> eitherDecode (BL8.pack (processStdout output))
-                    ExitFailure _ -> Left (commandFailure output)
-  where
-    namespaceArgs = maybe [] (\namespace -> ["--namespace", namespace]) maybeNamespace
-
 optionalKubectlJson :: FilePath -> Maybe String -> [String] -> IO (Either String (Maybe Value))
 optionalKubectlJson repoRoot maybeNamespace args = do
     outputResult <-
@@ -361,37 +398,118 @@ edgeObject maybeValue =
         Just (Object obj) -> Just obj
         _ -> Nothing
 
-edgeItems :: Value -> [Value]
-edgeItems value =
-    case value of
-        Object obj ->
-            case KeyMap.lookup "items" obj of
-                Just (Array items) -> Vector.toList items
-                _ -> []
-        _ -> []
-
-ingressClassPresent :: Value -> String -> Bool
-ingressClassPresent value className = any matches (edgeItems value)
-  where
-    matches item =
-        case item of
-            Object obj ->
-                case KeyMap.lookup "metadata" obj of
-                    Just (Object metadataObj) -> KeyMap.lookup "name" metadataObj == Just (String (Text.pack className))
-                    _ -> False
-            _ -> False
-
-serviceCount :: Value -> Int
-serviceCount value = length (edgeItems value)
-
-traefikServiceIp :: Maybe Value -> String
-traefikServiceIp maybeValue =
+serviceLoadBalancerIp :: Maybe Value -> String
+serviceLoadBalancerIp maybeValue =
     case edgeObject maybeValue of
         Just obj ->
             case KeyMap.lookup "items" obj of
                 Just (Array items) | not (Vector.null items) -> firstLoadBalancerIp (Vector.head items)
                 _ -> "<missing>"
         Nothing -> "<missing>"
+
+deploymentReady :: Maybe Value -> Bool
+deploymentReady maybeValue =
+    case maybeStatusObject maybeValue of
+        Just statusObj ->
+            let availableReplicas = numberField statusObj "availableReplicas"
+                readyReplicas = numberField statusObj "readyReplicas"
+             in availableReplicas > 0 && readyReplicas > 0
+        Nothing -> False
+
+gatewayClassAccepted :: Maybe Value -> Bool
+gatewayClassAccepted maybeValue = hasStatusCondition maybeValue ["Accepted"]
+
+gatewayReady :: Maybe Value -> Bool
+gatewayReady maybeValue = hasStatusCondition maybeValue ["Accepted", "Programmed", "Ready"]
+
+httpRouteAccepted :: Maybe Value -> Bool
+httpRouteAccepted maybeValue =
+    case maybeValue of
+        Just (Object obj) ->
+            case KeyMap.lookup "status" obj of
+                Just (Object statusObj) ->
+                    case KeyMap.lookup "parents" statusObj of
+                        Just (Array parents) -> any parentAccepted (Vector.toList parents)
+                        _ -> False
+                _ -> False
+        _ -> False
+  where
+    parentAccepted parentValue =
+        case parentValue of
+            Object parentObj ->
+                case KeyMap.lookup "conditions" parentObj of
+                    Just (Array conditions) -> any conditionAccepted (Vector.toList conditions)
+                    _ -> False
+            _ -> False
+    conditionAccepted conditionValue =
+        case conditionValue of
+            Object conditionObj ->
+                case (KeyMap.lookup "type" conditionObj, KeyMap.lookup "status" conditionObj) of
+                    (Just (String "Accepted"), Just (String "True")) -> True
+                    _ -> False
+            _ -> False
+
+securityPolicyAttached :: Maybe Value -> Bool
+securityPolicyAttached maybeValue =
+    case maybeValue of
+        Just (Object obj) ->
+            hasTargetRef obj && (hasStatusCondition maybeValue ["Accepted", "Programmed"] || not (hasAnyStatusConditions maybeValue))
+        _ -> False
+  where
+    hasTargetRef obj =
+        case KeyMap.lookup "spec" obj of
+            Just (Object specObj) ->
+                case KeyMap.lookup "targetRefs" specObj of
+                    Just (Array refs) -> any targetMatches (Vector.toList refs)
+                    _ -> False
+            _ -> False
+    targetMatches value =
+        case value of
+            Object refObj ->
+                KeyMap.lookup "kind" refObj == Just (String "HTTPRoute")
+                    && KeyMap.lookup "name" refObj == Just (String "vscode")
+            _ -> False
+
+maybeStatusObject :: Maybe Value -> Maybe (KeyMap.KeyMap Value)
+maybeStatusObject maybeValue =
+    case maybeValue of
+        Just (Object obj) ->
+            case KeyMap.lookup "status" obj of
+                Just (Object statusObj) -> Just statusObj
+                _ -> Nothing
+        _ -> Nothing
+
+hasAnyStatusConditions :: Maybe Value -> Bool
+hasAnyStatusConditions maybeValue =
+    case maybeStatusObject maybeValue of
+        Just statusObj ->
+            case KeyMap.lookup "conditions" statusObj of
+                Just (Array conditions) -> not (Vector.null conditions)
+                _ -> False
+        Nothing -> False
+
+hasStatusCondition :: Maybe Value -> [Text.Text] -> Bool
+hasStatusCondition maybeValue acceptedTypes =
+    case maybeStatusObject maybeValue of
+        Just statusObj ->
+            case KeyMap.lookup "conditions" statusObj of
+                Just (Array conditions) -> any conditionAccepted (Vector.toList conditions)
+                _ -> False
+        Nothing -> False
+  where
+    conditionAccepted value =
+        case value of
+            Object conditionObj ->
+                case (KeyMap.lookup "type" conditionObj, KeyMap.lookup "status" conditionObj) of
+                    (Just (String conditionType), Just (String "True")) -> conditionType `elem` acceptedTypes
+                    _ -> False
+            _ -> False
+
+numberField :: KeyMap.KeyMap Value -> Text.Text -> Int
+numberField obj fieldName =
+    case KeyMap.lookup (Key.fromText fieldName) obj of
+        Just (Number value) -> round value
+        _ -> 0
 
 firstLoadBalancerIp :: Value -> String
 firstLoadBalancerIp value =
@@ -418,36 +536,6 @@ firstIpLike value =
                     case KeyMap.lookup "hostname" obj of
                         Just (String hostText) -> Text.unpack hostText
                         _ -> "<missing>"
-        _ -> "<missing>"
-
-vscodeIngressClass :: Maybe Value -> String
-vscodeIngressClass maybeValue =
-    case maybeValue of
-        Just (Object obj) ->
-            case KeyMap.lookup "spec" obj of
-                Just (Object specObj) ->
-                    case KeyMap.lookup "ingressClassName" specObj of
-                        Just (String value) -> Text.unpack value
-                        _ -> "<missing>"
-                _ -> "<missing>"
-        _ -> "<missing>"
-
-vscodeIngressHost :: Maybe Value -> String
-vscodeIngressHost maybeValue =
-    case maybeValue of
-        Just (Object obj) ->
-            case KeyMap.lookup "spec" obj of
-                Just (Object specObj) ->
-                    case KeyMap.lookup "rules" specObj of
-                        Just (Array rules) | not (Vector.null rules) ->
-                            case Vector.head rules of
-                                Object firstRule ->
-                                    case KeyMap.lookup "host" firstRule of
-                                        Just (String value) -> Text.unpack value
-                                        _ -> "<missing>"
-                                _ -> "<missing>"
-                        _ -> "<missing>"
-                _ -> "<missing>"
         _ -> "<missing>"
 
 certificateReady :: Maybe Value -> String
@@ -674,10 +762,6 @@ fallbackLanAddressing =
         , lanMetallbPool = "<unknown>"
         , lanIngressLbIp = "<unknown>"
         }
-
-presentText :: Bool -> String
-presentText True = "present"
-presentText False = "missing"
 
 boolText :: Bool -> String
 boolText value = if value then "true" else "false"

@@ -11,7 +11,7 @@ module Prodbox.Lib.ChartPlatform (
     deleteChartPlan,
     deployChartPlan,
     gatewayNodeIds,
-    keycloakNginxClientId,
+    keycloakVscodeClientId,
     keycloakRealmName,
     mergeChartSecretValues,
     renderChartList,
@@ -145,8 +145,29 @@ chartClusterIssuer = "letsencrypt-http01"
 keycloakRealmName :: String
 keycloakRealmName = "prodbox"
 
-keycloakNginxClientId :: String
-keycloakNginxClientId = "vscode-nginx"
+keycloakVscodeClientId :: String
+keycloakVscodeClientId = "vscode"
+
+publicEdgeGatewayClassName :: String
+publicEdgeGatewayClassName = "prodbox-public-edge"
+
+publicEdgeGatewayName :: String
+publicEdgeGatewayName = "public-edge"
+
+publicEdgeKeycloakRouteName :: String
+publicEdgeKeycloakRouteName = "keycloak"
+
+publicEdgeKeycloakListenerName :: String
+publicEdgeKeycloakListenerName = "keycloak-https"
+
+publicEdgeTlsSecretName :: String
+publicEdgeTlsSecretName = "public-edge-tls"
+
+publicEdgeVscodeListenerName :: String
+publicEdgeVscodeListenerName = "vscode-https"
+
+publicEdgeVscodeSecurityPolicyName :: String
+publicEdgeVscodeSecurityPolicyName = "vscode-oidc"
 
 gatewayNodeIds :: [String]
 gatewayNodeIds = ["node-a", "node-b", "node-c"]
@@ -154,7 +175,7 @@ gatewayNodeIds = ["node-a", "node-b", "node-c"]
 requiredChartSecretKeys :: [String]
 requiredChartSecretKeys =
     [ "keycloak_admin_password"
-    , "keycloak_nginx_client_secret"
+    , "keycloak_vscode_client_secret"
     , "patroni_app_password"
     , "patroni_standby_password"
     , "patroni_superuser_password"
@@ -1434,6 +1455,17 @@ resolvePublicFqdn settings =
   where
     domainSection = domain (validatedConfig settings)
 
+resolveIdentityFqdn :: ValidatedSettings -> String -> Either String String
+resolveIdentityFqdn settings publicFqdn =
+    case maybeNonEmptyText (keycloak_fqdn domainSection) of
+        Just fqdn -> Right fqdn
+        Nothing ->
+            if publicFqdn == ""
+                then Left "identity public FQDN must not be empty"
+                else Right publicFqdn
+  where
+    domainSection = domain (validatedConfig settings)
+
 chartStorageSpecsForRelease :: String -> String -> ChartDefinition -> [ChartStorageSpec]
 chartStorageSpecsForRelease rootChart releaseName definition =
     case chartDefinitionName definition of
@@ -1487,11 +1519,15 @@ renderReleaseValuesJson definition namespace rootChart settings chartSecrets gat
                     _ -> Left "keycloak-postgres requires exactly three storage bindings"
             "keycloak" ->
                 case publicFqdn of
-                    Just fqdn -> valuesForKeycloak namespace rootChart settings chartSecrets fqdn
+                    Just fqdn -> do
+                        identityFqdn <- resolveIdentityFqdn settings fqdn
+                        valuesForKeycloak namespace rootChart settings chartSecrets fqdn identityFqdn
                     Nothing -> Left "keycloak requires a public host"
             "vscode" ->
                 case (publicFqdn, storageBindings) of
-                    (Just fqdn, [binding]) -> valuesForVscode namespace rootChart settings chartSecrets binding fqdn
+                    (Just fqdn, [binding]) -> do
+                        identityFqdn <- resolveIdentityFqdn settings fqdn
+                        valuesForVscode namespace rootChart settings chartSecrets binding fqdn identityFqdn
                     (Nothing, _) -> Left "vscode requires a public host"
                     _ -> Left "vscode requires exactly one storage binding"
             "gateway" ->
@@ -1507,10 +1543,15 @@ valuesForKeycloak ::
     ValidatedSettings ->
     Map String String ->
     String ->
+    String ->
     Either String Value
-valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn = do
+valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn identityFqdn = do
     adminPassword <- requireMapValue "keycloak_admin_password" chartSecrets "keycloak_admin_password is required in chart secrets"
-    nginxSecret <- requireMapValue "keycloak_nginx_client_secret" chartSecrets "keycloak_nginx_client_secret is required in chart secrets"
+    vscodeClientSecret <-
+        requireMapValue
+            "keycloak_vscode_client_secret"
+            chartSecrets
+            "keycloak_vscode_client_secret is required in chart secrets"
     pure
         ( object
             [ "replicaCount" .= (2 :: Int)
@@ -1529,9 +1570,24 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn = do
                 .= object
                     [ "adminUser" .= ("admin" :: String)
                     , "adminPassword" .= adminPassword
-                    , "publicHost" .= publicFqdn
-                    , "relativePath" .= ("/auth" :: String)
+                    , "publicHost" .= identityFqdn
                     , "realmName" .= keycloakRealmName
+                    ]
+            , "gateway"
+                .= object
+                    [ "className" .= publicEdgeGatewayClassName
+                    , "name" .= publicEdgeGatewayName
+                    , "listenerName" .= publicEdgeKeycloakListenerName
+                    , "routeName" .= publicEdgeKeycloakRouteName
+                    , "tlsSecretName" .= publicEdgeTlsSecretName
+                    , "clusterIssuer" .= chartClusterIssuer
+                    , "vscodePublicHost" .= publicFqdn
+                    ]
+            , "oidc"
+                .= object
+                    [ "vscodeClientId" .= keycloakVscodeClientId
+                    , "vscodeClientSecret" .= vscodeClientSecret
+                    , "redirectUri" .= ("https://" ++ publicFqdn ++ "/oauth2/callback")
                     ]
             , "postgres"
                 .= object
@@ -1539,11 +1595,6 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn = do
                     , "database" .= patroniDatabaseName
                     , "username" .= patroniUsername
                     , "passwordSecretName" .= patroniCredentialsSecretName rootChart
-                    ]
-            , "nginx"
-                .= object
-                    [ "clientId" .= keycloakNginxClientId
-                    , "clientSecret" .= nginxSecret
                     ]
             ]
         )
@@ -1756,9 +1807,14 @@ valuesForVscode ::
     Map String String ->
     ChartStorageBinding ->
     String ->
+    String ->
     Either String Value
-valuesForVscode namespace rootChart settings chartSecrets binding publicFqdn = do
-    nginxSecret <- requireMapValue "keycloak_nginx_client_secret" chartSecrets "keycloak_nginx_client_secret is required in chart secrets"
+valuesForVscode namespace rootChart settings chartSecrets binding publicFqdn identityFqdn = do
+    vscodeClientSecret <-
+        requireMapValue
+            "keycloak_vscode_client_secret"
+            chartSecrets
+            "keycloak_vscode_client_secret is required in chart secrets"
     pure
         ( object
             [ "replicaCount" .= (1 :: Int)
@@ -1768,18 +1824,23 @@ valuesForVscode namespace rootChart settings chartSecrets binding publicFqdn = d
                     [ "namespace" .= namespace
                     , "rootChart" .= rootChart
                     ]
-            , "ingress"
+            , "gateway"
                 .= object
-                    [ "host" .= publicFqdn
+                    [ "className" .= publicEdgeGatewayClassName
+                    , "name" .= publicEdgeGatewayName
+                    , "listenerName" .= publicEdgeVscodeListenerName
+                    , "tlsSecretName" .= publicEdgeTlsSecretName
                     , "clusterIssuer" .= chartClusterIssuer
+                    , "host" .= publicFqdn
                     ]
-            , "nginx"
+            , "oidc"
                 .= object
-                    [ "clientId" .= keycloakNginxClientId
-                    , "clientSecret" .= nginxSecret
-                    , "realm" .= keycloakRealmName
-                    , "keycloakInternalUrl" .= ("http://keycloak:8080" :: String)
-                    , "image" .= ContainerImage.renderImageRef ContainerImage.harborVscodeNginxImage
+                    [ "clientId" .= keycloakVscodeClientId
+                    , "clientSecret" .= vscodeClientSecret
+                    , "issuer" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName)
+                    , "redirectURL" .= ("https://" ++ publicFqdn ++ "/oauth2/callback")
+                    , "logoutPath" .= ("/logout" :: String)
+                    , "securityPolicyName" .= publicEdgeVscodeSecurityPolicyName
                     ]
             , "vscode"
                 .= object

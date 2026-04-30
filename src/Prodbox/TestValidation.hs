@@ -22,7 +22,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper)
-import Data.List (isInfixOf, sort)
+import Data.List (isInfixOf, nub, sort)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
@@ -35,7 +35,13 @@ import Prodbox.AwsEnvironment (
 import Prodbox.BuildSupport (
     canonicalOperatorBinaryPath,
  )
-import Prodbox.Dns (preferredPublicHostFqdn)
+import Prodbox.Dns (
+    configuredPublicHostFqdns,
+    fetchPublicIp,
+    preferredIdentityHostFqdn,
+    preferredPublicHostFqdn,
+    queryRoute53Record,
+ )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Result (Result (..))
@@ -80,6 +86,12 @@ publicEdgeReadyAttempts = 30
 
 publicEdgeReadyDelayMicroseconds :: Int
 publicEdgeReadyDelayMicroseconds = 10000000
+
+chartsVscodeCurlAttempts :: Int
+chartsVscodeCurlAttempts = 10
+
+chartsVscodeCurlDelayMicroseconds :: Int
+chartsVscodeCurlDelayMicroseconds = 5000000
 
 awsTestSshReadyAttempts :: Int
 awsTestSshReadyAttempts = 18
@@ -178,14 +190,17 @@ runChartsVscodeValidation repoRoot = do
                 ExitFailure _ -> pure readyExit
                 ExitSuccess -> do
                     let fqdn = preferredPublicHostFqdn settings
-                    assertCommandOutputContainsAll
+                        identityFqdn = preferredIdentityHostFqdn settings
+                    waitForCommandOutputContainsAll
                         CommandSpec
                             { commandPath = "curl"
-                            , commandArguments = ["-sSIL", "--max-time", "20", "https://" ++ fqdn]
+                            , commandArguments = ["-sSI", "--max-time", "20", "https://" ++ fqdn]
                             , commandEnvironment = Nothing
                             , commandWorkingDirectory = Just repoRoot
                             }
-                        ["HTTP/"]
+                        ["HTTP/", "location: https://" ++ identityFqdn ++ "/"]
+                        chartsVscodeCurlAttempts
+                        chartsVscodeCurlDelayMicroseconds
 
 waitForPublicEdgeReady :: FilePath -> IO ExitCode
 waitForPublicEdgeReady repoRoot = do
@@ -271,7 +286,12 @@ runPublicDnsValidation repoRoot = do
                                     let actualNameservers = sort (map normalizeDnsValue (filter (/= "") (lines stdoutText)))
                                         expectedNormalized = sort (map normalizeDnsValue expectedNameservers)
                                     if actualNameservers == expectedNormalized
-                                        then pure ExitSuccess
+                                        then do
+                                            publicIpResult <- fetchPublicIp
+                                            case publicIpResult of
+                                                Left err -> failWith err
+                                                Right publicIp ->
+                                                    verifyConfiguredPublicDnsRecords repoRoot settings publicIp
                                         else
                                             failWith
                                                 ( "Public NS delegation mismatch for "
@@ -680,6 +700,97 @@ assertCommandOutputContainsAll spec expectedTexts = do
                                         ++ "` did not report all required output fragments: "
                                         ++ show expectedTexts
                                     )
+
+waitForCommandOutputContainsAll :: CommandSpec -> [String] -> Int -> Int -> IO ExitCode
+waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = go attempts
+  where
+    go :: Int -> IO ExitCode
+    go attemptsLeft = do
+        outputResult <- captureCommand spec
+        case outputResult of
+            Failure err ->
+                if attemptsLeft <= 1
+                    then failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
+                    else retry attemptsLeft
+            Success output -> do
+                putStr (processStdout output)
+                hPutStr stderr (processStderr output)
+                let combinedOutput = processStdout output ++ processStderr output
+                case processExitCode output of
+                    ExitSuccess
+                        | all (`isInfixOf` combinedOutput) expectedTexts -> pure ExitSuccess
+                        | attemptsLeft <= 1 ->
+                            failWith
+                                ( "`"
+                                    ++ commandDisplay spec
+                                    ++ "` did not report all required output fragments: "
+                                    ++ show expectedTexts
+                                )
+                        | otherwise -> retry attemptsLeft
+                    ExitFailure code
+                        | attemptsLeft <= 1 ->
+                            failWith
+                                ( "`"
+                                    ++ commandDisplay spec
+                                    ++ "` exited with code "
+                                    ++ show code
+                                )
+                        | otherwise -> retry attemptsLeft
+
+    retry :: Int -> IO ExitCode
+    retry attemptsLeft = do
+        hPutStrLn stderr "Waiting for required command output before retry."
+        threadDelay delayMicroseconds
+        go (attemptsLeft - 1)
+
+verifyConfiguredPublicDnsRecords :: FilePath -> ValidatedSettings -> String -> IO ExitCode
+verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
+    foldM verifyHost ExitSuccess (configuredPublicHostFqdns settings)
+  where
+    verifyHost :: ExitCode -> String -> IO ExitCode
+    verifyHost exitCode fqdn =
+        case exitCode of
+            ExitFailure _ -> pure exitCode
+            ExitSuccess -> do
+                recordResult <- queryRoute53Record repoRoot settings fqdn
+                case recordResult of
+                    Left err -> failWith err
+                    Right Nothing ->
+                        failWith ("Public A record missing in Route 53 for " ++ fqdn)
+                    Right (Just route53Ip)
+                        | route53Ip /= publicIp ->
+                            failWith
+                                ( "Public A record mismatch for "
+                                    ++ fqdn
+                                    ++ ": Route 53 has "
+                                    ++ route53Ip
+                                    ++ " but the current public IP is "
+                                    ++ publicIp
+                                )
+                        | otherwise -> do
+                            digResult <-
+                                runTextCommand
+                                    CommandSpec
+                                        { commandPath = "dig"
+                                        , commandArguments = ["+short", "A", fqdn]
+                                        , commandEnvironment = Nothing
+                                        , commandWorkingDirectory = Just repoRoot
+                                        }
+                            case digResult of
+                                Left err -> failWith err
+                                Right stdoutText ->
+                                    let resolvedIps = nub (filter (/= "") (map trim (lines stdoutText)))
+                                     in if publicIp `elem` resolvedIps
+                                            then pure ExitSuccess
+                                            else
+                                                failWith
+                                                    ( "Public DNS A resolution mismatch for "
+                                                        ++ fqdn
+                                                        ++ ": expected "
+                                                        ++ publicIp
+                                                        ++ " but found "
+                                                        ++ show resolvedIps
+                                                    )
 
 runTextCommand :: CommandSpec -> IO (Either String String)
 runTextCommand spec = do

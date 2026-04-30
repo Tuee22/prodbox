@@ -12,14 +12,12 @@
 
 This phase ports the chart platform and retained-storage orchestration to Haskell while preserving
 deterministic PV/PVC rebinding and the supported cluster-backed `vscode` delivery model. It owns
-retained storage, Harbor-backed image sourcing for the supported chart stack, the current-worktree
-`vscode-nginx` image residue owned by the reopened edge work, and the PostgreSQL doctrine for
-every Helm-managed application stack. Sprint `3.1` and Sprint `3.3` remain closed on retained
-storage and PostgreSQL doctrine, Sprint `3.2` remains the current-worktree `vscode` baseline, and
-Sprint `3.4` reopens the browser-facing auth and public-route surface on the Envoy Gateway target.
-The supported chart platform remains Haskell-owned, the current `vscode` stack stays on
-Harbor-backed images after Harbor bootstrap, and the PostgreSQL doctrine for every Helm-managed
-application stack is the implemented Percona-operator-backed Patroni HA path: exactly three
+retained storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway
+browser-auth path for `vscode`, and the PostgreSQL doctrine for every Helm-managed application
+stack. Sprint `3.1`, Sprint `3.2`, Sprint `3.3`, and Sprint `3.4` now close on the Haskell-owned
+chart platform. The supported `vscode` stack stays on Harbor-backed images after Harbor bootstrap,
+uses Gateway API plus Envoy Gateway `SecurityPolicy` for the public route, and keeps the
+Percona-operator-backed Patroni HA path for every Helm-managed application stack: exactly three
 replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
 
 ## Current Baseline In Worktree
@@ -30,8 +28,6 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 - The retained-root contract remains the configured manual PV root (default `.data/`) plus
   generated non-PV chart state under `.prodbox-state/`; chart secret resolution and gateway
   event-key handling are Haskell-owned.
-- `docker/nginx-oidc.Dockerfile` remains current-worktree migration residue and is published to
-  Harbor before supported deployment.
 - The supported app dependency graph remains `keycloak-postgres -> keycloak -> vscode`, with
   `keycloak-postgres` owning the namespace-local application-database release for the root chart
   namespace.
@@ -45,8 +41,9 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
-- The current worktree still renders the `vscode` browser path through `Ingress` and
-  `vscode-nginx`. Sprint `3.4` reopens that surface to move public browser auth to Envoy Gateway.
+- The current worktree renders the `vscode` browser path through Gateway API `HTTPRoute`
+  resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the shared public-edge
+  `Gateway`, certificate, and identity route.
 
 ## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage ✅
 
@@ -85,7 +82,7 @@ None.
 ## Sprint 3.2: Haskell `vscode` Stack Delivery and Auth Path ✅
 
 **Status**: Done
-**Implementation**: `charts/`, `docker/nginx-oidc.Dockerfile`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/TestPlan.hs`
+**Implementation**: `charts/`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/TestPlan.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -96,20 +93,16 @@ image sourcing to the canonical Harbor-first doctrine.
 ### Deliverables
 
 - The supported app path is `external PostgreSQL -> keycloak -> vscode`.
-- `vscode-nginx` remains the namespace-local auth proxy behind Traefik.
-- `vscode-nginx` is loaded into Harbor before deployment and referenced from Harbor on the
-  supported path.
 - The Haskell chart runtime owns deploy, status, and delete behavior for the `vscode` stack.
-- Both `amd64` and `arm64` variants of the auth-proxy image are published or loaded irrespective
-  of the architecture of the machine running `prodbox`.
+- Harbor-backed image refs remain canonical for the supported `keycloak` and `vscode` workloads
+  after Harbor bootstrap.
 
 ### Validation
 
 1. `prodbox test integration charts-platform`
 2. `prodbox test integration charts-vscode`
-3. Image-source proof: the supported chart or rendered manifests reference Harbor for
-   `vscode-nginx`
-4. Harbor proof: both `amd64` and `arm64` variants of the auth-proxy image are available
+3. Image-source proof: the supported chart or rendered manifests reference Harbor-backed refs for
+   `keycloak` and `vscode`
 
 ### Current Validation State
 
@@ -192,9 +185,9 @@ dependency.
 
 None.
 
-## Sprint 3.4: Envoy-Protected `vscode` Delivery and `vscode-nginx` Removal 📋
+## Sprint 3.4: Envoy-Protected `vscode` Delivery and `vscode-nginx` Removal ✅
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `charts/vscode/`, `charts/keycloak/`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -227,15 +220,18 @@ API delivery and Envoy-enforced browser auth while keeping Keycloak as the ident
 
 ### Current Validation State
 
-- The current worktree still renders `charts/vscode/templates/ingress.yaml` and the
-  `vscode-nginx` deployment or config path.
-- The current chart-secret contract still contains `keycloak_nginx_client_secret`.
+- `charts/vscode/` now renders the public app path through `HTTPRoute` plus Envoy Gateway
+  `SecurityPolicy`, with no `Ingress`, `vscode-nginx` deployment, or nginx config path.
+- `charts/keycloak/` now renders the shared public-edge `Gateway`, certificate, identity
+  `HTTPRoute`, and the dedicated Keycloak public host expected by the app stack.
+- `src/Prodbox/Lib/ChartPlatform.hs` now renders the Gateway API, OIDC, and dedicated-hostname
+  values contract, and the chart-secret contract now uses `keycloak_vscode_client_secret`.
+- `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, and the built-frontend suites no
+  longer carry the nginx proxy image or image-publication path.
 
 ### Remaining Work
 
-- Replace the `vscode` `Ingress` path with Gateway API resources.
-- Remove `vscode-nginx` and its secret or image contract.
-- Move the public `vscode` auth path to Envoy Gateway while retaining Keycloak as the IdP.
+None.
 
 ## Documentation Requirements
 

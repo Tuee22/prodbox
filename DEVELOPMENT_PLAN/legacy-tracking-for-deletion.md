@@ -18,19 +18,12 @@
 
 ## Ledger Status
 
-The cleanup ledger remains closed on Python-removal work and the earlier non-Python cleanup owned
-by Sprint `4.2`, but it is reopened on the self-managed public-edge migration to Envoy Gateway.
-The pending items below capture the current Traefik, `Ingress`, and `vscode-nginx` compatibility
-surfaces that no longer match the target doctrine.
+The cleanup ledger is closed on both the Python-removal work and the later Envoy Gateway public-edge
+migration. No known compatibility helpers or duplicate surfaces remain pending removal.
 
 ## Pending Removal
 
-| Item | Owner | Notes |
-|------|-------|-------|
-| Traefik lifecycle ownership, Harbor mirror assumptions, and `traefik-system` inventory surfaces in `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/K8s.hs`, `documents/engineering/local_registry_pipeline.md`, `README.md`, and plan control docs | Sprint `1.4` | Replace the self-managed public edge with Envoy Gateway and Gateway API while keeping MetalLB and cert-manager on the local-cluster path. |
-| `Ingress`-based public-edge readiness classification in `src/Prodbox/Host.hs`, `charts/vscode/templates/ingress.yaml`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, and the public-edge doctrine docs | Sprint `5.2` | Replace Traefik `IngressClass` and `Ingress` readiness with Gateway API, Envoy Gateway, certificate, and Route 53 classification. |
-| App-local `vscode-nginx` browser-auth proxy surfaces in `docker/nginx-oidc.Dockerfile`, `charts/vscode/`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `documents/engineering/helm_chart_platform_doctrine.md`, and related README or plan references | Sprint `3.4` | Remove the nginx OIDC proxy, its Harbor image, and `keycloak_nginx_client_secret` from the supported `vscode` path once Envoy Gateway `SecurityPolicy` owns browser auth. |
-| Shared-host `domain.vscode_fqdn` plus `/auth` public-host doctrine in `src/Prodbox/Settings.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `README.md`, and the reopened public-edge docs | Sprint `1.4` / Sprint `3.4` | Introduce the dedicated identity and app hostname model required by the Envoy Gateway public edge. |
+None.
 
 ## Completed
 
@@ -74,9 +67,13 @@ surfaces that no longer match the target doctrine.
 | Repository-root `Dockerfile` and root-level references that treated it as canonical | Sprint 1.1 closure on April 18, 2026 | The canonical frontend image now lives at `docker/prodbox.Dockerfile`, and supported references point to `docker/` only |
 | Multi-stage frontend image build in the former root `Dockerfile` (`haskell:9.6.7 -> debian:bookworm-slim`) | Sprint 1.1 closure on April 18, 2026 | Replaced with a single-stage `ubuntu:24.04` frontend image while preserving `/opt/build` |
 | Multi-stage gateway image build in `docker/gateway.Dockerfile` (`haskell:9.6.7 -> debian:bookworm-slim`) | Sprint 2.1 closure on April 18, 2026 | Replaced with a single-stage `ubuntu:24.04` gateway image |
-| `vscode-nginx` delivery gap for Harbor-only dual-arch image publication | Sprint 3.2 closure on April 18, 2026 | `docker/nginx-oidc.Dockerfile` remains the permitted Alpine-based exception, but the supported stack now publishes it to Harbor and references Harbor only |
 | Supported doctrine that framed Harbor as a local mirror or allowed arbitrary non-Harbor workload pulls | Sprint 4.1 closure on April 18, 2026 | Supported charts and Pulumi home-stack workloads reference Harbor-backed images in steady state; the only supported public-image exception is the narrow Harbor/bootstrap path owned by Sprint `4.1` |
 | Arch-implicit container population doctrine without explicit `amd64` plus `arm64` and mixed-arch closure | Sprint 4.1 closure on April 18, 2026 | The lifecycle now reconciles required public images and custom images for both `amd64` and `arm64` irrespective of local host architecture |
+| Traefik lifecycle ownership, `traefik-system` inventory, and Traefik mirror assumptions in lifecycle code, tests, plan control docs, and registry doctrine | Sprint `1.4` closure on April 29, 2026 | Replaced by Envoy Gateway lifecycle ownership, `envoy-gateway-system`, and the Harbor-backed Envoy Gateway control-plane plus Envoy data-plane image set. |
+| `Ingress`-based public-edge classification in host diagnostics, chart templates, native validation flows, and doctrine docs | Sprint `5.2` closure on April 29, 2026 | Replaced by Gateway API, Envoy Gateway `SecurityPolicy`, certificate, and explicit Route 53 readiness classification. |
+| App-local `vscode-nginx` browser-auth proxy surfaces, its Harbor image, and `keycloak_nginx_client_secret` | Sprint `3.4` closure on April 29, 2026 | Removed from charts, lifecycle image publication, retained chart-secret state, and public-edge doctrine after Envoy Gateway `SecurityPolicy` took over the browser-auth path. |
+| Shared-host `domain.vscode_fqdn` plus `/auth` public-host doctrine | Sprint `1.4` / Sprint `3.4` closure on April 29, 2026 | Replaced by explicit app and identity hostname support through `domain.vscode_fqdn` plus `domain.keycloak_fqdn`. |
+| `vscode-nginx` delivery gap for Harbor-only dual-arch image publication | Sprint `3.4` closure on April 29, 2026 | Closed by removing `docker/nginx-oidc.Dockerfile` and the remaining nginx-based browser-auth path from the supported stack. |
 
 ## Related Documents
 

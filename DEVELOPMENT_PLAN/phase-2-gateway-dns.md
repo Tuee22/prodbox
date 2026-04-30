@@ -22,7 +22,7 @@ tool shims, and the retained in-image AWS CLI bundle. The current daemon surface
 config generation, heartbeat recording, in-memory ownership projection, DNS-write gating, HTTP
 REST status, and HMAC event signing. The broader peer-transport protocol remains design-owned by
 the TLA+ and gateway doctrine docs rather than by a closed repository surface. This phase does not
-own the Kubernetes Gateway API or Envoy Gateway public edge; that reopened work belongs to
+own the Kubernetes Gateway API or Envoy Gateway public edge; those closed surfaces belong to
 Phases `1`, `3`, and `5`.
 
 ## Current Baseline In Worktree
@@ -48,8 +48,8 @@ Phases `1`, `3`, and `5`.
 - `src/Prodbox/Gateway/Types.hs` still parses certificate, key, CA, and socket metadata in the
   daemon config and Orders document, but the current closed runtime surface does not materialize
   peer transport from those fields.
-- The Haskell `prodbox gateway ...` surface remains distinct from the reopened Envoy Gateway public
-  edge target.
+- The Haskell `prodbox gateway ...` surface remains distinct from the Envoy Gateway public edge
+  surface.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
   been removed.
 - `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface. All Python TLA+ wrappers have

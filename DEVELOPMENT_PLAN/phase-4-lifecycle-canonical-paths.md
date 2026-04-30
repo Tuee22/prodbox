@@ -105,8 +105,8 @@ contract without reintroducing Python or duplicate runtime paths.
   without hitting Helm's immutable Deployment selector error.
 - `inspectRawImageManifest` in `src/Prodbox/CLI/Rke2.hs` now treats Harbor's `401 Unauthorized`
   response for a missing custom-image target as a build-required miss instead of a fatal inspect
-  failure, so `prodbox rke2 install` rebuilds and publishes `prodbox-nginx-oidc` before later
-  chart work resumes.
+  failure, so `prodbox rke2 install` rebuilds and publishes the supported custom gateway image
+  before later chart work resumes.
 ### Remaining Work
 
 None.
@@ -199,7 +199,7 @@ parity exists.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
-  now tracks only non-Python Envoy-migration residue owned by reopened earlier phases.
+  is closed with no unresolved cleanup.
 
 ### Remaining Work
 

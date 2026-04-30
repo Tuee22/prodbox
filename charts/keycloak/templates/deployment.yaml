@@ -36,7 +36,6 @@ spec:
             - --health-enabled=true
             - --proxy-headers=xforwarded
             - --hostname={{ .Values.keycloak.publicHost }}
-            - --http-relative-path={{ .Values.keycloak.relativePath }}
             - --import-realm
           ports:
             - name: http
@@ -71,19 +70,19 @@ spec:
               readOnly: true
           startupProbe:
             httpGet:
-              path: {{ printf "%s/health/ready" .Values.keycloak.relativePath }}
+              path: /health/ready
               port: 9000
             failureThreshold: 60
             periodSeconds: 10
           readinessProbe:
             httpGet:
-              path: {{ printf "%s/health/ready" .Values.keycloak.relativePath }}
+              path: /health/ready
               port: 9000
             initialDelaySeconds: 20
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: {{ printf "%s/health/live" .Values.keycloak.relativePath }}
+              path: /health/live
               port: 9000
             initialDelaySeconds: 40
             periodSeconds: 20

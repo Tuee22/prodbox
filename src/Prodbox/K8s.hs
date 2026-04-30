@@ -23,7 +23,7 @@ import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
 
 defaultInfrastructureNamespaces :: [String]
-defaultInfrastructureNamespaces = ["metallb-system", "traefik-system", "cert-manager", "postgres-operator"]
+defaultInfrastructureNamespaces = ["metallb-system", "envoy-gateway-system", "cert-manager", "postgres-operator"]
 
 runK8sCommand :: FilePath -> K8sCommand -> IO ExitCode
 runK8sCommand repoRoot command =

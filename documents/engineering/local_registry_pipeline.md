@@ -20,8 +20,8 @@ This document is the SSoT for the local image-registry doctrine:
 4. Required public images are mirrored into Harbor idempotently after Harbor and its storage
    backend are healthy and before the later workloads that need them are deployed.
 5. Custom `prodbox` images are built outside the cluster via Docker CLI and published to Harbor as
-   `linux/amd64` plus `linux/arm64` manifests, and the long-term supported edge does not require a
-   permanent app-local `vscode-nginx` image.
+   `linux/amd64` plus `linux/arm64` manifests, and no supported edge path depends on a
+   repository-owned nginx auth-proxy image.
 
 Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
@@ -40,12 +40,10 @@ The native Haskell lifecycle reconciles Harbor state in order:
 6. Harbor project reconcile for `prodbox`
 7. MinIO bootstrap install from public `quay.io/minio/*` image refs
 8. Docker login plus required public-image mirror into Harbor
-9. Multi-platform custom-image publish and host-arch import for the Haskell gateway and the
-   current-worktree `vscode-nginx` migration-residue image
+9. Multi-platform custom-image publish and host-arch import for the Haskell gateway image
 10. `registries.yaml` reconcile and conditional RKE2 restart
-11. Harbor-backed platform-runtime install for MetalLB, the current Traefik baseline or the target
-   Envoy Gateway edge controller, cert-manager, and the Percona
-   PostgreSQL operator
+11. Harbor-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
+   Percona PostgreSQL operator
 12. Optional Route 53 bootstrap A-record reconcile
 13. MinIO steady-state reconcile onto Harbor-backed image refs
 
@@ -85,23 +83,21 @@ Policy:
 
 - `prodbox-id` source: `/etc/machine-id`
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
-- additional custom image ref: `127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest`
 - supported mirrored public refs include Harbor-backed Percona operator, PostgreSQL, `pgBouncer`,
-  and `pgBackRest` images, `code-server`, `keycloak`, `minio`, `minio-mc`, `traefik`, `metallb`,
-  `frr`, `kube-rbac-proxy`, and `cert-manager` images under the Harbor `prodbox` project
+  and `pgBackRest` images, `code-server`, `keycloak`, `minio`, `minio-mc`,
+  `envoy-gateway-mirror`, `envoy-proxy-mirror`, `metallb`, `frr`, `kube-rbac-proxy`, and
+  `cert-manager` images under the Harbor `prodbox` project
 
 Platform-runtime and chart-runtime workloads consume those Harbor-backed refs after bootstrap.
 
 ### 3.1 Target Edge Image Implications
 
-The target public-edge doctrine changes the expected image set:
+The supported public-edge doctrine uses this image set:
 
-1. Traefik images become removable migration residue.
-2. The supported edge image set becomes the Envoy Gateway control-plane image plus the Envoy data
+1. The supported edge image set includes the Envoy Gateway control-plane image plus the Envoy data
    plane images that back Gateway API listeners.
-3. `prodbox-nginx-oidc` becomes removable once Envoy Gateway `SecurityPolicy` owns the browser
-   auth flow.
-4. The Haskell distributed gateway image remains a separate repository-owned image and is not
+2. No supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
+3. The Haskell distributed gateway image remains a separate repository-owned image and is not
    replaced by Envoy Gateway.
 
 ## 4. RKE2 Mirror Behavior

@@ -61,6 +61,7 @@ data DomainSection = DomainSection
     { demo_fqdn :: Text
     , demo_ttl :: Natural
     , vscode_fqdn :: Maybe Text
+    , keycloak_fqdn :: Maybe Text
     }
     deriving (Eq, Show, Generic, FromJSON)
 
@@ -123,6 +124,7 @@ renderSettingsDisplay showSecrets settings =
         , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
         , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
         , "domain.vscode_fqdn=" ++ renderMaybeText (vscode_fqdn (domain config))
+        , "domain.keycloak_fqdn=" ++ renderMaybeText (keycloak_fqdn (domain config))
         , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
         , "acme.server=" ++ renderText (server (acme config))
         , "acme.eab_key_id=" ++ renderMaybeText (eab_key_id (acme config))
@@ -307,6 +309,7 @@ defaultConfigFile =
                 { demo_fqdn = "demo.example.com"
                 , demo_ttl = 60
                 , vscode_fqdn = Nothing
+                , keycloak_fqdn = Just "auth.example.com"
                 }
         , acme =
             AcmeSection
@@ -347,6 +350,7 @@ renderConfigDhall config =
         , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))
         , "        , demo_ttl = " ++ show (demo_ttl (domain config))
         , "        , vscode_fqdn = " ++ dhallOptionalText (vscode_fqdn (domain config))
+        , "        , keycloak_fqdn = " ++ dhallOptionalText (keycloak_fqdn (domain config))
         , "        }"
         , "    , acme = Config.default.acme // {"
         , "        , email = " ++ dhallText (email (acme config))

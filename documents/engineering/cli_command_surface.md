@@ -99,8 +99,9 @@ is prompt-driven for temporary elevated AWS credentials; stored
 `src/Prodbox/Host.hs` owns the full public `prodbox host ...` surface.
 
 The target public-edge doctrine for that surface is defined in
-[Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). The current implementation still
-classifies Traefik and `Ingress` state until the reopened edge phases close.
+[Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
+classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, `SecurityPolicy`
+attachment, certificate readiness, and external browser reachability.
 
 ### `prodbox rke2`
 

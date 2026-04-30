@@ -321,9 +321,7 @@ renderIntegralText value =
 
 preferredGatewayFqdn :: ValidatedSettings -> String
 preferredGatewayFqdn settings =
-    case vscode_fqdn (domain config) of
-        Just value -> Text.unpack value
-        Nothing -> Text.unpack (demo_fqdn (domain config))
+    Text.unpack (demo_fqdn (domain config))
   where
     config = validatedConfig settings
 

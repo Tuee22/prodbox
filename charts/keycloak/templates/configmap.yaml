@@ -15,18 +15,18 @@ data:
       "loginWithEmailAllowed": true,
       "clients": [
         {
-          "clientId": {{ .Values.nginx.clientId | quote }},
-          "secret": {{ .Values.nginx.clientSecret | quote }},
+          "clientId": {{ .Values.oidc.vscodeClientId | quote }},
+          "secret": {{ .Values.oidc.vscodeClientSecret | quote }},
           "enabled": true,
           "publicClient": false,
           "protocol": "openid-connect",
           "standardFlowEnabled": true,
           "directAccessGrantsEnabled": false,
           "redirectUris": [
-            {{ printf "https://%s/auth/callback" .Values.keycloak.publicHost | quote }}
+            {{ .Values.oidc.redirectUri | quote }}
           ],
           "webOrigins": [
-            {{ printf "https://%s" .Values.keycloak.publicHost | quote }}
+            {{ printf "https://%s" .Values.gateway.vscodePublicHost | quote }}
           ]
         }
       ]

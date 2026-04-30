@@ -171,6 +171,7 @@ data ConfigSetupResult = ConfigSetupResult
     , configSetupRoute53ZoneId :: Text
     , configSetupDemoFqdn :: Text
     , configSetupVscodeFqdn :: Maybe Text
+    , configSetupKeycloakFqdn :: Maybe Text
     , configSetupPolicyTier :: PolicyTier
     , configSetupAccessKeyId :: Text
     , configSetupQuotaStatuses :: [QuotaStatus]
@@ -206,6 +207,7 @@ data ConfigSetupInput = ConfigSetupInput
     , configSetupDemoFqdnInput :: Text
     , configSetupDemoTtlInput :: Natural
     , configSetupVscodeFqdnInput :: Maybe Text
+    , configSetupKeycloakFqdnInput :: Maybe Text
     , configSetupAcmeEmailInput :: Text
     , configSetupAcmeServerInput :: Text
     , configSetupAcmeEabKeyIdInput :: Maybe Text
@@ -441,6 +443,7 @@ interactiveConfigSetupInput repoRoot = do
     demoFqdnRaw <- promptText "Demo public FQDN (for example demo.example.com)" (Just ("demo." ++ Text.unpack zoneName))
     demoTtl <- promptInt "Demo DNS TTL seconds" 60
     vscodeFqdnRaw <- promptText "VS Code public FQDN (blank uses the demo FQDN; for example vscode.example.com)" Nothing
+    keycloakFqdnRaw <- promptText "Keycloak public FQDN (blank uses auth.<zone>; for example auth.example.com)" (Just ("auth." ++ Text.unpack zoneName))
     showAcmeProviderGuidance
     providerIndex <- promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 0
     acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
@@ -463,6 +466,7 @@ interactiveConfigSetupInput repoRoot = do
         demoFqdnRaw
         demoTtl
         vscodeFqdnRaw
+        keycloakFqdnRaw
         acmeEmailRaw
         acmeServerValue
         eabKeyIdRaw
@@ -821,6 +825,7 @@ validateConfigSetupInput ::
     Int ->
     String ->
     String ->
+    String ->
     Text ->
     String ->
     String ->
@@ -830,11 +835,12 @@ validateConfigSetupInput ::
     String ->
     PolicyTier ->
     IO ConfigSetupInput
-validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnRaw acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap manualPvHostRootRaw policyTier = do
+validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnRaw keycloakFqdnRaw acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap manualPvHostRootRaw policyTier = do
     normalizedAdminCredentials <- validateAdminCredentialsInput adminCredentials
     let normalizedZoneId = Text.strip zoneId
         normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
         normalizedVscodeFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack vscodeFqdnRaw))
+        normalizedKeycloakFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack keycloakFqdnRaw))
         normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
         normalizedEabKeyId = normalizeOptionalText (Text.pack eabKeyIdRaw)
         normalizedEabHmacKey = normalizeOptionalText (Text.pack eabHmacKeyRaw)
@@ -845,6 +851,9 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
     case normalizedVscodeFqdn of
         Nothing -> pure ()
         Just value -> unless (isValidFqdn value) (throwAws "vscode_fqdn must be a valid fully qualified domain name")
+    case normalizedKeycloakFqdn of
+        Nothing -> pure ()
+        Just value -> unless (isValidFqdn value) (throwAws "keycloak_fqdn must be a valid fully qualified domain name")
     when (demoTtl < 30 || demoTtl > 86400) (throwAws "demo_ttl must be between 30 and 86400 seconds")
     unless (hasValidEmailShape normalizedAcmeEmail) (throwAws "acme_email must be a valid email address")
     unless ("https://" `Text.isPrefixOf` Text.toLower acmeServer) (throwAws "acme_server must be an https:// URL")
@@ -856,6 +865,7 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
             , configSetupDemoFqdnInput = normalizedDemoFqdn
             , configSetupDemoTtlInput = fromIntegral demoTtl
             , configSetupVscodeFqdnInput = normalizedVscodeFqdn
+            , configSetupKeycloakFqdnInput = normalizedKeycloakFqdn
             , configSetupAcmeEmailInput = normalizedAcmeEmail
             , configSetupAcmeServerInput = Text.strip acmeServer
             , configSetupAcmeEabKeyIdInput = normalizedEabKeyId
@@ -964,6 +974,7 @@ applyConfigSetup repoRoot input = do
                         { demo_fqdn = configSetupDemoFqdnInput input
                         , demo_ttl = configSetupDemoTtlInput input
                         , vscode_fqdn = configSetupVscodeFqdnInput input
+                        , keycloak_fqdn = configSetupKeycloakFqdnInput input
                         }
                 , acme =
                     AcmeSection
@@ -992,6 +1003,7 @@ applyConfigSetup repoRoot input = do
                     , configSetupRoute53ZoneId = configSetupRoute53ZoneIdInput input
                     , configSetupDemoFqdn = configSetupDemoFqdnInput input
                     , configSetupVscodeFqdn = configSetupVscodeFqdnInput input
+                    , configSetupKeycloakFqdn = configSetupKeycloakFqdnInput input
                     , configSetupPolicyTier = configSetupPolicyTierInput input
                     , configSetupAccessKeyId = newAccessKeyId
                     , configSetupQuotaStatuses = quotaStatuses
@@ -1471,6 +1483,7 @@ renderConfigSetupResult result =
         , "ROUTE53_ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneId result)
         , "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result)
         , "VSCODE_FQDN=" ++ maybe "" Text.unpack (configSetupVscodeFqdn result)
+        , "KEYCLOAK_FQDN=" ++ maybe "" Text.unpack (configSetupKeycloakFqdn result)
         , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result)
         , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result)
         , "CONFIG_PATH=" ++ configSetupDhallPath result

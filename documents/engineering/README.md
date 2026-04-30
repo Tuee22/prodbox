@@ -15,9 +15,8 @@ Clean-room build order, sprint status, blockers, validation closure, and cleanup
 tracked only in [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 The documents in this directory are stable doctrine and architecture references. When the
-development plan reopens an earlier phase because the target architecture expands, the affected
-documents may carry explicit current-baseline notes so they do not overclaim implementation while
-still defining the canonical target doctrine.
+development plan changes the supported architecture, the affected doctrine docs must be updated in
+the same change so they continue to describe the implemented repository state.
 
 Pulumi doctrine in this directory applies only to the AWS validation stacks under
 `pulumi/aws-eks/` and `pulumi/aws-test/`.

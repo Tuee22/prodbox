@@ -19,9 +19,9 @@ The target public-edge doctrine for self-managed `prodbox` clusters is:
 5. Keycloak remains the OIDC identity provider.
 6. Envoy authenticates and authorizes public traffic at the edge for apps that do not natively own
    their own OIDC flow.
-7. Application-local auth proxies such as `vscode-nginx` are migration residue, not target
-   architecture.
-8. Traefik and `Ingress`-owned public routing are migration residue, not target architecture.
+7. Supported browser-facing routes do not depend on application-local auth proxies such as
+   `vscode-nginx`.
+8. Supported public routing does not depend on Traefik or `Ingress`.
 9. Redis is optional shared application infrastructure for realtime or rate-limit workloads; it is
    not part of Envoy JWT validation.
 
@@ -43,7 +43,7 @@ plain upstream Gateway API capability.
 
 This document owns the target public-edge doctrine only.
 
-Implementation status, reopened phases, cleanup ownership, and validation closure are tracked in
+Implementation status, validation closure, and cleanup history are tracked in
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
 This doctrine applies to the self-managed local-cluster path only. The repository's AWS validation
@@ -58,20 +58,18 @@ This doctrine is intentionally distinct from the distributed Haskell gateway dae
 
 ## 2. Current Worktree Baseline
 
-The current repository has not yet closed on this doctrine.
+The current repository closes on this doctrine.
 
 Current implementation facts:
 
-1. Local `prodbox rke2 install` still installs MetalLB, Traefik, cert-manager, and the Percona
-   PostgreSQL operator.
-2. The public `vscode` route still uses `networking.k8s.io/v1` `Ingress`.
-3. `vscode-nginx` still owns the browser-facing OIDC authorization-code flow and shared-host
-   `/auth` proxy behavior for the `vscode` stack.
-4. `prodbox host public-edge` still classifies Traefik `IngressClass`, `Ingress`, and
-   certificate-readiness state rather than `Gateway`, `HTTPRoute`, or Envoy Gateway policy state.
-
-Those surfaces are tracked as reopened work in the development plan and as pending-removal residue
-in [../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md).
+1. Local `prodbox rke2 install` installs Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager,
+   and the Percona PostgreSQL operator.
+2. The public `vscode` route uses Gateway API `HTTPRoute` resources plus Envoy Gateway
+   `SecurityPolicy`.
+3. Keycloak publishes the browser login flow on the dedicated hostname from
+   `domain.keycloak_fqdn`.
+4. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
+   `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, and `LoadBalancer` state.
 
 ## 3. Target Public-Edge Topology
 
@@ -103,8 +101,6 @@ The target public-host model prefers separate hostnames for identity and applica
 - a dedicated public Keycloak hostname
 - one hostname per browser-facing app
 - additional API or WebSocket hostnames only when a workload needs them
-
-The current shared-host `/auth` pattern is a migration state only.
 
 ## 4. Authentication Doctrine
 
@@ -174,21 +170,17 @@ guide the target edge and future workload shape, not to overclaim current implem
 
 ## 6. Lifecycle, Chart, and Image-Delivery Implications
 
-The target lifecycle doctrine changes the supported local-cluster edge from Traefik to Envoy
-Gateway.
-
-Target lifecycle implications:
+Supported lifecycle implications:
 
 1. `prodbox rke2 install` installs MetalLB, Envoy Gateway, cert-manager, and the Percona
    PostgreSQL operator for the self-managed public edge.
 2. Harbor-backed steady-state image sourcing mirrors or publishes Envoy Gateway control-plane and
    Envoy data-plane images rather than Traefik images.
-3. The custom `docker/nginx-oidc.Dockerfile` image and its Harbor publication path become removable
-   once Envoy owns the supported browser-facing auth flow.
+3. No supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; this
    doctrine does not replace it with Envoy Gateway.
 
-Target chart implications:
+Supported chart implications:
 
 1. `vscode` public delivery routes through Gateway API resources.
 2. Keycloak remains a chart-managed workload with a dedicated public identity host.
@@ -198,7 +190,7 @@ Target chart implications:
 
 ## 7. Diagnostics and Validation Doctrine
 
-The target public-edge diagnostic surface must classify:
+The supported public-edge diagnostic surface classifies:
 
 1. Route 53 record ownership and IP sync
 2. `Gateway` listener readiness and advertised addresses
@@ -207,15 +199,13 @@ The target public-edge diagnostic surface must classify:
 5. cert-manager certificate readiness
 6. external HTTPS reachability
 
-The target success state for `prodbox host public-edge` is still one canonical ready
-classification, but that classification must be derived from Gateway API and Envoy Gateway state
-rather than Traefik `Ingress` state.
+The supported success state for `prodbox host public-edge` is the canonical ready classification
+derived from Gateway API and Envoy Gateway state.
 
 Named validation implications:
 
-1. `prodbox test integration charts-vscode` must prove the Envoy-protected browser path rather than
-   a `vscode-nginx` path.
-2. `prodbox test integration public-dns` must prove the Gateway API public host contract.
+1. `prodbox test integration charts-vscode` proves the Envoy-protected browser path.
+2. `prodbox test integration public-dns` proves the Gateway API public host contract.
 3. If future app stacks expose WebSockets, they need named validation that proves connection-time
    auth, reconnect behavior, and any required shared-state backend assumptions.
 

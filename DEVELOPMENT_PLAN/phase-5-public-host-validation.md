@@ -12,8 +12,8 @@
 This phase defines the public DNS, TLS, public-edge, and external auth proof surfaces on the
 Haskell stack. It preserves the existing public-host doctrine: external proof remains
 external-only, explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based
-closure remains unsupported. Sprint `5.1` remains the implemented Haskell public-edge baseline,
-while Sprint `5.2` reopens this phase on Gateway API and Envoy-aware readiness proof.
+closure remains unsupported. Sprint `5.1` and Sprint `5.2` now close on the Haskell-owned
+Gateway API and Envoy-aware readiness proof.
 
 ## Current Baseline In Worktree
 
@@ -22,9 +22,8 @@ while Sprint `5.2` reopens this phase on Gateway API and Envoy-aware readiness p
 - Public-edge proof lives in the Haskell test suites under `test/`.
 - The public-edge proof depends on the Harbor-first lifecycle and chart/runtime surfaces closed in
   earlier phases; this phase remains limited to the diagnostic and external proof contract.
-- The current worktree still derives public-edge readiness from Traefik, `Ingress`, and
-  certificate state. Sprint `5.2` reopens this phase to classify Envoy Gateway and Gateway API
-  readiness instead.
+- The current worktree derives public-edge readiness from Route 53, Envoy Gateway controller
+  state, Gateway API readiness, certificate readiness, and explicit external browser proof.
 
 ## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
 
@@ -70,9 +69,9 @@ Close the implemented public DNS and public-edge path on the Haskell runtime tha
 
 None.
 
-## Sprint 5.2: Gateway API Public-Edge Diagnostics and External Proof 📋
+## Sprint 5.2: Gateway API Public-Edge Diagnostics and External Proof ✅
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -103,15 +102,18 @@ diagnostics while preserving explicit Route 53 proof and external-only validatio
 
 ### Current Validation State
 
-- The current implementation still inspects Traefik service IPs, `IngressClass`, `Ingress`, and
-  `vscode-tls` certificate readiness.
-- The external proof commands still exercise the current Traefik and `vscode-nginx` baseline.
+- `src/Prodbox/Host.hs` now classifies the public edge through Route 53 record sync, Envoy Gateway
+  deployment readiness, `GatewayClass` acceptance, `Gateway` readiness, `HTTPRoute` attachment,
+  `SecurityPolicy` attachment, certificate readiness, and `LoadBalancer` IP agreement.
+- `src/Prodbox/TestValidation.hs` now waits for `CLASSIFICATION=ready-for-external-proof`, proves
+  the external `vscode` path through the Envoy-to-Keycloak redirect, and validates every
+  configured public hostname through Route 53 plus public DNS resolution.
+- `test/unit/Main.hs` and the built-frontend suites now align the public-edge fixtures with the
+  Gateway API and dedicated-hostname contract.
 
 ### Remaining Work
 
-- Replace the current Traefik and `Ingress` public-edge classification logic.
-- Align external proof with the Envoy-authenticated browser path.
-- Keep Route 53 and TLS proof explicit while the Gateway API edge replaces the current baseline.
+None.
 
 ## Documentation Requirements
 

@@ -17,7 +17,7 @@ spec:
         - podSelector: {}
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: traefik-system
+              kubernetes.io/metadata.name: envoy-gateway-system
       ports:
         - protocol: TCP
           port: 8080

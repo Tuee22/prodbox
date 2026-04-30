@@ -167,9 +167,9 @@ Root charts:
 - `keycloak` deploys `keycloak-postgres` plus `keycloak` into the `keycloak` namespace.
 - `vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
 
-## 9. Target Public Auth Model For `vscode`
+## 9. Supported Public Auth Model For `vscode`
 
-The target supported `vscode` public path is:
+The supported `vscode` public path is:
 
 1. Envoy Gateway owns TLS termination, Gateway API routing, and browser-facing edge auth
    enforcement.
@@ -180,37 +180,27 @@ The target supported `vscode` public path is:
    edge image set, the Percona operator, and the Percona PostgreSQL workload after Harbor
    bootstrap.
 
-Current worktree baseline:
-
-1. `vscode-nginx` still fronts the browser-facing `vscode` route.
-2. Keycloak still serves the login flow through the shared-host `/auth` path.
-3. `keycloak_nginx_client_secret` remains migration residue until the reopened Envoy edge phases
-   close.
-
 The canonical public-edge doctrine and Redis or WebSocket guidance live in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
 
 ## 10. Required Settings and Auto-Generated Secrets
 
-The following repository configuration value is required for the public `vscode` path:
+The following repository configuration values are required for the public `vscode` path:
 
 | Setting | Purpose |
 |---------|---------|
-| `domain.vscode_fqdn` | Public FQDN for the `vscode` route; the current worktree still also uses it for the shared-host Keycloak path |
+| `domain.vscode_fqdn` | Public FQDN for the `vscode` route |
+| `domain.keycloak_fqdn` | Public FQDN for the Keycloak identity route |
 
 Namespace-local chart secrets live in `.prodbox-state/<namespace>/.secrets.json`:
 
 | Secret | Purpose |
 |--------|---------|
 | `keycloak_admin_password` | Keycloak admin credentials |
-| `keycloak_nginx_client_secret` | current-worktree `vscode-nginx` OIDC client secret; slated for removal once Envoy owns edge auth |
+| `keycloak_vscode_client_secret` | Envoy Gateway OIDC client secret for the protected `vscode` route |
 | `patroni_app_password` | retained Patroni application-user password for the namespace-local cluster |
 | `patroni_superuser_password` | retained Patroni `postgres` superuser password for the namespace-local cluster |
 | `patroni_standby_password` | retained Patroni standby-user password for the namespace-local cluster |
-
-The target public-edge doctrine expands this settings model with a dedicated Keycloak public
-hostname. Until the reopened Envoy edge phases close, the current worktree still shares
-`domain.vscode_fqdn` and `/auth` for the browser login path.
 
 The chart platform renders the three corresponding Kubernetes secrets before the Patroni cluster
 resource so retained PVC rebinding does not rotate credentials underneath preserved PostgreSQL

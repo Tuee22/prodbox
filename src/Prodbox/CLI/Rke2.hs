@@ -50,6 +50,7 @@ import Prodbox.CLI.Command (
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
+import Prodbox.Dns qualified as Dns
 import Prodbox.Host (
     LanAddressing (..),
     detectLanAddressing,
@@ -74,7 +75,6 @@ import Prodbox.Settings (
     aws,
     bootstrap_public_ip_override,
     defaultConfigFile,
-    demo_fqdn,
     demo_ttl,
     domain,
     eab_hmac_key,
@@ -223,29 +223,35 @@ metallbRepositoryName = "metallb"
 metallbRepositoryUrl :: String
 metallbRepositoryUrl = "https://metallb.github.io/metallb"
 
+legacyTraefikNamespace :: String
+legacyTraefikNamespace = "traefik-system"
+
+legacyTraefikReleaseName :: String
+legacyTraefikReleaseName = "traefik"
+
 metallbChartRef :: String
 metallbChartRef = "metallb/metallb"
 
 metallbChartVersion :: String
 metallbChartVersion = "0.14.9"
 
-traefikNamespace :: String
-traefikNamespace = "traefik-system"
+envoyGatewayNamespace :: String
+envoyGatewayNamespace = "envoy-gateway-system"
 
-traefikReleaseName :: String
-traefikReleaseName = "traefik"
+envoyGatewayReleaseName :: String
+envoyGatewayReleaseName = "envoy-gateway"
 
-traefikRepositoryName :: String
-traefikRepositoryName = "traefik"
+envoyGatewayChartRef :: String
+envoyGatewayChartRef = "oci://docker.io/envoyproxy/gateway-helm"
 
-traefikRepositoryUrl :: String
-traefikRepositoryUrl = "https://traefik.github.io/charts"
+envoyGatewayChartVersion :: String
+envoyGatewayChartVersion = "v1.7.2"
 
-traefikChartRef :: String
-traefikChartRef = "traefik/traefik"
+publicEdgeGatewayClassName :: String
+publicEdgeGatewayClassName = "prodbox-public-edge"
 
-traefikChartVersion :: String
-traefikChartVersion = "32.0.0"
+publicEdgeEnvoyProxyName :: String
+publicEdgeEnvoyProxyName = "prodbox-public-edge"
 
 certManagerNamespace :: String
 certManagerNamespace = "cert-manager"
@@ -319,7 +325,7 @@ managedNamespaces =
     [ prodboxNamespace
     , harborNamespace
     , metallbNamespace
-    , traefikNamespace
+    , envoyGatewayNamespace
     , certManagerNamespace
     , patroniOperatorNamespace
     , "gateway"
@@ -331,7 +337,7 @@ managedHelmInstances =
     [ "harbor"
     , "minio"
     , "metallb"
-    , "traefik"
+    , envoyGatewayReleaseName
     , "cert-manager"
     , patroniOperatorReleaseName
     ]
@@ -347,8 +353,8 @@ doctrineCrdSuffixes =
     [ ".metallb.io"
     , ".cert-manager.io"
     , ".acme.cert-manager.io"
-    , ".traefik.io"
-    , ".containo.us"
+    , ".gateway.networking.k8s.io"
+    , ".gateway.envoyproxy.io"
     , ".pgv2.percona.com"
     , ".postgres-operator.crunchydata.com"
     ]
@@ -455,7 +461,6 @@ runNativeInstall repoRoot = do
                             , ensureMinioRuntime repoRoot MinioBootstrapPublic
                             , mirrorClusterImagesOnce repoRoot
                             , ensureGatewayImages repoRoot prodboxId
-                            , ensureVscodeNginxImage repoRoot
                             , ensureRke2RegistriesConfig repoRoot
                             , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
                             , reconcileDnsBootstrapRecord repoRoot settings
@@ -1158,27 +1163,69 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
     lanDefaultsResult <- resolveClusterPlatformLanDefaults
     case lanDefaultsResult of
         Left err -> failWith err
-        Right (metallbPool, ingressLbIp) ->
+        Right (metallbPool, edgeLbIp) ->
             runSequentially
-                [ ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool
-                , ensureTraefikRuntime repoRoot prodboxId labelValue ingressLbIp
+                [ removeLegacyTraefikIfPresent repoRoot
+                , ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool
+                , ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp
                 , ensureCertManagerRuntime repoRoot prodboxId labelValue
                 , ensureAcmeRuntime repoRoot settings prodboxId labelValue
                 , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
                 ]
 
+removeLegacyTraefikIfPresent :: FilePath -> IO ExitCode
+removeLegacyTraefikIfPresent repoRoot = do
+    uninstallResult <-
+        captureToolOutput
+            repoRoot
+            "helm"
+            ["uninstall", legacyTraefikReleaseName, "--namespace", legacyTraefikNamespace, "--wait"]
+    case uninstallResult of
+        Left err -> failWith err
+        Right output -> do
+            emitCapturedProcessOutput output
+            case processExitCode output of
+                ExitSuccess -> deleteLegacyTraefikNamespace repoRoot
+                ExitFailure _
+                    | isMissingHelmReleaseError (outputDetail output) || isNotFoundMessage (outputDetail output) ->
+                        deleteLegacyTraefikNamespace repoRoot
+                    | otherwise ->
+                        failWith
+                            ( "Failed to remove legacy Traefik release `"
+                                ++ legacyTraefikReleaseName
+                                ++ "` before installing Envoy Gateway: "
+                                ++ outputDetail output
+                            )
+
+deleteLegacyTraefikNamespace :: FilePath -> IO ExitCode
+deleteLegacyTraefikNamespace repoRoot =
+    runCommand
+        CommandSpec
+            { commandPath = "kubectl"
+            , commandArguments =
+                [ "delete"
+                , "namespace"
+                , legacyTraefikNamespace
+                , "--ignore-not-found=true"
+                , "--wait=true"
+                , "--timeout=300s"
+                ]
+            , commandEnvironment = Nothing
+            , commandWorkingDirectory = Just repoRoot
+            }
+
 resolveClusterPlatformLanDefaults :: IO (Either String (String, String))
 resolveClusterPlatformLanDefaults = do
     maybeMetallbPool <- lookupNonEmptyEnv "PRODBOX_PULUMI_METALLB_POOL"
-    maybeIngressLbIp <- lookupNonEmptyEnv "PRODBOX_PULUMI_INGRESS_LB_IP"
-    case (maybeMetallbPool, maybeIngressLbIp) of
-        (Just metallbPool, Just ingressLbIp) -> pure (Right (metallbPool, ingressLbIp))
+    maybeEdgeLbIp <- firstNonEmptyEnv ["PRODBOX_PULUMI_EDGE_LB_IP", "PRODBOX_PULUMI_INGRESS_LB_IP"]
+    case (maybeMetallbPool, maybeEdgeLbIp) of
+        (Just metallbPool, Just edgeLbIp) -> pure (Right (metallbPool, edgeLbIp))
         (Just _, Nothing) ->
             pure
-                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP, or set neither")
+                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_EDGE_LB_IP, or set neither")
         (Nothing, Just _) ->
             pure
-                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_INGRESS_LB_IP, or set neither")
+                (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_EDGE_LB_IP, or set neither")
         (Nothing, Nothing) ->
             fmap
                 ( \lanResult ->
@@ -1220,6 +1267,16 @@ ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool = do
                                 repoRoot
                                 "prodbox-metallb-resources"
                                 (metallbRuntimeManifest prodboxId labelValue metallbPool)
+
+firstNonEmptyEnv :: [String] -> IO (Maybe String)
+firstNonEmptyEnv variableNames = go variableNames
+  where
+    go [] = pure Nothing
+    go (variableName : remaining) = do
+        maybeValue <- lookupNonEmptyEnv variableName
+        case maybeValue of
+            Just value -> pure (Just value)
+            Nothing -> go remaining
 
 metallbHelmValues :: String -> String -> Value
 metallbHelmValues prodboxId labelValue =
@@ -1280,53 +1337,129 @@ metallbRuntimeManifest prodboxId labelValue metallbPool =
         ]
     ]
 
-ensureTraefikRuntime :: FilePath -> String -> String -> String -> IO ExitCode
-ensureTraefikRuntime repoRoot prodboxId labelValue ingressLbIp = do
-    repoExit <- ensureHelmRepoAdded repoRoot traefikRepositoryName traefikRepositoryUrl
-    case repoExit of
-        ExitFailure _ -> pure repoExit
+ensureEnvoyGatewayRuntime :: FilePath -> String -> String -> String -> IO ExitCode
+ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp = do
+    installExit <-
+        helmUpgradeInstallWithJsonValues
+            repoRoot
+            envoyGatewayReleaseName
+            envoyGatewayChartRef
+            envoyGatewayChartVersion
+            envoyGatewayNamespace
+            (envoyGatewayHelmValues labelValue)
+    case installExit of
+        ExitFailure _ -> pure installExit
         ExitSuccess -> do
-            installExit <-
-                helmUpgradeInstallWithJsonValues
-                    repoRoot
-                    traefikReleaseName
-                    traefikChartRef
-                    traefikChartVersion
-                    traefikNamespace
-                    (traefikHelmValues prodboxId labelValue ingressLbIp)
-            case installExit of
-                ExitFailure _ -> pure installExit
-                ExitSuccess -> waitForDeployment repoRoot traefikNamespace traefikReleaseName
+            waitExit <-
+                runSequentially
+                    [ waitForDeployment repoRoot envoyGatewayNamespace envoyGatewayReleaseName
+                    , waitForCrdEstablished repoRoot "gatewayclasses.gateway.networking.k8s.io"
+                    , waitForCrdEstablished repoRoot "gateways.gateway.networking.k8s.io"
+                    , waitForCrdEstablished repoRoot "httproutes.gateway.networking.k8s.io"
+                    , waitForCrdEstablished repoRoot "envoyproxies.gateway.envoyproxy.io"
+                    , waitForCrdEstablished repoRoot "securitypolicies.gateway.envoyproxy.io"
+                    ]
+            case waitExit of
+                ExitFailure _ -> pure waitExit
+                ExitSuccess ->
+                    kubectlApplyJsonManifest
+                        repoRoot
+                        "prodbox-envoy-gateway-runtime"
+                        (envoyGatewayRuntimeManifest prodboxId labelValue edgeLbIp)
 
-traefikHelmValues :: String -> String -> String -> Value
-traefikHelmValues prodboxId labelValue ingressLbIp =
+envoyGatewayHelmValues :: String -> Value
+envoyGatewayHelmValues labelValue =
     object
-        [ "image"
+        [ "deployment"
             .= object
-                [ "registry" .= ContainerImage.imageRegistry ContainerImage.harborTraefikImage
-                , "repository" .= ContainerImage.imageRepository ContainerImage.harborTraefikImage
-                , "tag" .= ContainerImage.imageTag ContainerImage.harborTraefikImage
+                [ "replicas" .= (1 :: Int)
+                , "pod"
+                    .= object
+                        [ "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                        ]
+                , "envoyGateway"
+                    .= object
+                        [ "image"
+                            .= object
+                                [ "repository" .= renderImageRefWithoutTag ContainerImage.harborEnvoyGatewayImage
+                                , "tag" .= ContainerImage.imageTag ContainerImage.harborEnvoyGatewayImage
+                                ]
+                        ]
                 ]
-        , "service"
+        , "config"
             .= object
-                [ "type" .= ("LoadBalancer" :: String)
-                , "spec" .= object ["loadBalancerIP" .= ingressLbIp]
+                [ "envoyGateway"
+                    .= object
+                        [ "gateway"
+                            .= object
+                                [ "controllerName" .= ("gateway.envoyproxy.io/gatewayclass-controller" :: String)
+                                ]
+                        ]
                 ]
-        , "ports"
-            .= object
-                [ "web" .= object ["expose" .= object ["default" .= True]]
-                , "websecure" .= object ["expose" .= object ["default" .= True]]
-                ]
-        , "ingressClass"
-            .= object
-                [ "name" .= ("traefik" :: String)
-                , "isDefaultClass" .= False
-                ]
-        , "logs" .= object ["access" .= object ["enabled" .= True]]
-        , "metrics" .= object ["prometheus" .= object ["entryPoint" .= ("metrics" :: String)]]
-        , "commonLabels" .= object [Key.fromString prodboxLabelKey .= labelValue]
-        , "commonAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
         ]
+
+envoyGatewayRuntimeManifest :: String -> String -> String -> [Value]
+envoyGatewayRuntimeManifest prodboxId labelValue edgeLbIp =
+    [ object
+        [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
+        , "kind" .= ("EnvoyProxy" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= publicEdgeEnvoyProxyName
+                , "namespace" .= envoyGatewayNamespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec"
+            .= object
+                [ "provider"
+                    .= object
+                        [ "type" .= ("Kubernetes" :: String)
+                        , "kubernetes"
+                            .= object
+                                [ "envoyDeployment"
+                                    .= object
+                                        [ "replicas" .= (1 :: Int)
+                                        , "container"
+                                            .= object
+                                                [ "image"
+                                                    .= ContainerImage.renderImageRef ContainerImage.harborEnvoyProxyImage
+                                                ]
+                                        ]
+                                , "envoyService"
+                                    .= object
+                                        [ "name" .= ("public-edge" :: String)
+                                        , "type" .= ("LoadBalancer" :: String)
+                                        , "loadBalancerIP" .= edgeLbIp
+                                        , "externalTrafficPolicy" .= ("Local" :: String)
+                                        , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                                        ]
+                                ]
+                        ]
+                ]
+        ]
+    , object
+        [ "apiVersion" .= ("gateway.networking.k8s.io/v1" :: String)
+        , "kind" .= ("GatewayClass" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= publicEdgeGatewayClassName
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec"
+            .= object
+                [ "controllerName" .= ("gateway.envoyproxy.io/gatewayclass-controller" :: String)
+                , "parametersRef"
+                    .= object
+                        [ "group" .= ("gateway.envoyproxy.io" :: String)
+                        , "kind" .= ("EnvoyProxy" :: String)
+                        , "name" .= publicEdgeEnvoyProxyName
+                        , "namespace" .= envoyGatewayNamespace
+                        ]
+                ]
+        ]
+    ]
 
 ensureCertManagerRuntime :: FilePath -> String -> String -> IO ExitCode
 ensureCertManagerRuntime repoRoot prodboxId labelValue = do
@@ -1670,27 +1803,35 @@ reconcileDnsBootstrapRecord repoRoot settings =
                     awsEnvironment <- awsCommandEnvironment environment settings
                     let config = validatedConfig settings
                         zoneIdValue = Text.unpack (zone_id (route53 config))
-                        fqdn = Text.unpack (demo_fqdn (domain config))
                         ttlValue = fromIntegral (demo_ttl (domain config)) :: Integer
-                    withTemporaryJsonBytes
-                        "prodbox-dns-bootstrap"
-                        (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
-                        ( \payloadPath ->
-                            runCommand
-                                CommandSpec
-                                    { commandPath = "aws"
-                                    , commandArguments =
-                                        [ "route53"
-                                        , "change-resource-record-sets"
-                                        , "--hosted-zone-id"
-                                        , zoneIdValue
-                                        , "--change-batch"
-                                        , "file://" ++ payloadPath
-                                        ]
-                                    , commandEnvironment = Just awsEnvironment
-                                    , commandWorkingDirectory = Just repoRoot
-                                    }
+                        fqdnValues = Dns.configuredPublicHostFqdns settings
+                    foldM
+                        ( \exitCode fqdn ->
+                            case exitCode of
+                                ExitFailure _ -> pure exitCode
+                                ExitSuccess ->
+                                    withTemporaryJsonBytes
+                                        "prodbox-dns-bootstrap"
+                                        (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
+                                        ( \payloadPath ->
+                                            runCommand
+                                                CommandSpec
+                                                    { commandPath = "aws"
+                                                    , commandArguments =
+                                                        [ "route53"
+                                                        , "change-resource-record-sets"
+                                                        , "--hosted-zone-id"
+                                                        , zoneIdValue
+                                                        , "--change-batch"
+                                                        , "file://" ++ payloadPath
+                                                        ]
+                                                    , commandEnvironment = Just awsEnvironment
+                                                    , commandWorkingDirectory = Just repoRoot
+                                                    }
+                                        )
                         )
+                        ExitSuccess
+                        fqdnValues
 
 resolveDnsBootstrapIp :: ValidatedSettings -> IO (Either String String)
 resolveDnsBootstrapIp settings = do
@@ -1970,17 +2111,6 @@ ensureGatewayImages repoRoot prodboxId = do
             }
         [gatewayImage, latestImage]
         gatewayImage
-
-ensureVscodeNginxImage :: FilePath -> IO ExitCode
-ensureVscodeNginxImage repoRoot = do
-    let imageRef = ContainerImage.renderImageRef ContainerImage.harborVscodeNginxImage
-    ensureCustomImageVariants
-        repoRoot
-        CustomImageBuildPlan
-            { customImageDockerfile = "docker/nginx-oidc.Dockerfile"
-            }
-        [imageRef]
-        imageRef
 
 ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
 ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do

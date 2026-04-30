@@ -233,7 +233,7 @@ main = hspec $ do
                         ( RunNative
                             ( NativeK8s
                                 ( K8sLogs
-                                    ["metallb-system", "traefik-system", "cert-manager", "postgres-operator"]
+                                    ["metallb-system", "envoy-gateway-system", "cert-manager", "postgres-operator"]
                                     10
                                 )
                             )
@@ -385,7 +385,8 @@ main = hspec $ do
 
             deploymentTemplate `shouldContain` "progressDeadlineSeconds: 1800"
             deploymentTemplate `shouldContain` "startupProbe:"
-            deploymentTemplate `shouldContain` "path: {{ printf \"%s/health/ready\" .Values.keycloak.relativePath }}"
+            deploymentTemplate `shouldContain` "path: /health/ready"
+            deploymentTemplate `shouldNotContain` "relativePath"
             deploymentTemplate `shouldContain` "failureThreshold: 60"
 
         it "keeps the gateway image on the single-stage ubuntu doctrine" $ do
@@ -1030,14 +1031,45 @@ main = hspec $ do
                                     KeyMap.lookup (Key.fromString "passwordSecretName") postgresPayload
                                         `shouldBe` Just (String "prodbox-vscode-pg-pguser-keycloak")
                                 _ -> expectationFailure "expected keycloak postgres payload"
+                            case KeyMap.lookup (Key.fromString "keycloak") payload of
+                                Just (Object keycloakPayload) ->
+                                    KeyMap.lookup (Key.fromString "publicHost") keycloakPayload
+                                        `shouldBe` Just (String "auth.example.com")
+                                _ -> expectationFailure "expected keycloak runtime payload"
+                            case KeyMap.lookup (Key.fromString "gateway") payload of
+                                Just (Object gatewayPayload) -> do
+                                    KeyMap.lookup (Key.fromString "className") gatewayPayload
+                                        `shouldBe` Just (String "prodbox-public-edge")
+                                    KeyMap.lookup (Key.fromString "vscodePublicHost") gatewayPayload
+                                        `shouldBe` Just (String "vscode.example.com")
+                                _ -> expectationFailure "expected keycloak gateway payload"
+                            case KeyMap.lookup (Key.fromString "oidc") payload of
+                                Just (Object oidcPayload) -> do
+                                    KeyMap.lookup (Key.fromString "vscodeClientId") oidcPayload
+                                        `shouldBe` Just (String "vscode")
+                                    KeyMap.lookup (Key.fromString "redirectUri") oidcPayload
+                                        `shouldBe` Just (String "https://vscode.example.com/oauth2/callback")
+                                _ -> expectationFailure "expected keycloak oidc payload"
                         _ -> expectationFailure "expected keycloak values payload"
                     case Map.lookup "vscode" releaseValues of
                         Just (Right (Object payload)) -> do
                             KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 1)
-                            case KeyMap.lookup (Key.fromString "nginx") payload of
-                                Just (Object nginxPayload) ->
-                                    KeyMap.lookup (Key.fromString "image") nginxPayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest")
-                                _ -> expectationFailure "expected vscode nginx payload"
+                            case KeyMap.lookup (Key.fromString "gateway") payload of
+                                Just (Object gatewayPayload) -> do
+                                    KeyMap.lookup (Key.fromString "className") gatewayPayload
+                                        `shouldBe` Just (String "prodbox-public-edge")
+                                    KeyMap.lookup (Key.fromString "host") gatewayPayload
+                                        `shouldBe` Just (String "vscode.example.com")
+                                _ -> expectationFailure "expected vscode gateway payload"
+                            case KeyMap.lookup (Key.fromString "oidc") payload of
+                                Just (Object oidcPayload) -> do
+                                    KeyMap.lookup (Key.fromString "clientId") oidcPayload
+                                        `shouldBe` Just (String "vscode")
+                                    KeyMap.lookup (Key.fromString "clientSecret") oidcPayload
+                                        `shouldBe` Just (String "vscodesecret")
+                                    KeyMap.lookup (Key.fromString "issuer") oidcPayload
+                                        `shouldBe` Just (String "https://auth.example.com/realms/prodbox")
+                                _ -> expectationFailure "expected vscode oidc payload"
                             case KeyMap.lookup (Key.fromString "vscode") payload of
                                 Just (Object vscodePayload) ->
                                     KeyMap.lookup (Key.fromString "image") vscodePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2")
@@ -1060,13 +1092,13 @@ main = hspec $ do
                 let namespaceDir = tempRoot </> ".prodbox-state" </> "vscode"
                     secretPath = namespaceDir </> ".secrets.json"
                 createDirectoryIfMissing True namespaceDir
-                writeFile secretPath "{\"keycloak_admin_password\":\"adminpass\",\"keycloak_nginx_client_secret\":\"nginxsecret\"}\n"
+                writeFile secretPath "{\"keycloak_admin_password\":\"adminpass\",\"keycloak_vscode_client_secret\":\"vscodesecret\"}\n"
                 result <- resolveChartSecrets tempRoot "vscode"
                 case result of
                     Left err -> expectationFailure err
                     Right secrets -> do
                         Map.lookup "keycloak_admin_password" secrets `shouldBe` Just "adminpass"
-                        Map.lookup "keycloak_nginx_client_secret" secrets `shouldBe` Just "nginxsecret"
+                        Map.lookup "keycloak_vscode_client_secret" secrets `shouldBe` Just "vscodesecret"
                         case Map.lookup "patroni_app_password" secrets of
                             Just value -> value `shouldSatisfy` (not . null)
                             Nothing -> expectationFailure "expected patroni_app_password"
@@ -1081,7 +1113,7 @@ main = hspec $ do
             let existingSecrets =
                     Map.fromList
                         [ ("keycloak_admin_password", "adminpass")
-                        , ("keycloak_nginx_client_secret", "nginxsecret")
+                        , ("keycloak_vscode_client_secret", "vscodesecret")
                         , ("patroni_app_password", "stale-app")
                         , ("patroni_standby_password", "stale-standby")
                         , ("patroni_superuser_password", "stale-superuser")
@@ -1094,7 +1126,7 @@ main = hspec $ do
                         ]
                 mergedSecrets = mergeChartSecretValues existingSecrets recoveredSecrets
             Map.lookup "keycloak_admin_password" mergedSecrets `shouldBe` Just "adminpass"
-            Map.lookup "keycloak_nginx_client_secret" mergedSecrets `shouldBe` Just "nginxsecret"
+            Map.lookup "keycloak_vscode_client_secret" mergedSecrets `shouldBe` Just "vscodesecret"
             Map.lookup "patroni_app_password" mergedSecrets `shouldBe` Just "live-app"
             Map.lookup "patroni_standby_password" mergedSecrets `shouldBe` Just "live-standby"
             Map.lookup "patroni_superuser_password" mergedSecrets `shouldBe` Just "live-superuser"
@@ -1196,7 +1228,7 @@ main = hspec $ do
                             Right (Object payload) ->
                                 case KeyMap.lookup (Key.fromString "dns_write_gate") payload of
                                     Just (Object gate) -> do
-                                        KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "vscode.example.com")
+                                        KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "test.example.com")
                                         KeyMap.lookup (Key.fromString "zone_id") gate `shouldBe` Just (String "Z1234567890ABC")
                                         KeyMap.lookup (Key.fromString "ttl") gate `shouldBe` Just (Number 60)
                                         KeyMap.lookup (Key.fromString "aws_region") gate `shouldBe` Just (String "us-east-1")
@@ -1226,7 +1258,8 @@ main = hspec $ do
             mapM_
                 (\expectedPair -> ContainerImage.requiredPublicImagePairs `shouldContain` [expectedPair])
                 [ ("ghcr.io/coder/code-server:4.98.2", "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2")
-                , ("ghcr.io/traefik/traefik:v3.1.4", "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4")
+                , ("docker.io/envoyproxy/gateway:v1.7.2", "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2")
+                , ("docker.io/envoyproxy/envoy:distroless-v1.37.0", "127.0.0.1:30080/prodbox/envoy-proxy-mirror:distroless-v1.37.0")
                 ]
 
         it "maps supported public-image aliases to stable Harbor targets only for mirrored upstreams" $ do
@@ -1240,8 +1273,10 @@ main = hspec $ do
                 `shouldBe` Just "127.0.0.1:30080/prodbox/percona-pgbouncer-mirror:1.25.1-1"
             ContainerImage.harborMirrorTargetForSource "docker.io/codercom/code-server:4.98.2"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
-            ContainerImage.harborMirrorTargetForSource "docker.io/library/traefik:v3.1.4"
-                `shouldBe` Just "127.0.0.1:30080/prodbox/traefik-mirror:v3.1.4"
+            ContainerImage.harborMirrorTargetForSource "docker.io/envoyproxy/gateway:v1.7.2"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2"
+            ContainerImage.harborMirrorTargetForSource "docker.io/envoyproxy/envoy:distroless-v1.37.0"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-proxy-mirror:distroless-v1.37.0"
 
         it "orders public-image mirror candidates with the discovered source first" $ do
             ContainerImage.harborMirrorSourceCandidates "docker.io/percona/percona-postgresql-operator:2.9.0"
@@ -1512,7 +1547,7 @@ validConfig =
         [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = Some \"test-session-token\", region = \"us-east-1\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\" }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\", keycloak_fqdn = Some \"auth.example.com\" }"
         , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
@@ -1524,7 +1559,7 @@ invalidZeroSslConfig =
         [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = None Text, region = \"us-east-1\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = None Text }"
+        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = None Text, keycloak_fqdn = None Text }"
         , ", acme = { email = \"test@example.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
@@ -1549,6 +1584,7 @@ testValidatedSettings manualRoot =
                         { demo_fqdn = "test.example.com"
                         , demo_ttl = 60
                         , vscode_fqdn = Just "vscode.example.com"
+                        , keycloak_fqdn = Just "auth.example.com"
                         }
                 , deployment =
                     DeploymentSection
@@ -1565,7 +1601,7 @@ testChartSecrets :: Map.Map String String
 testChartSecrets =
     Map.fromList
         [ ("keycloak_admin_password", "adminpass")
-        , ("keycloak_nginx_client_secret", "nginxsecret")
+        , ("keycloak_vscode_client_secret", "vscodesecret")
         , ("patroni_app_password", "patroniapppassword")
         , ("patroni_standby_password", "patronistandbypassword")
         , ("patroni_superuser_password", "patronisuperuserpassword")

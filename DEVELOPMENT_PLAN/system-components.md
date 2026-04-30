@@ -7,14 +7,10 @@
 > **Purpose**: Document the authoritative target component inventory for infrastructure, runtime
 > control surfaces, validation surfaces, and state or authority boundaries in the Haskell rewrite.
 
-The inventory documents the authoritative target Haskell-only architecture and the component
+The inventory documents the authoritative implemented Haskell-only architecture and the component
 boundaries that the phase documents reference. When the cleanup ledger is non-empty,
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) tracks unsupported residue
-separately from this canonical target inventory.
-
-The current worktree still contains Traefik, `Ingress`, and `vscode-nginx` as migration residue.
-Those compatibility surfaces are tracked in the legacy ledger and the reopened phase docs rather
-than in this target inventory.
+separately from this canonical inventory.
 
 ## Haskell-Only Architecture
 

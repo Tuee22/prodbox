@@ -87,13 +87,15 @@ Router port forwarding:
 
 ### Current Implementation Baseline
 
-The current worktree has not yet landed the target edge architecture. Today:
+The current worktree closes on the supported edge architecture. Today:
 
-- local `rke2 install` still reconciles Traefik rather than Envoy Gateway
-- the public `vscode` path still uses `Ingress`
-- `vscode-nginx` still owns the browser-facing OIDC flow and shared-host `/auth` path
+- local `rke2 install` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+  Percona PostgreSQL operator
+- the public `vscode` path uses Gateway API `HTTPRoute` plus Envoy Gateway `SecurityPolicy`
+- Keycloak uses the dedicated public identity hostname from `domain.keycloak_fqdn`
 
-That migration status is tracked in [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+Closure, validation ownership, and phase history are tracked in
+[DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
 
 ## Install And Build
 
@@ -167,15 +169,14 @@ What this does:
 
 - `config setup` writes the supported Dhall config file.
 - `host ...` verifies the host toolchain, port availability, and firewall assumptions.
-- `rke2 install` currently reconciles the local substrate, including Harbor, MinIO, MetalLB,
-  Traefik, cert-manager, and the Percona PostgreSQL operator. The development-plan target replaces
-  Traefik with Envoy Gateway.
+- `rke2 install` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
+  cert-manager, and the Percona PostgreSQL operator.
 - `charts deploy gateway` deploys the gateway stack.
 - `charts deploy vscode` deploys the `vscode` stack plus its supported dependencies:
-  `keycloak` and the internal `keycloak-postgres` Patroni release. The current codebase still
-  inserts `vscode-nginx` on the public browser path; the target architecture removes it.
-- `host public-edge` confirms Route 53, public-edge controller, and certificate readiness for the
-  implemented edge path.
+  `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
+  by Envoy Gateway and Keycloak on its dedicated identity hostname.
+- `host public-edge` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
+  the implemented edge path.
 
 ## Configuration
 
@@ -216,12 +217,10 @@ These fields are not all parser-required, but they matter for normal operation:
 | Config Path | Description |
 |-------------|-------------|
 | `domain.demo_fqdn` | Primary public FQDN used by DNS inspection, public-edge diagnostics, and the gateway/public host flow |
-| `domain.vscode_fqdn` | Optional public FQDN override for the `vscode` path; in the current worktree it also fronts Keycloak through the shared-host `/auth` model |
+| `domain.vscode_fqdn` | Optional public FQDN override for the `vscode` app route |
+| `domain.keycloak_fqdn` | Optional public FQDN override for the Keycloak identity route |
 | `aws.region` | Operational AWS region; the default config value is `us-east-1` |
 | `storage.manual_pv_host_root` | Host root reserved for retained PV contents; defaults to `.data` under the repo |
-
-The target edge doctrine adds a dedicated Keycloak public hostname and per-app Gateway API routing.
-That schema expansion is tracked in [DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](./DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md).
 
 ### Optional Fields
 
@@ -321,8 +320,8 @@ Check the external Route 53 record and public ingress state:
 ```
 
 `host public-edge` is the main supported readiness diagnostic for the public host. The successful
-state is `CLASSIFICATION=ready-for-external-proof`. The current implementation still derives that
-from Traefik and `Ingress`; the target doctrine reworks it around Envoy Gateway and Gateway API.
+state is `CLASSIFICATION=ready-for-external-proof`. That classification derives from Route 53,
+Envoy Gateway, Gateway API, `SecurityPolicy`, and certificate readiness.
 
 ### Gateway Operations
 

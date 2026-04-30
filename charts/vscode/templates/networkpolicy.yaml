@@ -14,10 +14,9 @@ spec:
     - Egress
   ingress:
     - from:
-        - podSelector:
+        - namespaceSelector:
             matchLabels:
-              app.kubernetes.io/name: vscode-nginx
-              app.kubernetes.io/instance: {{ .Release.Name }}
+              kubernetes.io/metadata.name: envoy-gateway-system
       ports:
         - protocol: TCP
           port: 8080
@@ -39,52 +38,3 @@ spec:
           port: 80
         - protocol: TCP
           port: 443
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: vscode-nginx-isolation
-  labels:
-    {{- include "vscode.nginxLabels" . | nindent 4 }}
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: vscode-nginx
-      app.kubernetes.io/instance: {{ .Release.Name }}
-  policyTypes:
-    - Ingress
-    - Egress
-  ingress:
-    - from:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: traefik-system
-      ports:
-        - protocol: TCP
-          port: 80
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: vscode
-              app.kubernetes.io/instance: {{ .Release.Name }}
-      ports:
-        - protocol: TCP
-          port: 8080
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: keycloak
-              app.kubernetes.io/instance: keycloak
-      ports:
-        - protocol: TCP
-          port: 8080
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53

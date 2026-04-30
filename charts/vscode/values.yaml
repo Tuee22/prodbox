@@ -7,19 +7,21 @@ replicaCount: 1
 podAntiAffinity:
   enabled: true
 
-ingress:
-  host: vscode.example.com
+gateway:
+  className: prodbox-public-edge
+  name: public-edge
+  listenerName: vscode-https
+  tlsSecretName: public-edge-tls
   clusterIssuer: letsencrypt-http01
+  host: vscode.example.com
 
-nginx:
-  image: 127.0.0.1:30080/prodbox/prodbox-nginx-oidc:latest
-  clientId: vscode-nginx
+oidc:
+  clientId: vscode
   clientSecret: change-me
-  realm: prodbox
-  keycloakInternalUrl: http://keycloak:8080
-  # CoreDNS ClusterIP — used by njs ngx.fetch for hostname resolution.
-  # Default is the RKE2 cluster DNS IP. Override if different on your cluster.
-  dnsResolver: "10.43.0.10"
+  issuer: https://auth.example.com/realms/prodbox
+  redirectURL: https://vscode.example.com/oauth2/callback
+  logoutPath: /logout
+  securityPolicyName: vscode-oidc
 
 vscode:
   image: 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2

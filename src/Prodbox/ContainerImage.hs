@@ -8,6 +8,8 @@ module Prodbox.ContainerImage (
     harborCertManagerStartupApiCheckImage,
     harborCertManagerWebhookImage,
     harborCodeServerImage,
+    harborEnvoyGatewayImage,
+    harborEnvoyProxyImage,
     harborFrrImage,
     harborGatewayImageRepository,
     harborGatewayRepository,
@@ -27,8 +29,6 @@ module Prodbox.ContainerImage (
     harborPostgresDatabaseImage,
     harborPostgresPgbackrestImage,
     harborPostgresPgbouncerImage,
-    harborTraefikImage,
-    harborVscodeNginxImage,
     normalizeImageRefText,
     parseImageRef,
     renderImageRef,
@@ -59,9 +59,11 @@ harborGatewayRepository = harborMirrorProject ++ "/prodbox-gateway"
 harborGatewayImageRepository :: String
 harborGatewayImageRepository = harborRegistryEndpoint ++ "/" ++ harborGatewayRepository
 
-harborVscodeNginxImage :: ImageRef
-harborVscodeNginxImage =
-    ImageRef harborRegistryEndpoint (harborMirrorProject ++ "/prodbox-nginx-oidc") "latest"
+harborEnvoyGatewayImage :: ImageRef
+harborEnvoyGatewayImage = harborImageRefFromRepository "envoy-gateway-mirror" "v1.7.2"
+
+harborEnvoyProxyImage :: ImageRef
+harborEnvoyProxyImage = harborImageRefFromRepository "envoy-proxy-mirror" "distroless-v1.37.0"
 
 harborPostgresOperatorImage :: ImageRef
 harborPostgresOperatorImage =
@@ -96,9 +98,6 @@ harborMinioImage = harborImageRefFromRepository "minio-mirror" "RELEASE.2024-12-
 
 harborMinioMcImage :: ImageRef
 harborMinioMcImage = harborImageRefFromRepository "minio-mc-mirror" "RELEASE.2024-11-21T17-21-54Z"
-
-harborTraefikImage :: ImageRef
-harborTraefikImage = harborImageRefFromRepository "traefik-mirror" "v3.1.4"
 
 harborMetallbControllerImage :: ImageRef
 harborMetallbControllerImage = harborImageRefFromRepository "metallb-controller-mirror" "v0.14.9"
@@ -184,6 +183,14 @@ requiredPublicImageMirrors =
         []
         harborKeycloakImage
     , mirroredPublicImage
+        (ImageRef "docker.io" "envoyproxy/gateway" "v1.7.2")
+        []
+        harborEnvoyGatewayImage
+    , mirroredPublicImage
+        (ImageRef "docker.io" "envoyproxy/envoy" "distroless-v1.37.0")
+        []
+        harborEnvoyProxyImage
+    , mirroredPublicImage
         publicMinioImage
         []
         harborMinioImage
@@ -191,10 +198,6 @@ requiredPublicImageMirrors =
         publicMinioMcImage
         []
         harborMinioMcImage
-    , mirroredPublicImage
-        (ImageRef "ghcr.io" "traefik/traefik" "v3.1.4")
-        [ImageRef "docker.io" "library/traefik" "v3.1.4"]
-        harborTraefikImage
     , mirroredPublicImage
         (ImageRef "quay.io" "metallb/controller" "v0.14.9")
         []

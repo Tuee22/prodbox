@@ -73,9 +73,8 @@ Integration-selected `prodbox test` commands execute in two phases:
 
 When Phase `1.6/2` restores a cluster-backed supported runtime for external proof, it may wait for
 `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before the payload
-starts. The target doctrine for that readiness is Gateway API plus Envoy Gateway state; the
-current Traefik and `Ingress` implementation remains migration residue owned by the reopened plan
-phases.
+starts. That readiness is derived from Gateway API, Envoy Gateway, Route 53, and certificate
+state.
 
 When a Phase `1/2` prerequisite owns a deterministic local backend proof, it may perform a
 visible, bounded repair of repository-managed state before re-running the same readiness check. The

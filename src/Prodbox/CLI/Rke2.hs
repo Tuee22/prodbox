@@ -223,12 +223,6 @@ metallbRepositoryName = "metallb"
 metallbRepositoryUrl :: String
 metallbRepositoryUrl = "https://metallb.github.io/metallb"
 
-legacyTraefikNamespace :: String
-legacyTraefikNamespace = "traefik-system"
-
-legacyTraefikReleaseName :: String
-legacyTraefikReleaseName = "traefik"
-
 metallbChartRef :: String
 metallbChartRef = "metallb/metallb"
 
@@ -282,9 +276,6 @@ postgresOperatorChartRef = "percona/pg-operator"
 
 postgresOperatorChartVersion :: String
 postgresOperatorChartVersion = "2.9.0"
-
-perconaPostgresOperatorAppName :: String
-perconaPostgresOperatorAppName = "pg-operator"
 
 chartClusterIssuer :: String
 chartClusterIssuer = "letsencrypt-http01"
@@ -1165,54 +1156,12 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
         Left err -> failWith err
         Right (metallbPool, edgeLbIp) ->
             runSequentially
-                [ removeLegacyTraefikIfPresent repoRoot
-                , ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool
+                [ ensureMetalLbRuntime repoRoot prodboxId labelValue metallbPool
                 , ensureEnvoyGatewayRuntime repoRoot prodboxId labelValue edgeLbIp
                 , ensureCertManagerRuntime repoRoot prodboxId labelValue
                 , ensureAcmeRuntime repoRoot settings prodboxId labelValue
                 , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
                 ]
-
-removeLegacyTraefikIfPresent :: FilePath -> IO ExitCode
-removeLegacyTraefikIfPresent repoRoot = do
-    uninstallResult <-
-        captureToolOutput
-            repoRoot
-            "helm"
-            ["uninstall", legacyTraefikReleaseName, "--namespace", legacyTraefikNamespace, "--wait"]
-    case uninstallResult of
-        Left err -> failWith err
-        Right output -> do
-            emitCapturedProcessOutput output
-            case processExitCode output of
-                ExitSuccess -> deleteLegacyTraefikNamespace repoRoot
-                ExitFailure _
-                    | isMissingHelmReleaseError (outputDetail output) || isNotFoundMessage (outputDetail output) ->
-                        deleteLegacyTraefikNamespace repoRoot
-                    | otherwise ->
-                        failWith
-                            ( "Failed to remove legacy Traefik release `"
-                                ++ legacyTraefikReleaseName
-                                ++ "` before installing Envoy Gateway: "
-                                ++ outputDetail output
-                            )
-
-deleteLegacyTraefikNamespace :: FilePath -> IO ExitCode
-deleteLegacyTraefikNamespace repoRoot =
-    runCommand
-        CommandSpec
-            { commandPath = "kubectl"
-            , commandArguments =
-                [ "delete"
-                , "namespace"
-                , legacyTraefikNamespace
-                , "--ignore-not-found=true"
-                , "--wait=true"
-                , "--timeout=300s"
-                ]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
-            }
 
 resolveClusterPlatformLanDefaults :: IO (Either String (String, String))
 resolveClusterPlatformLanDefaults = do
@@ -1680,29 +1629,25 @@ acmeClusterIssuerSpec settings =
 
 ensurePostgresOperatorRuntime :: FilePath -> String -> String -> IO ExitCode
 ensurePostgresOperatorRuntime repoRoot prodboxId labelValue = do
-    removeLegacyExit <- removeLegacyPostgresOperatorIfPresent repoRoot
-    case removeLegacyExit of
-        ExitFailure _ -> pure removeLegacyExit
+    repoExit <- ensureHelmRepoAdded repoRoot postgresOperatorRepositoryName postgresOperatorRepositoryUrl
+    case repoExit of
+        ExitFailure _ -> pure repoExit
         ExitSuccess -> do
-            repoExit <- ensureHelmRepoAdded repoRoot postgresOperatorRepositoryName postgresOperatorRepositoryUrl
-            case repoExit of
-                ExitFailure _ -> pure repoExit
-                ExitSuccess -> do
-                    installExit <-
-                        helmUpgradeInstallWithJsonValues
-                            repoRoot
-                            patroniOperatorReleaseName
-                            postgresOperatorChartRef
-                            postgresOperatorChartVersion
-                            patroniOperatorNamespace
-                            (postgresOperatorHelmValues prodboxId labelValue)
-                    case installExit of
-                        ExitFailure _ -> pure installExit
-                        ExitSuccess ->
-                            runSequentially
-                                [ waitForCrdEstablished repoRoot patroniPostgresqlCrdName
-                                , waitForDeployment repoRoot patroniOperatorNamespace patroniOperatorDeploymentName
-                                ]
+            installExit <-
+                helmUpgradeInstallWithJsonValues
+                    repoRoot
+                    patroniOperatorReleaseName
+                    postgresOperatorChartRef
+                    postgresOperatorChartVersion
+                    patroniOperatorNamespace
+                    (postgresOperatorHelmValues prodboxId labelValue)
+            case installExit of
+                ExitFailure _ -> pure installExit
+                ExitSuccess ->
+                    runSequentially
+                        [ waitForCrdEstablished repoRoot patroniPostgresqlCrdName
+                        , waitForDeployment repoRoot patroniOperatorNamespace patroniOperatorDeploymentName
+                        ]
 
 postgresOperatorHelmValues :: String -> String -> Value
 postgresOperatorHelmValues prodboxId _labelValue =
@@ -1715,80 +1660,6 @@ postgresOperatorHelmValues prodboxId _labelValue =
         , "fullnameOverride" .= patroniOperatorDeploymentName
         , "podAnnotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
         ]
-
-removeLegacyPostgresOperatorIfPresent :: FilePath -> IO ExitCode
-removeLegacyPostgresOperatorIfPresent repoRoot = do
-    deploymentResult <-
-        captureKubectl
-            repoRoot
-            [ "get"
-            , "deployment"
-            , patroniOperatorDeploymentName
-            , "--namespace"
-            , patroniOperatorNamespace
-            , "-o"
-            , "jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}"
-            ]
-    case deploymentResult of
-        Left err -> failWith err
-        Right output ->
-            case processExitCode output of
-                ExitFailure _
-                    | isNotFoundMessage (outputDetail output) -> pure ExitSuccess
-                    | otherwise ->
-                        failWith
-                            ( "Failed to inspect existing PostgreSQL operator deployment: "
-                                ++ outputDetail output
-                            )
-                ExitSuccess ->
-                    let appName = trimWhitespace (processStdout output)
-                     in if appName == "" || appName == perconaPostgresOperatorAppName
-                            then pure ExitSuccess
-                            else removeLegacyPostgresOperator repoRoot appName
-
-removeLegacyPostgresOperator :: FilePath -> String -> IO ExitCode
-removeLegacyPostgresOperator repoRoot appName = do
-    uninstallResult <-
-        captureToolOutput
-            repoRoot
-            "helm"
-            ["uninstall", patroniOperatorReleaseName, "--namespace", patroniOperatorNamespace, "--wait"]
-    case uninstallResult of
-        Left err -> failWith err
-        Right output -> do
-            emitCapturedProcessOutput output
-            case processExitCode output of
-                ExitSuccess -> deleteLegacyOperatorNamespace repoRoot
-                ExitFailure _
-                    | isMissingHelmReleaseError (outputDetail output) -> deleteLegacyOperatorNamespace repoRoot
-                    | otherwise ->
-                        failWith
-                            ( "Failed to remove incompatible PostgreSQL operator deployment `"
-                                ++ patroniOperatorReleaseName
-                                ++ "` labeled as `"
-                                ++ appName
-                                ++ "` before installing `"
-                                ++ perconaPostgresOperatorAppName
-                                ++ "`: "
-                                ++ outputDetail output
-                            )
-
-deleteLegacyOperatorNamespace :: FilePath -> IO ExitCode
-deleteLegacyOperatorNamespace repoRoot =
-    runCommand
-        CommandSpec
-            { commandPath = "kubectl"
-            , commandArguments =
-                [ "delete"
-                , "namespace"
-                , patroniOperatorNamespace
-                , "--ignore-not-found=true"
-                , "--wait=true"
-                , "--timeout=300s"
-                ]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
-            }
 
 reconcileDnsBootstrapRecord :: FilePath -> ValidatedSettings -> IO ExitCode
 reconcileDnsBootstrapRecord repoRoot settings =
@@ -2188,14 +2059,19 @@ buildMissingCustomImageVariants repoRoot buildPlan taggedRefs = go customImagePu
 
 isRetryableCustomImageBuildFailure :: ProcessOutput -> Bool
 isRetryableCustomImageBuildFailure output =
-    let detail = map toLower (outputDetail output)
+    isRetryableHarborPublicationFailure (outputDetail output)
+
+isRetryableHarborPublicationFailure :: String -> Bool
+isRetryableHarborPublicationFailure detail =
+    let lowered = map toLower detail
      in any
-            (`isInfixOf` detail)
+            (`isInfixOf` lowered)
             [ "502 bad gateway"
             , "503 service unavailable"
             , "504 gateway timeout"
             , "429 too many requests"
             , "connection reset by peer"
+            , "connection refused"
             , "tls handshake timeout"
             , "i/o timeout"
             , "temporary failure"
@@ -2315,21 +2191,38 @@ pushCanonicalMirrorTarget :: FilePath -> String -> RawImageManifest -> String ->
 pushCanonicalMirrorTarget repoRoot source sourceManifest target =
     case buildCanonicalMirrorSourceRefs source sourceManifest of
         Left err -> pure (Left err)
-        Right sourceRefs ->
-            do
-                createResult <-
-                    captureToolOutput
-                        repoRoot
-                        "docker"
-                        (["buildx", "imagetools", "create", "--tag", target] ++ sourceRefs)
-                case createResult of
-                    Left err -> pure (Left err)
-                    Right output ->
-                        case processExitCode output of
-                            ExitSuccess -> do
-                                emitCapturedProcessOutput output
-                                pure (Right ())
-                            ExitFailure _ -> pure (Left (outputDetail output))
+        Right sourceRefs -> go sourceRefs customImagePushRetryAttempts
+  where
+    go :: [String] -> Int -> IO (Either String ())
+    go sourceRefs attemptsRemaining = do
+        createResult <-
+            captureToolOutput
+                repoRoot
+                "docker"
+                (["buildx", "imagetools", "create", "--tag", target] ++ sourceRefs)
+        case createResult of
+            Left err -> pure (Left err)
+            Right output ->
+                case processExitCode output of
+                    ExitSuccess -> do
+                        emitCapturedProcessOutput output
+                        pure (Right ())
+                    ExitFailure _ ->
+                        let detail = outputDetail output
+                         in if attemptsRemaining > 1 && isRetryableHarborPublicationFailure detail
+                                then do
+                                    hPutStrLn
+                                        stderr
+                                        ( "Retrying Harbor mirror publication after transient failure ("
+                                            ++ show (customImagePushRetryAttempts - attemptsRemaining + 1)
+                                            ++ "/"
+                                            ++ show customImagePushRetryAttempts
+                                            ++ "): "
+                                            ++ detail
+                                        )
+                                    threadDelay customImagePushRetryDelayMicroseconds
+                                    go sourceRefs (attemptsRemaining - 1)
+                                else pure (Left detail)
 
 buildCanonicalMirrorSourceRefs :: String -> RawImageManifest -> Either String [String]
 buildCanonicalMirrorSourceRefs source sourceManifest = do
@@ -3419,12 +3312,6 @@ isIgnorableAnnotationError detail =
     let lowered = map toLower detail
      in "does not allow this method" `isInfixOf` lowered
             || "methodnotallowed" `isInfixOf` lowered
-
-isMissingHelmReleaseError :: String -> Bool
-isMissingHelmReleaseError detail =
-    let lowered = map toLower detail
-     in "release: not found" `isInfixOf` lowered
-            || "release not loaded" `isInfixOf` lowered
 
 outputDetail :: ProcessOutput -> String
 outputDetail output =

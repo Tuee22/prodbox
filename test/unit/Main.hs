@@ -623,15 +623,18 @@ main = hspec $ do
             rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
             rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
 
-        it "retries transient Harbor push failures during custom image publication" $ do
+        it "retries transient Harbor publication failures during custom and mirrored image publication" $ do
             repoRoot <- getCurrentDirectory
             rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
 
             rke2Source `shouldContain` "customImagePushRetryAttempts = 3"
             rke2Source `shouldContain` "customImagePushRetryDelayMicroseconds = 5000000"
             rke2Source `shouldContain` "isRetryableCustomImageBuildFailure"
+            rke2Source `shouldContain` "isRetryableHarborPublicationFailure"
+            rke2Source `shouldContain` "Retrying Harbor mirror publication after transient failure"
             rke2Source `shouldContain` "\"unexpected eof\""
             rke2Source `shouldContain` "\"unexpected status from put request\""
+            rke2Source `shouldContain` "\"connection refused\""
 
         it "keeps postgres-operator runtime on explicit Percona chart values" $ do
             repoRoot <- getCurrentDirectory
@@ -641,6 +644,8 @@ main = hspec $ do
             rke2Source `shouldContain` "\"watchAllNamespaces\" .= True"
             rke2Source `shouldContain` "\"disableTelemetry\" .= True"
             rke2Source `shouldContain` "\"fullnameOverride\" .= patroniOperatorDeploymentName"
+            rke2Source `shouldNotContain` "removeLegacyTraefikIfPresent"
+            rke2Source `shouldNotContain` "removeLegacyPostgresOperatorIfPresent"
 
         it "checks Pulumi login against the local MinIO backend path" $ do
             repoRoot <- getCurrentDirectory
@@ -672,13 +677,13 @@ main = hspec $ do
             testProgram `shouldNotContain` "awsAccessKeyId:"
             testProgram `shouldNotContain` "awsSecretAccessKey:"
             testProgram `shouldNotContain` "awsSessionToken:"
-            eksStackSource `shouldContain` "clearLegacyAwsProviderConfig"
             eksStackSource `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+            eksStackSource `shouldNotContain` "clearLegacyAwsProviderConfig"
             eksStackSource `shouldNotContain` "(True, \"awsAccessKeyId\""
             eksStackSource `shouldNotContain` "(True, \"awsSecretAccessKey\""
             eksStackSource `shouldNotContain` "(True, \"awsSessionToken\""
-            testStackSource `shouldContain` "clearLegacyAwsProviderConfig"
             testStackSource `shouldContain` "PRODBOX_PULUMI_AWS_ACCESS_KEY_ID"
+            testStackSource `shouldNotContain` "clearLegacyAwsProviderConfig"
             testStackSource `shouldNotContain` "(True, \"awsAccessKeyId\""
             testStackSource `shouldNotContain` "(True, \"awsSecretAccessKey\""
             testStackSource `shouldNotContain` "(True, \"awsSessionToken\""

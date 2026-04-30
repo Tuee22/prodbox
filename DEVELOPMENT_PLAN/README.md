@@ -27,9 +27,9 @@ govern this plan suite.
 
 ## Closure Status
 
-Phase `4` is reopened on remaining compatibility-cleanup work in the lifecycle and retained
-AWS-validation Pulumi surfaces. Phases `0-3` and `5-7` remain closed on their owned
-repository surfaces.
+All phases `0-7` are closed on their owned repository surfaces. The earlier Phase `4`
+compatibility-cleanup work is closed after removing the retained lifecycle and AWS-validation
+Pulumi migration shims from the supported path.
 
 The current worktree closes on:
 
@@ -48,14 +48,14 @@ The current worktree closes on:
 - one explicit distinction between the Envoy Gateway public edge and the separate Haskell
   distributed gateway daemon shipped through `prodbox gateway ...` and `prodbox charts deploy gateway`
 - one explicit Route 53 public-host doctrine with dedicated app and identity hostnames
-- one cleanup ledger that stays closed on Python-removal work while tracking the remaining
-  lifecycle and Pulumi migration shims owned by Phase `4`
+- one cleanup ledger that preserves removal history while carrying no pending supported-path
+  compatibility shims
 
 The canonical validation contract is expressed through the `prodbox` commands documented by this
-plan: `./.build/prodbox check-code`, `./.build/prodbox test unit`,
-`./.build/prodbox test integration cli`, `./.build/prodbox test integration env`, the named
-native validations behind `./.build/prodbox test integration ...`, and the clean-room rerun owned
-by Phase `6`. Environment-dependent AWS and public-edge proof remain attached to those commands
+plan: `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`,
+`prodbox test integration env`, the named native validations behind
+`prodbox test integration ...`, and the clean-room rerun owned by Phase `6`.
+Environment-dependent AWS and public-edge proof remain attached to those commands
 rather than recorded here as a fresh execution log.
 
 The rewrite remains on the canonical phase model required by
@@ -108,19 +108,19 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 Active | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: the Haskell-only rewrite and the later self-managed public-edge
-expansion remain closed on Phases `0-3` and `5-7`, while Phase `4` is reopened for the remaining
-compatibility-shim cleanup still present in the Haskell codebase.
+expansion are closed on every phase-owned repository surface, including the Phase `4` lifecycle
+and AWS-validation cleanup work.
 
 ## Current Plan Status
 
-The development plan is current against the repository worktree on the following implemented and
-still-open surfaces:
+The development plan is current against the repository worktree on the following implemented
+surfaces:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -165,8 +165,9 @@ still-open surfaces:
 - The local lifecycle is Haskell-owned and Harbor-first: Harbor plus Harbor's storage backend may
   bootstrap from public registries, after which required public images and custom images are
   present in Harbor before later Helm deployments proceed.
-- The Harbor mirror path retries alternate configured upstreams when publication fails after
-  manifest inspection.
+- The Harbor mirror path retries transient Harbor publication failures on the same candidate and
+  then falls through to alternate configured upstreams when publication still fails after manifest
+  inspection.
 - The Haskell-owned lifecycle now retries transient upstream Helm fetch failures during
   `helm repo update` and `helm upgrade --install`, so clean-room restore does not fail terminally
   on intermittent upstream `5xx` or timeout errors.
@@ -196,14 +197,12 @@ still-open surfaces:
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile and ACME
   `ClusterIssuer` projection; those helpers do not expand the public `prodbox pulumi ...` command
   family.
-- `src/Prodbox/CLI/Rke2.hs` still carries two migration-cleanup shims on the supported lifecycle
-  path: `removeLegacyTraefikIfPresent` removes a legacy `traefik` release and
-  `traefik-system` namespace before Envoy Gateway reconcile, and
-  `removeLegacyPostgresOperatorIfPresent` removes an incompatible pre-Percona
-  `postgres-operator` deployment and namespace before the supported Percona install.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` still carry
-  `clearLegacyAwsProviderConfig` to remove older `aws:*` and camelCase Pulumi provider keys from
-  retained validation stacks before current stack-config sync proceeds.
+- `src/Prodbox/CLI/Rke2.hs` now closes the supported lifecycle on the clean-room Harbor, Envoy
+  Gateway, cert-manager, and Percona reconcile path with no retained cluster-migration cleanup
+  shims for Traefik or the pre-Percona operator surface.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` now sync only
+  the supported retained AWS-validation stack inputs and no longer remove older Pulumi
+  provider-key layouts on the supported path.
 - The self-managed public edge now installs Envoy Gateway, renders Gateway API resources, protects
   the browser path through Envoy Gateway `SecurityPolicy`, and keeps Keycloak on a dedicated
   identity hostname.
@@ -220,16 +219,15 @@ still-open surfaces:
   distributed gateway daemon surface; they are not the Envoy Gateway public edge.
 - The earlier unsupported root `Pulumi.yaml` and `Pulumi.home.yaml` residue for the retired
   local-cluster `pulumi/home` path is removed.
-- The canonical validation surfaces are `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`,
-  `./.build/prodbox test integration env`, the named native validation flows in
-  `src/Prodbox/TestValidation.hs`, and the aggregate reruns `./.build/prodbox test integration all`
-  plus `./.build/prodbox test all`.
+- The canonical validation surfaces are `prodbox check-code`, `prodbox test unit`,
+  `prodbox test integration cli`, `prodbox test integration env`, the named native validation
+  flows in `src/Prodbox/TestValidation.hs`, and the aggregate reruns
+  `prodbox test integration all` plus `prodbox test all`.
 - The aggregate rerun contract is owned by the shared suite plan behind
-  `./.build/prodbox test integration all` and `./.build/prodbox test all`, including AWS IAM,
+  `prodbox test integration all` and `prodbox test all`, including AWS IAM,
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
-- The legacy ledger remains closed on Python-removal residue and open only on the three remaining
-  Phase `4` compatibility-cleanup shims above.
+- The legacy ledger remains closed on Python-removal and non-Python supported-path residue while
+  preserving completed cleanup history.
 
 ## Exit Definition
 
@@ -257,9 +255,8 @@ This plan is complete only when all of the following are true:
    credentials, materializes operational `aws.*` only from `aws_admin_for_test_simulation.*` to
    simulate the interactive public CLI workflow, and clears operational `aws.*` from
    `prodbox-config.dhall` before returning so no test-created dedicated IAM user or key survives.
-7. The operator-facing binary lives at `.build/prodbox` (runnable as `./.build/prodbox`),
-   produced by the canonical `cabal build --builddir=.build exe:prodbox` invocation plus a copy
-   step.
+7. The operator-facing binary lives at `.build/prodbox`, produced by the canonical
+   `cabal build --builddir=.build exe:prodbox` invocation plus a copy step.
 8. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile
    lives under `docker/`.
 9. Every repository-owned Haskell-build Dockerfile is single-stage from `ubuntu:24.04`, installs

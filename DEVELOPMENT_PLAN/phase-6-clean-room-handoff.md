@@ -14,10 +14,9 @@
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
-The supported repository surfaces are Haskell-only, and the cleanup ledger remains closed on
-Python removal while Phase `4` is reopened on non-Python compatibility cleanup. Sprint `6.1` and
-Sprint `6.2` remain closed on their repository-owned rerun orchestration and final zero-Python
-handoff criteria.
+The supported repository surfaces are Haskell-only, and the cleanup ledger remains closed on both
+Python-removal and non-Python supported-path residue. Sprint `6.1` and Sprint `6.2` remain
+closed on their repository-owned rerun orchestration and final zero-Python handoff criteria.
 
 ## Current Baseline In Worktree
 
@@ -28,8 +27,8 @@ handoff criteria.
 - The `prodbox test` orchestration path runs Haskell test suites via `cabal test` and native CLI
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
-- The legacy tracking ledger is the authoritative cleanup ledger for any remaining repository
-  residue; it is currently open only on non-Python compatibility cleanup owned by Phase `4`.
+- The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history and
+  currently carries no pending supported-path residue.
 - Root guidance now aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -72,9 +71,9 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
 ### Current Validation State
 
 - The destructive operator flow and aggregate runner remain Haskell-only on the runtime surface.
-- `src/Prodbox/TestRunner.hs` now resyncs and reuses the canonical `./.build/prodbox` path before
-  native aggregate phases begin, so `prodbox test all` remains valid even after nested Haskell
-  suites refresh the operator binary.
+- `src/Prodbox/TestRunner.hs` now resyncs and reuses the canonical operator binary at
+  `.build/prodbox` before native aggregate phases begin, so `prodbox test all` remains valid
+  even after nested Haskell suites refresh the operator binary.
 - Validation steps `2`, `4`, and `5` close on the direct-Dhall config contract: no supported
   command materializes `prodbox-config.json`, and `prodbox config compile` is removed.
 - Validation steps `7`, `9`, and `12` remain mapped to the native validation harness because the
@@ -134,8 +133,8 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
-  removal history, keeps Python-removal residue at zero, and records the remaining Phase `4`
-  non-Python compatibility cleanup explicitly.
+  removal history while keeping both Python-removal and non-Python supported-path residue at
+  zero.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` continues to
   own the destructive rerun contract.

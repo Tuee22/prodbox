@@ -33,8 +33,7 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
   namespace.
 - The current lifecycle and chart code install the Percona `pg-operator` Helm release, mirror the
   Percona operator and PostgreSQL images, and render `PerconaPGCluster` resources for
-  `keycloak-postgres`. Any retained legacy-operator uninstall shim remains tracked in Phase `4`
-  and the cleanup ledger.
+  `keycloak-postgres`.
 - Sprint `3.3` keeps the namespace-local release shape, deterministic manual-PV bindings,
   retained-secret contract, and dependent-chart sequencing on the Percona operator surface.
 - `keycloak` now consumes the namespace-local retained Patroni credentials secret and the namespace-local
@@ -157,8 +156,7 @@ Patroni HA surface.
 ### Current Validation State
 
 - `src/Prodbox/CLI/Rke2.hs` now installs the Percona `percona/pg-operator` Helm release from
-  `https://percona.github.io/percona-helm-charts/`. The remaining incompatible legacy
-  `postgres-operator` uninstall shim is tracked in Phase `4` and the cleanup ledger.
+  `https://percona.github.io/percona-helm-charts/`.
 - `src/Prodbox/PostgresPlatform.hs` now defines the Percona operator namespace, release,
   deployment, CRD, service, and secret naming contract, including
   `perconapgclusters.pgv2.percona.com`, the `-ha` primary service, the `-replicas` service, and

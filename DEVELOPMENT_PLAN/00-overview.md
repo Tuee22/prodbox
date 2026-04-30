@@ -120,14 +120,14 @@ Build a clean-room Haskell `prodbox` repository with:
 | AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses |
 | AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup |
 | Formal verification | `prodbox tla-check` | Haskell CLI invoking the TLA+ toolchain |
-| Code quality gate | `./.build/prodbox check-code` | Haskell CLI plus governed doctrine-alignment enforcement |
+| Code quality gate | `prodbox check-code` | Haskell CLI plus governed doctrine-alignment enforcement |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |
 
 ## Current Repository State
 
 The repository worktree implements the Haskell-only rewrite baseline and the self-managed
-public-edge expansion, but Phase `4` is reopened on three remaining compatibility-cleanup shims.
-`prodbox check-code` enforces the governed doctrine gate, the Haskell gateway runtime plus status
+public-edge expansion with every phase-owned cleanup surface closed. `prodbox check-code`
+enforces the governed doctrine gate, the Haskell gateway runtime plus status
 path close on the implemented HTTP `/v1/state` payload and daemon timing-validation contract, the
 supported public surface is Haskell-only, and the earlier unsupported Python residue remains
 removed. The implementation uses in-image `ghcup` with pinned GHC `9.14.1` in the frontend and
@@ -211,13 +211,11 @@ than restated here as a fresh rerun log.
   retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`.
-- `src/Prodbox/CLI/Rke2.hs` still carries `removeLegacyTraefikIfPresent` and
-  `removeLegacyPostgresOperatorIfPresent` so migrated clusters can shed retired Traefik and an
-  incompatible pre-Percona `postgres-operator` before the supported Envoy Gateway and Percona
-  reconciles proceed.
-- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` still carry
-  `clearLegacyAwsProviderConfig` so retained validation stacks can shed the previous Pulumi AWS
-  provider-key layout before current stack-config sync runs.
+- `src/Prodbox/CLI/Rke2.hs` now closes the supported lifecycle on the clean-room Envoy Gateway
+  and Percona reconcile path with no retained Traefik or pre-Percona operator migration shims.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` now sync only
+  the supported retained AWS-validation stack inputs and no longer remove older Pulumi AWS
+  provider-key layouts on the supported path.
 - `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
   own the current Haskell gateway surface, including the HTTP `/v1/state` payload with
   `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation. The parsed
@@ -231,20 +229,19 @@ than restated here as a fresh rerun log.
 
 - Build and sync the operator binary through `cabal build --builddir=.build exe:prodbox` plus the
   `.build/prodbox` copy step.
-- Run `./.build/prodbox check-code`.
-- Run `./.build/prodbox test unit`.
-- Run `./.build/prodbox test integration cli`.
-- Run `./.build/prodbox test integration env`.
+- Run `prodbox check-code`.
+- Run `prodbox test unit`.
+- Run `prodbox test integration cli`.
+- Run `prodbox test integration env`.
 - Run the named native validation flows owned by `src/Prodbox/TestValidation.hs`.
-- Run the aggregate reruns `./.build/prodbox test integration all` and `./.build/prodbox test all`.
+- Run the aggregate reruns `prodbox test integration all` and `prodbox test all`.
 
 ### Interpretation
 
 The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
 application database ownership, the mounted `haskell:9.6.7-slim` toolchain-context path, or the
-Zalando `postgres-operator` surface. Phase `4` remains active because the lifecycle and retained
-AWS-validation Pulumi paths still carry explicit cleanup shims for legacy Traefik, an
-incompatible pre-Percona `postgres-operator`, and the older Pulumi AWS provider-key layout.
+Zalando `postgres-operator` surface. The final Phase `4` compatibility-cleanup work is now closed
+on the clean-room lifecycle and retained AWS-validation stack path.
 
 ## Haskell-Only Architecture by Surface
 
@@ -265,8 +262,7 @@ incompatible pre-Percona `postgres-operator`, and the older Pulumi AWS provider-
 
 ## Current Execution State
 
-Phases `0-3` and `5-7` are closed on their repository-owned surfaces and canonical validation
-contracts. Phase `4` is reopened on its sprint-owned compatibility-cleanup surface:
+Phases `0-7` are closed on their repository-owned surfaces and canonical validation contracts:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
@@ -280,10 +276,8 @@ contracts. Phase `4` is reopened on its sprint-owned compatibility-cleanup surfa
   PostgreSQL doctrine for Helm-managed workloads.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
   bootstrap exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
-  and ACME projection, and Python removal. Those implemented replacement surfaces remain closed,
-  but Sprint `4.1` and Sprint `4.2` are active because the code still contains migration shims
-  for legacy Traefik cleanup, incompatible pre-Percona `postgres-operator` cleanup, and legacy
-  Pulumi AWS provider-config cleanup.
+  and ACME projection, and Python removal. Its lifecycle and retained AWS-validation cleanup
+  shims are now removed from the supported path.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation.
 - Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria.

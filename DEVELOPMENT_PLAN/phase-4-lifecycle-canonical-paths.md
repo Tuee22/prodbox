@@ -12,10 +12,9 @@
 This phase closes the hard migration gap between parity and replacement. It owns the Harbor-first
 local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
-supported path Haskell-only. The replacement surfaces are implemented, but this phase is active
-because three compatibility-cleanup shims still survive in `src/Prodbox/CLI/Rke2.hs`,
-`src/Prodbox/Infra/AwsTestStack.hs`, and `src/Prodbox/Infra/AwsEksTestStack.hs`, alongside the
-lifecycle-owned bootstrap DNS and ACME `ClusterIssuer` reconcile in `src/Prodbox/CLI/Rke2.hs`.
+supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks now close
+on clean-room-only behavior, while the lifecycle-owned bootstrap DNS and ACME `ClusterIssuer`
+reconcile remain part of the supported `src/Prodbox/CLI/Rke2.hs` surface.
 
 ## Current Baseline In Worktree
 
@@ -37,15 +36,18 @@ lifecycle-owned bootstrap DNS and ACME `ClusterIssuer` reconcile in `src/Prodbox
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.
-- `src/Prodbox/CLI/Rke2.hs` still carries migration-cleanup shims for retired Traefik and an
-  incompatible pre-Percona `postgres-operator`, and the AWS validation stack helpers still carry
-  legacy Pulumi provider-config cleanup for retained stack state.
+- `src/Prodbox/CLI/Rke2.hs` closes the supported lifecycle on the clean-room Harbor, Envoy
+  Gateway, cert-manager, and Percona reconcile path with no retained Traefik or pre-Percona
+  operator cleanup shims.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` now sync only
+  the supported retained AWS-validation stack inputs with no legacy Pulumi provider-config
+  cleanup path.
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
-## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack 🔄
+## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -68,8 +70,9 @@ contract without reintroducing Python or duplicate runtime paths.
 - Every later Helm deployment obtains its images from Harbor.
 - The lifecycle publishes or mirrors both `amd64` and `arm64` variants or manifests irrespective
   of the host architecture running `prodbox`.
-- Harbor mirror publication retries alternate configured upstreams when a preferred source fails
-  after manifest inspection.
+- Harbor mirror publication retries transient Harbor availability failures on the same candidate
+  and then retries alternate configured upstreams when a preferred source still fails after
+  manifest inspection.
 - The explicit repo upgrade to GHC `9.14.1`, including required cabal-bound changes, closes with
   full canonical validation reruns on the upgraded toolchain path.
 
@@ -99,17 +102,14 @@ contract without reintroducing Python or duplicate runtime paths.
   login, mirror, or custom-image publication proceeds on a fresh cluster.
 - `mirrorClusterImagesOnce` now reconciles the canonical required public images and any
   already-running non-Harbor cluster images into Harbor, selecting from configured candidate
-  sources and retrying alternate upstreams when Harbor publication fails after manifest
-  inspection.
+  sources, retrying transient Harbor publication failures on the same candidate, and then
+  retrying alternate upstreams when Harbor publication still fails after manifest inspection.
 - `ensureCustomImageVariants` now keeps the custom Haskell images single-stage while publishing
   `linux/amd64` and `linux/arm64` variants directly from the repo-owned Dockerfiles with no named
   `haskell-toolchain` context.
-- `removeLegacyTraefikIfPresent` still uninstalls a migrated `traefik` release and deletes the
-  `traefik-system` namespace before the supported Envoy Gateway reconcile proceeds.
-- `ensurePostgresOperatorRuntime` now removes an incompatible legacy Zalando
-  `postgres-operator` release and deletes the dedicated operator namespace before installing the
-  Percona operator, so retained clusters can transition onto the supported operator surface
-  without hitting Helm's immutable Deployment selector error.
+- `ensureClusterPlatformRuntime` now reconciles the supported MetalLB, Envoy Gateway,
+  cert-manager, ACME, and Percona operator surfaces directly with no retained cluster-migration
+  cleanup shims for Traefik or the earlier incompatible operator surface.
 - `inspectRawImageManifest` in `src/Prodbox/CLI/Rke2.hs` now treats Harbor's `401 Unauthorized`
   response for a missing custom-image target as a build-required miss instead of a fatal inspect
   failure, so `prodbox rke2 install` rebuilds and publishes the supported custom gateway image
@@ -117,13 +117,11 @@ contract without reintroducing Python or duplicate runtime paths.
 
 ### Remaining Work
 
-Remove the live cluster-migration cleanup shims for retired Traefik and the incompatible
-pre-Percona `postgres-operator` once the supported clean-room lifecycle no longer needs to
-reconcile migrated clusters.
+None.
 
-## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions 🔄
+## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestPlan.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`
 
@@ -169,14 +167,13 @@ local-cluster supported ownership from the public Pulumi path.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain stack
   snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the
   HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`.
-- `clearLegacyAwsProviderConfig` in both retained AWS validation stack helpers still removes the
-  older `aws:*` and camelCase provider-key layout from existing stacks before the current sync
-  path writes only the supported operator-CIDR and SSH-public-key inputs.
+- The retained AWS validation stack helpers now write only the supported operator-CIDR and
+  SSH-public-key inputs and no longer remove older Pulumi provider-key layouts on the supported
+  path.
 
 ### Remaining Work
 
-Remove the legacy Pulumi AWS provider-config cleanup shim once supported retained validation
-stacks no longer need migration from the previous provider-key layout.
+None.
 
 ## Sprint 4.3: Repository-Wide Python Toolchain Removal ✅
 
@@ -214,8 +211,7 @@ parity exists.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
-  remains closed on Python-removal items even though non-Python migration shims remain open under
-  Sprint `4.1` and Sprint `4.2`.
+  remains closed on both Python-removal and non-Python supported-path residue.
 
 ### Remaining Work
 

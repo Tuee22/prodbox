@@ -122,9 +122,11 @@ are healthy:
    source lists
 3. map those refs into the Harbor `prodbox` project
 4. verify a candidate source publishes both `linux/amd64` and `linux/arm64`
-5. if a preferred candidate later fails during Harbor publication, purge the Harbor destination
-   repository path and retry the next configured candidate source
-6. create the Harbor target manifest only when the Harbor target is missing one of those
+5. if a preferred candidate later hits a transient Harbor availability failure during publication,
+   retry that same candidate before falling through
+6. if the candidate still fails during Harbor publication, purge the Harbor destination repository
+   path and retry the next configured candidate source
+7. create the Harbor target manifest only when the Harbor target is missing one of those
    architectures
 
 This is why inspect-time success is not sufficient: the later

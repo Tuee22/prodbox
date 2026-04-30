@@ -212,9 +212,9 @@ or operational `aws.*` credentials behind.
 - The aggregate IAM proof is sequenced before downstream AWS-backed suites through the named
   prerequisite DAG rather than through ambient host Pulumi login state.
 - The named and aggregate IAM closure gates are implemented on the same native suite path:
-  `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, and
-  `./.build/prodbox test all`. Environment-dependent end-to-end proof remains attached to those
-  commands rather than duplicated here as an execution log.
+  `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`.
+  Environment-dependent end-to-end proof remains attached to those commands rather than duplicated
+  here as an execution log.
 - `src/Prodbox/CLI/Rke2.hs` now retries transient Harbor `502` / `unexpected EOF` failures during
   custom multi-arch `docker buildx --push` publication so destructive reruns do not fail
   terminally on a single short-lived Harbor registry write error.

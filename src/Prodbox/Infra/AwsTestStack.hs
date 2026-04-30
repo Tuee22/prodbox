@@ -415,29 +415,6 @@ syncAwsTestStackConfig projectDir environment stackConfig =
                 ++ [key, value]
             )
 
-clearLegacyAwsProviderConfig :: FilePath -> [(String, String)] -> IO (Either String ())
-clearLegacyAwsProviderConfig projectDir environment =
-    foldM runConfigRm (Right ()) legacyConfigKeys
-  where
-    legacyConfigKeys =
-        [ "aws:region"
-        , "aws:accessKey"
-        , "aws:secretKey"
-        , "aws:token"
-        , "awsRegion"
-        , "awsAccessKeyId"
-        , "awsSecretAccessKey"
-        , "awsSessionToken"
-        ]
-
-    runConfigRm :: Either String () -> String -> IO (Either String ())
-    runConfigRm (Left err) _ = pure (Left err)
-    runConfigRm (Right ()) key =
-        runPulumiCommandQuiet
-            projectDir
-            environment
-            ["config", "rm", "--stack", awsTestStackName, key]
-
 readSshPublicKey :: FilePath -> IO (Either String String)
 readSshPublicKey repoRoot = do
     keyResult <- ensureAwsTestSshKey repoRoot
@@ -795,33 +772,28 @@ ensureAwsTestStackResources repoRoot = do
                                                         selectExit <- pulumiStackSelect projectDir baseEnvironment True
                                                         case selectExit of
                                                             PulumiStackSelected -> do
-                                                                clearLegacyResult <- clearLegacyAwsProviderConfig projectDir baseEnvironment
-                                                                case clearLegacyResult of
-                                                                    Left err ->
-                                                                        pure (Left ("pulumi provider config cleanup failed: " ++ err))
-                                                                    Right () -> do
-                                                                        syncExit <- syncAwsTestStackConfig projectDir baseEnvironment stackConfig
-                                                                        case syncExit of
-                                                                            ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                                syncExit <- syncAwsTestStackConfig projectDir baseEnvironment stackConfig
+                                                                case syncExit of
+                                                                    ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                                    ExitSuccess -> do
+                                                                        upExit <- pulumiUp projectDir baseEnvironment
+                                                                        case upExit of
+                                                                            ExitFailure _ -> pure (Left "pulumi up failed")
                                                                             ExitSuccess -> do
-                                                                                upExit <- pulumiUp projectDir baseEnvironment
-                                                                                case upExit of
-                                                                                    ExitFailure _ -> pure (Left "pulumi up failed")
-                                                                                    ExitSuccess -> do
-                                                                                        outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                                                                                        case outputsResult of
+                                                                                outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+                                                                                case outputsResult of
+                                                                                    Left err -> pure (Left err)
+                                                                                    Right outputs ->
+                                                                                        case snapshotFromOutputs outputs of
                                                                                             Left err -> pure (Left err)
-                                                                                            Right outputs ->
-                                                                                                case snapshotFromOutputs outputs of
+                                                                                            Right snapshot -> do
+                                                                                                saveAwsTestStackSnapshot repoRoot snapshot
+                                                                                                objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                                                                                                case objectCountResult of
                                                                                                     Left err -> pure (Left err)
-                                                                                                    Right snapshot -> do
-                                                                                                        saveAwsTestStackSnapshot repoRoot snapshot
-                                                                                                        objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                                                                        case objectCountResult of
-                                                                                                            Left err -> pure (Left err)
-                                                                                                            Right objectCount -> do
-                                                                                                                putStr (renderAwsTestStackReport snapshot objectCount)
-                                                                                                                pure (Right ())
+                                                                                                    Right objectCount -> do
+                                                                                                        putStr (renderAwsTestStackReport snapshot objectCount)
+                                                                                                        pure (Right ())
                                                             PulumiStackMissing ->
                                                                 pure (Left "pulumi stack select reported a missing stack after --create")
                                                             PulumiStackSelectFailed detail ->
@@ -877,21 +849,16 @@ destroyAwsTestStackStatus repoRoot = do
                                                     Right stackConfig -> do
                                                         let providerEnvironment =
                                                                 backendEnvironment ++ pulumiAwsProviderEnv operationalCredentials
-                                                        clearLegacyResult <- clearLegacyAwsProviderConfig projectDir providerEnvironment
-                                                        case clearLegacyResult of
-                                                            Left err ->
-                                                                pure (Left ("pulumi provider config cleanup failed: " ++ err))
-                                                            Right () -> do
-                                                                syncExit <- syncAwsTestStackConfig projectDir providerEnvironment stackConfig
-                                                                case syncExit of
-                                                                    ExitFailure _ -> pure (Left "pulumi config set failed")
-                                                                    ExitSuccess -> do
-                                                                        destroyResult <- pulumiDestroyQuiet projectDir providerEnvironment
-                                                                        case destroyResult of
-                                                                            Left err -> pure (Left ("pulumi destroy failed: " ++ err))
-                                                                            Right () -> do
-                                                                                void (pulumiStackRemoveQuiet projectDir providerEnvironment False)
-                                                                                finalizeDestroy repoRoot currentSnapshot
+                                                        syncExit <- syncAwsTestStackConfig projectDir providerEnvironment stackConfig
+                                                        case syncExit of
+                                                            ExitFailure _ -> pure (Left "pulumi config set failed")
+                                                            ExitSuccess -> do
+                                                                destroyResult <- pulumiDestroyQuiet projectDir providerEnvironment
+                                                                case destroyResult of
+                                                                    Left err -> pure (Left ("pulumi destroy failed: " ++ err))
+                                                                    Right () -> do
+                                                                        void (pulumiStackRemoveQuiet projectDir providerEnvironment False)
+                                                                        finalizeDestroy repoRoot currentSnapshot
                                     PulumiStackMissing -> do
                                         case currentSnapshot of
                                             Nothing ->

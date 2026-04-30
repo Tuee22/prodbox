@@ -328,7 +328,7 @@ main = hspec $ do
                 when (installExitCode /= ExitSuccess) (expectationFailure installOutput)
                 installExitCode `shouldBe` ExitSuccess
                 installStdout `shouldContain` "Kubernetes control plane is running"
-                installStderr `shouldBe` ""
+                installStderr `shouldContain` "Retrying Harbor mirror publication after transient failure"
 
                 createDirectoryIfMissing True (tmpDir </> ".kube")
                 writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
@@ -374,8 +374,6 @@ main = hspec $ do
                 kubectlRecord `shouldContain` "get|nodes|-o|name"
                 kubectlRecord `shouldContain` "wait|--for=condition=Ready|node|--all|--timeout=300s"
                 kubectlRecord `shouldContain` "get|storageclass|-o|name"
-                kubectlRecord `shouldContain` "get|deployment|postgres-operator|--namespace|postgres-operator|-o|jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}"
-                kubectlRecord `shouldContain` "delete|namespace|traefik-system|--ignore-not-found=true|--wait=true|--timeout=300s"
                 kubectlRecord `shouldContain` "delete|storageclass|storageclass.storage.k8s.io/local-path|--ignore-not-found=true"
                 kubectlRecord `shouldContain` "patch|deployment|harbor-nginx|-n|harbor|--type|strategic|--patch|"
                 kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
@@ -383,6 +381,8 @@ main = hspec $ do
                 kubectlRecord `shouldContain` "annotate|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldContain` "label|clusterroles.rbac.authorization.k8s.io|-l|app.kubernetes.io/instance=harbor|prodbox.io/id=prodbox-"
                 kubectlRecord `shouldNotContain` "delete|namespace|harbor|--ignore-not-found=true|--wait=true|--timeout=300s"
+                kubectlRecord `shouldNotContain` "jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}"
+                kubectlRecord `shouldNotContain` "delete|namespace|traefik-system|--ignore-not-found=true|--wait=true|--timeout=300s"
 
                 applyIdentity <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-1.json")
                 applyIdentity `shouldContain` "prodbox-identity"
@@ -400,7 +400,6 @@ main = hspec $ do
                 helmRecord `shouldContain` "mcImage.repository=quay.io/minio/mc"
                 helmRecord `shouldContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
                 helmRecord `shouldContain` "mcImage.repository=127.0.0.1:30080/prodbox/minio-mc-mirror"
-                helmRecord `shouldContain` "uninstall|traefik|--namespace|traefik-system|--wait"
                 helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
                 helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
                 helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
@@ -409,8 +408,9 @@ main = hspec $ do
                 helmRecord `shouldContain` "repo|add|jetstack|https://charts.jetstack.io"
                 helmRecord `shouldContain` "upgrade|--install|cert-manager|jetstack/cert-manager"
                 helmRecord `shouldContain` "repo|add|percona|https://percona.github.io/percona-helm-charts/"
-                helmRecord `shouldContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
                 helmRecord `shouldContain` "upgrade|--install|postgres-operator|percona/pg-operator"
+                helmRecord `shouldNotContain` "uninstall|traefik|--namespace|traefik-system|--wait"
+                helmRecord `shouldNotContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
 
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
@@ -543,7 +543,7 @@ main = hspec $ do
                         ""
 
                 upExitCode `shouldBe` ExitSuccess
-                upStderr `shouldBe` ""
+                upStderr `shouldContain` "Retrying Harbor mirror publication after transient failure"
                 upStdout `shouldContain` "Kubernetes control plane is running"
 
                 applyManifest <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-6.json")
@@ -1332,14 +1332,6 @@ fakeRke2KubectlScript =
         , "      deployments.apps)"
         , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
         , "          printf 'deployment.apps/prodbox-api\\n'"
-        , "        fi"
-        , "        ;;"
-        , "      deployment)"
-        , "        if [[ \"${3:-}\" == 'postgres-operator' && \"$*\" == *'--namespace postgres-operator'* && \"$*\" == *'jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}'* ]]; then"
-        , "          printf 'postgres-operator'"
-        , "        else"
-        , "          printf 'Error from server (NotFound): deployments \"%s\" not found\\n' \"${3:-deployment}\" >&2"
-        , "          exit 1"
         , "        fi"
         , "        ;;"
         , "      configmaps)"

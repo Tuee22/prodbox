@@ -66,7 +66,7 @@ symlinked Haskell tool shims, and explicit repo package-bound updates.
 - The self-managed local edge now installs MetalLB, Envoy Gateway, cert-manager, and the Percona
   PostgreSQL operator, while the config contract exposes dedicated app and identity public
   hostnames through `domain.vscode_fqdn` and `domain.keycloak_fqdn`.
-- The canonical closure gates for this phase are the host artifact contract at `./.build/prodbox`,
+- The canonical closure gates for this phase are the host artifact contract at `.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
 ## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
@@ -86,7 +86,8 @@ topology on the implemented rewrite path.
 - The frontend request ADT and entrypoint dispatch directly to native Haskell commands with no
   retained delegation shim.
 - The canonical host build invocation routes host build artifacts to `.build/` and copies the
-  binary to `.build/prodbox` so operators run `./.build/prodbox`.
+  binary to `.build/prodbox` as the operator-facing build artifact behind the `prodbox`
+  command surface.
 - The only supported home for repository-owned Dockerfiles is `docker/`.
 - The custom Haskell frontend image is single-stage from `ubuntu:24.04`, still emits artifacts
   under `/opt/build`, installs `ghcup` in-image, pins GHC `9.14.1`, and does not create
@@ -103,7 +104,7 @@ topology on the implemented rewrite path.
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
 5. Host build proof: the canonical `cabal build --builddir=.build exe:prodbox` invocation plus
-   the `.build/prodbox` copy step yields a runnable `./.build/prodbox`
+   the `.build/prodbox` copy step yields the runnable operator-facing binary artifact
 6. Container build proof: the canonical frontend Dockerfile under `docker/` emits artifacts under
    `/opt/build` through in-image `ghcup`-managed GHC `9.14.1` with no symlinked Haskell tool
    shims
@@ -173,8 +174,8 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
 - `src/Prodbox/Settings.hs` and `src/Prodbox/Repo.hs` decode `prodbox-config.dhall`, locate the
   canonical repository-root config paths, validate the required config contract, and render masked
   `prodbox config show` output without materializing `prodbox-config.json`.
-- Missing repo-root config now fails fast with explicit `./.build/prodbox config setup` guidance
-  instead of surfacing a raw file-open exception from the Dhall loader.
+- Missing repo-root config now fails fast with explicit `prodbox config setup` guidance instead
+  of surfacing a raw file-open exception from the Dhall loader.
 - `src/Prodbox/BuildSupport.hs` owns the shared `.build/support` linker shim and the
   operator-facing binary sync to `.build/prodbox`.
 - `src/Prodbox/CheckCode.hs` owns `prodbox check-code` and now runs the repository-owned workflow
@@ -190,8 +191,8 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
   validate configured AWS credentials, Route 53 access, and Pulumi login before the validation bodies
   run, so blocked environments fail during Phase `1/2` rather than inside later validation logic.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke native CLI
-  subcommands through the canonical `./.build/prodbox` path, so aggregate validation remains
-  stable after nested suite-side operator-binary syncs.
+  subcommands through the canonical operator-binary path at `.build/prodbox`, so aggregate
+  validation remains stable after nested suite-side operator-binary syncs.
 - `src/Prodbox/SupportedRuntime.hs` now carries only Haskell-owned repo-root and helper
   environment context fields; no Python-named supported-runtime field survives.
 - `src/Prodbox/Host.hs` and `src/Prodbox/K8s.hs` own the public `prodbox host
@@ -262,9 +263,8 @@ the supported product scope.
   fast on real backend errors instead of hanging on stale retained-storage mounts.
 - `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
   validation flows used by `prodbox test integration ...`.
-- The canonical local validation surfaces for this phase remain `./.build/prodbox check-code`,
-  `./.build/prodbox test unit`, `./.build/prodbox test integration cli`, and
-  `./.build/prodbox test integration env`.
+- The canonical local validation surfaces for this phase remain `prodbox check-code`,
+  `prodbox test unit`, `prodbox test integration cli`, and `prodbox test integration env`.
 - Environment-dependent AWS proof for this phase is owned by the named `prodbox pulumi ...` and
   `prodbox test integration ...` commands rather than recorded here as a fresh run result.
 ### Remaining Work

@@ -32,7 +32,7 @@ The supported chart doctrine is:
 5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, and targets an
    Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy.
 6. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
-   path is `./.build/prodbox rke2 install`.
+   path is `prodbox rke2 install`.
 
 ## 2. Singleton Chart Identity Rule
 
@@ -65,8 +65,7 @@ same namespace as the consuming chart stack.
 The supported contract is:
 
 - `prodbox rke2 install` installs the cluster-wide `percona/pg-operator` Helm release into the
-  `postgres-operator` namespace and removes an incompatible legacy Zalando operator release before
-  the Percona install when needed.
+  `postgres-operator` namespace.
 - `prodbox charts deploy keycloak` and `prodbox charts deploy vscode` include the internal
   `keycloak-postgres` release before `keycloak`.
 - Each Patroni cluster runs exactly three PostgreSQL replicas.

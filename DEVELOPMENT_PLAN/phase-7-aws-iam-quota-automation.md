@@ -99,7 +99,8 @@ None.
 
 ### Objective
 
-Move the standalone AWS administration commands to Haskell while preserving the supported contract.
+Keep the standalone AWS administration command family on the Haskell runtime while preserving the
+supported contract.
 
 ### Deliverables
 

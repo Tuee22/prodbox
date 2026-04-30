@@ -2,7 +2,12 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../README.md](../../README.md), [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md), [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md), [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
+**Referenced by**: [../../README.md](../../README.md),
+[../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md](../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md),
+[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md),
+[cli_command_surface.md](./cli_command_surface.md),
+[envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
+[storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
 
 > **Purpose**: Define the singleton chart identity, namespace isolation, external Patroni
 > PostgreSQL dependency model, storage lifecycle, and delete semantics for `prodbox charts`.
@@ -180,7 +185,15 @@ The supported `vscode` public path is:
    edge image set, the Percona operator, and the Percona PostgreSQL workload after Harbor
    bootstrap.
 
-The canonical public-edge doctrine and Redis or WebSocket guidance live in
+The current implementation boundary is:
+
+- `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
+- The current chart platform does not yet ship JWT-only API routes, Redis-backed workloads, or
+  WebSocket-specific public services.
+- Future public API or WebSocket workloads must follow the public-edge doctrine rather than adding
+  chart-local auth proxies or a parallel ingress model.
+
+The canonical public-edge doctrine and Redis, JWT, or WebSocket guidance live in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
 
 ## 10. Required Settings and Auto-Generated Secrets

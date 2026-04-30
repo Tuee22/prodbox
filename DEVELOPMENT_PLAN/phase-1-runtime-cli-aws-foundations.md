@@ -77,8 +77,8 @@ symlinked Haskell tool shims, and explicit repo package-bound updates.
 
 ### Objective
 
-Replace the Python entrypoints with one compiled Haskell `prodbox` binary and one explicit build
-artifact plus container-build topology contract.
+Define the supported Haskell `prodbox` binary, host build artifact contract, and container-build
+topology on the implemented rewrite path.
 
 ### Deliverables
 
@@ -139,8 +139,7 @@ None.
 
 ### Objective
 
-Re-express the current settings, interpreter, subprocess, and test contracts as Haskell-owned
-modules.
+Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned modules.
 
 ### Deliverables
 
@@ -217,8 +216,8 @@ None.
 
 ### Objective
 
-Move the local lifecycle surface and both AWS-backed validation paths to Haskell while retaining
-the same supported product scope.
+Keep the local lifecycle surface and both AWS-backed validation paths on Haskell while preserving
+the supported product scope.
 
 ### Deliverables
 
@@ -286,12 +285,16 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
 ### Deliverables
 
 - `prodbox rke2 install` targets Envoy Gateway as the self-managed public-edge controller.
+- The current supported MetalLB implementation path is L2; the broader doctrine may accommodate
+  BGP later without changing the public-edge control-plane split.
 - The local lifecycle mirrors or publishes the Envoy Gateway target image set and no longer treats
   Traefik as the supported edge controller.
 - The config contract expresses dedicated identity and app hostnames for the public edge through
   `domain.keycloak_fqdn` and `domain.vscode_fqdn`.
 - The foundational namespace and readiness inventory removes `traefik-system` as a canonical edge
   dependency and replaces it with Envoy Gateway ownership.
+- The foundational doctrine distinguishes the Envoy Gateway public edge from the separate Haskell
+  distributed gateway daemon surface.
 - AWS validation doctrine remains explicit that MetalLB is a self-managed local-cluster surface,
   not an AWS validation-stack component.
 
@@ -313,6 +316,9 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
   Gateway API plus Envoy Gateway CRDs, and applies the runtime `EnvoyProxy` plus `GatewayClass`
   resources required by the self-managed public edge.
 - `src/Prodbox/K8s.hs` now treats `envoy-gateway-system` as canonical infrastructure inventory.
+- `src/Prodbox/CLI/Rke2.hs` now renders MetalLB through `IPAddressPool` plus `L2Advertisement`,
+  establishing the current L2-supported path while leaving BGP as future doctrine rather than a
+  current implementation claim.
 - `src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
   `src/Prodbox/Aws.hs` now carry the dedicated `domain.keycloak_fqdn` setting through schema,
   display, onboarding, and authored config output.

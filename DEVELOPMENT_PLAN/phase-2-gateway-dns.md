@@ -10,20 +10,19 @@
 
 ## Phase Summary
 
-This phase ports the gateway daemon, DNS inspection command, and related command surfaces to
-Haskell, preserves the formal model entrypoint, and keeps Route 53 write ownership inside the
-in-cluster gateway workload. It owns the gateway image packaging contract, Harbor-backed image
-delivery for the gateway workload, DNS inspection, and the TLA+ entrypoint. The phase-owned
-repository surfaces are closed on the daemon, `prodbox gateway status`, the implemented
-HTTP `/v1/state` payload, Orders-backed interval validation, and the runtime-to-model
-correspondence notes. The gateway container doctrine is
-implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell
-tool shims, and the retained in-image AWS CLI bundle. The current daemon surface implements
-config generation, heartbeat recording, in-memory ownership projection, DNS-write gating, HTTP
-REST status, and HMAC event signing. The broader peer-transport protocol remains design-owned by
-the TLA+ and gateway doctrine docs rather than by a closed repository surface. This phase does not
-own the Kubernetes Gateway API or Envoy Gateway public edge; those closed surfaces belong to
-Phases `1`, `3`, and `5`.
+This phase owns the Haskell gateway daemon, DNS inspection command, and related command surfaces,
+preserves the formal model entrypoint, and keeps Route 53 write ownership inside the in-cluster
+gateway workload. It owns the gateway image packaging contract, Harbor-backed image delivery for
+the gateway workload, DNS inspection, and the TLA+ entrypoint. The phase-owned repository
+surfaces are closed on the daemon, `prodbox gateway status`, the implemented HTTP `/v1/state`
+payload, Orders-backed interval validation, and the runtime-to-model correspondence notes. The
+gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
+`9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. The current
+daemon surface implements config generation, heartbeat recording, in-memory ownership projection,
+DNS-write gating, HTTP REST status, and HMAC event signing. The broader peer-transport protocol
+remains design-owned by the TLA+ and gateway doctrine docs rather than by a closed repository
+surface. This phase does not own the Kubernetes Gateway API or Envoy Gateway public edge; those
+closed surfaces belong to Phases `1`, `3`, and `5`.
 
 ## Current Baseline In Worktree
 
@@ -70,9 +69,8 @@ Phases `1`, `3`, and `5`.
 
 ### Objective
 
-Replace the Python gateway daemon, DNS inspection command, and gateway-adjacent CLI surfaces with
-Haskell while preserving runtime behavior and aligning the gateway image with the canonical
-container doctrine.
+Keep the gateway daemon, DNS inspection command, and gateway-adjacent CLI surfaces on Haskell
+while preserving the implemented runtime contract and container doctrine.
 
 ### Deliverables
 

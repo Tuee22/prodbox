@@ -33,7 +33,7 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
-| [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Target MetalLB + Envoy Gateway + Keycloak public-edge doctrine |
+| [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine, including JWT, Redis, and WebSocket boundaries |
 | [effectful_dag_architecture.md](./effectful_dag_architecture.md) | Effect DAG system design |
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine and review-guidance split |
@@ -75,6 +75,13 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 ### Public Edge
 
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
+- [Authentication Doctrine](./envoy_gateway_edge_doctrine.md#5-authentication-doctrine)
+- [JWT Validation Doctrine](./envoy_gateway_edge_doctrine.md#6-jwt-validation-doctrine)
+- [Redis and WebSocket Doctrine](./envoy_gateway_edge_doctrine.md#7-redis-and-websocket-doctrine)
+- [Scaling and Availability Doctrine](./envoy_gateway_edge_doctrine.md#8-scaling-and-availability-doctrine)
+- [Operational and Delivery Implications](./envoy_gateway_edge_doctrine.md#9-operational-and-delivery-implications)
+- [Recommended Migration and Adoption Path](./envoy_gateway_edge_doctrine.md#10-recommended-migration-and-adoption-path)
+- [Diagnostics and Validation Doctrine](./envoy_gateway_edge_doctrine.md#11-diagnostics-and-validation-doctrine)
 - [CLI Command Surface](./cli_command_surface.md)
 - [Helm Chart Platform Doctrine](./helm_chart_platform_doctrine.md)
 - [Local Registry Pipeline](./local_registry_pipeline.md)

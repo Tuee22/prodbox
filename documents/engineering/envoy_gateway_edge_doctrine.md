@@ -2,28 +2,42 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [../../README.md](../../README.md), [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md), [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md), [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md), [distributed_gateway_architecture.md](./distributed_gateway_architecture.md), [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md), [local_registry_pipeline.md](./local_registry_pipeline.md), [unit_testing_policy.md](./unit_testing_policy.md)
+**Referenced by**: [../../README.md](../../README.md),
+[../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md](../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md),
+[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
+[../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
+[../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
+[README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md),
+[distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
+[helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
+[local_registry_pipeline.md](./local_registry_pipeline.md),
+[unit_testing_policy.md](./unit_testing_policy.md)
 
-> **Purpose**: Define the target public-edge doctrine for self-managed `prodbox` clusters: MetalLB,
-> Envoy Gateway, Kubernetes Gateway API, Keycloak-backed edge authentication, and the optional
-> Redis/WebSocket state model.
+> **Purpose**: Define the canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine for
+> self-managed `prodbox` clusters, including JWT, Redis, and WebSocket boundaries.
 
 ## 0. Canonical Doctrine Statements
 
 The target public-edge doctrine for self-managed `prodbox` clusters is:
 
-1. MetalLB exposes the cluster edge with a stable `LoadBalancer` IP on self-managed local clusters.
-2. Envoy Gateway is the target public edge controller.
+1. MetalLB exposes the cluster edge through a stable `LoadBalancer` address.
+2. Envoy Gateway is the target public-edge controller and Envoy is the edge data plane.
 3. Kubernetes Gateway API resources own public Layer 7 routing.
 4. cert-manager owns listener TLS material.
-5. Keycloak remains the OIDC identity provider.
-6. Envoy authenticates and authorizes public traffic at the edge for apps that do not natively own
-   their own OIDC flow.
-7. Supported browser-facing routes do not depend on application-local auth proxies such as
-   `vscode-nginx`.
-8. Supported public routing does not depend on Traefik or `Ingress`.
-9. Redis is optional shared application infrastructure for realtime or rate-limit workloads; it is
-   not part of Envoy JWT validation.
+5. Keycloak remains the OIDC identity provider and JWT issuer.
+6. Envoy owns edge authentication and authorization for routes that do not rely on
+   application-local auth handling.
+7. Envoy-managed browser authentication in this repository uses Envoy Gateway `SecurityPolicy`.
+8. JWT validation happens locally at Envoy from issuer metadata and signing keys, not through
+   per-request Keycloak lookups and not through Redis.
+9. Redis is optional shared application infrastructure for realtime or rate-limit workloads only.
+10. WebSocket authorization happens at connection setup time, while message-level authorization
+    remains application-owned.
+11. Supported public hostnames prefer separate identity and application routes; wildcard public DNS
+    is not part of the supported architecture.
+12. The Haskell distributed gateway daemon documented in
+    [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) is distinct from
+    the Envoy Gateway public edge.
 
 The target control-plane principle is:
 
@@ -35,181 +49,510 @@ Redis shares optional app state.
 MetalLB exposes the entrypoint.
 ```
 
-Envoy-managed browser authentication in this repository is expected to use Envoy Gateway
-`SecurityPolicy`, which is an Envoy Gateway extension layered on top of Gateway API rather than a
-plain upstream Gateway API capability.
-
 ## 1. Planning Ownership
 
-This document owns the target public-edge doctrine only.
+This document is normative public-edge doctrine only.
 
-Implementation status, validation closure, and cleanup history are tracked in
+Implementation status, validation closure, remaining work, and cleanup ownership live in
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
-This doctrine applies to the self-managed local-cluster path only. The repository's AWS validation
-stacks remain separate validation surfaces and do not currently provision MetalLB or Envoy
-Gateway.
-
-This doctrine is intentionally distinct from the distributed Haskell gateway daemon documented in
-[distributed_gateway_architecture.md](./distributed_gateway_architecture.md):
-
-- `prodbox gateway start|status|config-gen` refers to the Haskell in-cluster gateway daemon.
-- Envoy Gateway refers to the Kubernetes Gateway API edge controller for public HTTP(S) traffic.
+This doctrine applies to the self-managed local-cluster path only. The AWS validation stacks under
+`pulumi/aws-eks/` and `pulumi/aws-test/` do not currently provision MetalLB or Envoy Gateway.
 
 ## 2. Current Worktree Baseline
 
-The current repository closes on this doctrine.
+The current repository closes on a bounded subset of this doctrine:
 
-Current implementation facts:
-
-1. Local `prodbox rke2 install` installs Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager,
-   and the Percona PostgreSQL operator.
-2. The public `vscode` route uses Gateway API `HTTPRoute` resources plus Envoy Gateway
-   `SecurityPolicy`.
-3. Keycloak publishes the browser login flow on the dedicated hostname from
-   `domain.keycloak_fqdn`.
-4. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
+1. `prodbox rke2 install` installs Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+   Percona PostgreSQL operator.
+2. The current MetalLB runtime is the L2 path rendered through `IPAddressPool` plus
+   `L2Advertisement`. The broader doctrine may accommodate BGP later, but BGP is not the current
+   supported worktree path.
+3. The current shipped public browser path is `vscode`, delivered through Gateway API
+   `HTTPRoute` plus Envoy Gateway `SecurityPolicy`.
+4. Keycloak publishes the identity flow on the dedicated hostname from `domain.keycloak_fqdn`.
+5. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
    `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, and `LoadBalancer` state.
+6. The current repository does not yet ship JWT-only API routes, Redis-backed application stacks,
+   WebSocket-specific public workloads, or named WebSocket validation flows.
 
-## 3. Target Public-Edge Topology
+## 3. Component Responsibilities
 
-The target self-managed public edge is:
+### MetalLB
+
+MetalLB owns external IP advertisement for Kubernetes `Service` objects of type `LoadBalancer`.
+
+MetalLB does not own:
+
+- HTTP routing
+- TLS termination
+- OIDC flows
+- JWT validation
+- WebSocket upgrade semantics
+- application authorization
+
+Its role is:
 
 ```text
-Internet
-  -> Router port-forward
-  -> MetalLB-assigned LoadBalancer IP
-  -> Envoy service managed by Envoy Gateway
-  -> Gateway API resources
-  -> Backend Kubernetes Services
-  -> Pods
+Internet client -> MetalLB address -> Envoy service
 ```
 
-The target resource model is:
+The doctrine allows either L2 or BGP advertisement models. The current implementation closes on
+L2 only.
 
-1. a cluster-level `GatewayClass` owned by Envoy Gateway
-2. one or more `Gateway` resources for public listeners
-3. `HTTPRoute` resources attached to those listeners
-4. `SecurityPolicy` resources attached to `Gateway` or `HTTPRoute`
-5. cert-manager-managed TLS secrets referenced by Gateway listeners
+### Envoy Gateway and Envoy
 
-The supported DNS doctrine remains explicit per-FQDN Route 53 ownership. Wildcard public DNS is
-not part of the supported architecture.
+Envoy Gateway owns Kubernetes control-plane reconciliation for the public edge. Envoy owns the hot
+request path.
 
-The target public-host model prefers separate hostnames for identity and application routes:
+Envoy responsibilities include:
 
-- a dedicated public Keycloak hostname
-- one hostname per browser-facing app
-- additional API or WebSocket hostnames only when a workload needs them
+- TLS termination
+- Gateway API listener and route attachment
+- forwarding traffic to backend services
+- Envoy Gateway `SecurityPolicy` attachment
+- optional browser-facing OIDC enforcement
+- optional JWT validation for token-bearing API routes
+- optional claim-based route authorization
+- WebSocket proxying
+- edge observability
 
-## 4. Authentication Doctrine
+Envoy is treated as stateless edge infrastructure. It does not own durable application state.
+
+### Keycloak
 
 Keycloak remains the identity provider.
 
-Keycloak owns:
+Keycloak responsibilities include:
 
-1. browser login
-2. user, group, role, and client management
-3. OIDC issuer metadata
-4. token issuance and signing
-5. identity and session persistence in PostgreSQL
+- browser login
+- OIDC issuer metadata
+- token issuance and signing
+- user, role, group, and client management
+- identity and session persistence in PostgreSQL
+- durable identity and session storage behind the public login flow
 
-Envoy Gateway owns:
+Envoy and application workloads trust tokens issued by Keycloak according to route policy.
 
-1. TLS termination at the edge
-2. Gateway API route attachment
-3. OIDC login enforcement for browser apps that do not own their own OIDC flow well
-4. JWT validation for token-bearing API routes
-5. route-level or listener-level auth policy attachment through `SecurityPolicy`
+### Redis
 
-Application workloads own:
-
-1. application behavior after successful authentication
-2. fine-grained per-request or per-message authorization that Envoy cannot infer from route
-   metadata alone
-3. any app-specific session or collaboration semantics that must survive reconnects
-
-The target `vscode` doctrine is:
-
-1. `code-server` does not own the public OIDC browser flow directly.
-2. Envoy Gateway enforces browser authentication in front of the workload.
-3. Keycloak remains the OIDC provider.
-4. No supported long-term `vscode` architecture depends on `vscode-nginx`.
-
-For API routes, Envoy may validate JWTs without taking over the full interactive browser login
-flow.
-
-## 5. Redis, WebSocket, and Realtime-State Doctrine
-
-Redis is optional shared application infrastructure.
-
-It is appropriate for:
+Redis is optional shared infrastructure for workloads that need state outside one pod. It is
+appropriate for:
 
 1. WebSocket presence state
 2. pub/sub fanout
 3. shared ephemeral app state
 4. distributed locks
-5. external rate-limit backends
+5. application-level caching
+6. external rate-limit backends
 
-It is not part of Envoy JWT validation. Envoy validates JWTs from Keycloak locally from issuer
-metadata and signing keys.
+Redis is not part of Envoy JWT validation.
 
-The public-edge doctrine for WebSockets is:
+### Application Workloads
 
-1. Envoy authenticates at connection setup time.
-2. Envoy proxies the upgraded connection to one selected backend pod.
-3. The backend application owns message-level authorization.
-4. Long-lived connection recovery, token-expiry handling, and reconnect semantics must be designed
-   explicitly by the application surface.
+Application workloads sit behind Envoy.
 
-If a workload needs reconnect-safe shared state, that state must live outside the pod. Redis is the
-default optional doctrine for that class of state, but only when the workload actually needs it.
+They may be:
 
-The current repository does not yet ship a Redis-backed application stack. This doctrine exists to
-guide the target edge and future workload shape, not to overclaim current implementation.
+- browser apps
+- APIs
+- WebSocket services
+- legacy apps that do not understand OIDC
+- modern apps that integrate with Keycloak directly
+- app-managed OIDC workloads
+- edge-authenticated workloads
 
-## 6. Lifecycle, Chart, and Image-Delivery Implications
+Application workloads own:
 
-Supported lifecycle implications:
+- behavior after authentication succeeds
+- fine-grained per-request authorization beyond route metadata
+- message-level authorization for WebSocket payloads
+- reconnect-safe state that must survive pod restart or rebalance
 
-1. `prodbox rke2 install` installs MetalLB, Envoy Gateway, cert-manager, and the Percona
-   PostgreSQL operator for the self-managed public edge.
-2. Harbor-backed steady-state image sourcing mirrors or publishes Envoy Gateway control-plane and
-   Envoy data-plane images rather than Traefik images.
-3. No supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
-4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; this
-   doctrine does not replace it with Envoy Gateway.
+## 4. Traffic and Hostname Model
 
-Supported chart implications:
+The target public edge is:
 
-1. `vscode` public delivery routes through Gateway API resources.
-2. Keycloak remains a chart-managed workload with a dedicated public identity host.
-3. The chart platform no longer treats an app-local nginx auth proxy as a permanent supported
-   dependency for `vscode`.
-4. Optional Redis belongs only to workloads that actually need shared realtime state.
+```text
+Internet
+  -> router port-forward
+  -> MetalLB-assigned LoadBalancer IP
+  -> Envoy service managed by Envoy Gateway
+  -> Gateway API listeners and routes
+  -> backend services
+  -> pods
+```
 
-## 7. Diagnostics and Validation Doctrine
+The preferred hostname model is explicit:
+
+- `auth.<zone>` or another dedicated Keycloak hostname for identity
+- one hostname per browser-facing app
+- additional API or WebSocket hostnames only when a workload actually needs them
+
+Example hostname routing inside this model may look like:
+
+```text
+auth.<zone> -> Envoy -> Keycloak Service
+app.<zone>  -> Envoy -> App Service
+api.<zone>  -> Envoy -> API Service
+ws.<zone>   -> Envoy -> WebSocket Service
+```
+
+The supported architecture no longer treats an app-local nginx auth proxy or Traefik `Ingress`
+surface as the canonical public edge.
+
+The earlier edge pattern:
+
+```text
+Client -> Nginx reverse proxy -> Keycloak / Apps
+```
+
+becomes:
+
+```text
+Client -> MetalLB -> Envoy Gateway -> Keycloak / Apps
+```
+
+Nginx or another app-local edge proxy should remain only when a concrete feature gap requires it.
+
+## 5. Authentication Doctrine
+
+Two authentication patterns are supported by doctrine.
+
+### Pattern A: Application-Managed OIDC
+
+Use this pattern when the application already owns its OIDC flow well.
+
+Responsibilities:
+
+```text
+Keycloak = authenticates user
+App      = performs OIDC flow and manages login/session semantics
+Envoy    = TLS termination and routing
+```
+
+This pattern is acceptable for future workloads when application-local identity handling is
+material to the workload.
+
+Typical fit:
+
+- the application already supports OIDC well
+- the application needs to manage its own session semantics
+- application behavior depends directly on identity claims
+
+### Pattern B: Envoy-Enforced Edge Auth
+
+Use this pattern when central edge enforcement is preferred.
+
+Responsibilities:
+
+```text
+Keycloak = authenticates user and issues tokens
+Envoy    = verifies identity and blocks unauthenticated traffic
+App      = receives authenticated traffic
+```
+
+The current repository uses this pattern for the public `vscode` path through Envoy Gateway
+`SecurityPolicy`.
+
+Typical fit:
+
+- the application does not support OIDC
+- centralized edge auth is preferred
+- unauthenticated traffic should be blocked before it reaches the workload
+- multiple internal apps should share the same enforcement model
+
+### Current Implementation Boundary
+
+The current worktree ships browser-facing OIDC enforcement for `vscode`, not a general catalog of
+JWT-only API routes. Future API routes may validate JWTs without taking over the full interactive
+browser login flow.
+
+## 6. JWT Validation Doctrine
+
+OIDC and JWT are related but different:
+
+```text
+OIDC = login and identity protocol
+JWT  = signed token format often carried after OIDC authentication
+```
+
+Representative claims in a Keycloak-issued token may include:
+
+```text
+iss            = https://auth.<zone>/realms/<realm>
+sub            = <user-id>
+aud            = <client-or-api>
+exp            = <unix-timestamp>
+groups         = [users]
+realm roles    = [user]
+resource roles = [editor]
+```
+
+For token-bearing API routes, the doctrine is:
+
+1. the client presents a JWT through `Authorization: Bearer ...` or another explicitly supported
+   transport
+2. Envoy obtains Keycloak issuer metadata and signing keys
+3. Envoy validates signature, expiry, issuer, audience, and any route-required claims locally
+4. Envoy forwards only allowed traffic
+
+The hot path is:
+
+```text
+Request -> Envoy -> local JWT verification -> application
+```
+
+not:
+
+```text
+Request -> Envoy -> Keycloak -> database -> Envoy -> application
+```
+
+This means:
+
+- JWT validation must not depend on Redis
+- JWT validation must not require a per-request Keycloak round-trip
+- issuer, audience, and claim requirements belong to route policy
+
+Typical local validation checks are:
+
+1. extract the JWT from the request
+2. decode the JWT header and payload
+3. fetch or refresh issuer signing keys from the Keycloak JWKS endpoint
+4. verify the JWT signature
+5. check expiry
+6. check issuer
+7. check audience
+8. check any route-required roles, groups, or scopes
+
+Common token transport locations are:
+
+```text
+Authorization: Bearer <jwt>
+Cookie: <session-cookie-or-token-cookie>
+```
+
+Depending on the workload shape, either:
+
+1. the application performs the OIDC flow and the client later sends JWTs to Envoy, or
+2. Envoy performs the OIDC flow and manages browser login at the edge.
+
+Redis is intentionally excluded from the JWT hot path because adding it would introduce:
+
+- a network call
+- a shared dependency
+- additional failure modes
+- coordinated state that local JWT verification does not need
+
+The current repository does not yet ship public JWT-only API route manifests or named JWT-policy
+validations. When those routes are added, they must prove issuer, audience, and claim enforcement
+through named validations rather than undocumented manual checks.
+
+## 7. Redis and WebSocket Doctrine
+
+Redis is workload-local optional infrastructure, not a mandatory platform dependency.
+
+Appropriate Redis-backed workload uses include:
+
+1. WebSocket presence tracking
+2. pub/sub fanout
+3. shared application state
+4. distributed locks
+5. application-level caching
+6. global rate-limit counters behind an external rate-limit service
+
+If a workload exposes WebSockets behind the public edge, the doctrine is:
+
+1. Envoy authenticates the connection request at setup time.
+2. Envoy upgrades the connection and proxies it to one selected backend pod.
+3. The backend pod owns that live connection until it closes.
+4. Message-level authorization remains application-owned.
+
+The connection flow is:
+
+```text
+Client
+  -> Envoy HTTPS request
+  -> Envoy validates auth at connection time
+  -> Envoy upgrades the connection
+  -> Envoy proxies the WebSocket stream to one backend pod
+```
+
+Stateless WebSocket behavior means reconnects may land on any healthy pod. It does not mean a
+single live connection migrates between pods.
+
+Reconnect-safe or restart-safe state must live outside the pod, for example in Redis, NATS,
+Kafka, PostgreSQL, or another dedicated service.
+
+Application pods should not be the only place that knows:
+
+- which users are online
+- which rooms they joined
+- what messages need to be delivered
+- what subscriptions exist
+- what state must survive a restart
+
+Operational caveats for future WebSocket workloads:
+
+- token expiry during a long-lived connection requires explicit reconnect or refresh design
+- role or group changes do not automatically revoke an already-open socket unless the workload or
+  surrounding infrastructure actively closes it
+- high-security workloads should implement explicit revocation or reconnect logic
+- graceful shutdown needs readiness withdrawal and a drain window before process exit
+
+Per-message authorization remains an application concern. Envoy may enforce access to `/ws`, but
+the workload still decides whether an authenticated user may perform privileged actions inside the
+socket protocol.
+
+The current repository does not yet ship a Redis-backed application stack or WebSocket validation
+suite. Those are future workload shapes, not current implemented surfaces.
+
+## 8. Scaling and Availability Doctrine
+
+The doctrine is horizontally scalable, but the implementation boundary matters.
+
+### Envoy
+
+Envoy is the stateless edge data plane. The doctrine allows multiple Envoy replicas.
+
+The current repository deploys one Envoy Gateway controller replica and one Envoy data-plane
+replica by default. That default is an implementation choice, not a doctrinal scaling limit.
+
+### Applications
+
+Application replicas may scale horizontally behind Envoy.
+
+Run multiple application replicas when the workload needs horizontal capacity.
+
+For HTTP workloads, requests may rebalance normally.
+
+For WebSockets, one live connection stays on one selected pod until disconnect.
+
+### Keycloak
+
+Keycloak remains stateful and depends on PostgreSQL. Keycloak availability matters for new login
+and refresh operations even though local JWT verification can continue briefly while cached
+signing-key material remains valid.
+
+### Redis
+
+Redis high availability matters only for workloads that actually depend on Redis-backed state.
+Production workloads should size Redis availability according to the criticality of that shared
+state.
+
+## 9. Operational and Delivery Implications
+
+The supported operational model is:
+
+1. TLS terminates at Envoy on the public edge.
+2. Backend HTTP is acceptable on the trusted cluster network, but workloads with stricter
+   zero-trust requirements may also use TLS or mTLS from Envoy to backends.
+3. Dedicated hostnames should remain explicit, for example `auth.<zone>`, `app.<zone>`,
+   `api.<zone>`, and `ws.<zone>`.
+4. Keycloak must be proxy-aware and must emit public redirects and issuer URLs that match the
+   public identity hostname.
+5. Proxy headers such as `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` are part
+   of the expected backend contract when the workload needs them.
+6. Keycloak health or management endpoints are not a public-route goal by default; the public
+   route is the identity surface users need.
+7. WebSocket workloads need graceful termination that stops new connections, drains existing
+   sockets, and relies on readiness withdrawal before process exit.
+
+Lifecycle and chart implications:
+
+1. `prodbox rke2 install` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
+   operator on the self-managed cluster path.
+2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
+   and Envoy data-plane images rather than Traefik images.
+3. The current chart platform ships Keycloak and `vscode` on dedicated public hostnames and no
+   longer depends on `vscode-nginx`.
+4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not
+   the Envoy Gateway public edge.
+5. Future JWT-only API routes, Redis-backed workloads, or WebSocket services must be added only
+   when a real workload needs them and must follow this doctrine rather than inventing a parallel
+   edge model.
+
+Typical WebSocket drain flow is:
+
+```text
+1. Pod receives termination signal
+2. Pod stops accepting new sockets
+3. Existing sockets stay alive for a bounded drain period
+4. Clients reconnect to another healthy pod
+```
+
+## 10. Recommended Migration and Adoption Path
+
+The intended migration path from a legacy reverse-proxy edge is:
+
+```text
+Client -> Nginx -> Keycloak / Apps
+```
+
+to:
+
+```text
+Client -> MetalLB -> Envoy Gateway -> Keycloak / Apps
+```
+
+Recommended phases:
+
+### Phase 1: Replace legacy edge routing with Envoy routing
+
+- deploy MetalLB
+- deploy Envoy Gateway
+- expose Envoy Gateway through a Kubernetes `LoadBalancer` service
+- route the dedicated Keycloak hostname to the Keycloak service
+- route application hostnames to application services
+- keep application-managed OIDC first when that minimizes migration risk
+
+### Phase 2: Add JWT validation for selected APIs
+
+- configure Envoy to trust the Keycloak issuer metadata and JWKS
+- require valid JWTs for selected API routes
+- enforce issuer and audience
+- add role, group, or scope checks where required
+
+### Phase 3: Add edge OIDC for browser apps that need it
+
+- use Envoy-managed login for apps that do not support OIDC
+- keep app-managed OIDC for apps that need deeper identity integration
+
+### Phase 4: Harden WebSocket behavior
+
+- authenticate WebSocket connection requests at Envoy
+- move presence and fanout state to Redis or another shared backend
+- add reconnect and token-refresh behavior
+- add graceful drain behavior for deploys
+
+## 11. Diagnostics and Validation Doctrine
 
 The supported public-edge diagnostic surface classifies:
 
-1. Route 53 record ownership and IP sync
-2. `Gateway` listener readiness and advertised addresses
-3. `HTTPRoute` attachment and acceptance
-4. Envoy Gateway policy attachment for protected routes
-5. cert-manager certificate readiness
-6. external HTTPS reachability
+1. Route 53 record ownership and public-IP sync
+2. Envoy Gateway deployment readiness
+3. `GatewayClass` acceptance
+4. `Gateway` readiness and advertised addresses
+5. `HTTPRoute` attachment and acceptance
+6. Envoy Gateway policy attachment for protected routes
+7. cert-manager certificate readiness
+8. `LoadBalancer` IP agreement
+9. external HTTPS reachability
 
-The supported success state for `prodbox host public-edge` is the canonical ready classification
-derived from Gateway API and Envoy Gateway state.
+The supported success state for `prodbox host public-edge` is
+`CLASSIFICATION=ready-for-external-proof`.
 
-Named validation implications:
+Current named validation implications:
 
-1. `prodbox test integration charts-vscode` proves the Envoy-protected browser path.
-2. `prodbox test integration public-dns` proves the Gateway API public host contract.
-3. If future app stacks expose WebSockets, they need named validation that proves connection-time
-   auth, reconnect behavior, and any required shared-state backend assumptions.
+1. `prodbox test integration charts-vscode` proves the current Envoy-protected browser path.
+2. `prodbox test integration public-dns` proves the explicit Route 53 and public-host contract.
+3. The current repository does not yet include a named JWT-only API validation suite.
+4. If future workloads expose WebSockets, named validations must prove connection-time auth,
+   reconnect behavior, token-expiry expectations, revocation behavior when the workload requires
+   it, and any required shared-state backend assumptions.
 
-## 8. Cross-References
+## 12. Cross-References
 
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
 - [CLI Command Surface](./cli_command_surface.md)

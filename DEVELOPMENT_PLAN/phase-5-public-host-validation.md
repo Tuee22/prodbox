@@ -77,18 +77,20 @@ None.
 
 ### Objective
 
-Replace the Traefik and `Ingress` public-edge readiness model with Gateway API and Envoy Gateway
-diagnostics while preserving explicit Route 53 proof and external-only validation.
+Keep public-edge readiness on Gateway API and Envoy Gateway diagnostics with explicit Route 53
+proof and external-only validation.
 
 ### Deliverables
 
 - `prodbox host public-edge` classifies Route 53, `Gateway`, `HTTPRoute`, certificate, and
   external-reachability state on the self-managed public edge.
 - The public `charts-vscode` and `public-dns` proofs close on Envoy-authenticated browser delivery
-  rather than the current `vscode-nginx` path.
+  rather than the retired `vscode-nginx` path.
 - Public-edge validation remains cluster-external and does not depend on `/etc/hosts` shortcuts or
   manual kubeconfig-only verification.
 - Wildcard public DNS remains unsupported.
+- Additional API or WebSocket hostnames are future workload surfaces only when a workload needs
+  them; they are not implied current validation targets.
 
 ### Validation
 
@@ -110,6 +112,9 @@ diagnostics while preserving explicit Route 53 proof and external-only validatio
   configured public hostname through Route 53 plus public DNS resolution.
 - `test/unit/Main.hs` and the built-frontend suites now align the public-edge fixtures with the
   Gateway API and dedicated-hostname contract.
+- The current named public-edge proof surface remains the dedicated Keycloak identity route plus
+  the `vscode` browser route. JWT-only API and WebSocket-specific validations remain future named
+  validation surfaces when those workloads exist.
 
 ### Remaining Work
 

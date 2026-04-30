@@ -2,7 +2,15 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md,
+METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md, DEVELOPMENT_PLAN/README.md,
+documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md,
+documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md,
+documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md,
+documents/engineering/envoy_gateway_edge_doctrine.md,
+documents/engineering/helm_chart_platform_doctrine.md,
+documents/engineering/integration_fixture_doctrine.md,
+documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
 > `prodbox`.
@@ -113,7 +121,12 @@ the command contract.
 5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
 If future workloads expose WebSockets behind the supported public edge, named validations must
-prove connection-time auth, reconnect handling, and any required shared-state backend assumptions.
+prove connection-time auth, reconnect handling, token-expiry expectations, revocation behavior
+when the workload requires it, and any required shared-state backend assumptions.
+
+If future public API routes rely on Envoy JWT validation, named validations must prove
+unauthenticated rejection plus the intended issuer, audience, and claim-enforcement contract for
+the selected token transport.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

@@ -10,7 +10,7 @@
 
 ## Phase Summary
 
-This phase ports the chart platform and retained-storage orchestration to Haskell while preserving
+This phase owns the Haskell chart platform and retained-storage orchestration while preserving
 deterministic PV/PVC rebinding and the supported cluster-backed `vscode` delivery model. It owns
 retained storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway
 browser-auth path for `vscode`, and the PostgreSQL doctrine for every Helm-managed application
@@ -32,9 +32,9 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
   `keycloak-postgres` owning the namespace-local application-database release for the root chart
   namespace.
 - The current lifecycle and chart code install the Percona `pg-operator` Helm release, mirror the
-  Percona operator and PostgreSQL images, render `PerconaPGCluster` resources for
-  `keycloak-postgres`, and remove the incompatible legacy Zalando operator release before the
-  Percona install proceeds on a live cluster.
+  Percona operator and PostgreSQL images, and render `PerconaPGCluster` resources for
+  `keycloak-postgres`. Any retained legacy-operator uninstall shim remains tracked in Phase `4`
+  and the cleanup ledger.
 - Sprint `3.3` keeps the namespace-local release shape, deterministic manual-PV bindings,
   retained-secret contract, and dependent-chart sequencing on the Percona operator surface.
 - `keycloak` now consumes the namespace-local retained Patroni credentials secret and the namespace-local
@@ -53,8 +53,8 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 
 ### Objective
 
-Move chart orchestration and retained-storage handling to Haskell without changing the supported
-platform doctrine.
+Keep chart orchestration and retained-storage handling on the Haskell runtime while preserving the
+supported platform doctrine.
 
 ### Deliverables
 
@@ -87,8 +87,8 @@ None.
 
 ### Objective
 
-Preserve the supported cluster-backed `vscode` stack while moving its deployment orchestration and
-image sourcing to the canonical Harbor-first doctrine.
+Keep the supported cluster-backed `vscode` stack on the Haskell chart runtime and the canonical
+Harbor-first image doctrine.
 
 ### Deliverables
 
@@ -123,15 +123,14 @@ None.
 
 ### Objective
 
-Replace the current Zalando `postgres-operator` application-database doctrine with
-Percona-operator-backed external Patroni HA PostgreSQL for every Helm-managed PostgreSQL
-dependency.
+Keep every Helm-managed PostgreSQL dependency on the implemented Percona-operator-backed external
+Patroni HA surface.
 
 ### Deliverables
 
 - Every supported Helm-managed PostgreSQL dependency consumes an external
   Percona-operator-backed Patroni HA deployment rather than an embedded chart-local PostgreSQL
-  subchart or the current Zalando operator surface.
+  subchart or any retired operator surface.
 - Every supported Patroni deployment runs exactly three PostgreSQL replicas with synchronous
   replication enabled.
 - The only supported Helm role for Patroni is the cluster-wide Percona operator release plus the
@@ -158,8 +157,8 @@ dependency.
 ### Current Validation State
 
 - `src/Prodbox/CLI/Rke2.hs` now installs the Percona `percona/pg-operator` Helm release from
-  `https://percona.github.io/percona-helm-charts/` and removes the incompatible legacy
-  `postgres-operator` release before that install when needed.
+  `https://percona.github.io/percona-helm-charts/`. The remaining incompatible legacy
+  `postgres-operator` uninstall shim is tracked in Phase `4` and the cleanup ledger.
 - `src/Prodbox/PostgresPlatform.hs` now defines the Percona operator namespace, release,
   deployment, CRD, service, and secret naming contract, including
   `perconapgclusters.pgv2.percona.com`, the `-ha` primary service, the `-replicas` service, and
@@ -193,19 +192,23 @@ None.
 
 ### Objective
 
-Replace the chart-level Traefik `Ingress` and app-local `vscode-nginx` auth proxy with Gateway
-API delivery and Envoy-enforced browser auth while keeping Keycloak as the identity provider.
+Keep the `vscode` browser route on Gateway API delivery and Envoy-enforced browser auth with
+Keycloak as the identity provider.
 
 ### Deliverables
 
 - The supported `vscode` public route is expressed through Gateway API resources rather than
   `Ingress`.
-- `vscode-nginx` is removed from the target chart dependency graph and browser-facing auth path.
+- `vscode-nginx` is removed from the supported chart dependency graph and browser-facing auth path.
 - Keycloak remains a chart-managed dependency, but the public browser path no longer depends on the
   shared-host `/auth` model.
 - `keycloak_nginx_client_secret` is removed from the long-term chart secret contract.
+- The current chart platform closes on Envoy-managed browser OIDC for `vscode`, not on a general
+  catalog of JWT-only API routes.
 - Optional Redis remains out of scope for the current `vscode` stack unless a future workload
   needs shared realtime state.
+- Future WebSocket or JWT-only API workloads must follow the shared Envoy Gateway doctrine and add
+  named validations rather than introducing chart-local auth proxies.
 
 ### Validation
 
@@ -228,6 +231,9 @@ API delivery and Envoy-enforced browser auth while keeping Keycloak as the ident
   values contract, and the chart-secret contract now uses `keycloak_vscode_client_secret`.
 - `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, and the built-frontend suites no
   longer carry the nginx proxy image or image-publication path.
+- The current shipped chart surface remains `keycloak` plus `vscode`; JWT-only API routes,
+  Redis-backed workloads, and WebSocket-specific public chart stacks remain future doctrine
+  shapes, not current delivered charts.
 
 ### Remaining Work
 

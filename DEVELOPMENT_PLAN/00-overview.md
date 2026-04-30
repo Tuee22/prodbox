@@ -56,7 +56,8 @@ Build a clean-room Haskell `prodbox` repository with:
     peer-transport behavior from those fields today.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
     API owns Layer 7 routes, cert-manager owns listener TLS, Keycloak remains the identity
-    provider, and Envoy Gateway `SecurityPolicy` owns browser-facing edge auth for supported apps.
+    provider, and Envoy Gateway `SecurityPolicy` owns browser-facing edge auth for supported apps
+    that do not manage their own OIDC browser flow.
 16. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 17. One retained repo-local state root under `.prodbox-state/`, including namespace-local
@@ -68,10 +69,14 @@ Build a clean-room Haskell `prodbox` repository with:
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
 19. One supported cluster-backed `vscode` delivery path where Keycloak remains the IdP and Envoy
     Gateway `SecurityPolicy` owns the browser-facing auth path on the dedicated app route.
-20. Optional Redis only for future shared realtime or rate-limit state; not for Envoy JWT caching.
-21. One named validation command per major surface.
-22. One explicit ledger for every compatibility or cleanup item still slated for deletion.
-23. Pulumi retained for true IaC surfaces such as AWS validation resources, with no supported
+20. One explicit current-boundary statement for the public edge: the current worktree ships the
+    dedicated Keycloak identity route plus the Envoy-protected `vscode` browser path, while
+    JWT-only API routes, Redis-backed workloads, and WebSocket-specific public workloads remain
+    future doctrine shapes rather than current shipped surfaces.
+21. Optional Redis only for future shared realtime or rate-limit state; not for Envoy JWT caching.
+22. One named validation command per major surface.
+23. One explicit ledger for every compatibility or cleanup item still slated for deletion.
+24. Pulumi retained for true IaC surfaces such as AWS validation resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
 
 ## Clean-Room Sequence
@@ -108,7 +113,9 @@ Build a clean-room Haskell `prodbox` repository with:
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate |
 | DNS check | `prodbox dns check` | Haskell CLI |
 | Chart delivery | `prodbox charts list|status|deploy|delete` | Haskell chart platform with Keycloak as IdP and Envoy-authenticated browser delivery as the target path |
-| Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI on a Gateway API and Envoy Gateway target doctrine |
+| Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI on a dedicated-hostname Gateway API and Envoy Gateway doctrine |
+| Public-edge auth model | Envoy-managed browser OIDC today, JWT-only API validation when future workloads require it | Keycloak issuer plus Envoy policy |
+| Optional realtime-state model | Redis only when a workload needs shared reconnect-safe or rate-limit state | Application workload doctrine |
 | Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary elevated AWS credentials and AWS CLI subprocesses |
 | AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses |
 | AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup |
@@ -118,18 +125,23 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree implements the full Haskell-only rewrite baseline and closes on the
-self-managed public-edge expansion. `prodbox check-code` enforces the governed doctrine gate, the
-Haskell gateway runtime plus status path close on the implemented HTTP `/v1/state` payload and
-daemon timing-validation contract, the supported public surface is Haskell-only, and the earlier
-unsupported Python residue remains removed. The implementation uses in-image `ghcup` with pinned
-GHC `9.14.1` in the frontend and gateway Dockerfiles, removes symlinked GHC tool shims and the
-lifecycle-managed `haskell-toolchain` BuildKit path, pins `ghc-9.14.1` in `cabal.project` while
-carrying the required package-bound updates in `prodbox.cabal`, installs the Percona operator
-while mirroring Percona operator and PostgreSQL sidecar images, and targets
-`perconapgclusters.pgv2.percona.com`. The self-managed public edge now installs Envoy Gateway,
-renders Gateway API resources, protects supported browser routes through Envoy Gateway
-`SecurityPolicy`, and uses dedicated app and identity public hostnames.
+The repository worktree implements the Haskell-only rewrite baseline and the self-managed
+public-edge expansion, but Phase `4` is reopened on three remaining compatibility-cleanup shims.
+`prodbox check-code` enforces the governed doctrine gate, the Haskell gateway runtime plus status
+path close on the implemented HTTP `/v1/state` payload and daemon timing-validation contract, the
+supported public surface is Haskell-only, and the earlier unsupported Python residue remains
+removed. The implementation uses in-image `ghcup` with pinned GHC `9.14.1` in the frontend and
+gateway Dockerfiles, removes symlinked GHC tool shims and the lifecycle-managed
+`haskell-toolchain` BuildKit path, pins `ghc-9.14.1` in `cabal.project` while carrying the
+required package-bound updates in `prodbox.cabal`, installs the Percona operator while mirroring
+Percona operator and PostgreSQL sidecar images, and targets `perconapgclusters.pgv2.percona.com`.
+The self-managed public edge now installs Envoy Gateway, renders Gateway API resources, protects
+supported browser routes through Envoy Gateway `SecurityPolicy`, and uses dedicated app and
+identity public hostnames. The current supported MetalLB path is L2 through `IPAddressPool` plus
+`L2Advertisement`; BGP is not yet the supported worktree path. The current repository does not yet
+ship JWT-only API routes, Redis-backed application stacks, or WebSocket-specific public-edge
+validations. The separate Haskell distributed gateway daemon remains distinct from the Envoy
+Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
@@ -199,6 +211,13 @@ than restated here as a fresh rerun log.
   retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`.
+- `src/Prodbox/CLI/Rke2.hs` still carries `removeLegacyTraefikIfPresent` and
+  `removeLegacyPostgresOperatorIfPresent` so migrated clusters can shed retired Traefik and an
+  incompatible pre-Percona `postgres-operator` before the supported Envoy Gateway and Percona
+  reconciles proceed.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` still carry
+  `clearLegacyAwsProviderConfig` so retained validation stacks can shed the previous Pulumi AWS
+  provider-key layout before current stack-config sync runs.
 - `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
   own the current Haskell gateway surface, including the HTTP `/v1/state` payload with
   `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation. The parsed
@@ -223,8 +242,9 @@ than restated here as a fresh rerun log.
 
 The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
 application database ownership, the mounted `haskell:9.6.7-slim` toolchain-context path, or the
-Zalando `postgres-operator` surface. All phases `0-7` are now aligned with that repository end
-state.
+Zalando `postgres-operator` surface. Phase `4` remains active because the lifecycle and retained
+AWS-validation Pulumi paths still carry explicit cleanup shims for legacy Traefik, an
+incompatible pre-Percona `postgres-operator`, and the older Pulumi AWS provider-key layout.
 
 ## Haskell-Only Architecture by Surface
 
@@ -245,8 +265,8 @@ state.
 
 ## Current Execution State
 
-Phases `0` through `7` are closed on their repository-owned surfaces and canonical validation
-contracts:
+Phases `0-3` and `5-7` are closed on their repository-owned surfaces and canonical validation
+contracts. Phase `4` is reopened on its sprint-owned compatibility-cleanup surface:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
@@ -260,7 +280,10 @@ contracts:
   PostgreSQL doctrine for Helm-managed workloads.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
   bootstrap exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
-  and ACME projection, and Python removal.
+  and ACME projection, and Python removal. Those implemented replacement surfaces remain closed,
+  but Sprint `4.1` and Sprint `4.2` are active because the code still contains migration shims
+  for legacy Traefik cleanup, incompatible pre-Percona `postgres-operator` cleanup, and legacy
+  Pulumi AWS provider-config cleanup.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation.
 - Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria.

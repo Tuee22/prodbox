@@ -7,8 +7,8 @@
 > **Purpose**: Project overview, operator guide, installation guide, and documentation index for
 > `prodbox`.
 
-Home Kubernetes cluster management with a Haskell CLI, an Envoy Gateway target public edge, and
-Pulumi-backed AWS validation stacks.
+Home Kubernetes cluster management with a Haskell CLI, a MetalLB + Envoy Gateway + Keycloak
+public edge, and Pulumi-backed AWS validation stacks.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -26,7 +26,8 @@ validation environments.
 - The target self-managed public edge is documented in
   [documents/engineering/envoy_gateway_edge_doctrine.md](./documents/engineering/envoy_gateway_edge_doctrine.md):
   MetalLB exposes an Envoy Gateway `LoadBalancer`, Gateway API owns Layer 7 routing, Keycloak
-  remains the identity provider, and Envoy Gateway `SecurityPolicy` owns edge auth.
+  remains the identity provider, Envoy Gateway `SecurityPolicy` owns the current browser-auth
+  path, and the future JWT, Redis, and WebSocket boundaries are defined there.
 - The supported configuration contract is repository-root `prodbox-config.dhall` decoded directly
   into Haskell types. `prodbox-config.json` and `prodbox config compile` are not part of the
   supported interface.
@@ -34,6 +35,11 @@ validation environments.
   `pulumi/aws-test/`; local-cluster platform ownership does not use a root Pulumi project.
 - This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
   stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
+- The current shipped edge workloads are the dedicated Keycloak identity route and the
+  Envoy-protected `vscode` browser route. JWT-only API routes, Redis-backed workloads, and
+  WebSocket-specific public services are future doctrine shapes, not current shipped surfaces.
+- The Haskell `prodbox gateway ...` command group and `charts deploy gateway` manage the separate
+  distributed gateway daemon; they are not the Envoy Gateway public edge controller.
 
 The development-plan target architecture centers the local public edge on:
 
@@ -50,7 +56,8 @@ The current codebase baseline still deploys and manages:
   public-registry bootstrap exception for Harbor storage-backend prerequisites, and the dual-arch
   image pipeline
 - **MinIO** for the local-cluster-first Pulumi backend
-- **MetalLB**, **Traefik**, and **cert-manager** for the current cluster edge implementation
+- **MetalLB**, **Envoy Gateway**, **Gateway API**, and **cert-manager** for the current cluster
+  edge implementation
 - **Percona Operator for PostgreSQL** for Helm-managed application databases, with namespace-local
   three-replica synchronous Patroni clusters and Harbor-backed PostgreSQL sidecar images
 - **Route 53** for explicit per-subdomain DNS ownership
@@ -66,11 +73,17 @@ Implementation status, remaining work, and legacy-path removal are tracked in
 ## Target Architecture
 
 ```text
-Internet -> Router (80/443 port-forward) -> MetalLB IP -> Envoy service -> Gateway API routes -> Services -> Pods
-                                                         |
-                                                         +-> cert-manager
-                                                         |
-                                                         +-> Keycloak identity flow
+Internet
+  -> Router (80/443 port-forward)
+  -> MetalLB IP
+  -> Envoy service
+  -> Gateway API listeners and routes
+  -> Services
+  -> Pods
+
+Dedicated public hosts:
+  auth.<zone>   -> Keycloak identity flow
+  vscode.<zone> -> Envoy-protected browser app
 ```
 
 ### Network Design
@@ -93,6 +106,9 @@ The current worktree closes on the supported edge architecture. Today:
   Percona PostgreSQL operator
 - the public `vscode` path uses Gateway API `HTTPRoute` plus Envoy Gateway `SecurityPolicy`
 - Keycloak uses the dedicated public identity hostname from `domain.keycloak_fqdn`
+- MetalLB currently closes on the L2 path through `IPAddressPool` plus `L2Advertisement`
+- JWT-only API routes, Redis-backed app stacks, and WebSocket-specific public-edge validations are
+  not yet part of the shipped repository surface
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
@@ -133,6 +149,8 @@ operator path is the explicit `prodbox` command surface documented here and in
   reconcile the supported local cluster.
 - `prodbox charts ...` manages only the supported root chart stacks: `gateway`, `keycloak`, and
   `vscode`.
+- `keycloak` and `vscode` are the current public-edge chart surfaces. The `gateway` chart is the
+  separate in-cluster Haskell distributed gateway daemon, not the Envoy Gateway controller.
 - `prodbox pulumi ...` manages only the AWS validation stacks. It does not manage the local
   cluster or the application chart stacks.
 - The AWS validation stacks use the repo-backed MinIO backend in the local RKE2 cluster, so
@@ -157,12 +175,12 @@ cabal build --builddir=.build exe:prodbox
 ./.build/prodbox rke2 install
 ./.build/prodbox rke2 status
 
-./.build/prodbox charts deploy gateway
 ./.build/prodbox charts deploy vscode
 
 ./.build/prodbox host public-edge
-./.build/prodbox charts status gateway
 ./.build/prodbox charts status vscode
+./.build/prodbox charts deploy gateway
+./.build/prodbox charts status gateway
 ```
 
 What this does:
@@ -171,12 +189,13 @@ What this does:
 - `host ...` verifies the host toolchain, port availability, and firewall assumptions.
 - `rke2 install` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
   cert-manager, and the Percona PostgreSQL operator.
-- `charts deploy gateway` deploys the gateway stack.
 - `charts deploy vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
   by Envoy Gateway and Keycloak on its dedicated identity hostname.
 - `host public-edge` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
   the implemented edge path.
+- `charts deploy gateway` is optional for the separate Haskell distributed gateway daemon and is
+  not required to bring up the Envoy Gateway public edge.
 
 ## Configuration
 
@@ -312,7 +331,7 @@ Delete a chart stack while preserving retained host storage:
 
 ### Public Edge And DNS Diagnostics
 
-Check the external Route 53 record and public ingress state:
+Check the external Route 53 record and public edge state:
 
 ```bash
 ./.build/prodbox dns check
@@ -321,7 +340,8 @@ Check the external Route 53 record and public ingress state:
 
 `host public-edge` is the main supported readiness diagnostic for the public host. The successful
 state is `CLASSIFICATION=ready-for-external-proof`. That classification derives from Route 53,
-Envoy Gateway, Gateway API, `SecurityPolicy`, and certificate readiness.
+Envoy Gateway, Gateway API, `SecurityPolicy`, certificate readiness, and the dedicated identity
+and app hostname contract.
 
 ### Gateway Operations
 
@@ -335,7 +355,7 @@ Generate a gateway config and inspect a daemon:
 
 `gateway status` queries the daemon's HTTP `/v1/state` endpoint on the configured REST port.
 This `gateway` command group refers to the Haskell distributed gateway daemon, not the Kubernetes
-Gateway API edge controller.
+Gateway API or Envoy Gateway edge controller.
 
 ### AWS IAM And Quotas
 

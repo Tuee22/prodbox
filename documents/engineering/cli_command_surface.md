@@ -101,7 +101,8 @@ is prompt-driven for temporary elevated AWS credentials; stored
 The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
 classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, `SecurityPolicy`
-attachment, certificate readiness, and external browser reachability.
+attachment, certificate readiness, dedicated identity and app hostname routing, and external
+browser reachability.
 
 ### `prodbox rke2`
 
@@ -188,6 +189,15 @@ The supported chart doctrine does not permit embedded chart-local PostgreSQL sub
 fails fast until `prodbox rke2 install` has reconciled the cluster-wide `postgres-operator`
 platform.
 
+The current public chart surface ships:
+
+- Keycloak on a dedicated public identity hostname
+- `vscode` on a dedicated public app hostname protected by Envoy Gateway `SecurityPolicy`
+- the separate Haskell distributed `gateway` chart, which is not the Envoy Gateway public edge
+
+JWT-only API routes, Redis-backed workloads, and WebSocket-specific public chart stacks are not
+yet separate supported chart surfaces.
+
 ### `prodbox test`
 
 `prodbox test` and `prodbox test integration` are help groups only. They do not run an implicit
@@ -238,6 +248,9 @@ Named suite commands:
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode` proof continues on the supported-runtime path
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`
+
+Future JWT-only API or WebSocket validation surfaces must be added as named suite commands rather
+than raw ad-hoc selectors.
 
 ### `prodbox check-code`
 

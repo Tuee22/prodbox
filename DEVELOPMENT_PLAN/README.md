@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md),
+[../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md](../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md),
 [../documents/engineering/README.md](../documents/engineering/README.md),
 [development_plan_standards.md](development_plan_standards.md),
 [00-overview.md](00-overview.md), [system-components.md](system-components.md),
@@ -26,7 +27,9 @@ govern this plan suite.
 
 ## Closure Status
 
-All phases `0` through `7` are closed on the implemented Haskell-only architecture.
+Phase `4` is reopened on remaining compatibility-cleanup work in the lifecycle and retained
+AWS-validation Pulumi surfaces. Phases `0-3` and `5-7` remain closed on their owned
+repository surfaces.
 
 The current worktree closes on:
 
@@ -36,10 +39,17 @@ The current worktree closes on:
   `prodbox-config.dhall`
 - one Harbor-first local lifecycle that reconciles MetalLB, Envoy Gateway, cert-manager, and the
   Percona PostgreSQL operator on the supported self-managed cluster path
-- one Gateway API public edge where Envoy Gateway `SecurityPolicy` protects supported browser
-  routes and Keycloak remains the identity provider
+- one Gateway API public edge where MetalLB exposes Envoy Gateway, Keycloak owns the dedicated
+  public identity route, and Envoy Gateway `SecurityPolicy` protects the currently shipped
+  browser-facing `vscode` path
+- one explicit current-boundary statement: the repository doctrine permits future JWT-only API
+  routes plus optional Redis-backed WebSocket or rate-limit workloads, but the current worktree
+  does not yet ship those public workloads or their named validations
+- one explicit distinction between the Envoy Gateway public edge and the separate Haskell
+  distributed gateway daemon shipped through `prodbox gateway ...` and `prodbox charts deploy gateway`
 - one explicit Route 53 public-host doctrine with dedicated app and identity hostnames
-- one cleanup ledger that is closed on both Python-removal work and the Envoy Gateway migration
+- one cleanup ledger that stays closed on Python-removal work while tracking the remaining
+  lifecycle and Pulumi migration shims owned by Phase `4`
 
 The canonical validation contract is expressed through the `prodbox` commands documented by this
 plan: `./.build/prodbox check-code`, `./.build/prodbox test unit`,
@@ -98,18 +108,19 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Cluster-Backed `vscode` Delivery | ✅ Done | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 Active | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: the Haskell-only rewrite and the later self-managed public-edge
-expansion are both closed across Phases `0-7`.
+expansion remain closed on Phases `0-3` and `5-7`, while Phase `4` is reopened for the remaining
+compatibility-shim cleanup still present in the Haskell codebase.
 
 ## Current Plan Status
 
-The development plan is current against the repository worktree on the following implemented
-surfaces:
+The development plan is current against the repository worktree on the following implemented and
+still-open surfaces:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -185,9 +196,28 @@ surfaces:
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile and ACME
   `ClusterIssuer` projection; those helpers do not expand the public `prodbox pulumi ...` command
   family.
+- `src/Prodbox/CLI/Rke2.hs` still carries two migration-cleanup shims on the supported lifecycle
+  path: `removeLegacyTraefikIfPresent` removes a legacy `traefik` release and
+  `traefik-system` namespace before Envoy Gateway reconcile, and
+  `removeLegacyPostgresOperatorIfPresent` removes an incompatible pre-Percona
+  `postgres-operator` deployment and namespace before the supported Percona install.
+- `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` still carry
+  `clearLegacyAwsProviderConfig` to remove older `aws:*` and camelCase Pulumi provider keys from
+  retained validation stacks before current stack-config sync proceeds.
 - The self-managed public edge now installs Envoy Gateway, renders Gateway API resources, protects
   the browser path through Envoy Gateway `SecurityPolicy`, and keeps Keycloak on a dedicated
   identity hostname.
+- `src/Prodbox/CLI/Rke2.hs` currently renders MetalLB through `IPAddressPool` plus
+  `L2Advertisement`; the broader doctrine may accommodate BGP later, but the supported worktree
+  path closes on L2 today.
+- `charts/keycloak/`, `charts/vscode/`, and `src/Prodbox/Lib/ChartPlatform.hs` currently close on
+  the dedicated identity-and-app-hostname browser path: Keycloak remains the OIDC provider and
+  Envoy Gateway `SecurityPolicy` owns browser-facing auth for `vscode`.
+- The current repository does not yet ship JWT-only API route manifests, Redis-backed application
+  stacks, or WebSocket-specific public-edge validations. Those remain governed future workload
+  shapes under `documents/engineering/envoy_gateway_edge_doctrine.md`.
+- `charts/gateway/` and `prodbox gateway start|status|config-gen` remain the separate Haskell
+  distributed gateway daemon surface; they are not the Envoy Gateway public edge.
 - The earlier unsupported root `Pulumi.yaml` and `Pulumi.home.yaml` residue for the retired
   local-cluster `pulumi/home` path is removed.
 - The canonical validation surfaces are `./.build/prodbox check-code`,
@@ -198,8 +228,8 @@ surfaces:
 - The aggregate rerun contract is owned by the shared suite plan behind
   `./.build/prodbox test integration all` and `./.build/prodbox test all`, including AWS IAM,
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
-- The legacy ledger is closed on both Python-removal residue and the completed Envoy Gateway
-  migration cleanup.
+- The legacy ledger remains closed on Python-removal residue and open only on the three remaining
+  Phase `4` compatibility-cleanup shims above.
 
 ## Exit Definition
 
@@ -255,27 +285,34 @@ This plan is complete only when all of the following are true:
 16. `prodbox host public-edge`, `prodbox test integration charts-vscode`, and
     `prodbox test integration public-dns` close on Gateway, `HTTPRoute`, certificate, and Route 53
     state rather than `IngressClass` or `Ingress` state.
-17. Redis is optional app-level shared state only for future realtime or rate-limit workloads; it
+17. MetalLB currently closes on the L2 implementation path in the supported worktree; future BGP
+    support is doctrinally compatible but not part of today's implemented path.
+18. Future JWT-only API routes must validate tokens locally at Envoy from Keycloak issuer metadata
+    and signing keys rather than through Redis or per-request identity-provider lookups.
+19. Redis is optional app-level shared state only for future realtime or rate-limit workloads; it
     is not part of Envoy JWT validation.
-18. Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
+20. Future WebSocket workloads must authenticate at connection setup, keep reconnect-safe state
+    outside the pod, and add named validations for reconnect, token-expiry, and shared-state
+    assumptions.
+21. Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
     storage backend during bootstrap.
-19. Every later supported Helm deployment obtains its images from Harbor.
-20. `prodbox` idempotently ensures required public images and all custom images are present in
+22. Every later supported Helm deployment obtains its images from Harbor.
+23. `prodbox` idempotently ensures required public images and all custom images are present in
     Harbor after Harbor bootstrap and before those later deployments.
-21. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
+24. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
     irrespective of the architecture of the machine running `prodbox`.
-22. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
-23. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
+25. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
+26. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
     cluster-wide Percona operator, and runs Patroni HA with exactly three PostgreSQL replicas,
     synchronous replication, and no embedded chart-local PostgreSQL subchart.
-24. Pulumi remains part of the supported architecture for true IaC and AWS validation resources.
+27. Pulumi remains part of the supported architecture for true IaC and AWS validation resources.
     The public `prodbox pulumi ...` surface stays limited to those stacks, while local-cluster
     lifecycle, bootstrap DNS reconcile, and ACME `ClusterIssuer` projection remain owned by
     `src/Prodbox/CLI/Rke2.hs` rather than by a public Pulumi operator flow.
-25. No supported Pulumi program depends on Python.
-26. The strongest clean-room rerun passes from full local delete through final AWS teardown using
+28. No supported Pulumi program depends on Python.
+29. The strongest clean-room rerun passes from full local delete through final AWS teardown using
     the Haskell stack.
-27. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) contains no unresolved
+30. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) contains no unresolved
     cleanup.
-28. The repository has no supported-path Python implementation or Python toolchain ownership
+31. The repository has no supported-path Python implementation or Python toolchain ownership
     artifacts left.

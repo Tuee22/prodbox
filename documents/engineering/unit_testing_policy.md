@@ -120,13 +120,15 @@ the command contract.
    runbook only when their test plan does not require it.
 5. Aggregate suites use the canonical validation ordering defined in `src/Prodbox/TestPlan.hs`.
 
-Supported WebSocket validations must prove connection-time auth, reconnect-safe or restart-safe
-shared state, cross-replica behavior, token-expiry expectations when the workload requires them,
-and any required shared-state backend assumptions.
+Supported WebSocket validations must prove dedicated Keycloak identity-host alignment when the
+workload owns direct OIDC bootstrap, connection-time auth, real `/ws` upgrade, reconnect-safe or
+restart-safe shared state, cross-replica behavior, revocation or forced-reconnect handling,
+readiness-based drain, token-expiry expectations when the workload requires them, and any
+required shared-state backend assumptions.
 
 Supported public API routes that rely on Envoy JWT validation must prove unauthenticated
-rejection, wrong-claim rejection, and the intended issuer, audience, and claim-enforcement
-contract for the selected token transport.
+rejection, wrong-claim rejection, the dedicated identity-host plus JWKS contract, and the
+intended issuer, audience, and claim-enforcement contract for the selected token transport.
 
 ### Session Fixtures vs Test DAG (SSoT)
 

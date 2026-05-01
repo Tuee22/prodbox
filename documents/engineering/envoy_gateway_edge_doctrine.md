@@ -265,9 +265,17 @@ Typical fit:
 
 ### Current Implementation Boundary
 
-The current worktree ships browser-facing OIDC enforcement for `vscode`, not a general catalog of
-JWT-only API routes. Future API routes may validate JWTs without taking over the full interactive
-browser login flow.
+The current worktree ships all three supported public-edge auth shapes:
+
+- `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
+- `api` uses request-carried bearer JWTs validated locally at Envoy from Keycloak issuer metadata,
+  JWKS, audience, and route claims.
+- `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on `/oidc`,
+  then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
+  connections.
+
+The dedicated Keycloak public host remains the external identity surface for issuer metadata,
+browser login, and workload-managed redirect flows.
 
 ## 6. JWT Validation Doctrine
 
@@ -468,13 +476,14 @@ Lifecycle and chart implications:
    operator on the self-managed cluster path.
 2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
    and Envoy data-plane images rather than Traefik images.
-3. The current chart platform ships Keycloak and `vscode` on dedicated public hostnames and no
-   longer depends on `vscode-nginx`.
+3. The current chart platform ships Keycloak, `vscode`, `api`, and `websocket` on dedicated
+   public hostnames, keeps the Keycloak public route limited to the identity surfaces browser or
+   OIDC workloads need, and no longer depends on `vscode-nginx`.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not
    the Envoy Gateway public edge.
-5. Future JWT-only API routes, Redis-backed workloads, or WebSocket services must be added only
-   when a real workload needs them and must follow this doctrine rather than inventing a parallel
-   edge model.
+5. Additional JWT-only API routes, Redis-backed workloads, or WebSocket services must be added
+   only when a real workload needs them and must follow this doctrine rather than inventing a
+   parallel edge model.
 
 Typical WebSocket drain flow is:
 
@@ -550,11 +559,13 @@ Current named validation implications:
 
 1. `prodbox test integration charts-vscode` proves the current Envoy-protected browser path.
 2. `prodbox test integration public-dns` proves the explicit Route 53 and public-host contract.
-3. `prodbox test integration charts-api` proves unauthenticated rejection, wrong-claim rejection,
-   and acceptance for the JWT-only API route.
-4. `prodbox test integration charts-websocket` proves connection-time auth, shared-state
-   continuity, and cross-replica WebSocket workload behavior, while token-expiry or revocation
-   behavior remains workload-specific doctrine when required.
+3. `prodbox test integration charts-api` proves the dedicated Keycloak identity-host plus JWKS
+   contract, then proves unauthenticated rejection, wrong-claim rejection, and acceptance for the
+   JWT-only API route.
+4. `prodbox test integration charts-websocket` proves workload-managed OIDC bootstrap on the
+   dedicated Keycloak host, real WebSocket upgrade, connection-time auth, shared-state
+   continuity, cross-replica behavior, revocation-driven reconnect, and readiness-based drain,
+   while token-expiry behavior remains workload-specific doctrine when required.
 
 ## 12. Cross-References
 

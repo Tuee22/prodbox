@@ -53,8 +53,11 @@ library
         aeson-pretty ^>=0.8.10,
         async ^>=2.2.5,
         base ^>=4.22.0.0 || ^>=4.18.2.1,
+        base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
+        case-insensitive ^>=1.2.1.0,
         containers ^>=0.6.7,
+        cryptohash-sha1 ^>=0.11,
         cryptohash-sha256 ^>=0.11.102,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
@@ -65,7 +68,9 @@ library
         stm ^>=2.5,
         text ^>=2.0.2,
         time ^>=1.12,
-        vector ^>=0.13
+        vector ^>=0.13,
+        websockets ^>=0.13,
+        wuss ^>=2.0
     default-language: GHC2021
     ghc-options:      -Wall
 

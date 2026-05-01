@@ -28,7 +28,7 @@ spec:
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           args: ["workload", "start"]
           env:
             - name: PRODBOX_WORKLOAD_MODE

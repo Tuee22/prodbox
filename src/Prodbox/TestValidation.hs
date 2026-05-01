@@ -10,7 +10,9 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (
     IOException,
     SomeException,
+    bracket,
     displayException,
+    finally,
     try,
  )
 import Control.Monad (foldM)
@@ -20,13 +22,16 @@ import Data.Aeson (
  )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
 import Data.List (isInfixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
+import Network.WebSockets qualified as WebSocket
 import Prodbox.Aws (
     runAwsIamHarnessInspect,
  )
@@ -81,6 +86,8 @@ import System.IO (
     openTempFile,
     stderr,
  )
+import System.Timeout (timeout)
+import Wuss qualified
 
 publicEdgeReadyClassification :: String
 publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
@@ -231,7 +238,8 @@ runChartsApiValidation repoRoot = do
                         (_, Left err) -> failWith err
                         (Right apiToken, Right websocketToken) ->
                             runSequentially
-                                [ assertHttpStatusIn
+                                [ runKeycloakPublicHostValidation repoRoot settings
+                                , assertHttpStatusIn
                                     (statusOnlyCurlSpec repoRoot [] ("https://" ++ preferredApiHostFqdn settings))
                                     ["401", "403"]
                                 , assertHttpStatusIn
@@ -258,84 +266,531 @@ runChartsWebsocketValidation repoRoot environment = do
                         (Left err, _) -> failWith err
                         (_, Left err) -> failWith err
                         (Right apiToken, Right websocketToken) -> do
-                            nonce <- validationNonce
-                            let sessionId = "ws-" ++ nonce
-                                messageBody = "message-" ++ nonce
-                                websocketHost = preferredWebsocketHostFqdn settings
-                            initialStateExit <-
-                                runSequentially
-                                    [ assertHttpStatusIn
-                                        (statusOnlyCurlSpec repoRoot [] (websocketUrl websocketHost sessionId))
-                                        ["401", "403"]
-                                    , assertHttpStatusIn
-                                        (statusOnlyCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ apiToken] (websocketUrl websocketHost sessionId))
-                                        ["401", "403"]
-                                    , assertCommandOutputContainsAll
-                                        (jsonCurlSpec repoRoot ["-X", "POST", "-H", "Authorization: Bearer " ++ websocketToken] (websocketUrl websocketHost sessionId ++ "&reset=true"))
-                                        ["\"mode\":\"websocket\"", "\"session\":\"" ++ sessionId ++ "\""]
-                                    , assertCommandOutputContainsAll
-                                        (jsonCurlSpec repoRoot ["-X", "POST", "-H", "Authorization: Bearer " ++ websocketToken, "--data", messageBody] (publishUrl websocketHost sessionId))
-                                        ["\"messageCount\":1", "\"session\":\"" ++ sessionId ++ "\""]
-                                    ]
-                            case initialStateExit of
-                                ExitFailure _ -> pure initialStateExit
-                                ExitSuccess -> do
-                                    initialStateResult <-
-                                        runJsonCommand
-                                            (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] (stateUrl websocketHost sessionId))
-                                    case initialStateResult of
-                                        Left err -> failWith err
-                                        Right payload ->
-                                            case websocketStateSnapshot payload of
+                            runSequentially
+                                [ runDirectOidcSessionValidation repoRoot settings
+                                , runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketToken
+                                ]
+
+data ManagedWebsocketConnection = ManagedWebsocketConnection
+    { managedWebsocketConnection :: WebSocket.Connection
+    , managedWebsocketPod :: String
+    , managedWebsocketFinalize :: IO ()
+    }
+
+runKeycloakPublicHostValidation :: FilePath -> ValidatedSettings -> IO ExitCode
+runKeycloakPublicHostValidation repoRoot settings = do
+    let identityHost = preferredIdentityHostFqdn settings
+        websocketHost = preferredWebsocketHostFqdn settings
+        normalizedRedirectHeaders = map toLowerAscii
+        expectedRedirectFragments =
+            map
+                (map toLowerAscii)
+                [ "HTTP/"
+                , "Location: https://" ++ identityHost ++ "/realms/prodbox/protocol/openid-connect/auth"
+                , "redirect_uri=https%3A%2F%2F" ++ preferredWebsocketHostFqdn settings ++ "%2Foidc%2Fcallback"
+                ]
+    redirectResult <-
+        runTextCommand
+            CommandSpec
+                { commandPath = "curl"
+                , commandArguments = ["-sS", "-D", "-", "-o", "/dev/null", "https://" ++ websocketHost ++ "/oidc/start"]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+    case redirectResult of
+        Left err -> failWith err
+        Right redirectHeaders ->
+            if let loweredRedirectHeaders = normalizedRedirectHeaders redirectHeaders
+                in all (`isInfixOf` loweredRedirectHeaders) expectedRedirectFragments
+                then do
+                    metadataResult <-
+                        runJsonCommand
+                            (jsonCurlSpec repoRoot [] ("https://" ++ identityHost ++ "/realms/prodbox/.well-known/openid-configuration"))
+                    case metadataResult of
+                        Left err -> failWith err
+                        Right metadataPayload ->
+                            case keycloakWellKnownSummary metadataPayload of
+                                Left err -> failWith err
+                                Right (issuerValue, authorizationEndpoint, tokenEndpoint, jwksUriValue) ->
+                                    if and
+                                        [ issuerValue == "https://" ++ identityHost ++ "/realms/prodbox"
+                                        , ("https://" ++ identityHost ++ "/") `isInfixOf` authorizationEndpoint
+                                        , ("https://" ++ identityHost ++ "/") `isInfixOf` tokenEndpoint
+                                        , ("https://" ++ identityHost ++ "/") `isInfixOf` jwksUriValue
+                                        ]
+                                        then
+                                            assertHttpStatusIn
+                                                (statusOnlyCurlSpec repoRoot [] ("https://" ++ identityHost ++ "/health/ready"))
+                                                ["404"]
+                                        else
+                                            failWith
+                                                ( "Keycloak well-known metadata did not preserve the dedicated identity-host contract: "
+                                                    ++ show
+                                                        [ issuerValue
+                                                        , authorizationEndpoint
+                                                        , tokenEndpoint
+                                                        , jwksUriValue
+                                                        ]
+                                                )
+                else
+                    failWith
+                        ( "direct OIDC redirect did not preserve the dedicated identity-host contract: "
+                            ++ redirectHeaders
+                        )
+
+runDirectOidcSessionValidation :: FilePath -> ValidatedSettings -> IO ExitCode
+runDirectOidcSessionValidation repoRoot settings = do
+    sessionResult <- completeDirectOidcLogin repoRoot settings
+    case sessionResult of
+        Left err -> failWith err
+        Right sessionPayload ->
+            case directOidcSessionSummary sessionPayload of
+                Left err -> failWith err
+                Right (carrierValue, issuerValue, maybeUsername) ->
+                    if carrierValue == "cookie-session"
+                        && issuerValue == "https://" ++ preferredIdentityHostFqdn settings ++ "/realms/prodbox"
+                        && maybeUsername == Just "demo-user"
+                        then pure ExitSuccess
+                        else
+                            failWith
+                                ( "direct OIDC session payload did not match the documented carrier or issuer boundary: "
+                                    ++ show (carrierValue, issuerValue, maybeUsername)
+                                )
+
+runWebsocketUpgradeValidation ::
+    FilePath ->
+    [(String, String)] ->
+    ValidatedSettings ->
+    String ->
+    String ->
+    IO ExitCode
+runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketToken = do
+    nonce <- validationNonce
+    let sessionId = "ws-" ++ nonce
+        messageBody = "message-" ++ nonce
+        websocketHost = preferredWebsocketHostFqdn settings
+    initialChecksExit <-
+        runSequentially
+            [ assertHttpStatusIn
+                (statusOnlyCurlSpec repoRoot [] (stateUrl websocketHost sessionId))
+                ["401", "403"]
+            , assertHttpStatusIn
+                (statusOnlyCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ apiToken] (stateUrl websocketHost sessionId))
+                ["401", "403"]
+            ]
+    case initialChecksExit of
+        ExitFailure _ -> pure initialChecksExit
+        ExitSuccess -> do
+            firstConnectionResult <- openManagedWebsocketConnection websocketHost (websocketPath sessionId True) websocketToken
+            case firstConnectionResult of
+                Left err -> failWith err
+                Right firstConnection ->
+                    finally
+                        ( do
+                            secondConnectionResult <-
+                                openDistinctManagedWebsocketConnection
+                                    websocketHost
+                                    (websocketPath sessionId False)
+                                    websocketToken
+                                    (managedWebsocketPod firstConnection)
+                                    8
+                            case secondConnectionResult of
+                                Left err -> failWith err
+                                Right secondConnection ->
+                                    finally
+                                        ( do
+                                            WebSocket.sendTextData
+                                                (managedWebsocketConnection firstConnection)
+                                                (Text.pack messageBody)
+                                            broadcastResult <-
+                                                waitForWebsocketBroadcast
+                                                    (managedWebsocketConnection secondConnection)
+                                                    messageBody
+                                                    12
+                                            case broadcastResult of
                                                 Left err -> failWith err
-                                                Right (initialPod, messages) ->
-                                                    if messageBody `elem` messages
-                                                        then do
-                                                            deleteExit <-
-                                                                runCommandForExitCode
-                                                                    CommandSpec
-                                                                        { commandPath = "kubectl"
-                                                                        , commandArguments = ["delete", "pod", initialPod, "--namespace", "websocket", "--wait=true"]
-                                                                        , commandEnvironment = Nothing
-                                                                        , commandWorkingDirectory = Just repoRoot
-                                                                        }
-                                                            case deleteExit of
-                                                                ExitFailure _ -> pure deleteExit
-                                                                ExitSuccess -> do
-                                                                    rolloutExit <-
-                                                                        runNativeCliCommandForExitCode
-                                                                            repoRoot
-                                                                            environment
-                                                                            ["k8s", "wait", "--namespace", "websocket"]
-                                                                    case rolloutExit of
-                                                                        ExitFailure _ -> pure rolloutExit
-                                                                        ExitSuccess -> do
-                                                                            followupStateResult <-
-                                                                                runJsonCommand
-                                                                                    (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] (stateUrl websocketHost sessionId))
-                                                                            case followupStateResult of
-                                                                                Left err -> failWith err
-                                                                                Right followupPayload ->
-                                                                                    case websocketStateSnapshot followupPayload of
-                                                                                        Left err -> failWith err
-                                                                                        Right (followupPod, followupMessages) ->
-                                                                                            if messageBody `elem` followupMessages && followupPod /= initialPod
-                                                                                                then pure ExitSuccess
-                                                                                                else
-                                                                                                    failWith
-                                                                                                        ( "websocket validation expected Redis-backed state on a different pod after turnover; "
-                                                                                                            ++ "initial pod="
-                                                                                                            ++ initialPod
-                                                                                                            ++ ", followup pod="
-                                                                                                            ++ followupPod
-                                                                                                            ++ ", messages="
-                                                                                                            ++ show followupMessages
-                                                                                                        )
-                                                        else
+                                                Right senderPod ->
+                                                    if senderPod /= managedWebsocketPod firstConnection
+                                                        then
                                                             failWith
-                                                                ( "websocket validation did not observe the published message in Redis-backed state: "
-                                                                    ++ show messages
+                                                                ( "websocket broadcast came from unexpected pod: expected "
+                                                                    ++ managedWebsocketPod firstConnection
+                                                                    ++ " but observed "
+                                                                    ++ senderPod
                                                                 )
+                                                        else do
+                                                            revokeExit <-
+                                                                assertHttpStatusIn
+                                                                    ( statusOnlyCurlSpec
+                                                                        repoRoot
+                                                                        [ "-X"
+                                                                        , "POST"
+                                                                        , "-H"
+                                                                        , "Authorization: Bearer " ++ websocketToken
+                                                                        ]
+                                                                        (revokeUrl websocketHost sessionId)
+                                                                    )
+                                                                    ["200"]
+                                                            case revokeExit of
+                                                                ExitFailure _ -> pure revokeExit
+                                                                ExitSuccess -> do
+                                                                    revokeCloseResult <-
+                                                                        waitForWebsocketClose
+                                                                            (managedWebsocketConnection firstConnection)
+                                                                            15000000
+                                                                    case revokeCloseResult of
+                                                                        Left err -> failWith err
+                                                                        Right () -> do
+                                                                            thirdConnectionResult <-
+                                                                                openManagedWebsocketConnection
+                                                                                    websocketHost
+                                                                                    (websocketPath sessionId False)
+                                                                                    websocketToken
+                                                                            case thirdConnectionResult of
+                                                                                Left err -> failWith err
+                                                                                Right thirdConnection ->
+                                                                                    finally
+                                                                                        ( do
+                                                                                            deleteExit <-
+                                                                                                runCommandForExitCode
+                                                                                                    CommandSpec
+                                                                                                        { commandPath = "kubectl"
+                                                                                                        , commandArguments = ["delete", "pod", managedWebsocketPod thirdConnection, "--namespace", "websocket"]
+                                                                                                        , commandEnvironment = Nothing
+                                                                                                        , commandWorkingDirectory = Just repoRoot
+                                                                                                        }
+                                                                                            case deleteExit of
+                                                                                                ExitFailure _ -> pure deleteExit
+                                                                                                ExitSuccess -> do
+                                                                                                    threadDelay 2000000
+                                                                                                    fourthConnectionResult <-
+                                                                                                        openDistinctManagedWebsocketConnection
+                                                                                                            websocketHost
+                                                                                                            (websocketPath sessionId False)
+                                                                                                            websocketToken
+                                                                                                            (managedWebsocketPod thirdConnection)
+                                                                                                            8
+                                                                                                    case fourthConnectionResult of
+                                                                                                        Left err -> failWith err
+                                                                                                        Right fourthConnection ->
+                                                                                                            finally
+                                                                                                                ( do
+                                                                                                                    closeResult <-
+                                                                                                                        waitForWebsocketClose
+                                                                                                                            (managedWebsocketConnection thirdConnection)
+                                                                                                                            20000000
+                                                                                                                    case closeResult of
+                                                                                                                        Left err -> failWith err
+                                                                                                                        Right () -> do
+                                                                                                                            rolloutExit <-
+                                                                                                                                runNativeCliCommandForExitCode
+                                                                                                                                    repoRoot
+                                                                                                                                    environment
+                                                                                                                                    ["k8s", "wait", "--namespace", "websocket"]
+                                                                                                                            case rolloutExit of
+                                                                                                                                ExitFailure _ -> pure rolloutExit
+                                                                                                                                ExitSuccess -> do
+                                                                                                                                    statePayloadResult <-
+                                                                                                                                        runJsonCommand
+                                                                                                                                            (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] (stateUrl websocketHost sessionId))
+                                                                                                                                    case statePayloadResult of
+                                                                                                                                        Left err -> failWith err
+                                                                                                                                        Right statePayload ->
+                                                                                                                                            case websocketStateSnapshot statePayload of
+                                                                                                                                                Left err -> failWith err
+                                                                                                                                                Right (_, messages) ->
+                                                                                                                                                    if messageBody `elem` messages
+                                                                                                                                                        then pure ExitSuccess
+                                                                                                                                                        else
+                                                                                                                                                            failWith
+                                                                                                                                                                ( "websocket validation did not observe reconnect-safe Redis state after drain: "
+                                                                                                                                                                    ++ show messages
+                                                                                                                                                                )
+                                                                                                                )
+                                                                                                                (closeManagedWebsocketConnection fourthConnection)
+                                                                                        )
+                                                                                        (closeManagedWebsocketConnection thirdConnection)
+                                        )
+                                        (closeManagedWebsocketConnection secondConnection)
+                        )
+                        (closeManagedWebsocketConnection firstConnection)
+
+completeDirectOidcLogin :: FilePath -> ValidatedSettings -> IO (Either String Value)
+completeDirectOidcLogin repoRoot settings =
+    withTemporaryFilePath repoRoot "prodbox-oidc-cookies" $ \cookieJarPath ->
+        withTemporaryFilePath repoRoot "prodbox-oidc-login-body" $ \bodyPath -> do
+            secretsResult <- resolveChartSecrets repoRoot "vscode"
+            case secretsResult of
+                Left err -> pure (Left err)
+                Right secrets ->
+                    case Map.lookup "keycloak_demo_user_password" secrets of
+                        Nothing -> pure (Left "missing keycloak_demo_user_password for direct OIDC validation")
+                        Just demoPassword -> do
+                            loginPageResult <-
+                                runTextCommand
+                                    CommandSpec
+                                        { commandPath = "curl"
+                                        , commandArguments =
+                                            [ "-sS"
+                                            , "-L"
+                                            , "-c"
+                                            , cookieJarPath
+                                            , "-b"
+                                            , cookieJarPath
+                                            , "-o"
+                                            , bodyPath
+                                            , "https://" ++ preferredWebsocketHostFqdn settings ++ "/oidc/start"
+                                            ]
+                                        , commandEnvironment = Nothing
+                                        , commandWorkingDirectory = Just repoRoot
+                                        }
+                            case loginPageResult of
+                                Left err -> pure (Left err)
+                                Right _ -> do
+                                    loginBody <- readFile bodyPath
+                                    case extractLoginFormAction loginBody of
+                                        Left err -> pure (Left err)
+                                        Right formActionUrl -> do
+                                            loginResult <-
+                                                runTextCommand
+                                                    CommandSpec
+                                                        { commandPath = "curl"
+                                                        , commandArguments =
+                                                            [ "-sS"
+                                                            , "-L"
+                                                            , "-c"
+                                                            , cookieJarPath
+                                                            , "-b"
+                                                            , cookieJarPath
+                                                            , "--data-urlencode"
+                                                            , "username=demo-user"
+                                                            , "--data-urlencode"
+                                                            , "password=" ++ demoPassword
+                                                            , formActionUrl
+                                                            ]
+                                                        , commandEnvironment = Nothing
+                                                        , commandWorkingDirectory = Just repoRoot
+                                                        }
+                                            case loginResult of
+                                                Left err -> pure (Left err)
+                                                Right _ ->
+                                                    runJsonCommand
+                                                        CommandSpec
+                                                            { commandPath = "curl"
+                                                            , commandArguments =
+                                                                [ "-sS"
+                                                                , "-L"
+                                                                , "-c"
+                                                                , cookieJarPath
+                                                                , "-b"
+                                                                , cookieJarPath
+                                                                , "https://" ++ preferredWebsocketHostFqdn settings ++ "/oidc/session"
+                                                                ]
+                                                            , commandEnvironment = Nothing
+                                                            , commandWorkingDirectory = Just repoRoot
+                                                            }
+
+openManagedWebsocketConnection :: String -> String -> String -> IO (Either String ManagedWebsocketConnection)
+openManagedWebsocketConnection host path token = do
+    connectionResult <-
+        try
+            ( Wuss.newSecureClientConnectionWith
+                host
+                443
+                path
+                WebSocket.defaultConnectionOptions
+                [(CI.mk (BS8.pack "Authorization"), BS8.pack ("Bearer " ++ token))]
+            ) ::
+            IO (Either SomeException (WebSocket.Connection, IO ()))
+    case connectionResult of
+        Left err -> pure (Left ("failed to open websocket connection: " ++ displayException err))
+        Right (connection, finalizeConnection) -> do
+            welcomeResult <- readWebsocketWelcome connection 10000000
+            case welcomeResult of
+                Left err -> do
+                    finalizeConnection
+                    pure (Left err)
+                Right podName ->
+                    pure
+                        ( Right
+                            ManagedWebsocketConnection
+                                { managedWebsocketConnection = connection
+                                , managedWebsocketPod = podName
+                                , managedWebsocketFinalize = finalizeConnection
+                                }
+                        )
+
+openDistinctManagedWebsocketConnection :: String -> String -> String -> String -> Int -> IO (Either String ManagedWebsocketConnection)
+openDistinctManagedWebsocketConnection host path token excludedPod attemptsLeft = do
+    connectionResult <- openManagedWebsocketConnection host path token
+    case connectionResult of
+        Left err -> pure (Left err)
+        Right connection
+            | managedWebsocketPod connection /= excludedPod -> pure (Right connection)
+            | attemptsLeft <= 1 -> do
+                closeManagedWebsocketConnection connection
+                pure
+                    ( Left
+                        ( "failed to observe a second websocket backend pod distinct from "
+                            ++ excludedPod
+                        )
+                    )
+            | otherwise -> do
+                closeManagedWebsocketConnection connection
+                openDistinctManagedWebsocketConnection host path token excludedPod (attemptsLeft - 1)
+
+closeManagedWebsocketConnection :: ManagedWebsocketConnection -> IO ()
+closeManagedWebsocketConnection connection = do
+    _ <-
+        try
+            (WebSocket.sendCloseCode (managedWebsocketConnection connection) 1000 (Text.pack "validation complete")) ::
+            IO (Either SomeException ())
+    managedWebsocketFinalize connection
+
+readWebsocketWelcome :: WebSocket.Connection -> Int -> IO (Either String String)
+readWebsocketWelcome connection timeoutMicroseconds = do
+    messageResult <- waitForWebsocketJsonMessage connection timeoutMicroseconds
+    pure $ do
+        payload <- messageResult
+        payloadType <- websocketPayloadType payload
+        if payloadType == "welcome"
+            then websocketPayloadField payload "pod"
+            else Left ("expected websocket welcome payload but observed type " ++ payloadType)
+
+waitForWebsocketBroadcast :: WebSocket.Connection -> String -> Int -> IO (Either String String)
+waitForWebsocketBroadcast connection expectedMessage attemptsLeft = go attemptsLeft
+  where
+    go attemptsRemaining
+        | attemptsRemaining <= 0 = pure (Left "timed out waiting for websocket broadcast message")
+        | otherwise = do
+            messageResult <- waitForWebsocketJsonMessage connection 10000000
+            case messageResult of
+                Left err -> pure (Left err)
+                Right payload ->
+                    case websocketPayloadType payload of
+                        Left err -> pure (Left err)
+                        Right "message" ->
+                            case (websocketPayloadField payload "message", websocketPayloadField payload "pod") of
+                                (Right observedMessage, Right observedPod)
+                                    | observedMessage == expectedMessage -> pure (Right observedPod)
+                                    | otherwise -> go (attemptsRemaining - 1)
+                                (Left err, _) -> pure (Left err)
+                                (_, Left err) -> pure (Left err)
+                        Right _ -> go (attemptsRemaining - 1)
+
+waitForWebsocketClose :: WebSocket.Connection -> Int -> IO (Either String ())
+waitForWebsocketClose connection timeoutMicroseconds = go timeoutMicroseconds
+  where
+    go remainingMicroseconds
+        | remainingMicroseconds <= 0 = pure (Left "timed out waiting for websocket close")
+        | otherwise = do
+            receiveResult <-
+                timeout
+                    remainingMicroseconds
+                    (try (WebSocket.receiveData connection :: IO Text.Text) :: IO (Either SomeException Text.Text))
+            case receiveResult of
+                Nothing -> pure (Left "timed out waiting for websocket close")
+                Just (Left _) -> pure (Right ())
+                Just (Right _) -> go (remainingMicroseconds - 1000000)
+
+waitForWebsocketJsonMessage :: WebSocket.Connection -> Int -> IO (Either String Value)
+waitForWebsocketJsonMessage connection timeoutMicroseconds = do
+    receiveResult <-
+        timeout
+            timeoutMicroseconds
+            (try (WebSocket.receiveData connection :: IO Text.Text) :: IO (Either SomeException Text.Text))
+    case receiveResult of
+        Nothing -> pure (Left "timed out waiting for websocket message")
+        Just (Left err) -> pure (Left ("websocket receive failed: " ++ displayException err))
+        Just (Right messageText) ->
+            pure $
+                case eitherDecode (BL8.pack (Text.unpack messageText)) of
+                    Left err -> Left ("websocket payload was not valid JSON: " ++ err)
+                    Right payload -> Right payload
+
+keycloakWellKnownSummary :: Value -> Either String (String, String, String, String)
+keycloakWellKnownSummary payload =
+    case payload of
+        Object obj ->
+            (,,,)
+                <$> requireStringField obj "issuer"
+                <*> requireStringField obj "authorization_endpoint"
+                <*> requireStringField obj "token_endpoint"
+                <*> requireStringField obj "jwks_uri"
+        _ -> Left "Keycloak well-known payload was not a JSON object"
+
+directOidcSessionSummary :: Value -> Either String (String, String, Maybe String)
+directOidcSessionSummary payload =
+    case payload of
+        Object obj ->
+            (,,)
+                <$> requireStringField obj "carrier"
+                <*> requireStringField obj "issuer"
+                <*> pure
+                    ( case KeyMap.lookup "preferred_username" obj of
+                        Just (String value) -> Just (textValue value)
+                        _ -> Nothing
+                    )
+        _ -> Left "direct OIDC session payload was not a JSON object"
+
+websocketPayloadType :: Value -> Either String String
+websocketPayloadType payload =
+    case payload of
+        Object obj -> requireStringField obj "type"
+        _ -> Left "websocket payload was not a JSON object"
+
+websocketPayloadField :: Value -> String -> Either String String
+websocketPayloadField payload fieldName =
+    case payload of
+        Object obj -> requireStringField obj fieldName
+        _ -> Left "websocket payload was not a JSON object"
+
+extractLoginFormAction :: String -> Either String String
+extractLoginFormAction bodyText =
+    case splitOnSubstring "action=\"" bodyText of
+        Nothing -> Left "could not find Keycloak login form action"
+        Just (_, actionAndRest) ->
+            case break (== '"') actionAndRest of
+                (actionUrl, _ : _) | actionUrl /= "" -> Right (decodeHtmlAttributeValue actionUrl)
+                _ -> Left "could not parse Keycloak login form action"
+
+decodeHtmlAttributeValue :: String -> String
+decodeHtmlAttributeValue value =
+    replaceAll "&amp;" "&" value
+
+replaceAll :: String -> String -> String -> String
+replaceAll needle replacement = go
+  where
+    go remaining =
+        case splitOnSubstring needle remaining of
+            Nothing -> remaining
+            Just (beforeNeedle, afterNeedle) ->
+                beforeNeedle ++ replacement ++ go afterNeedle
+
+withTemporaryFilePath :: FilePath -> String -> (FilePath -> IO a) -> IO a
+withTemporaryFilePath parentDir templateName action =
+    bracket
+        (openTempFile parentDir templateName)
+        (\(path, handle) -> hClose handle >> removeFile path)
+        (\(path, handle) -> hClose handle >> action path)
+
+splitOnSubstring :: String -> String -> Maybe (String, String)
+splitOnSubstring needle haystack = go [] haystack
+  where
+    go _ [] = Nothing
+    go reversedPrefix remaining
+        | needle `startsWith` remaining =
+            Just (reverse reversedPrefix, drop (length needle) remaining)
+        | otherwise =
+            case remaining of
+                character : trailing ->
+                    go (character : reversedPrefix) trailing
+
+startsWith :: String -> String -> Bool
+startsWith [] _ = True
+startsWith _ [] = False
+startsWith (left : leftRest) (right : rightRest) =
+    left == right && startsWith leftRest rightRest
 
 waitForAccessToken :: FilePath -> ValidatedSettings -> String -> String -> IO (Either String String)
 waitForAccessToken repoRoot settings secretKey clientId = go tokenFetchAttempts
@@ -443,13 +898,15 @@ assertHttpStatusIn spec allowedStatuses = do
                             ++ show allowedStatuses
                         )
 
-websocketUrl :: String -> String -> String
-websocketUrl host sessionId =
-    "https://" ++ host ++ "/ws/connect?session=" ++ sessionId
+websocketPath :: String -> Bool -> String
+websocketPath sessionId resetRequested =
+    "/ws?session="
+        ++ sessionId
+        ++ if resetRequested then "&reset=true" else ""
 
-publishUrl :: String -> String -> String
-publishUrl host sessionId =
-    "https://" ++ host ++ "/ws/publish?session=" ++ sessionId
+revokeUrl :: String -> String -> String
+revokeUrl host sessionId =
+    "https://" ++ host ++ "/ws/revoke?session=" ++ sessionId
 
 stateUrl :: String -> String -> String
 stateUrl host sessionId =

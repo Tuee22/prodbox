@@ -180,7 +180,9 @@ Kubernetes Gateway API or Envoy Gateway controller.
 
 `src/Prodbox/Workload.hs` owns the internal public workload runtime used by the `api` and
 `websocket` chart surfaces. It is repo-rootless and selected through environment such as
-`PRODBOX_WORKLOAD_MODE=api|websocket`.
+`PRODBOX_WORKLOAD_MODE=api|websocket`. The current `websocket` runtime owns the workload-managed
+OIDC bootstrap under `/oidc`, the JWT-protected `/ws` upgrade path, and readiness-based drain for
+live upgraded connections.
 
 ### `prodbox charts`
 
@@ -205,8 +207,8 @@ The current public chart surface ships:
 - Keycloak on a dedicated public identity hostname
 - `vscode` on a dedicated public app hostname protected by Envoy Gateway `SecurityPolicy`
 - `api` on a dedicated public hostname protected by Envoy-local JWT validation plus route claims
-- `websocket` on a dedicated public hostname protected by Envoy-local JWT validation, with an
-  internal `redis` dependency for shared state
+- `websocket` on a dedicated public hostname with workload-managed OIDC bootstrap on `/oidc`, a
+  JWT-protected `/ws` upgrade path, and an internal `redis` dependency for shared state
 - the separate Haskell distributed `gateway` chart, which is not the Envoy Gateway public edge
 
 ### `prodbox test`

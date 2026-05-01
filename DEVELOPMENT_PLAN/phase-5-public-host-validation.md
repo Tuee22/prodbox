@@ -13,8 +13,10 @@ This phase defines the public DNS, TLS, public-edge, and external auth proof sur
 Haskell stack. It preserves the existing public-host doctrine: external proof remains
 external-only, explicit per-subdomain Route 53 records remain canonical, and `/etc/hosts`-based
 closure remains unsupported. Sprints `5.1` and `5.2` remain closed on the Haskell-owned Gateway
-API and Envoy-aware readiness proof. Sprint `5.3` now implements API plus WebSocket route
-classification and named external proof while remaining active on aggregate validation closure.
+API and Envoy-aware readiness proof. Sprint `5.3` now implements API route proof and the
+WebSocket-host proof boundary while remaining active only on the aggregate reruns for the
+direct-OIDC and Keycloak public-host proof still owned by Phase `3`, plus the end-to-end
+WebSocket validation work that also follows that phase.
 
 ## Current Baseline In Worktree
 
@@ -28,6 +30,17 @@ classification and named external proof while remaining active on aggregate vali
   mode, and explicit external browser or API or WebSocket proof.
 - The current diagnostic and proof surface covers the Keycloak identity route plus the `vscode`,
   `api`, and `websocket` public routes.
+- The current API proof exercises request-carried JWT validation on the dedicated API route, while
+  the browser proof still follows the Envoy-managed redirect and cookie or session path while the
+  direct-OIDC path on the `websocket` host now exercises the workload-owned session boundary with
+  Phase `3` still owning aggregate rerun closure.
+- The current proof surface now covers the supported direct-OIDC workload path and the Keycloak
+  proxy-aware identity-host contract, with aggregate reruns still required for closure.
+- The current `charts-websocket` proof now exercises the real WebSocket upgrade path, long-lived
+  socket lifetime, revocation-driven reconnect, and readiness-based drain on the WebSocket host.
+- The current proof surface intentionally closes on Envoy listener TLS and route behavior only;
+  backend TLS or mTLS is outside the current supported chart-workload contract and is not claimed
+  by this phase.
 
 ## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
 
@@ -93,8 +106,8 @@ proof and external-only validation.
 - Public-edge validation remains cluster-external and does not depend on `/etc/hosts` shortcuts or
   manual kubeconfig-only verification.
 - Wildcard public DNS remains unsupported.
-- Additional API and WebSocket hostnames now live in Sprint `5.3`, which remains active only on
-  aggregate validation closure.
+- Additional API and WebSocket hostnames now live in Sprint `5.3`, which remains active because
+  the WebSocket-host proof surface still has to follow the remaining Phase `3` runtime work.
 
 ### Validation
 
@@ -133,7 +146,8 @@ None.
 ### Objective
 
 Extend the Haskell-owned diagnostic and external proof surface from the current browser-only route
-set to the full supported identity, browser, API, and WebSocket public edge.
+set to the full supported identity, browser, API, and WebSocket public edge, including the mixed
+OIDC doctrine and Keycloak public-host contract.
 
 ### Deliverables
 
@@ -141,8 +155,15 @@ set to the full supported identity, browser, API, and WebSocket public edge.
   on the supported Envoy Gateway edge.
 - The public-edge diagnostic reports the active MetalLB advertisement mode and preserves the
   existing Route 53, certificate, and readiness classification contract.
-- Named external validations prove the supported API and WebSocket routes in addition to the
-  existing `charts-vscode` and `public-dns` browser or DNS proof surfaces.
+- Named external validations prove the supported API route on the explicit request-token and
+  local-JWKS doctrine, and prove the supported WebSocket route in addition to the existing
+  `charts-vscode` and `public-dns` browser or DNS proof surfaces.
+- Named external validations prove the supported Keycloak public-host contract, including
+  issuer and redirect alignment on the dedicated identity hostname, forwarded-header compatibility,
+  and no accidental public management or health route exposure.
+- Named external validations prove the supported WebSocket connection-lifetime contract, including
+  one upgraded connection per selected backend pod until disconnect and readiness-based drain
+  before pod exit through the runtime surface owned by Sprint `3.6`.
 - Public-edge validation remains cluster-external and does not depend on `/etc/hosts` shortcuts or
   manual kubeconfig-only verification.
 
@@ -157,6 +178,12 @@ set to the full supported identity, browser, API, and WebSocket public edge.
 7. `prodbox test integration public-dns`
 8. Classification proof: the readiness payload covers the full route set and the configured
    advertisement mode without falling back to `Ingress` assumptions
+9. Behavioral proof: the WebSocket-host validation uses the real upgrade path, proves the
+   one-upgraded-connection-per-backend-pod lifetime until disconnect, and checks readiness-based
+   drain rather than only HTTP helper endpoints on that hostname
+10. Identity proof: Keycloak-backed public workloads use the dedicated identity host for issuer
+    and redirect flows, the browser auth path stays on explicit redirect and cookie assumptions,
+    and unsupported management or health paths are not publicly routed
 
 ### Current Validation State
 
@@ -164,20 +191,24 @@ set to the full supported identity, browser, API, and WebSocket public edge.
   reports the active MetalLB advertisement mode, and proves per-route `SecurityPolicy`
   attachment.
 - `src/Prodbox/TestValidation.hs` now proves the browser redirect path, JWT-protected API
-  rejection and acceptance, Redis-backed WebSocket state continuity, and Route 53 resolution for
-  every configured public host.
+  rejection and acceptance on the request-carried JWT path, the Keycloak identity-host redirect
+  and issuer contract, workload-managed direct-OIDC session ownership on the WebSocket host, real
+  WebSocket upgrade behavior, and Route 53 resolution for every configured public host.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
-  `prodbox test integration env` now pass with the expanded public-edge proof surface in place.
-- The latest `prodbox test all` run reached the supported-runtime bootstrap and stalled during the
-  shared public-edge workload image build before the aggregate suite could return to the named API
-  and WebSocket proofs.
+  `prodbox test integration env` now pass with the expanded public-edge proof surface plus the
+  current custom-image rebuild or pull fix in place.
+- The remaining public-edge auth-path closure now depends on rerunning the canonical suite with
+  the single-replica Keycloak identity surface and the private WebSocket token-endpoint
+  backchannel rather than on any further feature implementation.
+- Sprint `5.3` remains active only because these implemented identity-host and WebSocket proof
+  surfaces still have to rerun to closure on the canonical aggregate suite.
 
 ### Remaining Work
 
-- Complete aggregate runtime validation so `prodbox host public-edge`,
+- Rerun aggregate runtime validation from the current tree so `prodbox host public-edge`,
   `prodbox test integration charts-api`, `prodbox test integration charts-websocket`, and
-  `prodbox test all` can finish through the shared public-edge workload image build and close the
-  external-proof contract.
+  `prodbox test all` close on the private Keycloak backchannel plus fresh custom-image
+  publication path instead of the stale stable-tag binaries from the earlier reruns.
 
 ## Documentation Requirements
 

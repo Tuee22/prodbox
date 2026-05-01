@@ -35,7 +35,8 @@ The supported chart doctrine is:
 6. `api` runs from the shared `prodbox-public-edge-workload` image and targets a dedicated
    JWT-protected public hostname.
 7. `websocket` runs from the shared `prodbox-public-edge-workload` image, depends on the internal
-   `redis` release for shared state, and targets a dedicated JWT-protected public hostname.
+   `redis` release for shared state, owns workload-managed OIDC bootstrap on `/oidc`, and targets
+   a dedicated JWT-protected `/ws` public hostname.
 8. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
    path is `prodbox rke2 install`.
 
@@ -201,8 +202,11 @@ The current implementation boundary is:
 
 - `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
 - `api` uses Envoy-local JWT validation plus route-claim authorization through `SecurityPolicy`.
-- `websocket` uses Envoy-local JWT validation plus route-claim authorization, while Redis owns the
-  shared reconnect-safe workload state.
+- `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on `/oidc`,
+  Envoy-local JWT validation plus route-claim authorization on `/ws`, Redis-backed reconnect-safe
+  workload state, and readiness-based drain for live upgraded connections.
+- `keycloak` stays on the dedicated identity host and publicly exposes only the identity-route
+  surfaces the shipped browser and workload-managed OIDC flows require.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add
   chart-local auth proxies or a parallel ingress model.
 
@@ -228,7 +232,7 @@ Namespace-local chart secrets live in `.prodbox-state/<namespace>/.secrets.json`
 | `keycloak_admin_password` | Keycloak admin credentials |
 | `keycloak_vscode_client_secret` | Envoy Gateway OIDC client secret for the protected `vscode` route |
 | `keycloak_api_client_secret` | Envoy JWT client secret contract for the protected `api` route |
-| `keycloak_websocket_client_secret` | Envoy JWT client secret contract for the protected `websocket` route |
+| `keycloak_websocket_client_secret` | WebSocket workload OIDC client secret and Envoy JWT client contract for the protected `websocket` route |
 | `keycloak_demo_user_password` | Demo-user password consumed by the external API and WebSocket validations |
 | `patroni_app_password` | retained Patroni application-user password for the namespace-local cluster |
 | `patroni_superuser_password` | retained Patroni `postgres` superuser password for the namespace-local cluster |
@@ -241,6 +245,10 @@ data. The rendered Kubernetes secret names are:
 - `prodbox-<root-chart>-pg-pguser-keycloak`
 - `prodbox-<root-chart>-pg-pguser-postgres`
 - `prodbox-<root-chart>-pg-primaryuser`
+
+When `api` or `websocket` deploy as separate root charts, the chart platform reuses the shared
+`keycloak_*` values from `.prodbox-state/vscode/.secrets.json` so the dedicated Keycloak-host
+client contracts stay aligned across the shipped public workloads.
 
 ## 11. Planning Ownership
 

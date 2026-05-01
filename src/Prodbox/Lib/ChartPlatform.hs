@@ -60,6 +60,7 @@ import Data.List (
     find,
     intercalate,
     isInfixOf,
+    isPrefixOf,
     nub,
     sort,
     sortOn,
@@ -1154,10 +1155,11 @@ resolveChartSecrets repoRoot namespace = do
                 if targetExists
                     then readStringMap targetPath
                     else pure (Right Map.empty)
+            sharedKeycloakValues <- readSharedKeycloakSecretValues repoRoot namespace
             let existingValues =
                     case existingValuesResult of
-                        Left _ -> Map.empty
-                        Right values -> values
+                        Left _ -> sharedKeycloakValues
+                        Right values -> Map.union sharedKeycloakValues values
             clusterStatus <- readOptionalPatroniClusterStatus namespace
             recoveredValues <-
                 if patroniClusterStatusIndicatesFailure clusterStatus
@@ -1170,6 +1172,24 @@ resolveChartSecrets repoRoot namespace = do
                 (mergeChartSecretValues existingValues recoveredValues)
                 requiredChartSecretKeys
                 24
+
+readSharedKeycloakSecretValues :: FilePath -> String -> IO (Map String String)
+readSharedKeycloakSecretValues repoRoot namespace
+    | namespace `elem` ["api", "websocket"] = do
+        let sourcePath = chartStateDir repoRoot "vscode" </> ".secrets.json"
+        sourceExists <- doesFileExist sourcePath
+        if not sourceExists
+            then pure Map.empty
+            else do
+                sourceValuesResult <- readStringMap sourcePath
+                pure $
+                    case sourceValuesResult of
+                        Left _ -> Map.empty
+                        Right sourceValues ->
+                            Map.filterWithKey
+                                (\key _ -> "keycloak_" `isPrefixOf` key)
+                                sourceValues
+    | otherwise = pure Map.empty
 
 resolveGatewayEventKeys :: FilePath -> String -> IO (Either String (Map String String))
 resolveGatewayEventKeys repoRoot namespace =
@@ -1634,7 +1654,7 @@ renderReleaseValuesJson definition namespace rootChart settings chartSecrets gat
                 case publicFqdn of
                     Just fqdn -> do
                         identityFqdn <- resolveIdentityFqdn settings fqdn
-                        valuesForWebsocket namespace rootChart settings fqdn identityFqdn maybePublicEdgeWorkloadImage
+                        valuesForWebsocket namespace rootChart settings chartSecrets fqdn identityFqdn maybePublicEdgeWorkloadImage
                     Nothing -> Left "websocket requires a public host"
             "gateway" ->
                 case publicFqdn of
@@ -1677,7 +1697,7 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn identityF
     websocketFqdn <- resolveWebsocketFqdn settings
     pure
         ( object
-            [ "replicaCount" .= (2 :: Int)
+            [ "replicaCount" .= (1 :: Int)
             , "podAntiAffinity" .= podAntiAffinityValue settings
             , "global"
                 .= object
@@ -1725,6 +1745,7 @@ valuesForKeycloak namespace rootChart settings chartSecrets publicFqdn identityF
                     , "websocketAudience" .= keycloakWebsocketClientId
                     , "websocketRouteClaimName" .= publicEdgeRouteClaimName
                     , "websocketRouteClaimValue" .= ("websocket" :: String)
+                    , "websocketRedirectUri" .= ("https://" ++ websocketFqdn ++ "/oidc/callback")
                     , "demoUserName" .= ("demo-user" :: String)
                     , "demoUserPassword" .= demoUserPassword
                     ]
@@ -2069,15 +2090,21 @@ valuesForWebsocket ::
     String ->
     String ->
     ValidatedSettings ->
+    Map String String ->
     String ->
     String ->
     Maybe (String, String) ->
     Either String Value
-valuesForWebsocket namespace rootChart settings publicFqdn identityFqdn maybePublicEdgeWorkloadImage = do
+valuesForWebsocket namespace rootChart settings chartSecrets publicFqdn identityFqdn maybePublicEdgeWorkloadImage = do
     (workloadRepository, workloadTag) <-
         case maybePublicEdgeWorkloadImage of
             Just imageInfo -> Right imageInfo
             Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
+    websocketClientSecret <-
+        requireMapValue
+            "keycloak_websocket_client_secret"
+            chartSecrets
+            "keycloak_websocket_client_secret is required in chart secrets"
     pure
         ( object
             [ "replicaCount" .= (maybe 2 fromIntegral (websocket_replicas (deployment (validatedConfig settings))) :: Int)
@@ -2108,6 +2135,19 @@ valuesForWebsocket namespace rootChart settings publicFqdn identityFqdn maybePub
                     , "jwksUri" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName ++ "/protocol/openid-connect/certs")
                     , "routeClaimName" .= publicEdgeRouteClaimName
                     , "routeClaimValue" .= ("websocket" :: String)
+                    ]
+            , "oidc"
+                .= object
+                    [ "issuer" .= ("https://" ++ identityFqdn ++ "/realms/" ++ keycloakRealmName)
+                    , "tokenEndpoint"
+                        .= ( "http://keycloak.vscode.svc.cluster.local:8080/realms/"
+                                ++ keycloakRealmName
+                                ++ "/protocol/openid-connect/token" ::
+                                String
+                           )
+                    , "clientId" .= keycloakWebsocketClientId
+                    , "clientSecret" .= websocketClientSecret
+                    , "publicBaseUrl" .= ("https://" ++ publicFqdn)
                     ]
             , "redis"
                 .= object

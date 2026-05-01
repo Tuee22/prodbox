@@ -2,7 +2,7 @@ global:
   namespace: default
   rootChart: keycloak
 
-replicaCount: 2
+replicaCount: 1
 
 podAntiAffinity:
   enabled: true
@@ -44,6 +44,7 @@ oidc:
   websocketAudience: prodbox-websocket
   websocketRouteClaimName: prodbox_route
   websocketRouteClaimValue: websocket
+  websocketRedirectUri: https://ws.example.com/oidc/callback
   demoUserName: demo-user
   demoUserPassword: change-me
 

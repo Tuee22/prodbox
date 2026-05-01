@@ -1023,7 +1023,7 @@ main = hspec $ do
 
                     case Map.lookup "keycloak" releaseValues of
                         Just (Right (Object payload)) -> do
-                            KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 2)
+                            KeyMap.lookup (Key.fromString "replicaCount") payload `shouldBe` Just (Number 1)
                             case KeyMap.lookup (Key.fromString "image") payload of
                                 Just (Object imagePayload) -> do
                                     KeyMap.lookup (Key.fromString "repository") imagePayload `shouldBe` Just (String "127.0.0.1:30080/prodbox/keycloak-mirror")

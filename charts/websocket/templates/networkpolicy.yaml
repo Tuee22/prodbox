@@ -31,6 +31,16 @@ spec:
     - to:
         - namespaceSelector:
             matchLabels:
+              kubernetes.io/metadata.name: vscode
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: keycloak
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
               kubernetes.io/metadata.name: kube-system
       ports:
         - protocol: UDP

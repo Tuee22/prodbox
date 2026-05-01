@@ -337,7 +337,7 @@ None.
 ## Sprint 1.5: MetalLB BGP and Public-Edge Runtime Expansion 🔄
 
 **Status**: Active
-**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Implementation**: `src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -380,18 +380,23 @@ architecture rather than the earlier L2-only browser baseline.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
   public-edge replica counts into validated settings, and builds or imports both the gateway image
   and the shared public-edge workload image during `prodbox rke2 install`.
+- `src/Prodbox/CLI/Rke2.hs`, `charts/gateway/`, `charts/api/`, and `charts/websocket/` now force
+  the repo-owned custom-image reconcile path to rebuild and republish the stable-tag gateway plus
+  public-edge workload images and to pull those refreshed tags back into the cluster rather than
+  reusing stale node-local binaries.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
-  `prodbox test integration env` now pass with the expanded config surface.
-- The latest `prodbox test all` run reached the real `rke2 install` path, completed Harbor
-  bootstrap plus image publication through the gateway image build, and remained active in the
-  dual-arch `docker/prodbox.Dockerfile` arm64 toolchain bootstrap for the shared public-edge
-  workload image before it was stopped.
+  `prodbox test integration env` now pass with the expanded config surface plus the custom-image
+  publication fix in place.
+- Sprint `1.5` is implementation-complete on the owned config and lifecycle surface and remains
+  active only until `prodbox test integration lifecycle` and `prodbox test all` rerun to
+  completion against that expanded public-edge contract.
 
 ### Remaining Work
 
-- Complete the aggregate lifecycle validation path so `prodbox test integration lifecycle` and
-  `prodbox test all` can finish past the dual-arch `docker/prodbox.Dockerfile` arm64 toolchain
-  bootstrap for the shared public-edge workload image.
+- Rerun the aggregate lifecycle validation path from the current tree so
+  `prodbox test integration lifecycle` and `prodbox test all` prove the forced custom-image
+  rebuild or republish path on the supported public-edge stack instead of reusing stale binaries
+  under the stable machine-id tags.
 
 ## Documentation Requirements
 

@@ -13,7 +13,7 @@ image:
   # containerd by `prodbox rke2 ensure`.
   repository: 127.0.0.1:30080/prodbox/prodbox-gateway
   tag: latest
-  pullPolicy: IfNotPresent
+  pullPolicy: Always
 
 # REST/event ports the daemon binds inside each pod.
 ports:

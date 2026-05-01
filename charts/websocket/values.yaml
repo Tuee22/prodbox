@@ -26,6 +26,13 @@ jwt:
   routeClaimName: prodbox_route
   routeClaimValue: websocket
 
+oidc:
+  issuer: https://auth.example.com/realms/prodbox
+  tokenEndpoint: http://keycloak.vscode.svc.cluster.local:8080/realms/prodbox/protocol/openid-connect/token
+  clientId: prodbox-websocket
+  clientSecret: change-me
+  publicBaseUrl: https://ws.example.com
+
 redis:
   host: redis
   port: 6379

@@ -89,7 +89,10 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /
+            value: /realms
+        - path:
+            type: PathPrefix
+            value: /resources
       backendRefs:
         - name: keycloak
           port: 8080

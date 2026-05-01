@@ -70,9 +70,15 @@ data:
           "enabled": true,
           "publicClient": false,
           "protocol": "openid-connect",
-          "standardFlowEnabled": false,
+          "standardFlowEnabled": true,
           "directAccessGrantsEnabled": true,
           "serviceAccountsEnabled": false,
+          "redirectUris": [
+            {{ .Values.oidc.websocketRedirectUri | quote }}
+          ],
+          "webOrigins": [
+            {{ printf "https://%s" .Values.gateway.websocketPublicHost | quote }}
+          ],
           "protocolMappers": [
             {
               "name": "websocket-audience",
@@ -104,7 +110,11 @@ data:
         {
           "username": {{ .Values.oidc.demoUserName | quote }},
           "enabled": true,
+          "firstName": "Demo",
+          "lastName": "User",
+          "email": "demo-user@prodbox.invalid",
           "emailVerified": true,
+          "requiredActions": [],
           "credentials": [
             {
               "type": "password",

@@ -15,6 +15,7 @@ spec:
       labels:
         {{- include "websocket.labels" . | nindent 8 }}
     spec:
+      terminationGracePeriodSeconds: 30
       {{- if .Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:
@@ -28,7 +29,7 @@ spec:
       containers:
         - name: websocket
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: IfNotPresent
+          imagePullPolicy: Always
           args: ["workload", "start"]
           env:
             - name: PRODBOX_WORKLOAD_MODE
@@ -39,9 +40,24 @@ spec:
               value: {{ .Values.redis.host | quote }}
             - name: PRODBOX_REDIS_PORT
               value: {{ .Values.redis.port | quote }}
+            - name: PRODBOX_OIDC_ISSUER
+              value: {{ .Values.oidc.issuer | quote }}
+            - name: PRODBOX_OIDC_CLIENT_ID
+              value: {{ .Values.oidc.clientId | quote }}
+            - name: PRODBOX_OIDC_CLIENT_SECRET
+              value: {{ .Values.oidc.clientSecret | quote }}
+            - name: PRODBOX_OIDC_PUBLIC_BASE_URL
+              value: {{ .Values.oidc.publicBaseUrl | quote }}
+            - name: PRODBOX_OIDC_TOKEN_ENDPOINT
+              value: {{ .Values.oidc.tokenEndpoint | quote }}
           ports:
             - name: http
               containerPort: {{ .Values.websocket.port }}
+          lifecycle:
+            preStop:
+              httpGet:
+                path: /drain
+                port: http
           readinessProbe:
             httpGet:
               path: /healthz

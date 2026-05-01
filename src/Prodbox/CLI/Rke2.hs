@@ -2075,36 +2075,28 @@ ensurePublicEdgeWorkloadImage repoRoot prodboxId = do
 
 ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
 ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
-    readinessResult <- mapM (inspectImagePlatforms repoRoot) taggedRefs
-    case sequence readinessResult of
-        Left err -> failWith err
-        Right maybePlatforms -> do
-            let allTargetsReady = all (maybe False supportsCanonicalImagePlatforms) maybePlatforms
-            buildExit <-
-                if allTargetsReady
-                    then pure ExitSuccess
-                    else
-                        withDockerBuildxBuilder
-                            repoRoot
-                            ( do
-                                loginExit <- ensureHarborDockerLogin repoRoot
-                                case loginExit of
-                                    ExitFailure _ -> pure loginExit
-                                    ExitSuccess -> buildMissingCustomImageVariants repoRoot buildPlan taggedRefs
-                            )
-            case buildExit of
-                ExitFailure _ -> pure buildExit
-                ExitSuccess ->
-                    runSequentially
-                        [ runCommand
-                            CommandSpec
-                                { commandPath = "docker"
-                                , commandArguments = ["pull", importRef]
-                                , commandEnvironment = Nothing
-                                , commandWorkingDirectory = Just repoRoot
-                                }
-                        , importImageIntoRke2Containerd repoRoot importRef
-                        ]
+    buildExit <-
+        withDockerBuildxBuilder
+            repoRoot
+            ( do
+                loginExit <- ensureHarborDockerLogin repoRoot
+                case loginExit of
+                    ExitFailure _ -> pure loginExit
+                    ExitSuccess -> buildMissingCustomImageVariants repoRoot buildPlan taggedRefs
+            )
+    case buildExit of
+        ExitFailure _ -> pure buildExit
+        ExitSuccess ->
+            runSequentially
+                [ runCommand
+                    CommandSpec
+                        { commandPath = "docker"
+                        , commandArguments = ["pull", importRef]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+                , importImageIntoRke2Containerd repoRoot importRef
+                ]
 
 buildMissingCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
 buildMissingCustomImageVariants repoRoot buildPlan taggedRefs = go customImagePushRetryAttempts

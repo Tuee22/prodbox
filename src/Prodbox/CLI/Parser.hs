@@ -357,6 +357,7 @@ integrationParser =
             <> command "charts-vscode" (info (withCoverage (TestIntegration IntegrationChartsVscode)) (progDesc "Run vscode stack integration tests"))
             <> command "charts-api" (info (withCoverage (TestIntegration IntegrationChartsApi)) (progDesc "Run API stack integration tests"))
             <> command "charts-websocket" (info (withCoverage (TestIntegration IntegrationChartsWebsocket)) (progDesc "Run WebSocket stack integration tests"))
+            <> command "admin-routes" (info (withCoverage (TestIntegration IntegrationAdminRoutes)) (progDesc "Run shared-host admin-route integration tests"))
             <> command "public-dns" (info (withCoverage (TestIntegration IntegrationPublicDns)) (progDesc "Run public DNS integration tests"))
         )
 

@@ -44,15 +44,17 @@ import Prodbox.BuildSupport (
 import Prodbox.Dns (
     configuredPublicHostFqdns,
     fetchPublicIp,
-    preferredApiHostFqdn,
-    preferredIdentityHostFqdn,
-    preferredPublicHostFqdn,
-    preferredWebsocketHostFqdn,
     queryRoute53Record,
  )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Lib.ChartPlatform (resolveChartSecrets)
+import Prodbox.PublicEdge (
+    PublicEdgeRoute (..),
+    identityIssuerUrl,
+    publicFqdn,
+    publicRouteUrl,
+ )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
     Route53Section (..),
@@ -123,6 +125,7 @@ runNativeValidation repoRoot environment validation = do
         ValidationChartsVscode -> runChartsVscodeValidation repoRoot
         ValidationChartsApi -> runChartsApiValidation repoRoot
         ValidationChartsWebsocket -> runChartsWebsocketValidation repoRoot environment
+        ValidationAdminRoutes -> runAdminRoutesValidation repoRoot
         ValidationPublicDns -> runPublicDnsValidation repoRoot
         ValidationDnsAws -> runDnsAwsValidation repoRoot
         ValidationAwsIam ->
@@ -207,17 +210,22 @@ runChartsVscodeValidation repoRoot = do
             readyExit <- waitForPublicEdgeReady repoRoot
             case readyExit of
                 ExitFailure _ -> pure readyExit
-                ExitSuccess -> do
-                    let fqdn = preferredPublicHostFqdn settings
-                        identityFqdn = preferredIdentityHostFqdn settings
+                ExitSuccess ->
                     waitForCommandOutputContainsAll
                         CommandSpec
                             { commandPath = "curl"
-                            , commandArguments = ["-sSI", "--max-time", "20", "https://" ++ fqdn]
+                            , commandArguments =
+                                [ "-sS"
+                                , "-D"
+                                , "-"
+                                , "-o"
+                                , "/dev/null"
+                                , publicRouteUrl settings PublicRouteVscode
+                                ]
                             , commandEnvironment = Nothing
                             , commandWorkingDirectory = Just repoRoot
                             }
-                        ["HTTP/", "location: https://" ++ identityFqdn ++ "/"]
+                        (oidcRedirectFragments settings (publicRouteUrl settings PublicRouteVscode ++ "/oauth2/callback"))
                         chartsVscodeCurlAttempts
                         chartsVscodeCurlDelayMicroseconds
 
@@ -240,13 +248,13 @@ runChartsApiValidation repoRoot = do
                             runSequentially
                                 [ runKeycloakPublicHostValidation repoRoot settings
                                 , assertHttpStatusIn
-                                    (statusOnlyCurlSpec repoRoot [] ("https://" ++ preferredApiHostFqdn settings))
+                                    (statusOnlyCurlSpec repoRoot [] (publicRouteUrl settings PublicRouteApi))
                                     ["401", "403"]
                                 , assertHttpStatusIn
-                                    (statusOnlyCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] ("https://" ++ preferredApiHostFqdn settings))
+                                    (statusOnlyCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ websocketToken] (publicRouteUrl settings PublicRouteApi))
                                     ["401", "403"]
                                 , assertCommandOutputContainsAll
-                                    (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ apiToken] ("https://" ++ preferredApiHostFqdn settings))
+                                    (jsonCurlSpec repoRoot ["-H", "Authorization: Bearer " ++ apiToken] (publicRouteUrl settings PublicRouteApi))
                                     ["\"mode\":\"api\"", "\"pod\":\""]
                                 ]
 
@@ -277,66 +285,72 @@ data ManagedWebsocketConnection = ManagedWebsocketConnection
     , managedWebsocketFinalize :: IO ()
     }
 
+runAdminRoutesValidation :: FilePath -> IO ExitCode
+runAdminRoutesValidation repoRoot = do
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left err -> failWith err
+        Right settings -> do
+            readyExit <- waitForPublicEdgeReady repoRoot
+            case readyExit of
+                ExitFailure _ -> pure readyExit
+                ExitSuccess ->
+                    runSequentially
+                        [ assertOidcProtectedRoute
+                            repoRoot
+                            settings
+                            (publicRouteUrl settings PublicRouteHarbor)
+                            (publicRouteUrl settings PublicRouteHarbor ++ "/oauth2/callback")
+                            "Harbor admin route did not preserve the shared-host auth contract"
+                        , assertOidcProtectedRoute
+                            repoRoot
+                            settings
+                            (publicRouteUrl settings PublicRouteMinio)
+                            (publicRouteUrl settings PublicRouteMinio ++ "/oauth2/callback")
+                            "MinIO admin route did not preserve the shared-host auth contract"
+                        ]
+
 runKeycloakPublicHostValidation :: FilePath -> ValidatedSettings -> IO ExitCode
 runKeycloakPublicHostValidation repoRoot settings = do
-    let identityHost = preferredIdentityHostFqdn settings
-        websocketHost = preferredWebsocketHostFqdn settings
-        normalizedRedirectHeaders = map toLowerAscii
-        expectedRedirectFragments =
-            map
-                (map toLowerAscii)
-                [ "HTTP/"
-                , "Location: https://" ++ identityHost ++ "/realms/prodbox/protocol/openid-connect/auth"
-                , "redirect_uri=https%3A%2F%2F" ++ preferredWebsocketHostFqdn settings ++ "%2Foidc%2Fcallback"
-                ]
-    redirectResult <-
-        runTextCommand
-            CommandSpec
-                { commandPath = "curl"
-                , commandArguments = ["-sS", "-D", "-", "-o", "/dev/null", "https://" ++ websocketHost ++ "/oidc/start"]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
-                }
-    case redirectResult of
-        Left err -> failWith err
-        Right redirectHeaders ->
-            if let loweredRedirectHeaders = normalizedRedirectHeaders redirectHeaders
-                in all (`isInfixOf` loweredRedirectHeaders) expectedRedirectFragments
-                then do
-                    metadataResult <-
-                        runJsonCommand
-                            (jsonCurlSpec repoRoot [] ("https://" ++ identityHost ++ "/realms/prodbox/.well-known/openid-configuration"))
-                    case metadataResult of
+    redirectExit <-
+        assertOidcProtectedRoute
+            repoRoot
+            settings
+            (publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start")
+            (publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/callback")
+            "direct OIDC redirect did not preserve the shared-host auth contract"
+    case redirectExit of
+        ExitFailure _ -> pure redirectExit
+        ExitSuccess -> do
+            metadataResult <-
+                runJsonCommand
+                    (jsonCurlSpec repoRoot [] (identityIssuerUrl settings ++ "/.well-known/openid-configuration"))
+            case metadataResult of
+                Left err -> failWith err
+                Right metadataPayload ->
+                    case keycloakWellKnownSummary metadataPayload of
                         Left err -> failWith err
-                        Right metadataPayload ->
-                            case keycloakWellKnownSummary metadataPayload of
-                                Left err -> failWith err
-                                Right (issuerValue, authorizationEndpoint, tokenEndpoint, jwksUriValue) ->
-                                    if and
-                                        [ issuerValue == "https://" ++ identityHost ++ "/realms/prodbox"
-                                        , ("https://" ++ identityHost ++ "/") `isInfixOf` authorizationEndpoint
-                                        , ("https://" ++ identityHost ++ "/") `isInfixOf` tokenEndpoint
-                                        , ("https://" ++ identityHost ++ "/") `isInfixOf` jwksUriValue
-                                        ]
-                                        then
-                                            assertHttpStatusIn
-                                                (statusOnlyCurlSpec repoRoot [] ("https://" ++ identityHost ++ "/health/ready"))
-                                                ["404"]
-                                        else
-                                            failWith
-                                                ( "Keycloak well-known metadata did not preserve the dedicated identity-host contract: "
-                                                    ++ show
-                                                        [ issuerValue
-                                                        , authorizationEndpoint
-                                                        , tokenEndpoint
-                                                        , jwksUriValue
-                                                        ]
-                                                )
-                else
-                    failWith
-                        ( "direct OIDC redirect did not preserve the dedicated identity-host contract: "
-                            ++ redirectHeaders
-                        )
+                        Right (issuerValue, authorizationEndpoint, tokenEndpoint, jwksUriValue) ->
+                            if and
+                                [ issuerValue == identityIssuerUrl settings
+                                , (publicRouteUrl settings PublicRouteAuth ++ "/") `isInfixOf` authorizationEndpoint
+                                , (publicRouteUrl settings PublicRouteAuth ++ "/") `isInfixOf` tokenEndpoint
+                                , (publicRouteUrl settings PublicRouteAuth ++ "/") `isInfixOf` jwksUriValue
+                                ]
+                                then
+                                    assertHttpStatusIn
+                                        (statusOnlyCurlSpec repoRoot [] (publicRouteUrl settings PublicRouteAuth ++ "/health/ready"))
+                                        ["404"]
+                                else
+                                    failWith
+                                        ( "Keycloak well-known metadata did not preserve the shared-host auth contract: "
+                                            ++ show
+                                                [ issuerValue
+                                                , authorizationEndpoint
+                                                , tokenEndpoint
+                                                , jwksUriValue
+                                                ]
+                                        )
 
 runDirectOidcSessionValidation :: FilePath -> ValidatedSettings -> IO ExitCode
 runDirectOidcSessionValidation repoRoot settings = do
@@ -348,7 +362,7 @@ runDirectOidcSessionValidation repoRoot settings = do
                 Left err -> failWith err
                 Right (carrierValue, issuerValue, maybeUsername) ->
                     if carrierValue == "cookie-session"
-                        && issuerValue == "https://" ++ preferredIdentityHostFqdn settings ++ "/realms/prodbox"
+                        && issuerValue == identityIssuerUrl settings
                         && maybeUsername == Just "demo-user"
                         then pure ExitSuccess
                         else
@@ -368,7 +382,7 @@ runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketTo
     nonce <- validationNonce
     let sessionId = "ws-" ++ nonce
         messageBody = "message-" ++ nonce
-        websocketHost = preferredWebsocketHostFqdn settings
+        websocketHost = publicFqdn settings
     initialChecksExit <-
         runSequentially
             [ assertHttpStatusIn
@@ -539,7 +553,7 @@ completeDirectOidcLogin repoRoot settings =
                                             , cookieJarPath
                                             , "-o"
                                             , bodyPath
-                                            , "https://" ++ preferredWebsocketHostFqdn settings ++ "/oidc/start"
+                                            , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start"
                                             ]
                                         , commandEnvironment = Nothing
                                         , commandWorkingDirectory = Just repoRoot
@@ -584,7 +598,7 @@ completeDirectOidcLogin repoRoot settings =
                                                                 , cookieJarPath
                                                                 , "-b"
                                                                 , cookieJarPath
-                                                                , "https://" ++ preferredWebsocketHostFqdn settings ++ "/oidc/session"
+                                                                , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/session"
                                                                 ]
                                                             , commandEnvironment = Nothing
                                                             , commandWorkingDirectory = Just repoRoot
@@ -834,9 +848,7 @@ fetchAccessToken repoRoot settings secretKey clientId = do
                                     , "username=demo-user"
                                     , "--data-urlencode"
                                     , "password=" ++ demoPassword
-                                    , "https://"
-                                        ++ preferredIdentityHostFqdn settings
-                                        ++ "/realms/prodbox/protocol/openid-connect/token"
+                                    , identityIssuerUrl settings ++ "/protocol/openid-connect/token"
                                     ]
                                 , commandEnvironment = Nothing
                                 , commandWorkingDirectory = Just repoRoot
@@ -926,6 +938,47 @@ websocketStateSnapshot payload =
                         )
                 _ -> Left "websocket state payload did not include pod and messages fields"
         _ -> Left "websocket state payload was not a JSON object"
+
+assertOidcProtectedRoute ::
+    FilePath ->
+    ValidatedSettings ->
+    String ->
+    String ->
+    String ->
+    IO ExitCode
+assertOidcProtectedRoute repoRoot settings requestUrl callbackUrl failurePrefix = do
+    redirectResult <-
+        runTextCommand
+            CommandSpec
+                { commandPath = "curl"
+                , commandArguments = ["-sS", "-D", "-", "-o", "/dev/null", requestUrl]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+    case redirectResult of
+        Left err -> failWith err
+        Right redirectHeaders ->
+            if redirectHeadersContainOidcContract settings callbackUrl redirectHeaders
+                then pure ExitSuccess
+                else failWith (failurePrefix ++ ": " ++ redirectHeaders)
+
+redirectHeadersContainOidcContract :: ValidatedSettings -> String -> String -> Bool
+redirectHeadersContainOidcContract settings callbackUrl redirectHeaders =
+    let loweredRedirectHeaders = map toLowerAscii redirectHeaders
+     in all (`isInfixOf` loweredRedirectHeaders) (oidcRedirectFragments settings callbackUrl)
+
+oidcRedirectFragments :: ValidatedSettings -> String -> [String]
+oidcRedirectFragments settings callbackUrl =
+    map
+        (map toLowerAscii)
+        [ "HTTP/"
+        , "Location: " ++ identityIssuerUrl settings ++ "/protocol/openid-connect/auth"
+        , "redirect_uri=" ++ encodeRedirectUri callbackUrl
+        ]
+
+encodeRedirectUri :: String -> String
+encodeRedirectUri =
+    replaceAll "/" "%2F" . replaceAll ":" "%3A"
 
 waitForPublicEdgeReady :: FilePath -> IO ExitCode
 waitForPublicEdgeReady repoRoot = do

@@ -150,7 +150,7 @@ None.
 
 **Status**: Blocked
 **Implementation**: `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
-**Blocked by**: Sprint `1.5`, Sprint `2.3`, Sprint `3.5`, Sprint `3.6`, Sprint `3.7`, Sprint `4.4`, Sprint `5.3`, Sprint `5.4`, Sprint `7.4`
+**Blocked by**: Sprint `1.5`, Sprint `2.3`, Sprint `3.5`, Sprint `3.6`, Sprint `3.7`, Sprint `4.1`, Sprint `4.4`, Sprint `5.3`, Sprint `5.4`, Sprint `7.4`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -164,6 +164,8 @@ supported path.
 
 - The authoritative rerun starts from full local delete and finishes on the shared-host public
   edge rather than the retired multi-host contract.
+- The authoritative rerun builds and publishes only the native container architecture of the host
+  performing the rerun, with no supported `docker buildx` or cross-arch emulation step.
 - The cleanup ledger returns to zero pending removal after `example.com` and dedicated-host
   public-edge residue are removed.
 - The final handoff proves that any number of supported application or admin services remain
@@ -185,6 +187,8 @@ supported path.
 - The current destructive rerun remains Haskell-only and zero-Python.
 - The current rerun still closes on the legacy dedicated-host public-edge doctrine, so the final
   handoff cannot yet claim the single-host target state.
+- The current rerun also still depends on cross-arch `docker buildx` custom-image publication, so
+  the final handoff cannot yet claim the supported native-host-architecture lifecycle doctrine.
 - The cleanup ledger is no longer empty, so the final handoff remains blocked by upstream public-
   edge, lifecycle, DNS, and onboarding work.
 

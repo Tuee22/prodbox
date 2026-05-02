@@ -21,6 +21,7 @@ data NativeValidation
     = ValidationChartsVscode
     | ValidationChartsApi
     | ValidationChartsWebsocket
+    | ValidationAdminRoutes
     | ValidationPublicDns
     | ValidationDnsAws
     | ValidationAwsIam
@@ -272,6 +273,20 @@ testExecutionPlan scope =
                             , nativeRequiresSupportedRuntimeBootstrap = True
                             , nativeRequiresSupportedRuntimePostflight = False
                             }
+                IntegrationAdminRoutes ->
+                    nativeExecutionPlan
+                        "integration admin-routes"
+                        []
+                        NativeSuitePlan
+                            { nativeSuiteId = "integration-admin-routes"
+                            , nativeValidations = [ValidationAdminRoutes]
+                            , nativeInitialIntegrationGatePrerequisites = adminRoutesInitialPrerequisites
+                            , nativeDeferredIntegrationGatePrerequisites = adminRoutesDeferredPrerequisites
+                            , nativeManagedAwsHarnessPolicyTier = Nothing
+                            , nativeRequiresIntegrationRunbook = True
+                            , nativeRequiresSupportedRuntimeBootstrap = True
+                            , nativeRequiresSupportedRuntimePostflight = False
+                            }
                 IntegrationPublicDns ->
                     nativeNamedSuite
                         "integration public-dns"
@@ -305,6 +320,7 @@ canonicalNativeValidations =
     [ ValidationChartsVscode
     , ValidationChartsApi
     , ValidationChartsWebsocket
+    , ValidationAdminRoutes
     , ValidationPublicDns
     , ValidationDnsAws
     , ValidationAwsIam
@@ -325,6 +341,7 @@ allInitialIntegrationPrerequisites =
         [ chartsVscodeInitialPrerequisites
         , chartsApiInitialPrerequisites
         , chartsWebsocketInitialPrerequisites
+        , adminRoutesInitialPrerequisites
         , publicDnsPrerequisites
         , dnsAwsPrerequisites
         , ["aws_iam_harness_ready"]
@@ -346,6 +363,7 @@ allDeferredIntegrationPrerequisites =
         [ chartsVscodeDeferredPrerequisites
         , chartsApiDeferredPrerequisites
         , chartsWebsocketDeferredPrerequisites
+        , adminRoutesDeferredPrerequisites
         , awsEksDeferredPrerequisites
         , pulumiDeferredPrerequisites
         , awsHaRke2DeferredPrerequisites
@@ -380,6 +398,12 @@ chartsWebsocketInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, 
 
 chartsWebsocketDeferredPrerequisites :: [String]
 chartsWebsocketDeferredPrerequisites = pulumiDeferredPrerequisites
+
+adminRoutesInitialPrerequisites :: [String]
+adminRoutesInitialPrerequisites = orderedUnion [pulumiInitialPrerequisites, ["tool_curl"]]
+
+adminRoutesDeferredPrerequisites :: [String]
+adminRoutesDeferredPrerequisites = pulumiDeferredPrerequisites
 
 publicDnsPrerequisites :: [String]
 publicDnsPrerequisites = ["route53_accessible", "tool_dig"]
@@ -440,6 +464,7 @@ nativeValidationId validation =
         ValidationChartsVscode -> "charts-vscode"
         ValidationChartsApi -> "charts-api"
         ValidationChartsWebsocket -> "charts-websocket"
+        ValidationAdminRoutes -> "admin-routes"
         ValidationPublicDns -> "public-dns"
         ValidationDnsAws -> "dns-aws"
         ValidationAwsIam -> "aws-iam"

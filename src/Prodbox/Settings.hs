@@ -16,6 +16,7 @@ module Prodbox.Settings (
     loadConfigFile,
     renderConfigDhall,
     renderSettingsDisplay,
+    supportedPublicHostname,
     validateAwsBootstrapConfig,
     validateAndLoadSettings,
 )
@@ -61,10 +62,6 @@ data Route53Section = Route53Section
 data DomainSection = DomainSection
     { demo_fqdn :: Text
     , demo_ttl :: Natural
-    , vscode_fqdn :: Maybe Text
-    , keycloak_fqdn :: Maybe Text
-    , api_fqdn :: Maybe Text
-    , websocket_fqdn :: Maybe Text
     }
     deriving (Eq, Show, Generic, FromJSON)
 
@@ -120,6 +117,9 @@ data ValidatedSettings = ValidatedSettings
     }
     deriving (Eq, Show)
 
+supportedPublicHostname :: Text
+supportedPublicHostname = "test.resolvefintech.com"
+
 validateAndLoadSettings :: FilePath -> IO (Either String ValidatedSettings)
 validateAndLoadSettings repoRoot = do
     configResult <- loadConfigFile repoRoot
@@ -141,10 +141,6 @@ renderSettingsDisplay showSecrets settings =
         , "route53.zone_id=" ++ renderText (zone_id (route53 config))
         , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
         , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
-        , "domain.vscode_fqdn=" ++ renderMaybeText (vscode_fqdn (domain config))
-        , "domain.keycloak_fqdn=" ++ renderMaybeText (keycloak_fqdn (domain config))
-        , "domain.api_fqdn=" ++ renderMaybeText (api_fqdn (domain config))
-        , "domain.websocket_fqdn=" ++ renderMaybeText (websocket_fqdn (domain config))
         , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
         , "acme.server=" ++ renderText (server (acme config))
         , "acme.eab_key_id=" ++ renderMaybeText (eab_key_id (acme config))
@@ -220,6 +216,7 @@ validateAwsBootstrapConfig :: ConfigFile -> Either String ()
 validateAwsBootstrapConfig config = do
     requireNonEmpty "route53.zone_id" (zone_id (route53 config))
     requireNonEmpty "acme.email" (email (acme config))
+    validateSupportedPublicHost (demo_fqdn (domain config))
     validateDemoTtl (demo_ttl (domain config))
     validateAcmeBinding (acme config)
     validateTestSimulationAdminCredentials (aws_admin_for_test_simulation config)
@@ -261,6 +258,19 @@ requireNonEmpty fieldName value =
     if Text.strip value == ""
         then Left (fieldName ++ " must not be empty")
         else Right ()
+
+validateSupportedPublicHost :: Text -> Either String ()
+validateSupportedPublicHost value
+    | normalized == "" = Left "domain.demo_fqdn must not be empty"
+    | lowerValue /= Text.toLower supportedPublicHostname =
+        Left
+            ( "domain.demo_fqdn must be "
+                ++ Text.unpack supportedPublicHostname
+            )
+    | otherwise = Right ()
+  where
+    normalized = Text.unpack (Text.strip value)
+    lowerValue = Text.toLower (Text.strip value)
 
 validateDemoTtl :: Natural -> Either String ()
 validateDemoTtl ttl
@@ -387,12 +397,8 @@ defaultConfigFile =
         , route53 = Route53Section{zone_id = ""}
         , domain =
             DomainSection
-                { demo_fqdn = "demo.example.com"
+                { demo_fqdn = supportedPublicHostname
                 , demo_ttl = 60
-                , vscode_fqdn = Nothing
-                , keycloak_fqdn = Just "auth.example.com"
-                , api_fqdn = Just "api.example.com"
-                , websocket_fqdn = Just "ws.example.com"
                 }
         , acme =
             AcmeSection
@@ -438,10 +444,6 @@ renderConfigDhall config =
         , "    , domain = Config.default.domain // {"
         , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))
         , "        , demo_ttl = " ++ show (demo_ttl (domain config))
-        , "        , vscode_fqdn = " ++ dhallOptionalText (vscode_fqdn (domain config))
-        , "        , keycloak_fqdn = " ++ dhallOptionalText (keycloak_fqdn (domain config))
-        , "        , api_fqdn = " ++ dhallOptionalText (api_fqdn (domain config))
-        , "        , websocket_fqdn = " ++ dhallOptionalText (websocket_fqdn (domain config))
         , "        }"
         , "    , acme = Config.default.acme // {"
         , "        , email = " ++ dhallText (email (acme config))

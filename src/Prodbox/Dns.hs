@@ -26,14 +26,16 @@ import Prodbox.AwsEnvironment (
     isolatedAwsEnvironment,
  )
 import Prodbox.CLI.Command (DnsCommand (..))
+import Prodbox.PublicEdge (
+    publicFqdn,
+    sharedPublicHostFqdns,
+ )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
     Credentials (..),
-    DomainSection (..),
     Route53Section (..),
     ValidatedSettings (..),
     aws,
-    domain,
     route53,
     validateAndLoadSettings,
  )
@@ -60,7 +62,7 @@ runDnsCommand repoRoot command =
                     case publicIpResult of
                         Left err -> failWith err
                         Right publicIp -> do
-                            recordResult <- queryRoute53Record repoRoot settings (Text.unpack (demo_fqdn (domain (validatedConfig settings))))
+                            recordResult <- queryRoute53Record repoRoot settings (publicFqdn settings)
                             case recordResult of
                                 Left err -> failWith err
                                 Right currentRecordIp -> do
@@ -71,61 +73,31 @@ renderDnsStatusReport :: ValidatedSettings -> String -> Maybe String -> String
 renderDnsStatusReport settings publicIp currentRecordIp =
     unlines
         [ "DNS status"
-        , "FQDN=" ++ Text.unpack (demo_fqdn (domain config))
+        , "FQDN=" ++ publicFqdn settings
         , "PUBLIC_IP=" ++ publicIp
         , "ROUTE53_A_RECORD=" ++ maybe "<missing>" id currentRecordIp
         , "STATUS=" ++ status
         ]
   where
-    config = validatedConfig settings
     status
         | currentRecordIp == Just publicIp = "in-sync"
         | currentRecordIp == Nothing = "record-missing"
         | otherwise = "mismatch"
 
 preferredPublicHostFqdn :: ValidatedSettings -> String
-preferredPublicHostFqdn settings =
-    case vscode_fqdn (domain config) of
-        Just value -> Text.unpack value
-        Nothing -> Text.unpack (demo_fqdn (domain config))
-  where
-    config = validatedConfig settings
+preferredPublicHostFqdn = publicFqdn
 
 preferredIdentityHostFqdn :: ValidatedSettings -> String
-preferredIdentityHostFqdn settings =
-    case keycloak_fqdn (domain config) of
-        Just value -> Text.unpack value
-        Nothing -> preferredPublicHostFqdn settings
-  where
-    config = validatedConfig settings
+preferredIdentityHostFqdn = publicFqdn
 
 preferredApiHostFqdn :: ValidatedSettings -> String
-preferredApiHostFqdn settings =
-    case api_fqdn (domain config) of
-        Just value -> Text.unpack value
-        Nothing -> "api." ++ Text.unpack (demo_fqdn (domain config))
-  where
-    config = validatedConfig settings
+preferredApiHostFqdn = publicFqdn
 
 preferredWebsocketHostFqdn :: ValidatedSettings -> String
-preferredWebsocketHostFqdn settings =
-    case websocket_fqdn (domain config) of
-        Just value -> Text.unpack value
-        Nothing -> "ws." ++ Text.unpack (demo_fqdn (domain config))
-  where
-    config = validatedConfig settings
+preferredWebsocketHostFqdn = publicFqdn
 
 configuredPublicHostFqdns :: ValidatedSettings -> [String]
-configuredPublicHostFqdns settings =
-    nub
-        [ Text.unpack (demo_fqdn (domain config))
-        , preferredPublicHostFqdn settings
-        , preferredIdentityHostFqdn settings
-        , preferredApiHostFqdn settings
-        , preferredWebsocketHostFqdn settings
-        ]
-  where
-    config = validatedConfig settings
+configuredPublicHostFqdns settings = nub (sharedPublicHostFqdns settings)
 
 fetchPublicIp :: IO (Either String String)
 fetchPublicIp = do

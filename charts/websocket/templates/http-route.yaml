@@ -37,7 +37,7 @@ spec:
     - matches:
         - path:
             type: PathPrefix
-            value: /oidc
+            value: {{ .Values.gateway.oidcPathPrefix | quote }}
       backendRefs:
         - name: websocket
           port: {{ .Values.websocket.port }}

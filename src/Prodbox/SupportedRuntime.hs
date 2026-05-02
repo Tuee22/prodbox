@@ -22,9 +22,10 @@ import Data.Char (toLower)
 import Data.List (intercalate)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Prodbox.PublicEdge (
+    publicFqdn,
+ )
 import Prodbox.Settings (
-    ConfigFile (..),
-    DomainSection (..),
     ValidatedSettings (..),
     validateAndLoadSettings,
  )
@@ -52,7 +53,7 @@ removePublicHostHostsOverride context = do
     case settingsResult of
         Left err -> pure (Left err)
         Right settings -> do
-            let fqdn = preferredPublicHostFqdn (validatedConfig settings)
+            let fqdn = publicFqdn settings
                 hostsPath = "/etc/hosts"
             originalTextResult <- try (readFile hostsPath) :: IO (Either IOException String)
             case originalTextResult of
@@ -144,12 +145,6 @@ unexpectedPulumiExportShape = "pulumi stack export returned deployment resources
 
 loadValidatedSettings :: SupportedRuntimeContext -> IO (Either String ValidatedSettings)
 loadValidatedSettings context = validateAndLoadSettings (supportedRuntimeRepoRoot context)
-
-preferredPublicHostFqdn :: ConfigFile -> String
-preferredPublicHostFqdn config =
-    case vscode_fqdn (domain config) of
-        Just value -> Text.unpack value
-        Nothing -> Text.unpack (demo_fqdn (domain config))
 
 writeHostsFile :: FilePath -> String -> IO (Either String ())
 writeHostsFile hostsPath updatedText = do

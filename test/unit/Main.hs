@@ -481,6 +481,7 @@ main = hspec $ do
                                 `shouldBe` [ "charts-vscode"
                                            , "charts-api"
                                            , "charts-websocket"
+                                           , "admin-routes"
                                            , "public-dns"
                                            , "dns-aws"
                                            , "aws-iam"
@@ -525,8 +526,8 @@ main = hspec $ do
                             nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
-                            take 3 (map nativeValidationId (nativeValidations suitePlan))
-                                `shouldBe` ["charts-vscode", "charts-api", "charts-websocket"]
+                            take 4 (map nativeValidationId (nativeValidations suitePlan))
+                                `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
                             last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
                         DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
@@ -608,6 +609,32 @@ main = hspec $ do
                             nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
                             nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
                         DelegatedSuite _ -> expectationFailure "expected native charts-vscode plan"
+
+        it "keeps admin-routes on the supported runtime bootstrap path" $ do
+            case testExecutionPlan (TestIntegration IntegrationAdminRoutes) of
+                testPlan ->
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan -> do
+                            nativeSuiteId suitePlan `shouldBe` "integration-admin-routes"
+                            nativeValidations suitePlan `shouldBe` [ValidationAdminRoutes]
+                            nativeInitialIntegrationGatePrerequisites suitePlan
+                                `shouldBe` [ "supported_ubuntu_2404"
+                                           , "tool_docker"
+                                           , "tool_ctr"
+                                           , "tool_helm"
+                                           , "tool_kubectl"
+                                           , "tool_sudo"
+                                           , "tool_systemctl"
+                                           , "settings_object"
+                                           , "aws_credentials_valid"
+                                           , "tool_pulumi"
+                                           , "tool_curl"
+                                           ]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan
+                                `shouldBe` ["pulumi_logged_in"]
+                            nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
+                            nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+                        DelegatedSuite _ -> expectationFailure "expected native admin-routes plan"
 
         it "waits for public-edge readiness during supported runtime restore actions" $ do
             repoRoot <- getCurrentDirectory
@@ -924,7 +951,7 @@ main = hspec $ do
                 Right plan -> do
                     chartDeploymentPlanRootChart plan `shouldBe` "vscode"
                     chartDeploymentPlanNamespace plan `shouldBe` "vscode"
-                    chartDeploymentPlanPublicFqdn plan `shouldBe` Just "vscode.example.com"
+                    chartDeploymentPlanPublicFqdn plan `shouldBe` Just "test.resolvefintech.com"
                     map chartReleasePlanReleaseName (chartDeploymentPlanReleases plan)
                         `shouldBe` ["keycloak-postgres", "keycloak", "vscode"]
 
@@ -1041,21 +1068,23 @@ main = hspec $ do
                             case KeyMap.lookup (Key.fromString "keycloak") payload of
                                 Just (Object keycloakPayload) ->
                                     KeyMap.lookup (Key.fromString "publicHost") keycloakPayload
-                                        `shouldBe` Just (String "auth.example.com")
+                                        `shouldBe` Just (String "test.resolvefintech.com")
                                 _ -> expectationFailure "expected keycloak runtime payload"
                             case KeyMap.lookup (Key.fromString "gateway") payload of
                                 Just (Object gatewayPayload) -> do
                                     KeyMap.lookup (Key.fromString "className") gatewayPayload
                                         `shouldBe` Just (String "prodbox-public-edge")
-                                    KeyMap.lookup (Key.fromString "vscodePublicHost") gatewayPayload
-                                        `shouldBe` Just (String "vscode.example.com")
+                                    KeyMap.lookup (Key.fromString "host") gatewayPayload
+                                        `shouldBe` Just (String "test.resolvefintech.com")
+                                    KeyMap.lookup (Key.fromString "authPathPrefix") gatewayPayload
+                                        `shouldBe` Just (String "/auth")
                                 _ -> expectationFailure "expected keycloak gateway payload"
                             case KeyMap.lookup (Key.fromString "oidc") payload of
                                 Just (Object oidcPayload) -> do
                                     KeyMap.lookup (Key.fromString "vscodeClientId") oidcPayload
                                         `shouldBe` Just (String "vscode")
                                     KeyMap.lookup (Key.fromString "redirectUri") oidcPayload
-                                        `shouldBe` Just (String "https://vscode.example.com/oauth2/callback")
+                                        `shouldBe` Just (String "https://test.resolvefintech.com/vscode/oauth2/callback")
                                 _ -> expectationFailure "expected keycloak oidc payload"
                         _ -> expectationFailure "expected keycloak values payload"
                     case Map.lookup "vscode" releaseValues of
@@ -1066,7 +1095,7 @@ main = hspec $ do
                                     KeyMap.lookup (Key.fromString "className") gatewayPayload
                                         `shouldBe` Just (String "prodbox-public-edge")
                                     KeyMap.lookup (Key.fromString "host") gatewayPayload
-                                        `shouldBe` Just (String "vscode.example.com")
+                                        `shouldBe` Just (String "test.resolvefintech.com")
                                 _ -> expectationFailure "expected vscode gateway payload"
                             case KeyMap.lookup (Key.fromString "oidc") payload of
                                 Just (Object oidcPayload) -> do
@@ -1075,7 +1104,7 @@ main = hspec $ do
                                     KeyMap.lookup (Key.fromString "clientSecret") oidcPayload
                                         `shouldBe` Just (String "vscodesecret")
                                     KeyMap.lookup (Key.fromString "issuer") oidcPayload
-                                        `shouldBe` Just (String "https://auth.example.com/realms/prodbox")
+                                        `shouldBe` Just (String "https://test.resolvefintech.com/auth/realms/prodbox")
                                 _ -> expectationFailure "expected vscode oidc payload"
                             case KeyMap.lookup (Key.fromString "vscode") payload of
                                 Just (Object vscodePayload) ->
@@ -1235,7 +1264,7 @@ main = hspec $ do
                             Right (Object payload) ->
                                 case KeyMap.lookup (Key.fromString "dns_write_gate") payload of
                                     Just (Object gate) -> do
-                                        KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "test.example.com")
+                                        KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "test.resolvefintech.com")
                                         KeyMap.lookup (Key.fromString "zone_id") gate `shouldBe` Just (String "Z1234567890ABC")
                                         KeyMap.lookup (Key.fromString "ttl") gate `shouldBe` Just (Number 60)
                                         KeyMap.lookup (Key.fromString "aws_region") gate `shouldBe` Just (String "us-east-1")
@@ -1554,7 +1583,7 @@ validConfig =
         [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = Some \"test-session-token\", region = \"us-east-1\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\", keycloak_fqdn = Some \"auth.example.com\" }"
+        , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
         , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
@@ -1566,7 +1595,7 @@ invalidZeroSslConfig =
         [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = None Text, region = \"us-east-1\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = None Text, keycloak_fqdn = None Text }"
+        , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
         , ", acme = { email = \"test@example.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
@@ -1588,12 +1617,8 @@ testValidatedSettings manualRoot =
                 , route53 = Route53Section{zone_id = "Z1234567890ABC"}
                 , domain =
                     DomainSection
-                        { demo_fqdn = "test.example.com"
+                        { demo_fqdn = "test.resolvefintech.com"
                         , demo_ttl = 60
-                        , vscode_fqdn = Just "vscode.example.com"
-                        , keycloak_fqdn = Just "auth.example.com"
-                        , api_fqdn = Just "api.example.com"
-                        , websocket_fqdn = Just "ws.example.com"
                         }
                 , deployment =
                     DeploymentSection

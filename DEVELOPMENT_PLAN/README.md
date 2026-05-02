@@ -29,13 +29,16 @@ govern this plan suite.
 
 Phases `1`, `2`, `3`, `4`, `5`, and `7` are active because the repository end state changes from
 the current dedicated identity or browser or API or WebSocket hostname model to one canonical
-public hostname: `test.resolvefintech.com`. The target handoff now uses one Route 53 record, one
-listener certificate, path-based routing such as `https://test.resolvefintech.com/vscode`, and
-Keycloak-backed JWT or RBAC enforcement at Envoy for both application routes and operational
-dashboards. Phase `6` is blocked until those phases close and the cleanup ledger returns to zero
-pending removal. Phase `0` remains closed on plan topology and ownership.
+public hostname: `test.resolvefintech.com`, and because Phase `4` also reopens the lifecycle
+container-build doctrine from cross-arch `docker buildx` publication to native-host-architecture
+Docker builds. The target handoff now uses one Route 53 record, one listener certificate,
+path-based routing such as `https://test.resolvefintech.com/vscode`, Keycloak-backed JWT or RBAC
+enforcement at Envoy for both application routes and operational dashboards, and same-architecture
+container publication only. Phase `6` is blocked until those phases close and the cleanup ledger
+returns to zero pending removal. Phase `0` remains closed on plan topology and ownership.
 
-The reopened work is limited to the public-edge doctrine and the surfaces that own it:
+The reopened work is limited to the public-edge doctrine plus one lifecycle image-publication
+cleanup:
 
 - Phase `1` owns the foundational config contract, including removal of `example.com` from the
   repository and collapse from multiple public FQDN inputs to the single supported hostname.
@@ -44,7 +47,8 @@ The reopened work is limited to the public-edge doctrine and the surfaces that o
 - Phase `3` owns path-routed application and admin delivery through Envoy Gateway, including
   Keycloak-backed JWT auth and RBAC on the shared hostname.
 - Phase `4` owns lifecycle bootstrap DNS and certificate closure on the one-record or one-cert
-  doctrine.
+  doctrine, plus removal of cross-arch `docker buildx` publication in favor of host-native Docker
+  builds only.
 - Phase `5` owns the external proof surface for the single-host Gateway API edge.
 - Phase `7` owns onboarding and validation so the wizard prompts, defaults, and config checks no
   longer materialize placeholder domains or multi-host assumptions.
@@ -59,10 +63,17 @@ The current worktree closes on:
   Percona PostgreSQL operator on the supported self-managed cluster path
 - one current implementation baseline that still carries dedicated identity, browser, API, and
   WebSocket hostnames across settings, lifecycle, charts, diagnostics, and validations
+- one current lifecycle image-publication baseline that still uses
+  `docker buildx build --platform linux/amd64,linux/arm64 --push` and therefore still assumes
+  cross-arch publication
 - one target public-edge doctrine, owned by the reopened phases, where every externally reachable
   application or dashboard sits behind Envoy Gateway on `test.resolvefintech.com`, distinguished
   only by explicit path prefixes, protected by Keycloak-backed JWT auth or RBAC, and covered by
   one Route 53 record plus one listener certificate
+- one target lifecycle image-publication doctrine where `amd64` hosts build and publish only
+  `amd64` images, `arm64` hosts build and publish only `arm64` images, Apple Silicon with Colima
+  is valid on the native `arm64` path, and no supported path uses `docker buildx` or cross-arch
+  emulation
 - one explicit steady-state JWT boundary where Envoy validates Keycloak-issued tokens locally and
   does not require per-request Keycloak or Redis calls on the hot path
 - one explicit Keycloak availability boundary where new logins, refresh flows, and later JWKS
@@ -163,6 +174,10 @@ surfaces:
 - The current worktree still carries placeholder-domain assumptions in the config surface,
   including `example.com` defaults. Their complete removal from the repository and supported
   runtime is now explicit phase-owned cleanup work.
+- The current worktree still publishes lifecycle-owned custom images through
+  `docker buildx build --platform linux/amd64,linux/arm64 --push`. Reopened Sprint `4.1`
+  replaces that cross-arch path with ordinary host-native Docker builds and same-architecture
+  cluster closure only.
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -383,9 +398,12 @@ This plan is complete only when all of the following are true:
 25. Every later supported Helm deployment obtains its images from Harbor.
 26. `prodbox` idempotently ensures required public images and all custom images are present in
     Harbor after Harbor bootstrap and before those later deployments.
-27. Both `amd64` and `arm64` image variants or manifests are built, loaded, mirrored, or fetched
-    irrespective of the architecture of the machine running `prodbox`.
-28. Mixed-arch clusters are supported on the canonical lifecycle and chart-delivery path.
+27. Supported custom-image builds and Harbor publication use only the native architecture of the
+    machine running `prodbox`: `amd64` hosts build and publish `amd64` images, and `arm64` hosts
+    build and publish `arm64` images.
+28. Native `arm64` publication works on native `arm64` Docker daemons, including Apple Silicon
+    with Colima. `docker buildx`, cross-arch emulation, and mixed-arch cluster closure are not
+    part of the supported lifecycle or chart-delivery path.
 29. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
     cluster-wide Percona operator, and runs Patroni HA with exactly three PostgreSQL replicas,
     synchronous replication, and no embedded chart-local PostgreSQL subchart.

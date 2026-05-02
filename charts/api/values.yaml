@@ -14,15 +14,16 @@ image:
 gateway:
   name: public-edge
   namespace: vscode
-  listenerName: api-https
-  host: api.example.com
+  listenerName: https
+  host: test.resolvefintech.com
+  pathPrefix: /api
 
 jwt:
   securityPolicyName: api-jwt
   providerName: keycloak
-  issuer: https://auth.example.com/realms/prodbox
+  issuer: https://test.resolvefintech.com/auth/realms/prodbox
   audience: prodbox-api
-  jwksUri: https://auth.example.com/realms/prodbox/protocol/openid-connect/certs
+  jwksUri: https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/certs
   routeClaimName: prodbox_route
   routeClaimValue: api
 

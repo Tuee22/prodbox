@@ -85,8 +85,8 @@ while preserving the implemented runtime contract and container doctrine.
   image built from `docker/gateway.Dockerfile`, with in-image `ghcup` pinned to GHC `9.14.1`,
   no symlinked Haskell tool shims, and the official AWS CLI bundle per `TARGETARCH`.
 - Gateway image delivery uses Harbor as the only supported cluster image source.
-- Gateway image publication produces or loads both `amd64` and `arm64` variants irrespective of
-  the operator host architecture.
+- Gateway image publication follows the lifecycle-owned native-host-architecture doctrine:
+  `amd64` hosts publish `amd64` images, and `arm64` hosts publish `arm64` images.
 - Gateway event-key continuity and state inspection move to Haskell-owned modules.
 - The daemon and `prodbox gateway status` close on the implemented HTTP `/v1/state`
   observability transport and payload.
@@ -102,7 +102,8 @@ while preserving the implemented runtime contract and container doctrine.
 5. `prodbox test integration gateway-pods`
 6. Gateway image proof: `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs
    `ghcup`, pins GHC `9.14.1`, and does not create symlinked Haskell tool shims
-7. Harbor proof: the gateway image is available from Harbor for both `amd64` and `arm64`
+7. Harbor proof: the gateway image is available from Harbor for the native architecture of the
+   supported host and cluster
 8. Aggregate reruns: `prodbox test integration all` and `prodbox test all`
 
 ### Current Validation State
@@ -138,9 +139,10 @@ while preserving the implemented runtime contract and container doctrine.
   GHC tool shims.
 - `docker/gateway.Dockerfile` already installs the official AWS CLI bundle per `TARGETARCH`; that
   requirement stays in place after the toolchain doctrine changes.
-- `src/Prodbox/CLI/Rke2.hs` now publishes the gateway image through a single Harbor-backed
-  `docker buildx build --platform linux/amd64,linux/arm64 --push` flow with no mounted
-  `haskell-toolchain` context.
+- `src/Prodbox/CLI/Rke2.hs` still publishes the gateway image through a Harbor-backed cross-arch
+  `docker buildx` flow with no mounted `haskell-toolchain` context, but that publication path is
+  now legacy cleanup owned by reopened Sprint `4.1`; this sprint remains closed on the gateway
+  runtime, CLI, and container structure.
 - `src/Prodbox/Lib/ChartPlatform.hs` resolves the supported gateway chart image through Harbor.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
@@ -247,7 +249,7 @@ None.
 - `documents/engineering/distributed_gateway_architecture.md` - Haskell gateway implementation and
   retained DNS ownership doctrine.
 - `documents/engineering/local_registry_pipeline.md` - gateway-container build, Harbor loading, and
-  dual-arch delivery doctrine.
+  native-host-architecture delivery doctrine.
 - `documents/engineering/tla/README.md` - formal model entrypoint and execution contract.
 - `documents/engineering/tla_modelling_assumptions.md` - correspondence between the Haskell runtime
   and the model.

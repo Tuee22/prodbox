@@ -69,6 +69,7 @@ import Prodbox.Settings (
     defaultConfigFile,
     loadConfigFile,
     renderConfigDhall,
+    supportedPublicHostname,
     validateAndLoadSettings,
     validateAwsBootstrapConfig,
  )
@@ -171,10 +172,6 @@ data ConfigSetupResult = ConfigSetupResult
     { configSetupRegion :: Text
     , configSetupRoute53ZoneId :: Text
     , configSetupDemoFqdn :: Text
-    , configSetupVscodeFqdn :: Maybe Text
-    , configSetupKeycloakFqdn :: Maybe Text
-    , configSetupApiFqdn :: Maybe Text
-    , configSetupWebsocketFqdn :: Maybe Text
     , configSetupPolicyTier :: PolicyTier
     , configSetupAccessKeyId :: Text
     , configSetupQuotaStatuses :: [QuotaStatus]
@@ -209,10 +206,6 @@ data ConfigSetupInput = ConfigSetupInput
     , configSetupRoute53ZoneIdInput :: Text
     , configSetupDemoFqdnInput :: Text
     , configSetupDemoTtlInput :: Natural
-    , configSetupVscodeFqdnInput :: Maybe Text
-    , configSetupKeycloakFqdnInput :: Maybe Text
-    , configSetupApiFqdnInput :: Maybe Text
-    , configSetupWebsocketFqdnInput :: Maybe Text
     , configSetupAcmeEmailInput :: Text
     , configSetupAcmeServerInput :: Text
     , configSetupAcmeEabKeyIdInput :: Maybe Text
@@ -451,12 +444,8 @@ interactiveConfigSetupInput repoRoot = do
     credentials <- promptAdminCredentialsWithRegionChoice repoRoot
     zone <- promptHostedZoneChoice repoRoot credentials
     let zoneName = hostedZoneChoiceName zone
-    demoFqdnRaw <- promptText "Demo public FQDN (for example demo.example.com)" (Just ("demo." ++ Text.unpack zoneName))
+    putStrLn ("The supported public hostname is fixed: " ++ Text.unpack supportedPublicHostname)
     demoTtl <- promptInt "Demo DNS TTL seconds" 60
-    vscodeFqdnRaw <- promptText "VS Code public FQDN (blank uses the demo FQDN; for example vscode.example.com)" Nothing
-    keycloakFqdnRaw <- promptText "Keycloak public FQDN (blank uses auth.<zone>; for example auth.example.com)" (Just ("auth." ++ Text.unpack zoneName))
-    apiFqdnRaw <- promptText "API public FQDN (blank uses api.<zone>; for example api.example.com)" (Just ("api." ++ Text.unpack zoneName))
-    websocketFqdnRaw <- promptText "WebSocket public FQDN (blank uses ws.<zone>; for example ws.example.com)" (Just ("ws." ++ Text.unpack zoneName))
     showAcmeProviderGuidance
     providerIndex <- promptNumberedChoice "Choose the ACME provider number" ["ZeroSSL", "Let's Encrypt"] 0
     acmeEmailRaw <- promptText "ACME notification email (certificate expiry notices)" Nothing
@@ -485,12 +474,9 @@ interactiveConfigSetupInput repoRoot = do
     validateConfigSetupInput
         credentials
         (hostedZoneChoiceId zone)
-        demoFqdnRaw
+        zoneName
+        (Text.unpack supportedPublicHostname)
         demoTtl
-        vscodeFqdnRaw
-        keycloakFqdnRaw
-        apiFqdnRaw
-        websocketFqdnRaw
         acmeEmailRaw
         acmeServerValue
         eabKeyIdRaw
@@ -574,8 +560,7 @@ showRegionChoiceGuidance = do
 showHostedZoneChoiceGuidance :: IO ()
 showHostedZoneChoiceGuidance = do
     putStrLn "Route 53 hosted zone guidance:"
-    putStrLn "Choose the public hosted zone that should own the demo, vscode, keycloak, api,"
-    putStrLn "and websocket records."
+    putStrLn ("Choose the public hosted zone that owns " ++ Text.unpack supportedPublicHostname ++ ".")
     putStrLn "If the desired zone is missing, open AWS console -> Route 53 -> Hosted zones,"
     putStrLn "create or delegate the zone, then rerun this command."
     putStrLn ""
@@ -874,12 +859,9 @@ validateAdminCredentialsInput credentials = do
 validateConfigSetupInput ::
     Credentials ->
     Text ->
+    Text ->
     String ->
     Int ->
-    String ->
-    String ->
-    String ->
-    String ->
     String ->
     Text ->
     String ->
@@ -896,14 +878,10 @@ validateConfigSetupInput ::
     String ->
     PolicyTier ->
     IO ConfigSetupInput
-validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnRaw keycloakFqdnRaw apiFqdnRaw websocketFqdnRaw acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
+validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl acmeEmailRaw acmeServer eabKeyIdRaw eabHmacKeyRaw devMode bootstrapOverrideRaw pulumiEnableDnsBootstrap advertisementModeRaw bgpPeersRaw envoyGatewayControllerReplicasRaw envoyGatewayDataPlaneReplicasRaw apiReplicasRaw websocketReplicasRaw manualPvHostRootRaw policyTier = do
     normalizedAdminCredentials <- validateAdminCredentialsInput adminCredentials
     let normalizedZoneId = Text.strip zoneId
         normalizedDemoFqdn = normalizeFqdn (Text.pack demoFqdnRaw)
-        normalizedVscodeFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack vscodeFqdnRaw))
-        normalizedKeycloakFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack keycloakFqdnRaw))
-        normalizedApiFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack apiFqdnRaw))
-        normalizedWebsocketFqdn = fmap normalizeFqdn (normalizeOptionalText (Text.pack websocketFqdnRaw))
         normalizedAcmeEmail = Text.strip (Text.pack acmeEmailRaw)
         normalizedEabKeyId = normalizeOptionalText (Text.pack eabKeyIdRaw)
         normalizedEabHmacKey = normalizeOptionalText (Text.pack eabHmacKeyRaw)
@@ -912,18 +890,9 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
         normalizedManualPvHostRoot = Text.strip (Text.pack manualPvHostRootRaw)
     unless (isValidRoute53ZoneId normalizedZoneId) $ throwAws "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
     unless (isValidFqdn normalizedDemoFqdn) $ throwAws "demo_fqdn must be a valid fully qualified domain name"
-    case normalizedVscodeFqdn of
-        Nothing -> pure ()
-        Just value -> unless (isValidFqdn value) (throwAws "vscode_fqdn must be a valid fully qualified domain name")
-    case normalizedKeycloakFqdn of
-        Nothing -> pure ()
-        Just value -> unless (isValidFqdn value) (throwAws "keycloak_fqdn must be a valid fully qualified domain name")
-    case normalizedApiFqdn of
-        Nothing -> pure ()
-        Just value -> unless (isValidFqdn value) (throwAws "api_fqdn must be a valid fully qualified domain name")
-    case normalizedWebsocketFqdn of
-        Nothing -> pure ()
-        Just value -> unless (isValidFqdn value) (throwAws "websocket_fqdn must be a valid fully qualified domain name")
+    unless (Text.toLower normalizedDemoFqdn == Text.toLower supportedPublicHostname) $
+        throwAws ("demo_fqdn must be " ++ Text.unpack supportedPublicHostname)
+    either throwAws pure (validateHostedZoneAlignment normalizedDemoFqdn zoneName)
     when (demoTtl < 30 || demoTtl > 86400) (throwAws "demo_ttl must be between 30 and 86400 seconds")
     unless (hasValidEmailShape normalizedAcmeEmail) (throwAws "acme_email must be a valid email address")
     unless ("https://" `Text.isPrefixOf` Text.toLower acmeServer) (throwAws "acme_server must be an https:// URL")
@@ -948,10 +917,6 @@ validateConfigSetupInput adminCredentials zoneId demoFqdnRaw demoTtl vscodeFqdnR
             , configSetupRoute53ZoneIdInput = normalizedZoneId
             , configSetupDemoFqdnInput = normalizedDemoFqdn
             , configSetupDemoTtlInput = fromIntegral demoTtl
-            , configSetupVscodeFqdnInput = normalizedVscodeFqdn
-            , configSetupKeycloakFqdnInput = normalizedKeycloakFqdn
-            , configSetupApiFqdnInput = normalizedApiFqdn
-            , configSetupWebsocketFqdnInput = normalizedWebsocketFqdn
             , configSetupAcmeEmailInput = normalizedAcmeEmail
             , configSetupAcmeServerInput = Text.strip acmeServer
             , configSetupAcmeEabKeyIdInput = normalizedEabKeyId
@@ -1065,10 +1030,6 @@ applyConfigSetup repoRoot input = do
                     DomainSection
                         { demo_fqdn = configSetupDemoFqdnInput input
                         , demo_ttl = configSetupDemoTtlInput input
-                        , vscode_fqdn = configSetupVscodeFqdnInput input
-                        , keycloak_fqdn = configSetupKeycloakFqdnInput input
-                        , api_fqdn = configSetupApiFqdnInput input
-                        , websocket_fqdn = configSetupWebsocketFqdnInput input
                         }
                 , acme =
                     AcmeSection
@@ -1102,10 +1063,6 @@ applyConfigSetup repoRoot input = do
                     { configSetupRegion = region adminCredentials
                     , configSetupRoute53ZoneId = configSetupRoute53ZoneIdInput input
                     , configSetupDemoFqdn = configSetupDemoFqdnInput input
-                    , configSetupVscodeFqdn = configSetupVscodeFqdnInput input
-                    , configSetupKeycloakFqdn = configSetupKeycloakFqdnInput input
-                    , configSetupApiFqdn = configSetupApiFqdnInput input
-                    , configSetupWebsocketFqdn = configSetupWebsocketFqdnInput input
                     , configSetupPolicyTier = configSetupPolicyTierInput input
                     , configSetupAccessKeyId = newAccessKeyId
                     , configSetupQuotaStatuses = quotaStatuses
@@ -1584,16 +1541,28 @@ renderConfigSetupResult result =
         [ "AWS_REGION=" ++ Text.unpack (configSetupRegion result)
         , "ROUTE53_ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneId result)
         , "DEMO_FQDN=" ++ Text.unpack (configSetupDemoFqdn result)
-        , "VSCODE_FQDN=" ++ maybe "" Text.unpack (configSetupVscodeFqdn result)
-        , "KEYCLOAK_FQDN=" ++ maybe "" Text.unpack (configSetupKeycloakFqdn result)
-        , "API_FQDN=" ++ maybe "" Text.unpack (configSetupApiFqdn result)
-        , "WEBSOCKET_FQDN=" ++ maybe "" Text.unpack (configSetupWebsocketFqdn result)
         , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTier result)
         , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (configSetupAccessKeyId result)
         , "CONFIG_PATH=" ++ configSetupDhallPath result
         , "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (configSetupQuotaStatuses result)))
         , "POST_SETUP_GUIDANCE=Delete the temporary elevated access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
         ]
+
+validateHostedZoneAlignment :: Text -> Text -> Either String ()
+validateHostedZoneAlignment fqdn zoneName
+    | normalizedZone == "" = Left "selected Route 53 hosted zone name must not be empty"
+    | lowerFqdn == lowerZone = Right ()
+    | ("." <> lowerZone) `Text.isSuffixOf` lowerFqdn = Right ()
+    | otherwise =
+        Left
+            ( Text.unpack fqdn
+                ++ " does not belong to the selected Route 53 hosted zone "
+                ++ Text.unpack zoneName
+            )
+  where
+    lowerFqdn = Text.toLower (Text.strip fqdn)
+    lowerZone = Text.toLower (Text.strip zoneName)
+    normalizedZone = Text.unpack lowerZone
 
 renderQuotaTable :: String -> [QuotaStatus] -> String
 renderQuotaTable title statuses =

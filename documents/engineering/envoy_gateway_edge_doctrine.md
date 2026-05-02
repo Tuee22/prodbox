@@ -68,14 +68,16 @@ The current repository closes on the implemented self-managed public-edge doctri
 2. The current MetalLB runtime supports config-selected L2 or BGP advertisement from repo-owned
    settings, rendered through `IPAddressPool` plus `L2Advertisement` on the L2 path and
    `BGPPeer` plus `BGPAdvertisement` on the BGP path.
-3. The current shipped public workloads are `vscode`, `api`, and `websocket`, each delivered
-   through dedicated Gateway API `HTTPRoute` resources.
-4. Keycloak publishes the identity flow on the dedicated hostname from `domain.keycloak_fqdn`.
+3. The current shipped public workloads are `vscode`, `api`, `websocket`, Harbor, and MinIO,
+   each delivered through shared-host Gateway API `HTTPRoute` resources on
+   `test.resolvefintech.com`.
+4. Keycloak publishes the identity flow on the shared hostname under `/auth`.
 5. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
    `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode
-   state across the browser, API, and WebSocket routes.
+   state across the browser, API, WebSocket, Harbor, and MinIO routes.
 6. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
-   prove the shipped JWT-only API and Redis-backed WebSocket paths externally.
+   prove the shipped JWT-only API and Redis-backed WebSocket paths externally, while
+   `prodbox test integration admin-routes` proves the Harbor and MinIO auth gates externally.
 
 ## 3. Component Responsibilities
 
@@ -559,13 +561,15 @@ Current named validation implications:
 
 1. `prodbox test integration charts-vscode` proves the current Envoy-protected browser path.
 2. `prodbox test integration public-dns` proves the explicit Route 53 and public-host contract.
-3. `prodbox test integration charts-api` proves the dedicated Keycloak identity-host plus JWKS
+3. `prodbox test integration charts-api` proves the shared-host Keycloak issuer plus JWKS
    contract, then proves unauthenticated rejection, wrong-claim rejection, and acceptance for the
-   JWT-only API route.
+   JWT-only API route on `/api`.
 4. `prodbox test integration charts-websocket` proves workload-managed OIDC bootstrap on the
-   dedicated Keycloak host, real WebSocket upgrade, connection-time auth, shared-state
+   shared hostname under `/ws/oidc`, real WebSocket upgrade, connection-time auth, shared-state
    continuity, cross-replica behavior, revocation-driven reconnect, and readiness-based drain,
    while token-expiry behavior remains workload-specific doctrine when required.
+5. `prodbox test integration admin-routes` proves that Harbor and MinIO stay behind shared-host
+   Envoy OIDC auth gates on `/harbor` and `/minio`.
 
 ## 12. Cross-References
 

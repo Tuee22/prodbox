@@ -204,11 +204,11 @@ platform.
 
 The current public chart surface ships:
 
-- Keycloak on a dedicated public identity hostname
-- `vscode` on a dedicated public app hostname protected by Envoy Gateway `SecurityPolicy`
-- `api` on a dedicated public hostname protected by Envoy-local JWT validation plus route claims
-- `websocket` on a dedicated public hostname with workload-managed OIDC bootstrap on `/oidc`, a
-  JWT-protected `/ws` upgrade path, and an internal `redis` dependency for shared state
+- Keycloak on the shared hostname `test.resolvefintech.com` under `/auth`
+- `vscode` on `/vscode`, protected by Envoy Gateway `SecurityPolicy`
+- `api` on `/api`, protected by Envoy-local JWT validation plus route claims
+- `websocket` on `/ws`, with workload-managed OIDC bootstrap on `/ws/oidc`, a JWT-protected `/ws`
+  upgrade path, and an internal `redis` dependency for shared state
 - the separate Haskell distributed `gateway` chart, which is not the Envoy Gateway public edge
 
 ### `prodbox test`
@@ -246,6 +246,7 @@ Named suite commands:
 | `prodbox test integration charts-vscode` | Native external `vscode` validation |
 | `prodbox test integration charts-api` | Native external API validation |
 | `prodbox test integration charts-websocket` | Native external WebSocket validation |
+| `prodbox test integration admin-routes` | Native shared-host Harbor and MinIO route validation |
 | `prodbox test integration public-dns` | Native public DNS delegation validation |
 
 `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint. It:
@@ -261,8 +262,8 @@ Named suite commands:
   `aws-iam` harness rather than the public command surface
 - performs supported-runtime bootstrap and postflight when required
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
-  external `charts-vscode`, `charts-api`, or `charts-websocket` proof continues on the
-  supported-runtime path
+  external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
+  on the supported-runtime path
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`
 
 ### `prodbox check-code`

@@ -335,7 +335,7 @@ handleWebsocketHttpRequest runtime clientSocket request = do
                             case stateResult of
                                 Left err -> sendPlainTextResponse clientSocket 500 [] err
                                 Right payload -> sendJsonResponse clientSocket 200 [] payload
-        ("GET", "/oidc/start") -> do
+        ("GET", "/ws/oidc/start") -> do
             startResult <- buildOidcStartResponse runtime
             case startResult of
                 Left err -> sendPlainTextResponse clientSocket 500 [] err
@@ -345,9 +345,9 @@ handleWebsocketHttpRequest runtime clientSocket request = do
                         302
                         [("Location", locationHeader), ("Set-Cookie", stateCookie)]
                         ""
-        ("GET", "/oidc/callback") ->
+        ("GET", "/ws/oidc/callback") ->
             handleOidcCallback runtime clientSocket request queryParams
-        ("GET", "/oidc/session") ->
+        ("GET", "/ws/oidc/session") ->
             handleOidcSession runtime clientSocket request
         ("GET", "/ws") -> sendPlainTextResponse clientSocket 400 [] "websocket upgrade required on /ws"
         _ -> sendPlainTextResponse clientSocket 404 [] "not found"
@@ -501,7 +501,7 @@ buildOidcStartResponse runtime = do
                 ++ urlEncode callbackUrl
                 ++ "&state="
                 ++ urlEncode stateToken
-        stateCookie = renderSetCookie oidcStateCookieName stateToken "/oidc" True
+        stateCookie = renderSetCookie oidcStateCookieName stateToken "/ws/oidc" True
     pure (Right (locationHeader, stateCookie))
 
 handleOidcCallback :: WebsocketRuntime -> Socket -> HttpRequest -> Map String String -> IO ()
@@ -523,9 +523,9 @@ handleOidcCallback runtime clientSocket request queryParams =
                                         sendPlainTextResponse
                                             clientSocket
                                             302
-                                            [ ("Location", "/oidc/session")
-                                            , ("Set-Cookie", renderSetCookie oidcSessionCookieName (oidcSessionId session) "/oidc" True)
-                                            , ("Set-Cookie", clearCookie oidcStateCookieName "/oidc")
+                                            [ ("Location", "/ws/oidc/session")
+                                            , ("Set-Cookie", renderSetCookie oidcSessionCookieName (oidcSessionId session) "/ws/oidc" True)
+                                            , ("Set-Cookie", clearCookie oidcStateCookieName "/ws/oidc")
                                             ]
                                             ""
         (Nothing, _, _) -> sendPlainTextResponse clientSocket 400 [] "authorization code is required"

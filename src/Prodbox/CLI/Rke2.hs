@@ -39,6 +39,7 @@ import Data.List (
     isPrefixOf,
     nub,
  )
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Prodbox.AwsEnvironment (
@@ -56,11 +57,23 @@ import Prodbox.Host (
     LanAddressing (..),
     detectLanAddressing,
  )
+import Prodbox.Lib.ChartPlatform (
+    keycloakVscodeClientId,
+    resolveChartSecrets,
+ )
 import Prodbox.PostgresPlatform (
     patroniOperatorDeploymentName,
     patroniOperatorNamespace,
     patroniOperatorReleaseName,
     patroniPostgresqlCrdName,
+ )
+import Prodbox.PublicEdge (
+    PublicEdgeRoute (..),
+    harborPathPrefix,
+    identityIssuerUrl,
+    minioPathPrefix,
+    publicFqdn,
+    publicRouteUrl,
  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
@@ -195,6 +208,24 @@ harborReadyAnnotationKey = "prodbox.io/harbor-nginx-readiness-contract"
 harborReadyAnnotationValue :: String
 harborReadyAnnotationValue = "readyz-v1"
 
+publicEdgeListenerName :: String
+publicEdgeListenerName = "https"
+
+harborAdminRouteName :: String
+harborAdminRouteName = "harbor-ui"
+
+harborAdminSecurityPolicyName :: String
+harborAdminSecurityPolicyName = "harbor-oidc"
+
+harborAdminClientSecretName :: String
+harborAdminClientSecretName = "harbor-oidc-client"
+
+harborServiceName :: String
+harborServiceName = "harbor"
+
+harborServicePort :: Int
+harborServicePort = 80
+
 minioNamespace :: String
 minioNamespace = prodboxNamespace
 
@@ -212,6 +243,21 @@ minioChartRef = "minio/minio"
 
 minioChartVersion :: String
 minioChartVersion = "5.4.0"
+
+minioAdminRouteName :: String
+minioAdminRouteName = "minio-console"
+
+minioAdminSecurityPolicyName :: String
+minioAdminSecurityPolicyName = "minio-oidc"
+
+minioAdminClientSecretName :: String
+minioAdminClientSecretName = "minio-oidc-client"
+
+minioConsoleServiceName :: String
+minioConsoleServiceName = "minio-console"
+
+minioConsoleServicePort :: Int
+minioConsoleServicePort = 9001
 
 metallbNamespace :: String
 metallbNamespace = "metallb-system"
@@ -459,6 +505,7 @@ runNativeInstall repoRoot = do
                             , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
                             , reconcileDnsBootstrapRecord repoRoot settings
                             , ensureMinioRuntime repoRoot MinioSteadyStateHarbor
+                            , ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue
                             , reconcileManagedAnnotations repoRoot prodboxId labelValue
                             ]
 
@@ -1165,6 +1212,149 @@ ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue = do
                 , ensureAcmeRuntime repoRoot settings prodboxId labelValue
                 , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
                 ]
+
+ensureAdminPublicEdgeRoutes :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
+ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue = do
+    chartSecretsResult <- resolveChartSecrets repoRoot "vscode"
+    case chartSecretsResult of
+        Left err -> failWith err
+        Right chartSecrets ->
+            case Map.lookup "keycloak_vscode_client_secret" chartSecrets of
+                Nothing -> failWith "keycloak_vscode_client_secret is required to render admin public-edge routes"
+                Just clientSecret ->
+                    withTemporaryJsonManifest
+                        "prodbox-admin-public-edge"
+                        (adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret)
+                        ( \manifestPath -> do
+                            outputResult <- captureKubectl repoRoot ["apply", "-f", manifestPath]
+                            case outputResult of
+                                Left err -> failWith err
+                                Right output ->
+                                    case processExitCode output of
+                                        ExitSuccess -> pure ExitSuccess
+                                        ExitFailure _ -> failWith ("kubectl apply failed: " ++ outputDetail output)
+                        )
+
+adminPublicEdgeManifestItems :: ValidatedSettings -> String -> String -> String -> [Value]
+adminPublicEdgeManifestItems settings prodboxId labelValue clientSecret =
+    [ adminOidcClientSecretManifest harborNamespace harborAdminClientSecretName prodboxId labelValue clientSecret
+    , adminHttpRouteManifest harborNamespace harborAdminRouteName harborPathPrefix harborServiceName harborServicePort prodboxId labelValue (publicFqdn settings)
+    , adminSecurityPolicyManifest harborNamespace harborAdminSecurityPolicyName harborAdminRouteName harborAdminClientSecretName (publicRouteUrl settings PublicRouteHarbor) prodboxId labelValue settings
+    , adminOidcClientSecretManifest minioNamespace minioAdminClientSecretName prodboxId labelValue clientSecret
+    , adminHttpRouteManifest minioNamespace minioAdminRouteName minioPathPrefix minioConsoleServiceName minioConsoleServicePort prodboxId labelValue (publicFqdn settings)
+    , adminSecurityPolicyManifest minioNamespace minioAdminSecurityPolicyName minioAdminRouteName minioAdminClientSecretName (publicRouteUrl settings PublicRouteMinio) prodboxId labelValue settings
+    ]
+
+adminOidcClientSecretManifest :: String -> String -> String -> String -> String -> Value
+adminOidcClientSecretManifest namespace secretName prodboxId labelValue clientSecret =
+    object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("Secret" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= secretName
+                , "namespace" .= namespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "type" .= ("Opaque" :: String)
+        , "stringData" .= object ["client-secret" .= clientSecret]
+        ]
+
+adminHttpRouteManifest :: String -> String -> String -> String -> Int -> String -> String -> String -> Value
+adminHttpRouteManifest namespace routeName pathPrefix serviceName servicePort prodboxId labelValue hostFqdn =
+    object
+        [ "apiVersion" .= ("gateway.networking.k8s.io/v1" :: String)
+        , "kind" .= ("HTTPRoute" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= routeName
+                , "namespace" .= namespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec"
+            .= object
+                [ "parentRefs"
+                    .= ( [ object
+                            [ "name" .= ("public-edge" :: String)
+                            , "namespace" .= ("vscode" :: String)
+                            , "sectionName" .= publicEdgeListenerName
+                            ]
+                         ] ::
+                            [Value]
+                       )
+                , "hostnames" .= ([hostFqdn] :: [String])
+                , "rules"
+                    .= ( [ object
+                            [ "matches"
+                                .= ( [ object
+                                        [ "path"
+                                            .= object
+                                                [ "type" .= ("PathPrefix" :: String)
+                                                , "value" .= pathPrefix
+                                                ]
+                                        ]
+                                     ] ::
+                                        [Value]
+                                   )
+                            , "backendRefs"
+                                .= ( [ object
+                                        [ "name" .= serviceName
+                                        , "port" .= servicePort
+                                        ]
+                                     ] ::
+                                        [Value]
+                                   )
+                            ]
+                         ] ::
+                            [Value]
+                       )
+                ]
+        ]
+
+adminSecurityPolicyManifest ::
+    String ->
+    String ->
+    String ->
+    String ->
+    String ->
+    String ->
+    String ->
+    ValidatedSettings ->
+    Value
+adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl prodboxId labelValue settings =
+    object
+        [ "apiVersion" .= ("gateway.envoyproxy.io/v1alpha1" :: String)
+        , "kind" .= ("SecurityPolicy" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= policyName
+                , "namespace" .= namespace
+                , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
+                ]
+        , "spec"
+            .= object
+                [ "targetRefs"
+                    .= ( [ object
+                            [ "group" .= ("gateway.networking.k8s.io" :: String)
+                            , "kind" .= ("HTTPRoute" :: String)
+                            , "name" .= routeName
+                            ]
+                         ] ::
+                            [Value]
+                       )
+                , "oidc"
+                    .= object
+                        [ "provider" .= object ["issuer" .= identityIssuerUrl settings]
+                        , "clientID" .= keycloakVscodeClientId
+                        , "clientSecret" .= object ["name" .= secretName]
+                        , "redirectURL" .= (baseUrl ++ "/oauth2/callback")
+                        , "logoutPath" .= ("/logout" :: String)
+                        ]
+                ]
+        ]
 
 resolveClusterPlatformLanDefaults :: IO (Either String (String, String))
 resolveClusterPlatformLanDefaults = do

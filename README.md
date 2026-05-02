@@ -36,9 +36,9 @@ validation environments.
   `pulumi/aws-test/`; local-cluster platform ownership does not use a root Pulumi project.
 - This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
   stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
-- The current shipped edge workloads are the dedicated Keycloak identity route, the
-  Envoy-protected `vscode` browser route, a JWT-protected API route, and a Redis-backed WebSocket
-  workload on dedicated public hostnames.
+- The current shipped edge workloads share the single public hostname
+  `test.resolvefintech.com`, with Keycloak on `/auth`, `vscode` on `/vscode`, the API on `/api`,
+  the WebSocket workload on `/ws`, Harbor on `/harbor`, and MinIO console on `/minio`.
 - The Haskell `prodbox gateway ...` command group and `charts deploy gateway` manage the separate
   distributed gateway daemon; they are not the Envoy Gateway public edge controller.
 
@@ -61,7 +61,7 @@ The current codebase baseline still deploys and manages:
   edge implementation
 - **Percona Operator for PostgreSQL** for Helm-managed application databases, with namespace-local
   three-replica synchronous Patroni clusters and Harbor-backed PostgreSQL sidecar images
-- **Route 53** for explicit per-subdomain DNS ownership
+- **Route 53** for the single public A-record ownership contract
 - **Interactive onboarding** through `prodbox config setup`
 - **AWS IAM automation** through `prodbox aws ...`
 - **AWS validation stacks** through `prodbox pulumi eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`
@@ -113,7 +113,7 @@ The current worktree closes on the supported edge architecture. Today:
   claim-based authorization
 - the public `websocket` route uses Gateway API `HTTPRoute`, Envoy-local JWT validation, and a
   Redis-backed shared-state workload
-- Keycloak uses the dedicated public identity hostname from `domain.keycloak_fqdn`
+- Keycloak uses the shared public hostname on the `/auth` path
 - MetalLB supports config-selected L2 or BGP advertisement through repo-owned settings
 - `host public-edge`, `charts-api`, and `charts-websocket` extend the external proof surface to
   the dedicated API and WebSocket hosts
@@ -202,12 +202,12 @@ What this does:
   cert-manager, and the Percona PostgreSQL operator.
 - `charts deploy vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
-  by Envoy Gateway and Keycloak on its dedicated identity hostname.
-- `charts deploy api` deploys the dedicated public API workload on the shared public edge.
-- `charts deploy websocket` deploys the dedicated public WebSocket workload plus its internal
-  Redis dependency on the shared public edge.
+  by Envoy Gateway and Keycloak on the shared `/auth` path.
+- `charts deploy api` deploys the shared-host API workload on `/api`.
+- `charts deploy websocket` deploys the shared-host WebSocket workload plus its internal Redis
+  dependency on `/ws`.
 - `host public-edge` confirms Route 53, Envoy Gateway, Gateway API, and certificate readiness for
-  the browser, API, and WebSocket edge paths.
+  the shared browser, API, WebSocket, Harbor, and MinIO edge paths.
 - `charts deploy gateway` is optional for the separate Haskell distributed gateway daemon and is
   not required to bring up the Envoy Gateway public edge.
 
@@ -250,10 +250,6 @@ These fields are not all parser-required, but they matter for normal operation:
 | Config Path | Description |
 |-------------|-------------|
 | `domain.demo_fqdn` | Primary public FQDN used by DNS inspection, public-edge diagnostics, and the gateway/public host flow |
-| `domain.vscode_fqdn` | Optional public FQDN override for the `vscode` app route |
-| `domain.keycloak_fqdn` | Optional public FQDN override for the Keycloak identity route |
-| `domain.api_fqdn` | Optional public FQDN override for the API route |
-| `domain.websocket_fqdn` | Optional public FQDN override for the WebSocket route |
 | `deployment.public_edge_advertisement_mode` | Optional MetalLB advertisement mode: `l2` or `bgp` |
 | `deployment.envoy_gateway_controller_replicas` | Optional Envoy Gateway controller replica count |
 | `deployment.envoy_gateway_data_plane_replicas` | Optional Envoy data-plane replica count |
@@ -362,8 +358,8 @@ Check the external Route 53 record and public edge state:
 
 `host public-edge` is the main supported readiness diagnostic for the public host. The successful
 state is `CLASSIFICATION=ready-for-external-proof`. That classification derives from Route 53,
-Envoy Gateway, Gateway API, `SecurityPolicy`, certificate readiness, and the dedicated identity
-and app hostname contract.
+Envoy Gateway, Gateway API, `SecurityPolicy`, certificate readiness, and the shared-host path
+contract.
 
 ### Gateway Operations
 

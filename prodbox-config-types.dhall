@@ -23,10 +23,6 @@
     , domain :
         { demo_fqdn : Text
         , demo_ttl : Natural
-        , vscode_fqdn : Optional Text
-        , keycloak_fqdn : Optional Text
-        , api_fqdn : Optional Text
-        , websocket_fqdn : Optional Text
         }
     , acme :
         { email : Text
@@ -73,12 +69,8 @@
         }
     , route53 = { zone_id = "" }
     , domain =
-        { demo_fqdn = "demo.example.com"
+        { demo_fqdn = "test.resolvefintech.com"
         , demo_ttl = 60
-        , vscode_fqdn = None Text
-        , keycloak_fqdn = Some "auth.example.com"
-        , api_fqdn = Some "api.example.com"
-        , websocket_fqdn = Some "ws.example.com"
         }
     , acme =
         { email = ""

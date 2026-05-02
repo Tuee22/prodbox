@@ -45,8 +45,11 @@ Build a clean-room Haskell `prodbox` repository with:
 10. One idempotent post-bootstrap image-reconcile path: after Harbor is healthy and externally
     serving, `prodbox` ensures required public images and all custom images are present in Harbor
     before later deployment.
-11. First-class `amd64` and `arm64` image handling irrespective of local host architecture.
-12. One mixed-arch cluster support contract.
+11. One native-architecture container-build doctrine: `amd64` hosts build `amd64` images, and
+    `arm64` hosts build `arm64` images.
+12. Native `arm64` container builds work on native `arm64` Docker daemons, including Apple
+    Silicon with Colima, while cross-arch builds, `docker buildx`, and mixed-arch clusters are
+    unsupported.
 13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
     test-stack state in the dedicated bucket `prodbox-test-pulumi-backends`.
 14. One in-cluster Haskell gateway runtime with config generation, HTTP `/v1/state`
@@ -115,7 +118,7 @@ Build a clean-room Haskell `prodbox` repository with:
 | Configuration | Operator-authored repository-root `prodbox-config.dhall` decoded directly into Haskell types, with `prodbox-config-types.dhall` as the shared schema and no supported `prodbox-config.json` artifact | Repository root |
 | Host diagnostics | `prodbox host ensure-tools|check-ports|info|firewall|public-edge` | Haskell CLI |
 | Local RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Haskell CLI with summary-oriented delete reporting |
-| Registry and image reconcile | Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, plus idempotent post-bootstrap public-image populate with alternate-source retry and dual-arch image publication for the Envoy Gateway target edge and chart workloads | Haskell lifecycle runtime |
+| Registry and image reconcile | Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, plus idempotent post-bootstrap public-image populate with alternate-source retry and native-host-architecture image publication for the Envoy Gateway target edge and chart workloads | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Haskell CLI |
 | AWS-backed EKS validation | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | Haskell orchestration plus Pulumi |
 | AWS-backed HA RKE2 validation | `prodbox pulumi test-resources|test-destroy --yes` plus `prodbox test integration ha-rke2-aws` | Haskell orchestration plus Pulumi |
@@ -215,9 +218,10 @@ than restated here as a fresh rerun log.
   single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, and avoids
   symlinked Haskell tool shims.
 - `src/Prodbox/CLI/Rke2.hs` owns the Harbor-first lifecycle, readiness gates, Harbor population,
-  post-bootstrap Harbor-backed workload reconcile, dual-arch custom-image publication, and
-  alternate-source retry during Harbor mirror publication. The current lifecycle installs Envoy
-  Gateway and the Harbor-backed Envoy image set for the supported public edge.
+  post-bootstrap Harbor-backed workload reconcile, the current cross-arch custom-image
+  publication path reopened under Sprint `4.1`, and alternate-source retry during Harbor mirror
+  publication. The current lifecycle installs Envoy Gateway and the Harbor-backed Envoy image set
+  for the supported public edge.
 - The Helm-driven lifecycle restore now retries transient upstream chart-fetch failures before
   failing the supported path.
 - `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `src/Prodbox/CLI/Rke2.hs` now
@@ -293,20 +297,24 @@ on the clean-room lifecycle and retained AWS-validation stack path.
 
 ## Current Execution State
 
-Phase `0`, Phase `2`, Phase `4`, Phase `6`, and Phase `7` are closed on their repository-owned
-surfaces and canonical validation contracts. Phase `1` remains active only on aggregate validation
-closure. Phase `3` remains active only on aggregate validation closure for the implemented mixed-
-auth doctrine plus end-to-end WebSocket runtime, and Phase `5` remains active on the proof reruns
-that follow those reopened public-edge boundaries:
+Phase `0` remains closed on the plan suite. Phase `1` remains active on aggregate validation
+closure. Phase `2` remains active on the single-record DNS doctrine while its gateway runtime
+surface is otherwise closed. Phase `3` remains active on aggregate validation closure for the
+implemented mixed-auth doctrine plus end-to-end WebSocket runtime. Phase `4` is active because
+Sprint `4.1` reopens native-host-architecture image publication and Sprint `4.4` remains active
+on one-record or one-certificate lifecycle closure. Phase `5` remains active on the proof reruns
+that follow those reopened public-edge boundaries, Phase `6` remains blocked on the upstream
+closure items, and Phase `7` remains active on onboarding cleanup:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
   Haskell test and quality framework, and the local edge foundations. It now also carries the
   config-selected MetalLB BGP support, dedicated API plus WebSocket public-host inputs, and
   explicit public-edge scaling controls that still need aggregate validation closure.
-- Phase 2 owns the gateway runtime, DNS inspection surface, and TLA+ validation entrypoint; its
-  repository surface is closed on the HTTP `/v1/state` payload, gateway status client path,
-  interval validation, and the corresponding runtime-to-model notes.
+- Phase 2 owns the gateway runtime, DNS inspection surface, and TLA+ validation entrypoint; the
+  Haskell gateway daemon itself is closed on the HTTP `/v1/state` payload, gateway status client
+  path, interval validation, and the corresponding runtime-to-model notes, while Sprint `2.3`
+  remains active on the single-record DNS doctrine.
 - Phase 3 owns the chart platform, retained state model, supported public workload delivery, and
   the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. It now
   includes the JWT-protected API route, the Redis-backed WebSocket runtime, the shared
@@ -317,8 +325,9 @@ that follow those reopened public-edge boundaries:
   remaining aggregate validation contract for those implemented surfaces.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
   bootstrap exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
-  and ACME projection, and Python removal. Its lifecycle and retained AWS-validation cleanup
-  shims are now removed from the supported path.
+  and ACME projection, Python removal, and the native-host-architecture container-build doctrine.
+  Its lifecycle and retained AWS-validation cleanup shims are removed from the supported path, but
+  the current `docker buildx` cross-arch publication path is now explicit remaining cleanup.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation. It now includes API and WebSocket
   route classification plus named external proofs for those workloads. Sprint `5.3` remains
@@ -379,9 +388,12 @@ that follow those reopened public-edge boundaries:
 - Every later Helm deployment must obtain its images through Harbor.
 - `prodbox` must idempotently ensure required public images are present in Harbor after Harbor
   bootstrap and before they are referenced by later supported cluster workloads.
-- Both `amd64` and `arm64` image variants or manifests are first-class on the supported path, even
-  when the operator runs `prodbox` from a host of only one architecture.
-- Mixed-arch clusters are supported on the canonical lifecycle, gateway, and chart-delivery path.
+- Supported custom-image builds and Harbor publication use only the native architecture of the
+  machine running `prodbox`: `amd64` hosts build `amd64` images, and `arm64` hosts build `arm64`
+  images.
+- Native `arm64` publication works on native `arm64` Docker daemons, including Apple Silicon with
+  Colima. `docker buildx`, cross-arch emulation, and mixed-arch clusters are unsupported on the
+  canonical lifecycle, gateway, and chart-delivery path.
 - All supported Patroni use must flow through the cluster-wide Percona operator installed on the
   canonical lifecycle path.
 - The self-managed public edge target uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and

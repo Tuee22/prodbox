@@ -220,10 +220,7 @@ catalog:
 
 | Setting | Purpose |
 |---------|---------|
-| `domain.vscode_fqdn` | Public FQDN for the `vscode` route |
-| `domain.keycloak_fqdn` | Public FQDN for the Keycloak identity route |
-| `domain.api_fqdn` | Public FQDN for the API route |
-| `domain.websocket_fqdn` | Public FQDN for the WebSocket route |
+| `domain.demo_fqdn` | Canonical shared public hostname for `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` |
 
 Namespace-local chart secrets live in `.prodbox-state/<namespace>/.secrets.json`:
 

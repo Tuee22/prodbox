@@ -12,7 +12,11 @@ spec:
   hostnames:
     - {{ .Values.gateway.host | quote }}
   rules:
-    - backendRefs:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: {{ .Values.gateway.pathPrefix | quote }}
+      backendRefs:
         - name: api
           port: {{ .Values.api.port }}
 ---

@@ -119,7 +119,7 @@ main = hspec $ do
                 stdoutText `shouldBe` ""
                 rendered <- readFile outputPath
                 rendered `shouldContain` "\"node_id\": \"node-a\""
-                rendered `shouldContain` "\"fqdn\": \"test.example.com\""
+                rendered `shouldContain` "\"fqdn\": \"test.resolvefintech.com\""
                 rendered `shouldContain` "\"zone_id\": \"Z1234567890ABC\""
 
         it "runs native gateway status through the built frontend with a fake curl" $
@@ -392,6 +392,11 @@ main = hspec $ do
                 applyHarbor <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-3.json")
                 applyHarbor `shouldContain` "nginx.conf"
                 applyHarbor `shouldContain` "/readyz"
+                applyAdminRoutes <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-7.json")
+                applyAdminRoutes `shouldContain` "harbor-ui"
+                applyAdminRoutes `shouldContain` "minio-console"
+                applyAdminRoutes `shouldContain` "harbor-oidc"
+                applyAdminRoutes `shouldContain` "minio-oidc"
 
                 helmRecord <- readFile (tmpDir </> "fake-rke2-state" </> "helm.txt")
                 helmRecord `shouldContain` "repo|add|minio|https://charts.min.io/"
@@ -601,11 +606,6 @@ main = hspec $ do
                             , "1"
                             , "1"
                             , ""
-                            , ""
-                            , ""
-                            , ""
-                            , ""
-                            , ""
                             , "2"
                             , "ops@example.com"
                             , "1"
@@ -625,6 +625,14 @@ main = hspec $ do
                         (proc binary ["config", "setup"]){cwd = Just tmpDir, env = Just envVars}
                         inputText
 
+                let failureOutput =
+                        unlines
+                            [ "config setup stdout:"
+                            , stdoutText
+                            , "config setup stderr:"
+                            , stderrText
+                            ]
+                when (exitCode /= ExitSuccess) (expectationFailure failureOutput)
                 exitCode `shouldBe` ExitSuccess
                 stderrText `shouldBe` ""
                 stdoutText `shouldContain` "ROUTE53_ZONE_ID=Z1234567890ABC"
@@ -632,10 +640,7 @@ main = hspec $ do
                 configText <- readFile (tmpDir </> "prodbox-config.dhall")
                 configText `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
                 configText `shouldContain` "route53 = { zone_id = \"Z1234567890ABC\" }"
-                configText `shouldContain` "demo_fqdn = \"demo.example.com\""
-                configText `shouldContain` "keycloak_fqdn = Some \"auth.example.com\""
-                configText `shouldContain` "api_fqdn = Some \"api.example.com\""
-                configText `shouldContain` "websocket_fqdn = Some \"ws.example.com\""
+                configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
                 configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
                 jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
                 jsonExists `shouldBe` False
@@ -1677,7 +1682,7 @@ fakeAwsScript stateDir =
         , "    ;;"
         , "  \"route53 list-hosted-zones\")"
         , "    cat <<'JSON'"
-        , "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.com.\"}]}"
+        , "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"}]}"
         , "JSON"
         , "    ;;"
         , "  \"iam create-user\")"
@@ -1860,7 +1865,7 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
         [ "{ aws = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"us-east-1\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\", keycloak_fqdn = Some \"auth.example.com\" }"
+        , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
         , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
@@ -1873,7 +1878,7 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
         [ "{ aws = { access_key_id = \"AKIALEAKED\", secret_access_key = \"leaked-secret\", session_token = None Text, region = \"us-west-2\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\", keycloak_fqdn = Some \"auth.example.com\" }"
+        , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
         , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
@@ -1906,7 +1911,7 @@ configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer ea
         [ "{ aws = { access_key_id = \"" ++ accessKeyId ++ "\", secret_access_key = \"" ++ secretAccessKey ++ "\", session_token = " ++ sessionTokenValue ++ ", region = \"us-east-1\" }"
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
-        , ", domain = { demo_fqdn = \"test.example.com\", demo_ttl = 60, vscode_fqdn = Some \"vscode.example.com\", keycloak_fqdn = Some \"auth.example.com\" }"
+        , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
         , ", acme = { email = \"test@example.com\", server = \"" ++ acmeServer ++ "\", eab_key_id = " ++ eabKeyIdValue ++ ", eab_hmac_key = " ++ eabHmacKeyValue ++ " }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"

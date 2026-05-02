@@ -24,16 +24,13 @@ import Numeric (readHex)
 import Prodbox.CLI.Command (HostCommand (..))
 import Prodbox.Dns (
     fetchPublicIp,
-    preferredApiHostFqdn,
-    preferredIdentityHostFqdn,
-    preferredPublicHostFqdn,
-    preferredWebsocketHostFqdn,
     queryRoute53Record,
  )
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
 import Prodbox.Prerequisite (prerequisiteRegistry)
+import Prodbox.PublicEdge (publicFqdn)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
     DeploymentSection (..),
@@ -55,16 +52,13 @@ data PortStatus = PortStatus
     }
     deriving (Eq, Show)
 
+prodboxNamespace :: String
+prodboxNamespace = "prodbox"
+
 data EdgeRuntime = EdgeRuntime
     { edgePublicIp :: String
-    , edgeAppHost :: String
-    , edgeIdentityHost :: String
-    , edgeApiHost :: String
-    , edgeWebsocketHost :: String
-    , edgeAppRoute53RecordIp :: Maybe String
-    , edgeIdentityRoute53RecordIp :: Maybe String
-    , edgeApiRoute53RecordIp :: Maybe String
-    , edgeWebsocketRoute53RecordIp :: Maybe String
+    , edgePublicHost :: String
+    , edgeRoute53RecordIp :: Maybe String
     , edgeActiveLanInterface :: String
     , edgeActiveLanIpv4 :: String
     , edgeActiveLanCidr :: String
@@ -75,13 +69,17 @@ data EdgeRuntime = EdgeRuntime
     , edgeEnvoyGatewayDeploymentReady :: Bool
     , edgeGatewayClassAccepted :: Bool
     , edgeGatewayReady :: Bool
+    , edgeAuthRouteAccepted :: Bool
     , edgeVscodeRouteAccepted :: Bool
-    , edgeKeycloakRouteAccepted :: Bool
     , edgeApiRouteAccepted :: Bool
     , edgeWebsocketRouteAccepted :: Bool
+    , edgeHarborRouteAccepted :: Bool
+    , edgeMinioRouteAccepted :: Bool
     , edgeVscodeSecurityPolicyAttached :: Bool
     , edgeApiSecurityPolicyAttached :: Bool
     , edgeWebsocketSecurityPolicyAttached :: Bool
+    , edgeHarborSecurityPolicyAttached :: Bool
+    , edgeMinioSecurityPolicyAttached :: Bool
     , edgeCertificateReady :: String
     }
     deriving (Eq, Show)
@@ -131,11 +129,8 @@ runHostPublicEdge repoRoot = do
             case publicIpResult of
                 Left err -> failWith err
                 Right publicIp -> do
-                    appRoute53Result <- queryRoute53Record repoRoot settings (preferredPublicHostFqdn settings)
-                    identityRoute53Result <- queryRoute53Record repoRoot settings (preferredIdentityHostFqdn settings)
-                    apiRoute53Result <- queryRoute53Record repoRoot settings (preferredApiHostFqdn settings)
-                    websocketRoute53Result <- queryRoute53Record repoRoot settings (preferredWebsocketHostFqdn settings)
-                    case firstFailure [toUnit appRoute53Result, toUnit identityRoute53Result, toUnit apiRoute53Result, toUnit websocketRoute53Result] of
+                    route53Result <- queryRoute53Record repoRoot settings (publicFqdn settings)
+                    case firstFailure [toUnit route53Result] of
                         Just err -> failWith err
                         Nothing -> do
                             lanResult <- detectLanAddressing
@@ -154,12 +149,16 @@ runHostPublicEdge repoRoot = do
                                     ]
                             gatewayResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "gateway", "public-edge", "-o", "json", "--ignore-not-found=true"]
                             vscodeRouteResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "httproute", "vscode", "-o", "json", "--ignore-not-found=true"]
-                            keycloakRouteResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "httproute", "keycloak", "-o", "json", "--ignore-not-found=true"]
+                            authRouteResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "httproute", "keycloak", "-o", "json", "--ignore-not-found=true"]
                             apiRouteResult <- optionalKubectlJson repoRoot (Just "api") ["get", "httproute", "api", "-o", "json", "--ignore-not-found=true"]
                             websocketRouteResult <- optionalKubectlJson repoRoot (Just "websocket") ["get", "httproute", "websocket", "-o", "json", "--ignore-not-found=true"]
+                            harborRouteResult <- optionalKubectlJson repoRoot (Just "harbor") ["get", "httproute", "harbor-ui", "-o", "json", "--ignore-not-found=true"]
+                            minioRouteResult <- optionalKubectlJson repoRoot (Just prodboxNamespace) ["get", "httproute", "minio-console", "-o", "json", "--ignore-not-found=true"]
                             vscodeSecurityPolicyResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "securitypolicy", "vscode-oidc", "-o", "json", "--ignore-not-found=true"]
                             apiSecurityPolicyResult <- optionalKubectlJson repoRoot (Just "api") ["get", "securitypolicy", "api-jwt", "-o", "json", "--ignore-not-found=true"]
                             websocketSecurityPolicyResult <- optionalKubectlJson repoRoot (Just "websocket") ["get", "securitypolicy", "websocket-jwt", "-o", "json", "--ignore-not-found=true"]
+                            harborSecurityPolicyResult <- optionalKubectlJson repoRoot (Just "harbor") ["get", "securitypolicy", "harbor-oidc", "-o", "json", "--ignore-not-found=true"]
+                            minioSecurityPolicyResult <- optionalKubectlJson repoRoot (Just prodboxNamespace) ["get", "securitypolicy", "minio-oidc", "-o", "json", "--ignore-not-found=true"]
                             certificateResult <- optionalKubectlJson repoRoot (Just "vscode") ["get", "certificate", "public-edge-tls", "-o", "json", "--ignore-not-found=true"]
                             case firstFailure
                                 [ toUnit lanResult
@@ -168,63 +167,63 @@ runHostPublicEdge repoRoot = do
                                 , toUnit envoyServiceResult
                                 , toUnit gatewayResult
                                 , toUnit vscodeRouteResult
-                                , toUnit keycloakRouteResult
+                                , toUnit authRouteResult
                                 , toUnit apiRouteResult
                                 , toUnit websocketRouteResult
+                                , toUnit harborRouteResult
+                                , toUnit minioRouteResult
                                 , toUnit vscodeSecurityPolicyResult
                                 , toUnit apiSecurityPolicyResult
                                 , toUnit websocketSecurityPolicyResult
+                                , toUnit harborSecurityPolicyResult
+                                , toUnit minioSecurityPolicyResult
                                 , toUnit certificateResult
                                 ] of
                                 Just err -> failWith err
                                 Nothing ->
-                                    case ( appRoute53Result
-                                         , identityRoute53Result
-                                         , apiRoute53Result
-                                         , websocketRoute53Result
+                                    case ( route53Result
                                          , lanResult
                                          , envoyGatewayDeploymentResult
                                          , gatewayClassResult
                                          , envoyServiceResult
                                          , gatewayResult
                                          , vscodeRouteResult
-                                         , keycloakRouteResult
+                                         , authRouteResult
                                          , apiRouteResult
                                          , websocketRouteResult
+                                         , harborRouteResult
+                                         , minioRouteResult
                                          , vscodeSecurityPolicyResult
                                          , apiSecurityPolicyResult
                                          , websocketSecurityPolicyResult
+                                         , harborSecurityPolicyResult
+                                         , minioSecurityPolicyResult
                                          , certificateResult
                                          ) of
-                                        ( Right appRoute53RecordIp
-                                            , Right identityRoute53RecordIp
-                                            , Right apiRoute53RecordIp
-                                            , Right websocketRoute53RecordIp
+                                        ( Right route53RecordIp
                                             , Right lan
                                             , Right envoyGatewayDeploymentDoc
                                             , Right gatewayClassDoc
                                             , Right envoyServiceDoc
                                             , Right gatewayDoc
                                             , Right vscodeRouteDoc
-                                            , Right keycloakRouteDoc
+                                            , Right authRouteDoc
                                             , Right apiRouteDoc
                                             , Right websocketRouteDoc
+                                            , Right harborRouteDoc
+                                            , Right minioRouteDoc
                                             , Right vscodeSecurityPolicyDoc
                                             , Right apiSecurityPolicyDoc
                                             , Right websocketSecurityPolicyDoc
+                                            , Right harborSecurityPolicyDoc
+                                            , Right minioSecurityPolicyDoc
                                             , Right certificateDoc
                                             ) -> do
                                                 let runtime =
                                                         EdgeRuntime
                                                             { edgePublicIp = publicIp
-                                                            , edgeAppHost = preferredPublicHostFqdn settings
-                                                            , edgeIdentityHost = preferredIdentityHostFqdn settings
-                                                            , edgeApiHost = preferredApiHostFqdn settings
-                                                            , edgeWebsocketHost = preferredWebsocketHostFqdn settings
-                                                            , edgeAppRoute53RecordIp = appRoute53RecordIp
-                                                            , edgeIdentityRoute53RecordIp = identityRoute53RecordIp
-                                                            , edgeApiRoute53RecordIp = apiRoute53RecordIp
-                                                            , edgeWebsocketRoute53RecordIp = websocketRoute53RecordIp
+                                                            , edgePublicHost = publicFqdn settings
+                                                            , edgeRoute53RecordIp = route53RecordIp
                                                             , edgeActiveLanInterface = lanInterfaceName lan
                                                             , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
                                                             , edgeActiveLanCidr = lanNetworkCidr lan
@@ -235,13 +234,17 @@ runHostPublicEdge repoRoot = do
                                                             , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
                                                             , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
                                                             , edgeGatewayReady = gatewayReady gatewayDoc
+                                                            , edgeAuthRouteAccepted = httpRouteAccepted authRouteDoc
                                                             , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
-                                                            , edgeKeycloakRouteAccepted = httpRouteAccepted keycloakRouteDoc
                                                             , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
                                                             , edgeWebsocketRouteAccepted = httpRouteAccepted websocketRouteDoc
+                                                            , edgeHarborRouteAccepted = httpRouteAccepted harborRouteDoc
+                                                            , edgeMinioRouteAccepted = httpRouteAccepted minioRouteDoc
                                                             , edgeVscodeSecurityPolicyAttached = securityPolicyAttached "vscode" vscodeSecurityPolicyDoc
                                                             , edgeApiSecurityPolicyAttached = securityPolicyAttached "api" apiSecurityPolicyDoc
                                                             , edgeWebsocketSecurityPolicyAttached = securityPolicyAttached "websocket" websocketSecurityPolicyDoc
+                                                            , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
+                                                            , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
                                                             , edgeCertificateReady = certificateReady certificateDoc
                                                             }
                                                 putStr (renderPublicEdgeReport runtime)
@@ -274,19 +277,10 @@ renderPublicEdgeReport :: EdgeRuntime -> String
 renderPublicEdgeReport runtime =
     unlines
         [ "Public edge diagnostic"
-        , "APP_FQDN=" ++ edgeAppHost runtime
-        , "IDENTITY_FQDN=" ++ edgeIdentityHost runtime
-        , "API_FQDN=" ++ edgeApiHost runtime
-        , "WEBSOCKET_FQDN=" ++ edgeWebsocketHost runtime
+        , "PUBLIC_FQDN=" ++ edgePublicHost runtime
         , "PUBLIC_IP=" ++ edgePublicIp runtime
-        , "APP_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeAppRoute53RecordIp runtime)
-        , "APP_ROUTE53_STATUS=" ++ appRoute53Status
-        , "IDENTITY_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeIdentityRoute53RecordIp runtime)
-        , "IDENTITY_ROUTE53_STATUS=" ++ identityRoute53Status
-        , "API_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeApiRoute53RecordIp runtime)
-        , "API_ROUTE53_STATUS=" ++ apiRoute53Status
-        , "WEBSOCKET_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeWebsocketRoute53RecordIp runtime)
-        , "WEBSOCKET_ROUTE53_STATUS=" ++ websocketRoute53Status
+        , "PUBLIC_ROUTE53_A_RECORD=" ++ maybe "<missing>" id (edgeRoute53RecordIp runtime)
+        , "PUBLIC_ROUTE53_STATUS=" ++ publicRoute53Status
         , "ACTIVE_LAN_INTERFACE=" ++ edgeActiveLanInterface runtime
         , "ACTIVE_LAN_IPV4=" ++ edgeActiveLanIpv4 runtime
         , "ACTIVE_LAN_CIDR=" ++ edgeActiveLanCidr runtime
@@ -297,57 +291,60 @@ renderPublicEdgeReport runtime =
         , "ENVOY_GATEWAY_DEPLOYMENT_READY=" ++ boolText (edgeEnvoyGatewayDeploymentReady runtime)
         , "GATEWAYCLASS_ACCEPTED=" ++ boolText (edgeGatewayClassAccepted runtime)
         , "GATEWAY_READY=" ++ boolText (edgeGatewayReady runtime)
+        , "AUTH_HTTPROUTE_ACCEPTED=" ++ boolText (edgeAuthRouteAccepted runtime)
         , "VSCODE_HTTPROUTE_ACCEPTED=" ++ boolText (edgeVscodeRouteAccepted runtime)
-        , "KEYCLOAK_HTTPROUTE_ACCEPTED=" ++ boolText (edgeKeycloakRouteAccepted runtime)
         , "API_HTTPROUTE_ACCEPTED=" ++ boolText (edgeApiRouteAccepted runtime)
         , "WEBSOCKET_HTTPROUTE_ACCEPTED=" ++ boolText (edgeWebsocketRouteAccepted runtime)
+        , "HARBOR_HTTPROUTE_ACCEPTED=" ++ boolText (edgeHarborRouteAccepted runtime)
+        , "MINIO_HTTPROUTE_ACCEPTED=" ++ boolText (edgeMinioRouteAccepted runtime)
         , "VSCODE_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeVscodeSecurityPolicyAttached runtime)
         , "API_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeApiSecurityPolicyAttached runtime)
         , "WEBSOCKET_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeWebsocketSecurityPolicyAttached runtime)
+        , "HARBOR_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeHarborSecurityPolicyAttached runtime)
+        , "MINIO_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeMinioSecurityPolicyAttached runtime)
         , "CERTIFICATE_READY=" ++ edgeCertificateReady runtime
         , "PRIVATE_EDGE_READY=" ++ boolText privateEdgeReady
         , "CLASSIFICATION=" ++ classification
         ]
   where
-    appRoute53Status
-        | edgeAppRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
-        | edgeAppRoute53RecordIp runtime == Nothing = "missing"
+    publicRoute53Status
+        | edgeRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
+        | edgeRoute53RecordIp runtime == Nothing = "missing"
         | otherwise = "mismatch"
-    identityRoute53Status
-        | edgeIdentityRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
-        | edgeIdentityRoute53RecordIp runtime == Nothing = "missing"
-        | otherwise = "mismatch"
-    apiRoute53Status
-        | edgeApiRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
-        | edgeApiRoute53RecordIp runtime == Nothing = "missing"
-        | otherwise = "mismatch"
-    websocketRoute53Status
-        | edgeWebsocketRoute53RecordIp runtime == Just (edgePublicIp runtime) = "in-sync"
-        | edgeWebsocketRoute53RecordIp runtime == Nothing = "missing"
-        | otherwise = "mismatch"
+    coreRoutesReady =
+        edgeAuthRouteAccepted runtime
+            && edgeVscodeRouteAccepted runtime
+            && edgeApiRouteAccepted runtime
+            && edgeWebsocketRouteAccepted runtime
+    adminRoutesReady =
+        edgeHarborRouteAccepted runtime
+            && edgeMinioRouteAccepted runtime
+    corePoliciesReady =
+        edgeVscodeSecurityPolicyAttached runtime
+            && edgeApiSecurityPolicyAttached runtime
+            && edgeWebsocketSecurityPolicyAttached runtime
+    adminPoliciesReady =
+        edgeHarborSecurityPolicyAttached runtime
+            && edgeMinioSecurityPolicyAttached runtime
     privateEdgeReady =
         edgeEnvoyGatewayDeploymentReady runtime
             && edgeGatewayClassAccepted runtime
             && edgeGatewayReady runtime
-            && edgeVscodeRouteAccepted runtime
-            && edgeKeycloakRouteAccepted runtime
-            && edgeApiRouteAccepted runtime
-            && edgeWebsocketRouteAccepted runtime
-            && edgeVscodeSecurityPolicyAttached runtime
-            && edgeApiSecurityPolicyAttached runtime
-            && edgeWebsocketSecurityPolicyAttached runtime
+            && coreRoutesReady
+            && adminRoutesReady
+            && corePoliciesReady
+            && adminPoliciesReady
             && edgeCertificateReady runtime == "true"
             && edgeEnvoyServiceIp runtime /= "<missing>"
             && edgeLoadBalancerIpMatches runtime
-    publicDnsStale =
-        any
-            (/= "in-sync")
-            [appRoute53Status, identityRoute53Status, apiRoute53Status, websocketRoute53Status]
+    publicDnsStale = publicRoute53Status /= "in-sync"
     classification
         | privateEdgeReady && publicDnsStale = "private-edge-ready-public-dns-stale"
         | edgeCertificateReady runtime /= "true" = "certificate-not-ready"
-        | not (edgeVscodeSecurityPolicyAttached runtime && edgeApiSecurityPolicyAttached runtime && edgeWebsocketSecurityPolicyAttached runtime) = "auth-policy-not-ready"
-        | not (edgeVscodeRouteAccepted runtime && edgeKeycloakRouteAccepted runtime && edgeApiRouteAccepted runtime && edgeWebsocketRouteAccepted runtime) = "gateway-route-not-ready"
+        | not corePoliciesReady = "auth-policy-not-ready"
+        | not adminPoliciesReady = "admin-auth-policy-not-ready"
+        | not coreRoutesReady = "gateway-route-not-ready"
+        | not adminRoutesReady = "admin-route-not-ready"
         | not (edgeGatewayReady runtime && edgeGatewayClassAccepted runtime) = "gateway-not-ready"
         | not (edgeEnvoyGatewayDeploymentReady runtime) = "envoy-gateway-controller-not-ready"
         | edgeEnvoyServiceIp runtime == "<missing>" = "envoy-service-not-ready"

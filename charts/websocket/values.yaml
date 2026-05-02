@@ -14,24 +14,25 @@ image:
 gateway:
   name: public-edge
   namespace: vscode
-  listenerName: websocket-https
-  host: ws.example.com
+  listenerName: https
+  host: test.resolvefintech.com
+  oidcPathPrefix: /ws/oidc
 
 jwt:
   securityPolicyName: websocket-jwt
   providerName: keycloak
-  issuer: https://auth.example.com/realms/prodbox
+  issuer: https://test.resolvefintech.com/auth/realms/prodbox
   audience: prodbox-websocket
-  jwksUri: https://auth.example.com/realms/prodbox/protocol/openid-connect/certs
+  jwksUri: https://test.resolvefintech.com/auth/realms/prodbox/protocol/openid-connect/certs
   routeClaimName: prodbox_route
   routeClaimValue: websocket
 
 oidc:
-  issuer: https://auth.example.com/realms/prodbox
-  tokenEndpoint: http://keycloak.vscode.svc.cluster.local:8080/realms/prodbox/protocol/openid-connect/token
+  issuer: https://test.resolvefintech.com/auth/realms/prodbox
+  tokenEndpoint: http://keycloak.vscode.svc.cluster.local:8080/auth/realms/prodbox/protocol/openid-connect/token
   clientId: prodbox-websocket
   clientSecret: change-me
-  publicBaseUrl: https://ws.example.com
+  publicBaseUrl: https://test.resolvefintech.com/ws
 
 redis:
   host: redis

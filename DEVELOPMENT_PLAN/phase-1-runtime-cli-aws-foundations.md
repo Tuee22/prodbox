@@ -238,7 +238,8 @@ the supported product scope.
   `prodbox pulumi eks-resources|eks-destroy --yes` are implemented in Haskell.
 - The local-cluster-first MinIO backend doctrine is preserved.
 - The Harbor bootstrap and registry baseline exist in Haskell and carry forward into the later
-  Harbor-first dual-arch doctrine with a Harbor-bootstrap public-registry exception.
+  Harbor-first native-host-architecture doctrine with a Harbor-bootstrap public-registry
+  exception.
 - Both intended AWS-backed validation branches survive the rewrite: EKS-backed and HA RKE2 over
   SSH.
 

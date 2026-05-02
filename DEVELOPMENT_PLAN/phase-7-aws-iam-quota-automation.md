@@ -265,8 +265,10 @@ or operational `aws.*` credentials behind.
   Environment-dependent end-to-end proof remains attached to those commands rather than duplicated
   here as an execution log.
 - `src/Prodbox/CLI/Rke2.hs` now retries transient Harbor `502` / `unexpected EOF` failures during
-  custom multi-arch `docker buildx --push` publication so destructive reruns do not fail
-  terminally on a single short-lived Harbor registry write error.
+  lifecycle-owned custom-image publication so destructive reruns do not fail terminally on a
+  single short-lived Harbor registry write error; the remaining replacement of the current
+  cross-arch `docker buildx` path with host-native Docker builds is owned by reopened Sprint
+  `4.1`.
 
 ### Remaining Work
 

@@ -13,18 +13,21 @@ This phase closes the hard migration gap between parity and replacement. It owns
 local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
 supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks now close
-on clean-room-only behavior. Sprint `4.4` is active because the lifecycle-owned bootstrap DNS and
-ACME `ClusterIssuer` reconcile must move from the current multi-host public-edge contract to one
-Route 53 record and one certificate for `test.resolvefintech.com`.
+on clean-room-only behavior, but Sprint `4.1` is reopened because custom-image publication still
+uses cross-arch `docker buildx` rather than the supported native-host-architecture Docker build
+path. Sprint `4.4` remains active because the lifecycle-owned bootstrap DNS and ACME
+`ClusterIssuer` reconcile must move from the current multi-host public-edge contract to one Route
+53 record and one certificate for `test.resolvefintech.com`.
 
 ## Current Baseline In Worktree
 
 - `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
 - `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
   inventory, and ordered upstream-candidate lists used during Harbor publication.
-- `src/Prodbox/CLI/Rke2.hs` now publishes frontend and gateway custom images directly through
-  `docker buildx build --platform linux/amd64,linux/arm64 --push` and no longer defines the
-  named BuildKit context `haskell-toolchain`.
+- `src/Prodbox/CLI/Rke2.hs` still publishes frontend and gateway custom images through
+  `docker buildx build --platform linux/amd64,linux/arm64 --push`; Sprint `4.1` now removes that
+  cross-arch path in favor of ordinary host-native Docker builds with no supported `buildx`
+  dependency.
 - `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
@@ -48,16 +51,16 @@ Route 53 record and one certificate for `test.resolvefintech.com`.
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
-## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
+## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack 🔄
 
-**Status**: Done
+**Status**: Active
 **Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
 Make the lifecycle-critical surfaces Haskell-only and close the Harbor-first cluster image
-contract without reintroducing Python or duplicate runtime paths.
+contract without reintroducing Python, duplicate runtime paths, or cross-arch container builds.
 
 ### Deliverables
 
@@ -70,9 +73,14 @@ contract without reintroducing Python or duplicate runtime paths.
 - Lifecycle-managed Haskell-build custom images stay single-stage `ubuntu:24.04`, install
   `ghcup` in-image, pin GHC `9.14.1`, and do not depend on mounted `haskell:9.6.7-slim`
   BuildKit contexts or symlinked Haskell tool shims.
+- Supported custom-image publication uses ordinary host-native Docker builds and pushes rather
+  than `docker buildx`.
+- `amd64` hosts publish only `amd64` images, and `arm64` hosts publish only `arm64` images.
+- Native `arm64` publication works on native `arm64` Docker daemons, including Apple Silicon with
+  Colima, without requiring cross-arch emulation.
 - Every later Helm deployment obtains its images from Harbor.
-- The lifecycle publishes or mirrors both `amd64` and `arm64` variants or manifests irrespective
-  of the host architecture running `prodbox`.
+- Mixed-arch cluster closure and cross-arch manifest publication are unsupported on the canonical
+  lifecycle path.
 - Harbor mirror publication retries transient Harbor availability failures on the same candidate
   and then retries alternate configured upstreams when a preferred source still fails after
   manifest inspection.
@@ -107,9 +115,10 @@ contract without reintroducing Python or duplicate runtime paths.
   already-running non-Harbor cluster images into Harbor, selecting from configured candidate
   sources, retrying transient Harbor publication failures on the same candidate, and then
   retrying alternate upstreams when Harbor publication still fails after manifest inspection.
-- `ensureCustomImageVariants` now keeps the custom Haskell images single-stage while publishing
-  `linux/amd64` and `linux/arm64` variants directly from the repo-owned Dockerfiles with no named
-  `haskell-toolchain` context.
+- `ensureCustomImageVariants` still keeps the custom Haskell images single-stage, but the current
+  worktree publishes `linux/amd64` and `linux/arm64` variants through cross-arch `docker buildx`.
+  That path is now legacy implementation only; Sprint `4.1` replaces it with ordinary host-native
+  `docker build` plus `docker push`.
 - `ensureClusterPlatformRuntime` now reconciles the supported MetalLB, Envoy Gateway,
   cert-manager, ACME, and Percona operator surfaces directly with no retained cluster-migration
   cleanup shims for Traefik or the earlier incompatible operator surface.
@@ -120,7 +129,12 @@ contract without reintroducing Python or duplicate runtime paths.
 
 ### Remaining Work
 
-None.
+- Replace the current `docker buildx build --platform linux/amd64,linux/arm64 --push` custom-image
+  path with ordinary host-native Docker build and push flows.
+- Remove mixed-arch and cross-arch publication assumptions from lifecycle validations, tests, and
+  docs.
+- Prove the supported doctrine on both native host families: `amd64 -> amd64` and `arm64 -> arm64`
+  only.
 
 ## Sprint 4.4: Single-Record DNS Bootstrap and Single-Certificate Lifecycle Closure 🔄
 

@@ -36,6 +36,7 @@ spec:
             - --health-enabled=true
             - --proxy-headers=xforwarded
             - --hostname={{ .Values.keycloak.publicHost }}
+            - --http-relative-path={{ .Values.keycloak.httpRelativePath }}
             - --import-realm
           ports:
             - name: http

@@ -10,10 +10,7 @@ spec:
     kind: ClusterIssuer
     name: {{ .Values.gateway.clusterIssuer | quote }}
   dnsNames:
-    - {{ .Values.keycloak.publicHost | quote }}
-    - {{ .Values.gateway.vscodePublicHost | quote }}
-    - {{ .Values.gateway.apiPublicHost | quote }}
-    - {{ .Values.gateway.websocketPublicHost | quote }}
+    - {{ .Values.gateway.host | quote }}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
@@ -25,43 +22,7 @@ spec:
   gatewayClassName: {{ .Values.gateway.className | quote }}
   listeners:
     - name: {{ .Values.gateway.listenerName | quote }}
-      hostname: {{ .Values.keycloak.publicHost | quote }}
-      port: 443
-      protocol: HTTPS
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - kind: Secret
-            name: {{ .Values.gateway.tlsSecretName | quote }}
-      allowedRoutes:
-        namespaces:
-          from: All
-    - name: vscode-https
-      hostname: {{ .Values.gateway.vscodePublicHost | quote }}
-      port: 443
-      protocol: HTTPS
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - kind: Secret
-            name: {{ .Values.gateway.tlsSecretName | quote }}
-      allowedRoutes:
-        namespaces:
-          from: All
-    - name: {{ .Values.gateway.apiListenerName | quote }}
-      hostname: {{ .Values.gateway.apiPublicHost | quote }}
-      port: 443
-      protocol: HTTPS
-      tls:
-        mode: Terminate
-        certificateRefs:
-          - kind: Secret
-            name: {{ .Values.gateway.tlsSecretName | quote }}
-      allowedRoutes:
-        namespaces:
-          from: All
-    - name: {{ .Values.gateway.websocketListenerName | quote }}
-      hostname: {{ .Values.gateway.websocketPublicHost | quote }}
+      hostname: {{ .Values.gateway.host | quote }}
       port: 443
       protocol: HTTPS
       tls:
@@ -84,15 +45,15 @@ spec:
     - name: {{ .Values.gateway.name | quote }}
       sectionName: {{ .Values.gateway.listenerName | quote }}
   hostnames:
-    - {{ .Values.keycloak.publicHost | quote }}
+    - {{ .Values.gateway.host | quote }}
   rules:
     - matches:
         - path:
             type: PathPrefix
-            value: /realms
+            value: {{ printf "%s/realms" .Values.gateway.authPathPrefix | quote }}
         - path:
             type: PathPrefix
-            value: /resources
+            value: {{ printf "%s/resources" .Values.gateway.authPathPrefix | quote }}
       backendRefs:
         - name: keycloak
           port: 8080

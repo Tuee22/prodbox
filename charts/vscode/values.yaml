@@ -10,19 +10,21 @@ podAntiAffinity:
 gateway:
   className: prodbox-public-edge
   name: public-edge
-  listenerName: vscode-https
+  listenerName: https
   tlsSecretName: public-edge-tls
   clusterIssuer: letsencrypt-http01
-  host: vscode.example.com
+  host: test.resolvefintech.com
+  pathPrefix: /vscode
 
 oidc:
   clientId: vscode
   clientSecret: change-me
-  issuer: https://auth.example.com/realms/prodbox
-  redirectURL: https://vscode.example.com/oauth2/callback
+  issuer: https://test.resolvefintech.com/auth/realms/prodbox
+  redirectURL: https://test.resolvefintech.com/vscode/oauth2/callback
   logoutPath: /logout
   securityPolicyName: vscode-oidc
 
 vscode:
   image: 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2
   existingClaim: vscode-data-0
+  basePath: /vscode

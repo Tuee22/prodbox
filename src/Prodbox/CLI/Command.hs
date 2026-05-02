@@ -140,6 +140,7 @@ data IntegrationSuite
     | IntegrationChartsVscode
     | IntegrationChartsApi
     | IntegrationChartsWebsocket
+    | IntegrationAdminRoutes
     | IntegrationPublicDns
     deriving (Eq, Show)
 

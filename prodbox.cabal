@@ -38,6 +38,7 @@ library
         Prodbox.Native
         Prodbox.PostgresPlatform
         Prodbox.Prerequisite
+        Prodbox.PublicEdge
         Prodbox.Repo
         Prodbox.Result
         Prodbox.Settings

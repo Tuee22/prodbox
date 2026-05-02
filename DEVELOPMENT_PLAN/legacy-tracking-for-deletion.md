@@ -18,12 +18,17 @@
 
 ## Ledger Status
 
-The cleanup ledger preserves completed removal history and is closed on both Python-removal work
-and non-Python supported-path compatibility residue.
+The cleanup ledger preserves completed removal history. Python-removal work remains closed, but
+non-Python supported-path cleanup is reopened for the single-host public-edge doctrine.
 
 ## Pending Removal
 
-None.
+| Item | Owner | Why removal is required |
+|------|-------|-------------------------|
+| `example.com` placeholder public domains in `prodbox-config-types.dhall`, `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, and related test fixtures | Sprint `1.5` / Sprint `7.4` | The supported public edge now uses only `test.resolvefintech.com`; placeholder domains have already leaked into real config and must be removed from the supported codebase. |
+| Dedicated public-FQDN config fields such as `domain.keycloak_fqdn`, `domain.vscode_fqdn`, `domain.api_fqdn`, and `domain.websocket_fqdn` plus matching validator assumptions | Sprint `1.5` / Sprint `7.4` | The supported config contract collapses to one canonical public hostname rather than one FQDN per service. |
+| Explicit per-FQDN Route 53, `dns_write_gate`, bootstrap-DNS, and public-certificate assumptions across DNS inspection, lifecycle, and proof surfaces | Sprint `2.3` / Sprint `4.4` / Sprint `5.3` | The supported public edge now requires one Route 53 record and one certificate for `test.resolvefintech.com`. |
+| Dedicated identity, browser, API, and WebSocket public-host routing doctrine across charts, validations, and host diagnostics | Sprint `3.5` / Sprint `3.6` / Sprint `3.7` / Sprint `5.3` / Sprint `5.4` | The supported public edge now uses shared-host path routing plus Keycloak-backed Envoy auth and RBAC for both application and admin surfaces. |
 
 ## Completed
 
@@ -75,7 +80,7 @@ None.
 | Legacy Pulumi AWS provider-config cleanup in `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` (`clearLegacyAwsProviderConfig`) | Phase `4` cleanup closure on April 29, 2026 | Removed once the supported retained AWS-validation stacks no longer needed migration from the previous provider-key layout. |
 | `Ingress`-based public-edge classification in host diagnostics, chart templates, native validation flows, and doctrine docs | Sprint `5.2` closure on April 29, 2026 | Replaced by Gateway API, Envoy Gateway `SecurityPolicy`, certificate, and explicit Route 53 readiness classification. |
 | App-local `vscode-nginx` browser-auth proxy surfaces, its Harbor image, and `keycloak_nginx_client_secret` | Sprint `3.4` closure on April 29, 2026 | Removed from charts, lifecycle image publication, retained chart-secret state, and public-edge doctrine after Envoy Gateway `SecurityPolicy` took over the browser-auth path. |
-| Shared-host `domain.vscode_fqdn` plus `/auth` public-host doctrine | Sprint `1.4` / Sprint `3.4` closure on April 29, 2026 | Replaced by explicit app and identity hostname support through `domain.vscode_fqdn` plus `domain.keycloak_fqdn`. |
+| Shared-host `domain.vscode_fqdn` plus `/auth` public-host doctrine | Sprint `1.4` / Sprint `3.4` closure on April 29, 2026 | Replaced at that time by explicit app and identity hostname support through `domain.vscode_fqdn` plus `domain.keycloak_fqdn`. That dedicated-host replacement is now itself slated for removal under the newer single-host `test.resolvefintech.com/<path>` doctrine tracked in `Pending Removal`. |
 | `vscode-nginx` delivery gap for Harbor-only dual-arch image publication | Sprint `3.4` closure on April 29, 2026 | Closed by removing `docker/nginx-oidc.Dockerfile` and the remaining nginx-based browser-auth path from the supported stack. |
 
 ## Related Documents

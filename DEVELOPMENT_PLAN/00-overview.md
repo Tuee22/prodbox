@@ -56,13 +56,10 @@ Build a clean-room Haskell `prodbox` repository with:
     peer-transport behavior from those fields today.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
     API owns Layer 7 routes, cert-manager owns listener TLS, Keycloak remains the identity
-    provider, Envoy Gateway `SecurityPolicy` owns browser-facing edge auth for supported apps that
-    do not manage their own OIDC browser flow, workloads that need direct identity or session
-    control may own their OIDC flow against the dedicated Keycloak public host, Envoy-managed
-    browser auth returns through the edge redirect and cookie or session path, JWT-only API routes
-    carry bearer tokens on the request and validate them locally at Envoy from Keycloak issuer
-    metadata plus JWKS-backed signing keys, and the steady-state request path does not
-    synchronously depend on Keycloak or Redis.
+    provider, every externally reachable app or dashboard lives under the single hostname
+    `test.resolvefintech.com`, Envoy enforces Keycloak-backed JWT auth and RBAC on explicit path
+    prefixes such as `/vscode`, `/api`, `/ws`, `/auth`, and later supported admin paths, and the
+    steady-state request path does not synchronously depend on Keycloak or Redis.
 16. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 17. One retained repo-local state root under `.prodbox-state/`, including namespace-local
@@ -73,9 +70,12 @@ Build a clean-room Haskell `prodbox` repository with:
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
 19. One supported public workload catalog comprising the cluster-backed `vscode` browser route, a
-    JWT-protected API route, and a WebSocket workload on dedicated public hostnames.
-20. One explicit dedicated-host routing model for the public edge: separate identity, browser-app,
-    API, and WebSocket hostnames, with no wildcard public DNS and no shared-host `/auth` model.
+    JWT-protected API route, a WebSocket route, and path-routed operational dashboards such as
+    Harbor, MinIO, and supported PostgreSQL administration surfaces, all on the same public
+    hostname.
+20. One explicit single-host routing model for the public edge:
+    `https://test.resolvefintech.com/<service-path>`, with one public DNS record, one public
+    certificate, and no dedicated identity, browser-app, API, or WebSocket hostnames.
 21. One repo-owned Redis workload path for supported realtime workloads and any later explicit
     external rate-limit service, only as shared application state and never as an Envoy JWT cache.
 22. One explicit public-edge transport boundary where public TLS terminates at Envoy, backend HTTP
@@ -85,7 +85,9 @@ Build a clean-room Haskell `prodbox` repository with:
     upgraded connection pinned to one backend pod until disconnect, reconnect-safe state outside
     the pod, and readiness-based drain before pod exit.
 24. One named validation command per major surface.
-25. One explicit ledger for every compatibility or cleanup item still slated for deletion.
+25. One explicit ledger for every compatibility or cleanup item still slated for deletion,
+    including `example.com` placeholders and dedicated-host public-edge residue until they reach
+    zero.
 26. Pulumi retained for true IaC surfaces such as AWS validation resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
 
@@ -94,13 +96,13 @@ Build a clean-room Haskell `prodbox` repository with:
 | Phase | Focus | Closure Result |
 |-------|-------|----------------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | The plan suite is rewritten around the Haskell end state |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | One supported Haskell binary owns CLI, config, lifecycle, test, and AWS validation foundations, and the local lifecycle or config surface closes on the dual-mode MetalLB plus Envoy Gateway prerequisites needed by later public workloads |
-| 2 | Haskell Gateway Runtime and DNS Ownership | Gateway runtime, formal verification entrypoint, and Harbor-backed gateway packaging close on the Haskell stack under the same `ubuntu:24.04` plus `ghcup` toolchain doctrine |
-| 3 | Haskell Chart Platform and Public Workload Delivery | Chart orchestration, retained storage, Harbor-backed browser/API/WebSocket delivery, Keycloak-backed Envoy edge auth, Redis-backed realtime state, and the Percona-operator-backed Patroni PostgreSQL doctrine close on the Haskell stack |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | Lifecycle parity closes, Harbor bootstrap narrows to Harbor plus its storage backend, broad local-cluster Pulumi ownership is removed, and Python residue is removed |
-| 5 | Public Hostname Closure and External Proof on the Haskell Stack | Public DNS, TLS, Gateway API, and external browser/API/WebSocket proof are owned by Haskell-only command paths |
-| 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes with no supported Python dependency; any surviving non-Python cleanup remains phase-owned in the ledger |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input and a shared suite-level IAM harness owning temporary operational credentials during AWS-backed reruns |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | One supported Haskell binary owns CLI, config, lifecycle, test, and AWS validation foundations, and the config contract closes on one canonical public hostname with no `example.com` residue |
+| 2 | Haskell Gateway Runtime and DNS Ownership | Gateway runtime, formal verification entrypoint, Harbor-backed gateway packaging, and the single-record Route 53 ownership contract close on the Haskell stack under the same `ubuntu:24.04` plus `ghcup` toolchain doctrine |
+| 3 | Haskell Chart Platform and Public Workload Delivery | Chart orchestration, retained storage, Harbor-backed browser/API/WebSocket delivery, path-routed admin delivery, Keycloak-backed Envoy auth and RBAC, Redis-backed realtime state, and the Percona-operator-backed Patroni PostgreSQL doctrine close on the Haskell stack |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | Lifecycle parity closes, Harbor bootstrap narrows to Harbor plus its storage backend, bootstrap DNS or certificate issuance collapse to the one-host doctrine, broad local-cluster Pulumi ownership is removed, and Python residue is removed |
+| 5 | Public Hostname Closure and External Proof on the Haskell Stack | Public DNS, TLS, Gateway API, and external proof close on one public hostname with path-routed app and admin surfaces owned by Haskell-only command paths |
+| 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes with no supported Python dependency and no surviving single-host public-edge cleanup in the ledger |
+| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with one canonical public hostname, no placeholder domains, and `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input |
 
 ## Architecture Summary
 
@@ -120,12 +122,12 @@ Build a clean-room Haskell `prodbox` repository with:
 | Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
 | Retained repo-local validation state | `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Haskell Pulumi orchestration and AWS validation helpers |
 | Gateway startup | `prodbox gateway start <config-path>` | Haskell gateway runtime |
-| Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported API surface and the direct-OIDC, real-WebSocket chart surface |
-| Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate |
+| Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
+| Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate for the single canonical public record |
 | DNS check | `prodbox dns check` | Haskell CLI |
-| Chart delivery | `prodbox charts list|status <chart>|deploy <chart>|delete <chart> [--yes]` | Haskell chart platform with Keycloak as IdP, Envoy-authenticated browser delivery, JWT-protected API delivery, and the active Redis-backed WebSocket implementation path |
-| Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI on a dedicated-hostname Gateway API and Envoy Gateway doctrine, including browser/API/WebSocket route classification |
-| Public-edge auth model | Envoy-managed browser OIDC with redirect or cookie return paths for proxy-auth workloads, app-managed OIDC for workloads that need direct identity integration or session ownership, and local JWT validation for supported API routes from explicit bearer-token carriers plus Keycloak JWKS metadata | Keycloak issuer plus Envoy policy |
+| Chart delivery | `prodbox charts list|status <chart>|deploy <chart>|delete <chart> [--yes]` | Haskell chart platform with Keycloak as IdP, Envoy-authenticated path-routed browser and admin delivery, JWT-protected API delivery, and the active Redis-backed WebSocket implementation path |
+| Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI on a single-host Gateway API and Envoy Gateway doctrine, including path-route classification for app and admin surfaces |
+| Public-edge auth model | Envoy-enforced Keycloak JWT auth and RBAC on the shared hostname, with explicit bearer-token carriers, browser return paths, and JWKS metadata ownership | Keycloak issuer plus Envoy policy |
 | Public-edge transport boundary | Public listener TLS terminates at Envoy on the supported path; backend HTTP remains the current workload default and backend TLS or mTLS requires later explicit doctrine ownership | Haskell lifecycle plus chart doctrine |
 | Optional realtime-state model | Redis-backed shared state for supported WebSocket workloads today and any later explicit external rate-limit service | Haskell chart platform plus application workload doctrine |
 | Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary elevated AWS credentials and AWS CLI subprocesses |
@@ -137,17 +139,13 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree implements the Haskell-only rewrite baseline and the public-edge expansion
-for MetalLB BGP, dedicated API plus WebSocket hostname inputs, JWT-protected API delivery, the
-shared public-workload runtime, multi-replica public workloads, and corresponding diagnostics plus
-named external validations. Phase `1` remains active only on aggregate validation closure. Phase
-`3` Sprint `3.5` remains active only on aggregate validation closure for the now-implemented mixed
-auth workload doctrine and Keycloak public-host contract, while Sprint `3.6` remains active only
-on aggregate validation closure for the now-implemented end-to-end WebSocket runtime. Phase `5`
-Sprint `5.3` remains active because the external proof surface must follow those public-edge
-boundaries honestly. Phases `2`, `4`, `6`, and `7` remain closed on their current owned surfaces.
-`prodbox check-code` enforces the governed
-doctrine gate, the Haskell gateway runtime plus status path close on the implemented HTTP
+The repository worktree implements the Haskell-only rewrite baseline, but the supported public-edge
+target has changed. The current implementation still uses dedicated identity, browser, API, and
+WebSocket hostnames. Reopened Phases `1`, `2`, `3`, `4`, `5`, and `7` replace that contract with
+the single public hostname `test.resolvefintech.com`, path-based routing, one DNS record, one
+certificate, Keycloak-backed JWT auth and RBAC at Envoy, and Envoy-routed operational dashboards.
+Phase `6` is blocked on that refactor and the matching cleanup. `prodbox check-code` enforces the
+governed doctrine gate, the Haskell gateway runtime plus status path close on the implemented HTTP
 `/v1/state` payload and daemon timing-validation contract, the supported public surface is
 Haskell-only, and the earlier unsupported Python residue remains removed. The implementation uses
 in-image `ghcup` with pinned GHC `9.14.1` in the
@@ -157,14 +155,14 @@ required package-bound updates in `prodbox.cabal`, installs the Percona operator
 Percona operator and PostgreSQL sidecar images, and targets `perconapgclusters.pgv2.percona.com`.
 The self-managed public edge currently installs Envoy Gateway, renders Gateway API resources,
 protects the shipped browser route through Envoy Gateway `SecurityPolicy`, validates the shipped
-API route locally at Envoy, and uses dedicated identity, browser, API, and WebSocket public
+API route locally at Envoy, and still uses dedicated identity, browser, API, and WebSocket public
 hostnames. The shipped browser route currently exercises the Envoy-managed redirect and cookie
 path, while the shipped API route validates request-carried JWTs locally at Envoy from Keycloak
 issuer metadata plus JWKS-backed signing keys rather than through per-request Keycloak or Redis
 calls. Keycloak availability remains necessary for login, refresh, and later JWKS refresh, but
 not for the steady-state JWT hot path while cached keys and unexpired tokens remain valid. Phase
-`3` still owns aggregate rerun closure for the supported direct-OIDC workload path and the
-Keycloak external hostname, issuer, and forwarded-header contract on the dedicated identity host.
+`3` now owns the path-routed replacement for that identity-host contract, including shared-host
+issuer and redirect behavior plus admin-route coverage at Envoy.
 The current `websocket` chart and runtime now materialize workload-managed OIDC bootstrap, a true
 `/ws` upgrade, one-upgraded-connection-per-backend-pod lifetime, readiness-based drain, and
 Redis-backed state continuity on the WebSocket host; the remaining active work is the matching
@@ -388,26 +386,25 @@ that follow those reopened public-edge boundaries:
   canonical lifecycle path.
 - The self-managed public edge target uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
   Keycloak-backed edge auth rather than Traefik `Ingress` plus `vscode-nginx`.
-- Supported public workloads use an explicit auth-model split between Envoy-managed browser auth
-  for proxy-auth workloads and app-managed OIDC for workloads that need direct identity or
-  session control on the dedicated Keycloak host. The supported auth doctrine must keep the token
-  carrier explicit across those paths: bearer tokens on JWT-only API routes, redirect or
-  cookie-backed browser sessions on Envoy-managed browser-auth routes, and workload-owned carrier
-  or session state on direct-OIDC workloads.
-- Keycloak-backed public workloads must keep the dedicated identity host proxy-aware, including
-  external hostname and issuer alignment, forwarded `X-Forwarded-*` header compatibility, and no
-  supported public management or health route exposure unless a later doctrine revision makes that
-  exposure explicit. Keycloak availability may gate login, refresh, and JWKS refresh, but the
-  steady-state JWT hot path at Envoy must not depend on per-request Keycloak calls while cached
-  signing keys and unexpired tokens suffice.
-- The supported public-host doctrine uses dedicated identity, browser-app, API, and WebSocket
-  hosts.
+- Supported public workloads and operational dashboards route only through Envoy on the shared
+  hostname `test.resolvefintech.com`. The supported auth doctrine keeps the token carrier
+  explicit across those paths: bearer tokens on JWT-protected routes, explicit browser return
+  paths for proxy-auth surfaces, and workload-owned carrier or session state only where a route
+  still needs direct-OIDC behavior behind the same host.
+- Keycloak-backed public workloads must stay proxy-aware behind Envoy on the shared hostname,
+  including issuer alignment, forwarded `X-Forwarded-*` header compatibility, and no supported
+  public management or health route exposure unless a later doctrine revision makes that exposure
+  explicit. Keycloak availability may gate login, refresh, and JWKS refresh, but the steady-state
+  JWT hot path at Envoy must not depend on per-request Keycloak calls while cached signing keys
+  and unexpired tokens suffice.
+- The supported public-host doctrine uses one shared hostname, one DNS entry, and one
+  certificate.
 - Redis may appear only as repo-owned shared app state for supported realtime or rate-limit
   workloads; it is not part of Envoy JWT validation, and the current supported worktree does not
   yet ship a standalone external rate-limit service surface.
-- Supported public API routes must validate JWTs locally at Envoy from Keycloak issuer metadata and
-  signing keys, with explicit bearer-token carriage and JWKS-discovery ownership, rather than
-  through per-request identity-provider lookups or Redis.
+- Supported public API and admin routes must validate JWTs locally at Envoy from Keycloak issuer
+  metadata and signing keys, with explicit bearer-token carriage, route-level RBAC, and
+  JWKS-discovery ownership, rather than through per-request identity-provider lookups or Redis.
 - Public listener TLS terminates at Envoy on the supported path. Backend TLS or mTLS is not part
   of the current chart-workload contract unless a later plan revision expands it explicitly.
 - Supported WebSocket workloads authenticate at connection setup, keep reconnect-safe state
@@ -426,9 +423,13 @@ that follow those reopened public-edge boundaries:
 - The gateway daemon, `prodbox gateway status`, and daemon config parsing must close on the
   implemented HTTP `/v1/state` surface, the Orders-backed interval-validation contract, and the
   current runtime-to-model notes in `documents/engineering/tla_modelling_assumptions.md`.
-- The only supported DNS model is explicit per-subdomain Route 53 records; wildcard public DNS is
-  not part of the supported architecture.
-- The supported public workload catalog includes the cluster-backed `vscode` stack, a JWT-protected
-  API route, and a WebSocket route; none may depend on app-local nginx auth proxies.
+- The only supported DNS model is one explicit Route 53 record for `test.resolvefintech.com`;
+  wildcard public DNS and per-service public hostnames are not part of the supported
+  architecture.
+- The supported public workload catalog includes the cluster-backed `vscode` stack, a
+  JWT-protected API route, a WebSocket route, and path-routed operational dashboards; none may
+  depend on app-local nginx auth proxies or dedicated public subdomains.
+- `example.com` must be completely removed from the supported codebase, defaults, fixtures, and
+  documented runtime contracts.
 - Final handoff requires a destructive rerun from full local delete through final AWS teardown on
   the Haskell stack with no Python implementation dependency.

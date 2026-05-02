@@ -17,9 +17,10 @@ under `docker/`, the direct-Dhall config contract, the native validation harness
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprints `1.1`,
 `1.2`, `1.3`, and `1.4` remain closed on the Haskell-only rewrite baseline. Sprint `1.5` now
-implements the config-selected MetalLB BGP support, dedicated API plus WebSocket public-host
-inputs, and explicit public-edge scaling controls that still need aggregate validation closure in
-the foundational config and lifecycle surfaces. The implemented frontend container doctrine uses
+owns the reopened config contract for the single-host public-edge doctrine: remove
+`example.com` from the repository, collapse the public edge from multiple public FQDN inputs to
+the single supported hostname `test.resolvefintech.com`, and preserve the MetalLB BGP plus public
+edge scaling surfaces through that refactor. The implemented frontend container doctrine uses
 `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and
 explicit repo package-bound updates.
 
@@ -67,10 +68,15 @@ explicit repo package-bound updates.
 - The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
   `pulumi/aws-test/Main.yaml`. The public AWS validation stacks match the target Pulumi boundary.
 - The self-managed local edge now installs MetalLB, Envoy Gateway, cert-manager, and the Percona
-  PostgreSQL operator, while the config contract exposes dedicated identity, browser, API, and
-  WebSocket public hostnames through repo-owned Dhall settings.
+  PostgreSQL operator.
+- The current config surface still exposes dedicated identity, browser, API, and WebSocket public
+  hostnames through repo-owned Dhall settings. That multi-host contract is now legacy
+  implementation only; Sprint `1.5` replaces it with the single supported hostname
+  `test.resolvefintech.com`.
 - The foundational edge surface now supports config-selected L2 or BGP MetalLB rendering plus
   settings-backed Envoy Gateway controller, Envoy data-plane, API, and WebSocket replica counts.
+- The current config defaults still carry placeholder-domain assumptions, including
+  `example.com`; complete removal of those placeholders is explicit Phase `1` work.
 - The canonical closure gates for this phase are the host artifact contract at `.build/prodbox`,
   `prodbox check-code`, and the built-frontend `cli` plus `env` integration suites.
 
@@ -285,7 +291,8 @@ None.
 ### Objective
 
 Close the lifecycle, config-foundation, and validation-entry surfaces on the self-managed public
-edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and app hostnames.
+edge baseline: MetalLB + Envoy Gateway + Gateway API before the later single-host doctrine
+reopened this phase.
 
 ### Deliverables
 
@@ -294,8 +301,9 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
   extends that baseline with config-selected MetalLB BGP support.
 - The local lifecycle mirrors or publishes the Envoy Gateway target image set and no longer treats
   Traefik as the supported edge controller.
-- The config contract expresses dedicated identity and app hostnames for the public edge through
-  `domain.keycloak_fqdn` and `domain.vscode_fqdn`.
+- The closed sprint baseline introduced dedicated identity and app hostnames for the public edge
+  through `domain.keycloak_fqdn` and `domain.vscode_fqdn`; Sprint `1.5` now removes that
+  dedicated-host contract in favor of one canonical public hostname.
 - The foundational namespace and readiness inventory removes `traefik-system` as a canonical edge
   dependency and replaces it with Envoy Gateway ownership.
 - The foundational doctrine distinguishes the Envoy Gateway public edge from the separate Haskell
@@ -325,10 +333,11 @@ edge doctrine: MetalLB + Envoy Gateway + Gateway API with dedicated identity and
   establishing the current L2-supported path that Sprint `1.5` expands with repo-owned BGP
   rendering.
 - `src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
-  `src/Prodbox/Aws.hs` now carry the dedicated `domain.keycloak_fqdn` setting through schema,
-  display, onboarding, and authored config output.
+  `src/Prodbox/Aws.hs` now carry the current `domain.keycloak_fqdn` setting through schema,
+  display, onboarding, and authored config output as part of the legacy baseline Sprint `1.5`
+  replaces.
 - `src/Prodbox/TestValidation.hs` and the built-frontend suites now align the foundational
-  validation assumptions with the Envoy Gateway and dedicated-hostname model.
+  validation assumptions with the Envoy Gateway baseline that later single-host work refines.
 
 ### Remaining Work
 
@@ -343,19 +352,24 @@ None.
 ### Objective
 
 Close the foundational config and lifecycle surface on the full self-managed public-edge
-architecture rather than the earlier L2-only browser baseline.
+architecture under the one-host doctrine rather than the earlier dedicated-host baseline.
 
 ### Deliverables
 
-- The repository config surface expands from dedicated identity plus browser hosts to dedicated
-  identity, browser-app, API, and WebSocket public hosts.
+- The repository config surface collapses from dedicated identity, browser, API, and WebSocket
+  public hosts to one canonical public hostname: `test.resolvefintech.com`.
+- `example.com` is removed from the config schema, defaults, fixtures, and supported authored
+  config output.
+- The foundational config contract derives public destinations from shared-host path prefixes such
+  as `/vscode`, `/api`, `/ws`, `/auth`, and later supported admin paths rather than from separate
+  FQDN inputs.
 - `prodbox rke2 install` supports config-selected MetalLB L2 or BGP rendering on the supported
   self-managed path.
 - The BGP path renders the required peer and advertisement resources from repo-owned settings
   rather than relying on manual cluster-side edits.
 - Envoy Gateway controller and Envoy data-plane replica counts become explicit lifecycle inputs
   rather than hardcoded singletons.
-- The built-frontend config and lifecycle validation surfaces cover the expanded host,
+- The built-frontend config and lifecycle validation surfaces cover the single-host, hosted-zone,
   advertisement, and scaling contract.
 
 ### Validation
@@ -367,16 +381,17 @@ architecture rather than the earlier L2-only browser baseline.
 5. `prodbox test integration lifecycle`
 6. Manifest proof: the lifecycle renders valid L2 resources when L2 mode is selected and valid
    BGP resources when BGP mode is selected
-7. Config proof: the built-frontend config surfaces expose the dedicated API plus WebSocket hosts
-   and the public-edge advertisement or scaling inputs without recreating `prodbox-config.json`
+7. Config proof: the built-frontend config surfaces expose only `test.resolvefintech.com`, remove
+   `example.com`, and preserve the public-edge advertisement or scaling inputs without recreating
+   `prodbox-config.json`
 
 ### Current Validation State
 
-- `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, and `prodbox-config-types.dhall` now expose
-  `domain.api_fqdn`, `domain.websocket_fqdn`, `deployment.public_edge_advertisement_mode`,
-  `deployment.public_edge_bgp_peers`, `deployment.envoy_gateway_controller_replicas`,
-  `deployment.envoy_gateway_data_plane_replicas`, `deployment.api_replicas`, and
-  `deployment.websocket_replicas`.
+- `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, and `prodbox-config-types.dhall` still expose
+  `domain.keycloak_fqdn`, `domain.vscode_fqdn`, `domain.api_fqdn`, and
+  `domain.websocket_fqdn`, plus the public-edge advertisement and scaling inputs. That multi-host
+  surface remains implemented in the worktree but is now the legacy contract Sprint `1.5`
+  removes.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
   public-edge replica counts into validated settings, and builds or imports both the gateway image
   and the shared public-edge workload image during `prodbox rke2 install`.
@@ -386,17 +401,20 @@ architecture rather than the earlier L2-only browser baseline.
   reusing stale node-local binaries.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
   `prodbox test integration env` now pass with the expanded config surface plus the custom-image
-  publication fix in place.
-- Sprint `1.5` is implementation-complete on the owned config and lifecycle surface and remains
-  active only until `prodbox test integration lifecycle` and `prodbox test all` rerun to
-  completion against that expanded public-edge contract.
+  publication fix in place, but those validations still reflect the legacy multi-host contract.
 
 ### Remaining Work
 
-- Rerun the aggregate lifecycle validation path from the current tree so
-  `prodbox test integration lifecycle` and `prodbox test all` prove the forced custom-image
-  rebuild or republish path on the supported public-edge stack instead of reusing stale binaries
-  under the stable machine-id tags.
+- Remove `domain.keycloak_fqdn`, `domain.vscode_fqdn`, `domain.api_fqdn`, and
+  `domain.websocket_fqdn` from the supported config contract in favor of the single public
+  hostname `test.resolvefintech.com`.
+- Remove `example.com` from repo-tracked schema defaults, wizard output, fixtures, and validation
+  assumptions.
+- Add foundational validation that the canonical hostname belongs to the selected Route 53 zone
+  and that no supported config path emits multiple public-edge FQDNs.
+- Rerun the aggregate lifecycle validation path from the updated tree so
+  `prodbox test integration lifecycle` and `prodbox test all` prove the single-host public-edge
+  contract in addition to the forced custom-image rebuild or republish path.
 
 ## Documentation Requirements
 

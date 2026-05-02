@@ -13,8 +13,9 @@ This phase closes the hard migration gap between parity and replacement. It owns
 local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
 supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks now close
-on clean-room-only behavior, while the lifecycle-owned bootstrap DNS and ACME `ClusterIssuer`
-reconcile remain part of the supported `src/Prodbox/CLI/Rke2.hs` surface.
+on clean-room-only behavior. Sprint `4.4` is active because the lifecycle-owned bootstrap DNS and
+ACME `ClusterIssuer` reconcile must move from the current multi-host public-edge contract to one
+Route 53 record and one certificate for `test.resolvefintech.com`.
 
 ## Current Baseline In Worktree
 
@@ -36,6 +37,8 @@ reconcile remain part of the supported `src/Prodbox/CLI/Rke2.hs` surface.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.
+- The current lifecycle-owned DNS and certificate helpers still reflect the earlier dedicated-host
+  public-edge contract. Sprint `4.4` owns collapse to the one-record or one-cert doctrine.
 - `src/Prodbox/CLI/Rke2.hs` closes the supported lifecycle on the clean-room Harbor, Envoy
   Gateway, cert-manager, and Percona reconcile path with no retained Traefik or pre-Percona
   operator cleanup shims.
@@ -118,6 +121,51 @@ contract without reintroducing Python or duplicate runtime paths.
 ### Remaining Work
 
 None.
+
+## Sprint 4.4: Single-Record DNS Bootstrap and Single-Certificate Lifecycle Closure 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Close the lifecycle-owned bootstrap DNS and TLS surfaces on the one-host doctrine:
+`test.resolvefintech.com`, one Route 53 record, and one certificate for all public or admin
+routes behind Envoy.
+
+### Deliverables
+
+- Lifecycle-owned bootstrap DNS reconcile writes only the canonical `test.resolvefintech.com`
+  record.
+- Lifecycle-owned certificate projection and listener configuration require only one public
+  certificate for the shared Envoy edge.
+- No supported lifecycle path assumes dedicated identity, browser, API, or WebSocket hostnames.
+- The Harbor-first lifecycle preserves Envoy, MetalLB, and cert-manager ownership while switching
+  the public edge to the one-record or one-cert contract.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test integration lifecycle`
+3. `prodbox rke2 install`
+4. `prodbox host public-edge`
+5. `prodbox test integration public-dns`
+6. `prodbox test all`
+
+### Current Validation State
+
+- `src/Prodbox/CLI/Rke2.hs` already owns bootstrap DNS reconcile and ACME `ClusterIssuer`
+  projection on the supported lifecycle path.
+- Those helpers still assume the current multi-host public-edge layout rather than one canonical
+  public hostname and certificate.
+
+### Remaining Work
+
+- Collapse lifecycle-owned DNS bootstrap to the single `test.resolvefintech.com` record.
+- Collapse certificate and listener assumptions to one public certificate for the shared Envoy
+  edge.
+- Rerun lifecycle and aggregate proof after the single-host public-edge refactor lands.
 
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
@@ -211,7 +259,8 @@ parity exists.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
-  remains closed on both Python-removal and non-Python supported-path residue.
+  remains closed on Python-removal residue even though non-Python single-host cleanup has been
+  reopened elsewhere in the plan.
 
 ### Remaining Work
 

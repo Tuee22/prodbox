@@ -18,7 +18,9 @@ for temporary elevated credentials, and stored `aws_admin_for_test_simulation.*`
 test-suite simulation of that ephemeral prompt input, with the native IAM validation harness as
 the only supported runtime consumer. The shared suite-level IAM harness keeps the aggregate
 Pulumi-backend proof behind the visible local runbook and closes the supported local-cluster
-aggregate validation path on Haskell-owned AWS-user and config cleanup.
+aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is active
+because the onboarding and validation surface must collapse from multiple public FQDN prompts and
+placeholder-domain defaults to the one supported hostname `test.resolvefintech.com`.
 
 ## Current Baseline In Worktree
 
@@ -39,6 +41,8 @@ aggregate validation path on Haskell-owned AWS-user and config cleanup.
   `prodbox test integration all`, and `prodbox test all` through the same managed IAM harness
   ownership in `src/Prodbox/TestRunner.hs`, while `src/Prodbox/TestValidation.hs` now treats
   `ValidationAwsIam` as an inspection step rather than as the setup/teardown owner.
+- The current onboarding surface still reflects the earlier multi-host public-edge doctrine and
+  still carries placeholder-domain defaults. Sprint `7.4` owns the one-host replacement.
 - `src/Prodbox/Aws.hs` now begins the shared managed harness by probing any pre-existing
   operational `aws.*`, deleting any pre-existing dedicated `prodbox` IAM user plus that user's
   keys, using resolvable pre-existing `aws.*` only to discover and delete the IAM user associated
@@ -90,6 +94,51 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 ### Remaining Work
 
 None.
+
+## Sprint 7.4: Single-Hostname Onboarding and Placeholder-Domain Removal 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `prodbox-config-types.dhall`
+**Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Collapse the onboarding and config-validation surface from multiple public FQDN prompts to the one
+supported hostname `test.resolvefintech.com`, while removing `example.com` from defaults, wizard
+output, fixtures, and validation assumptions.
+
+### Deliverables
+
+- `prodbox config setup` prompts for the single supported public hostname contract rather than
+  separate Keycloak, browser, API, and WebSocket FQDNs.
+- The wizard, schema, and validators never emit or accept `example.com` placeholder public
+  domains on the supported path.
+- Config validation fails fast when the canonical hostname does not belong to the selected Route 53
+  zone.
+- The built-frontend fake-AWS proof surfaces align with the one-host public-edge doctrine.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox config setup`
+6. `prodbox config validate`
+
+### Current Validation State
+
+- `src/Prodbox/Aws.hs` already owns the interactive wizard and standalone AWS administration
+  flows.
+- The current wizard and schema still reflect the earlier multi-host public-edge contract and do
+  not yet enforce the selected-zone or canonical-hostname consistency required by the new
+  doctrine.
+
+### Remaining Work
+
+- Remove multi-host public-edge prompts and schema fields from the supported onboarding surface.
+- Remove `example.com` from the onboarding, schema, fixture, and validation contract.
+- Add hosted-zone alignment validation for `test.resolvefintech.com`.
 
 ## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 

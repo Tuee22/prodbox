@@ -14,9 +14,12 @@
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
-The supported repository surfaces are Haskell-only, and the cleanup ledger remains closed on both
-Python-removal and non-Python supported-path residue. Sprint `6.1` and Sprint `6.2` remain
-closed on their repository-owned rerun orchestration and final zero-Python handoff criteria.
+The supported repository surfaces are Haskell-only. Python-removal work stays closed, but the
+overall handoff is blocked until the reopened single-host doctrine returns non-Python
+supported-path residue to zero. Sprint `6.1` and Sprint `6.2` remain closed on their
+repository-owned rerun orchestration and zero-Python baseline. Sprint `6.3` is blocked until the
+public-edge refactor closes on one hostname, one DNS entry, one certificate, and zero
+placeholder-domain residue.
 
 ## Current Baseline In Worktree
 
@@ -28,7 +31,8 @@ closed on their repository-owned rerun orchestration and final zero-Python hando
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history and
-  currently carries no pending supported-path residue.
+  now carries pending non-Python cleanup for `example.com` removal and the dedicated-host
+  public-edge doctrine.
 - Root guidance now aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -133,14 +137,60 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
-  removal history while keeping both Python-removal and non-Python supported-path residue at
-  zero.
+  removal history while keeping Python-removal residue at zero; the reopened non-Python
+  single-host cleanup now lives in Sprint `6.3`.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` continues to
   own the destructive rerun contract.
 ### Remaining Work
 
 None.
+
+## Sprint 6.3: Single-Host Clean-Room Handoff ⏸️
+
+**Status**: Blocked
+**Implementation**: `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Blocked by**: Sprint `1.5`, Sprint `2.3`, Sprint `3.5`, Sprint `3.6`, Sprint `3.7`, Sprint `4.4`, Sprint `5.3`, Sprint `5.4`, Sprint `7.4`
+**Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Close the destructive rerun and final handoff on the single-host doctrine: one public hostname
+`test.resolvefintech.com`, one DNS entry, one certificate, Keycloak-backed Envoy auth and RBAC
+for all supported public or admin surfaces, and no `example.com` residue anywhere in the
+supported path.
+
+### Deliverables
+
+- The authoritative rerun starts from full local delete and finishes on the shared-host public
+  edge rather than the retired multi-host contract.
+- The cleanup ledger returns to zero pending removal after `example.com` and dedicated-host
+  public-edge residue are removed.
+- The final handoff proves that any number of supported application or admin services remain
+  reachable through one DNS name and one certificate, distinguished only by path and Keycloak-
+  backed RBAC.
+
+### Validation
+
+1. `prodbox rke2 delete --yes`
+2. `prodbox rke2 install`
+3. `prodbox config show`
+4. `prodbox config validate`
+5. `prodbox test all`
+6. `prodbox host public-edge`
+7. Repository text-search proof that `example.com` is absent from the supported codebase
+
+### Current Validation State
+
+- The current destructive rerun remains Haskell-only and zero-Python.
+- The current rerun still closes on the legacy dedicated-host public-edge doctrine, so the final
+  handoff cannot yet claim the single-host target state.
+- The cleanup ledger is no longer empty, so the final handoff remains blocked by upstream public-
+  edge, lifecycle, DNS, and onboarding work.
+
+### Remaining Work
+
+- Unblock on the owning public-edge, DNS, lifecycle, proof, and onboarding sprints.
 
 ## Documentation Requirements
 

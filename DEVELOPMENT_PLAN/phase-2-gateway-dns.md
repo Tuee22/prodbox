@@ -21,8 +21,11 @@ gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup
 daemon surface implements config generation, heartbeat recording, in-memory ownership projection,
 DNS-write gating, HTTP REST status, and HMAC event signing. The broader peer-transport protocol
 remains design-owned by the TLA+ and gateway doctrine docs rather than by a closed repository
-surface. This phase does not own the Kubernetes Gateway API or Envoy Gateway public edge; those
-closed surfaces belong to Phases `1`, `3`, and `5`.
+surface. Sprints `2.1` and `2.2` remain closed on the gateway-daemon and TLA+ baseline. Sprint
+`2.3` is active because the supported DNS doctrine now changes from explicit per-FQDN public-host
+ownership to one canonical public record: `test.resolvefintech.com`. This phase does not own the
+Kubernetes Gateway API or Envoy Gateway public edge; those surfaces remain in Phases `1`, `3`,
+`4`, and `5`.
 
 ## Current Baseline In Worktree
 
@@ -53,6 +56,9 @@ closed surfaces belong to Phases `1`, `3`, and `5`.
   been removed.
 - `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface. All Python TLA+ wrappers have
   been removed.
+- The current DNS surfaces still assume explicit public hostnames. Sprint `2.3` retargets that
+  ownership to the one-record doctrine without changing the separate Haskell gateway-daemon
+  boundary.
 - Gateway parser, renderer, and CLI proof live in the Haskell test suites under `test/`, while
   the TLA+ artifacts live under `documents/engineering/tla/` and are exercised through
   `prodbox tla-check`.
@@ -143,6 +149,53 @@ while preserving the implemented runtime contract and container doctrine.
 
 None.
 
+## Sprint 2.3: Single-Record Route 53 Ownership and Diagnostics 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `documents/engineering/tla_modelling_assumptions.md`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Collapse the Route 53 ownership and diagnostics surface from explicit per-FQDN public hosts to the
+single supported public record `test.resolvefintech.com`.
+
+### Deliverables
+
+- `dns_write_gate` emits and reasons about one canonical public hostname rather than a set of
+  dedicated public hosts.
+- `prodbox dns check` classifies one Route 53 record and fails fast when config or runtime state
+  still implies multiple public-edge FQDNs.
+- The gateway and TLA+ correspondence docs describe single-record write ownership and no longer
+  present per-subdomain public DNS as the target doctrine.
+- DNS validation explicitly proves that `test.resolvefintech.com` belongs to the selected hosted
+  zone and that the supported public edge needs only one public DNS entry.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox dns check`
+3. `prodbox tla-check`
+4. `prodbox test integration dns-aws`
+5. `prodbox test integration gateway-partition`
+6. `prodbox test integration public-dns`
+
+### Current Validation State
+
+- `src/Prodbox/Dns.hs` and native validation flows still reason about the current multi-host Route
+  53 surface.
+- Native Haskell `gateway config-gen` still preserves `dns_write_gate` emission, but that payload
+  remains shaped around explicit public hostnames rather than the single supported record.
+- The TLA+ correspondence notes still describe the current write-ownership model rather than the
+  new one-record doctrine.
+
+### Remaining Work
+
+- Replace the per-FQDN DNS inventory with one canonical `test.resolvefintech.com` ownership model.
+- Update DNS diagnostics and validations to reject placeholder domains and multi-host public-edge
+  config.
+- Align the gateway or TLA+ correspondence docs with the single-record Route 53 doctrine.
+
 ## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
 
 **Status**: Done
@@ -157,7 +210,8 @@ gateway port.
 ### Deliverables
 
 - `prodbox tla-check` remains part of the supported validation surface.
-- Gateway config generation still emits `dns_write_gate` for explicit public hostnames.
+- Gateway config generation still emits `dns_write_gate` for the public-edge ownership surface that
+  Sprint `2.3` later collapses to one canonical public record.
 - The TLA+ model remains the authoritative formal surface for Route 53 write-ownership semantics.
 - Gateway partition and ownership reasoning remain documented through the TLA+ spec and the
   modelling-assumptions correspondence notes.

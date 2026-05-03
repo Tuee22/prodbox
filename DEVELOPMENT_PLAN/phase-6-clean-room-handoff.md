@@ -14,12 +14,10 @@
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
-The supported repository surfaces are Haskell-only. Python-removal work stays closed, but the
-overall handoff is blocked until the reopened single-host doctrine returns non-Python
-supported-path residue to zero. Sprint `6.1` and Sprint `6.2` remain closed on their
-repository-owned rerun orchestration and zero-Python baseline. Sprint `6.3` is blocked until the
-public-edge refactor closes on one hostname, one DNS entry, one certificate, and zero
-placeholder-domain residue.
+The supported repository surfaces are Haskell-only, the single-host doctrine is implemented, and
+the cleanup ledger is back at zero pending supported-path residue. Sprint `6.1` and Sprint `6.2`
+remain closed on their repository-owned rerun orchestration and zero-Python baseline. Sprint
+`6.3` is now closed on the final aggregate rerun plus handoff validation.
 
 ## Current Baseline In Worktree
 
@@ -31,8 +29,7 @@ placeholder-domain residue.
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history and
-  now carries pending non-Python cleanup for `example.com` removal and the dedicated-host
-  public-edge doctrine.
+  now carries zero pending supported-path cleanup items.
 - Root guidance now aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -138,7 +135,7 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
   removal history while keeping Python-removal residue at zero; the reopened non-Python
-  single-host cleanup now lives in Sprint `6.3`.
+  single-host cleanup now closes in Sprint `6.3`.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` continues to
   own the destructive rerun contract.
@@ -146,11 +143,10 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
 
 None.
 
-## Sprint 6.3: Single-Host Clean-Room Handoff ⏸️
+## Sprint 6.3: Single-Host Clean-Room Handoff ✅
 
-**Status**: Blocked
+**Status**: Done
 **Implementation**: `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
-**Blocked by**: Sprint `1.5`, Sprint `2.3`, Sprint `3.5`, Sprint `3.6`, Sprint `3.7`, Sprint `4.1`, Sprint `4.4`, Sprint `5.3`, Sprint `5.4`, Sprint `7.4`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -184,17 +180,50 @@ supported path.
 
 ### Current Validation State
 
-- The current destructive rerun remains Haskell-only and zero-Python.
-- The current rerun still closes on the legacy dedicated-host public-edge doctrine, so the final
-  handoff cannot yet claim the single-host target state.
-- The current rerun also still depends on cross-arch `docker buildx` custom-image publication, so
-  the final handoff cannot yet claim the supported native-host-architecture lifecycle doctrine.
-- The cleanup ledger is no longer empty, so the final handoff remains blocked by upstream public-
-  edge, lifecycle, DNS, and onboarding work.
+- The supported codebase now closes on the shared-host public edge, native-host-architecture
+  custom-image publication, and zero pending cleanup in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestPlan.hs` continue to own the destructive rerun,
+  aggregate validation, and postflight restore; `prodbox test all` is the authoritative proof
+  surface for validation step `5`.
+- `src/Prodbox/Host.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`,
+  `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, and `src/Prodbox/Dns.hs` now align to one
+  public hostname, one Route 53 record, one shared-edge certificate, and host-native Docker
+  publication only.
+- The aggregate rerun no longer fails on transient IAM credential propagation or OIDC redirect
+  percent-encoding case drift: `src/Prodbox/EffectInterpreter.hs` now retries transient AWS
+  validation auth failures, and `src/Prodbox/TestValidation.hs` now matches OIDC redirect headers
+  case-insensitively on percent-encoded fragments.
+- `src/Prodbox/TestRunner.hs` now treats failed public-edge ACME issuance as bounded
+  repository-managed runtime repair during the aggregate rerun: when cert-manager records failed
+  issuance attempts for `public-edge-tls`, the native harness deletes the stale
+  `CertificateRequest`, `Order`, `Challenge`, and next private-key secret so cert-manager can
+  re-issue immediately instead of waiting through the provider backoff window.
+- `src/Prodbox/Lib/ChartPlatform.hs` now projects the local Docker image ID into
+  `prodbox.io/image-build-id` pod annotations for custom-image chart workloads, so stable-tag
+  `api`, `websocket`, and `gateway` releases roll fresh pods whenever the local image build
+  changes.
+- `src/Prodbox/TestValidation.hs` now retries transient websocket route warm-up timeouts during
+  managed validation and decodes websocket plus HTTP JSON payloads through UTF-8-safe helpers so
+  non-ASCII claim content does not corrupt the native proof path.
+- `src/Prodbox/Workload.hs` now preserves buffered HTTP-upgrade remainder bytes, waits for
+  websocket socket readability before frame parsing, and consumes the frame header before mask-key
+  parsing so client-sent masked frames reach Redis and broadcast validation without corruption.
+- The latest clean-room closure proof now passes through `prodbox test all`,
+  `prodbox config show`, `prodbox config validate`, and `prodbox host public-edge`, with the
+  aggregate rerun carrying the supported-runtime restore all the way through
+  `CLASSIFICATION=ready-for-external-proof` and `Validation: charts-vscode`,
+  `Validation: charts-api`, `Validation: charts-websocket`, `ValidationLifecycle`, and post-test
+  restore all closing on the shared-host surface.
+- Supported-path search closure remains intact after the rerun: `example.com` is absent from the
+  supported code and governed doctrine surfaces that define the live operator path.
+- Repository cleanup history is preserved in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), and the supported-path
+  ledger is already at zero pending removal.
 
 ### Remaining Work
 
-- Unblock on the owning public-edge, DNS, lifecycle, proof, and onboarding sprints.
+None.
 
 ## Documentation Requirements
 

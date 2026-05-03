@@ -65,6 +65,10 @@ import Prodbox.EffectDAG (
     EffectNode (..),
     transitiveClosureIds,
  )
+import Prodbox.EffectInterpreter (
+    InterpreterContext (..),
+    runEffect,
+ )
 import Prodbox.Gateway (
     renderGatewayConfigTemplate,
     renderGatewayStatusReport,
@@ -102,6 +106,7 @@ import Prodbox.Lib.Storage (
 import Prodbox.Prerequisite (
     prerequisiteRegistry,
  )
+import Prodbox.Result qualified as Result
 import Prodbox.Settings (
     ConfigFile (..),
     Credentials (..),
@@ -385,7 +390,9 @@ main = hspec $ do
 
             deploymentTemplate `shouldContain` "progressDeadlineSeconds: 1800"
             deploymentTemplate `shouldContain` "startupProbe:"
-            deploymentTemplate `shouldContain` "path: /health/ready"
+            deploymentTemplate `shouldContain` "{{- $healthPathPrefix := trimSuffix \"/\" .Values.keycloak.httpRelativePath }}"
+            deploymentTemplate `shouldContain` "path: {{ printf \"%s/health/ready\" $healthPathPrefix | quote }}"
+            deploymentTemplate `shouldContain` "path: {{ printf \"%s/health/live\" $healthPathPrefix | quote }}"
             deploymentTemplate `shouldNotContain` "relativePath"
             deploymentTemplate `shouldContain` "failureThreshold: 60"
 
@@ -398,12 +405,19 @@ main = hspec $ do
             dockerfile `shouldContain` "ARG GHC_VERSION=9.14.1"
             dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
             dockerfile `shouldContain` "awscli.amazonaws.com"
-            dockerfile `shouldContain` "TARGETARCH"
+            dockerfile `shouldContain` "dpkg --print-architecture"
             dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
             dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
             dockerfile `shouldContain` "ghcup install cabal \"${CABAL_VERSION}\""
             dockerfile `shouldNotContain` "--mount=type=bind,from=haskell-toolchain"
             dockerfile `shouldContain` "ENTRYPOINT [\"/usr/bin/tini\", \"--\", \"/usr/local/bin/prodbox\", \"gateway\", \"start\"]"
+
+        it "keeps the vscode chart on the supported code-server path-prefix flag" $ do
+            repoRoot <- getCurrentDirectory
+            deploymentTemplate <- readFile (repoRoot </> "charts" </> "vscode" </> "templates" </> "deployment.yaml")
+
+            deploymentTemplate `shouldContain` "--abs-proxy-base-path"
+            deploymentTemplate `shouldNotContain` "--base-path"
 
         it "keeps AWS validation Pulumi YAML stacks on explicit stack config inputs" $ do
             repoRoot <- getCurrentDirectory
@@ -640,9 +654,13 @@ main = hspec $ do
             repoRoot <- getCurrentDirectory
             runnerSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestRunner.hs")
 
-            runnerSource `shouldContain` "runWaitForNativeCommandOutputContains"
-            runnerSource `shouldContain` "publicEdgeReadyAttempts = 30"
+            runnerSource `shouldContain` "runWaitForPublicEdgeReady"
+            runnerSource `shouldContain` "publicEdgeReadyAttempts = 60"
             runnerSource `shouldContain` "publicEdgeReadyDelayMicroseconds = 10000000"
+            runnerSource `shouldContain` "publicEdgeCertificateRepairAttempts = 3"
+            runnerSource `shouldContain` "Detected failed public-edge certificate issuance"
+            runnerSource `shouldContain` "\"certificaterequest,order,challenge\""
+            runnerSource `shouldContain` "\"jsonpath={.status.failedIssuanceAttempts}{\\\"|\\\"}{.status.nextPrivateKeySecretName}\""
 
         it "waits for stable Harbor endpoints before lifecycle image reconcile begins" $ do
             repoRoot <- getCurrentDirectory
@@ -658,9 +676,9 @@ main = hspec $ do
 
             rke2Source `shouldContain` "customImagePushRetryAttempts = 3"
             rke2Source `shouldContain` "customImagePushRetryDelayMicroseconds = 5000000"
-            rke2Source `shouldContain` "isRetryableCustomImageBuildFailure"
+            rke2Source `shouldContain` "pushDockerImageWithRetry"
             rke2Source `shouldContain` "isRetryableHarborPublicationFailure"
-            rke2Source `shouldContain` "Retrying Harbor mirror publication after transient failure"
+            rke2Source `shouldContain` "Retrying Harbor publication for "
             rke2Source `shouldContain` "\"unexpected eof\""
             rke2Source `shouldContain` "\"unexpected status from put request\""
             rke2Source `shouldContain` "\"connection refused\""
@@ -688,6 +706,67 @@ main = hspec $ do
             interpreterSource `shouldContain` "PULUMI_BACKEND_URL"
             minioSource `shouldContain` "parseDeletedMinioExportHostPath"
             minioSource `shouldContain` "\"rollout\", \"restart\", \"deployment/\" ++ minioDeploymentName"
+
+        it "matches OIDC redirect headers without depending on percent-encoding case" $ do
+            repoRoot <- getCurrentDirectory
+            validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+            validationSource `shouldContain` "loweredExpectedTexts = map (map toLowerAscii) expectedTexts"
+            validationSource `shouldContain` "loweredCombinedOutput = map toLowerAscii combinedOutput"
+
+        it "retries transient websocket route timeouts during managed validation" $ do
+            repoRoot <- getCurrentDirectory
+            validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+            validationSource `shouldContain` "websocketConnectionAttempts = 4"
+            validationSource `shouldContain` "websocketConnectionRetryDelayMicroseconds = 5000000"
+            validationSource `shouldContain` "websocketDistinctConnectionRetryDelayMicroseconds = 1000000"
+            validationSource `shouldContain` "websocketReceiveRetryDelayMicroseconds = 1000000"
+            validationSource `shouldContain` "Waiting for websocket route readiness before retry"
+            validationSource `shouldContain` "Waiting for a distinct websocket backend pod before retry."
+            validationSource `shouldContain` "Waiting for websocket broadcast delivery before retry"
+            validationSource `shouldContain` "shouldRetryTransientWebsocketOpenError"
+            validationSource `shouldContain` "shouldRetryTransientWebsocketReceiveError"
+
+        it "decodes websocket and HTTP JSON payloads through UTF-8-safe helpers" $ do
+            repoRoot <- getCurrentDirectory
+            validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+            validationSource `shouldContain` "decodeJsonTextUtf8"
+            validationSource `shouldContain` "decodeJsonStringUtf8"
+            validationSource `shouldContain` "BL.fromStrict . TextEncoding.encodeUtf8"
+
+        it "waits for websocket socket readability before parsing frames" $ do
+            repoRoot <- getCurrentDirectory
+            workloadSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Workload.hs")
+
+            workloadSource `shouldContain` "threadWaitRead"
+            workloadSource `shouldContain` "withFdSocket"
+            workloadSource `shouldContain` "if BS.null bufferedFrameBytes"
+            workloadSource `shouldNotContain` "timeout websocketPollDelayMicroseconds (readWebSocketFrame clientSocket frameBuffer)"
+
+        it "preserves websocket bytes buffered behind the HTTP upgrade request" $ do
+            repoRoot <- getCurrentDirectory
+            workloadSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Workload.hs")
+
+            workloadSource `shouldContain` "Right (request, requestRemainder) ->"
+            workloadSource `shouldContain` "handleWebsocketUpgrade runtime clientSocket requestRemainder request"
+            workloadSource `shouldContain` "parseHttpRequestWithRemainder"
+            workloadSource `shouldContain` "frameBuffer <- newIORef initialFrameBytes"
+
+        it "rolls custom-image chart workloads when the local image build changes" $ do
+            repoRoot <- getCurrentDirectory
+            chartPlatformSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Lib" </> "ChartPlatform.hs")
+            apiTemplate <- readFile (repoRoot </> "charts" </> "api" </> "templates" </> "deployment.yaml")
+            websocketTemplate <- readFile (repoRoot </> "charts" </> "websocket" </> "templates" </> "deployment.yaml")
+            gatewayTemplate <- readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "deployments.yaml")
+
+            chartPlatformSource `shouldContain` "commandPath = \"docker\""
+            chartPlatformSource `shouldContain` "commandArguments = [\"image\", \"inspect\", \"--format\", \"{{.Id}}\", imageRef]"
+            chartPlatformSource `shouldContain` "\"prodbox.io/image-build-id\""
+            apiTemplate `shouldContain` ".Values.podAnnotations"
+            websocketTemplate `shouldContain` ".Values.podAnnotations"
+            gatewayTemplate `shouldContain` "$.Values.podAnnotations"
 
         it "keeps Pulumi AWS provider credentials out of stack-local config" $ do
             repoRoot <- getCurrentDirectory
@@ -1185,7 +1264,7 @@ main = hspec $ do
                                 , Object
                                     ( KeyMap.fromList
                                         [ (Key.fromString "zone_id", String "Z123")
-                                        , (Key.fromString "fqdn", String "code.example.com")
+                                        , (Key.fromString "fqdn", String "test.resolvefintech.com")
                                         , (Key.fromString "ttl", Number 60)
                                         ]
                                     )
@@ -1205,7 +1284,7 @@ main = hspec $ do
                 Left err -> expectationFailure err
                 Right report -> do
                     report `shouldContain` "ACTIVE_CLAIM=true"
-                    report `shouldContain` "DNS_WRITE_GATE=code.example.com@Z123 ttl=60"
+                    report `shouldContain` "DNS_WRITE_GATE=test.resolvefintech.com@Z123 ttl=60"
                     report `shouldContain` "HEARTBEAT_NODE_B=1.5"
 
         it "enforces gateway timing relationships against the orders timeout" $ do
@@ -1335,10 +1414,10 @@ main = hspec $ do
 
     describe "supported runtime helpers" $ do
         it "removes only the target FQDN from hosts text" $ do
-            let hostsText = unlines ["127.0.0.1 localhost vscode.example.com demo.example.com # keep comment", "192.168.1.10 printer"]
-                (updatedText, removedEntries) = removeFqdnFromHostsText hostsText "vscode.example.com"
+            let hostsText = unlines ["127.0.0.1 localhost vscode.resolvefintech.test demo.resolvefintech.test # keep comment", "192.168.1.10 printer"]
+                (updatedText, removedEntries) = removeFqdnFromHostsText hostsText "vscode.resolvefintech.test"
             removedEntries `shouldBe` 1
-            updatedText `shouldBe` unlines ["127.0.0.1 localhost demo.example.com  # keep comment", "192.168.1.10 printer"]
+            updatedText `shouldBe` unlines ["127.0.0.1 localhost demo.resolvefintech.test  # keep comment", "192.168.1.10 printer"]
 
         it "drops delete-pending AWS resources from a Pulumi export" $ do
             let exportedValue =
@@ -1431,6 +1510,36 @@ main = hspec $ do
             lookup "AWS_SESSION_TOKEN" updatedEnvironment `shouldBe` Just "config-session-token"
             lookup "AWS_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
             lookup "AWS_DEFAULT_REGION" updatedEnvironment `shouldBe` Just "us-west-2"
+
+        it "retries transient AWS credential propagation failures before failing the prerequisite" $
+            withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+                let binDir = tmpDir </> "bin"
+                    fakeAwsPath = binDir </> "aws"
+                    stateDir = tmpDir </> "fake-aws-state"
+                    countPath = stateDir </> "sts-count"
+                    restoreEnv key previous =
+                        case previous of
+                            Just value -> setEnv key value
+                            Nothing -> unsetEnv key
+
+                createDirectoryIfMissing True binDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+                writeFile fakeAwsPath (unlines (fakeAwsCredentialPropagationScript stateDir))
+                makeExecutable fakeAwsPath
+
+                originalPath <- lookupEnv "PATH"
+                let configuredPath =
+                        case originalPath of
+                            Just currentPath -> binDir ++ ":" ++ currentPath
+                            Nothing -> binDir
+
+                setEnv "PATH" configuredPath
+                validationResult <-
+                    runEffect (InterpreterContext tmpDir) (Validate RequireAwsCredentials)
+                        `finally` restoreEnv "PATH" originalPath
+
+                validationResult `shouldBe` Result.Success ()
+                readFile countPath `shouldReturn` "3"
 
     describe "native validation helpers" $ do
         it "retries AWS test-stack SSH validation until a node accepts connections" $
@@ -1559,6 +1668,36 @@ fakeAwsTestSshScript =
     , "echo \"aws-test-node-0\""
     ]
 
+fakeAwsCredentialPropagationScript :: FilePath -> [String]
+fakeAwsCredentialPropagationScript stateDir =
+    [ "#!/usr/bin/env bash"
+    , "set -euo pipefail"
+    , "STATE_DIR=\"" ++ stateDir ++ "\""
+    , "COUNT_FILE=\"$STATE_DIR/sts-count\""
+    , "/bin/mkdir -p \"$STATE_DIR\""
+    , "if [[ \"${1:-}\" == \"--version\" ]]; then"
+    , "  printf 'aws-cli/2.17.0 Python/3.12.0 Linux/6.8.0 exe/x86_64\\n'"
+    , "  exit 0"
+    , "fi"
+    , "if [[ \"$*\" != 'sts get-caller-identity --output json' ]]; then"
+    , "  printf 'unsupported fake aws command: %s\\n' \"$*\" >&2"
+    , "  exit 1"
+    , "fi"
+    , "count=0"
+    , "if [[ -f \"$COUNT_FILE\" ]]; then"
+    , "  count=$(cat \"$COUNT_FILE\")"
+    , "fi"
+    , "count=$((count + 1))"
+    , "printf '%s' \"$count\" > \"$COUNT_FILE\""
+    , "if [[ $count -lt 3 ]]; then"
+    , "  printf 'An error occurred (InvalidClientTokenId) when calling the GetCallerIdentity operation: The security token included in the request is invalid.\\n' >&2"
+    , "  exit 254"
+    , "fi"
+    , "cat <<'JSON'"
+    , "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/prodbox\",\"UserId\":\"AIDAFake\"}"
+    , "JSON"
+    ]
+
 lookupPrerequisiteNode :: String -> EffectNode
 lookupPrerequisiteNode prerequisiteId =
     case Map.lookup prerequisiteId prerequisiteRegistry of
@@ -1584,7 +1723,7 @@ validConfig =
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
         , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-        , ", acme = { email = \"test@example.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
+        , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
         , "}"
@@ -1596,7 +1735,7 @@ invalidZeroSslConfig =
         , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
         , ", route53 = { zone_id = \"Z1234567890ABC\" }"
         , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
-        , ", acme = { email = \"test@example.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
+        , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
         , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
         , ", storage = { manual_pv_host_root = \".data\" }"
         , "}"

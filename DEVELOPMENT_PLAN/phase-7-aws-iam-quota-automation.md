@@ -18,9 +18,9 @@ for temporary elevated credentials, and stored `aws_admin_for_test_simulation.*`
 test-suite simulation of that ephemeral prompt input, with the native IAM validation harness as
 the only supported runtime consumer. The shared suite-level IAM harness keeps the aggregate
 Pulumi-backend proof behind the visible local runbook and closes the supported local-cluster
-aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is active
-because the onboarding and validation surface must collapse from multiple public FQDN prompts and
-placeholder-domain defaults to the one supported hostname `test.resolvefintech.com`.
+aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is now
+closed on the single-host onboarding and placeholder-domain removal doctrine for
+`test.resolvefintech.com`.
 
 ## Current Baseline In Worktree
 
@@ -41,8 +41,8 @@ placeholder-domain defaults to the one supported hostname `test.resolvefintech.c
   `prodbox test integration all`, and `prodbox test all` through the same managed IAM harness
   ownership in `src/Prodbox/TestRunner.hs`, while `src/Prodbox/TestValidation.hs` now treats
   `ValidationAwsIam` as an inspection step rather than as the setup/teardown owner.
-- The current onboarding surface still reflects the earlier multi-host public-edge doctrine and
-  still carries placeholder-domain defaults. Sprint `7.4` owns the one-host replacement.
+- The onboarding surface now closes on the one-host public-edge doctrine and no longer carries
+  placeholder-domain defaults.
 - `src/Prodbox/Aws.hs` now begins the shared managed harness by probing any pre-existing
   operational `aws.*`, deleting any pre-existing dedicated `prodbox` IAM user plus that user's
   keys, using resolvable pre-existing `aws.*` only to discover and delete the IAM user associated
@@ -95,9 +95,9 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 
 None.
 
-## Sprint 7.4: Single-Hostname Onboarding and Placeholder-Domain Removal 🔄
+## Sprint 7.4: Single-Hostname Onboarding and Placeholder-Domain Removal ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `prodbox-config-types.dhall`
 **Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
@@ -130,15 +130,13 @@ output, fixtures, and validation assumptions.
 
 - `src/Prodbox/Aws.hs` already owns the interactive wizard and standalone AWS administration
   flows.
-- The current wizard and schema still reflect the earlier multi-host public-edge contract and do
-  not yet enforce the selected-zone or canonical-hostname consistency required by the new
-  doctrine.
+- `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, and `prodbox-config-types.dhall` now close on
+  one canonical public hostname, reject placeholder-domain residue, and enforce selected-zone or
+  canonical-hostname consistency on the supported onboarding path.
 
 ### Remaining Work
 
-- Remove multi-host public-edge prompts and schema fields from the supported onboarding surface.
-- Remove `example.com` from the onboarding, schema, fixture, and validation contract.
-- Add hosted-zone alignment validation for `test.resolvefintech.com`.
+None.
 
 ## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 
@@ -266,9 +264,8 @@ or operational `aws.*` credentials behind.
   here as an execution log.
 - `src/Prodbox/CLI/Rke2.hs` now retries transient Harbor `502` / `unexpected EOF` failures during
   lifecycle-owned custom-image publication so destructive reruns do not fail terminally on a
-  single short-lived Harbor registry write error; the remaining replacement of the current
-  cross-arch `docker buildx` path with host-native Docker builds is owned by reopened Sprint
-  `4.1`.
+  single short-lived Harbor registry write error, and the lifecycle now closes on host-native
+  Docker builds rather than any cross-arch `docker buildx` path.
 
 ### Remaining Work
 

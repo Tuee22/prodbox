@@ -13,21 +13,16 @@ This phase closes the hard migration gap between parity and replacement. It owns
 local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
 supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks now close
-on clean-room-only behavior, but Sprint `4.1` is reopened because custom-image publication still
-uses cross-arch `docker buildx` rather than the supported native-host-architecture Docker build
-path. Sprint `4.4` remains active because the lifecycle-owned bootstrap DNS and ACME
-`ClusterIssuer` reconcile must move from the current multi-host public-edge contract to one Route
-53 record and one certificate for `test.resolvefintech.com`.
+on clean-room-only behavior, native-host-architecture Docker publication, one Route 53 record,
+and one listener certificate for `test.resolvefintech.com`.
 
 ## Current Baseline In Worktree
 
 - `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
 - `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
   inventory, and ordered upstream-candidate lists used during Harbor publication.
-- `src/Prodbox/CLI/Rke2.hs` still publishes frontend and gateway custom images through
-  `docker buildx build --platform linux/amd64,linux/arm64 --push`; Sprint `4.1` now removes that
-  cross-arch path in favor of ordinary host-native Docker builds with no supported `buildx`
-  dependency.
+- `src/Prodbox/CLI/Rke2.hs` publishes frontend and gateway custom images through ordinary
+  host-native Docker build and push flows with no supported `buildx` dependency.
 - `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
@@ -40,8 +35,8 @@ path. Sprint `4.4` remains active because the lifecycle-owned bootstrap DNS and 
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.
-- The current lifecycle-owned DNS and certificate helpers still reflect the earlier dedicated-host
-  public-edge contract. Sprint `4.4` owns collapse to the one-record or one-cert doctrine.
+- The lifecycle-owned DNS and certificate helpers now close on the one-record or one-cert
+  doctrine for the shared public edge.
 - `src/Prodbox/CLI/Rke2.hs` closes the supported lifecycle on the clean-room Harbor, Envoy
   Gateway, cert-manager, and Percona reconcile path with no retained Traefik or pre-Percona
   operator cleanup shims.
@@ -51,9 +46,9 @@ path. Sprint `4.4` remains active because the lifecycle-owned bootstrap DNS and 
 - Python source, Python tests, Python packaging, Python type stubs, Python Pulumi programs, and
   Python bridge modules are removed from the repository.
 
-## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack 🔄
+## Sprint 4.1: Lifecycle Parity and Canonical-Path Closure on the Haskell Stack ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestRunner.hs`, `test/integration/cli/Main.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -115,30 +110,23 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
   already-running non-Harbor cluster images into Harbor, selecting from configured candidate
   sources, retrying transient Harbor publication failures on the same candidate, and then
   retrying alternate upstreams when Harbor publication still fails after manifest inspection.
-- `ensureCustomImageVariants` still keeps the custom Haskell images single-stage, but the current
-  worktree publishes `linux/amd64` and `linux/arm64` variants through cross-arch `docker buildx`.
-  That path is now legacy implementation only; Sprint `4.1` replaces it with ordinary host-native
-  `docker build` plus `docker push`.
+- `ensureCustomImageVariants` keeps the custom Haskell images single-stage and now publishes only
+  the native architecture of the host through ordinary `docker build` plus `docker push`.
 - `ensureClusterPlatformRuntime` now reconciles the supported MetalLB, Envoy Gateway,
   cert-manager, ACME, and Percona operator surfaces directly with no retained cluster-migration
   cleanup shims for Traefik or the earlier incompatible operator surface.
-- `inspectRawImageManifest` in `src/Prodbox/CLI/Rke2.hs` now treats Harbor's `401 Unauthorized`
-  response for a missing custom-image target as a build-required miss instead of a fatal inspect
-  failure, so `prodbox rke2 install` rebuilds and publishes the supported custom gateway image
-  before later chart work resumes.
+- `supportedHostArchitecture`, `harborTargetAvailableForHostArchitecture`, and
+  `pushDockerImageWithRetry` in `src/Prodbox/CLI/Rke2.hs` now detect the supported native host
+  architecture, decide whether Harbor already has the required image, and publish or retry only
+  that architecture before later chart work resumes.
 
 ### Remaining Work
 
-- Replace the current `docker buildx build --platform linux/amd64,linux/arm64 --push` custom-image
-  path with ordinary host-native Docker build and push flows.
-- Remove mixed-arch and cross-arch publication assumptions from lifecycle validations, tests, and
-  docs.
-- Prove the supported doctrine on both native host families: `amd64 -> amd64` and `arm64 -> arm64`
-  only.
+None.
 
-## Sprint 4.4: Single-Record DNS Bootstrap and Single-Certificate Lifecycle Closure 🔄
+## Sprint 4.4: Single-Record DNS Bootstrap and Single-Certificate Lifecycle Closure ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -169,17 +157,15 @@ routes behind Envoy.
 
 ### Current Validation State
 
-- `src/Prodbox/CLI/Rke2.hs` already owns bootstrap DNS reconcile and ACME `ClusterIssuer`
-  projection on the supported lifecycle path.
-- Those helpers still assume the current multi-host public-edge layout rather than one canonical
-  public hostname and certificate.
+- `src/Prodbox/CLI/Rke2.hs` owns bootstrap DNS reconcile and ACME `ClusterIssuer` projection on
+  the supported lifecycle path.
+- Those helpers now write only the canonical `test.resolvefintech.com` record and keep the
+  lifecycle-owned certificate contract on one public listener certificate for the shared Envoy
+  edge.
 
 ### Remaining Work
 
-- Collapse lifecycle-owned DNS bootstrap to the single `test.resolvefintech.com` record.
-- Collapse certificate and listener assumptions to one public certificate for the shared Envoy
-  edge.
-- Rerun lifecycle and aggregate proof after the single-host public-edge refactor lands.
+None.
 
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
@@ -273,8 +259,7 @@ parity exists.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
-  remains closed on Python-removal residue even though non-Python single-host cleanup has been
-  reopened elsewhere in the plan.
+  remains closed on Python-removal residue.
 
 ### Remaining Work
 

@@ -10,19 +10,13 @@ import Control.Exception (
     IOException,
     bracket,
     displayException,
-    finally,
     try,
  )
 import Control.Monad (foldM)
 import Data.Aeson (
-    FromJSON (parseJSON),
     Value,
-    eitherDecode,
     encode,
     object,
-    withObject,
-    (.:),
-    (.:?),
     (.=),
  )
 import Data.Aeson.Key qualified as Key
@@ -138,6 +132,7 @@ import System.IO (
     stderr,
  )
 import System.Info (os)
+import System.Info qualified as SystemInfo
 
 rke2BinaryPath :: FilePath
 rke2BinaryPath = "/usr/local/bin/rke2"
@@ -337,12 +332,13 @@ acmeEabSecretName = "acme-eab-credentials"
 acmeEabSecretKey :: String
 acmeEabSecretKey = "secret"
 
-buildxBuilderName :: String
-buildxBuilderName = "prodbox-multiarch-hostnet"
-
 data MinioImageSource
     = MinioBootstrapPublic
     | MinioSteadyStateHarbor
+
+data HostArchitecture
+    = HostArchitectureAmd64
+    | HostArchitectureArm64
     deriving (Eq, Show)
 
 data CustomImageBuildPlan = CustomImageBuildPlan
@@ -2147,44 +2143,6 @@ nonEmptyTextValue rawValue =
             then Nothing
             else Just trimmed
 
-data ManifestPlatform = ManifestPlatform
-    { manifestPlatformOs :: String
-    , manifestPlatformArchitecture :: String
-    }
-
-instance FromJSON ManifestPlatform where
-    parseJSON =
-        withObject "ManifestPlatform" $ \payload ->
-            ManifestPlatform
-                <$> payload .: "os"
-                <*> payload .: "architecture"
-
-data ManifestDescriptor = ManifestDescriptor
-    { manifestDescriptorDigest :: Maybe String
-    , manifestDescriptorPlatform :: Maybe ManifestPlatform
-    }
-
-instance FromJSON ManifestDescriptor where
-    parseJSON =
-        withObject "ManifestDescriptor" $ \payload ->
-            ManifestDescriptor
-                <$> payload .:? "digest"
-                <*> payload .:? "platform"
-
-data RawImageManifest = RawImageManifest
-    { rawImageManifestManifests :: Maybe [ManifestDescriptor]
-    , rawImageManifestOs :: Maybe String
-    , rawImageManifestArchitecture :: Maybe String
-    }
-
-instance FromJSON RawImageManifest where
-    parseJSON =
-        withObject "RawImageManifest" $ \payload ->
-            RawImageManifest
-                <$> payload .:? "manifests"
-                <*> payload .:? "os"
-                <*> payload .:? "architecture"
-
 mirrorClusterImagesOnce :: FilePath -> IO ExitCode
 mirrorClusterImagesOnce repoRoot = do
     imagesResult <- collectClusterImages repoRoot
@@ -2226,13 +2184,12 @@ collectClusterImages repoRoot = do
 
 ensureMirroredClusterImage :: FilePath -> [String] -> String -> IO ExitCode
 ensureMirroredClusterImage repoRoot sourceCandidates target = do
-    targetPlatformsResult <- inspectImagePlatforms repoRoot target
-    case targetPlatformsResult of
+    targetAvailableResult <- harborTargetAvailableForHostArchitecture repoRoot target
+    case targetAvailableResult of
         Left err -> failWith err
-        Right (Just targetPlatforms)
-            | supportsCanonicalImagePlatforms targetPlatforms -> pure ExitSuccess
-        Right _ -> do
-            mirrorResult <- mirrorCanonicalTargetFromCandidates repoRoot sourceCandidates target
+        Right True -> pure ExitSuccess
+        Right False -> do
+            mirrorResult <- mirrorHostArchitectureTargetFromCandidates repoRoot sourceCandidates target
             case mirrorResult of
                 Left err -> failWith err
                 Right () -> pure ExitSuccess
@@ -2265,46 +2222,71 @@ ensurePublicEdgeWorkloadImage repoRoot prodboxId = do
 
 ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
 ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
-    buildExit <-
-        withDockerBuildxBuilder
-            repoRoot
-            ( do
-                loginExit <- ensureHarborDockerLogin repoRoot
-                case loginExit of
-                    ExitFailure _ -> pure loginExit
-                    ExitSuccess -> buildMissingCustomImageVariants repoRoot buildPlan taggedRefs
-            )
-    case buildExit of
-        ExitFailure _ -> pure buildExit
-        ExitSuccess ->
-            runSequentially
-                [ runCommand
-                    CommandSpec
-                        { commandPath = "docker"
-                        , commandArguments = ["pull", importRef]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
-                        }
-                , importImageIntoRke2Containerd repoRoot importRef
-                ]
+    loginExit <- ensureHarborDockerLogin repoRoot
+    case loginExit of
+        ExitFailure _ -> pure loginExit
+        ExitSuccess -> do
+            buildExit <- buildAndPushCustomImageVariants repoRoot buildPlan taggedRefs
+            case buildExit of
+                ExitFailure _ -> pure buildExit
+                ExitSuccess ->
+                    runSequentially
+                        [ runCommand
+                            CommandSpec
+                                { commandPath = "docker"
+                                , commandArguments = ["pull", importRef]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                        , importImageIntoRke2Containerd repoRoot importRef
+                        ]
 
-buildMissingCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
-buildMissingCustomImageVariants repoRoot buildPlan taggedRefs = go customImagePushRetryAttempts
+buildAndPushCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
+buildAndPushCustomImageVariants repoRoot buildPlan taggedRefs =
+    case supportedHostArchitecture of
+        Left err -> failWith err
+        Right hostArchitecture -> do
+            buildExit <- buildCustomImageOnce repoRoot hostArchitecture buildPlan taggedRefs
+            case buildExit of
+                ExitFailure _ -> pure buildExit
+                ExitSuccess ->
+                    runSequentially
+                        [ pushDockerImageWithRetry repoRoot tagRef ("custom image " ++ tagRef)
+                        | tagRef <- taggedRefs
+                        ]
+
+buildCustomImageOnce :: FilePath -> HostArchitecture -> CustomImageBuildPlan -> [String] -> IO ExitCode
+buildCustomImageOnce repoRoot hostArchitecture buildPlan taggedRefs = do
+    let arguments =
+            [ "build"
+            , "-f"
+            , customImageDockerfile buildPlan
+            ]
+                ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
+                ++ ["."]
+    outputResult <- captureToolOutput repoRoot "docker" arguments
+    case outputResult of
+        Left err -> failWith err
+        Right output ->
+            case processExitCode output of
+                ExitSuccess -> do
+                    emitCapturedProcessOutput output
+                    pure ExitSuccess
+                ExitFailure _ ->
+                    failWith
+                        ( "Failed to build "
+                            ++ customImageDockerfile buildPlan
+                            ++ " for "
+                            ++ renderHostArchitecture hostArchitecture
+                            ++ ": "
+                            ++ outputDetail output
+                        )
+
+pushDockerImageWithRetry :: FilePath -> String -> String -> IO ExitCode
+pushDockerImageWithRetry repoRoot imageRef description = go customImagePushRetryAttempts
   where
-    arguments =
-        [ "buildx"
-        , "build"
-        , "--platform"
-        , canonicalPlatformArgument
-        , "--push"
-        , "-f"
-        , customImageDockerfile buildPlan
-        ]
-            ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
-            ++ ["."]
-
     go attemptsRemaining = do
-        outputResult <- captureToolOutput repoRoot "docker" arguments
+        outputResult <- captureToolOutput repoRoot "docker" ["push", imageRef]
         case outputResult of
             Left err -> failWith err
             Right output ->
@@ -2312,11 +2294,13 @@ buildMissingCustomImageVariants repoRoot buildPlan taggedRefs = go customImagePu
                     ExitSuccess -> do
                         emitCapturedProcessOutput output
                         pure ExitSuccess
-                    failure@(ExitFailure _)
-                        | attemptsRemaining > 1 && isRetryableCustomImageBuildFailure output -> do
+                    ExitFailure _
+                        | attemptsRemaining > 1 && isRetryableHarborPublicationFailure (outputDetail output) -> do
                             hPutStrLn
                                 stderr
-                                ( "Retrying docker buildx build after transient Harbor push failure ("
+                                ( "Retrying Harbor publication for "
+                                    ++ description
+                                    ++ " ("
                                     ++ show (customImagePushRetryAttempts - attemptsRemaining + 1)
                                     ++ "/"
                                     ++ show customImagePushRetryAttempts
@@ -2327,11 +2311,7 @@ buildMissingCustomImageVariants repoRoot buildPlan taggedRefs = go customImagePu
                             go (attemptsRemaining - 1)
                         | otherwise -> do
                             emitCapturedProcessOutput output
-                            pure failure
-
-isRetryableCustomImageBuildFailure :: ProcessOutput -> Bool
-isRetryableCustomImageBuildFailure output =
-    isRetryableHarborPublicationFailure (outputDetail output)
+                            pure (ExitFailure 1)
 
 isRetryableHarborPublicationFailure :: String -> Bool
 isRetryableHarborPublicationFailure detail =
@@ -2351,56 +2331,16 @@ isRetryableHarborPublicationFailure detail =
             , "unexpected status from put request"
             ]
 
-inspectImagePlatforms :: FilePath -> String -> IO (Either String (Maybe [(String, String)]))
-inspectImagePlatforms repoRoot imageRef = do
-    manifestResult <- inspectRawImageManifest repoRoot imageRef
-    pure (fmap (fmap manifestPlatforms) manifestResult)
-
-inspectRawImageManifest :: FilePath -> String -> IO (Either String (Maybe RawImageManifest))
-inspectRawImageManifest repoRoot imageRef = do
-    inspectResult <- captureToolOutput repoRoot "docker" ["buildx", "imagetools", "inspect", "--raw", imageRef]
+harborTargetAvailableForHostArchitecture :: FilePath -> String -> IO (Either String Bool)
+harborTargetAvailableForHostArchitecture repoRoot imageRef = do
+    pullResult <- captureToolOutput repoRoot "docker" ["pull", imageRef]
     pure $
-        case inspectResult of
+        case pullResult of
             Left err -> Left err
             Right output ->
                 case processExitCode output of
-                    ExitSuccess ->
-                        case eitherDecode (BL8.pack (processStdout output)) of
-                            Left decodeErr ->
-                                Left
-                                    ( "Failed to decode raw image manifest for "
-                                        ++ imageRef
-                                        ++ ": "
-                                        ++ decodeErr
-                                    )
-                            Right manifest -> Right (Just manifest)
-                    ExitFailure _ ->
-                        if isBuildxUnavailable (outputDetail output)
-                            then Left "docker buildx imagetools support is required for the Harbor multi-arch reconcile path"
-                            else
-                                if isMissingImageInspectError (outputDetail output)
-                                    || isHarborUnauthorizedInspectError imageRef (outputDetail output)
-                                    then Right Nothing
-                                    else Left (outputDetail output)
-
-isMissingImageInspectError :: String -> Bool
-isMissingImageInspectError detail =
-    let lowered = map toLower detail
-     in any
-            (`isInfixOf` lowered)
-            [ "not found"
-            , "manifest unknown"
-            , "name unknown"
-            , "no such manifest"
-            , "repository does not exist"
-            ]
-
-isHarborUnauthorizedInspectError :: String -> String -> Bool
-isHarborUnauthorizedInspectError imageRef detail =
-    let lowered = map toLower detail
-     in isHarborHostedImage imageRef
-            && "unexpected status from head request" `isInfixOf` lowered
-            && "401 unauthorized" `isInfixOf` lowered
+                    ExitSuccess -> Right True
+                    ExitFailure _ -> Right False
 
 purgeHarborMirrorTarget :: FilePath -> String -> IO ExitCode
 purgeHarborMirrorTarget repoRoot target =
@@ -2459,74 +2399,8 @@ encodeHarborRepositoryName =
     encodeCharacter '/' = "%252F"
     encodeCharacter character = [character]
 
-pushCanonicalMirrorTarget :: FilePath -> String -> RawImageManifest -> String -> IO (Either String ())
-pushCanonicalMirrorTarget repoRoot source sourceManifest target =
-    case buildCanonicalMirrorSourceRefs source sourceManifest of
-        Left err -> pure (Left err)
-        Right sourceRefs -> go sourceRefs customImagePushRetryAttempts
-  where
-    go :: [String] -> Int -> IO (Either String ())
-    go sourceRefs attemptsRemaining = do
-        createResult <-
-            captureToolOutput
-                repoRoot
-                "docker"
-                (["buildx", "imagetools", "create", "--tag", target] ++ sourceRefs)
-        case createResult of
-            Left err -> pure (Left err)
-            Right output ->
-                case processExitCode output of
-                    ExitSuccess -> do
-                        emitCapturedProcessOutput output
-                        pure (Right ())
-                    ExitFailure _ ->
-                        let detail = outputDetail output
-                         in if attemptsRemaining > 1 && isRetryableHarborPublicationFailure detail
-                                then do
-                                    hPutStrLn
-                                        stderr
-                                        ( "Retrying Harbor mirror publication after transient failure ("
-                                            ++ show (customImagePushRetryAttempts - attemptsRemaining + 1)
-                                            ++ "/"
-                                            ++ show customImagePushRetryAttempts
-                                            ++ "): "
-                                            ++ detail
-                                        )
-                                    threadDelay customImagePushRetryDelayMicroseconds
-                                    go sourceRefs (attemptsRemaining - 1)
-                                else pure (Left detail)
-
-buildCanonicalMirrorSourceRefs :: String -> RawImageManifest -> Either String [String]
-buildCanonicalMirrorSourceRefs source sourceManifest = do
-    imageRef <- ContainerImage.parseImageRef source
-    descriptors <-
-        case rawImageManifestManifests sourceManifest of
-            Just manifestDescriptors -> Right manifestDescriptors
-            Nothing -> Left ("Source image is missing manifest descriptors for Harbor mirroring: " ++ source)
-    traverse (buildPlatformSourceRef imageRef descriptors) ContainerImage.canonicalImagePlatforms
-  where
-    buildPlatformSourceRef imageRef descriptors (osName, architecture) =
-        case [ digest
-             | descriptor <- descriptors
-             , Just platform <- [manifestDescriptorPlatform descriptor]
-             , manifestPlatformOs platform == osName
-             , manifestPlatformArchitecture platform == architecture
-             , Just digest <- [manifestDescriptorDigest descriptor]
-             ] of
-            digest : _ ->
-                Right (renderDigestedImageRef imageRef digest)
-            [] ->
-                Left
-                    ( "Source image is missing a published digest for "
-                        ++ osName
-                        ++ "/"
-                        ++ architecture
-                        ++ ": "
-                        ++ source
-                    )
-
-mirrorCanonicalTargetFromCandidates :: FilePath -> [String] -> String -> IO (Either String ())
-mirrorCanonicalTargetFromCandidates repoRoot sourceCandidates target = go [] sourceCandidates
+mirrorHostArchitectureTargetFromCandidates :: FilePath -> [String] -> String -> IO (Either String ())
+mirrorHostArchitectureTargetFromCandidates repoRoot sourceCandidates target = go [] sourceCandidates
   where
     go diagnostics [] =
         let detail =
@@ -2542,63 +2416,55 @@ mirrorCanonicalTargetFromCandidates repoRoot sourceCandidates target = go [] sou
                     )
                 )
     go diagnostics (source : remainingSources) = do
-        sourceManifestResult <- inspectRawImageManifest repoRoot source
-        case sourceManifestResult of
-            Left err
-                | isFatalMirrorCandidateError err -> pure (Left err)
-                | otherwise ->
-                    go
-                        (("Failed to inspect candidate source " ++ source ++ ": " ++ err) : diagnostics)
-                        remainingSources
-            Right (Just sourceManifest)
-                | supportsCanonicalImagePlatforms (manifestPlatforms sourceManifest) ->
-                    do
-                        purgeExit <- purgeHarborMirrorTarget repoRoot target
-                        case purgeExit of
-                            ExitFailure _ ->
-                                pure
-                                    ( Left
-                                        ( "Failed to reset Harbor mirror target '"
-                                            ++ target
-                                            ++ "' before mirroring from "
-                                            ++ source
-                                        )
-                                    )
-                            ExitSuccess -> do
-                                pushResult <- pushCanonicalMirrorTarget repoRoot source sourceManifest target
-                                case pushResult of
-                                    Right () -> pure (Right ())
-                                    Left err
-                                        | isFatalMirrorCandidateError err -> pure (Left err)
-                                        | otherwise ->
-                                            go
-                                                ( ( "Failed to publish Harbor mirror target "
-                                                        ++ target
-                                                        ++ " from "
-                                                        ++ source
-                                                        ++ ": "
-                                                        ++ err
-                                                  )
-                                                    : diagnostics
-                                                )
-                                                remainingSources
-                | otherwise ->
-                    go
-                        ( ( "Image "
-                                ++ source
-                                ++ " does not publish both linux/amd64 and linux/arm64 variants"
-                          )
-                            : diagnostics
-                        )
-                        remainingSources
-            Right Nothing ->
+        publicationResult <- mirrorHostArchitectureTarget repoRoot source target
+        case publicationResult of
+            Right () -> pure (Right ())
+            Left err ->
                 go
-                    (("Source image is unavailable for Harbor mirroring: " ++ source) : diagnostics)
+                    ( ( "Failed to publish Harbor mirror target "
+                            ++ target
+                            ++ " from "
+                            ++ source
+                            ++ ": "
+                            ++ err
+                      )
+                        : diagnostics
+                    )
                     remainingSources
 
-isFatalMirrorCandidateError :: String -> Bool
-isFatalMirrorCandidateError detail =
-    "docker buildx imagetools support is required" `isInfixOf` map toLower detail
+mirrorHostArchitectureTarget :: FilePath -> String -> String -> IO (Either String ())
+mirrorHostArchitectureTarget repoRoot source target = do
+    pullResult <- captureToolOutput repoRoot "docker" ["pull", source]
+    case pullResult of
+        Left err -> pure (Left err)
+        Right pullOutput ->
+            case processExitCode pullOutput of
+                ExitFailure _ -> pure (Left (outputDetail pullOutput))
+                ExitSuccess -> do
+                    purgeExit <- purgeHarborMirrorTarget repoRoot target
+                    case purgeExit of
+                        ExitFailure _ ->
+                            pure
+                                ( Left
+                                    ( "Failed to reset Harbor mirror target '"
+                                        ++ target
+                                        ++ "' before mirroring from "
+                                        ++ source
+                                    )
+                                )
+                        ExitSuccess -> do
+                            tagResult <- captureToolOutput repoRoot "docker" ["tag", source, target]
+                            case tagResult of
+                                Left err -> pure (Left err)
+                                Right tagOutput ->
+                                    case processExitCode tagOutput of
+                                        ExitFailure _ -> pure (Left (outputDetail tagOutput))
+                                        ExitSuccess ->
+                                            do
+                                                pushExit <- pushDockerImageWithRetry repoRoot target ("mirror target " ++ target)
+                                                case pushExit of
+                                                    ExitSuccess -> pure (Right ())
+                                                    ExitFailure _ -> pure (Left ("push failed for " ++ target))
 
 mergeMirrorCandidatePairs :: [([String], String)] -> [([String], String)]
 mergeMirrorCandidatePairs = foldl mergePair []
@@ -2607,10 +2473,6 @@ mergeMirrorCandidatePairs = foldl mergePair []
     mergePair ((existingSources, existingTarget) : rest) (sources, target)
         | target == existingTarget = (nub (existingSources ++ sources), target) : rest
         | otherwise = (existingSources, existingTarget) : mergePair rest (sources, target)
-
-renderDigestedImageRef :: ContainerImage.ImageRef -> String -> String
-renderDigestedImageRef imageRef digest =
-    ContainerImage.imageRegistry imageRef ++ "/" ++ ContainerImage.imageRepository imageRef ++ "@" ++ digest
 
 ensureHarborDockerLogin :: FilePath -> IO ExitCode
 ensureHarborDockerLogin repoRoot =
@@ -2621,113 +2483,6 @@ ensureHarborDockerLogin repoRoot =
             , commandEnvironment = Nothing
             , commandWorkingDirectory = Just repoRoot
             }
-
-ensureDockerBuildxBuilder :: FilePath -> IO ExitCode
-ensureDockerBuildxBuilder repoRoot = do
-    createResult <-
-        captureToolOutput
-            repoRoot
-            "docker"
-            [ "buildx"
-            , "create"
-            , "--name"
-            , buildxBuilderName
-            , "--driver"
-            , "docker-container"
-            , "--driver-opt"
-            , "network=host"
-            , "--use"
-            ]
-    case createResult of
-        Left err -> failWith err
-        Right output ->
-            case processExitCode output of
-                ExitSuccess -> bootstrapBuilder
-                ExitFailure _
-                    | buildxBuilderAlreadyExists (outputDetail output) -> useAndBootstrapBuilder
-                    | isBuildxUnavailable (outputDetail output) ->
-                        failWith "docker buildx support is required for multi-platform custom image builds"
-                    | otherwise ->
-                        failWith ("Failed to create Docker buildx builder: " ++ outputDetail output)
-  where
-    useAndBootstrapBuilder =
-        runSequentially
-            [ runCommand
-                CommandSpec
-                    { commandPath = "docker"
-                    , commandArguments = ["buildx", "use", buildxBuilderName]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
-                    }
-            , bootstrapBuilder
-            ]
-
-    bootstrapBuilder =
-        runCommand
-            CommandSpec
-                { commandPath = "docker"
-                , commandArguments = ["buildx", "inspect", "--bootstrap", buildxBuilderName]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
-                }
-
-buildxBuilderAlreadyExists :: String -> Bool
-buildxBuilderAlreadyExists detail =
-    let lowered = map toLower detail
-     in "existing instance" `isInfixOf` lowered || "already exists" `isInfixOf` lowered
-
-withDockerBuildxBuilder :: FilePath -> IO ExitCode -> IO ExitCode
-withDockerBuildxBuilder repoRoot action = do
-    builderExit <- ensureDockerBuildxBuilder repoRoot
-    case builderExit of
-        ExitFailure _ -> pure builderExit
-        ExitSuccess ->
-            action `finally` stopDockerBuildxBuilder repoRoot
-
-stopDockerBuildxBuilder :: FilePath -> IO ()
-stopDockerBuildxBuilder repoRoot = do
-    stopResult <- captureToolOutput repoRoot "docker" ["buildx", "stop", buildxBuilderName]
-    case stopResult of
-        Left err ->
-            hPutStrLn stderr ("Warning: failed to stop Docker buildx builder " ++ buildxBuilderName ++ ": " ++ err)
-        Right output ->
-            case processExitCode output of
-                ExitSuccess -> pure ()
-                ExitFailure _ ->
-                    hPutStrLn
-                        stderr
-                        ( "Warning: failed to stop Docker buildx builder "
-                            ++ buildxBuilderName
-                            ++ ": "
-                            ++ outputDetail output
-                        )
-
-manifestPlatforms :: RawImageManifest -> [(String, String)]
-manifestPlatforms manifest =
-    nub $
-        case rawImageManifestManifests manifest of
-            Just descriptors ->
-                [ (manifestPlatformOs platform, manifestPlatformArchitecture platform)
-                | descriptor <- descriptors
-                , Just platform <- [manifestDescriptorPlatform descriptor]
-                ]
-            Nothing ->
-                case (rawImageManifestOs manifest, rawImageManifestArchitecture manifest) of
-                    (Just osName, Just architecture) -> [(osName, architecture)]
-                    _ -> []
-
-supportsCanonicalImagePlatforms :: [(String, String)] -> Bool
-supportsCanonicalImagePlatforms platforms =
-    all (`elem` platforms) ContainerImage.canonicalImagePlatforms
-
-canonicalPlatformArgument :: String
-canonicalPlatformArgument = "linux/amd64,linux/arm64"
-
-isBuildxUnavailable :: String -> Bool
-isBuildxUnavailable detail =
-    let lowered = map toLower detail
-     in "buildx" `isInfixOf` lowered
-            && ("not a docker command" `isInfixOf` lowered || "unknown command" `isInfixOf` lowered)
 
 isHarborHostedImage :: String -> Bool
 isHarborHostedImage imageRef =
@@ -3452,6 +3207,26 @@ resolveMachineIdentity = do
                             if length machineId /= 32 || any (not . isHexDigit) machineId
                                 then Left ("Unexpected machine-id format in /etc/machine-id: " ++ show machineId)
                                 else Right (machineId, "prodbox-" ++ machineId)
+
+supportedHostArchitecture :: Either String HostArchitecture
+supportedHostArchitecture =
+    case map toLower SystemInfo.arch of
+        "x86_64" -> Right HostArchitectureAmd64
+        "amd64" -> Right HostArchitectureAmd64
+        "aarch64" -> Right HostArchitectureArm64
+        "arm64" -> Right HostArchitectureArm64
+        unsupported ->
+            Left
+                ( "Unsupported host architecture for the native lifecycle image path: "
+                    ++ unsupported
+                    ++ ". Supported architectures are amd64 and arm64."
+                )
+
+renderHostArchitecture :: HostArchitecture -> String
+renderHostArchitecture hostArchitecture =
+    case hostArchitecture of
+        HostArchitectureAmd64 -> "linux/amd64"
+        HostArchitectureArm64 -> "linux/arm64"
 
 prodboxIdToLabelValue :: String -> String
 prodboxIdToLabelValue = take 63

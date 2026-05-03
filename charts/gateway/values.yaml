@@ -7,6 +7,8 @@ global:
 podAntiAffinity:
   enabled: true
 
+podAnnotations: {}
+
 image:
   # Container image for the gateway daemon. The supported `prodbox charts`
   # path overrides this with the machine-identity tag imported into local RKE2

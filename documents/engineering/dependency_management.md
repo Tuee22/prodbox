@@ -26,10 +26,10 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   Haskell frontend under `/opt/build`, `docker/gateway.Dockerfile` builds the gateway image under
   the same root, and both custom Haskell images follow the single-stage `ubuntu:24.04` doctrine
   with in-image `ghcup`, pinned GHC `9.14.1`, and no symlinked Haskell tool shims.
-  `docker/gateway.Dockerfile` also installs the official AWS CLI bundle per `TARGETARCH` because
-  the in-cluster gateway daemon shells out to `aws route53 ...` for DNS writes. The supported
-  custom-image publish path uses a host-network `docker-container` buildx builder so pushes to
-  the canonical Harbor endpoint `127.0.0.1:30080` work from inside the builder.
+  `docker/gateway.Dockerfile` also installs the official AWS CLI bundle from the image's native
+  Debian architecture because the in-cluster gateway daemon shells out to `aws route53 ...` for
+  DNS writes. The supported custom-image publish path uses ordinary host-native `docker build`
+  plus `docker push` to the canonical Harbor endpoint `127.0.0.1:30080`.
 - Pulumi programs are YAML-based under `pulumi/aws-eks/` and `pulumi/aws-test/` only and do not
   introduce a Python runtime dependency.
 

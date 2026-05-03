@@ -5,7 +5,6 @@ WORKDIR /opt/build
 
 ARG GHC_VERSION=9.14.1
 ARG CABAL_VERSION=3.16.1.0
-ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH
 
@@ -29,10 +28,11 @@ RUN apt-get update \
         zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN case "${TARGETARCH}" in \
+RUN arch_name="$(dpkg --print-architecture)" \
+    && case "${arch_name}" in \
         amd64) aws_arch=x86_64 ;; \
         arm64) aws_arch=aarch64 ;; \
-        *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+        *) echo "Unsupported Debian architecture: ${arch_name}" >&2; exit 1 ;; \
     esac \
     && curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-${aws_arch}.zip" -o /tmp/awscliv2.zip \
     && unzip -q /tmp/awscliv2.zip -d /tmp \

@@ -21,11 +21,9 @@ gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup
 daemon surface implements config generation, heartbeat recording, in-memory ownership projection,
 DNS-write gating, HTTP REST status, and HMAC event signing. The broader peer-transport protocol
 remains design-owned by the TLA+ and gateway doctrine docs rather than by a closed repository
-surface. Sprints `2.1` and `2.2` remain closed on the gateway-daemon and TLA+ baseline. Sprint
-`2.3` is active because the supported DNS doctrine now changes from explicit per-FQDN public-host
-ownership to one canonical public record: `test.resolvefintech.com`. This phase does not own the
-Kubernetes Gateway API or Envoy Gateway public edge; those surfaces remain in Phases `1`, `3`,
-`4`, and `5`.
+surface. Sprints `2.1`, `2.2`, and `2.3` are closed on the gateway-daemon, TLA+, and
+single-record Route 53 doctrine. This phase does not own the Kubernetes Gateway API or Envoy
+Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 
 ## Current Baseline In Worktree
 
@@ -35,8 +33,8 @@ Kubernetes Gateway API or Envoy Gateway public edge; those surfaces remain in Ph
   been removed.
 - The gateway container build lives in `docker/gateway.Dockerfile`, is single-stage
   `ubuntu:24.04`, installs `ghcup` in-image, pins GHC `9.14.1`, retains the official AWS CLI
-  bundle per `TARGETARCH`, and does not depend on the old mounted `haskell:9.6.7-slim` toolchain
-  context or symlinked GHC tool shims.
+  bundle per native Debian host architecture, and does not depend on the old mounted
+  `haskell:9.6.7-slim` toolchain context or symlinked GHC tool shims.
 - The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
   repo-rootless `gateway start|status`, and `charts/gateway/` injects AWS credentials through the
   `gateway-aws-credentials` secret while probing `/v1/state` over HTTP on the in-pod REST port.
@@ -56,9 +54,8 @@ Kubernetes Gateway API or Envoy Gateway public edge; those surfaces remain in Ph
   been removed.
 - `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface. All Python TLA+ wrappers have
   been removed.
-- The current DNS surfaces still assume explicit public hostnames. Sprint `2.3` retargets that
-  ownership to the one-record doctrine without changing the separate Haskell gateway-daemon
-  boundary.
+- The DNS surfaces now close on one canonical public hostname, `test.resolvefintech.com`, and one
+  Route 53 record without changing the separate Haskell gateway-daemon boundary.
 - Gateway parser, renderer, and CLI proof live in the Haskell test suites under `test/`, while
   the TLA+ artifacts live under `documents/engineering/tla/` and are exercised through
   `prodbox tla-check`.
@@ -83,7 +80,8 @@ while preserving the implemented runtime contract and container doctrine.
 - `prodbox gateway start|status|config-gen` and `prodbox dns check` are implemented in Haskell.
 - The in-cluster gateway container runs the Haskell binary from a single-stage `ubuntu:24.04`
   image built from `docker/gateway.Dockerfile`, with in-image `ghcup` pinned to GHC `9.14.1`,
-  no symlinked Haskell tool shims, and the official AWS CLI bundle per `TARGETARCH`.
+  no symlinked Haskell tool shims, and the official AWS CLI bundle per native Debian host
+  architecture.
 - Gateway image delivery uses Harbor as the only supported cluster image source.
 - Gateway image publication follows the lifecycle-owned native-host-architecture doctrine:
   `amd64` hosts publish `amd64` images, and `arm64` hosts publish `arm64` images.
@@ -137,12 +135,10 @@ while preserving the implemented runtime contract and container doctrine.
 - `docker/gateway.Dockerfile` is single-stage `ubuntu:24.04`, installs `ghcup`, pins GHC
   `9.14.1`, and no longer uses the mounted `haskell:9.6.7-slim` BuildKit context or symlinked
   GHC tool shims.
-- `docker/gateway.Dockerfile` already installs the official AWS CLI bundle per `TARGETARCH`; that
-  requirement stays in place after the toolchain doctrine changes.
-- `src/Prodbox/CLI/Rke2.hs` still publishes the gateway image through a Harbor-backed cross-arch
-  `docker buildx` flow with no mounted `haskell-toolchain` context, but that publication path is
-  now legacy cleanup owned by reopened Sprint `4.1`; this sprint remains closed on the gateway
-  runtime, CLI, and container structure.
+- `docker/gateway.Dockerfile` installs the official AWS CLI bundle from the native Debian host
+  architecture detected at build time.
+- `src/Prodbox/CLI/Rke2.hs` publishes the gateway image through Harbor-backed native-host-
+  architecture Docker build and push flows with no mounted `haskell-toolchain` context.
 - `src/Prodbox/Lib/ChartPlatform.hs` resolves the supported gateway chart image through Harbor.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
@@ -151,9 +147,9 @@ while preserving the implemented runtime contract and container doctrine.
 
 None.
 
-## Sprint 2.3: Single-Record Route 53 Ownership and Diagnostics 🔄
+## Sprint 2.3: Single-Record Route 53 Ownership and Diagnostics ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Dns.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `documents/engineering/tla_modelling_assumptions.md`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
 
@@ -184,19 +180,18 @@ single supported public record `test.resolvefintech.com`.
 
 ### Current Validation State
 
-- `src/Prodbox/Dns.hs` and native validation flows still reason about the current multi-host Route
-  53 surface.
-- Native Haskell `gateway config-gen` still preserves `dns_write_gate` emission, but that payload
-  remains shaped around explicit public hostnames rather than the single supported record.
-- The TLA+ correspondence notes still describe the current write-ownership model rather than the
-  new one-record doctrine.
+- `src/Prodbox/Dns.hs` now inspects one canonical Route 53 record for
+  `test.resolvefintech.com`, and the built-frontend plus native validation flows align on that
+  one-record doctrine.
+- Native Haskell `gateway config-gen` preserves `dns_write_gate` emission with one canonical
+  public hostname, while `src/Prodbox/TestValidation.hs` keeps the corresponding gateway
+  partition proof on the supported path.
+- The gateway doctrine and TLA+ correspondence notes now describe single-record write ownership
+  rather than per-subdomain public DNS.
 
 ### Remaining Work
 
-- Replace the per-FQDN DNS inventory with one canonical `test.resolvefintech.com` ownership model.
-- Update DNS diagnostics and validations to reject placeholder domains and multi-host public-edge
-  config.
-- Align the gateway or TLA+ correspondence docs with the single-record Route 53 doctrine.
+None.
 
 ## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
 

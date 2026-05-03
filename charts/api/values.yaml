@@ -7,6 +7,8 @@ replicaCount: 2
 podAntiAffinity:
   enabled: true
 
+podAnnotations: {}
+
 image:
   repository: 127.0.0.1:30080/prodbox/prodbox-public-edge-workload
   tag: latest

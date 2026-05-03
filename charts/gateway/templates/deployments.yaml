@@ -17,6 +17,10 @@ spec:
       gateway-node: {{ $nodeId | quote }}
   template:
     metadata:
+      {{- with $.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- include "gateway.labels" $ | nindent 8 }}
         gateway-node: {{ $nodeId | quote }}

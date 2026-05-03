@@ -49,6 +49,7 @@ import Data.Scientific (toBoundedInteger)
 import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Word (Word8)
+import GHC.Conc (threadWaitRead)
 import Network.Socket (
     AddrInfo (..),
     AddrInfoFlag (AI_PASSIVE),
@@ -68,6 +69,7 @@ import Network.Socket (
     listen,
     setSocketOption,
     socket,
+    withFdSocket,
     withSocketsDo,
  )
 import Network.Socket.ByteString (recv, sendAll)
@@ -77,6 +79,7 @@ import System.Exit (
     ExitCode (ExitFailure, ExitSuccess),
  )
 import System.IO (hPutStrLn, stderr)
+import System.Posix.Types (Fd (..))
 import System.Process (
     proc,
     readCreateProcessWithExitCode,
@@ -220,7 +223,7 @@ handleClient mode podName maybeRuntime clientSocket = do
     requestResult <- readHttpRequest clientSocket
     case requestResult of
         Left err -> sendPlainTextResponse clientSocket 400 [] err
-        Right request ->
+        Right (request, requestRemainder) ->
             case mode of
                 WorkloadApi -> handleApiRequest podName clientSocket request
                 WorkloadWebsocket ->
@@ -228,7 +231,7 @@ handleClient mode podName maybeRuntime clientSocket = do
                         Nothing -> sendPlainTextResponse clientSocket 500 [] "websocket runtime is unavailable"
                         Just runtime ->
                             if isWebsocketUpgradeRequest request
-                                then handleWebsocketUpgrade runtime clientSocket request
+                                then handleWebsocketUpgrade runtime clientSocket requestRemainder request
                                 else handleWebsocketHttpRequest runtime clientSocket request
 
 handleApiRequest :: String -> Socket -> HttpRequest -> IO ()
@@ -352,8 +355,8 @@ handleWebsocketHttpRequest runtime clientSocket request = do
         ("GET", "/ws") -> sendPlainTextResponse clientSocket 400 [] "websocket upgrade required on /ws"
         _ -> sendPlainTextResponse clientSocket 404 [] "not found"
 
-handleWebsocketUpgrade :: WebsocketRuntime -> Socket -> HttpRequest -> IO ()
-handleWebsocketUpgrade runtime clientSocket request = do
+handleWebsocketUpgrade :: WebsocketRuntime -> Socket -> BS.ByteString -> HttpRequest -> IO ()
+handleWebsocketUpgrade runtime clientSocket initialFrameBytes request = do
     let queryParams = requestQueryParams request
         resetRequested = Map.lookup "reset" queryParams == Just "true"
     draining <- serverDraining <$> readTVarIO (websocketRuntimeState runtime)
@@ -394,7 +397,7 @@ handleWebsocketUpgrade runtime clientSocket request = do
                                                             ]
                                                         )
                                                     )
-                                                frameBuffer <- newIORef BS.empty
+                                                frameBuffer <- newIORef initialFrameBytes
                                                 runWebsocketConnectionLoop
                                                     runtime
                                                     redisSocket
@@ -442,13 +445,23 @@ runWebsocketConnectionLoop runtime redisSocket clientSocket token sessionId last
             atomically (writeTVar closeVar (Just CloseForExpiry))
             runWebsocketConnectionLoop runtime redisSocket clientSocket token sessionId lastSeenCount closeVar frameBuffer
         (Nothing, False) -> do
-            frameResult <- timeout websocketPollDelayMicroseconds (readWebSocketFrame clientSocket frameBuffer)
+            bufferedFrameBytes <- readIORef frameBuffer
+            maybeReadable <-
+                if BS.null bufferedFrameBytes
+                    then
+                        withFdSocket
+                            clientSocket
+                            (\socketFd -> timeout websocketPollDelayMicroseconds (threadWaitRead (Fd socketFd)))
+                    else pure (Just ())
             continue <-
-                case frameResult of
+                case maybeReadable of
                     Nothing -> pure True
-                    Just (Left _) -> pure False
-                    Just (Right frame) ->
-                        handleIncomingWebSocketFrame runtime redisSocket clientSocket token sessionId frame
+                    Just () -> do
+                        frameResult <- readWebSocketFrame clientSocket frameBuffer
+                        case frameResult of
+                            Left _ -> pure False
+                            Right frame ->
+                                handleIncomingWebSocketFrame runtime redisSocket clientSocket token sessionId frame
             if continue
                 then do
                     statusResult <- redisGet redisSocket (sessionStatusKey sessionId)
@@ -983,7 +996,7 @@ flushNewWebsocketMessages redisSocket clientSocket sessionId lastSeenCount = do
 
 readWebSocketFrame :: Socket -> IORef BS.ByteString -> IO (Either String WebSocketFrame)
 readWebSocketFrame clientSocket bufferRef = do
-    headerBytesResult <- ensureBufferedBytes clientSocket bufferRef 2
+    headerBytesResult <- readBufferedBytes clientSocket bufferRef 2
     case headerBytesResult of
         Left err -> pure (Left err)
         Right headerBytes -> do
@@ -1458,7 +1471,7 @@ parseRedisReply value =
             (laterItems, trailingRest) <- takeArrayItems (itemCount - 1) next
             Just (firstItem : laterItems, trailingRest)
 
-readHttpRequest :: Socket -> IO (Either String HttpRequest)
+readHttpRequest :: Socket -> IO (Either String (HttpRequest, BS.ByteString))
 readHttpRequest clientSocket = go ""
   where
     go accumulated = do
@@ -1468,14 +1481,27 @@ readHttpRequest clientSocket = go ""
             then
                 if next == ""
                     then pure (Left "request payload was empty")
-                    else pure (parseHttpRequest next)
+                    else pure (parseHttpRequestWithRemainder next)
             else case splitOnSubstring "\r\n\r\n" next of
                 Nothing -> go next
                 Just (headerText, bodyText) ->
                     let expectedBodyLength = contentLengthFromHeaderText headerText
                      in if length bodyText >= expectedBodyLength
-                            then pure (parseHttpRequest (headerText ++ "\r\n\r\n" ++ take expectedBodyLength bodyText))
+                            then pure (parseHttpRequestWithRemainder next)
                             else go next
+
+parseHttpRequestWithRemainder :: String -> Either String (HttpRequest, BS.ByteString)
+parseHttpRequestWithRemainder rawRequest =
+    case splitOnSubstring "\r\n\r\n" rawRequest of
+        Nothing -> Left "could not parse HTTP headers"
+        Just (headerText, bodyAndTrailingText) ->
+            let expectedBodyLength = contentLengthFromHeaderText headerText
+                (bodyText, trailingText) = splitAt expectedBodyLength bodyAndTrailingText
+             in if length bodyText < expectedBodyLength
+                    then Left "request body was truncated"
+                    else do
+                        request <- parseHttpRequest (headerText ++ "\r\n\r\n" ++ bodyText)
+                        pure (request, BS8.pack trailingText)
 
 parseHttpRequest :: String -> Either String HttpRequest
 parseHttpRequest rawRequest =

@@ -5,6 +5,7 @@ module Prodbox.EffectInterpreter (
 )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (
     foldM,
     when,
@@ -80,6 +81,12 @@ import System.IO (
 import System.Info (
     os,
  )
+
+awsValidationRetryAttempts :: Int
+awsValidationRetryAttempts = 5
+
+awsValidationRetryDelayMicroseconds :: Int
+awsValidationRetryDelayMicroseconds = 2000000
 
 data InterpreterContext = InterpreterContext
     { interpreterRepoRoot :: FilePath
@@ -342,8 +349,7 @@ runValidation context validation =
             Left err -> pure (Failure err)
             Right settings -> do
                 environment <- awsCommandEnvironment settings
-                requireCapturedCommandSuccess
-                    False
+                requireAwsValidationCommandSuccess
                     "AWS credential check failed"
                     CommandSpec
                         { commandPath = "aws"
@@ -376,8 +382,7 @@ runValidation context validation =
             Right settings -> do
                 environment <- awsCommandEnvironment settings
                 let zoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
-                requireCapturedCommandSuccess
-                    False
+                requireAwsValidationCommandSuccess
                     "Route 53 access check failed"
                     CommandSpec
                         { commandPath = "aws"
@@ -522,6 +527,65 @@ requireCapturedCommandSuccess echoOutput failureLabel spec = do
                                 ++ ")"
                                 ++ toolOutputSuffix output
                             )
+
+requireAwsValidationCommandSuccess :: String -> CommandSpec -> IO (Result ())
+requireAwsValidationCommandSuccess failureLabel spec =
+    go awsValidationRetryAttempts
+  where
+    go :: Int -> IO (Result ())
+    go attemptsRemaining = do
+        outputResult <- captureCommand spec
+        case outputResult of
+            Failure err ->
+                pure
+                    ( Failure
+                        ( failureLabel
+                            ++ " for `"
+                            ++ commandDisplay spec
+                            ++ "`: "
+                            ++ err
+                        )
+                    )
+            Success output ->
+                case processExitCode output of
+                    ExitSuccess -> pure (Success ())
+                    ExitFailure code
+                        | attemptsRemaining > 1 && isRetryableAwsValidationFailure output -> do
+                            threadDelay awsValidationRetryDelayMicroseconds
+                            go (attemptsRemaining - 1)
+                        | otherwise ->
+                            pure
+                                ( Failure
+                                    ( failureLabel
+                                        ++ " for `"
+                                        ++ commandDisplay spec
+                                        ++ "` (exit code "
+                                        ++ show code
+                                        ++ ")"
+                                        ++ toolOutputSuffix output
+                                    )
+                                )
+
+isRetryableAwsValidationFailure :: ProcessOutput -> Bool
+isRetryableAwsValidationFailure output =
+    any (`Text.isInfixOf` renderedOutput) retryableFragments
+  where
+    renderedOutput =
+        Text.toLower
+            ( Text.pack (processStdout output)
+                <> Text.pack "\n"
+                <> Text.pack (processStderr output)
+            )
+    retryableFragments =
+        map
+            Text.pack
+            [ "invalidclienttokenid"
+            , "security token included in the request is invalid"
+            , "signaturedoesnotmatch"
+            , "unrecognizedclientexception"
+            , "requestexpired"
+            , "expiredtoken"
+            ]
 
 echoProcessOutput :: ProcessOutput -> IO ()
 echoProcessOutput output = do

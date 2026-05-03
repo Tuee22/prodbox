@@ -10,7 +10,7 @@ import Control.Exception (
     try,
  )
 import Control.Monad (foldM, unless)
-import Data.List (isInfixOf)
+import Data.List (dropWhileEnd, isInfixOf, isPrefixOf)
 import Prodbox.Aws (
     runAwsIamHarnessSetup,
     runAwsIamHarnessTeardown,
@@ -42,6 +42,7 @@ import Prodbox.Subprocess (
     CommandSpec (..),
     ProcessOutput (..),
     captureCommand,
+    commandDisplay,
     runStreamingCommand,
  )
 import Prodbox.TestPlan (
@@ -82,14 +83,29 @@ phaseTwoMessage = "Phase 2/2: running test suites"
 postTestRestoreMessage :: String
 postTestRestoreMessage = "Post-test: restoring supported runtime"
 
+publicEdgeNamespace :: String
+publicEdgeNamespace = "vscode"
+
+publicEdgeCertificateName :: String
+publicEdgeCertificateName = "public-edge-tls"
+
 publicEdgeReadyClassification :: String
 publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
 
 publicEdgeReadyAttempts :: Int
-publicEdgeReadyAttempts = 30
+publicEdgeReadyAttempts = 60
 
 publicEdgeReadyDelayMicroseconds :: Int
 publicEdgeReadyDelayMicroseconds = 10000000
+
+publicEdgeCertificateRepairAttempts :: Int
+publicEdgeCertificateRepairAttempts = 3
+
+data PublicEdgeCertificateFailure = PublicEdgeCertificateFailure
+    { publicEdgeFailedIssuanceAttempts :: Int
+    , publicEdgeNextPrivateKeySecretName :: Maybe String
+    }
+    deriving (Eq, Show)
 
 runTests :: FilePath -> TestCommand -> IO ExitCode
 runTests repoRoot command =
@@ -210,11 +226,9 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
-            , runWaitForNativeCommandOutputContains
+            , runWaitForPublicEdgeReady
                 repoRoot
                 environment
-                ["host", "public-edge"]
-                publicEdgeReadyClassification
                 publicEdgeReadyAttempts
                 publicEdgeReadyDelayMicroseconds
             ]
@@ -234,11 +248,9 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
             , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "websocket"]
-            , runWaitForNativeCommandOutputContains
+            , runWaitForPublicEdgeReady
                 repoRoot
                 environment
-                ["host", "public-edge"]
-                publicEdgeReadyClassification
                 publicEdgeReadyAttempts
                 publicEdgeReadyDelayMicroseconds
             , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"]
@@ -334,45 +346,226 @@ runCommandForExitCode spec = do
         Failure err -> failWith err
         Success exitCode -> pure exitCode
 
-runWaitForCommandOutputContains :: CommandSpec -> String -> Int -> Int -> IO ExitCode
-runWaitForCommandOutputContains spec expectedText attemptsLeft delayMicroseconds = do
-    outputResult <- captureCommand spec
-    case outputResult of
-        Failure err -> failWith ("failed to start `" ++ unwords (commandPath spec : commandArguments spec) ++ "`: " ++ err)
-        Success output -> do
-            let combinedOutput = processStdout output ++ processStderr output
-            putStr (processStdout output)
-            hPutStr stderr (processStderr output)
-            case processExitCode output of
-                ExitFailure code ->
-                    failWith
-                        ( "`"
-                            ++ unwords (commandPath spec : commandArguments spec)
-                            ++ "` exited with code "
-                            ++ show code
-                        )
-                ExitSuccess
-                    | expectedText `isInfixOf` combinedOutput -> pure ExitSuccess
-                    | attemptsLeft <= 1 ->
+runWaitForPublicEdgeReady :: FilePath -> [(String, String)] -> Int -> Int -> IO ExitCode
+runWaitForPublicEdgeReady repoRoot environment attempts delayMicroseconds =
+    go attempts publicEdgeCertificateRepairAttempts
+  where
+    spec = nativeCliCommandSpec repoRoot environment ["host", "public-edge"]
+
+    go :: Int -> Int -> IO ExitCode
+    go attemptsLeft repairsLeft = do
+        outputResult <- captureCommand spec
+        case outputResult of
+            Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
+            Success output -> do
+                let combinedOutput = processStdout output ++ processStderr output
+                putStr (processStdout output)
+                hPutStr stderr (processStderr output)
+                case processExitCode output of
+                    ExitFailure code ->
                         failWith
                             ( "`"
-                                ++ unwords (commandPath spec : commandArguments spec)
-                                ++ "` did not report required output `"
-                                ++ expectedText
-                                ++ "` before timeout."
+                                ++ commandDisplay spec
+                                ++ "` exited with code "
+                                ++ show code
                             )
-                    | otherwise -> do
-                        hPutStrLn stderr "Waiting for required native command output before retry."
-                        threadDelay delayMicroseconds
-                        runWaitForCommandOutputContains spec expectedText (attemptsLeft - 1) delayMicroseconds
+                    ExitSuccess
+                        | publicEdgeReadyClassification `isInfixOf` combinedOutput -> pure ExitSuccess
+                        | attemptsLeft <= 1 ->
+                            failWith
+                                ( "`"
+                                    ++ commandDisplay spec
+                                    ++ "` did not report required output `"
+                                    ++ publicEdgeReadyClassification
+                                    ++ "` before timeout."
+                                )
+                        | otherwise -> do
+                            repairResult <-
+                                if repairsLeft > 0
+                                    then maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
+                                    else pure (Right False)
+                            case repairResult of
+                                Left err -> failWith err
+                                Right repaired -> do
+                                    hPutStrLn
+                                        stderr
+                                        ( if repaired
+                                            then "Waiting for public-edge certificate reissue before retry."
+                                            else "Waiting for required native command output before retry."
+                                        )
+                                    threadDelay delayMicroseconds
+                                    go
+                                        (attemptsLeft - 1)
+                                        ( if repaired
+                                            then repairsLeft - 1
+                                            else repairsLeft
+                                        )
 
-runWaitForNativeCommandOutputContains :: FilePath -> [(String, String)] -> [String] -> String -> Int -> Int -> IO ExitCode
-runWaitForNativeCommandOutputContains repoRoot environment cliArgs expectedText attempts delayMicroseconds = do
-    runWaitForCommandOutputContains
-        (nativeCliCommandSpec repoRoot environment cliArgs)
-        expectedText
-        attempts
-        delayMicroseconds
+maybeRepairPublicEdgeCertificateIssuance ::
+    FilePath ->
+    [(String, String)] ->
+    String ->
+    IO (Either String Bool)
+maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
+    | "CLASSIFICATION=certificate-not-ready" `notElem` lines combinedOutput = pure (Right False)
+    | otherwise = do
+        failureInfoResult <- loadPublicEdgeCertificateFailure repoRoot environment
+        case failureInfoResult of
+            Left err -> pure (Left err)
+            Right Nothing -> pure (Right False)
+            Right (Just failureInfo) -> do
+                repairTargetsResult <- loadPublicEdgeRepairTargets repoRoot environment failureInfo
+                case repairTargetsResult of
+                    Left err -> pure (Left err)
+                    Right repairTargets ->
+                        if null repairTargets
+                            then pure (Right False)
+                            else do
+                                putStrLn
+                                    ( "Detected failed public-edge certificate issuance ("
+                                        ++ show (publicEdgeFailedIssuanceAttempts failureInfo)
+                                        ++ " failed attempt(s)); deleting stale ACME resources for an immediate reissue."
+                                    )
+                                deleteResult <-
+                                    captureCommand
+                                        CommandSpec
+                                            { commandPath = "kubectl"
+                                            , commandArguments = ["-n", publicEdgeNamespace, "delete", "--ignore-not-found"] ++ repairTargets
+                                            , commandEnvironment = Just environment
+                                            , commandWorkingDirectory = Just repoRoot
+                                            }
+                                pure $
+                                    case deleteResult of
+                                        Failure err ->
+                                            Left ("failed to start `kubectl` while repairing public-edge certificate issuance: " ++ err)
+                                        Success deleteOutput ->
+                                            case processExitCode deleteOutput of
+                                                ExitFailure _ ->
+                                                    Left
+                                                        ( "Failed to delete stale public-edge ACME resources: "
+                                                            ++ processStderr deleteOutput
+                                                            ++ processStdout deleteOutput
+                                                        )
+                                                ExitSuccess -> Right True
+
+loadPublicEdgeCertificateFailure ::
+    FilePath ->
+    [(String, String)] ->
+    IO (Either String (Maybe PublicEdgeCertificateFailure))
+loadPublicEdgeCertificateFailure repoRoot environment = do
+    outputResult <-
+        captureCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "-n"
+                    , publicEdgeNamespace
+                    , "get"
+                    , "certificate"
+                    , publicEdgeCertificateName
+                    , "--ignore-not-found=true"
+                    , "-o"
+                    , "jsonpath={.status.failedIssuanceAttempts}{\"|\"}{.status.nextPrivateKeySecretName}"
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just repoRoot
+                }
+    pure $
+        case outputResult of
+            Failure err ->
+                Left ("failed to start `kubectl` while checking public-edge certificate status: " ++ err)
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ ->
+                        Left
+                            ( "Failed to inspect public-edge certificate status: "
+                                ++ processStderr output
+                                ++ processStdout output
+                            )
+                    ExitSuccess ->
+                        Right (parsePublicEdgeCertificateFailure (processStdout output))
+
+loadPublicEdgeRepairTargets ::
+    FilePath ->
+    [(String, String)] ->
+    PublicEdgeCertificateFailure ->
+    IO (Either String [String])
+loadPublicEdgeRepairTargets repoRoot environment failureInfo = do
+    outputResult <-
+        captureCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "-n"
+                    , publicEdgeNamespace
+                    , "get"
+                    , "certificaterequest,order,challenge"
+                    , "-o"
+                    , "name"
+                    ]
+                , commandEnvironment = Just environment
+                , commandWorkingDirectory = Just repoRoot
+                }
+    pure $
+        case outputResult of
+            Failure err ->
+                Left ("failed to start `kubectl` while listing public-edge ACME resources: " ++ err)
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ ->
+                        Left
+                            ( "Failed to list public-edge ACME resources: "
+                                ++ processStderr output
+                                ++ processStdout output
+                            )
+                    ExitSuccess ->
+                        Right
+                            ( filter isPublicEdgeAcmeResource (nonEmptyLines (processStdout output))
+                                ++ maybe [] (\secretName -> ["secret/" ++ secretName]) (publicEdgeNextPrivateKeySecretName failureInfo)
+                            )
+
+parsePublicEdgeCertificateFailure :: String -> Maybe PublicEdgeCertificateFailure
+parsePublicEdgeCertificateFailure stdoutText =
+    case break (== '|') (trimWhitespace stdoutText) of
+        ("", _) -> Nothing
+        (attemptsText, "") ->
+            parseFailure attemptsText Nothing
+        (attemptsText, _ : secretNameText) ->
+            parseFailure attemptsText (normalizeOptionalText secretNameText)
+  where
+    parseFailure :: String -> Maybe String -> Maybe PublicEdgeCertificateFailure
+    parseFailure attemptsText maybeSecretName =
+        case reads attemptsText of
+            [(attemptCount, "")]
+                | attemptCount > 0 ->
+                    Just
+                        PublicEdgeCertificateFailure
+                            { publicEdgeFailedIssuanceAttempts = attemptCount
+                            , publicEdgeNextPrivateKeySecretName = maybeSecretName
+                            }
+            _ -> Nothing
+
+isPublicEdgeAcmeResource :: String -> Bool
+isPublicEdgeAcmeResource resourceName =
+    case break (== '/') resourceName of
+        (_, '/' : objectName) -> (publicEdgeCertificateName ++ "-") `isPrefixOf` objectName
+        _ -> False
+
+nonEmptyLines :: String -> [String]
+nonEmptyLines =
+    filter (not . null) . map trimWhitespace . lines
+
+trimWhitespace :: String -> String
+trimWhitespace = dropWhileEnd isWhitespace . dropWhile isWhitespace
+  where
+    isWhitespace character = character == ' ' || character == '\n' || character == '\r' || character == '\t'
+
+normalizeOptionalText :: String -> Maybe String
+normalizeOptionalText rawValue =
+    let trimmed = trimWhitespace rawValue
+     in if null trimmed
+            then Nothing
+            else Just trimmed
 
 runNativeCliCommandForExitCode :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runNativeCliCommandForExitCode repoRoot environment cliArgs = do

@@ -15,19 +15,12 @@ deterministic PV/PVC rebinding and the supported public workload delivery model.
 storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway browser-auth
 path for `vscode`, the JWT-only API and Redis-backed WebSocket workload surfaces, and the
 PostgreSQL doctrine for every Helm-managed application stack. Sprints `3.1`, `3.2`, `3.3`, and
-`3.4` remain closed on the current chart platform. Sprint `3.5` is active because the supported
-API doctrine now moves from a dedicated hostname to the shared hostname
-`test.resolvefintech.com/api` with Keycloak-backed JWT auth and RBAC at Envoy. Sprint `3.6` is
-active because the supported WebSocket doctrine now moves from a dedicated hostname to the shared
-hostname `test.resolvefintech.com/ws` while preserving the end-to-end realtime contract,
-including the one-connection-per-pod lifetime and readiness-based drain contract. Sprint `3.7`
-is active because operational dashboards such as Harbor, MinIO, and supported PostgreSQL
-administration surfaces must also route through Envoy on shared-host paths with the same
-Keycloak-backed auth or RBAC model. The supported `vscode` stack stays on Harbor-backed images
-after Harbor bootstrap, uses Gateway API plus Envoy Gateway `SecurityPolicy` for the public
-route, and keeps the Percona-operator-backed Patroni HA path for every Helm-managed application
-stack: exactly three replicas, synchronous replication, and no embedded chart-local PostgreSQL
-subchart.
+`3.4` remain closed on the current chart platform, and Sprints `3.5`, `3.6`, and `3.7` are now
+closed on shared-host API, WebSocket, and supported admin delivery. The supported `vscode` stack
+stays on Harbor-backed images after Harbor bootstrap, uses Gateway API plus Envoy Gateway
+`SecurityPolicy` for the public route, and keeps the Percona-operator-backed Patroni HA path for
+every Helm-managed application stack: exactly three replicas, synchronous replication, and no
+embedded chart-local PostgreSQL subchart.
 
 ## Current Baseline In Worktree
 
@@ -59,14 +52,12 @@ subchart.
 - Envoy validates the current API route from Keycloak issuer metadata plus JWKS-backed signing keys
   on the edge hot path; Keycloak availability remains a dependency for login, refresh, and later
   JWKS refresh rather than for per-request API authorization.
-- The shipped browser route currently exercises the Envoy-managed OIDC path, while the supported
-  chart-managed direct-OIDC `websocket` workload still exercises workload-owned session bootstrap
-  on the current dedicated Keycloak host. That dedicated-host public edge is now legacy
-  implementation only.
-- The current dedicated Keycloak identity route is rendered and the named validation surface now
-  proves the external-hostname, issuer, forwarded-header, and public-path constraints for
-  Keycloak-backed public workloads; the remaining active work is to replace that identity-host
-  contract with shared-host path routing plus Envoy-protected admin surfaces.
+- The shipped browser route exercises the Envoy-managed OIDC path, while the chart-managed
+  direct-OIDC `websocket` workload keeps its workload-owned session bootstrap behind the shared
+  host on the `/ws` route.
+- The shared-host Keycloak identity route is rendered on `/auth`, and the named validation
+  surfaces prove the issuer, forwarded-header, and public-path constraints for the supported
+  Keycloak-backed workloads.
 - Public TLS currently terminates at Envoy on the supported browser, API, and WebSocket hosts.
   Phase `3` now owns the move to one shared hostname and one certificate for all public and admin
   routes. Backend TLS or mTLS is not part of the current supported chart-workload contract.
@@ -75,8 +66,7 @@ subchart.
   shared application state for the current WebSocket surface and any later explicit external
   rate-limit service; the current chart catalog does not yet ship a standalone rate-limit-service
   workload.
-- Operational dashboards such as Harbor, MinIO, and supported PostgreSQL administration surfaces
-  are not yet closed on the shared Envoy edge. Sprint `3.7` owns that delivery doctrine.
+- Supported operational dashboards now close on the shared Envoy edge for Harbor and MinIO.
 - The current `PRODBOX_WORKLOAD_MODE=websocket` runtime now materializes workload-managed OIDC
   bootstrap, a real `/ws` upgrade path, one-live-connection-per-backend-pod lifetime,
   readiness-based drain, revoke-and-reconnect behavior, and long-lived socket session semantics on
@@ -237,7 +227,7 @@ Keycloak as the identity provider.
   `Ingress`.
 - `vscode-nginx` is removed from the supported chart dependency graph and browser-facing auth path.
 - Keycloak remains a chart-managed dependency, and this closed sprint removed the earlier
-  nginx-backed browser-auth path before the later shared-host doctrine reopened the public edge.
+  nginx-backed browser-auth path before the final shared-host doctrine closed on the public edge.
 - `keycloak_nginx_client_secret` is removed from the long-term chart secret contract.
 - The current chart platform closes on Envoy-managed browser OIDC for `vscode`; Sprint `3.5`
   owns the remaining single-host API doctrine and any direct-identity path that still survives
@@ -261,25 +251,22 @@ Keycloak as the identity provider.
 - `charts/vscode/` now renders the public app path through `HTTPRoute` plus Envoy Gateway
   `SecurityPolicy`, with no `Ingress`, `vscode-nginx` deployment, or nginx config path.
 - `charts/keycloak/` now renders the shared public-edge `Gateway`, certificate, identity
-  `HTTPRoute`, and the current Keycloak public-host baseline that later shared-host work
-  replaces.
-- `src/Prodbox/Lib/ChartPlatform.hs` now renders the Gateway API, OIDC, and current
-  dedicated-hostname values contract, and the chart-secret contract now uses
+  `HTTPRoute`, and the supported shared-host Keycloak contract.
+- `src/Prodbox/Lib/ChartPlatform.hs` now renders the Gateway API, OIDC, and shared-host values
+  contract, and the chart-secret contract now uses
   `keycloak_vscode_client_secret`.
 - `src/Prodbox/ContainerImage.hs`, `src/Prodbox/CLI/Rke2.hs`, and the built-frontend suites no
   longer carry the nginx proxy image or image-publication path.
-- The shipped chart surface now extends beyond `keycloak` plus `vscode` to the dedicated `api`
-  and `websocket` workloads. Sprint `3.5` remains active on the mixed-auth doctrine and Keycloak
-  public-host contract, while Sprint `3.6` remains active on the remaining end-to-end WebSocket
-  implementation.
+- The shipped chart surface now includes `keycloak`, `vscode`, `api`, and `websocket` workloads
+  on the supported shared-host public edge.
 
 ### Remaining Work
 
 None.
 
-## Sprint 3.5: JWT-Protected API Workload Delivery 🔄
+## Sprint 3.5: JWT-Protected API Workload Delivery ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `charts/api/`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Workload.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -347,9 +334,8 @@ explicitly on Keycloak-backed Envoy auth and RBAC.
 - The shipped chart catalog now exercises the auth shapes the single-host doctrine must preserve:
   Envoy-managed browser OIDC through `vscode`, request-carried bearer JWTs through `api`, and the
   remaining direct-OIDC or workload-owned state required by the `websocket` path.
-- `src/Prodbox/TestValidation.hs` still proves the current dedicated Keycloak identity-host
-  redirect, issuer, and public-path contract; Sprint `3.5` now replaces that proof with the
-  shared-host issuer and path contract.
+- `src/Prodbox/TestValidation.hs` proves the shared-host Keycloak issuer, redirect, and
+  public-path contract for the API route on `https://test.resolvefintech.com/api`.
 - The repo-owned chart surface now also carries the current WebSocket auth-path hardening:
   `charts/keycloak/` runs the identity path on one Keycloak replica, `charts/websocket/`
   authorizes a private token-endpoint backchannel to that identity workload, and the repo-owned
@@ -358,23 +344,18 @@ explicitly on Keycloak-backed Envoy auth and RBAC.
 
 ### Remaining Work
 
-- Move the API route from the current dedicated hostname to `test.resolvefintech.com/api`.
-- Align issuer, redirect, and RBAC assumptions with the shared-host Keycloak contract.
-- Rerun aggregate runtime validation from the updated tree so
-  `prodbox test integration charts-api` and `prodbox test all` close on the single-host API
-  doctrine.
+None.
 
-## Sprint 3.6: Redis-Backed WebSocket Delivery and Scale-Out 🔄
+## Sprint 3.6: Redis-Backed WebSocket Delivery and Scale-Out ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `charts/redis/`, `charts/websocket/`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Workload.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
 Add a supported WebSocket workload and its Redis backing service to the Haskell chart platform so
-the public edge closes on reconnect-safe realtime delivery under the shared hostname instead of
-the current dedicated-host split.
+the public edge closes on reconnect-safe realtime delivery under the shared hostname.
 
 ### Deliverables
 
@@ -426,33 +407,27 @@ the current dedicated-host split.
 - `src/Prodbox/Workload.hs`, `charts/websocket/`, and `charts/keycloak/` now also carry the
   private Keycloak token-endpoint backchannel, the matching inter-chart network-policy allowance,
   and the current single-replica Keycloak auth-path workaround needed to keep direct-OIDC browser
-  login stable on the supported stack; that auth path still needs collapse to the shared-host
-  doctrine.
+  login stable on the supported stack while remaining on the shared-host doctrine.
 
 ### Remaining Work
 
-- Move the WebSocket route from the current dedicated hostname to `test.resolvefintech.com/ws`.
-- Align the WebSocket bootstrap, issuer, and reconnect surface with the shared-host Keycloak
-  doctrine.
-- Rerun `prodbox test integration charts-websocket` and `prodbox test all` from the updated tree
-  so the real WebSocket path closes on the shared-host route plus fresh custom-image publication
-  path.
+None.
 
-## Sprint 3.7: Envoy-Routed Admin Surfaces and Shared-Host RBAC 🔄
+## Sprint 3.7: Envoy-Routed Admin Surfaces and Shared-Host RBAC ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `charts/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Expose operational dashboards such as Harbor, MinIO, and supported PostgreSQL administration
-surfaces through Envoy on `test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC,
-so the platform needs only one public subdomain, one DNS entry, and one certificate.
+Expose the supported operational dashboards, Harbor and MinIO, through Envoy on
+`test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC, so the platform needs only
+one public hostname, one DNS entry, and one certificate.
 
 ### Deliverables
 
-- Supported operational dashboards route only through Envoy on explicit shared-host paths.
+- Supported Harbor and MinIO dashboards route only through Envoy on explicit shared-host paths.
 - Keycloak-backed JWT auth and route-level RBAC protect those admin surfaces at Envoy.
 - No supported admin dashboard requires its own public hostname, DNS record, or certificate.
 - Public-edge diagnostics and named validations include the shared-host admin surface.
@@ -463,22 +438,23 @@ so the platform needs only one public subdomain, one DNS entry, and one certific
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration charts-platform`
-5. Named admin-route validations
-6. Manifest proof: Harbor, MinIO, and supported PostgreSQL administration surfaces render behind
-   Envoy on shared-host paths with Keycloak-backed auth policy
+5. `prodbox test integration admin-routes`
+6. Manifest proof: Harbor and MinIO render behind Envoy on shared-host paths with Keycloak-backed
+   auth policy
 
 ### Current Validation State
 
-- The current supported public-edge doctrine does not yet close on Envoy-routed operational
-  dashboards.
-- Harbor, MinIO, and supported PostgreSQL administration surfaces therefore still need explicit
-  shared-host routing, auth, RBAC, and proof ownership.
+- `src/Prodbox/CLI/Rke2.hs` now renders the supported Harbor and MinIO `HTTPRoute` plus
+  `SecurityPolicy` resources behind Envoy on `/harbor` and `/minio`.
+- `src/Prodbox/TestPlan.hs` and `src/Prodbox/TestValidation.hs` now expose
+  `prodbox test integration admin-routes` as the named external validation surface for the
+  supported shared-host admin paths.
+- `src/Prodbox/Host.hs` classifies Harbor and MinIO as supported admin routes on the shared
+  hostname alongside the application route catalog.
 
 ### Remaining Work
 
-- Add shared-host Envoy routes and Keycloak-backed auth or RBAC for the supported admin surfaces.
-- Extend diagnostics and named validations to classify and prove those admin paths.
-- Ensure the one-DNS or one-cert doctrine remains intact as admin coverage expands.
+None.
 
 ## Documentation Requirements
 

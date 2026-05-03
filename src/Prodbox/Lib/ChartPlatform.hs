@@ -266,6 +266,13 @@ data ChartInstallSnapshot = ChartInstallSnapshot
     }
     deriving (Eq, Show)
 
+data ResolvedCustomImage = ResolvedCustomImage
+    { resolvedCustomImageRepository :: String
+    , resolvedCustomImageTag :: String
+    , resolvedCustomImageRolloutToken :: Maybe String
+    }
+    deriving (Eq, Show)
+
 data PatroniClusterReadiness
     = PatroniClusterReady
     | PatroniClusterPending String
@@ -1469,8 +1476,8 @@ buildChartDeploymentPlanPure ::
     String ->
     Map String String ->
     Map String String ->
-    Maybe (String, String) ->
-    Maybe (String, String) ->
+    Maybe ResolvedCustomImage ->
+    Maybe ResolvedCustomImage ->
     Either String ChartDeploymentPlan
 buildChartDeploymentPlanPure repoRoot settings chartName chartSecrets gatewayEventKeys maybeGatewayImage maybePublicEdgeWorkloadImage = do
     when
@@ -1589,8 +1596,8 @@ renderReleaseValuesJson ::
     Map String String ->
     [ChartStorageBinding] ->
     Maybe String ->
-    Maybe (String, String) ->
-    Maybe (String, String) ->
+    Maybe ResolvedCustomImage ->
+    Maybe ResolvedCustomImage ->
     Either String String
 renderReleaseValuesJson definition namespace rootChart settings chartSecrets gatewayEventKeys storageBindings maybePublicFqdn maybeGatewayImage maybePublicEdgeWorkloadImage = do
     values <-
@@ -1853,7 +1860,7 @@ valuesForGateway ::
     ValidatedSettings ->
     Map String String ->
     String ->
-    Maybe (String, String) ->
+    Maybe ResolvedCustomImage ->
     Either String Value
 valuesForGateway namespace rootChart settings gatewayEventKeys sharedHostFqdn maybeGatewayImage = do
     when (Map.null gatewayEventKeys) (Left "gateway chart requires non-empty event_keys")
@@ -1872,14 +1879,17 @@ valuesForGateway namespace rootChart settings gatewayEventKeys sharedHostFqdn ma
     when (null awsSecretAccessKey) (Left "gateway chart requires aws_secret_access_key in settings")
     when (null awsRegion) (Left "gateway chart requires aws_region in settings")
     when (null zoneId) (Left "gateway chart requires route53_zone_id in settings")
-    (gatewayRepository, gatewayTag) <-
+    resolvedGatewayImage <-
         case maybeGatewayImage of
             Just imageInfo -> Right imageInfo
             Nothing -> Left "gateway chart requires a resolved image reference"
+    let gatewayRepository = resolvedCustomImageRepository resolvedGatewayImage
+        gatewayTag = resolvedCustomImageTag resolvedGatewayImage
     pure
         ( object
             [ "replicaCount" .= length gatewayNodeIds
             , "podAntiAffinity" .= podAntiAffinityValue settings
+            , "podAnnotations" .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedGatewayImage)
             , "global"
                 .= object
                     [ "namespace" .= namespace
@@ -2011,17 +2021,20 @@ valuesForApi ::
     String ->
     ValidatedSettings ->
     String ->
-    Maybe (String, String) ->
+    Maybe ResolvedCustomImage ->
     Either String Value
 valuesForApi namespace rootChart settings sharedHostFqdn maybePublicEdgeWorkloadImage = do
-    (workloadRepository, workloadTag) <-
+    resolvedWorkloadImage <-
         case maybePublicEdgeWorkloadImage of
             Just imageInfo -> Right imageInfo
             Nothing -> Left "api chart requires a resolved public-edge workload image reference"
+    let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
+        workloadTag = resolvedCustomImageTag resolvedWorkloadImage
     pure
         ( object
             [ "replicaCount" .= (maybe 2 fromIntegral (api_replicas (deployment (validatedConfig settings))) :: Int)
             , "podAntiAffinity" .= podAntiAffinityValue settings
+            , "podAnnotations" .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedWorkloadImage)
             , "global"
                 .= object
                     [ "namespace" .= namespace
@@ -2063,10 +2076,10 @@ valuesForWebsocket ::
     ValidatedSettings ->
     Map String String ->
     String ->
-    Maybe (String, String) ->
+    Maybe ResolvedCustomImage ->
     Either String Value
 valuesForWebsocket namespace rootChart settings chartSecrets sharedHostFqdn maybePublicEdgeWorkloadImage = do
-    (workloadRepository, workloadTag) <-
+    resolvedWorkloadImage <-
         case maybePublicEdgeWorkloadImage of
             Just imageInfo -> Right imageInfo
             Nothing -> Left "websocket chart requires a resolved public-edge workload image reference"
@@ -2075,10 +2088,13 @@ valuesForWebsocket namespace rootChart settings chartSecrets sharedHostFqdn mayb
             "keycloak_websocket_client_secret"
             chartSecrets
             "keycloak_websocket_client_secret is required in chart secrets"
+    let workloadRepository = resolvedCustomImageRepository resolvedWorkloadImage
+        workloadTag = resolvedCustomImageTag resolvedWorkloadImage
     pure
         ( object
             [ "replicaCount" .= (maybe 2 fromIntegral (websocket_replicas (deployment (validatedConfig settings))) :: Int)
             , "podAntiAffinity" .= podAntiAffinityValue settings
+            , "podAnnotations" .= customImagePodAnnotationsValue (resolvedCustomImageRolloutToken resolvedWorkloadImage)
             , "global"
                 .= object
                     [ "namespace" .= namespace
@@ -2141,15 +2157,20 @@ podAntiAffinityValue settings =
         [ "enabled" .= not (dev_mode (deployment (validatedConfig settings)))
         ]
 
-resolveGatewayChartImage :: IO (Either String (Maybe (String, String)))
+customImagePodAnnotationsValue :: Maybe String -> Value
+customImagePodAnnotationsValue maybeRolloutToken =
+    object
+        (maybe [] (\rolloutToken -> ["prodbox.io/image-build-id" .= rolloutToken]) maybeRolloutToken)
+
+resolveGatewayChartImage :: IO (Either String (Maybe ResolvedCustomImage))
 resolveGatewayChartImage = do
     resolveCustomImageTag ContainerImage.harborGatewayImageRepository
 
-resolvePublicEdgeWorkloadChartImage :: IO (Either String (Maybe (String, String)))
+resolvePublicEdgeWorkloadChartImage :: IO (Either String (Maybe ResolvedCustomImage))
 resolvePublicEdgeWorkloadChartImage = do
     resolveCustomImageTag ContainerImage.harborPublicEdgeWorkloadImageRepository
 
-resolveCustomImageTag :: String -> IO (Either String (Maybe (String, String)))
+resolveCustomImageTag :: String -> IO (Either String (Maybe ResolvedCustomImage))
 resolveCustomImageTag repository = do
     machineIdExists <- doesFileExist machineIdPath
     if not machineIdExists
@@ -2157,11 +2178,42 @@ resolveCustomImageTag repository = do
         else do
             rawMachineId <- readFile machineIdPath
             let machineId = map toLower (trimWhitespace rawMachineId)
-            pure
-                ( if length machineId /= 32 || any (not . isHexDigit) machineId
-                    then Left ("Unexpected machine-id format in " ++ machineIdPath ++ ": " ++ show machineId)
-                    else Right (Just (repository, take 63 ("prodbox-" ++ machineId)))
-                )
+            if length machineId /= 32 || any (not . isHexDigit) machineId
+                then pure (Left ("Unexpected machine-id format in " ++ machineIdPath ++ ": " ++ show machineId))
+                else do
+                    let imageTag = take 63 ("prodbox-" ++ machineId)
+                        imageRef = repository ++ ":" ++ imageTag
+                    maybeRolloutToken <- resolveLocalImageBuildToken imageRef
+                    pure
+                        ( Right
+                            ( Just
+                                ResolvedCustomImage
+                                    { resolvedCustomImageRepository = repository
+                                    , resolvedCustomImageTag = imageTag
+                                    , resolvedCustomImageRolloutToken = maybeRolloutToken
+                                    }
+                            )
+                        )
+
+resolveLocalImageBuildToken :: String -> IO (Maybe String)
+resolveLocalImageBuildToken imageRef = do
+    result <-
+        captureCommand
+            CommandSpec
+                { commandPath = "docker"
+                , commandArguments = ["image", "inspect", "--format", "{{.Id}}", imageRef]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Nothing
+                }
+    pure $
+        case result of
+            Failure _ -> Nothing
+            Success output ->
+                case processExitCode output of
+                    ExitSuccess ->
+                        let buildToken = trimWhitespace (processStdout output)
+                         in if null buildToken then Nothing else Just buildToken
+                    ExitFailure _ -> Nothing
 
 renderStatusRelease ::
     Map String ChartInstallSnapshot ->

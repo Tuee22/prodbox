@@ -7,11 +7,10 @@
 > **Purpose**: Document the authoritative target component inventory for infrastructure, runtime
 > control surfaces, validation surfaces, and state or authority boundaries in the Haskell rewrite.
 
-The inventory documents the authoritative Haskell-only implementation target, including the
-reopened public-edge doctrine that replaces the earlier dedicated-host model with a single public
-hostname. When the cleanup ledger is non-empty,
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) tracks unsupported residue
-separately from this canonical inventory.
+The inventory documents the authoritative Haskell-only implementation end state. The supported
+public edge closes on one public hostname, shared-host path routing, and native-host-architecture
+container publication. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+preserves cleanup history separately from this canonical inventory.
 
 ## Haskell-Only Architecture
 
@@ -26,7 +25,7 @@ separately from this canonical inventory.
 | DNS inspection | Haskell DNS check module | `src/Prodbox/Dns.hs` |
 | Gateway runtime | Haskell daemon runtime with HTTP `/v1/state` observability, heartbeat, in-memory ownership, DNS write loops, Orders-backed gateway-interval validation, HMAC signing, and single-stage `ubuntu:24.04` packaging with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and an official AWS CLI bundle per target architecture. Config and Orders parsing still carry certificate and socket metadata, but the current closed runtime surface does not materialize peer transport from those fields. | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` |
 | Formal verification | Haskell TLA+ wrapper | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` |
-| Chart platform and retained state | Haskell chart registry, PostgreSQL platform constants, retained-storage reconciler, CLI runtime, the Percona-operator-backed application-database contract, path-routed browser and admin delivery through Envoy on `test.resolvefintech.com`, explicit bearer-token and browser-return-path auth-carrier doctrine, Keycloak JWT-backed Envoy auth and RBAC, JWT-only API delivery from Keycloak JWKS-backed Envoy validation, and the Redis-backed WebSocket chart surface with real `/ws` upgrade plus any later explicit external rate-limit-service surface | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/` |
+| Chart platform and retained state | Haskell chart registry, PostgreSQL platform constants, retained-storage reconciler, CLI runtime, the Percona-operator-backed application-database contract, path-routed browser and supported admin delivery through Envoy on `test.resolvefintech.com`, explicit bearer-token and browser-return-path auth-carrier doctrine, Keycloak JWT-backed Envoy auth and RBAC, JWT-only API delivery from Keycloak JWKS-backed Envoy validation, and the Redis-backed WebSocket chart surface with real `/ws` upgrade plus any later explicit external rate-limit-service surface | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/` |
 | Public workload runtime | Haskell internal runtime for the supported API workload plus the WebSocket workload selected through environment rather than repo-root config; the current runtime owns the shared-host `/api` and `/ws` surfaces, real `/ws` upgrade, Redis-backed reconnect-safe state, one-connection-per-pod lifetime, and readiness-based drain | `src/Prodbox/Workload.hs` |
 | Public-edge diagnostics | Haskell host diagnostic for the single-host Envoy edge and its path-routed application or admin surfaces | `src/Prodbox/Host.hs` |
 | Onboarding and AWS administration | Haskell interactive onboarding plus AWS CLI subprocess orchestration for prompt-driven temporary elevated flows, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input and supported AWS subprocess auth isolated from ambient host AWS state | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` |
@@ -73,7 +72,7 @@ separately from this canonical inventory.
 | Public-edge diagnostic | `prodbox host public-edge` | Classify Route 53, Gateway API, TLS, shared-host path routing, advertisement mode, and external-reachability state |
 | Gateway runtime | `prodbox gateway start <config-path>|status <config-path>|config-gen <output-path> --node-id <node-id>` | Start the in-pod gateway entrypoint, inspect gateway state over the governed HTTP `/v1/state` observability surface, and generate config |
 | Public workload runtime | `prodbox workload start` | Run the internal API runtime or WebSocket runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the chart-managed workloads behind the shared public hostname, including the real `/ws` upgrade, one-connection-per-pod lifetime, and readiness-based drain contract |
-| Chart runtime | `prodbox charts list|status <chart>|deploy <chart>|delete <chart> [--yes]` | Manage the chart platform, including Keycloak, `vscode`, `api`, `websocket`, and supported admin surfaces behind Envoy on shared-host paths with Keycloak-backed auth and RBAC |
+| Chart runtime | `prodbox charts list|status <chart>|deploy <chart>|delete <chart> [--yes]` | Manage the chart platform, including Keycloak, `vscode`, `api`, `websocket`, and the supported Harbor or MinIO admin surfaces behind Envoy on shared-host paths with Keycloak-backed auth and RBAC |
 | DNS check | `prodbox dns check` | Inspect DNS ownership state |
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Inspect cluster readiness and collect infrastructure pod logs |
 | Interactive onboarding | `prodbox config setup` | Guided Dhall authoring plus live AWS and operator prompts for one temporary elevated credential set |
@@ -138,7 +137,7 @@ separately from this canonical inventory.
 | Container build root | `/opt/build` | Canonical container-side Haskell build artifacts |
 | Canonical custom Dockerfiles | `docker/` | Authoritative home for repository-owned container builds |
 | Frontend container build | `docker/prodbox.Dockerfile` | Frontend image build owned by Phase `1`; single-stage `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, and no symlinked Haskell tool shims |
-| Gateway container build | `docker/gateway.Dockerfile` | Gateway image build owned by Phase `2`; single-stage `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and the official AWS CLI bundle keyed by `TARGETARCH` |
+| Gateway container build | `docker/gateway.Dockerfile` | Gateway image build owned by Phase `2`; single-stage `ubuntu:24.04` with in-image `ghcup`, pinned GHC `9.14.1`, no symlinked Haskell tool shims, and the official AWS CLI bundle keyed by the native Debian host architecture |
 | Pulumi definitions | `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml` | YAML Pulumi stacks (`runtime: yaml`) for the public AWS validation resources |
 | Engineering doctrine | `documents/engineering/` | Architecture and operator docs |
 | Development plan | `DEVELOPMENT_PLAN/` | Status, sequencing, and cleanup ownership |

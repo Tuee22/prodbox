@@ -36,7 +36,7 @@ spec:
             - none
             - --bind-addr
             - 0.0.0.0:8080
-            - --base-path
+            - --abs-proxy-base-path
             - {{ .Values.vscode.basePath | quote }}
             - /workspace
           ports:

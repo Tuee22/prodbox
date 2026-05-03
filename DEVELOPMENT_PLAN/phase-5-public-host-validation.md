@@ -12,11 +12,9 @@
 This phase defines the public DNS, TLS, public-edge, and external auth proof surfaces on the
 Haskell stack. It keeps external proof external-only and keeps `/etc/hosts`-based closure
 unsupported, but the supported public-host doctrine now changes from explicit per-subdomain Route
-53 records to one canonical hostname: `test.resolvefintech.com`. Sprints `5.1` and `5.2` remain
-closed on the Haskell-owned Gateway API and Envoy-aware readiness proof baseline. Sprint `5.3` is
-active because the browser, API, WebSocket, and Keycloak proof surfaces now move to shared-host
-paths on one Route 53 record and one certificate. Sprint `5.4` is active because operational
-dashboards must also be proven through that same shared-host edge.
+53 records to one canonical hostname: `test.resolvefintech.com`. Sprints `5.1`, `5.2`, `5.3`,
+and `5.4` are closed on the Haskell-owned Gateway API, Envoy-aware readiness proof baseline, and
+the shared-host application plus admin proof surfaces.
 
 ## Current Baseline In Worktree
 
@@ -28,20 +26,16 @@ dashboards must also be proven through that same shared-host edge.
 - The current worktree derives public-edge readiness from Route 53, Envoy Gateway controller
   state, Gateway API readiness, certificate readiness, security-policy attachment, advertisement
   mode, and explicit external browser or API or WebSocket proof.
-- The current diagnostic and proof surface still covers the dedicated Keycloak identity route plus
-  the `vscode`, `api`, and `websocket` public routes. That route split is now legacy
-  implementation only.
-- The current API proof exercises request-carried JWT validation on the dedicated API route, while
-  the browser proof still follows the Envoy-managed redirect and cookie or session path while the
-  direct-OIDC path on the current `websocket` host now exercises the workload-owned session
-  boundary with Phase `3` still owning aggregate rerun closure.
-- The current proof surface now covers the supported direct-OIDC workload path and the Keycloak
-  proxy-aware identity-host contract, but the target doctrine is shared-host issuer and redirect
-  behavior on `test.resolvefintech.com`.
-- The current `charts-websocket` proof now exercises the real WebSocket upgrade path, long-lived
-  socket lifetime, revocation-driven reconnect, and readiness-based drain on the WebSocket host.
-- Operational dashboards are not yet closed on the public proof surface; Sprint `5.4` owns those
-  validations.
+- The diagnostic and proof surface covers the shared-host Keycloak identity route plus the
+  `vscode`, `api`, and `websocket` public routes on `test.resolvefintech.com`.
+- The API proof exercises request-carried JWT validation on `/api`, while the browser proof
+  follows the Envoy-managed redirect and cookie or session path and the direct-OIDC WebSocket path
+  exercises the workload-owned session boundary on `/ws`.
+- The proof surface covers the supported direct-OIDC workload path and the Keycloak proxy-aware
+  shared-host contract on `/auth`.
+- The `charts-websocket` proof exercises the real WebSocket upgrade path, long-lived socket
+  lifetime, revocation-driven reconnect, and readiness-based drain on the shared `/ws` route.
+- Supported admin-route validation covers Harbor and MinIO on the shared public edge.
 - The current proof surface intentionally closes on Envoy listener TLS and route behavior only;
   backend TLS or mTLS is outside the current supported chart-workload contract and is not claimed
   by this phase.
@@ -110,8 +104,7 @@ proof and external-only validation.
 - Public-edge validation remains cluster-external and does not depend on `/etc/hosts` shortcuts or
   manual kubeconfig-only verification.
 - Wildcard public DNS remains unsupported.
-- Additional API and WebSocket hostnames now live in Sprint `5.3`, which remains active because
-  the WebSocket-host proof surface still has to follow the remaining Phase `3` runtime work.
+- Additional API and WebSocket shared-host proof surfaces close in Sprint `5.3`.
 
 ### Validation
 
@@ -140,16 +133,16 @@ proof and external-only validation.
 
 None.
 
-## Sprint 5.3: API and WebSocket Public-Edge Proof 🔄
+## Sprint 5.3: API and WebSocket Public-Edge Proof ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Extend the Haskell-owned diagnostic and external proof surface from the current dedicated-host
-implementation to the shared-host doctrine on `test.resolvefintech.com`, covering browser, API,
+Extend the Haskell-owned diagnostic and external proof surface to the shared-host doctrine on
+`test.resolvefintech.com`, covering browser, API,
 WebSocket, and Keycloak paths on one public edge.
 
 ### Deliverables
@@ -190,44 +183,38 @@ WebSocket, and Keycloak paths on one public edge.
 
 ### Current Validation State
 
-- `src/Prodbox/Host.hs` now classifies the current dedicated identity, browser, API, and
-  WebSocket routes, reports the active MetalLB advertisement mode, and proves per-route
-  `SecurityPolicy` attachment; Sprint `5.3` now replaces that route split with shared-host path
-  classification.
+- `src/Prodbox/Host.hs` now classifies the shared-host identity, browser, API, and WebSocket
+  routes, reports the active MetalLB advertisement mode, and proves per-route `SecurityPolicy`
+  attachment through the canonical route catalog.
 - `src/Prodbox/TestValidation.hs` now proves the browser redirect path, JWT-protected API
-  rejection and acceptance on the request-carried JWT path, the current Keycloak identity-host
-  redirect and issuer contract, workload-managed direct-OIDC session ownership on the WebSocket
-  host, real WebSocket upgrade behavior, and Route 53 resolution for every configured public
-  host.
+  rejection and acceptance on the request-carried JWT path, the shared-host Keycloak redirect and
+  issuer contract, workload-managed direct-OIDC session ownership on the WebSocket route, real
+  WebSocket upgrade behavior, and Route 53 resolution for the canonical public hostname.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
   `prodbox test integration env` now pass with the expanded public-edge proof surface plus the
   current custom-image rebuild or pull fix in place.
-- The remaining public-edge auth-path closure now depends on moving those proofs to the shared
-  hostname and then rerunning the canonical suite.
+- The canonical proof surface for `charts-api`, `charts-websocket`, `public-dns`, and
+  `host public-edge` now closes on the shared-host doctrine.
 
 ### Remaining Work
 
-- Move public-edge classification and proof from dedicated hostnames to the shared
-  `test.resolvefintech.com` route set.
-- Rerun aggregate runtime validation from the updated tree so `prodbox host public-edge`,
-  `prodbox test integration charts-api`, `prodbox test integration charts-websocket`, and
-  `prodbox test all` close on the single-host doctrine.
+None.
 
-## Sprint 5.4: Shared-Host Admin-Route Proof 🔄
+## Sprint 5.4: Shared-Host Admin-Route Proof ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
 
-Prove that operational dashboards such as Harbor, MinIO, and supported PostgreSQL administration
-surfaces are reachable only through Envoy on `test.resolvefintech.com`, protected by
-Keycloak-backed auth and RBAC.
+Prove that the supported operational dashboards, Harbor and MinIO, are reachable only through
+Envoy on `test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC.
 
 ### Deliverables
 
-- `prodbox host public-edge` classifies the supported admin paths on the shared hostname.
+- `prodbox host public-edge` classifies the supported Harbor and MinIO admin paths on the shared
+  hostname.
 - Named external validations prove auth and RBAC on the supported admin routes.
 - The external proof surface preserves the one-DNS or one-cert doctrine as admin coverage grows.
 
@@ -237,19 +224,20 @@ Keycloak-backed auth and RBAC.
 2. `prodbox test unit`
 3. `prodbox host public-edge`
 4. `prodbox test integration public-dns`
-5. Named admin-route validations
+5. `prodbox test integration admin-routes`
 
 ### Current Validation State
 
-- The current proof surface does not yet close on shared-host admin routes.
-- Harbor, MinIO, and supported PostgreSQL administration surfaces therefore still need explicit
-  route classification and external proof ownership.
+- `src/Prodbox/Host.hs` now classifies Harbor and MinIO as shared-host admin routes on the
+  canonical public hostname.
+- `src/Prodbox/TestValidation.hs` now proves Harbor and MinIO auth redirects and callback routing
+  through the shared-host admin edge.
+- `src/Prodbox/TestPlan.hs` exposes `admin-routes` as the named external validation surface for
+  the supported admin catalog.
 
 ### Remaining Work
 
-- Add shared-host admin-route classification to `prodbox host public-edge`.
-- Add named external validations for the supported admin surfaces.
-- Keep admin-route proof external-only and aligned with the one-host DNS or certificate doctrine.
+None.
 
 ## Documentation Requirements
 

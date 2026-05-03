@@ -23,12 +23,13 @@ import Data.Aeson (
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Char8 qualified as BS8
-import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
 import Data.List (isInfixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
 import Network.WebSockets qualified as WebSocket
@@ -95,7 +96,7 @@ publicEdgeReadyClassification :: String
 publicEdgeReadyClassification = "CLASSIFICATION=ready-for-external-proof"
 
 publicEdgeReadyAttempts :: Int
-publicEdgeReadyAttempts = 30
+publicEdgeReadyAttempts = 60
 
 publicEdgeReadyDelayMicroseconds :: Int
 publicEdgeReadyDelayMicroseconds = 10000000
@@ -117,6 +118,18 @@ awsTestSshReadyAttempts = 18
 
 awsTestSshReadyDelayMicroseconds :: Int
 awsTestSshReadyDelayMicroseconds = 10000000
+
+websocketConnectionAttempts :: Int
+websocketConnectionAttempts = 4
+
+websocketConnectionRetryDelayMicroseconds :: Int
+websocketConnectionRetryDelayMicroseconds = 5000000
+
+websocketDistinctConnectionRetryDelayMicroseconds :: Int
+websocketDistinctConnectionRetryDelayMicroseconds = 1000000
+
+websocketReceiveRetryDelayMicroseconds :: Int
+websocketReceiveRetryDelayMicroseconds = 1000000
 
 runNativeValidation :: FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
 runNativeValidation repoRoot environment validation = do
@@ -605,40 +618,59 @@ completeDirectOidcLogin repoRoot settings =
                                                             }
 
 openManagedWebsocketConnection :: String -> String -> String -> IO (Either String ManagedWebsocketConnection)
-openManagedWebsocketConnection host path token = do
-    connectionResult <-
-        try
-            ( Wuss.newSecureClientConnectionWith
-                host
-                443
-                path
-                WebSocket.defaultConnectionOptions
-                [(CI.mk (BS8.pack "Authorization"), BS8.pack ("Bearer " ++ token))]
-            ) ::
-            IO (Either SomeException (WebSocket.Connection, IO ()))
-    case connectionResult of
-        Left err -> pure (Left ("failed to open websocket connection: " ++ displayException err))
-        Right (connection, finalizeConnection) -> do
-            welcomeResult <- readWebsocketWelcome connection 10000000
-            case welcomeResult of
-                Left err -> do
-                    finalizeConnection
-                    pure (Left err)
-                Right podName ->
-                    pure
-                        ( Right
-                            ManagedWebsocketConnection
-                                { managedWebsocketConnection = connection
-                                , managedWebsocketPod = podName
-                                , managedWebsocketFinalize = finalizeConnection
-                                }
-                        )
+openManagedWebsocketConnection host path token = go websocketConnectionAttempts
+  where
+    go :: Int -> IO (Either String ManagedWebsocketConnection)
+    go attemptsLeft = do
+        connectionResult <-
+            try
+                ( Wuss.newSecureClientConnectionWith
+                    host
+                    443
+                    path
+                    WebSocket.defaultConnectionOptions
+                        { WebSocket.connectionCompressionOptions = WebSocket.NoCompression
+                        }
+                    [(CI.mk (BS8.pack "Authorization"), BS8.pack ("Bearer " ++ token))]
+                ) ::
+                IO (Either SomeException (WebSocket.Connection, IO ()))
+        case connectionResult of
+            Left err ->
+                retryOrFail attemptsLeft ("failed to open websocket connection: " ++ displayException err)
+            Right (connection, finalizeConnection) -> do
+                welcomeResult <- readWebsocketWelcome connection 10000000
+                case welcomeResult of
+                    Left err -> do
+                        finalizeConnection
+                        retryOrFail attemptsLeft err
+                    Right podName ->
+                        pure
+                            ( Right
+                                ManagedWebsocketConnection
+                                    { managedWebsocketConnection = connection
+                                    , managedWebsocketPod = podName
+                                    , managedWebsocketFinalize = finalizeConnection
+                                    }
+                            )
+
+    retryOrFail :: Int -> String -> IO (Either String ManagedWebsocketConnection)
+    retryOrFail attemptsLeft detail
+        | attemptsLeft <= 1 || not (shouldRetryTransientWebsocketOpenError detail) = pure (Left detail)
+        | otherwise = do
+            hPutStrLn stderr ("Waiting for websocket route readiness before retry: " ++ detail)
+            threadDelay websocketConnectionRetryDelayMicroseconds
+            go (attemptsLeft - 1)
 
 openDistinctManagedWebsocketConnection :: String -> String -> String -> String -> Int -> IO (Either String ManagedWebsocketConnection)
 openDistinctManagedWebsocketConnection host path token excludedPod attemptsLeft = do
     connectionResult <- openManagedWebsocketConnection host path token
     case connectionResult of
-        Left err -> pure (Left err)
+        Left err
+            | attemptsLeft <= 1 || not (shouldRetryTransientWebsocketOpenError err) -> pure (Left err)
+            | otherwise -> do
+                hPutStrLn stderr ("Waiting for websocket route readiness before retry: " ++ err)
+                threadDelay websocketDistinctConnectionRetryDelayMicroseconds
+                openDistinctManagedWebsocketConnection host path token excludedPod (attemptsLeft - 1)
         Right connection
             | managedWebsocketPod connection /= excludedPod -> pure (Right connection)
             | attemptsLeft <= 1 -> do
@@ -651,6 +683,8 @@ openDistinctManagedWebsocketConnection host path token excludedPod attemptsLeft 
                     )
             | otherwise -> do
                 closeManagedWebsocketConnection connection
+                hPutStrLn stderr "Waiting for a distinct websocket backend pod before retry."
+                threadDelay websocketDistinctConnectionRetryDelayMicroseconds
                 openDistinctManagedWebsocketConnection host path token excludedPod (attemptsLeft - 1)
 
 closeManagedWebsocketConnection :: ManagedWebsocketConnection -> IO ()
@@ -679,7 +713,12 @@ waitForWebsocketBroadcast connection expectedMessage attemptsLeft = go attemptsL
         | otherwise = do
             messageResult <- waitForWebsocketJsonMessage connection 10000000
             case messageResult of
-                Left err -> pure (Left err)
+                Left err
+                    | attemptsRemaining > 1 && shouldRetryTransientWebsocketReceiveError err -> do
+                        hPutStrLn stderr ("Waiting for websocket broadcast delivery before retry: " ++ err)
+                        threadDelay websocketReceiveRetryDelayMicroseconds
+                        go (attemptsRemaining - 1)
+                    | otherwise -> pure (Left err)
                 Right payload ->
                     case websocketPayloadType payload of
                         Left err -> pure (Left err)
@@ -718,9 +757,41 @@ waitForWebsocketJsonMessage connection timeoutMicroseconds = do
         Just (Left err) -> pure (Left ("websocket receive failed: " ++ displayException err))
         Just (Right messageText) ->
             pure $
-                case eitherDecode (BL8.pack (Text.unpack messageText)) of
+                case decodeJsonTextUtf8 messageText of
                     Left err -> Left ("websocket payload was not valid JSON: " ++ err)
                     Right payload -> Right payload
+
+shouldRetryTransientWebsocketOpenError :: String -> Bool
+shouldRetryTransientWebsocketOpenError detail =
+    let lowered = map toLowerAscii detail
+     in any
+            (`isInfixOf` lowered)
+            [ "<<timeout>>"
+            , "timed out"
+            , "temporary failure"
+            , "service unavailable"
+            , "connection refused"
+            , "connection reset"
+            , "unexpected eof"
+            , "end of file"
+            , "tls"
+            , "bad handshake"
+            , "handshake"
+            , "draining"
+            , "502"
+            , "503"
+            , "504"
+            ]
+
+shouldRetryTransientWebsocketReceiveError :: String -> Bool
+shouldRetryTransientWebsocketReceiveError detail =
+    let lowered = map toLowerAscii detail
+     in any
+            (`isInfixOf` lowered)
+            [ "<<timeout>>"
+            , "timed out waiting for websocket message"
+            , "timed out"
+            ]
 
 keycloakWellKnownSummary :: Value -> Either String (String, String, String, String)
 keycloakWellKnownSummary payload =
@@ -1482,6 +1553,8 @@ assertCommandOutputContainsAll spec expectedTexts = do
 waitForCommandOutputContainsAll :: CommandSpec -> [String] -> Int -> Int -> IO ExitCode
 waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = go attempts
   where
+    loweredExpectedTexts = map (map toLowerAscii) expectedTexts
+
     go :: Int -> IO ExitCode
     go attemptsLeft = do
         outputResult <- captureCommand spec
@@ -1494,9 +1567,10 @@ waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = 
                 putStr (processStdout output)
                 hPutStr stderr (processStderr output)
                 let combinedOutput = processStdout output ++ processStderr output
+                    loweredCombinedOutput = map toLowerAscii combinedOutput
                 case processExitCode output of
                     ExitSuccess
-                        | all (`isInfixOf` combinedOutput) expectedTexts -> pure ExitSuccess
+                        | all (`isInfixOf` loweredCombinedOutput) loweredExpectedTexts -> pure ExitSuccess
                         | attemptsLeft <= 1 ->
                             failWith
                                 ( "`"
@@ -1592,7 +1666,14 @@ runJsonCommand spec = do
     textResult <- runTextCommand spec
     pure $ do
         stdoutText <- textResult
-        eitherDecode (BL8.pack stdoutText)
+        decodeJsonStringUtf8 stdoutText
+
+decodeJsonStringUtf8 :: String -> Either String Value
+decodeJsonStringUtf8 = decodeJsonTextUtf8 . Text.pack
+
+decodeJsonTextUtf8 :: Text.Text -> Either String Value
+decodeJsonTextUtf8 =
+    eitherDecode . BL.fromStrict . TextEncoding.encodeUtf8
 
 settingsAwsEnvironment :: FilePath -> IO (Either String (ValidatedSettings, [(String, String)]))
 settingsAwsEnvironment repoRoot = do

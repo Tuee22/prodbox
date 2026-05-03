@@ -331,8 +331,8 @@ host-process invocation remains a development mode, not the supported steady sta
 Containerization is first-class for integration/runtime image publishing:
 
 - `prodbox rke2 install` builds the gateway image from `docker/gateway.Dockerfile`
-- the publish path runs one `docker buildx build --platform linux/amd64,linux/arm64 --push`
-  command from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
+- the publish path runs an ordinary host-native `docker build`, then pushes the resulting Harbor
+  tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
   pinned GHC `9.14.1`
 - Harbor is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache

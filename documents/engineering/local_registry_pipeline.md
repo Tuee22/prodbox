@@ -5,7 +5,8 @@
 **Referenced by**: README.md, documents/engineering/README.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/effectful_dag_architecture.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
 
 > **Purpose**: Define how `prodbox` provisions Harbor, bootstraps Harbor storage-backend
-> prerequisites, publishes dual-arch custom images, mirrors required public images, and keeps
+> prerequisites, publishes native-host-architecture custom images, mirrors required public images,
+> and keeps
 > later supported workloads on Harbor-backed image refs.
 
 ## 1. Scope
@@ -20,7 +21,7 @@ This document is the SSoT for the local image-registry doctrine:
 4. Required public images are mirrored into Harbor idempotently after Harbor and its storage
    backend are healthy and before the later workloads that need them are deployed.
 5. Custom `prodbox` images are built outside the cluster via Docker CLI and published to Harbor as
-   `linux/amd64` plus `linux/arm64` manifests, and no supported edge path depends on a
+   native host-architecture images only, and no supported edge path depends on a
    repository-owned nginx auth-proxy image.
 
 Retained storage and MinIO persistence doctrine remain defined in
@@ -40,8 +41,8 @@ The native Haskell lifecycle reconciles Harbor state in order:
 6. Harbor project reconcile for `prodbox`
 7. MinIO bootstrap install from public `quay.io/minio/*` image refs
 8. Docker login plus required public-image mirror into Harbor
-9. Multi-platform custom-image publish and host-arch import for the Haskell gateway image and the
-   shared public-edge workload image
+9. Host-native custom-image build, push, and import for the Haskell gateway image and the shared
+   public-edge workload image
 10. `registries.yaml` reconcile and conditional RKE2 restart
 11. Harbor-backed platform-runtime install for MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator
@@ -54,11 +55,6 @@ The critical split is:
 - post-Harbor-ready publication: mirror required public images and publish custom images into
   Harbor
 - later Helm deployment: Harbor-backed images only
-
-Custom-image publication uses a `docker-container` buildx builder created with host networking.
-That builder contract is required because the canonical Harbor push target remains the local
-NodePort endpoint `127.0.0.1:30080`, and buildx export or push traffic must resolve that address
-from inside the builder container as well as from the host.
 
 ### 2.1 Harbor Readiness Contract
 
@@ -118,25 +114,21 @@ before the effect succeeds.
 
 ## 5. Public Image Population
 
-Population is idempotent and dual-arch. It runs after Harbor and the local MinIO-backed backend
-are healthy:
+Population is idempotent and host-architecture specific. It runs after Harbor and the local
+MinIO-backed backend are healthy:
 
 1. enumerate the required supported-workload public images plus any already-referenced non-Harbor
    cluster images
 2. normalize upstream refs into canonical registry-qualified image refs and ordered candidate
    source lists
 3. map those refs into the Harbor `prodbox` project
-4. verify a candidate source publishes both `linux/amd64` and `linux/arm64`
+4. pull the preferred candidate source for the current host architecture
 5. if a preferred candidate later hits a transient Harbor availability failure during publication,
    retry that same candidate before falling through
 6. if the candidate still fails during Harbor publication, purge the Harbor destination repository
    path and retry the next configured candidate source
-7. create the Harbor target manifest only when the Harbor target is missing one of those
-   architectures
-
-This is why inspect-time success is not sufficient: the later
-`docker buildx imagetools create` step still depends on the source registry being usable for
-digest fetches all the way through publication.
+7. retag the pulled source onto the Harbor target and push that host-native image only when the
+   Harbor target for the current architecture is missing
 
 ## 6. Gateway Container Build Doctrine
 
@@ -147,15 +139,13 @@ Container build requirements:
 1. use single-stage `ubuntu:24.04` for repository-owned Haskell images
 2. build the Haskell gateway binary under `/opt/build`
 3. install `ghcup` in-image, pin GHC `9.14.1`, and do not create symlinked Haskell tool shims
-4. publish `linux/amd64` plus `linux/arm64` together through
-   `docker buildx build --platform linux/amd64,linux/arm64 --push`
-5. create or reuse the `docker-container` buildx builder with host networking so Harbor pushes to
-   `127.0.0.1:30080` succeed from inside the builder
+4. build once through ordinary host-native `docker build`
+5. push the resulting Harbor tags through ordinary `docker push`
 6. keep `.dockerignore` synchronized with the intended build inputs
 7. use `tini` as PID 1 in the runtime image
 8. invoke the canonical CLI startup path through the Haskell gateway entrypoint
-9. install the official AWS CLI bundle per `TARGETARCH` so the in-pod Route 53 subprocess path
-    remains available inside the single-stage gateway image
+9. install the official AWS CLI bundle from the image's native Debian architecture so the in-pod
+   Route 53 subprocess path remains available inside the single-stage gateway image
 
 ## 7. Operator Runbook
 

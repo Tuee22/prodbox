@@ -16,7 +16,7 @@ foundations for true IaC plus AWS validation. It also owns the canonical fronten
 under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprints `1.1`,
-`1.2`, `1.3`, `1.4`, and `1.5` remain closed on the Haskell-only rewrite baseline. The phase now
+`1.2`, `1.3`, `1.4`, and `1.5` remain closed on the Haskell-only rewrite baseline. The phase
 closes on the single-host public-edge config doctrine: one canonical public hostname,
 `test.resolvefintech.com`, settings-backed MetalLB L2 or BGP rendering, explicit public-edge
 scaling inputs, and Route 53 hosted-zone alignment enforced during supported config authoring. The
@@ -35,8 +35,8 @@ explicit repo package-bound updates.
   rest of the supported command matrix remains Haskell-owned:
   `aws policy|setup|teardown|check-quotas|request-quotas`,
   `host ensure-tools|check-ports|info|firewall|public-edge`, `rke2`, `pulumi`, `dns check`,
-  `gateway start|status|config-gen`, `charts`, `k8s health|wait|logs`, `check-code`, `test`, and
-  `tla-check`.
+  `gateway start|status|config-gen`, `workload start`, `charts`, `k8s health|wait|logs`,
+  `check-code`, `test`, and `tla-check`.
 - The tracked schema artifact is `prodbox-config-types.dhall`; the operator-authored repo-root
   config is `prodbox-config.dhall`, written by `prodbox config setup` and ignored from version
   control. `src/Prodbox/Settings.hs` and `src/Prodbox/Repo.hs` own decoding, display,
@@ -398,8 +398,8 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
   during `prodbox config setup`, while `src/Prodbox/TestValidation.hs` and the built-frontend
   suites align the config and lifecycle proofs with the one-host doctrine.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
-  `prodbox test integration env` now pass from the updated tree with the single-host settings
-  contract in place.
+  `prodbox test integration env` remain the canonical validation gates for the single-host
+  settings contract.
 
 ### Remaining Work
 

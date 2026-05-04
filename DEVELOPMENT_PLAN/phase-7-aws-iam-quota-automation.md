@@ -13,12 +13,12 @@
 
 This phase owns interactive config authoring, policy generation, IAM user management,
 service-quota automation, and the test-only elevated credential harness. The implemented
-credential boundary is now Haskell-owned: public onboarding and public AWS administration prompt
+credential boundary is Haskell-owned: public onboarding and public AWS administration prompt
 for temporary elevated credentials, and stored `aws_admin_for_test_simulation.*` exists only for
 test-suite simulation of that ephemeral prompt input, with the native IAM validation harness as
 the only supported runtime consumer. The shared suite-level IAM harness keeps the aggregate
 Pulumi-backend proof behind the visible local runbook and closes the supported local-cluster
-aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is now
+aggregate validation path on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is
 closed on the single-host onboarding and placeholder-domain removal doctrine for
 `test.resolvefintech.com`.
 

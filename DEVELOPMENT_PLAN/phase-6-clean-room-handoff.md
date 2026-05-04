@@ -29,8 +29,8 @@ and single-host handoff cleanup.
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history and
-  now carries zero pending supported-path cleanup items.
-- Root guidance now aligns with the post-cleanup Haskell-only repository state.
+  carries zero pending supported-path cleanup items.
+- Root guidance aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
 
@@ -212,12 +212,11 @@ supported path.
 - `src/Prodbox/Workload.hs` now preserves buffered HTTP-upgrade remainder bytes, waits for
   websocket socket readability before frame parsing, and consumes the frame header before mask-key
   parsing so client-sent masked frames reach Redis and broadcast validation without corruption.
-- The latest clean-room closure proof now passes through `prodbox test all`,
-  `prodbox config show`, `prodbox config validate`, and `prodbox host public-edge`, with the
-  aggregate rerun carrying the supported-runtime restore all the way through
-  `CLASSIFICATION=ready-for-external-proof` and `Validation: charts-vscode`,
-  `Validation: charts-api`, `Validation: charts-websocket`, `Validation: lifecycle`, and
-  post-test restore all closing on the shared-host surface.
+- The clean-room closure contract is `prodbox test all`, `prodbox config show`,
+  `prodbox config validate`, and `prodbox host public-edge`, with the aggregate rerun carrying the
+  supported-runtime restore through `CLASSIFICATION=ready-for-external-proof` and the named
+  `Validation: charts-vscode`, `Validation: charts-api`, `Validation: charts-websocket`, and
+  `Validation: lifecycle` surfaces before post-test restore closes on the shared-host edge.
 - Supported-path search closure remains intact after the rerun: `example.com` is absent from the
   supported code and governed doctrine surfaces that define the live operator path.
 - Repository cleanup history is preserved in

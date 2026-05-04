@@ -28,7 +28,7 @@ govern this plan suite.
 ## Closure Status
 
 Phases `0`, `1`, `2`, `3`, `4`, `5`, `6`, and `7` are closed on the supported Haskell-only end
-state. The final clean-room rerun and handoff validation now close on the canonical `prodbox`
+state. The final clean-room rerun and handoff validation close on the canonical `prodbox`
 command surface with no remaining phase-owned cleanup residue.
 
 The current worktree closes on:
@@ -61,7 +61,7 @@ The current worktree closes on:
 - one Redis surface that currently backs WebSocket shared state and may later back an explicit
   external rate-limit service, but does not yet ship a standalone rate-limit-service workload or
   validation surface
-- one cleanup ledger that preserves completed removal history and now contains zero pending
+- one cleanup ledger that preserves completed removal history and contains zero pending
   supported-path cleanup items
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
@@ -238,8 +238,9 @@ surfaces:
   Keycloak or Redis while Envoy still has cached signing keys and the presented tokens remain
   valid.
 - The current supported transport boundary now stays explicit in the plan: public TLS terminates at
-  Envoy for the shipped browser, API, and WebSocket hosts, while backend TLS or mTLS is outside
-  the supported chart-workload contract unless a later doctrine revision expands that path.
+  Envoy for the shipped `/vscode`, `/api`, and `/ws` routes on
+  `test.resolvefintech.com`, while backend TLS or mTLS is outside the supported
+  chart-workload contract unless a later doctrine revision expands that path.
 - `src/Prodbox/PublicEdge.hs` now centralizes the shared-host route catalog and issuer derivation
   consumed by lifecycle, DNS, chart, host-diagnostic, and native validation surfaces, keeping
   `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one Haskell-owned

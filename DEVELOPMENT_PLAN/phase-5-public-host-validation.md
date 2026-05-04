@@ -11,10 +11,10 @@
 
 This phase defines the public DNS, TLS, public-edge, and external auth proof surfaces on the
 Haskell stack. It keeps external proof external-only and keeps `/etc/hosts`-based closure
-unsupported, but the supported public-host doctrine now changes from explicit per-subdomain Route
-53 records to one canonical hostname: `test.resolvefintech.com`. Sprints `5.1`, `5.2`, `5.3`,
-and `5.4` are closed on the Haskell-owned Gateway API, Envoy-aware readiness proof baseline, and
-the shared-host application plus admin proof surfaces.
+unsupported. The supported public-host doctrine uses one canonical hostname,
+`test.resolvefintech.com`, rather than explicit per-subdomain Route 53 records. Sprints `5.1`,
+`5.2`, `5.3`, and `5.4` are closed on the Haskell-owned Gateway API, Envoy-aware readiness proof
+baseline, and the shared-host application plus admin proof surfaces.
 
 ## Current Baseline In Worktree
 
@@ -191,8 +191,8 @@ WebSocket, and Keycloak paths on one public edge.
   issuer contract, workload-managed direct-OIDC session ownership on the WebSocket route, real
   WebSocket upgrade behavior, and Route 53 resolution for the canonical public hostname.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
-  `prodbox test integration env` now pass with the expanded public-edge proof surface plus the
-  current custom-image rebuild or pull fix in place.
+  `prodbox test integration env` remain aligned with the expanded shared-host public-edge proof
+  surface.
 - The canonical proof surface for `charts-api`, `charts-websocket`, `public-dns`, and
   `host public-edge` now closes on the shared-host doctrine.
 

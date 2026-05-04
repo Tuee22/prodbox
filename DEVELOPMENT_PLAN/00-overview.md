@@ -141,7 +141,7 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree now implements the final Haskell-only rewrite architecture. The supported
+The repository worktree implements the final Haskell-only rewrite architecture. The supported
 operator surface is `prodbox`, the supported configuration contract is direct
 `Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and the supported build topology
 remains `.build/prodbox` on the host plus `/opt/build` inside repository-owned Dockerfiles.
@@ -150,7 +150,7 @@ plus status path close on the implemented HTTP `/v1/state` payload and daemon ti
 contract, the final clean-room handoff closes on the canonical rerun surface, and the earlier
 unsupported Python runtime and tooling surfaces remain removed.
 
-The supported public edge now uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
+The supported public edge uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
 Keycloak on the single public hostname `test.resolvefintech.com`. Every externally reachable
 application or operational dashboard routes through explicit shared-host paths such as `/auth`,
 `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio`, protected by Keycloak-backed JWT auth or RBAC
@@ -161,7 +161,7 @@ on a true `/ws` upgrade with Redis-backed shared state and readiness-based drain
 terminates at Envoy while backend TLS or mTLS remains outside the supported chart-workload
 contract.
 
-Root guidance plus the governed command-surface, public-edge, and chart-platform doctrine docs now
+Root guidance plus the governed command-surface, public-edge, and chart-platform doctrine docs
 describe that same shared-host route catalog and credential boundary, so the documented operator
 path matches the implemented one-host public edge.
 

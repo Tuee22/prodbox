@@ -61,9 +61,10 @@ embedded chart-local PostgreSQL subchart.
 - The shared-host Keycloak identity route is rendered on `/auth`, and the named validation
   surfaces prove the issuer, forwarded-header, and public-path constraints for the supported
   Keycloak-backed workloads.
-- Public TLS currently terminates at Envoy on the supported browser, API, and WebSocket hosts.
-  Phase `3` now owns the move to one shared hostname and one certificate for all public and admin
-  routes. Backend TLS or mTLS is not part of the current supported chart-workload contract.
+- Public TLS currently terminates at Envoy on the supported `/vscode`, `/api`, and `/ws` routes
+  behind `test.resolvefintech.com`. Phase `3` closes on one shared hostname and one certificate
+  for all public and admin routes. Backend TLS or mTLS is not part of the current supported
+  chart-workload contract.
 - The current worktree ships repo-owned API, Redis, and WebSocket chart stacks, with settings-
   backed replica controls for the public API and WebSocket workloads. Redis remains scoped to
   shared application state for the current WebSocket surface and any later explicit external
@@ -73,7 +74,7 @@ embedded chart-local PostgreSQL subchart.
 - The current `PRODBOX_WORKLOAD_MODE=websocket` runtime now materializes workload-managed OIDC
   bootstrap, a real `/ws` upgrade path, one-live-connection-per-backend-pod lifetime,
   readiness-based drain, revoke-and-reconnect behavior, and long-lived socket session semantics on
-  the WebSocket host.
+  the shared `/ws` route.
 
 ## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage ✅
 
@@ -333,7 +334,7 @@ explicitly on Keycloak-backed Envoy auth and RBAC.
   named external validation surface that proves unauthenticated rejection, wrong-claim rejection,
   and valid-token acceptance.
 - `prodbox check-code`, `prodbox test unit`, `prodbox test integration cli`, and
-  `prodbox test integration env` now pass with the API workload surface in place.
+  `prodbox test integration env` remain aligned with the API workload surface.
 - The shipped chart catalog now exercises the auth shapes the single-host doctrine must preserve:
   Envoy-managed browser OIDC through `vscode`, request-carried bearer JWTs through `api`, and the
   remaining direct-OIDC or workload-owned state required by the `websocket` path.

@@ -12,7 +12,7 @@
 This phase closes the hard migration gap between parity and replacement. It owns the Harbor-first
 local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
-supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks now close
+supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks close
 on clean-room-only behavior, native-host-architecture Docker publication, one Route 53 record,
 and one listener certificate for `test.resolvefintech.com`.
 

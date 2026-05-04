@@ -102,8 +102,8 @@ is prompt-driven for temporary elevated AWS credentials; stored
 The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
 classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, `SecurityPolicy`
-attachment, certificate readiness, dedicated identity, browser, API, and WebSocket hostname
-routing, and external reachability.
+attachment, certificate readiness, the shared-host `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`,
+and `/minio` routes, and external reachability.
 
 ### `prodbox rke2`
 
@@ -181,7 +181,7 @@ Kubernetes Gateway API or Envoy Gateway controller.
 `src/Prodbox/Workload.hs` owns the internal public workload runtime used by the `api` and
 `websocket` chart surfaces. It is repo-rootless and selected through environment such as
 `PRODBOX_WORKLOAD_MODE=api|websocket`. The current `websocket` runtime owns the workload-managed
-OIDC bootstrap under `/oidc`, the JWT-protected `/ws` upgrade path, and readiness-based drain for
+OIDC bootstrap under `/ws/oidc`, the JWT-protected `/ws` upgrade path, and readiness-based drain for
 live upgraded connections.
 
 ### `prodbox charts`

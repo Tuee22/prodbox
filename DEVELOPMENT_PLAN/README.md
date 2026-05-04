@@ -243,6 +243,9 @@ surfaces:
   consumed by lifecycle, DNS, chart, host-diagnostic, supported-runtime, and native validation
   surfaces, keeping `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one
   Haskell-owned public-edge contract.
+- Root `README.md` plus the governed command-surface, public-edge, and chart-platform doctrine
+  docs now describe that same single-host route catalog and no longer present dedicated public
+  subdomains as part of the supported path.
 - `charts/keycloak/`, `charts/api/`, `charts/redis/`, `charts/websocket/`, `charts/vscode/`,
   `src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/Workload.hs` now own the shared-host
   workload contract, including the internal `PRODBOX_WORKLOAD_MODE=api|websocket` runtime,

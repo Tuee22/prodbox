@@ -161,6 +161,10 @@ on a true `/ws` upgrade with Redis-backed shared state and readiness-based drain
 terminates at Envoy while backend TLS or mTLS remains outside the supported chart-workload
 contract.
 
+Root guidance plus the governed command-surface, public-edge, and chart-platform doctrine docs now
+describe that same shared-host route catalog and credential boundary, so the documented operator
+path matches the implemented one-host public edge.
+
 The lifecycle is Harbor-first and native-architecture only: Harbor plus its storage backend may
 bootstrap from public registries, every later Helm deployment pulls through Harbor, and `amd64`
 or `arm64` hosts build and publish only their own architecture. The stack closes on in-image

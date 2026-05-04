@@ -333,10 +333,10 @@ extended that baseline.
 - `src/Prodbox/CLI/Rke2.hs` now renders MetalLB through `IPAddressPool` plus `L2Advertisement`,
   establishing the current L2-supported path that Sprint `1.5` expands with repo-owned BGP
   rendering.
-- `src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
-  `src/Prodbox/Aws.hs` now carry the current `domain.keycloak_fqdn` setting through schema,
-  display, onboarding, and authored config output as part of the legacy baseline Sprint `1.5`
-  replaces.
+- The dedicated-host config fields that this sprint originally introduced now survive only as
+  completed cleanup history: Sprint `1.5` and Sprint `7.4` remove those fields from the current
+  schema, validators, and authored config surface while preserving the Envoy Gateway baseline
+  this sprint established.
 - `src/Prodbox/TestValidation.hs` and the built-frontend suites now align the foundational
   validation assumptions with the Envoy Gateway baseline that later single-host work refines.
 

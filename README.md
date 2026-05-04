@@ -83,11 +83,13 @@ Internet
   -> Services
   -> Pods
 
-Dedicated public hosts:
-  auth.<zone>   -> Keycloak identity flow
-  vscode.<zone> -> Envoy-protected browser app
-  api.<zone>    -> JWT-protected API
-  ws.<zone>     -> JWT-protected WebSocket workload
+Shared public hostname:
+  https://test.resolvefintech.com/auth   -> Keycloak identity flow
+  https://test.resolvefintech.com/vscode -> Envoy-protected browser app
+  https://test.resolvefintech.com/api    -> JWT-protected API
+  https://test.resolvefintech.com/ws     -> JWT-protected WebSocket workload
+  https://test.resolvefintech.com/harbor -> Harbor admin surface
+  https://test.resolvefintech.com/minio  -> MinIO console
 ```
 
 ### Network Design
@@ -115,8 +117,8 @@ The current worktree closes on the supported edge architecture. Today:
   Redis-backed shared-state workload
 - Keycloak uses the shared public hostname on the `/auth` path
 - MetalLB supports config-selected L2 or BGP advertisement through repo-owned settings
-- `host public-edge`, `charts-api`, and `charts-websocket` extend the external proof surface to
-  the dedicated API and WebSocket hosts
+- `host public-edge`, `charts-api`, `charts-websocket`, and `admin-routes` extend the external
+  proof surface across the shared-host application and admin paths
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).

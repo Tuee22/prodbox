@@ -32,11 +32,11 @@ The supported chart doctrine is:
 4. `keycloak` depends on that namespace-local Patroni cluster.
 5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, and targets an
    Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy.
-6. `api` runs from the shared `prodbox-public-edge-workload` image and targets a dedicated
-   JWT-protected public hostname.
+6. `api` runs from the shared `prodbox-public-edge-workload` image and targets the shared-host
+   JWT-protected `/api` route.
 7. `websocket` runs from the shared `prodbox-public-edge-workload` image, depends on the internal
-   `redis` release for shared state, owns workload-managed OIDC bootstrap on `/oidc`, and targets
-   a dedicated JWT-protected `/ws` public hostname.
+   `redis` release for shared state, owns workload-managed OIDC bootstrap on `/ws/oidc`, and
+   targets the shared-host JWT-protected `/ws` route.
 8. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
    path is `prodbox rke2 install`.
 
@@ -202,11 +202,11 @@ The current implementation boundary is:
 
 - `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
 - `api` uses Envoy-local JWT validation plus route-claim authorization through `SecurityPolicy`.
-- `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on `/oidc`,
-  Envoy-local JWT validation plus route-claim authorization on `/ws`, Redis-backed reconnect-safe
-  workload state, and readiness-based drain for live upgraded connections.
-- `keycloak` stays on the dedicated identity host and publicly exposes only the identity-route
-  surfaces the shipped browser and workload-managed OIDC flows require.
+- `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
+  `/ws/oidc`, Envoy-local JWT validation plus route-claim authorization on `/ws`, Redis-backed
+  reconnect-safe workload state, and readiness-based drain for live upgraded connections.
+- `keycloak` stays on the shared public hostname under `/auth` and publicly exposes only the
+  identity-route surfaces the shipped browser and workload-managed OIDC flows require.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add
   chart-local auth proxies or a parallel ingress model.
 
@@ -244,7 +244,7 @@ data. The rendered Kubernetes secret names are:
 - `prodbox-<root-chart>-pg-primaryuser`
 
 When `api` or `websocket` deploy as separate root charts, the chart platform reuses the shared
-`keycloak_*` values from `.prodbox-state/vscode/.secrets.json` so the dedicated Keycloak-host
+`keycloak_*` values from `.prodbox-state/vscode/.secrets.json` so the shared-host Keycloak
 client contracts stay aligned across the shipped public workloads.
 
 ## 11. Planning Ownership

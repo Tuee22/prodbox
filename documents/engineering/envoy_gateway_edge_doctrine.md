@@ -186,19 +186,23 @@ Internet
   -> pods
 ```
 
-The preferred hostname model is explicit:
+The supported route model is explicit:
 
-- `auth.<zone>` or another dedicated Keycloak hostname for identity
-- one hostname per browser-facing app
-- additional API or WebSocket hostnames only when a workload actually needs them
+- one shared public hostname, currently `test.resolvefintech.com`
+- Keycloak on `/auth`
+- browser workloads on explicit path prefixes such as `/vscode`
+- API and WebSocket workloads on explicit path prefixes such as `/api` and `/ws`
+- admin surfaces on explicit path prefixes such as `/harbor` and `/minio`
 
 Example hostname routing inside this model may look like:
 
 ```text
-auth.<zone> -> Envoy -> Keycloak Service
-app.<zone>  -> Envoy -> App Service
-api.<zone>  -> Envoy -> API Service
-ws.<zone>   -> Envoy -> WebSocket Service
+/auth   -> Envoy -> Keycloak Service
+/vscode -> Envoy -> Browser App Service
+/api    -> Envoy -> API Service
+/ws     -> Envoy -> WebSocket Service
+/harbor -> Envoy -> Harbor Service
+/minio  -> Envoy -> MinIO Service
 ```
 
 The supported architecture no longer treats an app-local nginx auth proxy or Traefik `Ingress`
@@ -272,12 +276,12 @@ The current worktree ships all three supported public-edge auth shapes:
 - `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
 - `api` uses request-carried bearer JWTs validated locally at Envoy from Keycloak issuer metadata,
   JWKS, audience, and route claims.
-- `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on `/oidc`,
-  then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
+- `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
+  `/ws/oidc`, then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
   connections.
 
-The dedicated Keycloak public host remains the external identity surface for issuer metadata,
-browser login, and workload-managed redirect flows.
+The shared-host Keycloak route on `/auth` remains the external identity surface for issuer
+metadata, browser login, and workload-managed redirect flows.
 
 ## 6. JWT Validation Doctrine
 
@@ -291,7 +295,7 @@ JWT  = signed token format often carried after OIDC authentication
 Representative claims in a Keycloak-issued token may include:
 
 ```text
-iss            = https://auth.<zone>/realms/<realm>
+iss            = https://<shared-host>/auth/realms/<realm>
 sub            = <user-id>
 aud            = <client-or-api>
 exp            = <unix-timestamp>
@@ -461,10 +465,10 @@ The supported operational model is:
 1. TLS terminates at Envoy on the public edge.
 2. Backend HTTP is acceptable on the trusted cluster network, but workloads with stricter
    zero-trust requirements may also use TLS or mTLS from Envoy to backends.
-3. Dedicated hostnames should remain explicit, for example `auth.<zone>`, `app.<zone>`,
-   `api.<zone>`, and `ws.<zone>`.
+3. Shared-host path routing must remain explicit, with `/auth`, `/vscode`, `/api`, `/ws`,
+   `/harbor`, and `/minio` owned as first-class public-edge paths.
 4. Keycloak must be proxy-aware and must emit public redirects and issuer URLs that match the
-   public identity hostname.
+   shared public hostname and `/auth` path contract.
 5. Proxy headers such as `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Host` are part
    of the expected backend contract when the workload needs them.
 6. Keycloak health or management endpoints are not a public-route goal by default; the public
@@ -478,9 +482,9 @@ Lifecycle and chart implications:
    operator on the self-managed cluster path.
 2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
    and Envoy data-plane images rather than Traefik images.
-3. The current chart platform ships Keycloak, `vscode`, `api`, and `websocket` on dedicated
-   public hostnames, keeps the Keycloak public route limited to the identity surfaces browser or
-   OIDC workloads need, and no longer depends on `vscode-nginx`.
+3. The current chart platform ships Keycloak, `vscode`, `api`, and `websocket` on one shared
+   public hostname, keeps the Keycloak public route limited to the identity surfaces browser or
+   OIDC workloads need under `/auth`, and no longer depends on `vscode-nginx`.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not
    the Envoy Gateway public edge.
 5. Additional JWT-only API routes, Redis-backed workloads, or WebSocket services must be added
@@ -517,8 +521,8 @@ Recommended phases:
 - deploy MetalLB
 - deploy Envoy Gateway
 - expose Envoy Gateway through a Kubernetes `LoadBalancer` service
-- route the dedicated Keycloak hostname to the Keycloak service
-- route application hostnames to application services
+- route the shared-host `/auth` path to the Keycloak service
+- route the other shared-host public path prefixes to application services
 - keep application-managed OIDC first when that minimizes migration risk
 
 ### Phase 2: Add JWT validation for selected APIs

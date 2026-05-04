@@ -340,7 +340,7 @@ Containerization is first-class for integration/runtime image publishing:
 - `PRODBOX_GATEWAY_IMAGE` remains an override for explicit image pinning/testing
 
 See [Local Registry Pipeline](./local_registry_pipeline.md) for Harbor install,
-dual-arch publish flow, explicit public-image reconcile, and RKE2 registry behavior.
+native-host-architecture publish flow, explicit public-image reconcile, and RKE2 registry behavior.
 
 ### CLI Management
 

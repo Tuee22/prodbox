@@ -29,7 +29,7 @@ govern this plan suite.
 
 Phases `0`, `1`, `2`, `3`, `4`, `5`, `6`, and `7` are closed on the supported Haskell-only end
 state. The final clean-room rerun and handoff validation now close on the canonical `prodbox`
-command surface with no remaining open phase-owned work.
+command surface with no remaining phase-owned cleanup residue.
 
 The current worktree closes on:
 
@@ -64,10 +64,11 @@ The current worktree closes on:
 - one cleanup ledger that preserves completed removal history and now contains zero pending
   supported-path cleanup items
 
-The clean-room closure proof remains the Phase `6` command contract expressed through
+The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
 `prodbox test all`, `prodbox config show`, `prodbox config validate`, `prodbox host public-edge`,
-and the supported-path `example.com` search proof. The canonical validation contract otherwise
-remains the `prodbox` command surface documented by this plan: `prodbox check-code`,
+and the repository text-search proof that `example.com` is absent from the supported path. The
+canonical validation contract otherwise remains the `prodbox` command surface documented by this
+plan: `prodbox check-code`,
 `prodbox test unit`, `prodbox test integration cli`, `prodbox test integration env`, and the
 named native validations behind `prodbox test integration ...`. Environment-dependent AWS and
 public-edge proof remain attached to those commands rather than recorded here as a fresh
@@ -240,9 +241,9 @@ surfaces:
   Envoy for the shipped browser, API, and WebSocket hosts, while backend TLS or mTLS is outside
   the supported chart-workload contract unless a later doctrine revision expands that path.
 - `src/Prodbox/PublicEdge.hs` now centralizes the shared-host route catalog and issuer derivation
-  consumed by lifecycle, DNS, chart, host-diagnostic, supported-runtime, and native validation
-  surfaces, keeping `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one
-  Haskell-owned public-edge contract.
+  consumed by lifecycle, DNS, chart, host-diagnostic, and native validation surfaces, keeping
+  `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one Haskell-owned
+  public-edge contract.
 - Root `README.md` plus the governed command-surface, public-edge, and chart-platform doctrine
   docs now describe that same single-host route catalog and no longer present dedicated public
   subdomains as part of the supported path.

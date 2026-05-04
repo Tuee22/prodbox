@@ -34,13 +34,12 @@ closed on the single-host onboarding and placeholder-domain removal doctrine for
   lives in `test/integration/cli/Main.hs`. The real IAM lifecycle named proof runs through the
   native validation harness in `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/EffectInterpreter.hs` now gate `aws-iam` on an
-  explicit native IAM harness readiness check before the validation body runs, while
-  `src/Prodbox/SupportedRuntime.hs` no longer carries the retired non-test
-  `aws_admin_for_test_simulation.*` repair path.
+  explicit native IAM harness readiness check before the validation body runs. The retired
+  non-test `aws_admin_for_test_simulation.*` recovery path is removed.
 - `src/Prodbox/TestPlan.hs` already routes `prodbox test integration aws-iam`,
   `prodbox test integration all`, and `prodbox test all` through the same managed IAM harness
   ownership in `src/Prodbox/TestRunner.hs`, while `src/Prodbox/TestValidation.hs` now treats
-  `ValidationAwsIam` as an inspection step rather than as the setup/teardown owner.
+  the `aws-iam` validation body as an inspection step rather than as the setup/teardown owner.
 - The onboarding surface now closes on the one-host public-edge doctrine and no longer carries
   placeholder-domain defaults.
 - `src/Prodbox/Aws.hs` now begins the shared managed harness by probing any pre-existing
@@ -143,7 +142,7 @@ None.
 ## Sprint 7.3: Elevated Credential Harness and Real IAM Lifecycle Proof on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/aws_admin_credentials.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -198,12 +197,11 @@ or operational `aws.*` credentials behind.
   only to discover and delete the IAM user associated with those credentials when STS can still
   resolve it, clearing operational `aws.*`, and then provisioning fresh operational credentials
   from `aws_admin_for_test_simulation.*`.
-- `src/Prodbox/TestValidation.hs` now limits `ValidationAwsIam` to inspecting the managed
-  operational IAM identity, while `src/Prodbox/TestRunner.hs` owns harness teardown so aggregate
-  AWS-backed validations can continue to use the temporary operational credentials until suite
-  completion.
-- `src/Prodbox/SupportedRuntime.hs` now contains only the retained supported-runtime helpers; the
-  retired non-test `aws_admin_for_test_simulation.*` recovery path has been removed.
+- `src/Prodbox/TestValidation.hs` now limits the `aws-iam` validation body to inspecting the
+  managed operational IAM identity, while `src/Prodbox/TestRunner.hs` owns harness teardown so
+  aggregate AWS-backed validations can continue to use the temporary operational credentials until
+  suite completion.
+- The retired non-test `aws_admin_for_test_simulation.*` recovery path has been removed.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/Prerequisite.hs` now
   split the aggregate and cluster-backed suite prerequisite contract into an initial fail-fast
   gate plus a deferred backend proof, so `pulumi_logged_in` no longer runs before the visible

@@ -14,10 +14,10 @@
 This phase defines the clean-room and zero-Python handoff criteria for the Haskell-only
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
-The supported repository surfaces are Haskell-only, the single-host doctrine is implemented, and
-the cleanup ledger is back at zero pending supported-path residue. Sprint `6.1` and Sprint `6.2`
-remain closed on their repository-owned rerun orchestration and zero-Python baseline. Sprint
-`6.3` is now closed on the final aggregate rerun plus handoff validation.
+The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
+The cleanup ledger is back at zero pending supported-path residue. Sprint `6.1`, Sprint `6.2`,
+and Sprint `6.3` are closed on their repository-owned rerun orchestration, zero-Python baseline,
+and single-host handoff cleanup.
 
 ## Current Baseline In Worktree
 
@@ -82,8 +82,8 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   validation flows.
 - `src/Prodbox/TestPlan.hs` already defines the aggregate end-to-end lifecycle proof surface:
   `prodbox test all` and `prodbox test integration all` run the native validation set that
-  includes `ValidationLifecycle` plus supported-runtime bootstrap and postflight, so no separate
-  lifecycle suite is missing from the repository.
+  includes `Validation: lifecycle` plus supported-runtime bootstrap and postflight, so no
+  separate lifecycle suite is missing from the repository.
 - `src/Prodbox/TestRunner.hs` encodes the supported-runtime postflight contract: after aggregate
   native validation, it re-installs the supported stack, waits for `prodbox host public-edge` to
   report the required readiness classification, and then destroys both AWS validation stacks.
@@ -146,8 +146,8 @@ None.
 ## Sprint 6.3: Single-Host Clean-Room Handoff ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
-**Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`
+**Implementation**: `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `prodbox.cabal`, `test/unit/Main.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
 
 ### Objective
 
@@ -162,8 +162,8 @@ supported path.
   edge rather than the retired multi-host contract.
 - The authoritative rerun builds and publishes only the native container architecture of the host
   performing the rerun, with no supported `docker buildx` or cross-arch emulation step.
-- The cleanup ledger returns to zero pending removal after `example.com` and dedicated-host
-  public-edge residue are removed.
+- The cleanup ledger returns to zero pending removal after `example.com`, dedicated-host
+  public-edge residue, and the final dead supported-runtime helper module are removed.
 - The final handoff proves that any number of supported application or admin services remain
   reachable through one DNS name and one certificate, distinguished only by path and Keycloak-
   backed RBAC.
@@ -186,6 +186,9 @@ supported path.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestPlan.hs` continue to own the destructive rerun,
   aggregate validation, and postflight restore; `prodbox test all` is the authoritative proof
   surface for validation step `5`.
+- The dead `Prodbox.SupportedRuntime` helper module is removed from `src/`, `prodbox.cabal`, and
+  `test/unit/Main.hs`, so the final handoff no longer depends on unit-only cleanup helpers
+  outside the active command path.
 - `src/Prodbox/Host.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`,
   `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, and `src/Prodbox/Dns.hs` now align to one
   public hostname, one Route 53 record, one shared-edge certificate, and host-native Docker
@@ -213,13 +216,13 @@ supported path.
   `prodbox config show`, `prodbox config validate`, and `prodbox host public-edge`, with the
   aggregate rerun carrying the supported-runtime restore all the way through
   `CLASSIFICATION=ready-for-external-proof` and `Validation: charts-vscode`,
-  `Validation: charts-api`, `Validation: charts-websocket`, `ValidationLifecycle`, and post-test
-  restore all closing on the shared-host surface.
+  `Validation: charts-api`, `Validation: charts-websocket`, `Validation: lifecycle`, and
+  post-test restore all closing on the shared-host surface.
 - Supported-path search closure remains intact after the rerun: `example.com` is absent from the
   supported code and governed doctrine surfaces that define the live operator path.
 - Repository cleanup history is preserved in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), and the supported-path
-  ledger is already at zero pending removal.
+  ledger is back at zero pending removal.
 
 ### Remaining Work
 

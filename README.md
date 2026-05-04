@@ -54,8 +54,8 @@ The current codebase baseline still deploys and manages:
 
 - **RKE2** for the local Kubernetes lifecycle
 - **Harbor** for the local registry, Harbor-first steady-state workload sourcing with a narrow
-  public-registry bootstrap exception for Harbor storage-backend prerequisites, and the dual-arch
-  image pipeline
+  public-registry bootstrap exception for Harbor storage-backend prerequisites, and native-host-
+  architecture image publication
 - **MinIO** for the local-cluster-first Pulumi backend
 - **MetalLB**, **Envoy Gateway**, **Gateway API**, and **cert-manager** for the current cluster
   edge implementation
@@ -68,7 +68,7 @@ The current codebase baseline still deploys and manages:
 - **Bespoke charts** for `gateway`, `keycloak`, `vscode`, `api`, and `websocket`, with internal
   `redis` and `keycloak-postgres` dependency releases
 
-Implementation status, remaining work, and legacy-path removal are tracked in
+Implementation status, phase closure, and legacy-path removal are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md). Engineering docs under
 `documents/engineering/` define doctrine and command contracts.
 

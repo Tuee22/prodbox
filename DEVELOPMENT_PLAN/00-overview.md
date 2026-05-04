@@ -169,9 +169,9 @@ The lifecycle is Harbor-first and native-architecture only: Harbor plus its stor
 bootstrap from public registries, every later Helm deployment pulls through Harbor, and `amd64`
 or `arm64` hosts build and publish only their own architecture. The stack closes on in-image
 `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the Percona operator-
-backed Patroni PostgreSQL doctrine, config-selected MetalLB L2 or BGP advertisement, and a
-cleanup ledger that preserves completed history with zero pending supported-path residue. The
-separate Haskell distributed gateway daemon remains distinct from the Envoy Gateway public edge.
+backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP advertisement. The
+cleanup ledger preserves completed history with zero pending supported-path residue. The separate
+Haskell distributed gateway daemon remains distinct from the Envoy Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
@@ -249,7 +249,7 @@ than restated here as a fresh rerun log.
   provider-key layouts on the supported path.
 - `src/Prodbox/PublicEdge.hs` now centralizes the single-host route catalog, canonical route
   URLs, and Keycloak issuer derivation consumed by lifecycle, DNS, chart, workload, host-
-  diagnostic, supported-runtime, and native validation surfaces.
+  diagnostic, and native validation surfaces.
 - `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
   own the current Haskell gateway surface, including the HTTP `/v1/state` payload with
   `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation. The parsed
@@ -294,7 +294,7 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 | Public workload runtime | `src/Prodbox/Workload.hs` | Phase 3 |
 | Public-edge diagnostics | `src/Prodbox/Host.hs` | Phase 5 |
 | Onboarding and AWS administration | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 7 |
-| Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1 and 4 |
+| Test harness and quality gate | `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `test/` | Phases 1 and 4 |
 
 ## Current Execution State
 

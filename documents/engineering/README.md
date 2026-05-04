@@ -38,7 +38,7 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine and review-guidance split |
 | [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
-| [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor-first workload sourcing, public-image reconcile, and dual-arch image publication |
+| [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor-first workload sourcing, public-image reconcile, and native-host-architecture image publication |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage and deterministic PVC/PV rebinding doctrine |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |
 | [prerequisite_dag_system.md](./prerequisite_dag_system.md) | Prerequisite DAG construction and reduction reference |

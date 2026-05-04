@@ -146,7 +146,7 @@ None.
 ## Sprint 1.2: Dhall Settings, Command ADTs, and Haskell Test Harness ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/SupportedRuntime.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/Repo.hs`, `test/unit/`, `test/integration/cli/`, `test/integration/env/`
+**Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/Repo.hs`, `test/unit/`, `test/integration/cli/`, `test/integration/env/`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/effect_interpreter.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/haskell_code_guide.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/prerequisite_dag_system.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/streaming_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -196,16 +196,16 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
   `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
 - `src/Prodbox/TestRunner.hs` owns `prodbox test ...`; it runs Haskell suites via `cabal test`,
   drives phase banners plus prerequisite and runbook gating through native
-  `src/Prodbox/Effect*.hs`, `src/Prodbox/Prerequisite.hs`, and `src/Prodbox/SupportedRuntime.hs`,
-  and executes the named real-world validations through `src/Prodbox/TestValidation.hs`.
+  `src/Prodbox/Effect*.hs` and `src/Prodbox/Prerequisite.hs`, and executes the named real-world
+  validations through `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/TestPlan.hs` now maps AWS-backed named suites through prerequisite gates that
   validate configured AWS credentials, Route 53 access, and Pulumi login before the validation bodies
   run, so blocked environments fail during Phase `1/2` rather than inside later validation logic.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestValidation.hs` now re-invoke native CLI
   subcommands through the canonical operator-binary path at `.build/prodbox`, so aggregate
   validation remains stable after nested suite-side operator-binary syncs.
-- `src/Prodbox/SupportedRuntime.hs` now carries only Haskell-owned repo-root and helper
-  environment context fields; no Python-named supported-runtime field survives.
+- No Python-named supported-runtime field or dead helper module survives on the active command
+  path.
 - `src/Prodbox/Host.hs` and `src/Prodbox/K8s.hs` own the public `prodbox host
   ensure-tools|check-ports|info|firewall` and `prodbox k8s health|wait|logs` paths through the
   native Haskell prerequisite, effect, DAG, interpreter, and subprocess runtime.

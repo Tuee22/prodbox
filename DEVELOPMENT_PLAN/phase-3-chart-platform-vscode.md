@@ -44,8 +44,8 @@ embedded chart-local PostgreSQL subchart.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/PublicEdge.hs` now centralizes the shared-host path-prefix catalog, canonical
-  route URLs, and Keycloak issuer derivation consumed by the lifecycle, chart, host-diagnostic,
-  supported-runtime, and native validation surfaces.
+  route URLs, and Keycloak issuer derivation consumed by the lifecycle, DNS, chart,
+  host-diagnostic, and native validation surfaces.
 - The current worktree renders the `vscode`, `api`, and `websocket` public paths through Gateway
   API `HTTPRoute` resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the
   shared public-edge `Gateway`, certificate, and identity route.

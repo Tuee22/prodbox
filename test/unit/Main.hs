@@ -119,10 +119,6 @@ import Prodbox.Settings (
     renderSettingsDisplay,
     validateAndLoadSettings,
  )
-import Prodbox.SupportedRuntime (
-    removeDeletePendingAwsResources,
-    removeFqdnFromHostsText,
- )
 import Prodbox.TestPlan (
     NativeSuitePlan (..),
     NativeValidation (..),
@@ -1411,65 +1407,6 @@ main = hspec $ do
                                     , "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
                                     )
                                 ]
-
-    describe "supported runtime helpers" $ do
-        it "removes only the target FQDN from hosts text" $ do
-            let hostsText = unlines ["127.0.0.1 localhost vscode.resolvefintech.test demo.resolvefintech.test # keep comment", "192.168.1.10 printer"]
-                (updatedText, removedEntries) = removeFqdnFromHostsText hostsText "vscode.resolvefintech.test"
-            removedEntries `shouldBe` 1
-            updatedText `shouldBe` unlines ["127.0.0.1 localhost demo.resolvefintech.test  # keep comment", "192.168.1.10 printer"]
-
-        it "drops delete-pending AWS resources from a Pulumi export" $ do
-            let exportedValue =
-                    Object
-                        ( KeyMap.fromList
-                            [
-                                ( Key.fromString "deployment"
-                                , Object
-                                    ( KeyMap.fromList
-                                        [
-                                            ( Key.fromString "resources"
-                                            , Array
-                                                ( Vector.fromList
-                                                    [ Object
-                                                        ( KeyMap.fromList
-                                                            [ (Key.fromString "type", String "pulumi:providers:aws")
-                                                            , (Key.fromString "delete", Bool True)
-                                                            ]
-                                                        )
-                                                    , Object
-                                                        ( KeyMap.fromList
-                                                            [ (Key.fromString "type", String "aws:route53/record:Record")
-                                                            , (Key.fromString "delete", Bool True)
-                                                            ]
-                                                        )
-                                                    , Object
-                                                        ( KeyMap.fromList
-                                                            [ (Key.fromString "type", String "kubernetes:core/v1:Namespace")
-                                                            , (Key.fromString "delete", Bool False)
-                                                            ]
-                                                        )
-                                                    ]
-                                                )
-                                            )
-                                        ]
-                                    )
-                                )
-                            ]
-                        )
-            case removeDeletePendingAwsResources exportedValue of
-                Left err -> expectationFailure err
-                Right (updatedValue, removedCount) -> do
-                    removedCount `shouldBe` 2
-                    case updatedValue of
-                        Object rootObject ->
-                            case KeyMap.lookup (Key.fromString "deployment") rootObject of
-                                Just (Object deploymentObject) ->
-                                    case KeyMap.lookup (Key.fromString "resources") deploymentObject of
-                                        Just (Array resources) -> Vector.length resources `shouldBe` 1
-                                        _ -> expectationFailure "expected deployment resources array"
-                                _ -> expectationFailure "expected deployment object"
-                        _ -> expectationFailure "expected exported object"
 
     describe "AWS environment helpers" $ do
         let credentialsWithoutSession =

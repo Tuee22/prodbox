@@ -43,7 +43,6 @@ library
         Prodbox.Result
         Prodbox.Settings
         Prodbox.Subprocess
-        Prodbox.SupportedRuntime
         Prodbox.TestPlan
         Prodbox.TestRunner
         Prodbox.TestValidation

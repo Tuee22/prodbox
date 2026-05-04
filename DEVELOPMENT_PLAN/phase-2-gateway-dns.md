@@ -147,6 +147,48 @@ while preserving the implemented runtime contract and container doctrine.
 
 None.
 
+## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Retain the formal verification entrypoint and the explicit DNS-write-gate contract after the
+gateway port.
+
+### Deliverables
+
+- `prodbox tla-check` remains part of the supported validation surface.
+- Gateway config generation still emits `dns_write_gate` for the public-edge ownership surface that
+  Sprint `2.3` later collapses to one canonical public record.
+- The TLA+ model remains the authoritative formal surface for Route 53 write-ownership semantics.
+- Gateway partition and ownership reasoning remain documented through the TLA+ spec and the
+  modelling-assumptions correspondence notes.
+
+### Validation
+
+1. `prodbox tla-check`
+2. `prodbox test integration gateway-partition`
+3. `prodbox test integration gateway-pods`
+
+### Current Validation State
+
+- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface and preserves the Docker-backed
+  TLC workflow plus `documents/engineering/tla/tlc_last_run.txt` result persistence.
+- `test/unit/Main.hs` proves parser routing for native `tla-check`.
+- Native Haskell `gateway config-gen` preserves `dns_write_gate` emission. All Python TLA+ and
+  gateway wrappers have been removed. The current runtime-to-model boundary is documented in
+  `documents/engineering/tla_modelling_assumptions.md`, including the current Haskell
+  observability payload and the remaining intentional model/runtime compression points.
+- `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to the Haskell
+  `tla-check` validation surface through `src/Prodbox/TestValidation.hs`.
+
+### Remaining Work
+
+None.
+
 ## Sprint 2.3: Single-Record Route 53 Ownership and Diagnostics ✅
 
 **Status**: Done
@@ -189,47 +231,6 @@ single supported public record `test.resolvefintech.com`.
 - The gateway doctrine and TLA+ correspondence notes now describe single-record write ownership
   rather than per-subdomain public DNS.
 
-### Remaining Work
-
-None.
-
-## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
-
-**Status**: Done
-**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`
-**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
-
-### Objective
-
-Retain the formal verification entrypoint and the explicit DNS-write-gate contract after the
-gateway port.
-
-### Deliverables
-
-- `prodbox tla-check` remains part of the supported validation surface.
-- Gateway config generation still emits `dns_write_gate` for the public-edge ownership surface that
-  Sprint `2.3` later collapses to one canonical public record.
-- The TLA+ model remains the authoritative formal surface for Route 53 write-ownership semantics.
-- Gateway partition and ownership reasoning remain documented through the TLA+ spec and the
-  modelling-assumptions correspondence notes.
-
-### Validation
-
-1. `prodbox tla-check`
-2. `prodbox test integration gateway-partition`
-3. `prodbox test integration gateway-pods`
-
-### Current Validation State
-
-- `src/Prodbox/Tla.hs` owns the public `prodbox tla-check` surface and preserves the Docker-backed
-  TLC workflow plus `documents/engineering/tla/tlc_last_run.txt` result persistence.
-- `test/unit/Main.hs` proves parser routing for native `tla-check`.
-- Native Haskell `gateway config-gen` preserves `dns_write_gate` emission. All Python TLA+ and
-  gateway wrappers have been removed. The current runtime-to-model boundary is documented in
-  `documents/engineering/tla_modelling_assumptions.md`, including the current Haskell
-  observability payload and the remaining intentional model/runtime compression points.
-- `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to the Haskell
-  `tla-check` validation surface through `src/Prodbox/TestValidation.hs`.
 ### Remaining Work
 
 None.

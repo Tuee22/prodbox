@@ -95,49 +95,6 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 
 None.
 
-## Sprint 7.4: Single-Hostname Onboarding and Placeholder-Domain Removal ✅
-
-**Status**: Done
-**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `prodbox-config-types.dhall`
-**Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
-
-### Objective
-
-Collapse the onboarding and config-validation surface from multiple public FQDN prompts to the one
-supported hostname `test.resolvefintech.com`, while removing `example.com` from defaults, wizard
-output, fixtures, and validation assumptions.
-
-### Deliverables
-
-- `prodbox config setup` prompts for the single supported public hostname contract rather than
-  separate Keycloak, browser, API, and WebSocket FQDNs.
-- The wizard, schema, and validators never emit or accept `example.com` placeholder public
-  domains on the supported path.
-- Config validation fails fast when the canonical hostname does not belong to the selected Route 53
-  zone.
-- The built-frontend fake-AWS proof surfaces align with the one-host public-edge doctrine.
-
-### Validation
-
-1. `prodbox check-code`
-2. `prodbox test unit`
-3. `prodbox test integration cli`
-4. `prodbox test integration env`
-5. `prodbox config setup`
-6. `prodbox config validate`
-
-### Current Validation State
-
-- `src/Prodbox/Aws.hs` already owns the interactive wizard and standalone AWS administration
-  flows.
-- `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, and `prodbox-config-types.dhall` now close on
-  one canonical public hostname, reject placeholder-domain residue, and enforce selected-zone or
-  canonical-hostname consistency on the supported onboarding path.
-
-### Remaining Work
-
-None.
-
 ## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 
 **Status**: Done
@@ -266,6 +223,49 @@ or operational `aws.*` credentials behind.
   lifecycle-owned custom-image publication so destructive reruns do not fail terminally on a
   single short-lived Harbor registry write error, and the lifecycle now closes on host-native
   Docker builds rather than any cross-arch `docker buildx` path.
+
+### Remaining Work
+
+None.
+
+## Sprint 7.4: Single-Hostname Onboarding and Placeholder-Domain Removal ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `prodbox-config-types.dhall`
+**Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Collapse the onboarding and config-validation surface from multiple public FQDN prompts to the one
+supported hostname `test.resolvefintech.com`, while removing `example.com` from defaults, wizard
+output, fixtures, and validation assumptions.
+
+### Deliverables
+
+- `prodbox config setup` prompts for the single supported public hostname contract rather than
+  separate Keycloak, browser, API, and WebSocket FQDNs.
+- The wizard, schema, and validators never emit or accept `example.com` placeholder public
+  domains on the supported path.
+- Config validation fails fast when the canonical hostname does not belong to the selected Route 53
+  zone.
+- The built-frontend fake-AWS proof surfaces align with the one-host public-edge doctrine.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox config setup`
+6. `prodbox config validate`
+
+### Current Validation State
+
+- `src/Prodbox/Aws.hs` already owns the interactive wizard and standalone AWS administration
+  flows.
+- `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, and `prodbox-config-types.dhall` now close on
+  one canonical public hostname, reject placeholder-domain residue, and enforce selected-zone or
+  canonical-hostname consistency on the supported onboarding path.
 
 ### Remaining Work
 

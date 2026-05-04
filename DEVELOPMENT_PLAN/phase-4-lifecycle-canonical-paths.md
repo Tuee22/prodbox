@@ -124,49 +124,6 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 
 None.
 
-## Sprint 4.4: Single-Record DNS Bootstrap and Single-Certificate Lifecycle Closure ✅
-
-**Status**: Done
-**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
-**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
-
-### Objective
-
-Close the lifecycle-owned bootstrap DNS and TLS surfaces on the one-host doctrine:
-`test.resolvefintech.com`, one Route 53 record, and one certificate for all public or admin
-routes behind Envoy.
-
-### Deliverables
-
-- Lifecycle-owned bootstrap DNS reconcile writes only the canonical `test.resolvefintech.com`
-  record.
-- Lifecycle-owned certificate projection and listener configuration require only one public
-  certificate for the shared Envoy edge.
-- No supported lifecycle path assumes dedicated identity, browser, API, or WebSocket hostnames.
-- The Harbor-first lifecycle preserves Envoy, MetalLB, and cert-manager ownership while switching
-  the public edge to the one-record or one-cert contract.
-
-### Validation
-
-1. `prodbox check-code`
-2. `prodbox test integration lifecycle`
-3. `prodbox rke2 install`
-4. `prodbox host public-edge`
-5. `prodbox test integration public-dns`
-6. `prodbox test all`
-
-### Current Validation State
-
-- `src/Prodbox/CLI/Rke2.hs` owns bootstrap DNS reconcile and ACME `ClusterIssuer` projection on
-  the supported lifecycle path.
-- Those helpers now write only the canonical `test.resolvefintech.com` record and keep the
-  lifecycle-owned certificate contract on one public listener certificate for the shared Envoy
-  edge.
-
-### Remaining Work
-
-None.
-
 ## Sprint 4.2: Replace Python Pulumi Programs with Non-Python Pulumi Definitions ✅
 
 **Status**: Done
@@ -260,6 +217,49 @@ parity exists.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger
   remains closed on Python-removal residue.
+
+### Remaining Work
+
+None.
+
+## Sprint 4.4: Single-Record DNS Bootstrap and Single-Certificate Lifecycle Closure ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Close the lifecycle-owned bootstrap DNS and TLS surfaces on the one-host doctrine:
+`test.resolvefintech.com`, one Route 53 record, and one certificate for all public or admin
+routes behind Envoy.
+
+### Deliverables
+
+- Lifecycle-owned bootstrap DNS reconcile writes only the canonical `test.resolvefintech.com`
+  record.
+- Lifecycle-owned certificate projection and listener configuration require only one public
+  certificate for the shared Envoy edge.
+- No supported lifecycle path assumes dedicated identity, browser, API, or WebSocket hostnames.
+- The Harbor-first lifecycle preserves Envoy, MetalLB, and cert-manager ownership while switching
+  the public edge to the one-record or one-cert contract.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test integration lifecycle`
+3. `prodbox rke2 install`
+4. `prodbox host public-edge`
+5. `prodbox test integration public-dns`
+6. `prodbox test all`
+
+### Current Validation State
+
+- `src/Prodbox/CLI/Rke2.hs` owns bootstrap DNS reconcile and ACME `ClusterIssuer` projection on
+  the supported lifecycle path.
+- Those helpers now write only the canonical `test.resolvefintech.com` record and keep the
+  lifecycle-owned certificate contract on one public listener certificate for the shared Envoy
+  edge.
 
 ### Remaining Work
 

@@ -239,11 +239,15 @@ surfaces:
 - The current supported transport boundary now stays explicit in the plan: public TLS terminates at
   Envoy for the shipped browser, API, and WebSocket hosts, while backend TLS or mTLS is outside
   the supported chart-workload contract unless a later doctrine revision expands that path.
+- `src/Prodbox/PublicEdge.hs` now centralizes the shared-host route catalog and issuer derivation
+  consumed by lifecycle, DNS, chart, host-diagnostic, supported-runtime, and native validation
+  surfaces, keeping `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one
+  Haskell-owned public-edge contract.
 - `charts/keycloak/`, `charts/api/`, `charts/redis/`, `charts/websocket/`, `charts/vscode/`,
   `src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/Workload.hs` now own the shared-host
-  contract, including the internal `PRODBOX_WORKLOAD_MODE=api|websocket` runtime, JWT-only API
-  delivery, Redis-backed shared-state continuity on the WebSocket route, workload-managed OIDC
-  bootstrap, real `/ws` upgrade handling, and settings-backed workload scaling.
+  workload contract, including the internal `PRODBOX_WORKLOAD_MODE=api|websocket` runtime,
+  JWT-only API delivery, Redis-backed shared-state continuity on the WebSocket route, workload-
+  managed OIDC bootstrap, real `/ws` upgrade handling, and settings-backed workload scaling.
 - The current WebSocket doctrine now states that one upgraded connection remains pinned to one
   selected backend pod until disconnect, reconnect-safe state must live outside the pod, and the
   implemented runtime now closes on readiness-based drain plus revocation-driven reconnect
@@ -256,8 +260,6 @@ surfaces:
   external validations on one shared hostname.
 - `charts/gateway/` and `prodbox gateway start|status|config-gen` remain the separate Haskell
   distributed gateway daemon surface; they are not the Envoy Gateway public edge.
-- The earlier unsupported root `Pulumi.yaml` and `Pulumi.home.yaml` residue for the retired
-  local-cluster `pulumi/home` path is removed.
 - The canonical validation surfaces are `prodbox check-code`, `prodbox test unit`,
   `prodbox test integration cli`, `prodbox test integration env`, the named native validation
   flows in `src/Prodbox/TestValidation.hs`, and the aggregate reruns
@@ -265,8 +267,8 @@ surfaces:
 - The aggregate rerun contract is owned by the shared suite plan behind
   `prodbox test integration all` and `prodbox test all`, including AWS IAM,
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
-- The only remaining open plan-owned work is the final Phase `6` destructive rerun and handoff
-  validation.
+- The final Phase `6` destructive rerun and handoff validation are closed on that aggregate rerun
+  contract and the supported postflight restore path.
 - The legacy ledger preserves completed cleanup history and now contains zero pending removal
   items.
 

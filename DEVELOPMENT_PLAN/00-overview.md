@@ -126,6 +126,7 @@ Build a clean-room Haskell `prodbox` repository with:
 | Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate for the single canonical public record |
 | DNS check | `prodbox dns check` | Haskell CLI |
+| Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Haskell-owned shared-host path catalog and issuer derivation for application and admin routes |
 | Chart delivery | `prodbox charts list|status <chart>|deploy <chart>|delete <chart> [--yes]` | Haskell chart platform with Keycloak as IdP, Envoy-authenticated path-routed browser and admin delivery, JWT-protected API delivery, and the active Redis-backed WebSocket implementation path |
 | Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI on a single-host Gateway API and Envoy Gateway doctrine, including path-route classification for app and admin surfaces |
 | Public-edge auth model | Envoy-enforced Keycloak JWT auth and RBAC on the shared hostname, with explicit bearer-token carriers, browser return paths, and JWKS metadata ownership | Keycloak issuer plus Envoy policy |
@@ -140,13 +141,13 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree now implements the final Haskell-only rewrite architecture, with the
-destructive clean-room rerun as the only remaining open handoff gate. The supported operator
-surface is `prodbox`, the supported configuration contract is direct `Dhall -> Haskell types`
-rooted at `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on
-the host plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the
-governed doctrine-alignment gate, the Haskell gateway runtime plus status path close on the
-implemented HTTP `/v1/state` payload and daemon timing-validation contract, and the earlier
+The repository worktree now implements the final Haskell-only rewrite architecture. The supported
+operator surface is `prodbox`, the supported configuration contract is direct
+`Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and the supported build topology
+remains `.build/prodbox` on the host plus `/opt/build` inside repository-owned Dockerfiles.
+`prodbox check-code` enforces the governed doctrine-alignment gate, the Haskell gateway runtime
+plus status path close on the implemented HTTP `/v1/state` payload and daemon timing-validation
+contract, the final clean-room handoff closes on the canonical rerun surface, and the earlier
 unsupported Python runtime and tooling surfaces remain removed.
 
 The supported public edge now uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
@@ -242,6 +243,9 @@ than restated here as a fresh rerun log.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` now sync only
   the supported retained AWS-validation stack inputs and no longer remove older Pulumi AWS
   provider-key layouts on the supported path.
+- `src/Prodbox/PublicEdge.hs` now centralizes the single-host route catalog, canonical route
+  URLs, and Keycloak issuer derivation consumed by lifecycle, DNS, chart, workload, host-
+  diagnostic, supported-runtime, and native validation surfaces.
 - `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
   own the current Haskell gateway surface, including the HTTP `/v1/state` payload with
   `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation. The parsed
@@ -264,10 +268,10 @@ than restated here as a fresh rerun log.
 
 ### Interpretation
 
-The supported architecture no longer depends on `pulumi/home`, shared `pgpool` / `repmgr`
-application database ownership, the mounted `haskell:9.6.7-slim` toolchain-context path, or the
-Zalando `postgres-operator` surface. The final Phase `4` compatibility-cleanup work is now closed
-on the clean-room lifecycle and retained AWS-validation stack path.
+The supported architecture closes on the Haskell-only clean-room lifecycle, the AWS-validation-
+only `prodbox pulumi ...` surface, the Harbor-first registry doctrine, and the Percona-backed
+Patroni application-database path. Compatibility-cleanup history now lives only in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Haskell-Only Architecture by Surface
 
@@ -279,6 +283,7 @@ on the clean-room lifecycle and retained AWS-validation stack path.
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
 | Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus generated state under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
+| Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Phase 3 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
 | Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/` and the Percona-operator-backed Patroni application-database contract | Phase 3 |

@@ -43,6 +43,9 @@ embedded chart-local PostgreSQL subchart.
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
   `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/PublicEdge.hs` now centralizes the shared-host path-prefix catalog, canonical
+  route URLs, and Keycloak issuer derivation consumed by the lifecycle, chart, host-diagnostic,
+  supported-runtime, and native validation surfaces.
 - The current worktree renders the `vscode`, `api`, and `websocket` public paths through Gateway
   API `HTTPRoute` resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the
   shared public-edge `Gateway`, certificate, and identity route.
@@ -416,7 +419,7 @@ None.
 ## Sprint 3.7: Envoy-Routed Admin Surfaces and Shared-Host RBAC ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `charts/`
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/PublicEdge.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`, `charts/`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -446,6 +449,9 @@ one public hostname, one DNS entry, and one certificate.
 
 - `src/Prodbox/CLI/Rke2.hs` now renders the supported Harbor and MinIO `HTTPRoute` plus
   `SecurityPolicy` resources behind Envoy on `/harbor` and `/minio`.
+- `src/Prodbox/PublicEdge.hs` now centralizes the supported `/auth`, `/vscode`, `/api`, `/ws`,
+  `/harbor`, and `/minio` path catalog used by the shared-host admin manifests, host
+  diagnostics, and named validation surfaces.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/TestValidation.hs` now expose
   `prodbox test integration admin-routes` as the named external validation surface for the
   supported shared-host admin paths.

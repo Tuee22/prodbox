@@ -71,9 +71,10 @@ The current worktree closes on:
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
 `prodbox test all`, `prodbox config show`, `prodbox config validate`, and
-`prodbox host public-edge`. Separate repository search checks keep `example.com` and zero-Python
-residue out of supported-path sources. The canonical automated validation contract otherwise
-remains the `prodbox` command surface documented by this plan: `prodbox check-code`,
+`prodbox host public-edge`. Separate repository review gates still verify that `example.com` and
+zero-Python residue stay out of supported-path sources, but those checks are not a dedicated
+`prodbox` command. The canonical automated validation contract otherwise remains the `prodbox`
+command surface documented by this plan: `prodbox check-code`,
 `prodbox test unit`, `prodbox test integration cli`, `prodbox test integration env`, and the
 named native validations behind `prodbox test integration ...`. Environment-dependent AWS and
 public-edge proof remain attached to those commands rather than recorded here as a fresh

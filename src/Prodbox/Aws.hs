@@ -737,7 +737,9 @@ promptRegionChoice repoRoot credentials = do
     mapM_ printRegionChoice (zip [1 :: Int ..] regions)
     let defaultIndex = maybe 0 id (findIndex ((== region credentials) . regionChoiceName) regions)
     selectedIndex <- promptNumberedChoice "Choose the AWS region number for prodbox operations" (map (Text.unpack . regionChoiceName) regions) defaultIndex
-    pure (regionChoiceName (regions !! selectedIndex))
+    case safeIndex selectedIndex regions of
+        Just choice -> pure (regionChoiceName choice)
+        Nothing -> throwAws "Internal error: AWS region selection produced an out-of-range index"
   where
     printRegionChoice (index, choice) =
         putStrLn (show index ++ ". " ++ Text.unpack (regionChoiceName choice) ++ " (" ++ Text.unpack (regionChoiceOptInStatus choice) ++ ")")
@@ -753,7 +755,9 @@ promptHostedZoneChoice repoRoot credentials = do
     putStrLn "Available Route 53 hosted zones:"
     mapM_ printZoneChoice (zip [1 :: Int ..] zones)
     selectedIndex <- promptNumberedChoice "Choose the public hosted zone number for prodbox DNS" (map (Text.unpack . hostedZoneChoiceName) zones) 0
-    pure (zones !! selectedIndex)
+    case safeIndex selectedIndex zones of
+        Just choice -> pure choice
+        Nothing -> throwAws "Internal error: hosted zone selection produced an out-of-range index"
   where
     printZoneChoice (index, choice) =
         putStrLn (show index ++ ". " ++ Text.unpack (hostedZoneChoiceName choice) ++ " (" ++ Text.unpack (hostedZoneChoiceId choice) ++ ")")
@@ -842,6 +846,13 @@ promptNumberedChoice promptMessage options defaultIndex = do
         _ -> do
             putStrLn "Enter the number shown beside the option."
             promptNumberedChoice promptMessage options defaultIndex
+
+safeIndex :: Int -> [a] -> Maybe a
+safeIndex _ [] = Nothing
+safeIndex 0 (x : _) = Just x
+safeIndex n (_ : xs)
+    | n > 0 = safeIndex (n - 1) xs
+    | otherwise = Nothing
 
 validateAdminCredentials :: Credentials -> Either String Credentials
 validateAdminCredentials credentials = do

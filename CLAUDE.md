@@ -30,6 +30,30 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.
 
+## Local Cluster Lifecycle Ownership
+
+**This machine is the home Kubernetes cluster that prodbox manages.** Prodbox owns the full
+local-cluster lifecycle on this host.
+
+- `prodbox rke2 install` is the canonical idempotent reconcile entrypoint. Running it on this
+  machine — including installing RKE2 if it is absent, or reconciling the existing cluster — is
+  the supported, expected operation, not an unauthorized state change.
+- `prodbox rke2 delete --yes` is the canonical teardown.
+- `prodbox test all` exercises the full lifecycle (install, validate, reconcile, sometimes
+  delete) on this host. It is **expected to start RKE2, etcd, kubelet, containerd, and Pulumi
+  flows on this machine**. Do not treat the resulting processes or the running cluster as a
+  surprise or as something to roll back.
+- `prodbox charts ...` and `prodbox gateway ...` mutate cluster state on this same host by
+  design.
+
+When a `prodbox` subcommand is the documented entrypoint for an operation, running it does not
+need separate user approval beyond the user's original request. The "confirm before mutating
+shared infrastructure" rule applies to ad-hoc shell commands and to operations that bypass the
+prodbox surface — not to invoking prodbox itself.
+
+If a `prodbox test all` or other lifecycle run is interrupted mid-flight, prefer letting the
+idempotent reconcile finish (or re-running the same command) over manual cleanup.
+
 ## Git Workflow Policy
 
 **CRITICAL: Claude Code is NOT authorized to commit or push changes.**

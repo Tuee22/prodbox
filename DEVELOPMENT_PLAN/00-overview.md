@@ -340,8 +340,8 @@ addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
   Harbor, and MinIO route classification plus named external proofs for those workloads.
 - Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria,
   closed through the aggregate rerun, postflight restore, `config show`, `config validate`,
-  `host public-edge`, and supported-path repository search checks for placeholder-domain and
-  Python residue.
+  `host public-edge`, and supported-path repository review gates for placeholder-domain and Python
+  residue.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
   credential proof harness on one canonical public hostname with no placeholder-domain residue.
 

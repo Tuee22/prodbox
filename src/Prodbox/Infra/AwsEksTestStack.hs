@@ -555,6 +555,39 @@ pulumiStackRemoveQuiet projectDir environment force =
         environment
         (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsEksTestStackName])
 
+pulumiLoginEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
+pulumiLoginEither projectDir environment summary
+    | summary = pulumiLoginQuiet projectDir environment
+    | otherwise = exitToEither "pulumi login" <$> pulumiLogin projectDir environment
+
+pulumiDestroyEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
+pulumiDestroyEither projectDir environment summary
+    | summary = pulumiDestroyQuiet projectDir environment
+    | otherwise =
+        exitToEither "pulumi destroy"
+            <$> runPulumiCommand projectDir environment ["destroy", "--yes", "--stack", awsEksTestStackName]
+
+pulumiRefreshEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
+pulumiRefreshEither projectDir environment summary
+    | summary = pulumiRefreshQuiet projectDir environment
+    | otherwise =
+        exitToEither "pulumi refresh"
+            <$> runPulumiCommand projectDir environment ["refresh", "--yes", "--stack", awsEksTestStackName]
+
+pulumiStackRemoveEither :: FilePath -> [(String, String)] -> Bool -> Bool -> IO (Either String ())
+pulumiStackRemoveEither projectDir environment force summary
+    | summary = pulumiStackRemoveQuiet projectDir environment force
+    | otherwise =
+        exitToEither "pulumi stack rm"
+            <$> runPulumiCommand
+                projectDir
+                environment
+                (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsEksTestStackName])
+
+exitToEither :: String -> ExitCode -> Either String ()
+exitToEither _ ExitSuccess = Right ()
+exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ show code)
+
 pulumiStackOutputs :: FilePath -> [(String, String)] -> IO (Either String Value)
 pulumiStackOutputs projectDir environment = do
     result <-
@@ -1071,17 +1104,17 @@ ensureAwsEksTestStackResources repoRoot = do
                     Right (Left err) -> failWith err
                     Right (Right ()) -> pure ExitSuccess
 
-destroyAwsEksTestStack :: FilePath -> IO ExitCode
-destroyAwsEksTestStack repoRoot = do
-    statusResult <- destroyAwsEksTestStackStatus repoRoot
+destroyAwsEksTestStack :: FilePath -> Bool -> IO ExitCode
+destroyAwsEksTestStack repoRoot summary = do
+    statusResult <- destroyAwsEksTestStackStatus repoRoot summary
     case statusResult of
         Left err -> failWith err
         Right status -> do
             putStrLn ("AWS EKS test stack: " ++ status)
             pure ExitSuccess
 
-destroyAwsEksTestStackStatus :: FilePath -> IO (Either String String)
-destroyAwsEksTestStackStatus repoRoot = do
+destroyAwsEksTestStackStatus :: FilePath -> Bool -> IO (Either String String)
+destroyAwsEksTestStackStatus repoRoot summary = do
     currentSnapshot <- loadAwsEksTestStackSnapshot repoRoot
     let projectDir = awsEksTestPulumiProjectDir repoRoot
     portForwardResult <- withMinioPortForward $ \localPort -> do
@@ -1094,7 +1127,7 @@ destroyAwsEksTestStackStatus repoRoot = do
                     Left err -> pure (Left err)
                     Right () -> do
                         backendEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-                        loginResult <- pulumiLoginQuiet projectDir backendEnvironment
+                        loginResult <- pulumiLoginEither projectDir backendEnvironment summary
                         case loginResult of
                             Left err -> pure (Left ("pulumi login failed: " ++ err))
                             Right () -> do
@@ -1121,16 +1154,16 @@ destroyAwsEksTestStackStatus repoRoot = do
                                                         case syncExit of
                                                             ExitFailure _ -> pure (Left "pulumi config set failed")
                                                             ExitSuccess -> do
-                                                                destroyResult <- pulumiDestroyQuiet projectDir providerEnvironment
+                                                                destroyResult <- pulumiDestroyEither projectDir providerEnvironment summary
                                                                 case destroyResult of
                                                                     Left _ -> do
-                                                                        _ <- pulumiRefreshQuiet projectDir providerEnvironment
-                                                                        retryResult <- pulumiDestroyQuiet projectDir providerEnvironment
+                                                                        _ <- pulumiRefreshEither projectDir providerEnvironment summary
+                                                                        retryResult <- pulumiDestroyEither projectDir providerEnvironment summary
                                                                         case retryResult of
                                                                             Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
-                                                                            Right () -> completeDestroy repoRoot projectDir providerEnvironment currentSnapshot
+                                                                            Right () -> completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary
                                                                     Right () ->
-                                                                        completeDestroy repoRoot projectDir providerEnvironment currentSnapshot
+                                                                        completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary
                                     PulumiStackMissing -> do
                                         case currentSnapshot of
                                             Nothing ->
@@ -1147,9 +1180,9 @@ destroyAwsEksTestStackStatus repoRoot = do
         Right (Left err) -> pure (Left err)
         Right (Right status) -> pure (Right status)
 
-completeDestroy :: FilePath -> FilePath -> [(String, String)] -> Maybe AwsEksTestStackSnapshot -> IO (Either String String)
-completeDestroy repoRoot projectDir environment currentSnapshot = do
-    _ <- pulumiStackRemoveQuiet projectDir environment False
+completeDestroy :: FilePath -> FilePath -> [(String, String)] -> Maybe AwsEksTestStackSnapshot -> Bool -> IO (Either String String)
+completeDestroy repoRoot projectDir environment currentSnapshot summary = do
+    _ <- pulumiStackRemoveEither projectDir environment False summary
     finalizeDestroy repoRoot currentSnapshot
 
 finalizeDestroy :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO (Either String String)

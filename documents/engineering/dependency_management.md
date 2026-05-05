@@ -73,9 +73,9 @@ cabal build --builddir=.build exe:prodbox
 
 - Core CLI and runtime: `base`, `text`, `bytestring`, `aeson`, `optparse-applicative`,
   `process`, `directory`, `filepath`
-- Repository config decoding remains operator-authored `Dhall -> Haskell types`, but the runtime
-  now bridges that contract through the external `dhall-to-json` command instead of linking the
-  in-process `dhall` library
+- Repository config decoding is operator-authored `Dhall -> Haskell types`, bridged at runtime
+  through the Haskell-owned `dhall-to-json` subprocess and parsed via `aeson` into typed Haskell
+  settings values without materializing `prodbox-config.json` on the supported path
 - Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
   `src/Prodbox/Gateway/`
 - Test suites: `hspec`, `temporary`, and the same core runtime packages needed to exercise the

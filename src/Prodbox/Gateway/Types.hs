@@ -10,15 +10,33 @@ module Prodbox.Gateway.Types (
     DnsWriteGate (..),
     ChannelName (..),
     ConnectionKey (..),
+    Disposition (..),
+    PeerHealth (..),
+    eventTypeHeartbeat,
+    eventTypeClaim,
+    eventTypeYield,
+    eventTypeOrdersPromoted,
+    defaultMaxClockSkewSeconds,
     emptyCommitLog,
     appendIfNew,
     sortedEvents,
     latestTimestamp,
     parseDaemonConfig,
     parseOrders,
+    parseEvent,
+    encodeEvent,
     peerDialRestHost,
     peerRestUrl,
     peerDialSocketHost,
+    peerSocketUrl,
+    peerEventsUrl,
+    eventTimestampUtc,
+    nodeDisposition,
+    canWriteDns,
+    parseIso8601Utc,
+    formatUtcIso,
+    computeMaxObservedSkew,
+    extractOrdersVersionFromEvent,
     validateDaemonTimingAgainstOrders,
 )
 where
@@ -26,13 +44,18 @@ where
 import Data.Aeson (
     Value (..),
     eitherDecode,
+    object,
+    (.=),
  )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (nub, sortBy)
 import Data.Ord (comparing)
+import Data.Scientific (toRealFloat)
 import Data.Text qualified as Text
+import Data.Time.Clock (UTCTime, diffUTCTime)
+import Data.Time.Format.ISO8601 (formatShow, iso8601Format, iso8601ParseM)
 import Data.Vector qualified as Vector
 
 data ChannelName = MeshChannel | GatewayChannel
@@ -63,6 +86,13 @@ peerDialSocketHost peer =
     if peerSocketHost peer `elem` ["0.0.0.0", "::"]
         then peerStableDnsName peer
         else peerSocketHost peer
+
+peerSocketUrl :: PeerEndpoint -> String
+peerSocketUrl peer =
+    "http://" ++ peerDialSocketHost peer ++ ":" ++ show (peerSocketPort peer)
+
+peerEventsUrl :: PeerEndpoint -> String
+peerEventsUrl peer = peerSocketUrl peer ++ "/v1/peer/events"
 
 data GatewayRule = GatewayRule
     { rankedNodes :: [String]
@@ -129,6 +159,7 @@ data DaemonConfig = DaemonConfig
     , daemonHeartbeatInterval :: Double
     , daemonReconnectInterval :: Double
     , daemonSyncInterval :: Double
+    , daemonMaxClockSkewSeconds :: Double
     , daemonDnsWriteGate :: Maybe DnsWriteGate
     }
     deriving (Eq, Show)
@@ -138,6 +169,31 @@ data ConnectionKey = ConnectionKey
     , connectionKeyChannel :: ChannelName
     }
     deriving (Eq, Ord, Show)
+
+data Disposition = DispositionOwner | DispositionYielded | DispositionUnknown
+    deriving (Eq, Show)
+
+data PeerHealth = PeerHealth
+    { peerHealthLastInboundEvent :: Maybe UTCTime
+    , peerHealthConnected :: Bool
+    , peerHealthLastError :: Maybe String
+    }
+    deriving (Eq, Show)
+
+eventTypeHeartbeat :: String
+eventTypeHeartbeat = "heartbeat"
+
+eventTypeClaim :: String
+eventTypeClaim = "claim"
+
+eventTypeYield :: String
+eventTypeYield = "yield"
+
+eventTypeOrdersPromoted :: String
+eventTypeOrdersPromoted = "orders_promoted"
+
+defaultMaxClockSkewSeconds :: Double
+defaultMaxClockSkewSeconds = 10.0
 
 parseDaemonConfig :: String -> Either String DaemonConfig
 parseDaemonConfig jsonText =
@@ -153,8 +209,10 @@ parseDaemonConfig jsonText =
             let heartbeat = readOptionalFloat obj "heartbeat_interval_seconds" 1.0
                 reconnect = readOptionalFloat obj "reconnect_interval_seconds" 1.0
                 sync = readOptionalFloat obj "sync_interval_seconds" 5.0
+                maxSkew = readOptionalFloat obj "max_clock_skew_seconds" defaultMaxClockSkewSeconds
             dnsGate <- parseDnsWriteGate obj
             validateIntervals heartbeat reconnect sync
+            validateMaxSkew maxSkew
             Right
                 DaemonConfig
                     { daemonNodeId = nodeId
@@ -166,6 +224,7 @@ parseDaemonConfig jsonText =
                     , daemonHeartbeatInterval = heartbeat
                     , daemonReconnectInterval = reconnect
                     , daemonSyncInterval = sync
+                    , daemonMaxClockSkewSeconds = maxSkew
                     , daemonDnsWriteGate = dnsGate
                     }
         Right _ -> Left "daemon config must be a JSON object"
@@ -176,6 +235,9 @@ parseOrders jsonText =
         Left err -> Left ("failed to parse orders: " ++ err)
         Right (Object obj) -> do
             versionUtc <- requireInt obj "version_utc"
+            if versionUtc < 0
+                then Left "version_utc must be non-negative"
+                else pure ()
             nodes <- parseNodeList obj
             rule <- parseGatewayRule obj
             let nodeIds = map peerNodeId nodes
@@ -192,6 +254,47 @@ parseOrders jsonText =
                                     }
                         else Left "gateway_rule.ranked_nodes must be a subset of orders.nodes.node_id"
         Right _ -> Left "orders must be a JSON object"
+
+parseEvent :: Value -> Either String SignedEvent
+parseEvent value =
+    case value of
+        Object obj -> do
+            evHash <- requireStr obj "event_hash"
+            emitter <- requireStr obj "emitter_node_id"
+            ts <- requireStr obj "timestamp_utc"
+            evType <- requireStr obj "event_type"
+            payload <- requireStr obj "payload_json"
+            sig <- requireStr obj "signature_hex"
+            Right
+                SignedEvent
+                    { eventHash = evHash
+                    , emitterNodeId = emitter
+                    , timestampUtc = ts
+                    , eventType = evType
+                    , payloadJson = payload
+                    , signatureHex = sig
+                    }
+        _ -> Left "event entries must be JSON objects"
+
+encodeEvent :: SignedEvent -> Value
+encodeEvent ev =
+    object
+        [ "event_hash" .= eventHash ev
+        , "emitter_node_id" .= emitterNodeId ev
+        , "timestamp_utc" .= timestampUtc ev
+        , "event_type" .= eventType ev
+        , "payload_json" .= payloadJson ev
+        , "signature_hex" .= signatureHex ev
+        ]
+
+eventTimestampUtc :: SignedEvent -> Maybe UTCTime
+eventTimestampUtc ev = parseIso8601Utc (timestampUtc ev)
+
+parseIso8601Utc :: String -> Maybe UTCTime
+parseIso8601Utc = iso8601ParseM
+
+formatUtcIso :: UTCTime -> String
+formatUtcIso = formatShow iso8601Format
 
 requireStr :: KeyMap.KeyMap Value -> String -> Either String String
 requireStr obj key =
@@ -210,7 +313,7 @@ requireInt obj key =
 readOptionalFloat :: KeyMap.KeyMap Value -> String -> Double -> Double
 readOptionalFloat obj key defaultVal =
     case KeyMap.lookup (Key.fromString key) obj of
-        Just (Number n) -> realToFrac n
+        Just (Number n) -> toRealFloat n
         _ -> defaultVal
 
 parseEventKeys :: KeyMap.KeyMap Value -> Either String [(String, String)]
@@ -324,6 +427,12 @@ validateIntervals heartbeat reconnect sync
     | sync < 0.1 = Left "sync_interval_seconds must be >= 0.1"
     | otherwise = Right ()
 
+validateMaxSkew :: Double -> Either String ()
+validateMaxSkew skew
+    | skew < 0.1 = Left "max_clock_skew_seconds must be >= 0.1"
+    | skew > 600 = Left "max_clock_skew_seconds must be <= 600"
+    | otherwise = Right ()
+
 validateDaemonTimingAgainstOrders :: DaemonConfig -> Orders -> Either String ()
 validateDaemonTimingAgainstOrders config orders =
     let timeout = fromIntegral (heartbeatTimeoutSeconds (ordersGatewayRule orders)) :: Double
@@ -339,3 +448,68 @@ validateDaemonTimingAgainstOrders config orders =
                         if sync > timeout * 2
                             then Left "sync_interval_seconds must be <= heartbeat_timeout_seconds * 2"
                             else Right ()
+
+{- | Compute the disposition (last-known claim/yield state) for a node from
+the commit log.  A node is the owner if its most recent claim/yield event
+is a claim; yielded if the most recent is a yield; unknown if neither has
+been observed.
+-}
+nodeDisposition :: String -> CommitLog -> Disposition
+nodeDisposition nodeId commitLog =
+    let claimYieldEvents =
+            [ ev
+            | ev <- sortedEvents commitLog
+            , emitterNodeId ev == nodeId
+            , eventType ev == eventTypeClaim || eventType ev == eventTypeYield
+            ]
+     in case claimYieldEvents of
+            [] -> DispositionUnknown
+            events ->
+                let lastEv = last events
+                 in if eventType lastEv == eventTypeClaim
+                        then DispositionOwner
+                        else DispositionYielded
+
+{- | The runtime equivalent of the modelled @CanWriteDns@ predicate: the local
+node may write DNS only when the in-memory election picks the local node
+AND the local node has an active claim in the commit log AND no later
+yield from the local node supersedes that claim.
+-}
+canWriteDns ::
+    -- | local node id
+    String ->
+    -- | current owner view (in-memory election)
+    Maybe String ->
+    CommitLog ->
+    Bool
+canWriteDns localNodeId ownerView log_ =
+    ownerView == Just localNodeId
+        && nodeDisposition localNodeId log_ == DispositionOwner
+
+{- | Compute the maximum observed inter-node clock skew given a "now"
+sample and the events recorded in the commit log.  Returns 'Nothing' when
+no event timestamps were parseable.
+-}
+computeMaxObservedSkew :: UTCTime -> CommitLog -> Maybe Double
+computeMaxObservedSkew now log_ =
+    let parsed =
+            [ realToFrac (abs (diffUTCTime now ts)) :: Double
+            | ev <- commitLogEvents log_
+            , Just ts <- [eventTimestampUtc ev]
+            ]
+     in case parsed of
+            [] -> Nothing
+            xs -> Just (foldl' max 0 xs)
+
+{- | Recover the Orders @version_utc@ promoted by the emitter from an
+@orders_promoted@ event payload.
+-}
+extractOrdersVersionFromEvent :: SignedEvent -> Maybe Int
+extractOrdersVersionFromEvent ev
+    | eventType ev /= eventTypeOrdersPromoted = Nothing
+    | otherwise =
+        case eitherDecode (BL8.pack (payloadJson ev)) of
+            Right (Object obj) -> case KeyMap.lookup (Key.fromString "orders_version_utc") obj of
+                Just (Number n) -> Just (round n)
+                _ -> Nothing
+            _ -> Nothing

@@ -3,8 +3,11 @@
 module Prodbox.Host (
     LanAddressing (..),
     PortStatus (..),
+    NtpDisposition (..),
     detectLanAddressing,
     renderPortAvailabilityReport,
+    parseTimedatectlNtpDisposition,
+    renderHostInfoReport,
     runHostCommand,
 )
 where
@@ -50,6 +53,18 @@ data PortStatus = PortStatus
     , portAvailable :: Bool
     , portDetail :: String
     }
+    deriving (Eq, Show)
+
+{- | Disposition of the host's NTP synchronization, derived from
+@timedatectl status@ on Ubuntu 24.04 hosts.  The supported-host gate
+treats @NtpUnsynced@ as a fail-fast condition because every freshness
+judgement and claim/yield ordering check in the gateway daemon compares
+wall-clock UTC stamps across nodes.
+-}
+data NtpDisposition
+    = NtpSynchronized
+    | NtpUnsynced String
+    | NtpUnknown String
     deriving (Eq, Show)
 
 prodboxNamespace :: String
@@ -115,7 +130,7 @@ runHostCommand repoRoot command =
                     putStrLn "All required host tools are available."
                     pure ExitSuccess
         HostCheckPorts -> runHostCheckPorts
-        HostInfo -> runSingleEffect repoRoot "Get host system information" (commandEffect "uname" ["-a"] repoRoot)
+        HostInfo -> runHostInfo repoRoot
         HostFirewall -> runSingleEffect repoRoot "Check firewall status" (commandEffect "ufw" ["status"] repoRoot)
         HostPublicEdge -> runHostPublicEdge repoRoot
 
@@ -422,6 +437,113 @@ runSingleEffect repoRoot failureContext effect = do
     case effectResult of
         Failure err -> failWith (failureContext ++ ": " ++ err)
         Success () -> pure ExitSuccess
+
+{- | Print host system information including NTP synchronization
+disposition.  Fails fast when the host is reachable via @timedatectl@
+but reports unsynchronized clocks, since every freshness judgement and
+claim/yield ordering check in the gateway daemon compares wall-clock UTC
+stamps across nodes.
+-}
+runHostInfo :: FilePath -> IO ExitCode
+runHostInfo repoRoot = do
+    unameOutput <- captureCommand (CommandSpec "uname" ["-a"] Nothing (Just repoRoot))
+    let unameLine = case unameOutput of
+            Failure err -> "uname unavailable: " ++ err
+            Success out -> case processExitCode out of
+                ExitSuccess -> trim (processStdout out)
+                ExitFailure _ -> "uname failed: " ++ trim (processStderr out)
+    ntp <- detectNtpDisposition repoRoot
+    putStr (renderHostInfoReport unameLine ntp)
+    case ntp of
+        NtpSynchronized -> pure ExitSuccess
+        NtpUnknown _ -> pure ExitSuccess
+        NtpUnsynced detail ->
+            failWith ("Host NTP synchronization is unhealthy: " ++ detail)
+
+{- | Render the operator-facing host-info disposition.  Tested directly so
+documentation and integration coverage can rely on stable output.
+-}
+renderHostInfoReport :: String -> NtpDisposition -> String
+renderHostInfoReport unameLine ntp =
+    unlines
+        [ "Host info"
+        , "UNAME=" ++ unameLine
+        , "NTP_STATUS=" ++ ntpStatusLabel ntp
+        , "NTP_DETAIL=" ++ ntpDetail ntp
+        ]
+  where
+    ntpStatusLabel :: NtpDisposition -> String
+    ntpStatusLabel NtpSynchronized = "synchronized"
+    ntpStatusLabel (NtpUnsynced _) = "unsynced"
+    ntpStatusLabel (NtpUnknown _) = "unknown"
+
+    ntpDetail :: NtpDisposition -> String
+    ntpDetail NtpSynchronized = "system clock is synchronized to a time source"
+    ntpDetail (NtpUnsynced detail) = detail
+    ntpDetail (NtpUnknown detail) = detail
+
+{- | Inspect the host's NTP state via @timedatectl status@. Returns
+'NtpUnknown' when @timedatectl@ is not available so non-systemd test
+hosts (or chroots) do not block development workflows.
+-}
+detectNtpDisposition :: FilePath -> IO NtpDisposition
+detectNtpDisposition repoRoot = do
+    timedatectl <- findExecutable "timedatectl"
+    case timedatectl of
+        Nothing -> pure (NtpUnknown "timedatectl is not available on this host")
+        Just _ -> do
+            outputResult <-
+                captureCommand
+                    (CommandSpec "timedatectl" ["status"] Nothing (Just repoRoot))
+            case outputResult of
+                Failure err -> pure (NtpUnknown ("timedatectl invocation failed: " ++ err))
+                Success out -> case processExitCode out of
+                    ExitSuccess -> pure (parseTimedatectlNtpDisposition (processStdout out))
+                    ExitFailure code ->
+                        pure
+                            ( NtpUnknown
+                                ( "timedatectl exited "
+                                    ++ show code
+                                    ++ ": "
+                                    ++ trim (processStderr out)
+                                )
+                            )
+
+{- | Pure helper that parses @timedatectl status@ output into a
+'NtpDisposition'.  Recognises both the modern @System clock
+synchronized: yes/no@ field and the legacy @NTP synchronized@ field.
+-}
+parseTimedatectlNtpDisposition :: String -> NtpDisposition
+parseTimedatectlNtpDisposition raw =
+    let fieldLines = lines raw
+        synchronized = lookupField fieldLines "system clock synchronized"
+        legacyNtp = lookupField fieldLines "ntp synchronized"
+        firstAvailable = synchronized `mplus` legacyNtp
+     in case firstAvailable of
+            Just value
+                | normalize value == "yes" -> NtpSynchronized
+                | normalize value == "no" ->
+                    NtpUnsynced "timedatectl reports system clock not synchronized"
+                | otherwise -> NtpUnknown ("unrecognized timedatectl value: " ++ value)
+            Nothing -> NtpUnknown "timedatectl output did not include synchronization state"
+  where
+    lookupField :: [String] -> String -> Maybe String
+    lookupField items needle =
+        case filter (\l -> map toLowerAscii (trim l) `startsWith` needle) items of
+            [] -> Nothing
+            (l : _) -> case break (== ':') (trim l) of
+                (_, ':' : value) -> Just (trim value)
+                _ -> Nothing
+
+    startsWith :: String -> String -> Bool
+    startsWith haystack needle = take (length needle) haystack == needle
+
+    normalize :: String -> String
+    normalize = map toLowerAscii . trim
+
+    mplus :: Maybe a -> Maybe a -> Maybe a
+    mplus (Just a) _ = Just a
+    mplus Nothing b = b
 
 runPrerequisites :: FilePath -> [String] -> IO (Result ())
 runPrerequisites repoRoot rootIds =

@@ -6,6 +6,7 @@ import Control.Exception (finally)
 import Data.Aeson (
     Value (..),
     eitherDecode,
+    encode,
  )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -73,13 +74,35 @@ import Prodbox.Gateway (
     renderGatewayConfigTemplate,
     renderGatewayStatusReport,
  )
+import Prodbox.Gateway.Peer (
+    PeerEventBatch (..),
+    PeerTransportRequest (..),
+    encodePeerEventBatch,
+    handlePeerRequest,
+    parsePeerEventBatch,
+    parsePeerHttpRequest,
+ )
+import Prodbox.Gateway.Peer qualified as Peer
 import Prodbox.Gateway.Types (
+    Disposition (..),
+    SignedEvent (..),
+    appendIfNew,
+    canWriteDns,
+    defaultMaxClockSkewSeconds,
+    emptyCommitLog,
+    eventTypeClaim,
+    eventTypeHeartbeat,
+    eventTypeYield,
+    nodeDisposition,
     parseDaemonConfig,
     parseOrders,
     validateDaemonTimingAgainstOrders,
  )
 import Prodbox.Host (
+    NtpDisposition (..),
     PortStatus (..),
+    parseTimedatectlNtpDisposition,
+    renderHostInfoReport,
     renderPortAvailabilityReport,
  )
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
@@ -1346,6 +1369,140 @@ main = hspec $ do
                                     _ -> expectationFailure "expected dns_write_gate object"
                             Right _ -> expectationFailure "expected config template object"
 
+    describe "gateway commit-log dispositions" $ do
+        it "computes node disposition from claim/yield events in chronological order" $ do
+            let claimA = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:00Z"
+                yieldA = signedEventStub "node-a" eventTypeYield "2026-04-06T10:00:01Z"
+                heartbeat = signedEventStub "node-b" eventTypeHeartbeat "2026-04-06T10:00:02Z"
+                claimAReclaim = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:03Z"
+                logBefore = foldl appendIfNew emptyCommitLog [claimA, yieldA, heartbeat]
+                logReclaim = appendIfNew logBefore claimAReclaim
+            nodeDisposition "node-a" logBefore `shouldBe` DispositionYielded
+            nodeDisposition "node-a" logReclaim `shouldBe` DispositionOwner
+            nodeDisposition "node-b" logReclaim `shouldBe` DispositionUnknown
+
+        it "gates DNS writes on the runtime CanWriteDns predicate" $ do
+            let claim = signedEventStub "node-a" eventTypeClaim "2026-04-06T10:00:00Z"
+                yield = signedEventStub "node-a" eventTypeYield "2026-04-06T10:00:01Z"
+                logOwner = appendIfNew emptyCommitLog claim
+                logYielded = appendIfNew logOwner yield
+            canWriteDns "node-a" (Just "node-a") logOwner `shouldBe` True
+            canWriteDns "node-a" (Just "node-a") logYielded `shouldBe` False
+            canWriteDns "node-a" (Just "node-b") logOwner `shouldBe` False
+            canWriteDns "node-a" Nothing logOwner `shouldBe` False
+            canWriteDns "node-a" (Just "node-a") emptyCommitLog `shouldBe` False
+
+    describe "gateway peer transport" $ do
+        it "round-trips a peer event batch through encode and parse" $ do
+            let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
+                batch = PeerEventBatch [event] 1700000000
+            case parsePeerEventBatch (encodePeerEventBatch batch) of
+                Left err -> expectationFailure err
+                Right parsed -> do
+                    peerEventBatchSenderOrdersVersionUtc parsed `shouldBe` 1700000000
+                    map eventHash (peerEventBatchEvents parsed) `shouldBe` [eventHash event]
+
+        it "rejects events whose HMAC signature does not match the configured key" $ do
+            let badEvent =
+                    Peer.signEvent
+                        "node-a"
+                        eventTypeHeartbeat
+                        "2026-04-06T10:00:00Z"
+                        "{}"
+                        "wrong-key"
+                eventKeys = Map.fromList [("node-a", "fake-key")]
+                batch = PeerEventBatch [badEvent] 1
+                (accepted, rejected) =
+                    handlePeerRequest
+                        (`Map.lookup` eventKeys)
+                        ["node-a"]
+                        defaultMaxClockSkewSeconds
+                        "2026-04-06T10:00:00Z"
+                        batch
+            accepted `shouldBe` []
+            length rejected `shouldBe` 1
+
+        it "rejects events from emitters that are not in the orders node set" $ do
+            let event = signedEventStub "stranger" eventTypeHeartbeat "2026-04-06T10:00:00Z"
+                eventKeys = Map.fromList [("node-a", "fake-key")]
+                batch = PeerEventBatch [event] 1
+                (accepted, rejected) =
+                    handlePeerRequest
+                        (`Map.lookup` eventKeys)
+                        ["node-a", "node-b"]
+                        defaultMaxClockSkewSeconds
+                        "2026-04-06T10:00:00Z"
+                        batch
+            accepted `shouldBe` []
+            map fst rejected `shouldBe` [eventHash event]
+
+        it "rejects events whose timestamp exceeds the configured skew bound" $ do
+            let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
+                eventKeys = Map.fromList [("node-a", "fake-key")]
+                batch = PeerEventBatch [event] 1
+                (accepted, rejected) =
+                    handlePeerRequest
+                        (`Map.lookup` eventKeys)
+                        ["node-a"]
+                        5.0
+                        "2026-04-06T10:01:00Z"
+                        batch
+            accepted `shouldBe` []
+            length rejected `shouldBe` 1
+
+        it "parses an inbound peer push request body" $ do
+            let event = signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
+                batch = PeerEventBatch [event] 7
+                bodyBytes = BL8.unpack (encodeJsonValue (encodePeerEventBatch batch))
+                request =
+                    BL8.pack
+                        ( "POST /v1/peer/events HTTP/1.1\r\n"
+                            ++ "Host: example.test:8444\r\n"
+                            ++ "Content-Type: application/json\r\n"
+                            ++ "Content-Length: "
+                            ++ show (length bodyBytes)
+                            ++ "\r\n"
+                            ++ "Connection: close\r\n"
+                            ++ "\r\n"
+                            ++ bodyBytes
+                        )
+            case parsePeerHttpRequest (BL8.toStrict request) of
+                Left err -> expectationFailure err
+                Right (PeerPushEvents parsed) -> do
+                    peerEventBatchSenderOrdersVersionUtc parsed `shouldBe` 7
+                    length (peerEventBatchEvents parsed) `shouldBe` 1
+                Right _ -> expectationFailure "expected PeerPushEvents"
+
+    describe "host NTP disposition" $ do
+        it "treats `System clock synchronized: yes` as healthy" $ do
+            parseTimedatectlNtpDisposition
+                ( unlines
+                    [ "               Local time: Mon 2026-04-06 10:00:00 UTC"
+                    , "  System clock synchronized: yes"
+                    , "                NTP service: active"
+                    ]
+                )
+                `shouldBe` NtpSynchronized
+
+        it "fails fast when the system clock is not synchronized" $ do
+            parseTimedatectlNtpDisposition
+                ( unlines
+                    [ "               Local time: Mon 2026-04-06 10:00:00 UTC"
+                    , "  System clock synchronized: no"
+                    , "                NTP service: inactive"
+                    ]
+                )
+                `shouldBe` NtpUnsynced "timedatectl reports system clock not synchronized"
+
+        it "renders deterministic host info disposition output" $ do
+            renderHostInfoReport "Linux test 6.17.0 #1 x86_64 GNU/Linux" NtpSynchronized
+                `shouldBe` unlines
+                    [ "Host info"
+                    , "UNAME=Linux test 6.17.0 #1 x86_64 GNU/Linux"
+                    , "NTP_STATUS=synchronized"
+                    , "NTP_DETAIL=system clock is synchronized to a time source"
+                    ]
+
     describe "native host and k8s helpers" $ do
         it "renders deterministic host port availability output" $ do
             renderPortAvailabilityReport
@@ -1580,6 +1737,17 @@ parseArgs argv =
             let (message, _) = renderFailure failure "prodbox"
              in Left message
         CompletionInvoked _ -> Left "shell completion requested"
+
+{- | Build a 'SignedEvent' whose hash and HMAC signature match the
+canonical unsigned-payload encoding the daemon uses.  Used by the
+peer-transport tests to construct round-trippable batches.
+-}
+signedEventStub :: String -> String -> String -> SignedEvent
+signedEventStub nodeId evType ts =
+    Peer.signEvent nodeId evType ts "{}" "fake-key"
+
+encodeJsonValue :: Value -> BL8.ByteString
+encodeJsonValue = encode
 
 makeExecutable :: FilePath -> IO ()
 makeExecutable path = do

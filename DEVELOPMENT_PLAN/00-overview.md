@@ -54,9 +54,11 @@ Build a clean-room Haskell `prodbox` repository with:
     test-stack state in the dedicated bucket `prodbox-test-pulumi-backends`.
 14. One in-cluster Haskell gateway runtime with config generation, HTTP `/v1/state`
     observability, heartbeat recording, in-memory ownership projection, DNS-write gating,
-    Orders-backed interval validation, and HMAC-signed event state. Gateway config still carries
-    certificate and socket metadata, but the closed repository surface does not materialize
-    peer-transport behavior from those fields today.
+    Orders-backed interval validation, HMAC-signed event state, peer-transport gossip with
+    commit-log replication, runtime claim/yield emission under the `CanWriteDns` gate,
+    operator-verifiable bounded-clock-skew enforcement through the supported-host NTP gate and
+    `/v1/state` skew reporting, and atomic Orders-promotion coordination keyed off the monotonic
+    `orders_version_utc` field.
 15. One self-managed public-edge doctrine where MetalLB exposes Envoy Gateway, Kubernetes Gateway
     API owns Layer 7 routes, cert-manager owns listener TLS, Keycloak remains the identity
     provider, every externally reachable app or dashboard lives under the single hostname
@@ -299,16 +301,21 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 ## Current Execution State
 
 Phase `0` is closed on the plan suite. Phases `1`, `2`, `3`, `4`, `5`, `6`, and `7` are closed
-on the implemented repository architecture:
+on the implemented repository architecture. Sprints `2.4`, `2.5`, `2.6`, and `2.7` are now
+closed on peer-heartbeat transport with commit-log gossip, runtime claim/yield emission under
+`CanWriteDns`, operator time-base discipline, and atomic Orders-promotion coordination, in
+addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
   Haskell test and quality framework, the local edge foundations, the one-host config contract,
   and config-selected MetalLB BGP support.
 - Phase 2 owns the gateway runtime, DNS inspection surface, the single-record Route 53 doctrine,
-  and the TLA+ validation entrypoint; the Haskell gateway daemon itself is closed on the HTTP
-  `/v1/state` payload, gateway status client path, interval validation, and the corresponding
-  runtime-to-model notes.
+  and the TLA+ validation entrypoint; the Haskell gateway daemon is closed on the HTTP
+  `/v1/state` payload, gateway status client path, interval validation, peer-transport gossip
+  through `Prodbox.Gateway.Peer`, runtime claim/yield emission under the `canWriteDns` predicate,
+  operator-verifiable bounded-clock-skew enforcement, and Orders-version coordination across the
+  mesh.
 - Phase 3 owns the chart platform, retained state model, supported public workload delivery, and
   the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. It includes
   the JWT-protected API route, the Redis-backed WebSocket runtime, the shared public-workload
@@ -421,6 +428,26 @@ on the implemented repository architecture:
 - The gateway daemon, `prodbox gateway status`, and daemon config parsing must close on the
   implemented HTTP `/v1/state` surface, the Orders-backed interval-validation contract, and the
   current runtime-to-model notes in `documents/engineering/tla_modelling_assumptions.md`.
+- The gateway daemon must materialize peer transport from the certificate, key, CA, and socket
+  fields already retained in `DaemonConfig` and `Orders`, so `stateLastHeartbeatTimes` is updated
+  from inbound peer events rather than from the local heartbeat loop alone, the append-only commit
+  log replicates between nodes as the canonical heartbeat-and-event transport, and `/v1/state`
+  exposes per-peer transport health.
+- The gateway daemon must emit signed `Claim` and `Yield` events on owner transitions and gate
+  Route 53 writes on the runtime equivalent of the modelled `CanWriteDns` predicate, so
+  `ClaimPrecedesWrite` and `YieldPrecedesReclaim` hold on the runtime event log and a stale owner
+  cannot reclaim DNS write authority without first observing its own yield being superseded by a
+  fresh claim.
+- The supported-host gate must fail fast on unhealthy NTP synchronization, the gateway daemon
+  must record the maximum observed inter-node clock skew on `/v1/state` and refuse inbound
+  heartbeats whose timestamps exceed the documented bound, and the architecture and TLA+
+  correspondence docs must name that bound, the operator response, and how the model's
+  bounded-delay assumption maps to a runtime-enforced skew limit.
+- Orders documents must carry a monotonic version field, daemons must reject inbound peer events
+  from a peer presenting an older Orders version, a new Orders version must propagate through the
+  commit-log gossip surface and be adopted by every live daemon before the next election tick,
+  and a daemon rebooting against a stale Orders version must refuse to claim ownership until its
+  Orders view catches up.
 - The only supported DNS model is one explicit Route 53 record for `test.resolvefintech.com`;
   wildcard public DNS and per-service public hostnames are not part of the supported
   architecture.

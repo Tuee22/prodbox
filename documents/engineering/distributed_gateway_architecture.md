@@ -172,21 +172,67 @@ This provides deterministic convergence.
 
 ## 7.1 Transport
 
-- Mutual TLS for all peer RPCs.
-- Node identity bound to cert subject + Orders node_id mapping.
+- Mutual TLS for all peer RPCs is the design contract for the supported
+  cluster surface.  The current Haskell runtime ships an HTTP transport
+  bound to the configured peer-events port, so every daemon dials and
+  receives signed event batches even though the chart-mounted certificates,
+  key, and CA stay declarative for now.
+- Node identity is bound to the Orders `node_id` mapping: the receiver
+  validates each event's HMAC signature against the per-node key in
+  `daemonEventKeys`, refuses unknown emitters, and ignores events whose
+  emitter id is outside the Orders node set.
 
 ## 7.2 Log Replication
 
-- Range pull by `(from_event_hash | from_index)`.
-- Merkle/hash frontier exchange for efficient diff.
-- Idempotent append.
+- Each daemon periodically pushes its append-only commit log to every
+  other peer over the events port.  The protocol is a simple
+  `POST /v1/peer/events` carrying a JSON batch plus the sender's monotonic
+  `orders_version_utc`.
+- Acceptance is idempotent: the receiver merges through `appendIfNew`, so
+  repeated pushes never create duplicates.
+- The receiver updates its view of every other node's last heartbeat from
+  the inbound event timestamps rather than from the local heartbeat loop
+  alone, closing the documented gap between the runtime and the TLA+
+  model's peer-communication assumptions.
+- The receiver also tracks per-peer transport health
+  (last inbound event timestamp, connect state, last error) and exposes
+  it on `/v1/state` as `peer_transport`.
 
 ## 7.3 Corruption Resistance
 
 - Per-event schema validation.
 - Hash-chain integrity check.
-- Signature verification.
+- HMAC signature verification (rejected pushes never mutate state).
 - Reject-on-invalid, never partially apply.
+
+## 7.4 Operator Time-Base Discipline
+
+- The supported-host gate (`prodbox host info`) reports the host's NTP
+  synchronization disposition derived from `timedatectl` and fails fast
+  when the host is reachable but reports the system clock as
+  unsynchronized.  Every freshness judgement and claim/yield ordering check
+  in the daemon compares wall-clock UTC stamps across nodes, so a drifting
+  operator clock breaks the model's bounded-delay assumption.
+- The gateway daemon refuses inbound events whose timestamps lie beyond
+  the configured `max_clock_skew_seconds` bound (default 10 seconds, range
+  `[0.1, 600]`).  Rejected events appear in the push response's
+  `rejected` list with the offending skew.
+- The daemon records the maximum observed inter-node skew on
+  `/v1/state` as `max_clock_skew_seconds_observed` so operators can
+  detect drift before it crosses the configured bound.
+
+## 7.5 Orders Promotion
+
+- Orders carries the existing monotonic `version_utc` field.  Each peer
+  push includes the sender's current `orders_version_utc`, and the
+  receiver returns `409 Conflict` when the sender's view is older than
+  the receiver's.  This prevents a stale peer from pushing events that
+  predate the receiver's promotion of a newer Orders document.
+- The daemon tracks the highest observed Orders version on
+  `/v1/state` as `latest_observed_orders_version_utc`.  When the peer
+  view advances past the local Orders, the daemon refuses to claim
+  ownership until its local Orders catches up so a daemon rebooting
+  against a stale Orders version cannot reclaim DNS write authority.
 
 ---
 
@@ -215,28 +261,43 @@ For modelling assumptions, variable correspondence, known divergences, and verif
 
 ---
 
-## 9. Target GatewayClaim / GatewayYield Event Lifecycle
+## 9. GatewayClaim / GatewayYield Event Lifecycle
 
-In the target protocol, ownership transitions are tracked via typed events in the commit log:
+Ownership transitions are tracked via typed events in the commit log,
+emitted by the running daemon:
 
 | Event | Trigger | Payload |
 |-------|---------|---------|
-| `GatewayClaim` | This node becomes elected gateway owner | `{"claiming_node_id": str, "previous_owner": str \| None}` |
-| `GatewayYield` | This node loses gateway ownership | `{"yielding_node_id": str, "new_owner": str}` |
+| `claim` | This node becomes elected gateway owner | `{"claiming_node_id": str, "previous_owner": str \| None}` |
+| `yield` | This node loses gateway ownership | `{"yielding_node_id": str, "new_owner": str \| None}` |
 
-**Ordering guarantee**: `GatewayYield` from the old owner is emitted before `GatewayClaim` from the new owner when transitions occur within the same node's recomputation cycle.
+**Ordering guarantee**: A `yield` from the old owner is emitted before a
+`claim` from the new owner when both transitions land in the same
+recomputation cycle. The daemon keeps `statePreviousOwner` to detect
+the transition and signs the resulting event with the local node's
+configured event key before appending it to the commit log.
 
 ---
 
-## 10. Target DNS Write Gating
+## 10. DNS Write Gating
 
-In the target protocol, only the elected gateway owner writes the primary DNS A record. Two
-conditions must be satisfied:
+Only the elected gateway owner writes the primary DNS A record. Two conditions must be satisfied
+in the runtime, materialising the modelled `CanWriteDns` predicate:
 
 1. **Ownership check**: `gateway_owner == self.node_id`
-2. **Claim check**: A `GatewayClaim` event from self exists in the local commit log
+2. **Claim check**: the most recent claim/yield event from `self.node_id`
+   in the commit log is a `claim`, not a `yield`.
 
-This prevents stale writes from lagging nodes that haven't yet learned about ownership changes.
+The runtime helper `canWriteDns` enforces both conditions before
+`dnsWriteLoop` issues a Route 53 UPSERT.  Because the commit log is
+replicated through anti-entropy gossip (see Section 7), a stale owner
+that has yielded cannot reclaim DNS write authority without first
+observing a fresh `claim` from itself superseding its own `yield`.
+
+The daemon emits a signed `claim` event on the non-owner-to-owner
+transition and a signed `yield` event on the owner-to-non-owner
+transition, so `ClaimPrecedesWrite` and `YieldPrecedesReclaim` from the
+TLA+ spec hold on the runtime event log, not only on the model.
 
 Current runtime correspondence and any compressed operational status fields are documented in
 [TLA+ Modelling Assumptions](./tla_modelling_assumptions.md).
@@ -284,7 +345,11 @@ Returns current daemon state:
 {
     "node_id": "node-a",
     "gateway_owner": "node-a",
+    "previous_owner": null,
     "has_active_claim": true,
+    "can_write_dns": true,
+    "node_disposition": "owner",
+    "peer_dispositions": {"node-b": "yielded"},
     "event_count": 42,
     "event_hashes": ["abc123", "def456"],
     "mesh_peers": ["node-b", "node-c"],
@@ -295,6 +360,17 @@ Returns current daemon state:
         "node-a": 0.2,
         "node-b": 1.3
     },
+    "peer_transport": {
+        "node-b": {
+            "connected": true,
+            "last_inbound_event_age_seconds": 0.7,
+            "last_error": null
+        }
+    },
+    "max_clock_skew_seconds_observed": 0.4,
+    "max_clock_skew_seconds_bound": 10.0,
+    "orders_version_utc": 1700000000,
+    "latest_observed_orders_version_utc": 1700000000,
     "dns_write_gate": {
         "zone_id": "Z1234567890",
         "fqdn": "gw.example.test",

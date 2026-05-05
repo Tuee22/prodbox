@@ -27,6 +27,7 @@ library
         Prodbox.EffectInterpreter
         Prodbox.Gateway
         Prodbox.Gateway.Daemon
+        Prodbox.Gateway.Peer
         Prodbox.Gateway.Types
         Prodbox.Host
         Prodbox.Infra.AwsEksTestStack

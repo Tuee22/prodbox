@@ -12,7 +12,9 @@ import Control.Concurrent.STM (
     atomically,
     modifyTVar',
     newTVarIO,
+    readTVar,
     readTVarIO,
+    writeTVar,
  )
 import Control.Exception (SomeException, try)
 import Control.Monad (forever, void, when)
@@ -30,8 +32,11 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (intToDigit)
+import Data.Char (intToDigit, toLower)
+import Data.List (isPrefixOf)
+import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as Text
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word8)
@@ -42,26 +47,49 @@ import Network.Socket (
     SocketOption (ReuseAddr),
     SocketType (Stream),
     accept,
+    addrAddress,
     bind,
-    gracefulClose,
+    close,
+    connect,
+    defaultProtocol,
+    getAddrInfo,
     listen,
     setSocketOption,
     socket,
     tupleToHostAddress,
     withSocketsDo,
  )
-import Network.Socket.ByteString (sendAll)
+import Network.Socket.ByteString (recv, sendAll)
+import Prodbox.Gateway.Peer (
+    PeerEventBatch (..),
+    PeerTransportRequest (..),
+    PeerTransportResponse (..),
+    encodePeerEventBatch,
+    handlePeerRequest,
+    parsePeerHttpRequest,
+    renderPeerHttpResponse,
+ )
 import Prodbox.Gateway.Types (
     CommitLog (..),
     DaemonConfig (..),
+    Disposition (..),
     DnsWriteGate (..),
     GatewayRule (..),
     Orders (..),
     PeerEndpoint (..),
+    PeerHealth (..),
     SignedEvent (..),
     appendIfNew,
+    canWriteDns,
     emptyCommitLog,
+    eventTimestampUtc,
+    eventTypeClaim,
+    eventTypeHeartbeat,
+    eventTypeYield,
+    extractOrdersVersionFromEvent,
+    nodeDisposition,
     parseOrders,
+    peerDialSocketHost,
     validateDaemonTimingAgainstOrders,
  )
 import Prodbox.Result (Result (..))
@@ -73,26 +101,39 @@ import Prodbox.Subprocess (
 import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
 
+{- | In-memory daemon state.  Updated through STM by the loops and HTTP
+listeners, and rendered onto @/v1/state@ for operator inspection.
+-}
 data DaemonState = DaemonState
     { stateCommitLog :: CommitLog
-    , stateLastHeartbeatTimes :: Map.Map String UTCTime
+    , stateLastHeartbeatTimes :: Map String UTCTime
     , stateGatewayOwner :: Maybe String
+    , statePreviousOwner :: Maybe String
     , stateLastPublicIp :: Maybe String
     , stateLastDnsWriteIp :: Maybe String
     , stateLastDnsWriteTime :: Maybe UTCTime
     , stateMeshPeers :: [String]
+    , statePeerHealth :: Map String PeerHealth
+    , stateMaxObservedSkewSeconds :: Maybe Double
+    , stateOrdersVersionUtc :: Int
+    , stateLatestObservedOrdersVersion :: Int
     }
 
-initialState :: DaemonState
-initialState =
+initialState :: Int -> DaemonState
+initialState ordersVersion =
     DaemonState
         { stateCommitLog = emptyCommitLog
         , stateLastHeartbeatTimes = Map.empty
         , stateGatewayOwner = Nothing
+        , statePreviousOwner = Nothing
         , stateLastPublicIp = Nothing
         , stateLastDnsWriteIp = Nothing
         , stateLastDnsWriteTime = Nothing
         , stateMeshPeers = []
+        , statePeerHealth = Map.empty
+        , stateMaxObservedSkewSeconds = Nothing
+        , stateOrdersVersionUtc = ordersVersion
+        , stateLatestObservedOrdersVersion = ordersVersion
         }
 
 runGatewayDaemon :: DaemonConfig -> IO ExitCode
@@ -117,9 +158,12 @@ runGatewayDaemon config = withSocketsDo $ do
                             , peerNodeId peer /= localNodeId
                             ]
                         initialDaemonState =
-                            initialState
+                            (initialState (ordersVersionUtc orders))
                                 { stateLastHeartbeatTimes = Map.singleton localNodeId now
                                 , stateMeshPeers = meshPeers
+                                , statePeerHealth =
+                                    Map.fromList
+                                        [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
                                 }
                     stateVar <- newTVarIO initialDaemonState
                     let eventKeys = Map.fromList (daemonEventKeys config)
@@ -127,11 +171,20 @@ runGatewayDaemon config = withSocketsDo $ do
                     hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
 
                     heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
-                    gatewayThread <- async (gatewayLoop config orders stateVar)
+                    gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
                     dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
                     restThread <- async (restServerLoop config orders stateVar)
+                    peerListenerThread <- async (peerListenerLoop config orders stateVar eventKeys)
+                    peerDialerThread <- async (peerDialerLoop config orders stateVar)
 
-                    let allThreads = [heartbeatThread, gatewayThread, dnsWriteThread, restThread]
+                    let allThreads =
+                            [ heartbeatThread
+                            , gatewayThread
+                            , dnsWriteThread
+                            , restThread
+                            , peerListenerThread
+                            , peerDialerThread
+                            ]
 
                     result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
                     case result of
@@ -143,7 +196,7 @@ runGatewayDaemon config = withSocketsDo $ do
                             hPutStrLn stderr "Gateway daemon stopped"
                             pure ExitSuccess
 
-heartbeatLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map.Map String String -> IO ()
+heartbeatLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map String String -> IO ()
 heartbeatLoop config _orders stateVar eventKeys = forever $ do
     now <- getCurrentTime
     let nodeId = daemonNodeId config
@@ -155,7 +208,7 @@ heartbeatLoop config _orders stateVar eventKeys = forever $ do
     case Map.lookup nodeId eventKeys of
         Nothing -> hPutStrLn stderr ("No event key for local node " ++ nodeId)
         Just key -> do
-            let event = createSignedEvent nodeId "heartbeat" heartbeatPayload key now
+            let event = createSignedEvent nodeId eventTypeHeartbeat heartbeatPayload key now
             atomically $ modifyTVar' stateVar $ \state ->
                 state
                     { stateCommitLog = appendIfNew (stateCommitLog state) event
@@ -164,31 +217,96 @@ heartbeatLoop config _orders stateVar eventKeys = forever $ do
                     }
     threadDelay (round (daemonHeartbeatInterval config * 1000000))
 
-gatewayLoop :: DaemonConfig -> Orders -> TVar DaemonState -> IO ()
-gatewayLoop config _orders stateVar = forever $ do
+{- | Recompute the elected owner from heartbeat freshness, emit signed
+@claim@/@yield@ events on transitions, and update the in-memory owner
+view.  Closes the model's ownership-event lifecycle in the runtime.
+-}
+gatewayLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map String String -> IO ()
+gatewayLoop config orders stateVar eventKeys = forever $ do
     now <- getCurrentTime
     state <- readTVarIO stateVar
-    let rule = ordersGatewayRule _orders
+    let nodeId = daemonNodeId config
+        rule = ordersGatewayRule orders
         timeout = fromIntegral (heartbeatTimeoutSeconds rule)
+        ordersOk = stateLatestObservedOrdersVersion state <= stateOrdersVersionUtc state
         activeNodes =
-            [ nodeId
-            | nodeId <- rankedNodes rule
-            , case Map.lookup nodeId (stateLastHeartbeatTimes state) of
+            [ rankedId
+            | rankedId <- rankedNodes rule
+            , case Map.lookup rankedId (stateLastHeartbeatTimes state) of
                 Just lastHeartbeat -> diffUTCTime now lastHeartbeat < timeout
-                Nothing -> nodeId == daemonNodeId config
+                Nothing -> rankedId == nodeId
             ]
-        owner = case activeNodes of
-            (first : _) -> Just first
-            [] -> Nothing
-    atomically $ modifyTVar' stateVar $ \s -> s{stateGatewayOwner = owner}
+        owner =
+            if not ordersOk
+                then Nothing
+                else case activeNodes of
+                    (firstNode : _) -> Just firstNode
+                    [] -> Nothing
+        previous = stateGatewayOwner state
+        transitionedToOwner = previous /= Just nodeId && owner == Just nodeId
+        transitionedFromOwner = previous == Just nodeId && owner /= Just nodeId
+    when transitionedToOwner $
+        appendOwnershipEvent
+            stateVar
+            eventKeys
+            nodeId
+            eventTypeClaim
+            now
+            ( object
+                [ "claiming_node_id" .= nodeId
+                , "previous_owner" .= toMaybeString previous
+                ]
+            )
+    when transitionedFromOwner $
+        appendOwnershipEvent
+            stateVar
+            eventKeys
+            nodeId
+            eventTypeYield
+            now
+            ( object
+                [ "yielding_node_id" .= nodeId
+                , "new_owner" .= toMaybeString owner
+                ]
+            )
+    atomically $ modifyTVar' stateVar $ \s ->
+        s
+            { stateGatewayOwner = owner
+            , statePreviousOwner = previous
+            }
     threadDelay 1000000
 
+toMaybeString :: Maybe String -> Value
+toMaybeString Nothing = Null
+toMaybeString (Just s) = String (Text.pack s)
+
+appendOwnershipEvent ::
+    TVar DaemonState ->
+    Map String String ->
+    String ->
+    String ->
+    UTCTime ->
+    Value ->
+    IO ()
+appendOwnershipEvent stateVar eventKeys nodeId evType now payload =
+    case Map.lookup nodeId eventKeys of
+        Nothing -> hPutStrLn stderr ("No event key for local node " ++ nodeId)
+        Just key -> do
+            let ev = createSignedEvent nodeId evType payload key now
+            atomically $ modifyTVar' stateVar $ \s ->
+                s{stateCommitLog = appendIfNew (stateCommitLog s) ev}
+            hPutStrLn stderr ("Gateway emitted " ++ evType ++ " event from " ++ nodeId)
+
+{- | Write Route 53 only when the runtime CanWriteDns predicate holds: the
+local node must be the elected owner AND the most recent claim/yield
+event from the local node must be a claim.
+-}
 dnsWriteLoop :: DaemonConfig -> Orders -> TVar DaemonState -> IO ()
 dnsWriteLoop config _orders stateVar = forever $ do
     state <- readTVarIO stateVar
     let nodeId = daemonNodeId config
-        isOwner = stateGatewayOwner state == Just nodeId
-    when isOwner $ do
+        eligible = canWriteDns nodeId (stateGatewayOwner state) (stateCommitLog state)
+    when eligible $ do
         case daemonDnsWriteGate config of
             Nothing -> pure ()
             Just gate -> do
@@ -233,7 +351,7 @@ restServerLoop config orders stateVar = do
 handleRestClient :: Socket -> DaemonConfig -> TVar DaemonState -> IO ()
 handleRestClient sock config stateVar = do
     _ <- try handleRequest :: IO (Either SomeException ())
-    gracefulClose sock 1000
+    close sock
   where
     handleRequest = do
         state <- readTVarIO stateVar
@@ -250,13 +368,335 @@ handleRestClient sock config stateVar = do
         sendAll sock (BS8.pack responseHeaders)
         sendAll sock (BL.toStrict responseBody)
 
+-- | Bind the peer-events HTTP listener on the configured socket port.
+peerListenerLoop ::
+    DaemonConfig ->
+    Orders ->
+    TVar DaemonState ->
+    Map String String ->
+    IO ()
+peerListenerLoop config orders stateVar eventKeys = do
+    let localPeer = case filter (\n -> peerNodeId n == daemonNodeId config) (ordersNodes orders) of
+            [peer] -> peer
+            _ -> error ("Local node " ++ daemonNodeId config ++ " not found in orders")
+        port = peerSocketPort localPeer
+    sock <- socket AF_INET Stream 0
+    setSocketOption sock ReuseAddr 1
+    bind sock (SockAddrInet (fromIntegral port) (tupleToHostAddress (0, 0, 0, 0)))
+    listen sock 16
+    hPutStrLn stderr ("Peer events listener on port " ++ show port)
+    forever $ do
+        (clientSock, _) <- accept sock
+        void $ async $ handlePeerClient clientSock config orders stateVar eventKeys
+
+handlePeerClient ::
+    Socket ->
+    DaemonConfig ->
+    Orders ->
+    TVar DaemonState ->
+    Map String String ->
+    IO ()
+handlePeerClient sock config orders stateVar eventKeys = do
+    _ <- try handleOne :: IO (Either SomeException ())
+    close sock
+  where
+    handleOne = do
+        raw <- receiveAll sock
+        case parsePeerHttpRequest raw of
+            Left err -> do
+                let response = renderPeerHttpResponse (PeerResponseError err)
+                sendAll sock (BL.toStrict response)
+            Right (PeerPushEvents batch) -> do
+                response <- ingestPeerBatch config orders stateVar eventKeys batch
+                sendAll sock (BL.toStrict response)
+            Right PeerPullEvents -> do
+                state <- readTVarIO stateVar
+                let batch =
+                        PeerEventBatch
+                            (commitLogEvents (stateCommitLog state))
+                            (stateOrdersVersionUtc state)
+                    response = renderPeerHttpResponse (PeerResponseEventBatch batch)
+                sendAll sock (BL.toStrict response)
+
+{- | Read the inbound request until the body matches the @Content-Length@
+header.  GET requests with no body return after the header section.
+-}
+receiveAll :: Socket -> IO BS.ByteString
+receiveAll sock = loop BS.empty
+  where
+    loop acc = do
+        chunk <- recv sock 16384
+        if BS.null chunk
+            then pure acc
+            else
+                let acc' = acc `BS.append` chunk
+                 in if hasFullBody acc'
+                        then pure acc'
+                        else loop acc'
+
+    hasFullBody :: BS.ByteString -> Bool
+    hasFullBody bs =
+        let text = BS8.unpack bs
+            (header, body) = splitOnDoubleCrlf text
+         in case lookupContentLength header of
+                Just expected -> length body >= expected
+                Nothing -> not (null header) && doubleCrlfPresent text
+
+    doubleCrlfPresent :: String -> Bool
+    doubleCrlfPresent text = "\r\n\r\n" `isInfixOf'` text || "\n\n" `isInfixOf'` text
+
+    splitOnDoubleCrlf :: String -> (String, String)
+    splitOnDoubleCrlf = go []
+      where
+        go acc rest = case rest of
+            '\r' : '\n' : '\r' : '\n' : remainder -> (reverse acc, remainder)
+            '\n' : '\n' : remainder -> (reverse acc, remainder)
+            (c : remainder) -> go (c : acc) remainder
+            [] -> (reverse acc, "")
+
+    lookupContentLength :: String -> Maybe Int
+    lookupContentLength text =
+        let headerLines = lines (replace '\r' ' ' text)
+            findHeader [] = Nothing
+            findHeader (h : rest) =
+                let lc = map toLower h
+                 in if "content-length:" `isPrefixOf` lc
+                        then case reads (drop (length ("content-length:" :: String)) lc) of
+                            ((n, _) : _) -> Just n
+                            _ -> findHeader rest
+                        else findHeader rest
+         in findHeader headerLines
+
+    replace c r = map (\x -> if x == c then r else x)
+
+    isInfixOf' :: String -> String -> Bool
+    isInfixOf' needle haystack = any (needle `isPrefixOf`) (tails haystack)
+
+    tails :: [a] -> [[a]]
+    tails [] = [[]]
+    tails xs@(_ : rest) = xs : tails rest
+
+ingestPeerBatch ::
+    DaemonConfig ->
+    Orders ->
+    TVar DaemonState ->
+    Map String String ->
+    PeerEventBatch ->
+    IO BL.ByteString
+ingestPeerBatch config orders stateVar eventKeys batch = do
+    now <- getCurrentTime
+    state0 <- readTVarIO stateVar
+    let receiverOrdersVersion = stateOrdersVersionUtc state0
+        senderOrdersVersion = peerEventBatchSenderOrdersVersionUtc batch
+    if senderOrdersVersion > 0 && senderOrdersVersion < receiverOrdersVersion
+        then
+            pure
+                ( renderPeerHttpResponse
+                    (PeerResponseStaleOrders senderOrdersVersion receiverOrdersVersion)
+                )
+        else do
+            let nowIso = formatUtcIso now
+                knownEmitters = map peerNodeId (ordersNodes orders)
+                lookupKey = (`Map.lookup` eventKeys)
+                (accepted, rejected) =
+                    handlePeerRequest
+                        lookupKey
+                        knownEmitters
+                        (daemonMaxClockSkewSeconds config)
+                        nowIso
+                        batch
+            appliedCount <- atomically $ do
+                s0 <- readTVar stateVar
+                let preCount = length (commitLogEvents (stateCommitLog s0))
+                    updated =
+                        applyAcceptedEvents now accepted s0
+                            `noteSenderOrdersAdvert` senderOrdersVersion
+                    postCount = length (commitLogEvents (stateCommitLog updated))
+                writeTVar stateVar updated
+                pure (postCount - preCount)
+            pure (renderPeerHttpResponse (PeerResponseEventsAccepted appliedCount rejected))
+
+noteSenderOrdersAdvert :: DaemonState -> Int -> DaemonState
+noteSenderOrdersAdvert s senderVersion
+    | senderVersion > stateLatestObservedOrdersVersion s =
+        s{stateLatestObservedOrdersVersion = senderVersion}
+    | otherwise = s
+
+{- | Apply a list of accepted peer events to the daemon state in one pass:
+append to the commit log (idempotently), update last-heartbeat times,
+record per-peer transport health, refresh max-observed clock skew, and
+promote a newer Orders version when announced.
+-}
+applyAcceptedEvents :: UTCTime -> [SignedEvent] -> DaemonState -> DaemonState
+applyAcceptedEvents now events s0 =
+    let log0 = stateCommitLog s0
+        log' = foldl' appendIfNew log0 events
+        heartbeats0 = stateLastHeartbeatTimes s0
+        heartbeats' = foldl' updateHeartbeatFromEvent heartbeats0 events
+        peerHealth0 = statePeerHealth s0
+        peerHealth' = foldl' (updatePeerHealthFromEvent now) peerHealth0 events
+        skew0 = stateMaxObservedSkewSeconds s0
+        skew' = foldl' (updateSkewFromEvent now) skew0 events
+        ordersAdvert = foldl' updateOrdersAdvert (stateLatestObservedOrdersVersion s0) events
+     in s0
+            { stateCommitLog = log'
+            , stateLastHeartbeatTimes = heartbeats'
+            , statePeerHealth = peerHealth'
+            , stateMaxObservedSkewSeconds = skew'
+            , stateLatestObservedOrdersVersion = ordersAdvert
+            }
+
+updateHeartbeatFromEvent :: Map String UTCTime -> SignedEvent -> Map String UTCTime
+updateHeartbeatFromEvent acc ev =
+    case eventTimestampUtc ev of
+        Just ts ->
+            Map.insertWith max (emitterNodeId ev) ts acc
+        Nothing -> acc
+
+updatePeerHealthFromEvent :: UTCTime -> Map String PeerHealth -> SignedEvent -> Map String PeerHealth
+updatePeerHealthFromEvent now acc ev =
+    let baseline = PeerHealth (Just now) True Nothing
+        merge _new old =
+            old
+                { peerHealthLastInboundEvent = Just now
+                , peerHealthConnected = True
+                , peerHealthLastError = Nothing
+                }
+     in Map.insertWith merge (emitterNodeId ev) baseline acc
+
+updateSkewFromEvent :: UTCTime -> Maybe Double -> SignedEvent -> Maybe Double
+updateSkewFromEvent now acc ev =
+    case eventTimestampUtc ev of
+        Just ts ->
+            let skew = abs (realToFrac (diffUTCTime now ts) :: Double)
+             in Just (maybe skew (max skew) acc)
+        Nothing -> acc
+
+updateOrdersAdvert :: Int -> SignedEvent -> Int
+updateOrdersAdvert acc ev =
+    case extractOrdersVersionFromEvent ev of
+        Just v | v > acc -> v
+        _ -> acc
+
+{- | Periodically push the local commit log to every other peer in the
+mesh.  Each cycle marks unreachable peers as disconnected so
+@/v1/state@ exposes per-peer transport health.
+-}
+peerDialerLoop :: DaemonConfig -> Orders -> TVar DaemonState -> IO ()
+peerDialerLoop config orders stateVar = forever $ do
+    state <- readTVarIO stateVar
+    let nodeId = daemonNodeId config
+        peers = [p | p <- ordersNodes orders, peerNodeId p /= nodeId]
+        events = commitLogEvents (stateCommitLog state)
+        batch = PeerEventBatch events (stateOrdersVersionUtc state)
+    mapM_ (pushToPeer stateVar batch) peers
+    threadDelay (round (daemonReconnectInterval config * 1000000))
+
+pushToPeer :: TVar DaemonState -> PeerEventBatch -> PeerEndpoint -> IO ()
+pushToPeer stateVar batch peer = do
+    let host = peerDialSocketHost peer
+        port = peerSocketPort peer
+        body = encode (encodePeerEventBatch batch)
+        request =
+            BL.toStrict $
+                BL.append
+                    ( BL.fromStrict
+                        ( BS8.pack
+                            ( "POST /v1/peer/events HTTP/1.1\r\n"
+                                ++ "Host: "
+                                ++ host
+                                ++ ":"
+                                ++ show port
+                                ++ "\r\n"
+                                ++ "Content-Type: application/json\r\n"
+                                ++ "Content-Length: "
+                                ++ show (BL.length body)
+                                ++ "\r\n"
+                                ++ "Connection: close\r\n"
+                                ++ "\r\n"
+                            )
+                        )
+                    )
+                    body
+    result <- try (dialAndSend host port request) :: IO (Either SomeException (Either String BS.ByteString))
+    case result of
+        Left exc -> markPeerError stateVar (peerNodeId peer) (show exc)
+        Right (Left err) -> markPeerError stateVar (peerNodeId peer) err
+        Right (Right _resp) -> markPeerOk stateVar (peerNodeId peer)
+
+dialAndSend :: String -> Int -> BS.ByteString -> IO (Either String BS.ByteString)
+dialAndSend host port request = do
+    addrInfos <- getAddrInfo Nothing (Just host) (Just (show port))
+    case addrInfos of
+        [] -> pure (Left ("no address resolution for " ++ host))
+        (info : _) -> do
+            sock <- socket AF_INET Stream defaultProtocol
+            connectResult <- try (connect sock (addrAddress info)) :: IO (Either SomeException ())
+            case connectResult of
+                Left exc -> do
+                    close sock
+                    pure (Left (show exc))
+                Right () -> do
+                    sendAll sock request
+                    chunks <- readUntilClose sock []
+                    close sock
+                    pure (Right (BS.concat (reverse chunks)))
+
+readUntilClose :: Socket -> [BS.ByteString] -> IO [BS.ByteString]
+readUntilClose sock acc = do
+    chunk <- recv sock 16384
+    if BS.null chunk
+        then pure acc
+        else readUntilClose sock (chunk : acc)
+
+markPeerError :: TVar DaemonState -> String -> String -> IO ()
+markPeerError stateVar peerId reason =
+    atomically $ modifyTVar' stateVar $ \s ->
+        s
+            { statePeerHealth =
+                Map.alter
+                    ( \mh -> case mh of
+                        Just h -> Just h{peerHealthConnected = False, peerHealthLastError = Just reason}
+                        Nothing -> Just (PeerHealth Nothing False (Just reason))
+                    )
+                    peerId
+                    (statePeerHealth s)
+            }
+
+markPeerOk :: TVar DaemonState -> String -> IO ()
+markPeerOk stateVar peerId = do
+    now <- getCurrentTime
+    atomically $ modifyTVar' stateVar $ \s ->
+        s
+            { statePeerHealth =
+                Map.alter
+                    ( \mh -> case mh of
+                        Just h ->
+                            Just
+                                h
+                                    { peerHealthConnected = True
+                                    , peerHealthLastError = Nothing
+                                    , peerHealthLastInboundEvent =
+                                        Just (maybe now (max now) (peerHealthLastInboundEvent h))
+                                    }
+                        Nothing -> Just (PeerHealth (Just now) True Nothing)
+                    )
+                    peerId
+                    (statePeerHealth s)
+            }
+
 renderStateJson :: UTCTime -> DaemonConfig -> DaemonState -> BL.ByteString
 renderStateJson now config state =
     encode $
         object
             [ "node_id" .= daemonNodeId config
             , "gateway_owner" .= stateGatewayOwner state
+            , "previous_owner" .= statePreviousOwner state
             , "has_active_claim" .= (stateGatewayOwner state == Just (daemonNodeId config))
+            , "can_write_dns"
+                .= canWriteDns (daemonNodeId config) (stateGatewayOwner state) (stateCommitLog state)
+            , "node_disposition" .= renderDisposition (nodeDisposition (daemonNodeId config) (stateCommitLog state))
+            , "peer_dispositions" .= renderPeerDispositions state
             , "mesh_peers" .= stateMeshPeers state
             , "event_count" .= length (commitLogEvents (stateCommitLog state))
             , "event_hashes" .= map eventHash (commitLogEvents (stateCommitLog state))
@@ -265,6 +705,25 @@ renderStateJson now config state =
             , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
             , "dns_write_gate" .= fmap renderDnsWriteGate (daemonDnsWriteGate config)
             , "heartbeat_age_seconds" .= renderHeartbeatAges now state
+            , "peer_transport" .= renderPeerTransport now state
+            , "max_clock_skew_seconds_observed" .= stateMaxObservedSkewSeconds state
+            , "max_clock_skew_seconds_bound" .= daemonMaxClockSkewSeconds config
+            , "orders_version_utc" .= stateOrdersVersionUtc state
+            , "latest_observed_orders_version_utc" .= stateLatestObservedOrdersVersion state
+            ]
+
+renderDisposition :: Disposition -> Value
+renderDisposition d = case d of
+    DispositionOwner -> String "owner"
+    DispositionYielded -> String "yielded"
+    DispositionUnknown -> String "unknown"
+
+renderPeerDispositions :: DaemonState -> Value
+renderPeerDispositions state =
+    Object $
+        KeyMap.fromList
+            [ (Key.fromString peer, renderDisposition (nodeDisposition peer (stateCommitLog state)))
+            | peer <- stateMeshPeers state
             ]
 
 renderDnsWriteGate :: DnsWriteGate -> Value
@@ -282,6 +741,21 @@ renderHeartbeatAges now state =
         KeyMap.fromList
             [ (Key.fromString nodeId, toJSON (realToFrac (diffUTCTime now timestamp) :: Double))
             | (nodeId, timestamp) <- Map.toList (stateLastHeartbeatTimes state)
+            ]
+
+renderPeerTransport :: UTCTime -> DaemonState -> Value
+renderPeerTransport now state =
+    Object $
+        KeyMap.fromList
+            [ ( Key.fromString peer
+              , object
+                    [ "connected" .= peerHealthConnected health
+                    , "last_inbound_event_age_seconds"
+                        .= fmap (\t -> realToFrac (diffUTCTime now t) :: Double) (peerHealthLastInboundEvent health)
+                    , "last_error" .= peerHealthLastError health
+                    ]
+              )
+            | (peer, health) <- Map.toList (statePeerHealth state)
             ]
 
 fetchPublicIp :: IO (Either String String)

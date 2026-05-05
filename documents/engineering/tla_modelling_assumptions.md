@@ -41,6 +41,14 @@ The spec contains both synchronous heartbeats (`Heartbeat(s, r)`) and async hear
 tractable state space; the async actions are retained in the spec for reference. The operator-facing
 HTTP `/v1/state` observability endpoint is not modelled.
 
+In the runtime, peer transport is materialised as anti-entropy gossip:
+each daemon periodically pushes its commit log to every other peer over
+the configured peer-events port, and receivers update
+`stateLastHeartbeatTimes` plus `statePeerHealth` from the inbound event
+timestamps.  The event-log replication is therefore concrete in the
+runtime even though the model abstracts it through a global `eventLog`
+plus delayed delivery via `msgQueue`.
+
 ### What the model does NOT include
 
 - **Real time**: The model uses discrete timestamps (`0..MaxTimestamp`), not wall-clock time.
@@ -48,7 +56,7 @@ HTTP `/v1/state` observability endpoint is not modelled.
 - **TLS handshakes**: mTLS authentication is assumed correct and not modelled.
 - **Message ordering beyond append-only log**: The `msgQueue` is a set (unordered). Ordering comes from the event log sequence.
 - **Network-level failures**: Only node crash/recover and message delay are modelled. TCP resets, partial writes, and connection timeouts are not represented.
-- **Anti-entropy gossip**: The sync protocol that reconciles divergent event logs between peers is not explicitly modelled. The global `eventLog` abstracts this — in practice, anti-entropy ensures logs converge.
+- **Anti-entropy gossip**: The sync protocol that reconciles divergent event logs between peers is abstracted through the global `eventLog`.  The runtime materialises this protocol concretely (`Prodbox.Gateway.Peer`, `peerListenerLoop`, and `peerDialerLoop`); the divergence between the model's global log and the runtime's per-node log is therefore narrowed to delivery delay only.
 
 ---
 
@@ -63,7 +71,7 @@ HTTP `/v1/state` observability endpoint is not modelled.
 | `ownerView[n]` | `DaemonState.stateGatewayOwner` | `DaemonState`, `gatewayLoop` |
 | `eventLog` | `CommitLog.commitLogEvents` carried in `DaemonState.stateCommitLog` | `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Daemon.hs` |
 | `dnsWriteNode` | Last successful write tracked by `stateLastDnsWriteIp` / `stateLastDnsWriteTime` | `DaemonState`, `dnsWriteLoop` |
-| `msgQueue` | Not materialized as a first-class runtime queue; transport is abstracted behind daemon loops and socket/REST boundaries | `src/Prodbox/Gateway/Daemon.hs` |
+| `msgQueue` | Realised as inbound peer-event batches received over the events port; the receiver merges accepted events into the local commit log via `appendIfNew` | `src/Prodbox/Gateway/Peer.hs`, `peerListenerLoop` in `src/Prodbox/Gateway/Daemon.hs` |
 | `activeOrderTs[n]` | `Orders.ordersVersionUtc` from the parsed Orders document | `src/Prodbox/Gateway/Types.hs` |
 | `now` | `getCurrentTime` samples used by the daemon loops | `src/Prodbox/Gateway/Daemon.hs` |
 | `RankOrder` (constant) | `GatewayRule.rankedNodes` | `src/Prodbox/Gateway/Types.hs` |
@@ -77,7 +85,7 @@ HTTP `/v1/state` observability endpoint is not modelled.
 | `Tick` | Wall-clock progression sampled via `getCurrentTime` | `heartbeatLoop`, `gatewayLoop`, `dnsWriteLoop` |
 | `Crash(n)` / `Recover(n)` | Process or pod stop/restart around `runGatewayDaemon` | `src/Prodbox/Gateway/Daemon.hs`, `charts/gateway/` |
 | `SendHeartbeat(sender)` | `heartbeatLoop` appends local signed `heartbeat` events and refreshes local heartbeat time | `src/Prodbox/Gateway/Daemon.hs` |
-| `DeliverHeartbeat` | Abstracted in the current runtime surface; not materialized as a standalone queue action | `src/Prodbox/Gateway/Daemon.hs` |
+| `DeliverHeartbeat` | `peerListenerLoop` accepts inbound peer event batches and updates `stateLastHeartbeatTimes` from the emitter timestamps | `src/Prodbox/Gateway/Peer.hs`, `peerListenerLoop` in `src/Prodbox/Gateway/Daemon.hs` |
 | `Heartbeat(s, r)` | Model-only synchronous heartbeat step retained for tractable TLC exploration | `documents/engineering/tla/gateway_orders_rule.tla` |
 | `PromoteOrders(r, newTs)` | Orders parsing and `ordersVersionUtc` promotion boundary | `parseOrders`, `runGatewayDaemon` |
 | `RecomputeOwner(n)` | `gatewayLoop` recomputes owner from ranked fresh heartbeats | `src/Prodbox/Gateway/Daemon.hs` |
@@ -107,26 +115,57 @@ The TLA+ model keeps both:
 2. asynchronous `SendHeartbeat` / `DeliverHeartbeat` actions over `msgQueue` for protocol
    reference
 
-The current Haskell runtime compresses that surface: it stores local heartbeat freshness in
-`stateLastHeartbeatTimes`, keeps transport implicit behind daemon loops and socket/REST boundaries,
-and does not expose a first-class runtime `msgQueue`.
+The current Haskell runtime now materialises the asynchronous variant
+through `peerDialerLoop` (push) and `peerListenerLoop` (deliver).  Each
+runtime push corresponds to a `SendHeartbeat`/`DeliverHeartbeat` step,
+the receiver updates `stateLastHeartbeatTimes` from inbound event
+timestamps, and the global `eventLog` is converged via idempotent
+`appendIfNew`.  The remaining compression is the synchronous shortcut
+the model uses for tractable TLC exploration.
 
-### Divergence 3: Ownership Lifecycle Is More Explicit In The Model Than In The Current Runtime Surface
+### Divergence 3: Ownership Lifecycle Now Materialised In The Runtime
 
-The target architecture and TLA+ model use `GatewayClaim` / `GatewayYield` as the formal
-DNS-write gate.
+The TLA+ model uses `GatewayClaim` / `GatewayYield` as the formal
+DNS-write gate. The runtime now emits the same events from
+`gatewayLoop` on owner transitions and gates `dnsWriteLoop` through the
+`canWriteDns` predicate.  The runtime invariants therefore align with
+the model's `ClaimPrecedesWrite` and `YieldPrecedesReclaim`.
 
 The current Haskell daemon status surface exposes:
 
 1. `stateGatewayOwner` as the in-memory owner view
 2. `has_active_claim` rendered from `stateGatewayOwner state == Just (daemonNodeId config)`
-3. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
-4. `event_hashes` plus `heartbeat_age_seconds` on `/v1/state` for operator and integration
+3. `can_write_dns` rendered from the runtime `canWriteDns` predicate
+4. `node_disposition` and `peer_dispositions` derived from the commit log
+5. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
+6. `event_hashes` plus `heartbeat_age_seconds` on `/v1/state` for operator and integration
    observability
+7. `peer_transport` per-peer connection health
 
-Treat the event-log lifecycle in the model as the formal safety contract and the runtime fields as
-the current operational projection. Phase closure and any remaining alignment work on that
-boundary are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+Phase closure and any remaining alignment work on that boundary are
+owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
+
+### Divergence 4: Operator Time-Base Discipline Is Runtime-Enforced
+
+The model's bounded-delay assumption is now mapped to a runtime-enforced
+skew limit.  `prodbox host info` reports the host's NTP synchronization
+disposition derived from `timedatectl` and fails fast when the system
+clock is unsynchronized.  The gateway daemon refuses inbound peer
+events whose timestamps lie beyond `daemonMaxClockSkewSeconds` (default
+10 seconds, range `[0.1, 600]`) and records the maximum observed
+inter-node skew on `/v1/state` as `max_clock_skew_seconds_observed`.
+
+### Divergence 5: Orders Promotion Is Coordinated Across The Mesh
+
+Orders documents carry the existing monotonic `version_utc` field. Each
+peer push includes the sender's current view of that version.  The
+receiver returns `409 Conflict` when the sender's view is older,
+preventing a stale peer from advancing the receiver's commit log
+behind a newer Orders.  The daemon tracks the highest observed Orders
+version on `/v1/state` and refuses to claim ownership while
+`stateLatestObservedOrdersVersion > stateOrdersVersionUtc`, so a
+daemon rebooting against a stale Orders cannot reclaim DNS write
+authority until its Orders view catches up.
 
 ---
 

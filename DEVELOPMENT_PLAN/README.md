@@ -27,9 +27,16 @@ govern this plan suite.
 
 ## Closure Status
 
-Phases `0`, `1`, `2`, `3`, `4`, `5`, `6`, and `7` are closed on the supported Haskell-only end
-state. The final clean-room rerun and handoff validation close on the canonical `prodbox`
-command surface with no remaining phase-owned cleanup residue.
+Phases `0` through `7` are closed on the supported Haskell-only end state. Sprints `2.1`,
+`2.2`, and `2.3` remain closed on the daemon basics, the TLA+ formal-verification entrypoint,
+and the single-record Route 53 doctrine. Sprints `2.4`, `2.5`, `2.6`, and `2.7` are closed on
+peer heartbeat transport with commit-log gossip, runtime claim/yield emission under the
+`CanWriteDns` gate, operator time-base discipline, and atomic Orders-promotion coordination.
+The TLA+ model's peer-transport, claim/yield, and bounded-delay safety belt is now enforced at
+runtime through `Prodbox.Gateway.Peer`, the daemon's `peerListenerLoop` and `peerDialerLoop`
+threads, the runtime `canWriteDns` predicate, and `daemonMaxClockSkewSeconds`. The final
+clean-room rerun and handoff validation close on the canonical `prodbox` command surface with
+no remaining phase-owned cleanup residue.
 
 The current worktree closes on:
 
@@ -130,8 +137,10 @@ A sprint can move to `Done` only when all of the following are true:
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: the Haskell-only rewrite baseline, shared-host public edge, native-
-host-architecture lifecycle, cleanup closure, and final clean-room handoff are all validated on
-the supported Haskell command surface.
+host-architecture lifecycle, cleanup closure, gateway-protocol completeness, and final
+clean-room handoff are all validated on the supported Haskell command surface. The TLA+-modelled
+safety belt for peer transport, claim/yield emission, bounded clock skew, and Orders-promotion
+coordination is now enforced at runtime by the gateway daemon.
 
 ## Current Plan Status
 
@@ -382,3 +391,23 @@ This plan is complete only when all of the following are true:
     cleanup.
 34. The repository has no supported-path Python implementation or Python toolchain ownership
     artifacts left.
+35. The Haskell gateway daemon materializes peer transport from the certificate, key, CA, and
+    socket fields already retained in `DaemonConfig` and `Orders`: every node updates
+    `stateLastHeartbeatTimes` from inbound peer events rather than from the local heartbeat loop
+    only, the append-only commit log replicates between nodes as the canonical heartbeat-and-event
+    transport, and `/v1/state` exposes per-peer transport health for operator inspection.
+36. The gateway daemon emits signed `Claim` and `Yield` events on owner transitions and gates
+    Route 53 writes on the runtime equivalent of the modelled `CanWriteDns` predicate, so
+    `ClaimPrecedesWrite` and `YieldPrecedesReclaim` hold on the runtime event log rather than only
+    on the model, and a stale owner cannot reclaim DNS write authority without first observing its
+    own yield being superseded by a fresh claim.
+37. The supported-host gate fails fast when the host's NTP synchronization state is unhealthy, the
+    gateway daemon records the maximum observed inter-node clock skew on `/v1/state` and refuses
+    inbound heartbeats whose timestamps exceed the documented bound, and the architecture and TLA+
+    correspondence docs name that bound, the operator response, and how the model's bounded-delay
+    assumption maps to a runtime-enforced skew limit.
+38. Orders documents carry a monotonic version field, daemons reject inbound peer events from a
+    peer presenting an older Orders version, a new Orders version propagates through commit-log
+    gossip and is adopted by every live daemon before the next election tick, and a daemon
+    rebooting against a stale Orders version refuses to claim ownership until its Orders view
+    catches up.

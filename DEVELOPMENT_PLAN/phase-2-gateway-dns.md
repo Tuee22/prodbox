@@ -13,16 +13,16 @@
 This phase owns the Haskell gateway daemon, DNS inspection command, and related command surfaces,
 preserves the formal model entrypoint, and keeps Route 53 write ownership inside the in-cluster
 gateway workload. It owns the gateway image packaging contract, Harbor-backed image delivery for
-the gateway workload, DNS inspection, and the TLA+ entrypoint. The phase-owned repository
-surfaces are closed on the daemon, `prodbox gateway status`, the implemented HTTP `/v1/state`
-payload, Orders-backed interval validation, and the runtime-to-model correspondence notes. The
+the gateway workload, DNS inspection, and the TLA+ entrypoint. The closed phase-owned surfaces
+include the daemon, `prodbox gateway status`, the implemented HTTP `/v1/state` payload, Orders-
+backed interval validation, the runtime-to-model correspondence notes, the peer-transport gossip
+surface, runtime claim/yield emission under the `CanWriteDns` gate, operator-verifiable
+bounded-clock-skew enforcement, and atomic Orders-promotion coordination across the mesh. The
 gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
-`9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. The current
-daemon surface implements config generation, heartbeat recording, in-memory ownership projection,
-DNS-write gating, HTTP REST status, and HMAC event signing. The broader peer-transport protocol
-remains design-owned by the TLA+ and gateway doctrine docs rather than by a closed repository
-surface. Sprints `2.1`, `2.2`, and `2.3` are closed on the gateway-daemon, TLA+, and
-single-record Route 53 doctrine. This phase does not own the Kubernetes Gateway API or Envoy
+`9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
+`2.1` through `2.7` are now closed on the gateway-daemon, TLA+, single-record Route 53 doctrine,
+peer-transport gossip, claim/yield emission under `CanWriteDns`, time-base discipline, and
+Orders-promotion coordination. This phase does not own the Kubernetes Gateway API or Envoy
 Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 
 ## Current Baseline In Worktree
@@ -45,9 +45,13 @@ Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
   operator and integration observability, including `event_hashes` and `heartbeat_age_seconds`.
 - `src/Prodbox/Gateway/Types.hs` now enforces the documented cross-field interval relationships
   from `documents/engineering/distributed_gateway_architecture.md` against the Orders timeout.
-- `src/Prodbox/Gateway/Types.hs` still parses certificate, key, CA, and socket metadata in the
-  daemon config and Orders document, but the current closed runtime surface does not materialize
-  peer transport from those fields.
+- `src/Prodbox/Gateway/Types.hs` parses certificate, key, CA, and socket metadata in the daemon
+  config and Orders document. `src/Prodbox/Gateway/Peer.hs` plus the `peerListenerLoop` and
+  `peerDialerLoop` threads in `src/Prodbox/Gateway/Daemon.hs` materialize peer transport over the
+  configured peer-events port: each daemon pushes its commit log to every other peer at the
+  reconnect interval, receivers ingest signed event batches via `appendIfNew`, update
+  `stateLastHeartbeatTimes` from inbound timestamps, and refuse events whose timestamps exceed
+  `daemonMaxClockSkewSeconds` or whose senders present an older Orders version.
 - The Haskell `prodbox gateway ...` surface remains distinct from the Envoy Gateway public edge
   surface.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
@@ -230,6 +234,198 @@ single supported public record `test.resolvefintech.com`.
   partition proof on the supported path.
 - The gateway doctrine and TLA+ correspondence notes now describe single-record write ownership
   rather than per-subdomain public DNS.
+
+### Remaining Work
+
+None.
+
+## Sprint 2.4: Peer Heartbeat Transport and Commit-Log Gossip ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Peer.hs`, `charts/gateway/`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Materialize the documented peer-transport surface so each gateway daemon dials its mesh peers,
+exchanges signed heartbeats, and replicates the append-only commit log. The closed runtime
+maintains every node's view of every other node's last heartbeat from observed peer traffic
+rather than from local self-update only, closing the documented gap between the in-cluster
+runtime and the TLA+ model's peer-communication assumptions.
+
+### Deliverables
+
+- The daemon binds a transport listener on the configured peer-events port, consumes the
+  certificate, key, CA, and socket fields retained in `DaemonConfig` and `Orders`, and validates
+  inbound heartbeats against the configured per-node HMAC keys in `daemonEventKeys`.
+- `stateLastHeartbeatTimes` is updated from inbound peer events rather than from the local
+  heartbeat loop only.
+- The append-only commit log replicates between nodes as the canonical heartbeat-and-event
+  transport, with idempotent acceptance of repeated events through `appendIfNew`.
+- The HTTP `/v1/state` payload exposes per-peer transport health under `peer_transport`,
+  including connect state, last inbound event age, and last error.
+- `charts/gateway/` keeps the per-pod peer endpoint and trust material in place so the in-cluster
+  steady state opens the documented peer mesh.
+- `documents/engineering/tla_modelling_assumptions.md` records that peer transport is now
+  materialized in the runtime, narrowing the "anti-entropy gossip not modelled in implementation"
+  divergence to delivery-delay only.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration gateway-daemon`
+4. `prodbox test integration gateway-pods`
+5. `prodbox test integration gateway-partition`
+6. `prodbox tla-check`
+
+### Current Validation State
+
+- `src/Prodbox/Gateway/Peer.hs` defines the wire-level peer transport: HTTP framing parser,
+  signed event batch encoding, per-event HMAC verification, and the pure `handlePeerRequest`
+  helper that splits a batch into accepted/rejected lists with explicit reasons.
+- `src/Prodbox/Gateway/Daemon.hs` adds `peerListenerLoop` and `peerDialerLoop`, ingests inbound
+  events through one atomic STM transaction, refreshes per-peer health, and exposes the new
+  fields on `/v1/state`.
+- `test/unit/Main.hs` proves disposition computation, the runtime `canWriteDns` predicate, peer
+  batch round-trip, and rejection paths for unknown emitters, signature mismatches, and
+  excessive timestamp skew.
+
+### Remaining Work
+
+None.
+
+## Sprint 2.5: Runtime Claim/Yield Emission and DNS-Write Gating ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Lift the TLA+-modelled claim/yield protocol and the `CanWriteDns` predicate into the executable
+daemon so DNS-write authority depends on a recorded ownership transition, not only on the in-
+memory election projection. Closing this sprint eliminates the brief dual-writer window during
+partition heal that today is benign only because Route 53 UPSERT happens to be idempotent.
+
+### Deliverables
+
+- `gatewayLoop` emits a signed `claim` event into the commit log on the non-owner-to-owner
+  transition and a signed `yield` event on the owner-to-non-owner transition.
+- `dnsWriteLoop` writes the Route 53 record only when the local node is owner AND the most
+  recent applicable claim event is the local node's claim AND no later yield from the local node
+  is present, via the runtime `canWriteDns` predicate.
+- `ClaimPrecedesWrite` and `YieldPrecedesReclaim` from the TLA+ spec hold on the runtime event
+  log, not only on the model.
+- `/v1/state` exposes the current `node_disposition` and `peer_dispositions` plus `can_write_dns`.
+- A stale owner cannot reclaim DNS write authority without first observing its own yield being
+  superseded by a fresh claim.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration gateway-daemon`
+4. `prodbox test integration gateway-partition`
+5. `prodbox tla-check`
+
+### Current Validation State
+
+- `nodeDisposition` and `canWriteDns` in `src/Prodbox/Gateway/Types.hs` compute the runtime
+  predicate without IO and are exercised in unit tests.
+- `gatewayLoop` records `statePreviousOwner` so transition detection is precise across cycles
+  and emits ownership events through the configured event key.
+- `/v1/state` now renders `can_write_dns`, `node_disposition`, and `peer_dispositions`
+  alongside the historical owner and event-count fields.
+
+### Remaining Work
+
+None.
+
+## Sprint 2.6: Operator Time-Base Discipline ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Host.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Peer.hs`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Make the daemon's reliance on bounded clock skew explicit and operator-verifiable, since every
+freshness judgment in `gatewayLoop` and every claim/yield ordering check compares wall-clock UTC
+stamps across nodes. The TLA+ model's bounded-delay assumption maps to a runtime-enforced skew
+limit rather than to an implicit operator assumption.
+
+### Deliverables
+
+- `prodbox host info` reports the host's NTP synchronization disposition derived from
+  `timedatectl status` and fails fast when the system clock is unsynchronized.
+- The gateway daemon refuses inbound peer events whose timestamps exceed
+  `daemonMaxClockSkewSeconds` (default 10 seconds, range `[0.1, 600]`) and records the maximum
+  observed skew on `/v1/state` as `max_clock_skew_seconds_observed`.
+- `documents/engineering/distributed_gateway_architecture.md` names the supported skew bound, the
+  consequences of breaching it, and the operator response.
+- `documents/engineering/tla_modelling_assumptions.md` records that the model's bounded-delay
+  assumption is now mapped to a runtime-enforced skew bound.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration gateway-daemon`
+4. `prodbox host info` reports the supported NTP synchronization state in its supported-host
+   disposition
+
+### Current Validation State
+
+- `parseTimedatectlNtpDisposition` and `renderHostInfoReport` in `src/Prodbox/Host.hs` are unit-
+  tested for synchronized, unsynchronized, and unknown dispositions.
+- `handlePeerRequest` rejects events whose timestamp lies outside the configured skew bound and
+  the reject reason is surfaced through the peer push response.
+
+### Remaining Work
+
+None.
+
+## Sprint 2.7: Orders-Promotion Coordination ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `src/Prodbox/Gateway/Peer.hs`, `test/unit/Main.hs`
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla_modelling_assumptions.md`
+
+### Objective
+
+Coordinate Orders promotion across the gateway mesh so a change to `ranked_nodes` or
+`heartbeat_timeout_seconds` is adopted atomically by every live daemon rather than per-node on
+local restart. This closes the documented gap where a mid-flight Orders change on one node can
+disagree with a peer's view of `RankOrder`.
+
+### Deliverables
+
+- Orders documents carry the existing monotonic `version_utc` field, peer push messages include
+  the sender's `orders_version_utc`, and the receiver returns `409 Conflict` when the sender's
+  view is older than the local view.
+- The daemon tracks the highest observed Orders version on `/v1/state` and propagates that
+  observation through commit-log gossip.
+- A daemon rebooting against a stale Orders version refuses to claim ownership in `gatewayLoop`
+  while `stateLatestObservedOrdersVersion > stateOrdersVersionUtc`.
+- `documents/engineering/tla_modelling_assumptions.md` records the Orders-version invariant and
+  the supported promotion procedure.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration gateway-daemon`
+4. `prodbox test integration gateway-partition`
+5. `prodbox tla-check`
+
+### Current Validation State
+
+- `PeerEventBatch` carries `sender_orders_version_utc` end to end in `src/Prodbox/Gateway/Peer.hs`,
+  and `ingestPeerBatch` returns `PeerResponseStaleOrders` when the sender's view is older.
+- `gatewayLoop` blocks ownership claims while the latest observed Orders version is newer than
+  the local one, and `/v1/state` reports both `orders_version_utc` and
+  `latest_observed_orders_version_utc`.
 
 ### Remaining Work
 

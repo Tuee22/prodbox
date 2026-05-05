@@ -55,6 +55,22 @@ main = hspec $ do
                 exitCode `shouldBe` ExitFailure 1
                 stderrText `shouldContain` "aws.access_key_id must not be empty"
 
+        it "requires repo-root commands to run from the repository root instead of searching upward" $
+            withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                let nestedDir = tmpDir </> "nested"
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+                createDirectoryIfMissing True nestedDir
+
+                (exitCode, _, stderrText) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["config", "validate"]){cwd = Just nestedDir}
+                        ""
+
+                exitCode `shouldBe` ExitFailure 1
+                stderrText `shouldContain` "Current working directory is not the repository root."
+
 resolveBinaryPath :: IO FilePath
 resolveBinaryPath = do
     repoRoot <- getCurrentDirectory

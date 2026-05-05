@@ -50,9 +50,8 @@ The current worktree closes on:
   such as `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio`, protected by Keycloak-
   backed JWT auth or RBAC, and covered by one Route 53 record plus one listener certificate
 - one native-host-architecture lifecycle image-publication doctrine where `amd64` hosts build and
-  publish only `amd64` images, `arm64` hosts build and publish only `arm64` images, Apple
-  Silicon with Colima is valid on the native `arm64` path, and no supported path uses
-  `docker buildx` or cross-arch emulation
+  publish only `amd64` images, `arm64` hosts build and publish only `arm64` images, and no
+  supported path uses `docker buildx` or cross-arch emulation
 - one explicit steady-state JWT boundary where Envoy validates Keycloak-issued tokens locally and
   does not require per-request Keycloak or Redis calls on the hot path
 - one explicit Keycloak availability boundary where new logins, refresh flows, and later JWKS
@@ -71,10 +70,10 @@ The current worktree closes on:
   supported-path cleanup items
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
-`prodbox test all`, `prodbox config show`, `prodbox config validate`, `prodbox host public-edge`,
-and the repository text-search proof that `example.com` is absent from the supported path. The
-canonical validation contract otherwise remains the `prodbox` command surface documented by this
-plan: `prodbox check-code`,
+`prodbox test all`, `prodbox config show`, `prodbox config validate`, and
+`prodbox host public-edge`. Separate repository search checks keep `example.com` and zero-Python
+residue out of supported-path sources. The canonical automated validation contract otherwise
+remains the `prodbox` command surface documented by this plan: `prodbox check-code`,
 `prodbox test unit`, `prodbox test integration cli`, `prodbox test integration env`, and the
 named native validations behind `prodbox test integration ...`. Environment-dependent AWS and
 public-edge proof remain attached to those commands rather than recorded here as a fresh
@@ -196,9 +195,8 @@ surfaces:
   `helm repo update` and `helm upgrade --install`, so clean-room restore does not fail terminally
   on intermittent upstream `5xx` or timeout errors.
 - `src/Prodbox/CLI/Rke2.hs` now closes the supported lifecycle on native-host-architecture image
-  publication only: `amd64` hosts publish `amd64`, `arm64` hosts publish `arm64`, Apple Silicon
-  with Colima stays supported on the native `arm64` path, and no supported lifecycle path uses
-  `docker buildx` or cross-arch emulation.
+  publication only: `amd64` hosts publish `amd64`, `arm64` hosts publish `arm64`, and no
+  supported lifecycle path uses `docker buildx` or cross-arch emulation.
 - The chart-platform end state is Haskell-owned and renders namespace-local
   Percona-operator-backed Patroni PostgreSQL HA through `src/Prodbox/PostgresPlatform.hs` and
   `src/Prodbox/Lib/ChartPlatform.hs`, with exactly three replicas, synchronous replication,
@@ -215,11 +213,12 @@ surfaces:
 - The current gateway runtime surface is Haskell-owned and code-backed in `src/Prodbox/Gateway.hs`,
   `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, and
   `src/Prodbox/Gateway/Types.hs`: config generation, heartbeat recording, in-memory ownership
-  projection, DNS-write gating, the HTTP `/v1/state` observability payload, HMAC event signing,
-  Orders-backed gateway-interval validation, peer-transport gossip with commit-log replication
-  through `peerListenerLoop` and `peerDialerLoop`, runtime claim/yield emission under the
-  `canWriteDns` predicate, bounded-clock-skew enforcement keyed off `daemonMaxClockSkewSeconds`,
-  and monotonic Orders-version coordination across the mesh are all implemented there today.
+  projection, DNS-write gating, the bounded HTTP `/v1/state` observability payload, HMAC event
+  signing, Orders-backed gateway-interval validation, peer-transport gossip with commit-log
+  replication through `peerListenerLoop` and `peerDialerLoop`, runtime claim/yield emission under
+  the `canWriteDns` predicate, bounded-clock-skew enforcement keyed off
+  `daemonMaxClockSkewSeconds`, and monotonic Orders-version coordination across the mesh are all
+  implemented there today.
 - `src/Prodbox/Tla.hs` still owns `prodbox tla-check`, while
   `documents/engineering/tla_modelling_assumptions.md` records the current runtime-to-model
   correspondence and compression points for the Phase `2` surface.
@@ -327,8 +326,8 @@ This plan is complete only when all of the following are true:
     `documents/engineering/code_quality.md`, not only formatter, linter, build, and binary-sync
     checks.
 12. The Haskell distributed gateway runtime, `gateway status` client path, and daemon config
-    validation close on the implemented HTTP `/v1/state` observability payload, the Orders-backed
-    gateway-interval relationships enforced by `src/Prodbox/Gateway/Types.hs`, and the current
+    validation close on the implemented bounded HTTP `/v1/state` observability payload, the
+    Orders-backed gateway-interval relationships enforced by `src/Prodbox/Gateway/Types.hs`, and the current
     correspondence notes in `documents/engineering/tla_modelling_assumptions.md`.
 13. The self-managed public edge uses MetalLB, Envoy Gateway, Kubernetes Gateway API, and
     cert-manager rather than Traefik plus `Ingress`.
@@ -375,9 +374,9 @@ This plan is complete only when all of the following are true:
 27. Supported custom-image builds and Harbor publication use only the native architecture of the
     machine running `prodbox`: `amd64` hosts build and publish `amd64` images, and `arm64` hosts
     build and publish `arm64` images.
-28. Native `arm64` publication works on native `arm64` Docker daemons, including Apple Silicon
-    with Colima. `docker buildx`, cross-arch emulation, and mixed-arch cluster closure are not
-    part of the supported lifecycle or chart-delivery path.
+28. Native `arm64` publication works on native `arm64` Docker daemons. `docker buildx`,
+    cross-arch emulation, and mixed-arch cluster closure are not part of the supported lifecycle
+    or chart-delivery path.
 29. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
     cluster-wide Percona operator, and runs Patroni HA with exactly three PostgreSQL replicas,
     synchronous replication, and no embedded chart-local PostgreSQL subchart.

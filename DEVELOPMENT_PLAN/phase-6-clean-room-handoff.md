@@ -139,8 +139,9 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   removal history while keeping Python-removal residue at zero; the reopened non-Python
   single-host cleanup now closes in Sprint `6.3`.
 - The legacy ledger remains clear on Python-removal items.
-- Repository artifact and text-search closure remain Haskell-only, and Sprint `6.1` continues to
-  own the destructive rerun contract.
+- Repository artifact and text-search closure remain explicit repo-review gates alongside the
+  Haskell command-surface validations, and Sprint `6.1` continues to own the destructive rerun
+  contract.
 ### Remaining Work
 
 None.

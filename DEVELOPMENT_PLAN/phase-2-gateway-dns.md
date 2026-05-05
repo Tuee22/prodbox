@@ -14,9 +14,9 @@ This phase owns the Haskell gateway daemon, DNS inspection command, and related 
 preserves the formal model entrypoint, and keeps Route 53 write ownership inside the in-cluster
 gateway workload. It owns the gateway image packaging contract, Harbor-backed image delivery for
 the gateway workload, DNS inspection, and the TLA+ entrypoint. The closed phase-owned surfaces
-include the daemon, `prodbox gateway status`, the implemented HTTP `/v1/state` payload, Orders-
-backed interval validation, the runtime-to-model correspondence notes, the peer-transport gossip
-surface, runtime claim/yield emission under the `CanWriteDns` gate, operator-verifiable
+include the daemon, `prodbox gateway status`, the implemented bounded HTTP `/v1/state` payload,
+Orders-backed interval validation, the runtime-to-model correspondence notes, the peer-transport
+gossip surface, runtime claim/yield emission under the `CanWriteDns` gate, operator-verifiable
 bounded-clock-skew enforcement, and atomic Orders-promotion coordination across the mesh. The
 gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
 `9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
@@ -38,11 +38,12 @@ Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 - The in-cluster gateway steady state is repo-rootless: `app/prodbox/Main.hs` now permits
   repo-rootless `gateway start|status`, and `charts/gateway/` injects AWS credentials through the
   `gateway-aws-credentials` secret while probing `/v1/state` over HTTP on the in-pod REST port.
-- `src/Prodbox/Gateway.hs` now queries daemon state over the governed HTTP `/v1/state`
+- `src/Prodbox/Gateway.hs` now queries daemon state over the governed bounded HTTP `/v1/state`
   observability surface, matching the chart probes and the in-pod REST listener in
   `src/Prodbox/Gateway/Daemon.hs`.
-- `src/Prodbox/Gateway/Daemon.hs` now renders the documented `/v1/state` payload fields used for
-  operator and integration observability, including `event_hashes` and `heartbeat_age_seconds`.
+- `src/Prodbox/Gateway/Daemon.hs` now renders the documented bounded `/v1/state` payload fields
+  used for operator and integration observability, including a bounded recent `event_hashes` tail
+  and `heartbeat_age_seconds`.
 - `src/Prodbox/Gateway/Types.hs` now enforces the documented cross-field interval relationships
   from `documents/engineering/distributed_gateway_architecture.md` against the Orders timeout.
 - `src/Prodbox/Gateway/Types.hs` parses certificate, key, CA, and socket metadata in the daemon
@@ -90,7 +91,7 @@ while preserving the implemented runtime contract and container doctrine.
 - Gateway image publication follows the lifecycle-owned native-host-architecture doctrine:
   `amd64` hosts publish `amd64` images, and `arm64` hosts publish `arm64` images.
 - Gateway event-key continuity and state inspection move to Haskell-owned modules.
-- The daemon and `prodbox gateway status` close on the implemented HTTP `/v1/state`
+- The daemon and `prodbox gateway status` close on the implemented bounded HTTP `/v1/state`
   observability transport and payload.
 - Native gateway config parsing enforces the documented cross-field gateway-interval relationships.
 - The target steady state remains the in-cluster gateway workload; no host-side daemon is revived.
@@ -123,11 +124,14 @@ while preserving the implemented runtime contract and container doctrine.
   peer-events port (Sprint `2.4`).
 - `src/Prodbox/Gateway/Daemon.hs` provides the daemon runtime: heartbeat loop, gateway ownership
   loop, DNS write loop, HTTP REST server, and HMAC event signing. The state payload now exposes
-  `event_hashes`, `heartbeat_age_seconds`, and the DNS-write observability fields described by the
-  gateway doctrine.
-- `src/Prodbox/Gateway.hs` now dials daemon state over the same HTTP `/v1/state` endpoint used by
-  the in-cluster liveness and readiness probes, so the public status path and the daemon listener
-  close on one native transport contract.
+  total `event_count`, a bounded recent `event_hashes` tail, `heartbeat_age_seconds`, and the
+  DNS-write observability fields described by the gateway doctrine.
+- `src/Prodbox/Gateway.hs` now dials daemon state over the same bounded HTTP `/v1/state`
+  endpoint used by the in-cluster liveness and readiness probes, so the public status path and
+  the daemon listener close on one native transport contract.
+- `src/Prodbox/Gateway/Daemon.hs` now drains the inbound REST request before closing the socket,
+  keeping `kubectl port-forward` backed `prodbox gateway status` and the corresponding
+  `gateway-daemon` validation path on one complete-response HTTP contract.
 - `src/Prodbox/Gateway/Types.hs` now enforces the timeout range, interval minimums, and the
   documented relationships `heartbeat_interval_seconds <= timeout/2`,
   `reconnect_interval_seconds <= timeout`, and `sync_interval_seconds <= timeout*2`.

@@ -406,10 +406,10 @@ adminRoutesDeferredPrerequisites :: [String]
 adminRoutesDeferredPrerequisites = pulumiDeferredPrerequisites
 
 publicDnsPrerequisites :: [String]
-publicDnsPrerequisites = ["route53_accessible", "tool_dig"]
+publicDnsPrerequisites = ["route53_lifecycle_capable", "tool_dig"]
 
 dnsAwsPrerequisites :: [String]
-dnsAwsPrerequisites = ["route53_accessible"]
+dnsAwsPrerequisites = ["route53_lifecycle_capable"]
 
 pulumiInitialPrerequisites :: [String]
 pulumiInitialPrerequisites = orderedUnion [clusterPrerequisites, ["aws_credentials_valid", "tool_pulumi"]]
@@ -433,7 +433,7 @@ awsHaRke2DeferredPrerequisites :: [String]
 awsHaRke2DeferredPrerequisites = pulumiDeferredPrerequisites
 
 gatewayDaemonPrerequisites :: [String]
-gatewayDaemonPrerequisites = clusterPrerequisites
+gatewayDaemonPrerequisites = orderedUnion [clusterPrerequisites, ["tool_curl"]]
 
 gatewayPodsPrerequisites :: [String]
 gatewayPodsPrerequisites = clusterPrerequisites

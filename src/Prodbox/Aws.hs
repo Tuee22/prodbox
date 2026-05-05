@@ -72,6 +72,7 @@ import Prodbox.Settings (
     supportedPublicHostname,
     validateAndLoadSettings,
     validateAwsBootstrapConfig,
+    validatePublicEdgeDeployment,
  )
 import Prodbox.Subprocess (
     CommandSpec (..),
@@ -842,8 +843,8 @@ promptNumberedChoice promptMessage options defaultIndex = do
             putStrLn "Enter the number shown beside the option."
             promptNumberedChoice promptMessage options defaultIndex
 
-validateAdminCredentialsInput :: Credentials -> IO Credentials
-validateAdminCredentialsInput credentials = do
+validateAdminCredentials :: Credentials -> Either String Credentials
+validateAdminCredentials credentials = do
     let normalized =
             Credentials
                 { access_key_id = Text.strip (access_key_id credentials)
@@ -851,10 +852,20 @@ validateAdminCredentialsInput credentials = do
                 , session_token = normalizeOptionalText =<< session_token credentials
                 , region = Text.strip (region credentials)
                 }
-    when (Text.null (access_key_id normalized)) (throwAws "Admin AWS access key ID is required")
-    when (Text.null (secret_access_key normalized)) (throwAws "Admin AWS secret access key is required")
-    when (Text.null (region normalized)) (throwAws "Admin AWS region is required")
+    if Text.null (access_key_id normalized)
+        then Left "Admin AWS access key ID is required"
+        else pure ()
+    if Text.null (secret_access_key normalized)
+        then Left "Admin AWS secret access key is required"
+        else pure ()
+    if Text.null (region normalized)
+        then Left "Admin AWS region is required"
+        else pure ()
     pure normalized
+
+validateAdminCredentialsInput :: Credentials -> IO Credentials
+validateAdminCredentialsInput credentials =
+    either throwAws pure (validateAdminCredentials credentials)
 
 validateConfigSetupInput ::
     Credentials ->
@@ -888,6 +899,18 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
         normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
         normalizedAdvertisementMode = normalizeOptionalText (Text.toLower (Text.strip (Text.pack advertisementModeRaw)))
         normalizedManualPvHostRoot = Text.strip (Text.pack manualPvHostRootRaw)
+        normalizedDeployment =
+            DeploymentSection
+                { dev_mode = devMode
+                , bootstrap_public_ip_override = normalizedBootstrapOverride
+                , pulumi_enable_dns_bootstrap = pulumiEnableDnsBootstrap
+                , public_edge_advertisement_mode = normalizedAdvertisementMode
+                , public_edge_bgp_peers = bgpPeersRaw
+                , envoy_gateway_controller_replicas = Just (fromIntegral envoyGatewayControllerReplicasRaw)
+                , envoy_gateway_data_plane_replicas = Just (fromIntegral envoyGatewayDataPlaneReplicasRaw)
+                , api_replicas = Just (fromIntegral apiReplicasRaw)
+                , websocket_replicas = Just (fromIntegral websocketReplicasRaw)
+                }
     unless (isValidRoute53ZoneId normalizedZoneId) $ throwAws "Route 53 zone ID must look like a hosted-zone ID (for example Z1234)"
     unless (isValidFqdn normalizedDemoFqdn) $ throwAws "demo_fqdn must be a valid fully qualified domain name"
     unless (Text.toLower normalizedDemoFqdn == Text.toLower supportedPublicHostname) $
@@ -898,19 +921,8 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
     unless ("https://" `Text.isPrefixOf` Text.toLower acmeServer) (throwAws "acme_server must be an https:// URL")
     when ((normalizedEabKeyId == Nothing) /= (normalizedEabHmacKey == Nothing)) $ throwAws "acme_eab_key_id and acme_eab_hmac_key must either both be set or both be empty"
     case normalizedAdvertisementMode of
-        Just "l2" -> pure ()
-        Just "bgp" ->
-            case bgpPeersRaw of
-                Just peers
-                    | not (null peers)
-                        && all (\peer -> Text.strip (peer_name peer) /= "" && Text.strip (peer_address peer) /= "") peers ->
-                        pure ()
-                _ -> throwAws "BGP mode requires at least one BGP peer with non-empty name and address"
-        _ -> throwAws "public_edge_advertisement_mode must be l2 or bgp"
-    when (envoyGatewayControllerReplicasRaw < 1) (throwAws "envoy_gateway_controller_replicas must be at least 1")
-    when (envoyGatewayDataPlaneReplicasRaw < 1) (throwAws "envoy_gateway_data_plane_replicas must be at least 1")
-    when (apiReplicasRaw < 1) (throwAws "api_replicas must be at least 1")
-    when (websocketReplicasRaw < 1) (throwAws "websocket_replicas must be at least 1")
+        Nothing -> throwAws "public_edge_advertisement_mode must be l2 or bgp"
+        Just _ -> either throwAws pure (validatePublicEdgeDeployment normalizedDeployment)
     pure
         ConfigSetupInput
             { configSetupAdminCredentialsInput = normalizedAdminCredentials
@@ -1099,7 +1111,7 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
             , "--policy-document"
             , buildIamPolicyJson policyTier
             ]
-    _ <- requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput
+    _ <- liftAwsEither (requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput)
 
     createAccessKeyOutput <-
         runAwsCliCompleted
@@ -1110,11 +1122,12 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
             , "--user-name"
             , Text.unpack prodboxIamUserName
             ]
-    accessKeyValue <- decodeJsonPayload "aws iam create-access-key" =<< requireCommandSuccess "aws iam create-access-key" createAccessKeyOutput
-    accessKeyObject <- requireObject "create-access-key" accessKeyValue
-    nestedAccessKey <- requireObjectField "create-access-key" "AccessKey" accessKeyObject
-    newAccessKeyId <- requireTextField "AccessKey" "AccessKeyId" nestedAccessKey
-    newSecretKey <- requireTextField "AccessKey" "SecretAccessKey" nestedAccessKey
+    accessKeyPayloadText <- liftAwsEither (requireCommandSuccess "aws iam create-access-key" createAccessKeyOutput)
+    accessKeyValue <- liftAwsEither (decodeJsonPayload "aws iam create-access-key" accessKeyPayloadText)
+    accessKeyObject <- liftAwsEither (requireObject "create-access-key" accessKeyValue)
+    nestedAccessKey <- liftAwsEither (requireObjectField "create-access-key" "AccessKey" accessKeyObject)
+    newAccessKeyId <- liftAwsEither (requireTextField "AccessKey" "AccessKeyId" nestedAccessKey)
+    newSecretKey <- liftAwsEither (requireTextField "AccessKey" "SecretAccessKey" nestedAccessKey)
     quotaStatuses <- mapM (\spec -> ensureServiceQuota repoRoot adminCredentials spec True) baselineQuotaSpecs
     pure (newAccessKeyId, newSecretKey, quotaStatuses)
 
@@ -1170,9 +1183,9 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
     (quotaObject, sourceLabel) <-
         if processExitCode primaryOutput == ExitSuccess
             then do
-                value <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout primaryOutput)
-                payload <- requireObject (Text.unpack (quotaDisplayName spec)) value
-                quotaPayload <- requireObjectField (Text.unpack (quotaDisplayName spec)) "Quota" payload
+                value <- liftAwsEither (decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout primaryOutput))
+                payload <- liftAwsEither (requireObject (Text.unpack (quotaDisplayName spec)) value)
+                quotaPayload <- liftAwsEither (requireObjectField (Text.unpack (quotaDisplayName spec)) "Quota" payload)
                 pure (quotaPayload, "current")
             else do
                 fallbackOutput <-
@@ -1186,12 +1199,12 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
                         , "--quota-code"
                         , Text.unpack (quotaCode spec)
                         ]
-                fallbackPayloadText <- requireCommandSuccess (Text.unpack (quotaDisplayName spec)) fallbackOutput
-                value <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) fallbackPayloadText
-                payload <- requireObject (Text.unpack (quotaDisplayName spec)) value
-                quotaPayload <- requireObjectField (Text.unpack (quotaDisplayName spec)) "Quota" payload
+                fallbackPayloadText <- liftAwsEither (requireCommandSuccess (Text.unpack (quotaDisplayName spec)) fallbackOutput)
+                value <- liftAwsEither (decodeJsonPayload (Text.unpack (quotaDisplayName spec)) fallbackPayloadText)
+                payload <- liftAwsEither (requireObject (Text.unpack (quotaDisplayName spec)) value)
+                quotaPayload <- liftAwsEither (requireObjectField (Text.unpack (quotaDisplayName spec)) "Quota" payload)
                 pure (quotaPayload, "default")
-    currentValue <- requireNumberField (Text.unpack (quotaDisplayName spec)) "Value" quotaObject
+    currentValue <- liftAwsEither (requireNumberField (Text.unpack (quotaDisplayName spec)) "Value" quotaObject)
     let meetsTarget = currentValue >= quotaTargetValue spec
         baseStatus =
             QuotaStatus
@@ -1229,10 +1242,10 @@ ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
                             , quotaStatusNote = Just (Text.pack (errorDetail requestOutput))
                             }
                 else do
-                    requestValue <- decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout requestOutput)
-                    requestPayload <- requireObject (Text.unpack (quotaDisplayName spec)) requestValue
-                    requestedQuota <- requireObjectField (Text.unpack (quotaDisplayName spec)) "RequestedQuota" requestPayload
-                    requestStatus <- requireTextField (Text.unpack (quotaDisplayName spec)) "Status" requestedQuota
+                    requestValue <- liftAwsEither (decodeJsonPayload (Text.unpack (quotaDisplayName spec)) (processStdout requestOutput))
+                    requestPayload <- liftAwsEither (requireObject (Text.unpack (quotaDisplayName spec)) requestValue)
+                    requestedQuota <- liftAwsEither (requireObjectField (Text.unpack (quotaDisplayName spec)) "RequestedQuota" requestPayload)
+                    requestStatus <- liftAwsEither (requireTextField (Text.unpack (quotaDisplayName spec)) "Status" requestedQuota)
                     pure baseStatus{quotaStatusRequestStatus = Just requestStatus}
 
 listAwsRegions :: FilePath -> Credentials -> IO [RegionChoice]
@@ -1243,8 +1256,8 @@ listAwsRegions repoRoot adminCredentials = do
             adminCredentials
             ["ec2", "describe-regions"]
             "aws ec2 describe-regions"
-    rootObject <- requireObject "describe-regions" payload
-    regionsArray <- requireArrayField "describe-regions" "Regions" rootObject
+    rootObject <- liftAwsEither (requireObject "describe-regions" payload)
+    regionsArray <- liftAwsEither (requireArrayField "describe-regions" "Regions" rootObject)
     mapM parseRegionChoice (Vector.toList regionsArray)
 
 listHostedZones :: FilePath -> Credentials -> IO [HostedZoneChoice]
@@ -1255,14 +1268,14 @@ listHostedZones repoRoot adminCredentials = do
             adminCredentials
             ["route53", "list-hosted-zones"]
             "aws route53 list-hosted-zones"
-    rootObject <- requireObject "list-hosted-zones" payload
-    zonesArray <- requireArrayField "list-hosted-zones" "HostedZones" rootObject
+    rootObject <- liftAwsEither (requireObject "list-hosted-zones" payload)
+    zonesArray <- liftAwsEither (requireArrayField "list-hosted-zones" "HostedZones" rootObject)
     mapM parseHostedZoneChoice (Vector.toList zonesArray)
 
 parseRegionChoice :: Value -> IO RegionChoice
 parseRegionChoice value = do
-    regionObject <- requireObject "describe-regions" value
-    regionNameValue <- requireTextField "describe-regions" "RegionName" regionObject
+    regionObject <- liftAwsEither (requireObject "describe-regions" value)
+    regionNameValue <- liftAwsEither (requireTextField "describe-regions" "RegionName" regionObject)
     pure
         RegionChoice
             { regionChoiceName = regionNameValue
@@ -1271,9 +1284,9 @@ parseRegionChoice value = do
 
 parseHostedZoneChoice :: Value -> IO HostedZoneChoice
 parseHostedZoneChoice value = do
-    zoneObject <- requireObject "list-hosted-zones" value
-    zoneIdValue <- requireTextField "list-hosted-zones" "Id" zoneObject
-    zoneNameValue <- requireTextField "list-hosted-zones" "Name" zoneObject
+    zoneObject <- liftAwsEither (requireObject "list-hosted-zones" value)
+    zoneIdValue <- liftAwsEither (requireTextField "list-hosted-zones" "Id" zoneObject)
+    zoneNameValue <- liftAwsEither (requireTextField "list-hosted-zones" "Name" zoneObject)
     pure
         HostedZoneChoice
             { hostedZoneChoiceId = Text.replace "/hostedzone/" "" zoneIdValue
@@ -1295,13 +1308,13 @@ listUserAccessKeys repoRoot adminCredentials userName = do
             , "--user-name"
             , Text.unpack userName
             ]
-    listPayloadText <- requireCommandSuccess "aws iam list-access-keys" listKeysOutput
-    listPayloadValue <- decodeJsonPayload "list-access-keys" listPayloadText
-    listPayloadObject <- requireObject "list-access-keys" listPayloadValue
-    accessKeysArray <- requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject
+    listPayloadText <- liftAwsEither (requireCommandSuccess "aws iam list-access-keys" listKeysOutput)
+    listPayloadValue <- liftAwsEither (decodeJsonPayload "list-access-keys" listPayloadText)
+    listPayloadObject <- liftAwsEither (requireObject "list-access-keys" listPayloadValue)
+    accessKeysArray <- liftAwsEither (requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject)
     forM (Vector.toList accessKeysArray) $ \item -> do
-        metadataObject <- requireObject "AccessKeyMetadata" item
-        requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
+        metadataObject <- liftAwsEither (requireObject "AccessKeyMetadata" item)
+        liftAwsEither (requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject)
 
 deleteExistingOperationalKeys :: FilePath -> Credentials -> IO [Text]
 deleteExistingOperationalKeys repoRoot adminCredentials =
@@ -1320,12 +1333,12 @@ deleteExistingUserKeys repoRoot adminCredentials userName = do
             ]
     if processExitCode listKeysOutput == ExitSuccess
         then do
-            listPayloadValue <- decodeJsonPayload "list-access-keys" (processStdout listKeysOutput)
-            listPayloadObject <- requireObject "list-access-keys" listPayloadValue
-            accessKeysArray <- requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject
+            listPayloadValue <- liftAwsEither (decodeJsonPayload "list-access-keys" (processStdout listKeysOutput))
+            listPayloadObject <- liftAwsEither (requireObject "list-access-keys" listPayloadValue)
+            accessKeysArray <- liftAwsEither (requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject)
             forM (Vector.toList accessKeysArray) $ \item -> do
-                metadataObject <- requireObject "AccessKeyMetadata" item
-                accessKeyIdValue <- requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject
+                metadataObject <- liftAwsEither (requireObject "AccessKeyMetadata" item)
+                accessKeyIdValue <- liftAwsEither (requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject)
                 deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue
                 pure accessKeyIdValue
         else case awsErrorCode (errorDetail listKeysOutput) of
@@ -1349,7 +1362,7 @@ deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue = do
             , "--access-key-id"
             , Text.unpack accessKeyIdValue
             ]
-    _ <- requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput
+    _ <- liftAwsEither (requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput)
     pure ()
 
 deleteUserPolicyIfPresent :: FilePath -> Credentials -> IO ()
@@ -1426,9 +1439,9 @@ probeOperationalIdentity repoRoot credentials =
                 ExitFailure _ ->
                     pure (OperationalIdentityProbeFailed (errorDetail stsOutput))
                 ExitSuccess -> do
-                    payload <- decodeJsonPayload "aws sts get-caller-identity" (processStdout stsOutput)
-                    payloadObject <- requireObject "aws sts get-caller-identity" payload
-                    arn <- requireTextField "aws sts get-caller-identity" "Arn" payloadObject
+                    payload <- liftAwsEither (decodeJsonPayload "aws sts get-caller-identity" (processStdout stsOutput))
+                    payloadObject <- liftAwsEither (requireObject "aws sts get-caller-identity" payload)
+                    arn <- liftAwsEither (requireTextField "aws sts get-caller-identity" "Arn" payloadObject)
                     pure $
                         case iamUserNameFromArn arn of
                             Just userName -> OperationalIdentityIamUser userName
@@ -1654,44 +1667,47 @@ runAwsCliCompletedWithEnvironment repoRoot environment arguments = do
 decodeJsonCommand :: FilePath -> Credentials -> [String] -> String -> IO Value
 decodeJsonCommand repoRoot adminCredentials arguments commandLabel = do
     output <- runAwsCliCompleted repoRoot adminCredentials arguments
-    payloadText <- requireCommandSuccess commandLabel output
-    decodeJsonPayload commandLabel payloadText
+    payloadText <- liftAwsEither (requireCommandSuccess commandLabel output)
+    liftAwsEither (decodeJsonPayload commandLabel payloadText)
 
-requireCommandSuccess :: String -> ProcessOutput -> IO String
+liftAwsEither :: Either String a -> IO a
+liftAwsEither = either throwAws pure
+
+requireCommandSuccess :: String -> ProcessOutput -> Either String String
 requireCommandSuccess commandLabel output =
     case processExitCode output of
-        ExitSuccess -> pure (processStdout output)
-        ExitFailure _ -> throwAws (commandLabel ++ " failed: " ++ errorDetail output)
+        ExitSuccess -> Right (processStdout output)
+        ExitFailure _ -> Left (commandLabel ++ " failed: " ++ errorDetail output)
 
-decodeJsonPayload :: String -> String -> IO Value
+decodeJsonPayload :: String -> String -> Either String Value
 decodeJsonPayload context payloadText =
     case eitherDecode (BL8.pack payloadText) of
-        Left err -> throwAws (context ++ " returned invalid JSON: " ++ err)
-        Right value -> pure value
+        Left err -> Left (context ++ " returned invalid JSON: " ++ err)
+        Right value -> Right value
 
-requireObject :: String -> Value -> IO Object
+requireObject :: String -> Value -> Either String Object
 requireObject context value =
     case value of
-        Object objectValue -> pure objectValue
-        _ -> throwAws (context ++ " must be a JSON object")
+        Object objectValue -> Right objectValue
+        _ -> Left (context ++ " must be a JSON object")
 
-requireArrayField :: String -> String -> Object -> IO Array
+requireArrayField :: String -> String -> Object -> Either String Array
 requireArrayField context fieldName objectValue =
     case KeyMap.lookup (Key.fromString fieldName) objectValue of
-        Just (Array arrayValue) -> pure arrayValue
-        _ -> throwAws (context ++ " missing required array field " ++ fieldName)
+        Just (Array arrayValue) -> Right arrayValue
+        _ -> Left (context ++ " missing required array field " ++ fieldName)
 
-requireObjectField :: String -> String -> Object -> IO Object
+requireObjectField :: String -> String -> Object -> Either String Object
 requireObjectField context fieldName objectValue =
     case KeyMap.lookup (Key.fromString fieldName) objectValue of
-        Just (Object nestedObject) -> pure nestedObject
-        _ -> throwAws (context ++ " missing required object field " ++ fieldName)
+        Just (Object nestedObject) -> Right nestedObject
+        _ -> Left (context ++ " missing required object field " ++ fieldName)
 
-requireTextField :: String -> String -> Object -> IO Text
+requireTextField :: String -> String -> Object -> Either String Text
 requireTextField context fieldName objectValue =
     case KeyMap.lookup (Key.fromString fieldName) objectValue of
-        Just (String textValue) | Text.strip textValue /= "" -> pure textValue
-        _ -> throwAws (context ++ " missing required string field " ++ fieldName)
+        Just (String textValue) | Text.strip textValue /= "" -> Right textValue
+        _ -> Left (context ++ " missing required string field " ++ fieldName)
 
 optionalTextField :: String -> Object -> Maybe Text
 optionalTextField fieldName objectValue =
@@ -1699,11 +1715,11 @@ optionalTextField fieldName objectValue =
         Just (String textValue) | Text.strip textValue /= "" -> Just textValue
         _ -> Nothing
 
-requireNumberField :: String -> String -> Object -> IO Double
+requireNumberField :: String -> String -> Object -> Either String Double
 requireNumberField context fieldName objectValue =
     case KeyMap.lookup (Key.fromString fieldName) objectValue of
-        Just (Number numericValue) -> pure (realToFrac numericValue)
-        _ -> throwAws (context ++ " missing required numeric field " ++ fieldName)
+        Just (Number numericValue) -> Right (realToFrac numericValue)
+        _ -> Left (context ++ " missing required numeric field " ++ fieldName)
 
 normalizeOptionalText :: Text -> Maybe Text
 normalizeOptionalText value =

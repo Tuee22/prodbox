@@ -135,12 +135,14 @@ import Prodbox.Settings (
     Credentials (..),
     DeploymentSection (..),
     DomainSection (..),
+    MetallbBgpPeer (..),
     Route53Section (..),
     StorageSection (..),
     ValidatedSettings (..),
     defaultConfigFile,
     renderSettingsDisplay,
     validateAndLoadSettings,
+    validatePublicEdgeDeployment,
  )
 import Prodbox.TestPlan (
     NativeSuitePlan (..),
@@ -498,7 +500,7 @@ main = hspec $ do
                                            , "aws_credentials_valid"
                                            , "tool_pulumi"
                                            , "tool_curl"
-                                           , "route53_accessible"
+                                           , "route53_lifecycle_capable"
                                            , "tool_dig"
                                            , "aws_iam_harness_ready"
                                            , "tool_aws"
@@ -548,7 +550,7 @@ main = hspec $ do
                                            , "aws_credentials_valid"
                                            , "tool_pulumi"
                                            , "tool_curl"
-                                           , "route53_accessible"
+                                           , "route53_lifecycle_capable"
                                            , "tool_dig"
                                            , "aws_iam_harness_ready"
                                            , "tool_aws"
@@ -594,7 +596,7 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeInitialIntegrationGatePrerequisites suitePlan
-                                `shouldBe` ["route53_accessible", "tool_dig"]
+                                `shouldBe` ["route53_lifecycle_capable", "tool_dig"]
                             nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                         DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
 
@@ -603,7 +605,7 @@ main = hspec $ do
                     case testPlanExecutionMode testPlan of
                         NativeSuite suitePlan -> do
                             nativeInitialIntegrationGatePrerequisites suitePlan
-                                `shouldBe` ["route53_accessible"]
+                                `shouldBe` ["route53_lifecycle_capable"]
                             nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                         DelegatedSuite _ -> expectationFailure "expected native dns-aws plan"
 
@@ -616,6 +618,25 @@ main = hspec $ do
                             nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                             nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
                         DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
+
+        it "includes curl in the gateway-daemon validation prerequisites" $ do
+            case testExecutionPlan (TestIntegration IntegrationGatewayDaemon) of
+                testPlan ->
+                    case testPlanExecutionMode testPlan of
+                        NativeSuite suitePlan -> do
+                            nativeInitialIntegrationGatePrerequisites suitePlan
+                                `shouldBe` [ "supported_ubuntu_2404"
+                                           , "tool_docker"
+                                           , "tool_ctr"
+                                           , "tool_helm"
+                                           , "tool_kubectl"
+                                           , "tool_sudo"
+                                           , "tool_systemctl"
+                                           , "settings_object"
+                                           , "tool_curl"
+                                           ]
+                            nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
+                        DelegatedSuite _ -> expectationFailure "expected native gateway-daemon plan"
 
         it "keeps charts-vscode on the supported runtime bootstrap path" $ do
             case testExecutionPlan (TestIntegration IntegrationChartsVscode) of
@@ -874,6 +895,7 @@ main = hspec $ do
                     , "rke2_config_exists"
                     , "aws_credentials_valid"
                     , "route53_accessible"
+                    , "route53_lifecycle_capable"
                     , "rke2_installed"
                     , "rke2_service_exists"
                     , "rke2_service_active"
@@ -910,6 +932,8 @@ main = hspec $ do
                 `shouldBe` []
             effectNodePrerequisites (lookupPrerequisiteNode "route53_accessible")
                 `shouldBe` ["aws_credentials_valid"]
+            effectNodePrerequisites (lookupPrerequisiteNode "route53_lifecycle_capable")
+                `shouldBe` ["route53_accessible"]
             effectNodePrerequisites (lookupPrerequisiteNode "rke2_service_exists")
                 `shouldBe` ["rke2_installed", "systemd_available", "supported_ubuntu_2404"]
             effectNodePrerequisites (lookupPrerequisiteNode "rke2_service_active")
@@ -942,6 +966,7 @@ main = hspec $ do
             lookupPrerequisiteEffect "rke2_config_exists" `shouldBe` Validate (RequireFileExists "/etc/rancher/rke2/config.yaml")
             lookupPrerequisiteEffect "aws_credentials_valid" `shouldBe` Validate RequireAwsCredentials
             lookupPrerequisiteEffect "route53_accessible" `shouldBe` Validate RequireRoute53Access
+            lookupPrerequisiteEffect "route53_lifecycle_capable" `shouldBe` Validate RequireRoute53LifecycleCapability
             lookupPrerequisiteEffect "rke2_installed" `shouldBe` Validate (RequireFileExists "/usr/local/bin/rke2")
             lookupPrerequisiteEffect "rke2_service_exists" `shouldBe` Validate (RequireServiceExists "rke2-server.service")
             lookupPrerequisiteEffect "rke2_service_active" `shouldBe` Validate (RequireServiceActive "rke2-server.service")
@@ -964,6 +989,14 @@ main = hspec $ do
                 `shouldBe` Right
                     [ "aws_credentials_valid"
                     , "route53_accessible"
+                    , "settings_loaded"
+                    , "tool_aws"
+                    ]
+            transitiveClosureIds ["route53_lifecycle_capable"] prerequisiteRegistry
+                `shouldBe` Right
+                    [ "aws_credentials_valid"
+                    , "route53_accessible"
+                    , "route53_lifecycle_capable"
                     , "settings_loaded"
                     , "tool_aws"
                     ]
@@ -1584,6 +1617,7 @@ main = hspec $ do
                     , ("AWS_ACCESS_KEY_ID", "ambient-access-key")
                     , ("AWS_SECRET_ACCESS_KEY", "ambient-secret-key")
                     , ("AWS_SESSION_TOKEN", "ambient-session-token")
+                    , ("AWS_SECURITY_TOKEN", "ambient-security-token")
                     ]
                 updatedEnvironment = overlayAwsCredentials environment credentialsWithoutSession
             lookup "PATH" updatedEnvironment `shouldBe` Just "/usr/bin"
@@ -1596,6 +1630,7 @@ main = hspec $ do
             lookup "AWS_PROFILE" updatedEnvironment `shouldBe` Nothing
             lookup "AWS_SHARED_CREDENTIALS_FILE" updatedEnvironment `shouldBe` Nothing
             lookup "AWS_SESSION_TOKEN" updatedEnvironment `shouldBe` Nothing
+            lookup "AWS_SECURITY_TOKEN" updatedEnvironment `shouldBe` Nothing
 
         it "projects an explicit session token when the repo config provides one" $ do
             let updatedEnvironment = isolatedAwsEnvironment credentialsWithSession
@@ -1707,6 +1742,48 @@ main = hspec $ do
                         renderSettingsDisplay True settings `shouldContain` "aws.access_key_id=test-access-key"
                         renderSettingsDisplay False settings `shouldContain` ("storage.manual_pv_host_root=" ++ (tmpDir </> ".data"))
                         doesFileExist (tmpDir </> "prodbox-config.json") `shouldReturn` False
+
+        it "fails fast on invalid bootstrap public IP overrides" $
+            validatePublicEdgeDeployment
+                validDeploymentSection
+                    { bootstrap_public_ip_override = Just "not-an-ip"
+                    }
+                `shouldBe` Left "deployment.bootstrap_public_ip_override must be a valid IP address when set"
+
+        it "fails fast on invalid BGP peer IP literals" $
+            validatePublicEdgeDeployment
+                validDeploymentSection
+                    { public_edge_advertisement_mode = Just "bgp"
+                    , public_edge_bgp_peers =
+                        Just
+                            [ MetallbBgpPeer
+                                { peer_name = "peer-a"
+                                , peer_address = "invalid-address"
+                                , peer_asn = 64501
+                                , my_asn = 64500
+                                , ebgp_multi_hop = Just False
+                                }
+                            ]
+                    }
+                `shouldBe` Left "deployment.public_edge_bgp_peers[1].peer_address must be a valid IP address when set"
+
+        it "accepts IPv6 literals for the supported public-edge settings" $
+            validatePublicEdgeDeployment
+                validDeploymentSection
+                    { bootstrap_public_ip_override = Just "2001:db8::10"
+                    , public_edge_advertisement_mode = Just "bgp"
+                    , public_edge_bgp_peers =
+                        Just
+                            [ MetallbBgpPeer
+                                { peer_name = "peer-a"
+                                , peer_address = "2001:db8::20"
+                                , peer_asn = 64501
+                                , my_asn = 64500
+                                , ebgp_multi_hop = Just True
+                                }
+                            ]
+                    }
+                `shouldBe` Right ()
 
         it "fails fast on invalid ZeroSSL EAB configuration" $
             withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -1846,6 +1923,20 @@ invalidZeroSslConfig =
         , "}"
         ]
 
+validDeploymentSection :: DeploymentSection
+validDeploymentSection =
+    DeploymentSection
+        { dev_mode = True
+        , bootstrap_public_ip_override = Nothing
+        , pulumi_enable_dns_bootstrap = True
+        , public_edge_advertisement_mode = Just "l2"
+        , public_edge_bgp_peers = Nothing
+        , envoy_gateway_controller_replicas = Just 1
+        , envoy_gateway_data_plane_replicas = Just 1
+        , api_replicas = Just 2
+        , websocket_replicas = Just 2
+        }
+
 testValidatedSettings :: FilePath -> ValidatedSettings
 testValidatedSettings manualRoot =
     ValidatedSettings
@@ -1864,18 +1955,7 @@ testValidatedSettings manualRoot =
                         { demo_fqdn = "test.resolvefintech.com"
                         , demo_ttl = 60
                         }
-                , deployment =
-                    DeploymentSection
-                        { dev_mode = True
-                        , bootstrap_public_ip_override = Nothing
-                        , pulumi_enable_dns_bootstrap = True
-                        , public_edge_advertisement_mode = Just "l2"
-                        , public_edge_bgp_peers = Nothing
-                        , envoy_gateway_controller_replicas = Just 1
-                        , envoy_gateway_data_plane_replicas = Just 1
-                        , api_replicas = Just 2
-                        , websocket_replicas = Just 2
-                        }
+                , deployment = validDeploymentSection
                 , storage = StorageSection{manual_pv_host_root = ".data"}
                 }
         , resolvedManualPvHostRoot = manualRoot

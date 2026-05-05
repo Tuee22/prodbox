@@ -21,6 +21,7 @@ data Validation
     | RequireAwsCredentials
     | RequireAwsIamHarnessReady
     | RequireRoute53Access
+    | RequireRoute53LifecycleCapability
     | RequirePulumiLogin
     | RequireKubectlClusterReachable
     | RequireUbuntu2404

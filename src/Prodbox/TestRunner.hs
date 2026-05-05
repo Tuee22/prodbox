@@ -116,18 +116,15 @@ runTests repoRoot command =
             environment <- addBuildSupportEnvironment repoRoot baseEnvironment
             let plan = testExecutionPlan (testScope command)
             putStrLn ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
-            haskellExit <- runHaskellSuites repoRoot environment (testPlanHaskellSuites plan)
-            case haskellExit of
-                ExitSuccess ->
-                    case testPlanExecutionMode plan of
-                        DelegatedSuite _ ->
-                            pure ExitSuccess
-                        NativeSuite suitePlan -> do
-                            prepareExit <- ensureCanonicalOperatorBinary repoRoot environment
-                            case prepareExit of
-                                ExitSuccess -> runNativeSuite repoRoot environment suitePlan
-                                failure@(ExitFailure _) -> pure failure
-                failure@(ExitFailure _) -> pure failure
+            case testPlanExecutionMode plan of
+                DelegatedSuite _ ->
+                    runHaskellSuites repoRoot environment (testPlanHaskellSuites plan)
+                NativeSuite suitePlan -> do
+                    prepareExit <- ensureCanonicalOperatorBinary repoRoot environment
+                    case prepareExit of
+                        ExitSuccess ->
+                            runNativeSuite repoRoot environment (testPlanHaskellSuites plan) suitePlan
+                        failure@(ExitFailure _) -> pure failure
 
 runHaskellSuites :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runHaskellSuites repoRoot environment suites = do
@@ -150,25 +147,25 @@ runHaskellSuites repoRoot environment suites = do
                 , commandWorkingDirectory = Just repoRoot
                 }
 
-runNativeSuite :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
-runNativeSuite repoRoot environment suitePlan = do
+runNativeSuite :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
+runNativeSuite repoRoot environment haskellSuites suitePlan = do
     bannerExit <- emitLineAction (phaseOneMessage suitePlan)
     case bannerExit of
         failure@(ExitFailure _) -> pure failure
         ExitSuccess ->
             case nativeManagedAwsHarnessPolicyTier suitePlan of
-                Nothing -> runNativeSuiteBody repoRoot environment suitePlan
+                Nothing -> runNativeSuiteBody repoRoot environment haskellSuites suitePlan
                 Just policyTier -> do
                     setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
                     case setupExit of
                         failure@(ExitFailure _) -> pure failure
                         ExitSuccess -> do
-                            suiteExit <- runNativeSuiteBody repoRoot environment suitePlan
+                            suiteExit <- runNativeSuiteBody repoRoot environment haskellSuites suitePlan
                             cleanupExit <- runManagedAwsHarnessTeardown repoRoot
                             pure (preferEarlierFailure suiteExit cleanupExit)
 
-runNativeSuiteBody :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
-runNativeSuiteBody repoRoot environment suitePlan = do
+runNativeSuiteBody :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
+runNativeSuiteBody repoRoot environment haskellSuites suitePlan = do
     initialPrerequisitesExit <- runPhaseOneInitialPrerequisites repoRoot suitePlan
     case initialPrerequisitesExit of
         failure@(ExitFailure _) -> pure failure
@@ -184,14 +181,22 @@ runNativeSuiteBody repoRoot environment suitePlan = do
                     deferredPrerequisitesExit <- runPhaseOneDeferredPrerequisites repoRoot suitePlan
                     case deferredPrerequisitesExit of
                         failure@(ExitFailure _) -> pure failure
-                        ExitSuccess -> runNativeWorkflow repoRoot environment suitePlan
+                        ExitSuccess -> runPhaseTwo repoRoot environment haskellSuites suitePlan
 
-runNativeWorkflow :: FilePath -> [(String, String)] -> NativeSuitePlan -> IO ExitCode
-runNativeWorkflow repoRoot environment suitePlan =
-    runSequentially
-        ( [emitLineAction phaseTwoMessage, runNativeValidations repoRoot environment suitePlan]
-            ++ supportedRuntimePostflightActions repoRoot environment suitePlan
-        )
+runPhaseTwo :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
+runPhaseTwo repoRoot environment haskellSuites suitePlan = do
+    phaseTwoExit <- emitLineAction phaseTwoMessage
+    case phaseTwoExit of
+        failure@(ExitFailure _) -> pure failure
+        ExitSuccess -> do
+            haskellExit <- runHaskellSuites repoRoot environment haskellSuites
+            case haskellExit of
+                failure@(ExitFailure _) -> pure failure
+                ExitSuccess ->
+                    runSequentially
+                        ( runNativeValidations repoRoot environment suitePlan
+                            : supportedRuntimePostflightActions repoRoot environment suitePlan
+                        )
 
 runSequentially :: [IO ExitCode] -> IO ExitCode
 runSequentially = foldM step ExitSuccess

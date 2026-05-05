@@ -464,8 +464,8 @@ nodeDisposition nodeId commitLog =
             ]
      in case claimYieldEvents of
             [] -> DispositionUnknown
-            events ->
-                let lastEv = last events
+            firstEvent : remainingEvents ->
+                let lastEv = foldl (\_ event -> event) firstEvent remainingEvents
                  in if eventType lastEv == eventTypeClaim
                         then DispositionOwner
                         else DispositionYielded

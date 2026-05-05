@@ -19,12 +19,13 @@ module Prodbox.Settings (
     supportedPublicHostname,
     validateAwsBootstrapConfig,
     validateAndLoadSettings,
+    validatePublicEdgeDeployment,
 )
 where
 
 import Data.Aeson (FromJSON, eitherDecode)
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (toLower)
+import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
@@ -224,6 +225,7 @@ validateAwsBootstrapConfig config = do
 
 validatePublicEdgeDeployment :: DeploymentSection -> Either String ()
 validatePublicEdgeDeployment deploymentSection = do
+    validateBootstrapOverride
     validateAdvertisementMode
     validateReplicas "deployment.envoy_gateway_controller_replicas" (envoy_gateway_controller_replicas deploymentSection)
     validateReplicas "deployment.envoy_gateway_data_plane_replicas" (envoy_gateway_data_plane_replicas deploymentSection)
@@ -232,6 +234,10 @@ validatePublicEdgeDeployment deploymentSection = do
   where
     normalizedMode =
         fmap (Text.toLower . Text.strip) (public_edge_advertisement_mode deploymentSection)
+    validateBootstrapOverride =
+        validateOptionalIpAddressField
+            "deployment.bootstrap_public_ip_override"
+            (normalizeMaybeText (bootstrap_public_ip_override deploymentSection))
     validateAdvertisementMode =
         case normalizedMode of
             Nothing -> Right ()
@@ -239,11 +245,8 @@ validatePublicEdgeDeployment deploymentSection = do
             Just "bgp" ->
                 case public_edge_bgp_peers deploymentSection of
                     Just peers
-                        | not (null peers)
-                            && all
-                                (\peer -> Text.strip (peer_name peer) /= "" && Text.strip (peer_address peer) /= "")
-                                peers ->
-                            Right ()
+                        | not (null peers) ->
+                            mapM_ (uncurry validateBgpPeer) (zip [1 :: Int ..] peers)
                     _ -> Left "deployment.public_edge_bgp_peers must contain at least one non-empty peer when deployment.public_edge_advertisement_mode is bgp"
             _ -> Left "deployment.public_edge_advertisement_mode must be l2 or bgp when set"
 
@@ -258,6 +261,80 @@ requireNonEmpty fieldName value =
     if Text.strip value == ""
         then Left (fieldName ++ " must not be empty")
         else Right ()
+
+validateBgpPeer :: Int -> MetallbBgpPeer -> Either String ()
+validateBgpPeer index peer = do
+    requireNonEmpty fieldPrefixName (peer_name peer)
+    requireNonEmpty fieldPrefixAddress (peer_address peer)
+    validateOptionalIpAddressField fieldPrefixAddress (normalizeOptionalText (peer_address peer))
+  where
+    fieldPrefix = "deployment.public_edge_bgp_peers[" ++ show index ++ "]"
+    fieldPrefixName = fieldPrefix ++ ".peer_name"
+    fieldPrefixAddress = fieldPrefix ++ ".peer_address"
+
+validateOptionalIpAddressField :: String -> Maybe Text -> Either String ()
+validateOptionalIpAddressField _ Nothing = Right ()
+validateOptionalIpAddressField fieldName (Just value)
+    | isValidIpLiteral (Text.strip value) = Right ()
+    | otherwise = Left (fieldName ++ " must be a valid IP address when set")
+
+isValidIpLiteral :: Text -> Bool
+isValidIpLiteral value =
+    isValidIpv4Literal value || isValidIpv6Literal value
+
+isValidIpv4Literal :: Text -> Bool
+isValidIpv4Literal value =
+    case Text.splitOn "." value of
+        [firstOctet, secondOctet, thirdOctet, fourthOctet] ->
+            all isValidIpv4Octet [firstOctet, secondOctet, thirdOctet, fourthOctet]
+        _ -> False
+
+isValidIpv4Octet :: Text -> Bool
+isValidIpv4Octet octet =
+    not (Text.null octet)
+        && Text.all isDigit octet
+        && case reads (Text.unpack octet) of
+            [(value, "")] -> value >= (0 :: Int) && value <= 255
+            _ -> False
+
+isValidIpv6Literal :: Text -> Bool
+isValidIpv6Literal value =
+    case Text.splitOn "::" value of
+        [groupsText] ->
+            let groups = splitIpv6Groups groupsText
+             in not (null groups) && isValidIpv6GroupList groups && ipv6GroupWidth groups == 8
+        [leftText, rightText] ->
+            let leftGroups = splitIpv6Groups leftText
+                rightGroups = splitIpv6Groups rightText
+                totalWidth = ipv6GroupWidth leftGroups + ipv6GroupWidth rightGroups
+             in isValidIpv6GroupList leftGroups
+                    && isValidIpv6GroupList rightGroups
+                    && totalWidth < 8
+        _ -> False
+
+splitIpv6Groups :: Text -> [Text]
+splitIpv6Groups value
+    | Text.null value = []
+    | otherwise = Text.splitOn ":" value
+
+isValidIpv6GroupList :: [Text] -> Bool
+isValidIpv6GroupList groups =
+    and (zipWith validateGroup [0 :: Int ..] groups)
+  where
+    lastIndex = length groups - 1
+    validateGroup index group
+        | Text.null group = False
+        | isValidIpv4Literal group = index == lastIndex
+        | otherwise = isValidIpv6Hextet group
+
+isValidIpv6Hextet :: Text -> Bool
+isValidIpv6Hextet group =
+    let lengthValue = Text.length group
+     in lengthValue >= 1 && lengthValue <= 4 && Text.all isHexDigit group
+
+ipv6GroupWidth :: [Text] -> Int
+ipv6GroupWidth =
+    sum . map (\group -> if isValidIpv4Literal group then 2 else 1)
 
 validateSupportedPublicHost :: Text -> Either String ()
 validateSupportedPublicHost value

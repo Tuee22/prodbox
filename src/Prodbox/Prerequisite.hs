@@ -48,6 +48,7 @@ allPrerequisites =
     , rke2ConfigExists
     , awsCredentialsValid
     , route53Accessible
+    , route53LifecycleCapable
     , rke2Installed
     , rke2ServiceExists
     , rke2ServiceActive
@@ -202,6 +203,15 @@ route53Accessible =
         , effectNodeDescription = "Validate Route 53 is accessible"
         , effectNodePrerequisites = ["aws_credentials_valid"]
         , effectNodeEffect = Validate RequireRoute53Access
+        }
+
+route53LifecycleCapable :: EffectNode
+route53LifecycleCapable =
+    EffectNode
+        { effectNodeId = "route53_lifecycle_capable"
+        , effectNodeDescription = "Validate Route 53 hosted-zone lifecycle capability"
+        , effectNodePrerequisites = ["route53_accessible"]
+        , effectNodeEffect = Validate RequireRoute53LifecycleCapability
         }
 
 rke2Installed :: EffectNode

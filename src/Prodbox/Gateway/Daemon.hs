@@ -149,52 +149,64 @@ runGatewayDaemon config = withSocketsDo $ do
                 Left err -> do
                     hPutStrLn stderr ("Failed to validate gateway timing: " ++ err)
                     pure (ExitFailure 1)
-                Right () -> do
-                    now <- getCurrentTime
-                    let localNodeId = daemonNodeId config
-                        meshPeers =
-                            [ peerNodeId peer
-                            | peer <- ordersNodes orders
-                            , peerNodeId peer /= localNodeId
-                            ]
-                        initialDaemonState =
-                            (initialState (ordersVersionUtc orders))
-                                { stateLastHeartbeatTimes = Map.singleton localNodeId now
-                                , stateMeshPeers = meshPeers
-                                , statePeerHealth =
-                                    Map.fromList
-                                        [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
-                                }
-                    stateVar <- newTVarIO initialDaemonState
-                    let eventKeys = Map.fromList (daemonEventKeys config)
-
-                    hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
-
-                    heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
-                    gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
-                    dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
-                    restThread <- async (restServerLoop config orders stateVar)
-                    peerListenerThread <- async (peerListenerLoop config orders stateVar eventKeys)
-                    peerDialerThread <- async (peerDialerLoop config orders stateVar)
-
-                    let allThreads =
-                            [ heartbeatThread
-                            , gatewayThread
-                            , dnsWriteThread
-                            , restThread
-                            , peerListenerThread
-                            , peerDialerThread
-                            ]
-
-                    result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
-                    case result of
-                        Left exc -> do
-                            hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
-                            mapM_ cancel allThreads
+                Right () ->
+                    case resolveLocalPeerEndpoint config orders of
+                        Left err -> do
+                            hPutStrLn stderr ("Failed to resolve local gateway node: " ++ err)
                             pure (ExitFailure 1)
-                        Right () -> do
-                            hPutStrLn stderr "Gateway daemon stopped"
-                            pure ExitSuccess
+                        Right localPeer -> do
+                            now <- getCurrentTime
+                            let localNodeId = daemonNodeId config
+                                meshPeers =
+                                    [ peerNodeId peer
+                                    | peer <- ordersNodes orders
+                                    , peerNodeId peer /= localNodeId
+                                    ]
+                                initialDaemonState =
+                                    (initialState (ordersVersionUtc orders))
+                                        { stateLastHeartbeatTimes = Map.singleton localNodeId now
+                                        , stateMeshPeers = meshPeers
+                                        , statePeerHealth =
+                                            Map.fromList
+                                                [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
+                                        }
+                            stateVar <- newTVarIO initialDaemonState
+                            let eventKeys = Map.fromList (daemonEventKeys config)
+
+                            hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
+
+                            heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
+                            gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
+                            dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
+                            restThread <- async (restServerLoop localPeer config stateVar)
+                            peerListenerThread <- async (peerListenerLoop localPeer config orders stateVar eventKeys)
+                            peerDialerThread <- async (peerDialerLoop config orders stateVar)
+
+                            let allThreads =
+                                    [ heartbeatThread
+                                    , gatewayThread
+                                    , dnsWriteThread
+                                    , restThread
+                                    , peerListenerThread
+                                    , peerDialerThread
+                                    ]
+
+                            result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
+                            case result of
+                                Left exc -> do
+                                    hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
+                                    mapM_ cancel allThreads
+                                    pure (ExitFailure 1)
+                                Right () -> do
+                                    hPutStrLn stderr "Gateway daemon stopped"
+                                    pure ExitSuccess
+
+resolveLocalPeerEndpoint :: DaemonConfig -> Orders -> Either String PeerEndpoint
+resolveLocalPeerEndpoint config orders =
+    case filter (\peer -> peerNodeId peer == daemonNodeId config) (ordersNodes orders) of
+        [peer] -> Right peer
+        [] -> Left ("local node " ++ daemonNodeId config ++ " not found in orders")
+        _ -> Left ("local node " ++ daemonNodeId config ++ " appeared multiple times in orders")
 
 heartbeatLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map String String -> IO ()
 heartbeatLoop config _orders stateVar eventKeys = forever $ do
@@ -333,12 +345,9 @@ dnsWriteLoop config _orders stateVar = forever $ do
                                     hPutStrLn stderr ("DNS write: " ++ dnsWriteGateFqdn gate ++ " -> " ++ currentIp)
     threadDelay (round (daemonSyncInterval config * 1000000))
 
-restServerLoop :: DaemonConfig -> Orders -> TVar DaemonState -> IO ()
-restServerLoop config orders stateVar = do
-    let localPeer = case filter (\n -> peerNodeId n == daemonNodeId config) (ordersNodes orders) of
-            [peer] -> peer
-            _ -> error ("Local node " ++ daemonNodeId config ++ " not found in orders")
-        port = peerRestPort localPeer
+restServerLoop :: PeerEndpoint -> DaemonConfig -> TVar DaemonState -> IO ()
+restServerLoop localPeer config stateVar = do
+    let port = peerRestPort localPeer
     sock <- socket AF_INET Stream 0
     setSocketOption sock ReuseAddr 1
     bind sock (SockAddrInet (fromIntegral port) (tupleToHostAddress (0, 0, 0, 0)))
@@ -354,6 +363,9 @@ handleRestClient sock config stateVar = do
     close sock
   where
     handleRequest = do
+        -- Consume the inbound request before closing the socket so the
+        -- response does not get reset under kubectl port-forward.
+        _ <- receiveAll sock
         state <- readTVarIO stateVar
         now <- getCurrentTime
         let responseBody = renderStateJson now config state
@@ -370,16 +382,14 @@ handleRestClient sock config stateVar = do
 
 -- | Bind the peer-events HTTP listener on the configured socket port.
 peerListenerLoop ::
+    PeerEndpoint ->
     DaemonConfig ->
     Orders ->
     TVar DaemonState ->
     Map String String ->
     IO ()
-peerListenerLoop config orders stateVar eventKeys = do
-    let localPeer = case filter (\n -> peerNodeId n == daemonNodeId config) (ordersNodes orders) of
-            [peer] -> peer
-            _ -> error ("Local node " ++ daemonNodeId config ++ " not found in orders")
-        port = peerSocketPort localPeer
+peerListenerLoop localPeer config orders stateVar eventKeys = do
+    let port = peerSocketPort localPeer
     sock <- socket AF_INET Stream 0
     setSocketOption sock ReuseAddr 1
     bind sock (SockAddrInet (fromIntegral port) (tupleToHostAddress (0, 0, 0, 0)))
@@ -699,7 +709,7 @@ renderStateJson now config state =
             , "peer_dispositions" .= renderPeerDispositions state
             , "mesh_peers" .= stateMeshPeers state
             , "event_count" .= length (commitLogEvents (stateCommitLog state))
-            , "event_hashes" .= map eventHash (commitLogEvents (stateCommitLog state))
+            , "event_hashes" .= renderRecentEventHashes (commitLogEvents (stateCommitLog state))
             , "last_public_ip_observed" .= stateLastPublicIp state
             , "last_dns_write_ip" .= stateLastDnsWriteIp state
             , "last_dns_write_at_utc" .= fmap formatUtcIso (stateLastDnsWriteTime state)
@@ -711,6 +721,13 @@ renderStateJson now config state =
             , "orders_version_utc" .= stateOrdersVersionUtc state
             , "latest_observed_orders_version_utc" .= stateLatestObservedOrdersVersion state
             ]
+
+gatewayStatusEventHashLimit :: Int
+gatewayStatusEventHashLimit = 64
+
+renderRecentEventHashes :: [SignedEvent] -> [String]
+renderRecentEventHashes events =
+    reverse (take gatewayStatusEventHashLimit (reverse (map eventHash events)))
 
 renderDisposition :: Disposition -> Value
 renderDisposition d = case d of

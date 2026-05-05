@@ -32,8 +32,9 @@ The target public-edge doctrine for self-managed `prodbox` clusters is:
 9. Redis is optional shared application infrastructure for realtime or rate-limit workloads only.
 10. WebSocket authorization happens at connection setup time, while message-level authorization
     remains application-owned.
-11. Supported public hostnames prefer separate identity and application routes; wildcard public DNS
-    is not part of the supported architecture.
+11. Supported public routing uses one shared public hostname with explicit path prefixes for
+    identity, application, and admin surfaces; wildcard public DNS is not part of the supported
+    architecture.
 12. The Haskell distributed gateway daemon documented in
     [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) is distinct from
     the Envoy Gateway public edge.

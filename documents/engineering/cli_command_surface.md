@@ -103,7 +103,7 @@ The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
 classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, `SecurityPolicy`
 attachment, certificate readiness, the shared-host `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`,
-and `/minio` routes, and external reachability.
+and `/minio` routes, and readiness for named external proof.
 
 ### `prodbox rke2`
 
@@ -167,7 +167,7 @@ No supported local-cluster platform or application deployment depends on a root 
 
 `src/Prodbox/Gateway.hs` owns the public gateway surface and `src/Prodbox/Gateway/Daemon.hs`
 owns the daemon runtime. `prodbox gateway status` queries the daemon's operator-facing
-`/v1/state` endpoint over HTTP on the configured REST port.
+bounded `/v1/state` endpoint over HTTP on the configured REST port.
 
 This `gateway` command group refers to the Haskell distributed gateway daemon, not to the
 Kubernetes Gateway API or Envoy Gateway controller.

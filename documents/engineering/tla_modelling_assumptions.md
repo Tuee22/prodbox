@@ -138,8 +138,8 @@ The current Haskell daemon status surface exposes:
 3. `can_write_dns` rendered from the runtime `canWriteDns` predicate
 4. `node_disposition` and `peer_dispositions` derived from the commit log
 5. `stateLastDnsWriteIp` / `stateLastDnsWriteTime` as the observed last successful write
-6. `event_hashes` plus `heartbeat_age_seconds` on `/v1/state` for operator and integration
-   observability
+6. total `event_count`, a bounded recent `event_hashes` tail, and `heartbeat_age_seconds` on
+   `/v1/state` for operator and integration observability
 7. `peer_transport` per-peer connection health
 
 Phase closure and any remaining alignment work on that boundary are

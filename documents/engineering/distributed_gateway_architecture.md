@@ -373,7 +373,7 @@ Returns current daemon state:
     "latest_observed_orders_version_utc": 1700000000,
     "dns_write_gate": {
         "zone_id": "Z1234567890",
-        "fqdn": "gw.example.test",
+        "fqdn": "test.resolvefintech.com",
         "ttl": 60,
         "aws_region": "us-east-1"
     }
@@ -382,9 +382,15 @@ Returns current daemon state:
 
 Used by integration tests for observability and by `prodbox gateway status` CLI.
 
+`event_count` is the full unique-event cardinality of the local commit log. `event_hashes` is a
+bounded recent tail of that log (currently the 64 most recent event hashes) so `GET /v1/state`
+remains small enough for chart probes, `kubectl port-forward` backed validation, and
+`prodbox gateway status` on long-lived meshes.
+
 The `/v1/state` observability endpoint is an operator-facing HTTP surface on the in-pod REST
 port. It is separate from the peer-to-peer mutual-TLS transport doctrine used for gateway mesh
-communication.
+communication. The REST handler consumes the inbound HTTP request before closing the socket so the
+operator-facing response contract stays intact when queried through `kubectl port-forward`.
 
 ---
 

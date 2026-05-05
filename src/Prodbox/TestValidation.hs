@@ -19,6 +19,9 @@ import Control.Monad (foldM)
 import Data.Aeson (
     Value (..),
     eitherDecode,
+    encode,
+    object,
+    (.=),
  )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -32,6 +35,20 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
+import Network.Socket (
+    Family (AF_INET),
+    SockAddr (..),
+    SocketOption (ReuseAddr),
+    SocketType (Stream),
+    bind,
+    close,
+    defaultProtocol,
+    getSocketName,
+    setSocketOption,
+    socket,
+    tupleToHostAddress,
+    withSocketsDo,
+ )
 import Network.WebSockets qualified as WebSocket
 import Prodbox.Aws (
     runAwsIamHarnessInspect,
@@ -47,6 +64,12 @@ import Prodbox.Dns (
     fetchPublicIp,
     queryRoute53Record,
  )
+import Prodbox.Gateway.Types (
+    GatewayRule (..),
+    Orders (..),
+    PeerEndpoint (..),
+    parseOrders,
+ )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Lib.ChartPlatform (resolveChartSecrets)
@@ -58,9 +81,12 @@ import Prodbox.PublicEdge (
  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings (
+    Credentials (..),
+    DomainSection (..),
     Route53Section (..),
     ValidatedSettings (..),
     aws,
+    domain,
     route53,
     validateAndLoadSettings,
  )
@@ -88,6 +114,14 @@ import System.IO (
     hPutStrLn,
     openTempFile,
     stderr,
+ )
+import System.Process (
+    CreateProcess (..),
+    ProcessHandle,
+    createProcess,
+    proc,
+    terminateProcess,
+    waitForProcess,
  )
 import System.Timeout (timeout)
 import Wuss qualified
@@ -130,6 +164,15 @@ websocketDistinctConnectionRetryDelayMicroseconds = 1000000
 
 websocketReceiveRetryDelayMicroseconds :: Int
 websocketReceiveRetryDelayMicroseconds = 1000000
+
+gatewayValidationNamespace :: String
+gatewayValidationNamespace = "gateway"
+
+gatewayStatusRetryAttempts :: Int
+gatewayStatusRetryAttempts = 12
+
+gatewayStatusRetryDelayMicroseconds :: Int
+gatewayStatusRetryDelayMicroseconds = 1000000
 
 runNativeValidation :: FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
 runNativeValidation repoRoot environment validation = do
@@ -177,8 +220,8 @@ runNativeValidation repoRoot environment validation = do
         ValidationGatewayDaemon -> runGatewayDaemonValidation repoRoot environment
         ValidationGatewayPods ->
             runSequentially
-                [ runNativeCliCommandForExitCode repoRoot environment ["k8s", "wait", "--namespace", "prodbox"]
-                , runNativeCliCommandForExitCode repoRoot environment ["k8s", "logs", "--namespace", "prodbox", "--tail", "20"]
+                [ runNativeCliCommandForExitCode repoRoot environment ["k8s", "wait", "--namespace", gatewayValidationNamespace]
+                , runNativeCliCommandForExitCode repoRoot environment ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
                 ]
         ValidationGatewayPartition -> runNativeCliCommandForExitCode repoRoot environment ["tla-check"]
         ValidationChartsPlatform ->
@@ -1359,24 +1402,177 @@ route53ChangeBatch action recordName recordIp =
 
 runGatewayDaemonValidation :: FilePath -> [(String, String)] -> IO ExitCode
 runGatewayDaemonValidation repoRoot environment = do
-    (configPath, handle) <- openTempFile repoRoot "gateway-validation.json"
-    hClose handle
-    configExit <-
-        runNativeCliCommandForExitCode
-            repoRoot
-            environment
-            ["gateway", "config-gen", configPath, "--node-id", "validation-node"]
-    case configExit of
-        ExitFailure _ -> pure configExit
-        ExitSuccess -> do
-            configReadResult <- try (readFile configPath) :: IO (Either IOException String)
-            _ <- try (removeFile configPath) :: IO (Either IOException ())
-            case configReadResult of
-                Left err -> failWith ("failed to read generated gateway config: " ++ show err)
-                Right configText ->
-                    if "\"dns_write_gate\"" `isInfixOf` configText && "\"node_id\": \"validation-node\"" `isInfixOf` configText
-                        then runNativeCliCommandForExitCode repoRoot environment ["k8s", "logs", "--namespace", "prodbox", "--tail", "20"]
-                        else failWith "generated gateway config did not include the expected node_id and dns_write_gate fields"
+    settingsResult <- validateAndLoadSettings repoRoot
+    case settingsResult of
+        Left err -> failWith err
+        Right settings -> do
+            readyExit <- runNativeCliCommandForExitCode repoRoot environment ["k8s", "wait", "--namespace", gatewayValidationNamespace]
+            case readyExit of
+                ExitFailure _ -> pure readyExit
+                ExitSuccess -> do
+                    ordersTextResult <-
+                        runTextCommand
+                            CommandSpec
+                                { commandPath = "kubectl"
+                                , commandArguments =
+                                    [ "--namespace"
+                                    , gatewayValidationNamespace
+                                    , "get"
+                                    , "configmap"
+                                    , "gateway-orders"
+                                    , "-o"
+                                    , "jsonpath={.data.orders\\.json}"
+                                    ]
+                                , commandEnvironment = Just environment
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                    case ordersTextResult of
+                        Left err -> failWith err
+                        Right ordersText ->
+                            case parseOrders ordersText of
+                                Left err -> failWith ("failed to parse gateway orders from cluster ConfigMap: " ++ err)
+                                Right orders ->
+                                    case selectGatewayValidationPeer orders of
+                                        Left err -> failWith err
+                                        Right localPeer -> do
+                                            localPort <- reserveLocalTcpPort
+                                            withGatewayPortForward repoRoot environment localPeer localPort $
+                                                withTemporaryFilePath repoRoot "gateway-validation-orders.json" $ \ordersPath ->
+                                                    withTemporaryFilePath repoRoot "gateway-validation-config.json" $ \configPath -> do
+                                                        ordersWriteResult <-
+                                                            try (BL.writeFile ordersPath (renderGatewayValidationOrders orders (peerNodeId localPeer) localPort)) ::
+                                                                IO (Either IOException ())
+                                                        case ordersWriteResult of
+                                                            Left err ->
+                                                                failWith ("failed to write gateway validation orders file: " ++ show err)
+                                                            Right () -> do
+                                                                configWriteResult <-
+                                                                    try
+                                                                        ( BL.writeFile
+                                                                            configPath
+                                                                            (renderGatewayValidationConfig settings (peerNodeId localPeer) ordersPath)
+                                                                        ) ::
+                                                                        IO (Either IOException ())
+                                                                case configWriteResult of
+                                                                    Left err ->
+                                                                        failWith ("failed to write gateway validation config: " ++ show err)
+                                                                    Right () -> do
+                                                                        statusExit <-
+                                                                            waitForCommandOutputContainsAll
+                                                                                (nativeCliCommandSpec repoRoot environment ["gateway", "status", configPath])
+                                                                                [ "Gateway status"
+                                                                                , "NODE_ID=" ++ peerNodeId localPeer
+                                                                                , "DNS_WRITE_GATE=" ++ publicFqdn settings ++ "@"
+                                                                                ]
+                                                                                gatewayStatusRetryAttempts
+                                                                                gatewayStatusRetryDelayMicroseconds
+                                                                        case statusExit of
+                                                                            ExitFailure _ -> pure statusExit
+                                                                            ExitSuccess ->
+                                                                                runNativeCliCommandForExitCode
+                                                                                    repoRoot
+                                                                                    environment
+                                                                                    ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
+
+selectGatewayValidationPeer :: Orders -> Either String PeerEndpoint
+selectGatewayValidationPeer orders =
+    case ordersNodes orders of
+        [] -> Left "gateway validation requires at least one node in gateway-orders"
+        peer : _ -> Right peer
+
+renderGatewayValidationOrders :: Orders -> String -> Int -> BL.ByteString
+renderGatewayValidationOrders orders localNodeId localPort =
+    encode $
+        object
+            [ "version_utc" .= ordersVersionUtc orders
+            , "nodes" .= map renderNode (ordersNodes orders)
+            , "gateway_rule"
+                .= object
+                    [ "ranked_nodes" .= rankedNodes (ordersGatewayRule orders)
+                    , "heartbeat_timeout_seconds" .= heartbeatTimeoutSeconds (ordersGatewayRule orders)
+                    ]
+            ]
+  where
+    renderNode :: PeerEndpoint -> Value
+    renderNode peer =
+        object
+            [ "node_id" .= peerNodeId peer
+            , "stable_dns_name" .= rewrittenStableDnsName
+            , "rest_host" .= rewrittenRestHost
+            , "rest_port" .= rewrittenRestPort
+            , "socket_host" .= peerSocketHost peer
+            , "socket_port" .= peerSocketPort peer
+            ]
+      where
+        isLocalNode = peerNodeId peer == localNodeId
+        rewrittenStableDnsName =
+            if isLocalNode
+                then "127.0.0.1"
+                else peerStableDnsName peer
+        rewrittenRestHost =
+            if isLocalNode
+                then "127.0.0.1"
+                else peerRestHost peer
+        rewrittenRestPort =
+            if isLocalNode
+                then localPort
+                else peerRestPort peer
+
+renderGatewayValidationConfig :: ValidatedSettings -> String -> FilePath -> BL.ByteString
+renderGatewayValidationConfig settings nodeId ordersPath =
+    encode $
+        object
+            [ "node_id" .= nodeId
+            , "cert_file" .= ("unused.crt" :: String)
+            , "key_file" .= ("unused.key" :: String)
+            , "ca_file" .= ("unused-ca.crt" :: String)
+            , "orders_file" .= ordersPath
+            , "event_keys"
+                .= Object
+                    (KeyMap.singleton (Key.fromString nodeId) (String "validation-key"))
+            , "heartbeat_interval_seconds" .= (1.0 :: Double)
+            , "reconnect_interval_seconds" .= (1.0 :: Double)
+            , "sync_interval_seconds" .= (5.0 :: Double)
+            , "dns_write_gate"
+                .= object
+                    [ "zone_id" .= textValue (zone_id (route53 (validatedConfig settings)))
+                    , "fqdn" .= publicFqdn settings
+                    , "ttl" .= (fromIntegral (demo_ttl (domain (validatedConfig settings))) :: Integer)
+                    , "aws_region" .= textValue (region (aws (validatedConfig settings)))
+                    ]
+            ]
+
+withGatewayPortForward :: FilePath -> [(String, String)] -> PeerEndpoint -> Int -> IO a -> IO a
+withGatewayPortForward repoRoot environment localPeer localPort action = do
+    (_, _, _, processHandle) <-
+        createProcess
+            (proc "kubectl" ["--namespace", gatewayValidationNamespace, "port-forward", "service/gateway-" ++ peerNodeId localPeer, show localPort ++ ":" ++ show (peerRestPort localPeer)])
+                { env = Just environment
+                , cwd = Just repoRoot
+                }
+    action `finally` cleanupGatewayPortForward processHandle
+
+cleanupGatewayPortForward :: ProcessHandle -> IO ()
+cleanupGatewayPortForward processHandle = do
+    _ <- try (terminateProcess processHandle) :: IO (Either SomeException ())
+    _ <- try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
+    pure ()
+
+reserveLocalTcpPort :: IO Int
+reserveLocalTcpPort =
+    withSocketsDo $
+        bracket
+            (socket AF_INET Stream defaultProtocol)
+            close
+            ( \reservedSocket -> do
+                setSocketOption reservedSocket ReuseAddr 1
+                bind reservedSocket (SockAddrInet 0 (tupleToHostAddress (0, 0, 0, 0)))
+                socketAddress <- getSocketName reservedSocket
+                case socketAddress of
+                    SockAddrInet port _ -> pure (fromIntegral port)
+                    SockAddrInet6 port _ _ _ -> pure (fromIntegral port)
+                    _ -> fail "failed to reserve a local TCP port for gateway validation"
+            )
 
 verifyAwsEksSnapshot :: FilePath -> IO ExitCode
 verifyAwsEksSnapshot repoRoot = do
@@ -1701,20 +1897,20 @@ hostedZoneDelegation payload =
         _ -> Left "aws route53 get-hosted-zone did not return a JSON object"
 
 requireObjectField :: KeyMap.KeyMap Value -> String -> Either String (KeyMap.KeyMap Value)
-requireObjectField object key =
-    case KeyMap.lookup (Key.fromString key) object of
+requireObjectField objectValue key =
+    case KeyMap.lookup (Key.fromString key) objectValue of
         Just (Object nested) -> Right nested
         _ -> Left ("missing object field " ++ key)
 
 requireStringField :: KeyMap.KeyMap Value -> String -> Either String String
-requireStringField object key =
-    case KeyMap.lookup (Key.fromString key) object of
+requireStringField objectValue key =
+    case KeyMap.lookup (Key.fromString key) objectValue of
         Just (String value) -> Right (textValue value)
         _ -> Left ("missing string field " ++ key)
 
 requireStringArrayField :: KeyMap.KeyMap Value -> String -> Either String [String]
-requireStringArrayField object key =
-    case KeyMap.lookup (Key.fromString key) object of
+requireStringArrayField objectValue key =
+    case KeyMap.lookup (Key.fromString key) objectValue of
         Just (Array values) ->
             mapM
                 ( \value ->

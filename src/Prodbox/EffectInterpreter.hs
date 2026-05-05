@@ -10,6 +10,7 @@ import Control.Monad (
     foldM,
     when,
  )
+import Data.Char (isDigit)
 import Data.List (
     intercalate,
     isInfixOf,
@@ -21,6 +22,7 @@ import Data.Set (
  )
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.AwsEnvironment (
     overlayAwsCredentials,
  )
@@ -224,6 +226,7 @@ runValidation context validation =
         RequireAwsCredentials -> requireAwsCredentials
         RequireAwsIamHarnessReady -> requireAwsIamHarnessReady
         RequireRoute53Access -> requireRoute53Access
+        RequireRoute53LifecycleCapability -> requireRoute53LifecycleCapability
         RequirePulumiLogin -> requirePulumiLogin
         RequireKubectlClusterReachable -> requireKubectlClusterReachable
         RequireUbuntu2404 -> requireUbuntu2404
@@ -391,6 +394,83 @@ runValidation context validation =
                         , commandWorkingDirectory = Just (interpreterRepoRoot context)
                         }
 
+    requireRoute53LifecycleCapability :: IO (Result ())
+    requireRoute53LifecycleCapability = do
+        settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
+        case settingsResult of
+            Left err -> pure (Failure err)
+            Right settings -> do
+                environment <- awsCommandEnvironment settings
+                let configuredZoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
+                baseZoneResult <-
+                    captureAwsValidationCommandOutput
+                        "Route 53 lifecycle capability check failed"
+                        CommandSpec
+                            { commandPath = "aws"
+                            , commandArguments =
+                                [ "route53"
+                                , "get-hosted-zone"
+                                , "--id"
+                                , configuredZoneId
+                                , "--query"
+                                , "HostedZone.Name"
+                                , "--output"
+                                , "text"
+                                ]
+                            , commandEnvironment = Just environment
+                            , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                            }
+                case baseZoneResult of
+                    Failure err -> pure (Failure err)
+                    Success baseZoneOutput -> do
+                        let baseZoneName = trimTrailingDot (trimTrailingNewlines (processStdout baseZoneOutput))
+                        if null baseZoneName
+                            then pure (Failure "Route 53 lifecycle capability check failed: configured hosted zone name was empty.")
+                            else do
+                                nonce <- route53LifecycleNonce
+                                let childZoneName = "prodbox-route53-prereq-" ++ nonce ++ "." ++ baseZoneName
+                                    callerReference = "prodbox-route53-prereq-" ++ nonce
+                                createZoneResult <-
+                                    captureAwsValidationCommandOutput
+                                        "Route 53 lifecycle capability check failed"
+                                        CommandSpec
+                                            { commandPath = "aws"
+                                            , commandArguments =
+                                                [ "route53"
+                                                , "create-hosted-zone"
+                                                , "--name"
+                                                , childZoneName
+                                                , "--caller-reference"
+                                                , callerReference
+                                                , "--query"
+                                                , "HostedZone.Id"
+                                                , "--output"
+                                                , "text"
+                                                ]
+                                            , commandEnvironment = Just environment
+                                            , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                                            }
+                                case createZoneResult of
+                                    Failure err -> pure (Failure err)
+                                    Success createZoneOutput -> do
+                                        let createdZoneId = trimTrailingNewlines (processStdout createZoneOutput)
+                                        if null createdZoneId
+                                            then pure (Failure "Route 53 lifecycle capability check failed: create-hosted-zone did not return a hosted zone id.")
+                                            else
+                                                requireAwsValidationCommandSuccess
+                                                    "Route 53 lifecycle capability cleanup failed"
+                                                    CommandSpec
+                                                        { commandPath = "aws"
+                                                        , commandArguments =
+                                                            [ "route53"
+                                                            , "delete-hosted-zone"
+                                                            , "--id"
+                                                            , createdZoneId
+                                                            ]
+                                                        , commandEnvironment = Just environment
+                                                        , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                                                        }
+
     requirePulumiLogin :: IO (Result ())
     requirePulumiLogin = do
         portForwardResult <-
@@ -530,9 +610,17 @@ requireCapturedCommandSuccess echoOutput failureLabel spec = do
 
 requireAwsValidationCommandSuccess :: String -> CommandSpec -> IO (Result ())
 requireAwsValidationCommandSuccess failureLabel spec =
+    toUnit <$> captureAwsValidationCommandOutput failureLabel spec
+  where
+    toUnit :: Result ProcessOutput -> Result ()
+    toUnit (Failure err) = Failure err
+    toUnit (Success _) = Success ()
+
+captureAwsValidationCommandOutput :: String -> CommandSpec -> IO (Result ProcessOutput)
+captureAwsValidationCommandOutput failureLabel spec =
     go awsValidationRetryAttempts
   where
-    go :: Int -> IO (Result ())
+    go :: Int -> IO (Result ProcessOutput)
     go attemptsRemaining = do
         outputResult <- captureCommand spec
         case outputResult of
@@ -548,7 +636,7 @@ requireAwsValidationCommandSuccess failureLabel spec =
                     )
             Success output ->
                 case processExitCode output of
-                    ExitSuccess -> pure (Success ())
+                    ExitSuccess -> pure (Success output)
                     ExitFailure code
                         | attemptsRemaining > 1 && isRetryableAwsValidationFailure output -> do
                             threadDelay awsValidationRetryDelayMicroseconds
@@ -623,3 +711,13 @@ toolOutputSuffix output =
 
 trimTrailingNewlines :: String -> String
 trimTrailingNewlines = reverse . dropWhile (== '\n') . reverse
+
+trimTrailingDot :: String -> String
+trimTrailingDot value =
+    if not (null value) && last value == '.'
+        then init value
+        else value
+
+route53LifecycleNonce :: IO String
+route53LifecycleNonce =
+    filter isDigit . show <$> getPOSIXTime

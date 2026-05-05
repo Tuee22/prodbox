@@ -10,7 +10,6 @@ import System.Directory (
     getCurrentDirectory,
  )
 import System.FilePath (
-    takeDirectory,
     (</>),
  )
 
@@ -22,18 +21,12 @@ data ConfigPaths = ConfigPaths
 
 findRepoRoot :: IO (Either String FilePath)
 findRepoRoot = do
-    startDir <- getCurrentDirectory
-    search startDir
-  where
-    search currentDir = do
-        repoMarkerPresent <- hasRepoMarkers currentDir
+    currentDir <- getCurrentDirectory
+    repoMarkerPresent <- hasRepoMarkers currentDir
+    pure $
         if repoMarkerPresent
-            then pure (Right currentDir)
-            else
-                let parentDir = takeDirectory currentDir
-                 in if parentDir == currentDir
-                        then pure (Left "Could not locate the repository root from the current working directory.")
-                        else search parentDir
+            then Right currentDir
+            else Left "Current working directory is not the repository root."
 
 hasRepoMarkers :: FilePath -> IO Bool
 hasRepoMarkers candidate = do

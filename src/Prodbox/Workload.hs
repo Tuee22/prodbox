@@ -209,14 +209,18 @@ runWorkloadServer = do
                 Left err -> failWith err
                 Right maybeRuntime -> do
                     hPutStrLn stderr ("Public workload starting: mode=" ++ renderMode mode ++ " port=" ++ show port)
-                    bracket (openListeningSocket port) close $ \serverSocket -> do
-                        listen serverSocket 16
-                        forever $ do
-                            (clientSocket, _) <- accept serverSocket
-                            void $
-                                forkFinally
-                                    (handleClient mode podName maybeRuntime clientSocket)
-                                    (\_ -> void (tryCloseSocket clientSocket))
+                    serverSocketResult <- openListeningSocket port
+                    case serverSocketResult of
+                        Left err -> failWith err
+                        Right serverSocket ->
+                            bracket (pure serverSocket) close $ \boundSocket -> do
+                                listen boundSocket 16
+                                forever $ do
+                                    (clientSocket, _) <- accept boundSocket
+                                    void $
+                                        forkFinally
+                                            (handleClient mode podName maybeRuntime clientSocket)
+                                            (\_ -> void (tryCloseSocket clientSocket))
 
 handleClient :: WorkloadMode -> String -> Maybe WebsocketRuntime -> Socket -> IO ()
 handleClient mode podName maybeRuntime clientSocket = do
@@ -272,22 +276,24 @@ handleWebsocketHttpRequest runtime clientSocket request = do
                     resetRequested = Map.lookup "reset" queryParams == Just "true"
                 case sessionIdResult of
                     Left err -> sendPlainTextResponse clientSocket 400 [] err
-                    Right sessionId ->
-                        withRedisSocket (websocketRuntimeRedisConfig runtime) $ \redisSocket -> do
-                            resetResult <- prepareWebsocketSession redisSocket (websocketRuntimePodName runtime) sessionId resetRequested
-                            case resetResult of
-                                Left err -> sendPlainTextResponse clientSocket 500 [] err
-                                Right () ->
-                                    sendJsonResponse
-                                        clientSocket
-                                        200
-                                        []
-                                        ( object
-                                            [ "mode" .= ("websocket" :: String)
-                                            , "pod" .= websocketRuntimePodName runtime
-                                            , "session" .= sessionId
-                                            ]
-                                        )
+                    Right sessionId -> do
+                        prepareResult <-
+                            withRedisSocket
+                                (websocketRuntimeRedisConfig runtime)
+                                (\redisSocket -> prepareWebsocketSession redisSocket (websocketRuntimePodName runtime) sessionId resetRequested)
+                        case prepareResult of
+                            Left err -> sendPlainTextResponse clientSocket 500 [] err
+                            Right () ->
+                                sendJsonResponse
+                                    clientSocket
+                                    200
+                                    []
+                                    ( object
+                                        [ "mode" .= ("websocket" :: String)
+                                        , "pod" .= websocketRuntimePodName runtime
+                                        , "session" .= sessionId
+                                        ]
+                                    )
         ("POST", "/ws/publish") ->
             withAuthorizedWebsocketToken request clientSocket $ \token -> do
                 let sessionIdResult = requireSession queryParams
@@ -300,8 +306,11 @@ handleWebsocketHttpRequest runtime clientSocket request = do
                     Right sessionId ->
                         if messageBody == ""
                             then sendPlainTextResponse clientSocket 400 [] "message body must not be empty"
-                            else withRedisSocket (websocketRuntimeRedisConfig runtime) $ \redisSocket -> do
-                                publishResult <- publishWebsocketMessage redisSocket token (websocketRuntimePodName runtime) sessionId messageBody
+                            else do
+                                publishResult <-
+                                    withRedisSocket
+                                        (websocketRuntimeRedisConfig runtime)
+                                        (\redisSocket -> publishWebsocketMessage redisSocket token (websocketRuntimePodName runtime) sessionId messageBody)
                                 case publishResult of
                                     Left err -> sendPlainTextResponse clientSocket 500 [] err
                                     Right messageCount ->
@@ -321,23 +330,27 @@ handleWebsocketHttpRequest runtime clientSocket request = do
                 let sessionIdResult = requireSession queryParams
                 case sessionIdResult of
                     Left err -> sendPlainTextResponse clientSocket 400 [] err
-                    Right sessionId ->
-                        withRedisSocket (websocketRuntimeRedisConfig runtime) $ \redisSocket -> do
-                            revokeResult <- revokeWebsocketSession redisSocket token sessionId
-                            case revokeResult of
-                                Left err -> sendPlainTextResponse clientSocket 500 [] err
-                                Right () -> sendPlainTextResponse clientSocket 200 [] "revoked"
+                    Right sessionId -> do
+                        revokeResult <-
+                            withRedisSocket
+                                (websocketRuntimeRedisConfig runtime)
+                                (\redisSocket -> revokeWebsocketSession redisSocket token sessionId)
+                        case revokeResult of
+                            Left err -> sendPlainTextResponse clientSocket 500 [] err
+                            Right () -> sendPlainTextResponse clientSocket 200 [] "revoked"
         ("GET", "/ws/state") ->
             withAuthorizedWebsocketToken request clientSocket $ \_ -> do
                 let sessionIdResult = requireSession queryParams
                 case sessionIdResult of
                     Left err -> sendPlainTextResponse clientSocket 400 [] err
-                    Right sessionId ->
-                        withRedisSocket (websocketRuntimeRedisConfig runtime) $ \redisSocket -> do
-                            stateResult <- websocketSessionState redisSocket (websocketRuntimePodName runtime) sessionId
-                            case stateResult of
-                                Left err -> sendPlainTextResponse clientSocket 500 [] err
-                                Right payload -> sendJsonResponse clientSocket 200 [] payload
+                    Right sessionId -> do
+                        stateResult <-
+                            withRedisSocket
+                                (websocketRuntimeRedisConfig runtime)
+                                (\redisSocket -> websocketSessionState redisSocket (websocketRuntimePodName runtime) sessionId)
+                        case stateResult of
+                            Left err -> sendPlainTextResponse clientSocket 500 [] err
+                            Right payload -> sendJsonResponse clientSocket 200 [] payload
         ("GET", "/ws/oidc/start") -> do
             startResult <- buildOidcStartResponse runtime
             case startResult of
@@ -372,41 +385,50 @@ handleWebsocketUpgrade runtime clientSocket initialFrameBytes request = do
                     Left err -> sendPlainTextResponse clientSocket 500 [] err
                     Right (connectionId, closeVar) ->
                         finally
-                            ( withRedisSocket (websocketRuntimeRedisConfig runtime) $ \redisSocket -> do
-                                prepareResult <-
-                                    prepareWebsocketSession redisSocket (websocketRuntimePodName runtime) sessionId resetRequested
-                                case prepareResult of
+                            ( do
+                                redisResult <-
+                                    withRedisSocket
+                                        (websocketRuntimeRedisConfig runtime)
+                                        ( \redisSocket -> do
+                                            prepareResult <-
+                                                prepareWebsocketSession redisSocket (websocketRuntimePodName runtime) sessionId resetRequested
+                                            case prepareResult of
+                                                Left err -> pure (Left err)
+                                                Right () -> do
+                                                    currentMessageCountResult <- redisLlen redisSocket (messagesKey sessionId)
+                                                    case currentMessageCountResult of
+                                                        Left err -> pure (Left err)
+                                                        Right currentMessageCount -> do
+                                                            sendWebSocketHandshakeResponse clientSocket acceptKey
+                                                            sendWebSocketText
+                                                                clientSocket
+                                                                ( renderJsonText
+                                                                    ( object
+                                                                        [ "type" .= ("welcome" :: String)
+                                                                        , "mode" .= ("websocket" :: String)
+                                                                        , "pod" .= websocketRuntimePodName runtime
+                                                                        , "session" .= sessionId
+                                                                        , "subject" .= authorizedSubject token
+                                                                        , "preferred_username" .= authorizedPreferredUsername token
+                                                                        , "expires_at" .= authorizedExpiryEpoch token
+                                                                        ]
+                                                                    )
+                                                                )
+                                                            frameBuffer <- newIORef initialFrameBytes
+                                                            runWebsocketConnectionLoop
+                                                                runtime
+                                                                redisSocket
+                                                                clientSocket
+                                                                token
+                                                                sessionId
+                                                                currentMessageCount
+                                                                closeVar
+                                                                frameBuffer
+                                                            pure (Right ())
+                                        )
+                                case redisResult of
                                     Left err -> sendPlainTextResponse clientSocket 500 [] err
-                                    Right () -> do
-                                        currentMessageCountResult <- redisLlen redisSocket (messagesKey sessionId)
-                                        case currentMessageCountResult of
-                                            Left err -> sendPlainTextResponse clientSocket 500 [] err
-                                            Right currentMessageCount -> do
-                                                sendWebSocketHandshakeResponse clientSocket acceptKey
-                                                sendWebSocketText
-                                                    clientSocket
-                                                    ( renderJsonText
-                                                        ( object
-                                                            [ "type" .= ("welcome" :: String)
-                                                            , "mode" .= ("websocket" :: String)
-                                                            , "pod" .= websocketRuntimePodName runtime
-                                                            , "session" .= sessionId
-                                                            , "subject" .= authorizedSubject token
-                                                            , "preferred_username" .= authorizedPreferredUsername token
-                                                            , "expires_at" .= authorizedExpiryEpoch token
-                                                            ]
-                                                        )
-                                                    )
-                                                frameBuffer <- newIORef initialFrameBytes
-                                                runWebsocketConnectionLoop
-                                                    runtime
-                                                    redisSocket
-                                                    clientSocket
-                                                    token
-                                                    sessionId
-                                                    currentMessageCount
-                                                    closeVar
-                                                    frameBuffer
+                                    Right () -> pure ()
                             )
                             (unregisterWebsocketConnection runtime connectionId)
 
@@ -550,26 +572,28 @@ handleOidcSession :: WebsocketRuntime -> Socket -> HttpRequest -> IO ()
 handleOidcSession runtime clientSocket request =
     case lookupCookie oidcSessionCookieName request of
         Nothing -> sendPlainTextResponse clientSocket 401 [] "missing oidc session cookie"
-        Just sessionId ->
-            withRedisSocket (websocketRuntimeRedisConfig runtime) $ \redisSocket -> do
-                sessionResult <- loadOidcSession redisSocket sessionId
-                case sessionResult of
-                    Left err -> sendPlainTextResponse clientSocket 500 [] err
-                    Right Nothing -> sendPlainTextResponse clientSocket 401 [] "oidc session not found"
-                    Right (Just session) ->
-                        sendJsonResponse
-                            clientSocket
-                            200
-                            []
-                            ( object
-                                [ "authenticated" .= True
-                                , "carrier" .= oidcSessionCarrier session
-                                , "issuer" .= oidcSessionIssuer session
-                                , "subject" .= oidcSessionSubject session
-                                , "preferred_username" .= oidcSessionPreferredUsername session
-                                , "expires_at" .= oidcSessionExpiryEpoch session
-                                ]
-                            )
+        Just sessionId -> do
+            sessionResult <-
+                withRedisSocket
+                    (websocketRuntimeRedisConfig runtime)
+                    (\redisSocket -> loadOidcSession redisSocket sessionId)
+            case sessionResult of
+                Left err -> sendPlainTextResponse clientSocket 500 [] err
+                Right Nothing -> sendPlainTextResponse clientSocket 401 [] "oidc session not found"
+                Right (Just session) ->
+                    sendJsonResponse
+                        clientSocket
+                        200
+                        []
+                        ( object
+                            [ "authenticated" .= True
+                            , "carrier" .= oidcSessionCarrier session
+                            , "issuer" .= oidcSessionIssuer session
+                            , "subject" .= oidcSessionSubject session
+                            , "preferred_username" .= oidcSessionPreferredUsername session
+                            , "expires_at" .= oidcSessionExpiryEpoch session
+                            ]
+                        )
 
 resolveWorkloadMode :: IO (Either String WorkloadMode)
 resolveWorkloadMode = do
@@ -668,7 +692,7 @@ resolveOidcConfig = do
                 Left
                     "PRODBOX_OIDC_ISSUER, PRODBOX_OIDC_CLIENT_ID, PRODBOX_OIDC_CLIENT_SECRET, PRODBOX_OIDC_PUBLIC_BASE_URL, and PRODBOX_OIDC_TOKEN_ENDPOINT must be set for websocket mode"
 
-openListeningSocket :: Int -> IO Socket
+openListeningSocket :: Int -> IO (Either String Socket)
 openListeningSocket port = do
     addressInfos <-
         getAddrInfo
@@ -680,8 +704,8 @@ openListeningSocket port = do
             listenSocket <- socket (addrFamily addressInfo) Stream (addrProtocol addressInfo)
             setSocketOption listenSocket ReuseAddr 1
             bind listenSocket (addrAddress addressInfo)
-            pure listenSocket
-        [] -> error ("no listen addresses resolved for port " ++ show port)
+            pure (Right listenSocket)
+        [] -> pure (Left ("no listen addresses resolved for port " ++ show port))
 
 isWebsocketUpgradeRequest :: HttpRequest -> Bool
 isWebsocketUpgradeRequest request =
@@ -1328,11 +1352,14 @@ requireJsonInt fieldName obj =
                 Nothing -> Left ("JSON object field `" ++ fieldName ++ "` was out of range")
         _ -> Left ("JSON object did not contain integer field `" ++ fieldName ++ "`")
 
-withRedisSocket :: RedisConfig -> (Socket -> IO a) -> IO a
-withRedisSocket config action =
-    bracket (openRedisSocket config) close action
+withRedisSocket :: RedisConfig -> (Socket -> IO (Either String a)) -> IO (Either String a)
+withRedisSocket config action = do
+    socketResult <- openRedisSocket config
+    case socketResult of
+        Left err -> pure (Left err)
+        Right redisSocket -> bracket (pure redisSocket) close action
 
-openRedisSocket :: RedisConfig -> IO Socket
+openRedisSocket :: RedisConfig -> IO (Either String Socket)
 openRedisSocket config = do
     addressInfos <-
         getAddrInfo
@@ -1343,8 +1370,8 @@ openRedisSocket config = do
         addressInfo : _ -> do
             redisSocket <- socket (addrFamily addressInfo) Stream (addrProtocol addressInfo)
             connect redisSocket (addrAddress addressInfo)
-            pure redisSocket
-        [] -> error ("no Redis addresses resolved for " ++ redisHost config ++ ":" ++ redisPort config)
+            pure (Right redisSocket)
+        [] -> pure (Left ("no Redis addresses resolved for " ++ redisHost config ++ ":" ++ redisPort config))
 
 redisSet :: Socket -> String -> String -> IO (Either String ())
 redisSet redisSocket keyName keyValue = do

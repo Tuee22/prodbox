@@ -98,7 +98,7 @@ proof and external-only validation.
 ### Deliverables
 
 - `prodbox host public-edge` classifies Route 53, `Gateway`, `HTTPRoute`, certificate, and
-  external-reachability state on the self-managed public edge.
+  external-proof readiness on the self-managed public edge.
 - The public `charts-vscode` and `public-dns` proofs close on Envoy-authenticated browser delivery
   rather than the retired `vscode-nginx` path.
 - Public-edge validation remains cluster-external and does not depend on `/etc/hosts` shortcuts or

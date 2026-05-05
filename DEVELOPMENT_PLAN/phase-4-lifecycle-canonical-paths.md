@@ -71,8 +71,8 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 - Supported custom-image publication uses ordinary host-native Docker builds and pushes rather
   than `docker buildx`.
 - `amd64` hosts publish only `amd64` images, and `arm64` hosts publish only `arm64` images.
-- Native `arm64` publication works on native `arm64` Docker daemons, including Apple Silicon with
-  Colima, without requiring cross-arch emulation.
+- Native `arm64` publication works on native `arm64` Docker daemons without requiring cross-arch
+  emulation.
 - Every later Helm deployment obtains its images from Harbor.
 - Mixed-arch cluster closure and cross-arch manifest publication are unsupported on the canonical
   lifecycle path.
@@ -213,6 +213,8 @@ parity exists.
 - The repository no longer contains `src/prodbox/`, `tests/`, `typings/`, `pyproject.toml`,
   `poetry.toml`, `.python-version`, or any Python Pulumi program.
 - `prodbox check-code` remains the canonical doctrine gate for this sprint.
+- The repository search checks in this sprint remain explicit repo-review gates alongside the
+  implemented `prodbox` command-surface validations.
 - Root guidance docs and governed doctrine are aligned with the Haskell-only repository state.
 - The Python-removal portion of
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is complete, and the ledger

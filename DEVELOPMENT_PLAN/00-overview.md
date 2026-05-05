@@ -22,7 +22,7 @@
 Build a clean-room Haskell `prodbox` repository with:
 
 1. One explicit `prodbox` CLI surface implemented in Haskell.
-2. One supported local operator environment: `Ubuntu 24.04 LTS` with systemd.
+2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd.
 3. One host-owned `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` surface for
    the local RKE2 cluster.
 4. Two AWS-backed cluster deployment and validation patterns under `prodbox`: one EKS-backed path
@@ -47,12 +47,11 @@ Build a clean-room Haskell `prodbox` repository with:
     before later deployment.
 11. One native-architecture container-build doctrine: `amd64` hosts build `amd64` images, and
     `arm64` hosts build `arm64` images.
-12. Native `arm64` container builds work on native `arm64` Docker daemons, including Apple
-    Silicon with Colima, while cross-arch builds, `docker buildx`, and mixed-arch clusters are
-    unsupported.
+12. Native `arm64` container builds work on native `arm64` Docker daemons, while cross-arch
+    builds, `docker buildx`, and mixed-arch clusters are unsupported.
 13. One local-cluster-first Pulumi backend model: the local RKE2 cluster runs MinIO and stores AWS
     test-stack state in the dedicated bucket `prodbox-test-pulumi-backends`.
-14. One in-cluster Haskell gateway runtime with config generation, HTTP `/v1/state`
+14. One in-cluster Haskell gateway runtime with config generation, bounded HTTP `/v1/state`
     observability, heartbeat recording, in-memory ownership projection, DNS-write gating,
     Orders-backed interval validation, HMAC-signed event state, peer-transport gossip with
     commit-log replication, runtime claim/yield emission under the `CanWriteDns` gate,
@@ -148,8 +147,8 @@ operator surface is `prodbox`, the supported configuration contract is direct
 `Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and the supported build topology
 remains `.build/prodbox` on the host plus `/opt/build` inside repository-owned Dockerfiles.
 `prodbox check-code` enforces the governed doctrine-alignment gate, the Haskell gateway runtime
-plus status path close on the implemented HTTP `/v1/state` payload and daemon timing-validation
-contract, the final clean-room handoff closes on the canonical rerun surface, and the earlier
+plus status path close on the implemented bounded HTTP `/v1/state` payload and daemon timing-
+validation contract, the final clean-room handoff closes on the canonical rerun surface, and the earlier
 unsupported Python runtime and tooling surfaces remain removed.
 
 The supported public edge uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
@@ -256,11 +255,12 @@ than restated here as a fresh rerun log.
   diagnostic, and native validation surfaces.
 - `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, and
   `src/Prodbox/Gateway/Types.hs` own the current Haskell gateway surface, including the HTTP
-  `/v1/state` payload with `event_hashes`, `heartbeat_age_seconds`, `peer_transport`,
-  `can_write_dns`, `node_disposition`, `peer_dispositions`, `max_clock_skew_seconds_observed`,
-  `max_clock_skew_seconds_bound`, `orders_version_utc`, and `latest_observed_orders_version_utc`,
-  plus Orders-backed interval validation. The certificate, key, CA, and socket metadata in
-  `DaemonConfig` and `Orders` are materialized at runtime through `peerListenerLoop` and
+  `/v1/state` payload with total `event_count`, a bounded recent `event_hashes` tail,
+  `heartbeat_age_seconds`, `peer_transport`, `can_write_dns`, `node_disposition`,
+  `peer_dispositions`, `max_clock_skew_seconds_observed`, `max_clock_skew_seconds_bound`,
+  `orders_version_utc`, and `latest_observed_orders_version_utc`, plus Orders-backed interval
+  validation. The certificate, key, CA, and socket metadata in `DaemonConfig` and `Orders` are
+  materialized at runtime through `peerListenerLoop` and
   `peerDialerLoop`, which replicate the append-only commit log between nodes, update
   `stateLastHeartbeatTimes` from inbound peer events, refuse heartbeats outside the configured
   skew bound, and reject inbound batches that present an older Orders version.
@@ -318,7 +318,7 @@ addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
   Haskell test and quality framework, the local edge foundations, the one-host config contract,
   and config-selected MetalLB BGP support.
 - Phase 2 owns the gateway runtime, DNS inspection surface, the single-record Route 53 doctrine,
-  and the TLA+ validation entrypoint; the Haskell gateway daemon is closed on the HTTP
+  and the TLA+ validation entrypoint; the Haskell gateway daemon is closed on the bounded HTTP
   `/v1/state` payload, gateway status client path, interval validation, peer-transport gossip
   through `Prodbox.Gateway.Peer`, runtime claim/yield emission under the `canWriteDns` predicate,
   operator-verifiable bounded-clock-skew enforcement, and Orders-version coordination across the
@@ -340,7 +340,8 @@ addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
   Harbor, and MinIO route classification plus named external proofs for those workloads.
 - Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria,
   closed through the aggregate rerun, postflight restore, `config show`, `config validate`,
-  `host public-edge`, and the supported-path `example.com` search proof.
+  `host public-edge`, and supported-path repository search checks for placeholder-domain and
+  Python residue.
 - Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
   credential proof harness on one canonical public hostname with no placeholder-domain residue.
 
@@ -350,7 +351,7 @@ addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
 - The rewrite preserves the full supported command matrix in
   [../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md)
   unless a later plan revision changes it explicitly.
-- The only supported host runtime is `Ubuntu 24.04 LTS` with systemd.
+- The only supported local lifecycle host runtime is `Ubuntu 24.04 LTS` with systemd.
 - The host build root is `.build/` with the operator-facing binary at `.build/prodbox`, enforced
   by the canonical `cabal build --builddir=.build exe:prodbox` invocation plus a copy step.
 - The container build root is `/opt/build`, and the only supported home for repository-owned
@@ -391,9 +392,9 @@ addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
 - Supported custom-image builds and Harbor publication use only the native architecture of the
   machine running `prodbox`: `amd64` hosts build `amd64` images, and `arm64` hosts build `arm64`
   images.
-- Native `arm64` publication works on native `arm64` Docker daemons, including Apple Silicon with
-  Colima. `docker buildx`, cross-arch emulation, and mixed-arch clusters are unsupported on the
-  canonical lifecycle, gateway, and chart-delivery path.
+- Native `arm64` publication works on native `arm64` Docker daemons. `docker buildx`,
+  cross-arch emulation, and mixed-arch clusters are unsupported on the canonical lifecycle,
+  gateway, and chart-delivery path.
 - All supported Patroni use must flow through the cluster-wide Percona operator installed on the
   canonical lifecycle path.
 - The self-managed public edge target uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
@@ -433,7 +434,7 @@ addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
 - No supported Pulumi program or orchestration path may depend on Python.
 - The only supported gateway steady state is inside the cluster as a Kubernetes workload.
 - The gateway daemon, `prodbox gateway status`, and daemon config parsing must close on the
-  implemented HTTP `/v1/state` surface, the Orders-backed interval-validation contract, and the
+  implemented bounded HTTP `/v1/state` surface, the Orders-backed interval-validation contract, and the
   current runtime-to-model notes in `documents/engineering/tla_modelling_assumptions.md`.
 - The gateway daemon must materialize peer transport from the certificate, key, CA, and socket
   fields already retained in `DaemonConfig` and `Orders`, so `stateLastHeartbeatTimes` is updated

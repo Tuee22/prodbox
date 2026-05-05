@@ -172,8 +172,10 @@ bootstrap from public registries, every later Helm deployment pulls through Harb
 or `arm64` hosts build and publish only their own architecture. The stack closes on in-image
 `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the Percona operator-
 backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP advertisement. The
-cleanup ledger preserves completed history with zero pending supported-path residue. The separate
-Haskell distributed gateway daemon remains distinct from the Envoy Gateway public edge.
+cleanup ledger preserves completed history and currently lists no pending supported-path cleanup
+items after the Phase `6` doc-harmony follow-up removed the stale governed-doc backlinks to the
+deleted `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning doc. The separate Haskell distributed
+gateway daemon remains distinct from the Envoy Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
@@ -252,11 +254,16 @@ than restated here as a fresh rerun log.
 - `src/Prodbox/PublicEdge.hs` now centralizes the single-host route catalog, canonical route
   URLs, and Keycloak issuer derivation consumed by lifecycle, DNS, chart, workload, host-
   diagnostic, and native validation surfaces.
-- `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`
-  own the current Haskell gateway surface, including the HTTP `/v1/state` payload with
-  `event_hashes` and `heartbeat_age_seconds`, plus Orders-backed interval validation. The parsed
-  certificate, key, CA, and socket metadata remain in the current model even though the closed
-  runtime surface does not yet materialize peer transport from them.
+- `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, and
+  `src/Prodbox/Gateway/Types.hs` own the current Haskell gateway surface, including the HTTP
+  `/v1/state` payload with `event_hashes`, `heartbeat_age_seconds`, `peer_transport`,
+  `can_write_dns`, `node_disposition`, `peer_dispositions`, `max_clock_skew_seconds_observed`,
+  `max_clock_skew_seconds_bound`, `orders_version_utc`, and `latest_observed_orders_version_utc`,
+  plus Orders-backed interval validation. The certificate, key, CA, and socket metadata in
+  `DaemonConfig` and `Orders` are materialized at runtime through `peerListenerLoop` and
+  `peerDialerLoop`, which replicate the append-only commit log between nodes, update
+  `stateLastHeartbeatTimes` from inbound peer events, refuse heartbeats outside the configured
+  skew bound, and reject inbound batches that present an older Orders version.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
   own the aggregate reruns, named native validation flows, and destructive postflight restore
   path.
@@ -290,7 +297,7 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 | Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus generated state under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Phase 3 |
-| Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
+| Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
 | Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/` and the Percona-operator-backed Patroni application-database contract | Phase 3 |
 | Public workload runtime | `src/Prodbox/Workload.hs` | Phase 3 |

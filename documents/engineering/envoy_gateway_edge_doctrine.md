@@ -3,7 +3,6 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [../../README.md](../../README.md),
-[../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md](../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md),
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
 [../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),

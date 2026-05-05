@@ -3,7 +3,6 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [../../README.md](../../README.md),
-[../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md](../../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md),
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md),
 [cli_command_surface.md](./cli_command_surface.md),
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),

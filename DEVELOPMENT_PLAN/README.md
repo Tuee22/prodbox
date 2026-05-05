@@ -3,7 +3,6 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md),
-[../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md](../METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md),
 [../documents/engineering/README.md](../documents/engineering/README.md),
 [development_plan_standards.md](development_plan_standards.md),
 [00-overview.md](00-overview.md), [system-components.md](system-components.md),
@@ -68,7 +67,7 @@ The current worktree closes on:
 - one Redis surface that currently backs WebSocket shared state and may later back an explicit
   external rate-limit service, but does not yet ship a standalone rate-limit-service workload or
   validation surface
-- one cleanup ledger that preserves completed removal history and contains zero pending
+- one cleanup ledger that preserves completed removal history and currently lists no pending
   supported-path cleanup items
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
@@ -214,12 +213,13 @@ surfaces:
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`.
 - The current gateway runtime surface is Haskell-owned and code-backed in `src/Prodbox/Gateway.hs`,
-  `src/Prodbox/Gateway/Daemon.hs`, and `src/Prodbox/Gateway/Types.hs`: config generation,
-  heartbeat recording, in-memory ownership projection, DNS-write gating, the HTTP `/v1/state`
-  observability payload, HMAC event signing, and Orders-backed gateway-interval validation are all
-  implemented there today. The parsed certificate, key, CA, and socket fields remain part of the
-  config or Orders model, but the closed repository surface does not materialize peer transport
-  from them today.
+  `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, and
+  `src/Prodbox/Gateway/Types.hs`: config generation, heartbeat recording, in-memory ownership
+  projection, DNS-write gating, the HTTP `/v1/state` observability payload, HMAC event signing,
+  Orders-backed gateway-interval validation, peer-transport gossip with commit-log replication
+  through `peerListenerLoop` and `peerDialerLoop`, runtime claim/yield emission under the
+  `canWriteDns` predicate, bounded-clock-skew enforcement keyed off `daemonMaxClockSkewSeconds`,
+  and monotonic Orders-version coordination across the mesh are all implemented there today.
 - `src/Prodbox/Tla.hs` still owns `prodbox tla-check`, while
   `documents/engineering/tla_modelling_assumptions.md` records the current runtime-to-model
   correspondence and compression points for the Phase `2` surface.
@@ -283,8 +283,9 @@ surfaces:
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
 - The final Phase `6` destructive rerun and handoff validation are closed on that aggregate rerun
   contract and the supported postflight restore path.
-- The legacy ledger preserves completed cleanup history and now contains zero pending removal
-  items.
+- The legacy ledger preserves completed cleanup history and is back at zero pending supported-path
+  residue after the Phase `6` doc-harmony follow-up removed the stale governed-doc backlinks to the
+  deleted `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning doc.
 
 ## Exit Definition
 

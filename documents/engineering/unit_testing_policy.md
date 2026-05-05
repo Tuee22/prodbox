@@ -2,8 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md,
-METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md, DEVELOPMENT_PLAN/README.md,
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md,
 documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md,
 documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md,
 documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md,

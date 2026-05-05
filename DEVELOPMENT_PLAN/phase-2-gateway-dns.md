@@ -118,7 +118,9 @@ while preserving the implemented runtime contract and container doctrine.
 - `src/Prodbox/Gateway/Types.hs` provides core gateway types: `PeerEndpoint`, `GatewayRule`,
   `Orders`, `SignedEvent`, `CommitLog`, `DaemonConfig`, `DnsWriteGate`, and config parsing.
 - The same parsing layer retains certificate, key, CA, and socket metadata in the current config
-  model even though the closed runtime surface uses the REST listener and local daemon loops only.
+  model and `src/Prodbox/Gateway/Peer.hs` plus the `peerListenerLoop` and `peerDialerLoop`
+  threads in `src/Prodbox/Gateway/Daemon.hs` materialize peer transport over the configured
+  peer-events port (Sprint `2.4`).
 - `src/Prodbox/Gateway/Daemon.hs` provides the daemon runtime: heartbeat loop, gateway ownership
   loop, DNS write loop, HTTP REST server, and HMAC event signing. The state payload now exposes
   `event_hashes`, `heartbeat_age_seconds`, and the DNS-write observability fields described by the

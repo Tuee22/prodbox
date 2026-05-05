@@ -17,7 +17,9 @@ the dependency between those surfaces and the earlier lifecycle, gateway, chart,
 The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
 The cleanup ledger is back at zero pending supported-path residue. Sprint `6.1`, Sprint `6.2`,
 and Sprint `6.3` are closed on their repository-owned rerun orchestration, zero-Python baseline,
-and single-host handoff cleanup.
+and single-host handoff cleanup. The Phase `6` doc-harmony follow-up to the
+`METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Current Baseline In Worktree
 

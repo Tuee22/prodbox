@@ -288,7 +288,7 @@ Validate the repository config:
 | Config | `config setup`, `config show`, `config validate` | You need to create, inspect, or validate `prodbox-config.dhall` |
 | Host checks | `host ensure-tools`, `host check-ports`, `host firewall`, `host info`, `host public-edge` | You need to verify the host runtime or diagnose the public edge and certificate state |
 | Local cluster lifecycle | `rke2 install`, `rke2 status`, `rke2 start`, `rke2 stop`, `rke2 restart`, `rke2 logs`, `rke2 delete --yes` | You need to create, reconcile, inspect, or remove the local RKE2 environment |
-| Chart lifecycle | `charts list`, `charts status`, `charts deploy`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, or `vscode` chart stacks |
+| Chart lifecycle | `charts list`, `charts status`, `charts deploy`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, `vscode`, `api`, or `websocket` chart stacks |
 | Kubernetes helpers | `k8s health`, `k8s wait`, `k8s logs` | You need cluster or workload diagnostics without dropping into raw `kubectl` |
 | Gateway operations | `gateway config-gen`, `gateway start`, `gateway status` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |

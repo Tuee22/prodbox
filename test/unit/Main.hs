@@ -1566,7 +1566,11 @@ main = hspec $ do
         it "maps supported public-image aliases to stable Harbor targets only for mirrored upstreams" $ do
             ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-postgresql-operator:2.9.0"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
+            ContainerImage.harborMirrorTargetForSource "mirror.gcr.io/percona/percona-postgresql-operator:2.9.0"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
             ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-distribution-postgresql:17.9-1"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
+            ContainerImage.harborMirrorTargetForSource "mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
             ContainerImage.harborMirrorTargetForSource "docker.io/percona/percona-pgbackrest:2.58.0-1"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/percona-pgbackrest-mirror:2.58.0-1"
@@ -1576,27 +1580,57 @@ main = hspec $ do
                 `shouldBe` Just "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
             ContainerImage.harborMirrorTargetForSource "docker.io/envoyproxy/gateway:v1.7.2"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2"
+            ContainerImage.harborMirrorTargetForSource "mirror.gcr.io/envoyproxy/gateway:v1.7.2"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2"
             ContainerImage.harborMirrorTargetForSource "docker.io/envoyproxy/envoy:distroless-v1.37.0"
+                `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-proxy-mirror:distroless-v1.37.0"
+            ContainerImage.harborMirrorTargetForSource "mirror.gcr.io/envoyproxy/envoy:distroless-v1.37.0"
                 `shouldBe` Just "127.0.0.1:30080/prodbox/envoy-proxy-mirror:distroless-v1.37.0"
 
         it "orders public-image mirror candidates with the discovered source first" $ do
             ContainerImage.harborMirrorSourceCandidates "docker.io/percona/percona-postgresql-operator:2.9.0"
-                `shouldBe` Just ["docker.io/percona/percona-postgresql-operator:2.9.0"]
+                `shouldBe` Just
+                    [ "docker.io/percona/percona-postgresql-operator:2.9.0"
+                    , "mirror.gcr.io/percona/percona-postgresql-operator:2.9.0"
+                    ]
             ContainerImage.harborMirrorSourceCandidates "docker.io/percona/percona-pgbackrest:2.58.0-1"
-                `shouldBe` Just ["docker.io/percona/percona-pgbackrest:2.58.0-1"]
+                `shouldBe` Just
+                    [ "docker.io/percona/percona-pgbackrest:2.58.0-1"
+                    , "mirror.gcr.io/percona/percona-pgbackrest:2.58.0-1"
+                    ]
             ContainerImage.harborMirrorSourceCandidates "ghcr.io/coder/code-server:4.98.2"
                 `shouldBe` Just ["ghcr.io/coder/code-server:4.98.2", "docker.io/codercom/code-server:4.98.2"]
+            ContainerImage.harborMirrorSourceCandidates "docker.io/envoyproxy/gateway:v1.7.2"
+                `shouldBe` Just
+                    [ "docker.io/envoyproxy/gateway:v1.7.2"
+                    , "mirror.gcr.io/envoyproxy/gateway:v1.7.2"
+                    ]
 
         it "tracks candidate upstream sets for required public images" $ do
-            ContainerImage.requiredPublicImageCandidatePairs
-                `shouldContain` [
-                                    (
-                                        [ "ghcr.io/coder/code-server:4.98.2"
-                                        , "docker.io/codercom/code-server:4.98.2"
-                                        ]
-                                    , "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
-                                    )
-                                ]
+            mapM_
+                (\expectedPair -> ContainerImage.requiredPublicImageCandidatePairs `shouldContain` [expectedPair])
+                [
+                    (
+                        [ "docker.io/percona/percona-distribution-postgresql:17.9-1"
+                        , "mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1"
+                        ]
+                    , "127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
+                    )
+                ,
+                    (
+                        [ "docker.io/envoyproxy/gateway:v1.7.2"
+                        , "mirror.gcr.io/envoyproxy/gateway:v1.7.2"
+                        ]
+                    , "127.0.0.1:30080/prodbox/envoy-gateway-mirror:v1.7.2"
+                    )
+                ,
+                    (
+                        [ "ghcr.io/coder/code-server:4.98.2"
+                        , "docker.io/codercom/code-server:4.98.2"
+                        ]
+                    , "127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
+                    )
+                ]
 
     describe "AWS environment helpers" $ do
         let credentialsWithoutSession =

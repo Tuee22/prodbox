@@ -191,7 +191,8 @@ surfaces:
   present in Harbor before later Helm deployments proceed.
 - The Harbor mirror path retries transient Harbor publication failures on the same candidate and
   then falls through to alternate configured upstreams when publication still fails after manifest
-  inspection.
+  inspection, with `mirror.gcr.io` fallbacks now covering the Docker Hub-hosted Percona and Envoy
+  images used by the supported lifecycle.
 - The Haskell-owned lifecycle now retries transient upstream Helm fetch failures during
   `helm repo update` and `helm upgrade --install`, so clean-room restore does not fail terminally
   on intermittent upstream `5xx` or timeout errors.

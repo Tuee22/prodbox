@@ -109,7 +109,10 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 - `mirrorClusterImagesOnce` now reconciles the canonical required public images and any
   already-running non-Harbor cluster images into Harbor, selecting from configured candidate
   sources, retrying transient Harbor publication failures on the same candidate, and then
-  retrying alternate upstreams when Harbor publication still fails after manifest inspection.
+  retrying alternate upstreams when Harbor publication still fails after manifest inspection. The
+  configured candidate set now includes `mirror.gcr.io` fallbacks for the Docker Hub-hosted
+  Percona and Envoy images used by the supported lifecycle, so clean-room reruns can absorb
+  unauthenticated Docker Hub rate limiting without leaving the Harbor-first doctrine.
 - `ensureCustomImageVariants` keeps the custom Haskell images single-stage and now publishes only
   the native architecture of the host through ordinary `docker build` plus `docker push`.
 - `ensureClusterPlatformRuntime` now reconciles the supported MetalLB, Envoy Gateway,

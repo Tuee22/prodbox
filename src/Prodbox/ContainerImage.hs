@@ -175,19 +175,19 @@ requiredPublicImageMirrors :: [PublicImageMirror]
 requiredPublicImageMirrors =
     [ mirroredPublicImage
         (ImageRef "docker.io" "percona/percona-postgresql-operator" "2.9.0")
-        []
+        [ImageRef "mirror.gcr.io" "percona/percona-postgresql-operator" "2.9.0"]
         harborPostgresOperatorImage
     , mirroredPublicImage
         (ImageRef "docker.io" "percona/percona-distribution-postgresql" "17.9-1")
-        []
+        [ImageRef "mirror.gcr.io" "percona/percona-distribution-postgresql" "17.9-1"]
         harborPostgresDatabaseImage
     , mirroredPublicImage
         (ImageRef "docker.io" "percona/percona-pgbackrest" "2.58.0-1")
-        []
+        [ImageRef "mirror.gcr.io" "percona/percona-pgbackrest" "2.58.0-1"]
         harborPostgresPgbackrestImage
     , mirroredPublicImage
         (ImageRef "docker.io" "percona/percona-pgbouncer" "1.25.1-1")
-        []
+        [ImageRef "mirror.gcr.io" "percona/percona-pgbouncer" "1.25.1-1"]
         harborPostgresPgbouncerImage
     , mirroredPublicImage
         (ImageRef "ghcr.io" "coder/code-server" "4.98.2")
@@ -203,11 +203,11 @@ requiredPublicImageMirrors =
         harborRedisImage
     , mirroredPublicImage
         (ImageRef "docker.io" "envoyproxy/gateway" "v1.7.2")
-        []
+        [ImageRef "mirror.gcr.io" "envoyproxy/gateway" "v1.7.2"]
         harborEnvoyGatewayImage
     , mirroredPublicImage
         (ImageRef "docker.io" "envoyproxy/envoy" "distroless-v1.37.0")
-        []
+        [ImageRef "mirror.gcr.io" "envoyproxy/envoy" "distroless-v1.37.0"]
         harborEnvoyProxyImage
     , mirroredPublicImage
         publicMinioImage

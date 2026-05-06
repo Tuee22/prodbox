@@ -141,6 +141,9 @@ git clone https://github.com/Tuee22/prodbox.git
 cd prodbox
 
 cabal build --builddir=.build exe:prodbox
+mkdir -p .build
+cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
+chmod +x .build/prodbox
 ./.build/prodbox --help
 ```
 

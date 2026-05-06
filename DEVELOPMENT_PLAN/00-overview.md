@@ -220,8 +220,10 @@ than restated here as a fresh rerun log.
   symlinked Haskell tool shims.
 - `src/Prodbox/CLI/Rke2.hs` owns the Harbor-first lifecycle, readiness gates, Harbor population,
   post-bootstrap Harbor-backed workload reconcile, native-host-architecture custom-image
-  publication, and alternate-source retry during Harbor mirror publication. The current lifecycle
-  installs Envoy Gateway and the Harbor-backed Envoy image set for the supported public edge.
+  publication, and alternate-source retry during Harbor mirror publication, including
+  `mirror.gcr.io` fallbacks for the Docker Hub-hosted Percona and Envoy images used by the
+  supported lifecycle. The current lifecycle installs Envoy Gateway and the Harbor-backed Envoy
+  image set for the supported public edge.
 - The Helm-driven lifecycle restore now retries transient upstream chart-fetch failures before
   failing the supported path.
 - `docker/prodbox.Dockerfile`, `docker/gateway.Dockerfile`, and `src/Prodbox/CLI/Rke2.hs` now

@@ -450,6 +450,40 @@ main = hspec $ do
                 pulumiRecordExists <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
                 pulumiRecordExists `shouldBe` False
 
+        it "falls back to mirror.gcr when Docker Hub rate-limits a supported Percona image" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+                baseEnvVars <- fakeRke2Environment tmpDir
+                let envVars =
+                        ( "PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF"
+                        , "docker.io/percona/percona-distribution-postgresql:17.9-1"
+                        )
+                            : baseEnvVars
+
+                (installExitCode, installStdout, installStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["rke2", "install"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                let installOutput =
+                        unlines
+                            [ "install stdout:"
+                            , installStdout
+                            , "install stderr:"
+                            , installStderr
+                            ]
+                when (installExitCode /= ExitSuccess) (expectationFailure installOutput)
+                installExitCode `shouldBe` ExitSuccess
+                installStdout `shouldContain` "Kubernetes control plane is running"
+
+                dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
+                dockerRecord `shouldContain` "pull|docker.io/percona/percona-distribution-postgresql:17.9-1"
+                dockerRecord `shouldContain` "pull|mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1"
+                dockerRecord `shouldContain` "tag|mirror.gcr.io/percona/percona-distribution-postgresql:17.9-1|127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
+                dockerRecord `shouldContain` "push|127.0.0.1:30080/prodbox/percona-distribution-postgresql-mirror:17.9-1"
+
         it "summarizes noisy uninstall-script cleanup instead of streaming raw delete traces" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
                 binary <- resolveBinaryPath
@@ -1427,6 +1461,11 @@ fakeRke2DockerScript =
         , "        exit 0"
         , "      fi"
         , "      echo 'manifest unknown' >&2"
+        , "      exit 1"
+        , "    fi"
+        , "    rate_limit_ref=${PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF:-}"
+        , "    if [[ -n \"$rate_limit_ref\" && \"$ref\" == \"$rate_limit_ref\" ]]; then"
+        , "      echo 'toomanyrequests: rate limit exceeded' >&2"
         , "      exit 1"
         , "    fi"
         , "    exit 0"

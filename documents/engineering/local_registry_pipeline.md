@@ -130,6 +130,10 @@ MinIO-backed backend are healthy:
 7. retag the pulled source onto the Harbor target and push that host-native image only when the
    Harbor target for the current architecture is missing
 
+The supported candidate sets include `mirror.gcr.io` fallbacks for the Docker Hub-hosted Percona
+and Envoy images used by the current lifecycle, so clean-room reruns can survive unauthenticated
+Docker Hub rate limiting without widening the supported steady-state image sources.
+
 ## 6. Gateway Container Build Doctrine
 
 Gateway image builds use `docker/gateway.Dockerfile` with full-repository build context.

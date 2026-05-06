@@ -14,8 +14,8 @@
 This document is the SSoT for the local image-registry doctrine:
 
 1. Harbor is installed or reconciled during `prodbox rke2 install`.
-2. Direct public-registry pulls are permitted only for Harbor itself and the MinIO bootstrap that
-   makes Harbor's storage backend functional before Harbor is healthy and externally serving.
+2. Direct public-registry pulls are permitted only for Harbor itself and the current Harbor
+   storage-backend bootstrap, presently MinIO, before Harbor is healthy and externally serving.
 3. After Harbor is healthy and externally serving, later supported Helm workloads use Harbor-backed
    image refs.
 4. Required public images are mirrored into Harbor idempotently after Harbor and its storage
@@ -27,19 +27,21 @@ This document is the SSoT for the local image-registry doctrine:
 Retained storage and MinIO persistence doctrine remain defined in
 [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
 
-## 2. Current Runtime Contract
+## 2. Runtime Contract
 
-The supported `prodbox rke2 install` path is owned by `src/Prodbox/CLI/Rke2.hs`.
+The authoritative `prodbox rke2 install` contract is owned by
+`src/Prodbox/CLI/Rke2.hs`.
 
-The native Haskell lifecycle reconciles Harbor state in order:
+The native Haskell lifecycle reconciles Harbor state in this order:
 
 1. Helm repository reconcile
-2. Harbor chart upgrade or install
-3. Harbor readiness-contract reconcile
-4. Harbor readiness wait
-5. Stable Harbor external-endpoint wait
-6. Harbor project reconcile for `prodbox`
-7. MinIO bootstrap install from public `quay.io/minio/*` image refs
+2. Harbor storage-backend bootstrap from public `quay.io/minio/*` image refs, including MinIO
+   reconcile plus Harbor-registry bucket and credential bootstrap
+3. Harbor chart upgrade or install configured to use that storage backend
+4. Harbor readiness-contract reconcile
+5. Harbor readiness wait
+6. Stable Harbor external-endpoint wait
+7. Harbor project reconcile for `prodbox`
 8. Docker login plus required public-image mirror into Harbor
 9. Host-native custom-image build, push, and import for the Haskell gateway image and the shared
    public-edge workload image
@@ -51,7 +53,7 @@ The native Haskell lifecycle reconciles Harbor state in order:
 
 The critical split is:
 
-- pre-Harbor-ready public pulls: Harbor plus MinIO bootstrap only
+- pre-Harbor-ready public pulls: Harbor plus the current Harbor storage-backend bootstrap only
 - post-Harbor-ready publication: mirror required public images and publish custom images into
   Harbor
 - later Helm deployment: Harbor-backed images only
@@ -114,8 +116,8 @@ before the effect succeeds.
 
 ## 5. Public Image Population
 
-Population is idempotent and host-architecture specific. It runs after Harbor and the local
-MinIO-backed backend are healthy:
+Population is idempotent and host-architecture specific. It runs after Harbor and the current
+Harbor storage backend are healthy:
 
 1. enumerate the required supported-workload public images plus any already-referenced non-Harbor
    cluster images
@@ -156,17 +158,17 @@ Container build requirements:
 Recommended flow before gateway or public-edge workload integration tests:
 
 ```bash
-./.build/prodbox rke2 install
-./.build/prodbox test integration gateway-pods
-./.build/prodbox test integration charts-api
-./.build/prodbox test integration charts-websocket
+prodbox rke2 install
+prodbox test integration gateway-pods
+prodbox test integration charts-api
+prodbox test integration charts-websocket
 ```
 
 Image overrides remain available for explicit testing:
 
 ```bash
-PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> ./.build/prodbox test integration gateway-pods
-PRODBOX_PUBLIC_EDGE_WORKLOAD_IMAGE=<explicit-image-ref> ./.build/prodbox test integration charts-api
+PRODBOX_GATEWAY_IMAGE=<explicit-image-ref> prodbox test integration gateway-pods
+PRODBOX_PUBLIC_EDGE_WORKLOAD_IMAGE=<explicit-image-ref> prodbox test integration charts-api
 ```
 
 ## Cross-References

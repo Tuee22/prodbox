@@ -17,7 +17,7 @@ All policy, formatting, build, and host-side executable-proof closure flow throu
 operator entrypoint:
 
 ```bash
-./.build/prodbox check-code
+prodbox check-code
 ```
 
 `src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs a fail-fast
@@ -53,8 +53,8 @@ retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, a
 Use local CLI entrypoints only:
 
 ```bash
-./.build/prodbox check-code
-./.build/prodbox test all
+prodbox check-code
+prodbox test all
 ```
 
 ## 3. Guard Coverage
@@ -66,7 +66,7 @@ Current enforced quality surfaces:
 - Fourmolu formatting through `fourmolu.toml`
 - HLint through `.hlint.yaml`
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
-- operator-binary sync to `./.build/prodbox`
+- operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory
 
 Detailed Haskell hard-gate doctrine and the review-guidance split live in

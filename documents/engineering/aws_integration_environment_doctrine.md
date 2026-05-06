@@ -80,7 +80,7 @@ Optional elevated validation fields:
 4. `aws_admin_for_test_simulation.region`
 
 Stored admin credentials are otherwise forbidden. `aws_admin_for_test_simulation.*` is the one
-supported exception, and it is reserved for `./.build/prodbox test integration aws-iam`,
+supported exception, and it is reserved for `prodbox test integration aws-iam`,
 aggregate-harness execution of that suite, and repository tests that simulate the interactive
 elevated-credential prompt.
 

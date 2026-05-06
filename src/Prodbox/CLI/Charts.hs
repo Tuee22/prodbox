@@ -5,6 +5,7 @@ where
 
 import Control.Exception (IOException, try)
 import Data.Char (toLower)
+import Data.List (intercalate)
 import Prodbox.CLI.Command (ChartsCommand (..))
 import Prodbox.Lib.ChartPlatform (
     buildChartDeletePlan,
@@ -15,6 +16,7 @@ import Prodbox.Lib.ChartPlatform (
     renderChartStatus,
     resolveChartSecrets,
     resolveGatewayEventKeys,
+    supportedChartNames,
  )
 import Prodbox.Settings (
     ValidatedSettings,
@@ -38,35 +40,64 @@ runChartsCommand repoRoot command =
                 result <- renderChartList repoRoot settings
                 either failWith writeSuccess result
         ChartsStatus chartName ->
-            withSettings repoRoot $ \settings -> do
-                result <- renderChartStatus repoRoot settings chartName
-                either failWith writeSuccess result
+            case requirePublicRootChartName chartName of
+                Left err -> failWith err
+                Right rootChart ->
+                    withSettings repoRoot $ \settings -> do
+                        result <- renderChartStatus repoRoot settings rootChart
+                        either failWith writeSuccess result
         ChartsDeploy chartName ->
-            withSettings repoRoot $ \settings -> do
-                secretsResult <- resolveChartSecrets repoRoot chartName
-                case secretsResult of
-                    Left err -> failWith err
-                    Right chartSecrets -> do
-                        eventKeysResult <- resolveGatewayEventKeys repoRoot chartName
-                        case eventKeysResult of
+            case requirePublicRootChartName chartName of
+                Left err -> failWith err
+                Right rootChart ->
+                    withSettings repoRoot $ \settings -> do
+                        secretsResult <- resolveChartSecrets repoRoot rootChart
+                        case secretsResult of
                             Left err -> failWith err
-                            Right gatewayEventKeys -> do
-                                buildResult <- buildChartDeploymentPlan repoRoot settings chartName chartSecrets gatewayEventKeys
-                                case buildResult of
+                            Right chartSecrets -> do
+                                eventKeysResult <- resolveGatewayEventKeys repoRoot rootChart
+                                case eventKeysResult of
                                     Left err -> failWith err
-                                    Right plan -> do
-                                        deployResult <- deployChartPlan plan
-                                        either failWith writeSuccess deployResult
+                                    Right gatewayEventKeys -> do
+                                        buildResult <- buildChartDeploymentPlan repoRoot settings rootChart chartSecrets gatewayEventKeys
+                                        case buildResult of
+                                            Left err -> failWith err
+                                            Right plan -> do
+                                                deployResult <- deployChartPlan plan
+                                                either failWith writeSuccess deployResult
         ChartsDelete chartName confirmed ->
-            withSettings repoRoot $ \settings -> do
-                allowed <- if confirmed then pure True else promptForDelete chartName
-                if not allowed
-                    then failWith "User declined confirmation"
-                    else case buildChartDeletePlan repoRoot (Just settings) chartName of
-                        Left err -> failWith err
-                        Right plan -> do
-                            deleteResult <- deleteChartPlan plan
-                            either failWith writeSuccess deleteResult
+            case requirePublicRootChartName chartName of
+                Left err -> failWith err
+                Right rootChart ->
+                    withSettings repoRoot $ \settings -> do
+                        allowed <- if confirmed then pure True else promptForDelete rootChart
+                        if not allowed
+                            then failWith "User declined confirmation"
+                            else case buildChartDeletePlan repoRoot (Just settings) rootChart of
+                                Left err -> failWith err
+                                Right plan -> do
+                                    deleteResult <- deleteChartPlan plan
+                                    either failWith writeSuccess deleteResult
+
+requirePublicRootChartName :: String -> Either String String
+requirePublicRootChartName chartName
+    | chartName `elem` supportedChartNames = Right chartName
+    | otherwise =
+        Left
+            ( "Unsupported public chart '"
+                ++ chartName
+                ++ "'. Supported root charts: "
+                ++ intercalate ", " supportedChartNames
+                ++ dependencyHint chartName
+            )
+  where
+    dependencyHint name =
+        case name of
+            "keycloak-postgres" ->
+                ". `keycloak-postgres` is an internal dependency release; use `prodbox charts ... keycloak`."
+            "redis" ->
+                ". `redis` is an internal dependency release; use `prodbox charts ... websocket`."
+            _ -> ""
 
 withSettings :: FilePath -> (ValidatedSettings -> IO ExitCode) -> IO ExitCode
 withSettings repoRoot action = do

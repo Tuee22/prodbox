@@ -24,6 +24,8 @@ The supported chart doctrine is:
 
 1. `prodbox charts` manages the repo-owned root charts `gateway`, `keycloak`, `vscode`, `api`,
    and `websocket`, with internal `keycloak-postgres` and `redis` dependency releases.
+   Public `status|deploy|delete` inputs are restricted to those root chart names; the internal
+   dependency releases are runtime-owned and are not supported public CLI targets.
 2. No repo-owned chart may render or own an embedded PostgreSQL subchart.
 3. Helm-managed application PostgreSQL is namespace-local and Patroni-based: the internal
    `keycloak-postgres` release renders a `pgv2.percona.com/v2` `PerconaPGCluster` resource in the
@@ -77,7 +79,7 @@ The supported contract is:
 - `prodbox charts deploy keycloak` and `prodbox charts deploy vscode` include the internal
   `keycloak-postgres` release before `keycloak`.
 - Each Patroni cluster runs exactly three PostgreSQL replicas.
-- Patroni synchronous replication is enabled with strict mode.
+- Patroni synchronous replication is enabled across the supported three-replica steady state.
 - The PostgreSQL workload images are Harbor-backed:
   `percona-distribution-postgresql-mirror:17.9-1`,
   `percona-pgbouncer-mirror:1.25.1-1`, and `percona-pgbackrest-mirror:2.58.0-1`.
@@ -165,6 +167,10 @@ This means a later deploy can rebind to the same retained host state.
 ## 8. Supported Charts
 
 The chart registry is defined in `src/Prodbox/Lib/ChartPlatform.hs`.
+
+Internal entries appear in the registry for runtime dependency planning
+only. The public `prodbox charts ...` surface is restricted to root
+chart names.
 
 | Chart | Kind | Dependencies | External Requirements | Storage | Public Host Required |
 |-------|------|--------------|-----------------------|---------|----------------------|

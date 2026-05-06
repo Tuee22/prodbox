@@ -10,7 +10,10 @@
 The inventory documents the authoritative Haskell-only implementation end state. The supported
 public edge closes on one public hostname, shared-host path routing, and native-host-architecture
 container publication. [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
-preserves cleanup history separately from this canonical inventory.
+preserves cleanup history separately from this canonical inventory. The earlier alignment follow-
+up on native `gateway-partition` validation, peer-transport trust-material runtime closure,
+root-chart-only public chart commands, and the Harbor-plus-storage-backend bootstrap contract is
+now closed in code and governed docs.
 
 ## Haskell-Only Architecture
 

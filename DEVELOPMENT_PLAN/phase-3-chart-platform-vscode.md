@@ -14,13 +14,14 @@ This phase owns the Haskell chart platform and retained-storage orchestration wh
 deterministic PV/PVC rebinding and the supported public workload delivery model. It owns retained
 storage, Harbor-backed image sourcing for the supported chart stack, the Envoy Gateway browser-auth
 path for `vscode`, the JWT-only API and Redis-backed WebSocket workload surfaces, and the
-PostgreSQL doctrine for every Helm-managed application stack. Sprints `3.1`, `3.2`, `3.3`, and
-`3.4` remain closed on the current chart platform, and Sprints `3.5`, `3.6`, and `3.7` are now
-closed on shared-host API, WebSocket, and supported admin delivery. The supported `vscode` stack
-stays on Harbor-backed images after Harbor bootstrap, uses Gateway API plus Envoy Gateway
-`SecurityPolicy` for the public route, and keeps the Percona-operator-backed Patroni HA path for
-every Helm-managed application stack: exactly three replicas, synchronous replication, and no
-embedded chart-local PostgreSQL subchart.
+PostgreSQL doctrine for every Helm-managed application stack. Sprints `3.2` through `3.7` remain
+closed on the current chart platform, shared-host API, WebSocket, supported admin delivery, and
+the authoritative Patroni doctrine. Sprint `3.1` now also closes on the root-chart-only public
+command surface. The supported
+`vscode` stack stays on Harbor-backed images after Harbor bootstrap, uses
+Gateway API plus Envoy Gateway `SecurityPolicy` for the public route, and keeps the
+Percona-operator-backed Patroni HA path for every Helm-managed application stack: exactly three
+replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
 
 ## Current Baseline In Worktree
 
@@ -31,14 +32,17 @@ embedded chart-local PostgreSQL subchart.
   generated non-PV chart state under `.prodbox-state/`; chart secret resolution and gateway
   event-key handling are Haskell-owned.
 - The supported chart catalog now includes `keycloak`, `vscode`, `api`, `websocket`, and
-  `gateway`, with `keycloak-postgres` plus `redis` as internal dependency releases.
+  `gateway`, with `keycloak-postgres` plus `redis` as internal dependency releases. The public
+  parser and chart CLI now reject those internal names on the operator-facing
+  `prodbox charts ...` surface with explicit guidance toward the owning root charts.
 - The current supported app dependency graph now includes `keycloak-postgres -> keycloak -> vscode`
   for the browser stack and `redis -> websocket` for the shared-state realtime stack.
 - The current lifecycle and chart code install the Percona `pg-operator` Helm release, mirror the
   Percona operator and PostgreSQL images, and render `PerconaPGCluster` resources for
   `keycloak-postgres`.
-- Sprint `3.3` keeps the namespace-local release shape, deterministic manual-PV bindings,
-  retained-secret contract, and dependent-chart sequencing on the Percona operator surface.
+- The namespace-local release shape, deterministic manual-PV bindings, retained-secret contract,
+  dependent-chart sequencing, and authoritative three-replica synchronous-replication doctrine
+  all close on the Percona operator surface.
 - `keycloak` now consumes the namespace-local retained Patroni credentials secret and the namespace-local
   primary service endpoint instead of a shared `pgpool` service.
 - `src/Prodbox/TestPlan.hs` maps the chart validation names to executable native validations in
@@ -105,7 +109,9 @@ supported platform doctrine.
 
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
 - `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
-  list|status|deploy|delete` behavior against fake `helm` and `kubectl`.
+  list|status|deploy|delete` behavior against fake `helm` and `kubectl`, including explicit
+  failure guidance when operators try to address internal `keycloak-postgres` or `redis`
+  dependency releases directly.
 ### Remaining Work
 
 None.
@@ -210,6 +216,8 @@ Patroni HA surface.
   synchronous mode, explicit security IDs `1001`, and deterministic manual-PV bindings.
 - `charts/keycloak/` now consumes the namespace-local retained database secret and the namespace-local
   primary service endpoint.
+- `documents/engineering/helm_chart_platform_doctrine.md` and the linked chart-platform doctrine
+  now match the authoritative three-replica synchronous-replication contract described here.
 ### Remaining Work
 
 None.
@@ -467,11 +475,13 @@ None.
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/cli_command_surface.md` - canonical Haskell `prodbox charts` surface.
+- `documents/engineering/cli_command_surface.md` - canonical Haskell `prodbox charts` surface,
+  restricted to root charts.
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - target Envoy Gateway and Keycloak edge
   doctrine for chart-managed workloads.
 - `documents/engineering/helm_chart_platform_doctrine.md` - Haskell chart runtime, supported stack
-  topology, and the Percona-operator-backed Patroni PostgreSQL doctrine.
+  topology, internal dependency-release boundary, and the authoritative synchronous-replication
+  Patroni doctrine.
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage and rebinding doctrine.
 - `documents/engineering/local_registry_pipeline.md` - Harbor-loading implications for the chart
   platform where relevant.

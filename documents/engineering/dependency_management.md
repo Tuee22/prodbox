@@ -47,7 +47,7 @@ Developers should build and test through Cabal:
 
 ```bash
 cabal build --builddir=.build exe:prodbox
-./.build/prodbox check-code
+prodbox check-code
 ```
 
 ## 3. Version Constraint Standards
@@ -98,12 +98,12 @@ Checklist:
 2. Add Haskell library dependencies to `prodbox.cabal`, not to an unsupported sidecar toolchain.
 3. Update prerequisite doctrine when a new host tool becomes mandatory.
 4. Update the relevant engineering docs when the command surface or validation contract changes.
-5. Run `./.build/prodbox check-code` and the affected test suites.
+5. Run `prodbox check-code` and the affected test suites.
 
 ## 6. Upgrading Dependencies
 
 - Keep Cabal changes small and isolated.
-- Re-run `./.build/prodbox check-code` after dependency upgrades.
+- Re-run `prodbox check-code` after dependency upgrades.
 - Re-run the affected named validation suites when an upgrade touches AWS, gateway, chart, Pulumi,
   or public-edge behavior.
 - Update doctrine when an upgrade changes the supported external tool version expectations.

@@ -61,7 +61,7 @@ In the current repository:
 
 - Integration selections must fail fast when prerequisites are missing.
 - Platform and environment gating belongs in prerequisite validation, not in skips.
-- Use `./.build/prodbox test unit` when integration prerequisites are unavailable.
+- Use `prodbox test unit` when integration prerequisites are unavailable.
 
 ### Two-Phase Test Command Doctrine
 
@@ -192,10 +192,10 @@ The equivalent doctrine in the current Haskell repository is:
 Coverage remains a repository expectation, but the supported local closure gate is the Haskell
 build-plus-suite contract:
 
-- `./.build/prodbox check-code`
-- `./.build/prodbox test unit`
-- `./.build/prodbox test integration cli`
-- `./.build/prodbox test integration env`
+- `prodbox check-code`
+- `prodbox test unit`
+- `prodbox test integration cli`
+- `prodbox test integration env`
 
 Named real-world validation commands provide operational proof rather than synthetic line coverage.
 

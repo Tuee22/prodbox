@@ -27,11 +27,12 @@ public-edge controller target is owned separately by
 This design assumes:
 
 1. No centralized coordinator (no DynamoDB, etc.).
-2. All nodes use mutual TLS and are fully trusted peers.
+2. All nodes are fully trusted mesh peers identified by Orders membership and per-node event
+   keys; peer trust material remains part of the gateway config and chart contract.
 3. A typed global Orders document exists (protobuf), with monotonic UTC version timestamp.
 4. Nodes immediately promote newer validated Orders.
-5. Every node maintains its own stable DNS record.
-6. Only gateway owner updates primary gateway DNS record.
+5. Every node has a stable peer endpoint in Orders for mesh communication.
+6. Only gateway owner updates the canonical public DNS record `test.resolvefintech.com`.
 7. A global append-only event log is the source of truth and is recovered peer-to-peer.
 
 ---
@@ -66,7 +67,7 @@ Canonical repository facts referenced by this doctrine:
 
 - `orders_version_utc` (int64, strictly increasing)
 - `orders_hash`
-- `nodes[]` (node_id, stable_fqdn, rank)
+- `nodes[]` (node_id, stable peer endpoint fields, rank)
 - `gateway_rule` (schema-constrained rule)
 - `rule_parameters` (timeouts, windows, jitter, etc.)
 
@@ -88,15 +89,14 @@ Event classes:
 - `GatewayYield`
 - domain events
 
-Replication is anti-entropy gossip over stable node DNS names.
+Replication is anti-entropy gossip over the stable peer endpoints carried in Orders.
 
 ## 3.3 DNS Plane
 
-1. Per-node record: `node-k.prodbox.resolvefintech.com`
-2. Gateway record: `prodbox.resolvefintech.com`
-
-All nodes own their node record updates.
-Only elected gateway owner updates gateway record.
+1. One canonical public record exists: `test.resolvefintech.com`.
+2. Mesh peers discover each other through the stable peer endpoint data carried in Orders and
+   rendered by `charts/gateway/`; that peer mesh is not a second public-host doctrine.
+3. Only elected gateway owner updates the canonical public record.
 
 ---
 
@@ -156,7 +156,7 @@ The schema can forbid ambiguous rule forms, but cannot bypass impossibility resu
 
 When a silent node returns:
 
-1. It reconnects via stable node DNS.
+1. It reconnects via the stable peer endpoint carried in Orders.
 2. It performs anti-entropy pull of missing log segments.
 3. It validates hash chain and schemas.
 4. It promotes latest Orders by UTC version.
@@ -172,11 +172,15 @@ This provides deterministic convergence.
 
 ## 7.1 Transport
 
-- Mutual TLS for all peer RPCs is the design contract for the supported
-  cluster surface.  The current Haskell runtime ships an HTTP transport
-  bound to the configured peer-events port, so every daemon dials and
-  receives signed event batches even though the chart-mounted certificates,
-  key, and CA stay declarative for now.
+- Peer transport is a signed HTTP event-batch push on the configured
+  peer-events port. `POST /v1/peer/events` is the peer batch ingest
+  surface; `GET /v1/state` is the separate operator-facing observability
+  surface.
+- Certificate, key, CA, and socket fields remain part of the gateway
+  config and chart trust-material contract for the peer mesh. The daemon
+  validates the retained certificate, key, and CA files at startup and
+  binds the REST plus peer-events listeners on the configured local
+  Orders hosts before the signed peer mesh begins.
 - Node identity is bound to the Orders `node_id` mapping: the receiver
   validates each event's HMAC signature against the per-node key in
   `daemonEventKeys`, refuses unknown emitters, and ignores events whose
@@ -333,9 +337,11 @@ credential fields.
 
 ## 11. REST API
 
-### `POST /v1/handshake`
+### `POST /v1/peer/events`
 
-Peer connection establishment with CN verification against expected peer node IDs.
+Peer event-batch ingest over the configured peer-events port. The batch includes signed events
+plus the sender's monotonic `orders_version_utc` view, and the receiver responds with explicit
+accept or reject dispositions.
 
 ### `GET /v1/state`
 
@@ -388,7 +394,7 @@ remains small enough for chart probes, `kubectl port-forward` backed validation,
 `prodbox gateway status` on long-lived meshes.
 
 The `/v1/state` observability endpoint is an operator-facing HTTP surface on the in-pod REST
-port. It is separate from the peer-to-peer mutual-TLS transport doctrine used for gateway mesh
+port. It is separate from the peer-to-peer event-batch transport used for gateway mesh
 communication. The REST handler consumes the inbound HTTP request before closing the socket so the
 operator-facing response contract stays intact when queried through `kubectl port-forward`.
 

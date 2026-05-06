@@ -64,10 +64,24 @@ import Prodbox.Dns (
     fetchPublicIp,
     queryRoute53Record,
  )
+import Prodbox.Gateway.Peer (
+    PeerEventBatch (..),
+    handlePeerRequest,
+    signEvent,
+ )
 import Prodbox.Gateway.Types (
+    CommitLog (..),
+    Disposition (..),
     GatewayRule (..),
     Orders (..),
     PeerEndpoint (..),
+    appendIfNew,
+    canWriteDns,
+    defaultMaxClockSkewSeconds,
+    emptyCommitLog,
+    eventTypeClaim,
+    eventTypeYield,
+    nodeDisposition,
     parseOrders,
  )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
@@ -223,7 +237,7 @@ runNativeValidation repoRoot environment validation = do
                 [ runNativeCliCommandForExitCode repoRoot environment ["k8s", "wait", "--namespace", gatewayValidationNamespace]
                 , runNativeCliCommandForExitCode repoRoot environment ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
                 ]
-        ValidationGatewayPartition -> runNativeCliCommandForExitCode repoRoot environment ["tla-check"]
+        ValidationGatewayPartition -> runGatewayPartitionValidation
         ValidationChartsPlatform ->
             runSequentially
                 [ assertNativeCommandOutputContainsAll
@@ -256,6 +270,94 @@ runNativeValidation repoRoot environment validation = do
                 , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
                 , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
                 ]
+
+runGatewayPartitionValidation :: IO ExitCode
+runGatewayPartitionValidation =
+    case gatewayPartitionValidationReport of
+        Left err -> failWith err
+        Right report -> do
+            putStr report
+            pure ExitSuccess
+
+gatewayPartitionValidationReport :: Either String String
+gatewayPartitionValidationReport = do
+    let eventKeys =
+            Map.fromList
+                [ ("node-a", "partition-key-a")
+                , ("node-b", "partition-key-b")
+                , ("node-c", "partition-key-c")
+                ]
+        knownNodes = Map.keys eventKeys
+        claimA =
+            signEvent
+                "node-a"
+                eventTypeClaim
+                "2026-04-06T10:00:00Z"
+                "{}"
+                "partition-key-a"
+        claimB =
+            signEvent
+                "node-b"
+                eventTypeClaim
+                "2026-04-06T10:00:05Z"
+                "{}"
+                "partition-key-b"
+        yieldA =
+            signEvent
+                "node-a"
+                eventTypeYield
+                "2026-04-06T10:00:06Z"
+                "{}"
+                "partition-key-a"
+        initialLog = appendIfNew emptyCommitLog claimA
+        (acceptedTakeover, rejectedTakeover) =
+            handlePeerRequest
+                (`Map.lookup` eventKeys)
+                knownNodes
+                defaultMaxClockSkewSeconds
+                "2026-04-06T10:00:05Z"
+                (PeerEventBatch [claimB] 2)
+        takeoverLog = foldl appendIfNew initialLog acceptedTakeover
+        (acceptedHeal, rejectedHeal) =
+            handlePeerRequest
+                (`Map.lookup` eventKeys)
+                knownNodes
+                defaultMaxClockSkewSeconds
+                "2026-04-06T10:00:06Z"
+                (PeerEventBatch [yieldA] 2)
+        healedLog = foldl appendIfNew takeoverLog acceptedHeal
+        duplicateMergeLog = foldl appendIfNew healedLog acceptedTakeover
+        initialOwnerActive = canWriteDns "node-a" (Just "node-a") initialLog
+        singleWriterAfterTakeover =
+            canWriteDns "node-b" (Just "node-b") takeoverLog
+                && not (canWriteDns "node-a" (Just "node-b") takeoverLog)
+        yieldPersisted = nodeDisposition "node-a" healedLog == DispositionYielded
+        idempotentMerge = length (commitLogEvents duplicateMergeLog) == length (commitLogEvents healedLog)
+    ensurePartitionInvariant initialOwnerActive "initial claim did not activate DNS-write authority for node-a"
+    ensurePartitionInvariant
+        (length acceptedTakeover == 1 && null rejectedTakeover)
+        "partition takeover batch did not accept the signed node-b claim event"
+    ensurePartitionInvariant singleWriterAfterTakeover "partition takeover did not preserve the single-writer DNS surface"
+    ensurePartitionInvariant
+        (length acceptedHeal == 1 && null rejectedHeal)
+        "rejoin healing batch did not accept the signed node-a yield event"
+    ensurePartitionInvariant yieldPersisted "node-a yield was not preserved after rejoin healing"
+    ensurePartitionInvariant idempotentMerge "append-only commit-log merge was not idempotent on repeated peer delivery"
+    Right $
+        unlines
+            [ "GATEWAY_PARTITION_VALIDATION"
+            , "FORMAL_MODEL_DELEGATED=false"
+            , "INITIAL_OWNER_ACTIVE=true"
+            , "PARTITION_TAKEOVER_ACCEPTED=" ++ show (length acceptedTakeover)
+            , "PARTITION_TAKEOVER_REJECTED=" ++ show (length rejectedTakeover)
+            , "SINGLE_WRITER_AFTER_TAKEOVER=true"
+            , "REJOIN_YIELD_RECORDED=true"
+            , "COMMIT_LOG_IDEMPOTENT=true"
+            ]
+
+ensurePartitionInvariant :: Bool -> String -> Either String ()
+ensurePartitionInvariant condition err =
+    if condition then Right () else Left err
 
 runChartsVscodeValidation :: FilePath -> IO ExitCode
 runChartsVscodeValidation repoRoot = do

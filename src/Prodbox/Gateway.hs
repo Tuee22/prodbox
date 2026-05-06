@@ -68,7 +68,7 @@ runGatewayStart _repoRoot configPath = do
     configResult <- loadDaemonConfig configPath
     case configResult of
         Left err -> failWith err
-        Right config -> Daemon.runGatewayDaemon config
+        Right config -> Daemon.runGatewayDaemon (resolveDaemonInputPaths configPath config)
 
 runGatewayStatus :: FilePath -> IO ExitCode
 runGatewayStatus configPath = do
@@ -233,6 +233,16 @@ resolveRelativePath baseDir path =
     if isAbsolute path
         then path
         else baseDir </> path
+
+resolveDaemonInputPaths :: FilePath -> DaemonConfig -> DaemonConfig
+resolveDaemonInputPaths configPath config =
+    let baseDir = takeDirectory configPath
+     in config
+            { daemonCertFile = resolveRelativePath baseDir (daemonCertFile config)
+            , daemonKeyFile = resolveRelativePath baseDir (daemonKeyFile config)
+            , daemonCaFile = resolveRelativePath baseDir (daemonCaFile config)
+            , daemonOrdersFile = resolveRelativePath baseDir (daemonOrdersFile config)
+            }
 
 lookupTextField :: String -> KeyMap.KeyMap Value -> Maybe String
 lookupTextField fieldName obj =

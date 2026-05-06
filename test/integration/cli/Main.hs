@@ -1,7 +1,7 @@
 module Main (main) where
 
 import Control.Monad (when)
-import Data.List (isInfixOf)
+import Data.List (find, findIndex, isInfixOf, sort)
 import Prodbox.BuildSupport (
     addBuildSupportEnvironment,
     canonicalOperatorBinaryPath,
@@ -14,6 +14,7 @@ import System.Directory (
     doesFileExist,
     getCurrentDirectory,
     getPermissions,
+    listDirectory,
     setPermissions,
  )
 import System.Environment (getEnvironment)
@@ -147,6 +148,49 @@ main = hspec $ do
                 curlArgs `shouldNotContain` "--key"
                 curlArgs `shouldNotContain` "--cacert"
 
+        it "fails fast when gateway start is missing required trust material" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                let ordersPath = tmpDir </> "orders.json"
+                    configPath = tmpDir </> "gateway-start.json"
+                writeFile ordersPath gatewayOrders
+                writeFile
+                    configPath
+                    ( gatewayStartConfig
+                        ordersPath
+                        (tmpDir </> "missing.crt")
+                        (tmpDir </> "missing.key")
+                        (tmpDir </> "missing-ca.crt")
+                    )
+
+                (exitCode, stdoutText, stderrText) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["gateway", "start", configPath]){cwd = Just tmpDir}
+                        ""
+
+                exitCode `shouldBe` ExitFailure 1
+                stdoutText `shouldBe` ""
+                stderrText `shouldContain` "Failed to validate gateway startup inputs"
+                stderrText `shouldContain` "cert_file does not exist"
+                stderrText `shouldContain` "key_file does not exist"
+                stderrText `shouldContain` "ca_file does not exist"
+
+        it "runs native gateway-partition through the built frontend without delegating to tla-check" $ do
+            repoRoot <- getCurrentDirectory
+            binary <- resolveBinaryPath
+
+            (exitCode, stdoutText, stderrText) <-
+                readCreateProcessWithExitCode
+                    (proc binary ["test", "integration", "gateway-partition"]){cwd = Just repoRoot}
+                    ""
+
+            exitCode `shouldBe` ExitSuccess
+            stderrText `shouldBe` ""
+            stdoutText `shouldContain` "Validation: gateway-partition"
+            stdoutText `shouldContain` "FORMAL_MODEL_DELEGATED=false"
+            stdoutText `shouldContain` "SINGLE_WRITER_AFTER_TAKEOVER=true"
+
         it "runs native charts list, status, deploy, and delete through the built frontend with fake helm and kubectl" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
                 binary <- resolveBinaryPath
@@ -225,6 +269,33 @@ main = hspec $ do
                 deleteRecord `shouldContain` "delete|pvc|vscode-data-0|--namespace|vscode"
                 deleteRecord `shouldContain` "delete|pv|prodbox-chart-vscode-vscode-vscode-0-data"
                 deleteRecord `shouldContain` "delete|namespace|vscode"
+
+        it "rejects internal dependency charts on the public charts surface" $
+            withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+                binary <- resolveBinaryPath
+                writeRepoMarkers tmpDir
+                writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+                envVars <- fakeChartEnvironment tmpDir
+
+                (statusExitCode, _, statusStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["charts", "status", "keycloak-postgres"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                statusExitCode `shouldBe` ExitFailure 1
+                statusStderr `shouldContain` "Unsupported public chart 'keycloak-postgres'"
+                statusStderr `shouldContain` "Supported root charts: keycloak, vscode, api, websocket, gateway"
+                statusStderr `shouldContain` "internal dependency release"
+
+                (deleteExitCode, _, deleteStderr) <-
+                    readCreateProcessWithExitCode
+                        (proc binary ["charts", "delete", "redis", "--yes"]){cwd = Just tmpDir, env = Just envVars}
+                        ""
+
+                deleteExitCode `shouldBe` ExitFailure 1
+                deleteStderr `shouldContain` "Unsupported public chart 'redis'"
+                deleteStderr `shouldContain` "Supported root charts: keycloak, vscode, api, websocket, gateway"
+                deleteStderr `shouldContain` "internal dependency release"
 
         it "restores retained Patroni state through a staged bootstrap before scaling back to three replicas" $
             withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -384,15 +455,23 @@ main = hspec $ do
                 kubectlRecord `shouldNotContain` "jsonpath={.metadata.labels.app\\.kubernetes\\.io/name}"
                 kubectlRecord `shouldNotContain` "delete|namespace|traefik-system|--ignore-not-found=true|--wait=true|--timeout=300s"
 
-                applyIdentity <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-1.json")
+                let rke2StateDir = tmpDir </> "fake-rke2-state"
+
+                applyIdentity <- readFile (rke2StateDir </> "kubectl-apply-1.json")
                 applyIdentity `shouldContain` "prodbox-identity"
-                applyStorage <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-2.json")
+                applyStorage <- readFile (rke2StateDir </> "kubectl-apply-2.json")
                 applyStorage `shouldContain` "PersistentVolumeClaim"
                 applyStorage `shouldContain` "prodbox-minio-pv-0"
-                applyHarbor <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-3.json")
+                applyHarborBootstrap <- readAppliedManifestContaining rke2StateDir harborRegistryStorageBootstrapJobName
+                applyHarborBootstrap `shouldContain` harborRegistryStorageSecretName
+                applyHarborBootstrap `shouldContain` "REGISTRY_STORAGE_S3_ACCESSKEY"
+                applyHarborBootstrap `shouldContain` "REGISTRY_STORAGE_S3_SECRETKEY"
+                applyHarborBootstrap `shouldContain` "quay.io/minio/mc"
+                applyHarborBootstrap `shouldContain` ("mc mb --ignore-existing local/" ++ harborRegistryStorageBucket)
+                applyHarbor <- readAppliedManifestContaining rke2StateDir "/readyz"
                 applyHarbor `shouldContain` "nginx.conf"
                 applyHarbor `shouldContain` "/readyz"
-                applyAdminRoutes <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-7.json")
+                applyAdminRoutes <- readAppliedManifestContaining rke2StateDir "harbor-ui"
                 applyAdminRoutes `shouldContain` "harbor-ui"
                 applyAdminRoutes `shouldContain` "minio-console"
                 applyAdminRoutes `shouldContain` "harbor-oidc"
@@ -407,6 +486,11 @@ main = hspec $ do
                 helmRecord `shouldContain` "mcImage.repository=127.0.0.1:30080/prodbox/minio-mc-mirror"
                 helmRecord `shouldContain` "repo|add|harbor|https://helm.goharbor.io"
                 helmRecord `shouldContain` "upgrade|--install|harbor|harbor/harbor"
+                helmRecord `shouldContain` "persistence.imageChartStorage.type=s3"
+                helmRecord `shouldContain` "persistence.imageChartStorage.disableredirect=true"
+                helmRecord `shouldContain` ("persistence.imageChartStorage.s3.bucket=" ++ harborRegistryStorageBucket)
+                helmRecord `shouldContain` ("persistence.imageChartStorage.s3.regionendpoint=" ++ minioClusterEndpoint)
+                helmRecord `shouldContain` ("persistence.imageChartStorage.s3.existingSecret=" ++ harborRegistryStorageSecretName)
                 helmRecord `shouldContain` "repo|add|metallb|https://metallb.github.io/metallb"
                 helmRecord `shouldContain` "upgrade|--install|metallb|metallb/metallb"
                 helmRecord `shouldContain` "upgrade|--install|envoy-gateway|oci://docker.io/envoyproxy/gateway-helm"
@@ -416,6 +500,8 @@ main = hspec $ do
                 helmRecord `shouldContain` "upgrade|--install|postgres-operator|percona/pg-operator"
                 helmRecord `shouldNotContain` "uninstall|traefik|--namespace|traefik-system|--wait"
                 helmRecord `shouldNotContain` "uninstall|postgres-operator|--namespace|postgres-operator|--wait"
+                findRecordLineIndex "upgrade|--install|minio|minio/minio" helmRecord
+                    `shouldSatisfy` (< findRecordLineIndex "upgrade|--install|harbor|harbor/harbor" helmRecord)
 
                 dockerRecord <- readFile (tmpDir </> "fake-rke2-state" </> "docker.txt")
                 dockerRecord `shouldContain` "login|127.0.0.1:30080|--username|admin|--password|Harbor12345"
@@ -573,7 +659,7 @@ main = hspec $ do
                 upStderr `shouldContain` "Retrying Harbor publication for mirror target 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
                 upStdout `shouldContain` "Kubernetes control plane is running"
 
-                applyManifest <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl-apply-6.json")
+                applyManifest <- readAppliedManifestContaining (tmpDir </> "fake-rke2-state") "\"externalAccountBinding\""
                 applyManifest `shouldContain` "\"ClusterIssuer\""
                 applyManifest `shouldContain` "\"Secret\""
                 applyManifest `shouldContain` "\"externalAccountBinding\""
@@ -1838,6 +1924,50 @@ seedFakeAwsHarnessState repoRoot = do
     writeFile (stateDir </> "user-leaked-user-policy") ""
     writeFile (stateDir </> "user-leaked-user-access-key-id") "AKIALEAKED"
     writeFile (stateDir </> "identity-AKIALEAKED") "leaked-user"
+
+harborRegistryStorageSecretName :: String
+harborRegistryStorageSecretName = "harbor-registry-s3"
+
+harborRegistryStorageBucket :: String
+harborRegistryStorageBucket = "prodbox-harbor-registry"
+
+harborRegistryStorageBootstrapJobName :: String
+harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
+
+minioClusterEndpoint :: String
+minioClusterEndpoint = "http://minio.prodbox.svc.cluster.local:9000"
+
+readAppliedManifestContaining :: FilePath -> String -> IO String
+readAppliedManifestContaining stateDir needle = do
+    applyFiles <- sort . filter ("kubectl-apply-" `isInfixOf`) <$> listDirectory stateDir
+    manifests <- mapM (\fileName -> readFile (stateDir </> fileName)) applyFiles
+    case find (isInfixOf needle) manifests of
+        Just manifest -> pure manifest
+        Nothing ->
+            expectationFailure ("expected applied manifest containing " ++ show needle)
+                >> pure ""
+
+findRecordLineIndex :: String -> String -> Int
+findRecordLineIndex needle haystack =
+    case findIndex (isInfixOf needle) (lines haystack) of
+        Just indexValue -> indexValue
+        Nothing -> error ("missing record line containing " ++ show needle)
+
+gatewayStartConfig :: FilePath -> FilePath -> FilePath -> FilePath -> String
+gatewayStartConfig ordersPath certPath keyPath caPath =
+    unlines
+        [ "{"
+        , "  \"node_id\": \"node-a\","
+        , "  \"cert_file\": " ++ show certPath ++ ","
+        , "  \"key_file\": " ++ show keyPath ++ ","
+        , "  \"ca_file\": " ++ show caPath ++ ","
+        , "  \"orders_file\": " ++ show ordersPath ++ ","
+        , "  \"event_keys\": { \"node-a\": \"validation-key\" },"
+        , "  \"heartbeat_interval_seconds\": 1.0,"
+        , "  \"reconnect_interval_seconds\": 1.0,"
+        , "  \"sync_interval_seconds\": 5.0"
+        , "}"
+        ]
 
 gatewayStatusConfig :: String
 gatewayStatusConfig =

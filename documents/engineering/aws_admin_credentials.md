@@ -18,9 +18,9 @@ otherwise type interactively.
 
 The `aws_admin_for_test_simulation` section exists only for:
 
-1. `./.build/prodbox test integration aws-iam`
-2. `./.build/prodbox test integration all`
-3. `./.build/prodbox test all` when the aggregate runner reaches the native IAM suite
+1. `prodbox test integration aws-iam`
+2. `prodbox test integration all`
+3. `prodbox test all` when the aggregate runner reaches the native IAM suite
 4. repository tests that simulate the interactive elevated-credential workflow
 
 Normal runtime commands use `aws.*`. Public `prodbox config setup` and public `prodbox aws ...`
@@ -68,8 +68,8 @@ credential workflow:
 2. open `prodbox-config.dhall`
 3. place the elevated key in `aws_admin_for_test_simulation.*`
 4. leave `aws.*` blank or treat any pre-existing value there as disposable suite residue
-5. run `./.build/prodbox config validate`
-6. run `./.build/prodbox test integration aws-iam`
+5. run `prodbox config validate`
+6. run `prodbox test integration aws-iam`
 
 The native IAM suite fails in the Phase `1/2` prerequisite gate when
 `aws_admin_for_test_simulation.*` is missing, partial, or paired with an otherwise incomplete
@@ -91,8 +91,8 @@ This split is deliberate:
 
 Do not treat `aws_admin_for_test_simulation.*` as the default working credential source.
 
-When `./.build/prodbox test integration aws-iam`, `./.build/prodbox test integration all`, or
-`./.build/prodbox test all` runs with the native IAM harness, `prodbox` now:
+When `prodbox test integration aws-iam`, `prodbox test integration all`, or
+`prodbox test all` runs with the native IAM harness, `prodbox` now:
 
 1. deletes any pre-existing dedicated `prodbox` IAM user and that user's access keys before fresh
    provisioning

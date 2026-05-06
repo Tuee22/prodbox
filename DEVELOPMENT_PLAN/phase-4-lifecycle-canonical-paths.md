@@ -12,9 +12,11 @@
 This phase closes the hard migration gap between parity and replacement. It owns the Harbor-first
 local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validation Pulumi surface,
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
-supported path Haskell-only. The supported lifecycle and retained AWS-validation stacks close
-on clean-room-only behavior, native-host-architecture Docker publication, one Route 53 record,
-and one listener certificate for `test.resolvefintech.com`.
+supported path Haskell-only. Sprints `4.2` and `4.3` remain closed on the AWS-validation Pulumi
+surface and repository-wide Python removal. Sprint `4.1` now also closes on the authoritative
+Harbor-plus-storage-backend bootstrap contract. The supported lifecycle and retained AWS-validation stacks
+otherwise close on clean-room-only behavior, native-host-architecture Docker publication, one
+Route 53 record, and one listener certificate for `test.resolvefintech.com`.
 
 ## Current Baseline In Worktree
 
@@ -35,6 +37,11 @@ and one listener certificate for `test.resolvefintech.com`.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.
+- The authoritative lifecycle target keeps Harbor plus Harbor's storage backend as the only direct-
+  public bootstrap exception before later Harbor-backed workloads proceed. `runNativeInstall` now
+  installs MinIO first, bootstraps the Harbor registry bucket plus secret through the public
+  `quay.io/minio/*` storage-backend images, and then reconciles Harbor on S3-backed registry
+  storage before later Harbor image publication resumes.
 - The lifecycle-owned DNS and certificate helpers now close on the one-record or one-cert
   doctrine for the shared public edge.
 - `src/Prodbox/CLI/Rke2.hs` closes the supported lifecycle on the clean-room Harbor, Envoy
@@ -97,9 +104,14 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 
 ### Current Validation State
 
-- `runNativeInstall` now performs the supported split explicitly: Harbor install and readiness
-  first, Harbor-storage-backend bootstrap second, Harbor population and custom-image publication
-  third, later Harbor-backed platform and chart workloads afterward.
+- The authoritative lifecycle target keeps the supported split explicit: Harbor-storage-backend
+  bootstrap first, Harbor install configured to use that backend plus readiness second, Harbor
+  population and custom-image publication third, and later Harbor-backed platform and chart
+  workloads afterward.
+- `runNativeInstall` now deploys MinIO before Harbor, bootstraps the Harbor registry bucket plus
+  credential secret through the supported public `quay.io/minio/*` storage-backend path, and
+  reconciles Harbor with S3-backed `persistence.imageChartStorage` values before mirror, custom-
+  image publication, or later Harbor-backed platform work continues.
 - The shared Helm repo-update and upgrade/install helpers in `src/Prodbox/CLI/Rke2.hs` now retry
   transient upstream chart-fetch failures before surfacing a hard lifecycle failure, so the
   supported clean-room rerun can absorb intermittent upstream `5xx` and timeout errors.
@@ -282,8 +294,8 @@ None.
 - `documents/engineering/code_quality.md` - final non-Python quality gate.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
   inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.
-- `documents/engineering/local_registry_pipeline.md` - Harbor-first lifecycle ordering and
-  bootstrap doctrine.
+- `documents/engineering/local_registry_pipeline.md` - Harbor-first lifecycle ordering and the
+  authoritative Harbor-plus-storage-backend bootstrap doctrine.
 - `documents/engineering/prerequisite_doctrine.md` - lifecycle and Pulumi prerequisite checks.
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage contract after the
   lifecycle/chart rewrite.

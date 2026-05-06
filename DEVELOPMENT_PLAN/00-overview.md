@@ -106,6 +106,14 @@ Build a clean-room Haskell `prodbox` repository with:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes with no supported Python dependency and no surviving single-host public-edge cleanup in the ledger |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with one canonical public hostname, no placeholder domains, and `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input |
 
+## Alignment Status
+
+The earlier alignment follow-up on Phases `2`, `3`, and `4` is now closed. Phase `5` continues to
+own the shared-host public-edge closure, Phase `6` continues to own the clean-room rerun
+contract, and Phase `7` continues to own interactive onboarding and AWS administration, but those
+later surfaces remain closed while the earlier gateway, chart, and lifecycle implementation gaps
+are now resolved in code and governed docs.
+
 ## Architecture Summary
 
 | Surface | Canonical Target Path | Authority |
@@ -142,8 +150,8 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Current Repository State
 
-The repository worktree implements the final Haskell-only rewrite architecture. The supported
-operator surface is `prodbox`, the supported configuration contract is direct
+The target Haskell-only rewrite architecture is implemented in the worktree, and the repository
+is now closed against this plan. The supported operator surface is `prodbox`, the supported configuration contract is direct
 `Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and the supported build topology
 remains `.build/prodbox` on the host plus `/opt/build` inside repository-owned Dockerfiles.
 `prodbox check-code` enforces the governed doctrine-alignment gate, the Haskell gateway runtime
@@ -162,18 +170,19 @@ on a true `/ws` upgrade with Redis-backed shared state and readiness-based drain
 terminates at Envoy while backend TLS or mTLS remains outside the supported chart-workload
 contract.
 
-Root guidance plus the governed command-surface, public-edge, and chart-platform doctrine docs
-describe that same shared-host route catalog and credential boundary, so the documented operator
-path matches the implemented one-host public edge.
+Root guidance plus the governed public-edge, gateway, chart-platform, registry, and testing docs
+now describe that same shared-host route catalog and credential boundary, and the earlier Phase
+`2`, `3`, and `4` implementation gaps are now closed in the same authoritative code paths.
 
-The lifecycle is Harbor-first and native-architecture only: Harbor plus its storage backend may
-bootstrap from public registries, every later Helm deployment pulls through Harbor, and `amd64`
-or `arm64` hosts build and publish only their own architecture. The stack closes on in-image
-`ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the Percona operator-
-backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP advertisement. The
-cleanup ledger preserves completed history and currently lists no pending supported-path cleanup
-items after the Phase `6` doc-harmony follow-up removed the stale governed-doc backlinks to the
-deleted `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning doc. The separate Haskell distributed
+The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus
+its storage backend bootstrap from public registries, every later Helm deployment pulls through
+Harbor, and `amd64` or `arm64` hosts build and publish only their own architecture. The stack
+closes on in-image `ghcup`
+with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the Percona operator-backed
+Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP advertisement. The cleanup
+ledger preserves completed history and currently lists no pending supported-path cleanup items
+after the Phase `6` doc-harmony follow-up removed the stale governed-doc backlinks to the deleted
+`METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning doc. The separate Haskell distributed
 gateway daemon remains distinct from the Envoy Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
@@ -267,7 +276,7 @@ than restated here as a fresh rerun log.
   `stateLastHeartbeatTimes` from inbound peer events, refuse heartbeats outside the configured
   skew bound, and reject inbound batches that present an older Orders version.
 - `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestPlan.hs`, and `src/Prodbox/TestValidation.hs`
-  own the aggregate reruns, named native validation flows, and destructive postflight restore
+  own the aggregate reruns, named Haskell-owned validation flows, and destructive postflight restore
   path.
 
 ### Canonical Validation Gates
@@ -278,7 +287,7 @@ than restated here as a fresh rerun log.
 - Run `prodbox test unit`.
 - Run `prodbox test integration cli`.
 - Run `prodbox test integration env`.
-- Run the named native validation flows owned by `src/Prodbox/TestValidation.hs`.
+- Run the named Haskell-owned validation flows owned by `src/Prodbox/TestValidation.hs`.
 - Run the aggregate reruns `prodbox test integration all` and `prodbox test all`.
 
 ### Interpretation
@@ -309,34 +318,33 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 
 ## Current Execution State
 
-Phase `0` is closed on the plan suite. Phases `1`, `2`, `3`, `4`, `5`, `6`, and `7` are closed
-on the implemented repository architecture. Sprints `2.4`, `2.5`, `2.6`, and `2.7` are now
-closed on peer-heartbeat transport with commit-log gossip, runtime claim/yield emission under
-`CanWriteDns`, operator time-base discipline, and atomic Orders-promotion coordination, in
-addition to the previously closed Sprints `2.1`, `2.2`, and `2.3`:
+Phases `0` through `7` are closed on the implemented repository architecture:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
   Haskell test and quality framework, the local edge foundations, the one-host config contract,
   and config-selected MetalLB BGP support.
 - Phase 2 owns the gateway runtime, DNS inspection surface, the single-record Route 53 doctrine,
-  and the TLA+ validation entrypoint; the Haskell gateway daemon is closed on the bounded HTTP
-  `/v1/state` payload, gateway status client path, interval validation, peer-transport gossip
-  through `Prodbox.Gateway.Peer`, runtime claim/yield emission under the `canWriteDns` predicate,
-  operator-verifiable bounded-clock-skew enforcement, and Orders-version coordination across the
-  mesh.
+  and the TLA+ validation entrypoint. The Phase `2` gateway surfaces close on the bounded HTTP
+  `/v1/state` payload, a distinct native `gateway-partition` validation path, peer-transport
+  gossip through `Prodbox.Gateway.Peer`, runtime claim/yield emission under the `canWriteDns`
+  predicate, operator-verifiable bounded-clock-skew enforcement, config-relative trust-material
+  validation, listener-host closure from Orders, and Orders-version coordination across the mesh.
 - Phase 3 owns the chart platform, retained state model, supported public workload delivery, and
-  the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. It includes
-  the JWT-protected API route, the Redis-backed WebSocket runtime, the shared public-workload
-  runtime, multi-replica public workload scaling, the mixed-auth doctrine boundary between Envoy-
-  managed browser auth and app-managed OIDC workloads, the explicit JWT carrier plus Keycloak
-  JWKS-availability boundary, the shared-host Keycloak contract, real WebSocket upgrade handling,
-  one-connection-per-pod lifetime, readiness-based drain, and path-routed Harbor plus MinIO admin
-  delivery.
+  the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. The Phase
+  `3` surfaces include the root-chart-only public `prodbox charts ...` surface, the JWT-protected
+  API route, the Redis-backed
+  WebSocket runtime, the shared public-workload runtime, multi-replica public workload scaling,
+  the mixed-auth doctrine boundary between Envoy-managed browser auth and app-managed OIDC
+  workloads, the explicit JWT carrier plus Keycloak JWKS-availability boundary, the shared-host
+  Keycloak contract, real WebSocket upgrade handling, one-connection-per-pod lifetime,
+  readiness-based drain, and path-routed Harbor plus MinIO admin delivery.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
   bootstrap exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
   and ACME projection, Python removal, and the native-host-architecture container-build doctrine.
-  Its lifecycle and retained AWS-validation cleanup shims are removed from the supported path.
+  The Phase `4` lifecycle now installs MinIO first, bootstraps Harbor's registry bucket plus
+  credential secret, reconciles Harbor on S3-backed registry storage, and keeps its later AWS-
+  validation and Python-removal surfaces closed on the supported path.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation. It includes API, WebSocket,
   Harbor, and MinIO route classification plus named external proofs for those workloads.

@@ -39,7 +39,7 @@ Current hard gates:
 - HLint through the checked-in [`/.hlint.yaml`](../../.hlint.yaml)
 - warning-clean Haskell compilation through
   `cabal build --builddir=.build all --ghc-options=-Werror`
-- operator-binary sync to `./.build/prodbox` after a successful quality gate
+- operator-binary sync to `.build/prodbox` after a successful quality gate
 
 The workflow or hook policy scan is scoped to repo-owned surfaces and excludes generated or
 retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
@@ -78,7 +78,7 @@ Important distinction:
 The authoritative mechanical Haskell quality gate is:
 
 ```bash
-./.build/prodbox check-code
+prodbox check-code
 ```
 
 `src/Prodbox/CheckCode.hs` owns that command. The supported gate currently requires:
@@ -87,7 +87,7 @@ The authoritative mechanical Haskell quality gate is:
 2. `fourmolu --mode check app src test`
 3. `hlint app src test --hint=.hlint.yaml`
 4. `cabal build --builddir=.build all --ghc-options=-Werror`
-5. sync of the built operator binary to `./.build/prodbox`
+5. sync of the built operator binary to `.build/prodbox`
 
 The policy-scan phase ignores generated or retained runtime roots such as `.build/`,
 `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
@@ -95,10 +95,10 @@ The policy-scan phase ignores generated or retained runtime roots such as `.buil
 The broader validation surfaces remain separate:
 
 ```bash
-./.build/prodbox test unit
-./.build/prodbox test integration cli
-./.build/prodbox test integration env
-./.build/prodbox test all
+prodbox test unit
+prodbox test integration cli
+prodbox test integration env
+prodbox test all
 ```
 
 Those suites validate runtime behavior and owned proof flows. They do not replace `check-code` as

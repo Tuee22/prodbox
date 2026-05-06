@@ -17,6 +17,12 @@ Sprint sequencing, completion status, remaining work, validation closure, and cl
 for the gateway/TLA surfaces are owned by
 [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
+The authoritative verification contract distinguishes the formal
+`prodbox tla-check` surface from the separate native
+`prodbox test integration gateway-partition` surface. This document
+describes the model and its correspondence only; current implementation
+closure for those validation paths remains plan-owned.
+
 ---
 
 ## 1. Abstract System Model
@@ -53,7 +59,10 @@ plus delayed delivery via `msgQueue`.
 
 - **Real time**: The model uses discrete timestamps (`0..MaxTimestamp`), not wall-clock time.
 - **TCP connections**: Transport-level details (connection establishment, teardown, partial writes) are abstracted away.
-- **TLS handshakes**: mTLS authentication is assumed correct and not modelled.
+- **Peer transport establishment**: socket setup, trust-material
+  consumption, and any later transport-auth expansion are abstracted
+  away. The model starts from accepted peer batches plus runtime HMAC
+  validation.
 - **Message ordering beyond append-only log**: The `msgQueue` is a set (unordered). Ordering comes from the event log sequence.
 - **Network-level failures**: Only node crash/recover and message delay are modelled. TCP resets, partial writes, and connection timeouts are not represented.
 - **Anti-entropy gossip**: The sync protocol that reconciles divergent event logs between peers is abstracted through the global `eventLog`.  The runtime materialises this protocol concretely (`Prodbox.Gateway.Peer`, `peerListenerLoop`, and `peerDialerLoop`); the divergence between the model's global log and the runtime's per-node log is therefore narrowed to delivery delay only.

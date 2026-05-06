@@ -638,6 +638,29 @@ main = hspec $ do
                             nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
                         DelegatedSuite _ -> expectationFailure "expected native gateway-daemon plan"
 
+        it "keeps gateway-partition on a native validation path distinct from tla-check" $ do
+            repoRoot <- getCurrentDirectory
+            validationSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "TestValidation.hs")
+
+            validationSource `shouldContain` "ValidationGatewayPartition -> runGatewayPartitionValidation"
+            validationSource `shouldContain` "FORMAL_MODEL_DELEGATED=false"
+            validationSource `shouldNotContain` "ValidationGatewayPartition -> runNativeCliCommandForExitCode repoRoot environment [\"tla-check\"]"
+
+        it "consumes gateway trust material and configured listener hosts in the daemon runtime" $ do
+            repoRoot <- getCurrentDirectory
+            daemonSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
+            gatewaySource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway.hs")
+
+            daemonSource `shouldContain` "validateDaemonStartupInputs"
+            daemonSource `shouldContain` "daemonCertFile"
+            daemonSource `shouldContain` "daemonKeyFile"
+            daemonSource `shouldContain` "daemonCaFile"
+            daemonSource `shouldContain` "peerRestHost localPeer"
+            daemonSource `shouldContain` "peerSocketHost localPeer"
+            daemonSource `shouldContain` "openListeningSocket \"REST server\""
+            daemonSource `shouldContain` "openListeningSocket \"Peer events listener\""
+            gatewaySource `shouldContain` "resolveDaemonInputPaths"
+
         it "keeps charts-vscode on the supported runtime bootstrap path" $ do
             case testExecutionPlan (TestIntegration IntegrationChartsVscode) of
                 testPlan ->
@@ -709,6 +732,10 @@ main = hspec $ do
             rke2Source `shouldContain` "waitForHarborStableEndpoints repoRoot"
             rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
             rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
+            rke2Source `shouldContain` "ensureHarborRegistryStorageBackend repoRoot"
+            rke2Source `shouldContain` "persistence.imageChartStorage.type=s3"
+            rke2Source `shouldContain` "persistence.imageChartStorage.disableredirect=true"
+            rke2Source `shouldContain` "mc mb --ignore-existing local/"
 
         it "retries transient Harbor publication failures during custom and mirrored image publication" $ do
             repoRoot <- getCurrentDirectory

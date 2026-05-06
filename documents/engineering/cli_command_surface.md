@@ -197,6 +197,12 @@ live upgraded connections.
 `src/Prodbox/Lib/Storage.hs`, and `src/Prodbox/PostgresPlatform.hs` own the public chart surface
 and its canonical external Patroni naming contract.
 
+For `prodbox charts status|deploy|delete`, `CHART` must be one of the
+root chart names `gateway`, `keycloak`, `vscode`, `api`, or
+`websocket`. Internal `keycloak-postgres` and `redis` dependency
+releases are runtime-owned implementation details and are not supported
+public CLI arguments.
+
 The supported chart doctrine does not permit embedded chart-local PostgreSQL subcharts.
 `keycloak-postgres` is an internal namespace-local Patroni dependency release, and chart deploy
 fails fast until `prodbox rke2 install` has reconciled the cluster-wide `postgres-operator`

@@ -16,7 +16,7 @@ import Control.Concurrent.STM (
     readTVarIO,
     writeTVar,
  )
-import Control.Exception (SomeException, try)
+import Control.Exception (IOException, SomeException, displayException, try)
 import Control.Monad (forever, void, when)
 import Crypto.Hash.SHA256 (hash, hmac)
 import Data.Aeson (
@@ -33,7 +33,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (intToDigit, toLower)
-import Data.List (isPrefixOf)
+import Data.List (intercalate, isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
@@ -41,22 +41,27 @@ import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word8)
 import Network.Socket (
+    AddrInfo (..),
+    AddrInfoFlag (AI_PASSIVE),
     Family (AF_INET),
-    SockAddr (..),
     Socket,
     SocketOption (ReuseAddr),
     SocketType (Stream),
     accept,
     addrAddress,
+    addrFamily,
+    addrFlags,
+    addrProtocol,
+    addrSocketType,
     bind,
     close,
     connect,
+    defaultHints,
     defaultProtocol,
     getAddrInfo,
     listen,
     setSocketOption,
     socket,
-    tupleToHostAddress,
     withSocketsDo,
  )
 import Network.Socket.ByteString (recv, sendAll)
@@ -98,6 +103,7 @@ import Prodbox.Subprocess (
     ProcessOutput (..),
     captureCommand,
  )
+import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
 import System.IO (hPutStrLn, stderr)
 
@@ -155,51 +161,93 @@ runGatewayDaemon config = withSocketsDo $ do
                             hPutStrLn stderr ("Failed to resolve local gateway node: " ++ err)
                             pure (ExitFailure 1)
                         Right localPeer -> do
-                            now <- getCurrentTime
-                            let localNodeId = daemonNodeId config
-                                meshPeers =
-                                    [ peerNodeId peer
-                                    | peer <- ordersNodes orders
-                                    , peerNodeId peer /= localNodeId
-                                    ]
-                                initialDaemonState =
-                                    (initialState (ordersVersionUtc orders))
-                                        { stateLastHeartbeatTimes = Map.singleton localNodeId now
-                                        , stateMeshPeers = meshPeers
-                                        , statePeerHealth =
-                                            Map.fromList
-                                                [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
-                                        }
-                            stateVar <- newTVarIO initialDaemonState
-                            let eventKeys = Map.fromList (daemonEventKeys config)
-
-                            hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
-
-                            heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
-                            gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
-                            dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
-                            restThread <- async (restServerLoop localPeer config stateVar)
-                            peerListenerThread <- async (peerListenerLoop localPeer config orders stateVar eventKeys)
-                            peerDialerThread <- async (peerDialerLoop config orders stateVar)
-
-                            let allThreads =
-                                    [ heartbeatThread
-                                    , gatewayThread
-                                    , dnsWriteThread
-                                    , restThread
-                                    , peerListenerThread
-                                    , peerDialerThread
-                                    ]
-
-                            result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
-                            case result of
-                                Left exc -> do
-                                    hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
-                                    mapM_ cancel allThreads
+                            startupValidationResult <- validateDaemonStartupInputs config
+                            case startupValidationResult of
+                                Left err -> do
+                                    hPutStrLn stderr ("Failed to validate gateway startup inputs: " ++ err)
                                     pure (ExitFailure 1)
                                 Right () -> do
-                                    hPutStrLn stderr "Gateway daemon stopped"
-                                    pure ExitSuccess
+                                    now <- getCurrentTime
+                                    let localNodeId = daemonNodeId config
+                                        meshPeers =
+                                            [ peerNodeId peer
+                                            | peer <- ordersNodes orders
+                                            , peerNodeId peer /= localNodeId
+                                            ]
+                                        initialDaemonState =
+                                            (initialState (ordersVersionUtc orders))
+                                                { stateLastHeartbeatTimes = Map.singleton localNodeId now
+                                                , stateMeshPeers = meshPeers
+                                                , statePeerHealth =
+                                                    Map.fromList
+                                                        [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
+                                                }
+                                    stateVar <- newTVarIO initialDaemonState
+                                    let eventKeys = Map.fromList (daemonEventKeys config)
+
+                                    hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
+
+                                    heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
+                                    gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
+                                    dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
+                                    restThread <- async (restServerLoop localPeer config stateVar)
+                                    peerListenerThread <- async (peerListenerLoop localPeer config orders stateVar eventKeys)
+                                    peerDialerThread <- async (peerDialerLoop config orders stateVar)
+
+                                    let allThreads =
+                                            [ heartbeatThread
+                                            , gatewayThread
+                                            , dnsWriteThread
+                                            , restThread
+                                            , peerListenerThread
+                                            , peerDialerThread
+                                            ]
+
+                                    result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
+                                    case result of
+                                        Left exc -> do
+                                            hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
+                                            mapM_ cancel allThreads
+                                            pure (ExitFailure 1)
+                                        Right () -> do
+                                            hPutStrLn stderr "Gateway daemon stopped"
+                                            pure ExitSuccess
+
+validateDaemonStartupInputs :: DaemonConfig -> IO (Either String ())
+validateDaemonStartupInputs config = do
+    fileResults <-
+        mapM
+            (uncurry validateRequiredFile)
+            [ ("cert_file", daemonCertFile config)
+            , ("key_file", daemonKeyFile config)
+            , ("ca_file", daemonCaFile config)
+            ]
+    pure $
+        case [err | Left err <- fileResults] of
+            [] -> Right ()
+            errors -> Left (intercalate "; " errors)
+
+validateRequiredFile :: String -> FilePath -> IO (Either String ())
+validateRequiredFile fieldName path = do
+    exists <- doesFileExist path
+    if not exists
+        then pure (Left (fieldName ++ " does not exist: " ++ path))
+        else do
+            fileResult <- try (BS.readFile path) :: IO (Either IOException BS.ByteString)
+            pure $
+                case fileResult of
+                    Left err ->
+                        Left
+                            ( fieldName
+                                ++ " could not be read from "
+                                ++ path
+                                ++ ": "
+                                ++ displayException err
+                            )
+                    Right contents ->
+                        if BS.null contents
+                            then Left (fieldName ++ " is empty: " ++ path)
+                            else Right ()
 
 resolveLocalPeerEndpoint :: DaemonConfig -> Orders -> Either String PeerEndpoint
 resolveLocalPeerEndpoint config orders =
@@ -347,12 +395,10 @@ dnsWriteLoop config _orders stateVar = forever $ do
 
 restServerLoop :: PeerEndpoint -> DaemonConfig -> TVar DaemonState -> IO ()
 restServerLoop localPeer config stateVar = do
-    let port = peerRestPort localPeer
-    sock <- socket AF_INET Stream 0
-    setSocketOption sock ReuseAddr 1
-    bind sock (SockAddrInet (fromIntegral port) (tupleToHostAddress (0, 0, 0, 0)))
-    listen sock 16
-    hPutStrLn stderr ("REST server listening on port " ++ show port)
+    let host = peerRestHost localPeer
+        port = peerRestPort localPeer
+    sock <- openListeningSocket "REST server" host port
+    hPutStrLn stderr ("REST server listening on " ++ host ++ ":" ++ show port)
     forever $ do
         (clientSock, _) <- accept sock
         void $ async $ handleRestClient clientSock config stateVar
@@ -389,15 +435,64 @@ peerListenerLoop ::
     Map String String ->
     IO ()
 peerListenerLoop localPeer config orders stateVar eventKeys = do
-    let port = peerSocketPort localPeer
-    sock <- socket AF_INET Stream 0
-    setSocketOption sock ReuseAddr 1
-    bind sock (SockAddrInet (fromIntegral port) (tupleToHostAddress (0, 0, 0, 0)))
-    listen sock 16
-    hPutStrLn stderr ("Peer events listener on port " ++ show port)
+    let host = peerSocketHost localPeer
+        port = peerSocketPort localPeer
+    sock <- openListeningSocket "Peer events listener" host port
+    hPutStrLn stderr ("Peer events listener on " ++ host ++ ":" ++ show port)
     forever $ do
         (clientSock, _) <- accept sock
         void $ async $ handlePeerClient clientSock config orders stateVar eventKeys
+
+openListeningSocket :: String -> String -> Int -> IO Socket
+openListeningSocket label host port = do
+    socketResult <- bindListeningSocket host port
+    case socketResult of
+        Left err -> ioError (userError (label ++ " failed to bind on " ++ host ++ ":" ++ show port ++ ": " ++ err))
+        Right sock -> pure sock
+
+bindListeningSocket :: String -> Int -> IO (Either String Socket)
+bindListeningSocket host port = do
+    let hints =
+            defaultHints
+                { addrFlags = [AI_PASSIVE]
+                , addrSocketType = Stream
+                }
+    addrResult <-
+        try
+            (getAddrInfo (Just hints) (Just host) (Just (show port))) ::
+            IO (Either IOException [AddrInfo])
+    case addrResult of
+        Left err ->
+            pure
+                ( Left
+                    ( "failed to resolve listener address: "
+                        ++ displayException err
+                    )
+                )
+        Right [] -> pure (Left "no listener addresses resolved")
+        Right addresses -> tryAddresses addresses []
+  where
+    tryAddresses :: [AddrInfo] -> [String] -> IO (Either String Socket)
+    tryAddresses [] errors = pure (Left (intercalate "; " (reverse errors)))
+    tryAddresses (addressInfo : rest) errors = do
+        socketResult <-
+            try
+                (socket (addrFamily addressInfo) (addrSocketType addressInfo) (addrProtocol addressInfo)) ::
+                IO (Either IOException Socket)
+        case socketResult of
+            Left err ->
+                tryAddresses rest (displayException err : errors)
+            Right sock -> do
+                setSocketOption sock ReuseAddr 1
+                bindResult <-
+                    try
+                        (bind sock (addrAddress addressInfo) >> listen sock 16) ::
+                        IO (Either IOException ())
+                case bindResult of
+                    Left err -> do
+                        close sock
+                        tryAddresses rest (displayException err : errors)
+                    Right () -> pure (Right sock)
 
 handlePeerClient ::
     Socket ->

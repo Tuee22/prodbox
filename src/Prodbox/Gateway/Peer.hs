@@ -11,10 +11,10 @@ inbound events whose timestamps lie beyond the configured maximum clock
 skew are refused with the offending peer marked unhealthy.
 
 The transport is intentionally HTTP rather than mutual TLS today: the
-chart-mounted certificates and CA remain part of the daemon config so the
-doctrine is preserved, while the runtime closes on the simplest transport
-that materialises the documented anti-entropy gossip and per-peer
-transport-health reporting.
+daemon still consumes the retained certificate, key, CA, and listener-host
+inputs at startup and binding time, while the peer mesh itself closes on
+the simplest transport that materialises the documented anti-entropy
+gossip and per-peer transport-health reporting.
 -}
 module Prodbox.Gateway.Peer (
     PeerTransportRequest (..),

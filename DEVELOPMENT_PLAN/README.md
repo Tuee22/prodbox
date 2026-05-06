@@ -26,18 +26,12 @@ govern this plan suite.
 
 ## Closure Status
 
-Phases `0` through `7` are closed on the supported Haskell-only end state. Sprints `2.1`,
-`2.2`, and `2.3` remain closed on the daemon basics, the TLA+ formal-verification entrypoint,
-and the single-record Route 53 doctrine. Sprints `2.4`, `2.5`, `2.6`, and `2.7` are closed on
-peer heartbeat transport with commit-log gossip, runtime claim/yield emission under the
-`CanWriteDns` gate, operator time-base discipline, and atomic Orders-promotion coordination.
-The TLA+ model's peer-transport, claim/yield, and bounded-delay safety belt is now enforced at
-runtime through `Prodbox.Gateway.Peer`, the daemon's `peerListenerLoop` and `peerDialerLoop`
-threads, the runtime `canWriteDns` predicate, and `daemonMaxClockSkewSeconds`. The final
-clean-room rerun and handoff validation close on the canonical `prodbox` command surface with
-no remaining phase-owned cleanup residue.
+Phases `0` through `7` are closed on their owned Haskell-only surfaces. The earlier Phase `2`,
+`3`, and `4` alignment follow-up on native `gateway-partition` validation, peer trust-material
+runtime closure, root-chart-only public chart commands, and the Harbor-plus-storage-backend
+bootstrap contract is now complete in both governed docs and code.
 
-The current worktree closes on:
+The authoritative target still closes on:
 
 - one Haskell-owned CLI, lifecycle, Pulumi, gateway-daemon, public-workload, chart, onboarding,
   AWS, and test surface
@@ -76,7 +70,7 @@ zero-Python residue stay out of supported-path sources, but those checks are not
 `prodbox` command. The canonical automated validation contract otherwise remains the `prodbox`
 command surface documented by this plan: `prodbox check-code`,
 `prodbox test unit`, `prodbox test integration cli`, `prodbox test integration env`, and the
-named native validations behind `prodbox test integration ...`. Environment-dependent AWS and
+named validation surfaces behind `prodbox test integration ...`. Environment-dependent AWS and
 public-edge proof remain attached to those commands rather than recorded here as a fresh
 execution log.
 
@@ -135,16 +129,14 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: the Haskell-only rewrite baseline, shared-host public edge, native-
-host-architecture lifecycle, cleanup closure, gateway-protocol completeness, and final
-clean-room handoff are all validated on the supported Haskell command surface. The TLA+-modelled
-safety belt for peer transport, claim/yield emission, bounded clock skew, and Orders-promotion
-coordination is now enforced at runtime by the gateway daemon.
+**Status interpretation**: the Haskell-only rewrite baseline plus the later public-edge,
+clean-room, and AWS-administration surfaces are now validated on the supported Haskell command
+surface with no reopened earlier-phase alignment gap remaining.
 
 ## Current Plan Status
 
-The development plan is current against the repository worktree on the following implemented
-surfaces:
+The development plan remains authoritative, and the repository worktree is now closed against it.
+The following implemented surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -186,9 +178,9 @@ surfaces:
 - The supported container topology lives entirely under `docker/`. Every repository-owned
   Haskell-build Dockerfile stays single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC
   `9.14.1`, and does not create symlinked Haskell tool shims.
-- The local lifecycle is Haskell-owned and Harbor-first: Harbor plus Harbor's storage backend may
-  bootstrap from public registries, after which required public images and custom images are
-  present in Harbor before later Helm deployments proceed.
+- The authoritative local lifecycle target remains Haskell-owned and Harbor-first: Harbor plus
+  Harbor's storage backend bootstrap from public registries, after which required public images
+  and custom images are present in Harbor before later Helm deployments proceed.
 - The Harbor mirror path retries transient Harbor publication failures on the same candidate and
   then falls through to alternate configured upstreams when publication still fails after manifest
   inspection, with `mirror.gcr.io` fallbacks now covering the Docker Hub-hosted Percona and Envoy
@@ -204,6 +196,9 @@ surfaces:
   `src/Prodbox/Lib/ChartPlatform.hs`, with exactly three replicas, synchronous replication,
   deterministic retained PV bindings, retained secret state, and no embedded chart-local
   PostgreSQL subcharts.
+- The public `prodbox charts ...` runtime now rejects internal `keycloak-postgres` and `redis`
+  dependency releases directly and keeps those names reachable only through their owning root-
+  chart orchestration.
 - The public `prodbox pulumi ...` surface is limited to the AWS validation stacks under
   `pulumi/aws-eks/` and `pulumi/aws-test/`. Non-secret validation inputs are synchronized through
   stack config, while AWS provider credentials stay only in `prodbox-config.dhall` and the
@@ -221,6 +216,9 @@ surfaces:
   the `canWriteDns` predicate, bounded-clock-skew enforcement keyed off
   `daemonMaxClockSkewSeconds`, and monotonic Orders-version coordination across the mesh are all
   implemented there today.
+- `prodbox test integration gateway-partition` now runs as a distinct native validation path,
+  while the retained peer trust-material fields are validated and bound as authoritative runtime
+  transport inputs.
 - `src/Prodbox/Tla.hs` still owns `prodbox tla-check`, while
   `documents/engineering/tla_modelling_assumptions.md` records the current runtime-to-model
   correspondence and compression points for the Phase `2` surface.
@@ -255,9 +253,9 @@ surfaces:
   consumed by lifecycle, DNS, chart, host-diagnostic, and native validation surfaces, keeping
   `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio` aligned on one Haskell-owned
   public-edge contract.
-- Root `README.md` plus the governed command-surface, public-edge, and chart-platform doctrine
-  docs now describe that same single-host route catalog and no longer present dedicated public
-  subdomains as part of the supported path.
+- Root `README.md` plus the governed public-edge, gateway, chart-platform, registry, and testing
+  doctrine docs now describe that same supported route catalog and command surface, and the
+  earlier Phase `2`, `3`, and `4` implementation gaps are closed in the same code-backed paths.
 - `charts/keycloak/`, `charts/api/`, `charts/redis/`, `charts/websocket/`, `charts/vscode/`,
   `src/Prodbox/Lib/ChartPlatform.hs`, and `src/Prodbox/Workload.hs` now own the shared-host
   workload contract, including the internal `PRODBOX_WORKLOAD_MODE=api|websocket` runtime,
@@ -276,7 +274,8 @@ surfaces:
 - `charts/gateway/` and `prodbox gateway start|status|config-gen` remain the separate Haskell
   distributed gateway daemon surface; they are not the Envoy Gateway public edge.
 - The canonical validation surfaces are `prodbox check-code`, `prodbox test unit`,
-  `prodbox test integration cli`, `prodbox test integration env`, the named native validation
+  `prodbox test integration cli`, `prodbox test integration env`, the named Haskell-owned
+  validation
   flows in `src/Prodbox/TestValidation.hs`, and the aggregate reruns
   `prodbox test integration all` plus `prodbox test all`.
 - The aggregate rerun contract is owned by the shared suite plan behind

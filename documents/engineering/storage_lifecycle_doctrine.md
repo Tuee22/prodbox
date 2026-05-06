@@ -111,7 +111,7 @@ Lifecycle-oriented validation should prove:
 5. retained Patroni redeploy preserves the ordinal `0` anchor PV, resets retained follower roots
    for ordinals `1` and `2`, and scales from one replica back to the supported three-replica
    steady state
-6. `./.build/prodbox rke2 delete --yes` succeeds on the first operator invocation
+6. `prodbox rke2 delete --yes` succeeds on the first operator invocation
 7. temporary validation resources are fully removed at test end
 8. baseline runtime after test completion matches the post-install state defined by
    `prodbox rke2 install`

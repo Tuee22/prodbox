@@ -239,6 +239,9 @@ minioChartRef = "minio/minio"
 minioChartVersion :: String
 minioChartVersion = "5.4.0"
 
+minioServiceName :: String
+minioServiceName = "minio"
+
 minioAdminRouteName :: String
 minioAdminRouteName = "minio-console"
 
@@ -253,6 +256,19 @@ minioConsoleServiceName = "minio-console"
 
 minioConsoleServicePort :: Int
 minioConsoleServicePort = 9001
+
+harborRegistryStorageSecretName :: String
+harborRegistryStorageSecretName = "harbor-registry-s3"
+
+harborRegistryStorageBucket :: String
+harborRegistryStorageBucket = "prodbox-harbor-registry"
+
+harborRegistryStorageBootstrapJobName :: String
+harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
+
+minioClusterEndpoint :: String
+minioClusterEndpoint =
+    "http://" ++ minioServiceName ++ "." ++ minioNamespace ++ ".svc.cluster.local:9000"
 
 metallbNamespace :: String
 metallbNamespace = "metallb-system"
@@ -492,8 +508,9 @@ runNativeInstall repoRoot = do
                             , deleteNonManualStorageClasses repoRoot
                             , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
                             , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
-                            , ensureHarborRegistryRuntime repoRoot
                             , ensureMinioRuntime repoRoot MinioBootstrapPublic
+                            , ensureHarborRegistryStorageBackend repoRoot
+                            , ensureHarborRegistryRuntime repoRoot
                             , mirrorClusterImagesOnce repoRoot
                             , ensureGatewayImages repoRoot prodboxId
                             , ensurePublicEdgeWorkloadImage repoRoot prodboxId
@@ -830,6 +847,203 @@ minioChartImages imageSource =
         MinioSteadyStateHarbor ->
             (ContainerImage.harborMinioImage, ContainerImage.harborMinioMcImage)
 
+ensureHarborRegistryStorageBackend :: FilePath -> IO ExitCode
+ensureHarborRegistryStorageBackend repoRoot = do
+    credentialsResult <- readMinioRootCredentials repoRoot
+    case credentialsResult of
+        Left err -> failWith err
+        Right (accessKey, secretKey) ->
+            runSequentially
+                [ runCommand
+                    CommandSpec
+                        { commandPath = "kubectl"
+                        , commandArguments =
+                            [ "delete"
+                            , "job"
+                            , harborRegistryStorageBootstrapJobName
+                            , "-n"
+                            , minioNamespace
+                            , "--ignore-not-found=true"
+                            , "--wait=true"
+                            ]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+                , withTemporaryJsonManifest
+                    "harbor-storage-backend"
+                    (harborStorageBackendManifestItems accessKey secretKey)
+                    ( \manifestPath ->
+                        runCommand
+                            CommandSpec
+                                { commandPath = "kubectl"
+                                , commandArguments = ["apply", "-f", manifestPath]
+                                , commandEnvironment = Nothing
+                                , commandWorkingDirectory = Just repoRoot
+                                }
+                    )
+                , runCommand
+                    CommandSpec
+                        { commandPath = "kubectl"
+                        , commandArguments =
+                            [ "wait"
+                            , "--for=condition=complete"
+                            , "job/" ++ harborRegistryStorageBootstrapJobName
+                            , "-n"
+                            , minioNamespace
+                            , "--timeout=300s"
+                            ]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+                , runCommand
+                    CommandSpec
+                        { commandPath = "kubectl"
+                        , commandArguments =
+                            [ "delete"
+                            , "job"
+                            , harborRegistryStorageBootstrapJobName
+                            , "-n"
+                            , minioNamespace
+                            , "--ignore-not-found=true"
+                            , "--wait=true"
+                            ]
+                        , commandEnvironment = Nothing
+                        , commandWorkingDirectory = Just repoRoot
+                        }
+                ]
+
+readMinioRootCredentials :: FilePath -> IO (Either String (String, String))
+readMinioRootCredentials repoRoot = do
+    accessKeyResult <-
+        runTextCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "get"
+                    , "secret"
+                    , minioReleaseName
+                    , "-n"
+                    , minioNamespace
+                    , "-o"
+                    , "go-template={{index .data \"rootUser\" | base64decode}}"
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+    secretKeyResult <-
+        runTextCommand
+            CommandSpec
+                { commandPath = "kubectl"
+                , commandArguments =
+                    [ "get"
+                    , "secret"
+                    , minioReleaseName
+                    , "-n"
+                    , minioNamespace
+                    , "-o"
+                    , "go-template={{index .data \"rootPassword\" | base64decode}}"
+                    ]
+                , commandEnvironment = Nothing
+                , commandWorkingDirectory = Just repoRoot
+                }
+    pure $ do
+        accessKey <- accessKeyResult
+        secretKey <- secretKeyResult
+        let trimmedAccessKey = trimWhitespace accessKey
+            trimmedSecretKey = trimWhitespace secretKey
+        if trimmedAccessKey == ""
+            then Left "MinIO rootUser secret field is empty"
+            else
+                if trimmedSecretKey == ""
+                    then Left "MinIO rootPassword secret field is empty"
+                    else Right (trimmedAccessKey, trimmedSecretKey)
+
+harborStorageBackendManifestItems :: String -> String -> [Value]
+harborStorageBackendManifestItems accessKey secretKey =
+    [ object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("Namespace" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= harborNamespace
+                ]
+        ]
+    , object
+        [ "apiVersion" .= ("v1" :: String)
+        , "kind" .= ("Secret" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= harborRegistryStorageSecretName
+                , "namespace" .= harborNamespace
+                ]
+        , "type" .= ("Opaque" :: String)
+        , "stringData"
+            .= object
+                [ "REGISTRY_STORAGE_S3_ACCESSKEY" .= accessKey
+                , "REGISTRY_STORAGE_S3_SECRETKEY" .= secretKey
+                ]
+        ]
+    , object
+        [ "apiVersion" .= ("batch/v1" :: String)
+        , "kind" .= ("Job" :: String)
+        , "metadata"
+            .= object
+                [ "name" .= harborRegistryStorageBootstrapJobName
+                , "namespace" .= minioNamespace
+                ]
+        , "spec"
+            .= object
+                [ "backoffLimit" .= (3 :: Int)
+                , "ttlSecondsAfterFinished" .= (60 :: Int)
+                , "template"
+                    .= object
+                        [ "spec"
+                            .= object
+                                [ "restartPolicy" .= ("OnFailure" :: String)
+                                , "containers"
+                                    .= [ object
+                                            [ "name" .= ("bucket-bootstrap" :: String)
+                                            , "image" .= ContainerImage.renderImageRef ContainerImage.publicMinioMcImage
+                                            , "command" .= ["sh" :: String, "-c"]
+                                            , "args"
+                                                .= [ unlines
+                                                        [ "set -eu"
+                                                        , "mc alias set local " ++ minioClusterEndpoint ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
+                                                        , "mc mb --ignore-existing local/" ++ harborRegistryStorageBucket
+                                                        ]
+                                                   ]
+                                            , "env"
+                                                .= [ object
+                                                        [ "name" .= ("MINIO_ROOT_USER" :: String)
+                                                        , "valueFrom"
+                                                            .= object
+                                                                [ "secretKeyRef"
+                                                                    .= object
+                                                                        [ "name" .= minioReleaseName
+                                                                        , "key" .= ("rootUser" :: String)
+                                                                        ]
+                                                                ]
+                                                        ]
+                                                   , object
+                                                        [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
+                                                        , "valueFrom"
+                                                            .= object
+                                                                [ "secretKeyRef"
+                                                                    .= object
+                                                                        [ "name" .= minioReleaseName
+                                                                        , "key" .= ("rootPassword" :: String)
+                                                                        ]
+                                                                ]
+                                                        ]
+                                                   ]
+                                            ]
+                                       ]
+                                ]
+                        ]
+                ]
+        ]
+    ]
+
 ensureHarborRegistryRuntime :: FilePath -> IO ExitCode
 ensureHarborRegistryRuntime repoRoot = do
     repoAddResult <- captureToolOutput repoRoot "helm" ["repo", "add", harborRepositoryName, harborRepositoryUrl]
@@ -843,36 +1057,48 @@ ensureHarborRegistryRuntime repoRoot = do
                 ExitSuccess -> continue
   where
     continue = do
-        existingHarborHealthy <- harborRuntimeAlreadyHealthy repoRoot
         installExit <-
-            if existingHarborHealthy
-                then pure ExitSuccess
-                else
-                    runSequentially
-                        [ runHelmCommandWithRetries repoRoot ["repo", "update"]
-                        , runHelmCommandWithRetries
-                            repoRoot
-                            [ "upgrade"
-                            , "--install"
-                            , harborReleaseName
-                            , harborRepositoryName ++ "/harbor"
-                            , "--namespace"
-                            , harborNamespace
-                            , "--create-namespace"
-                            , "--set"
-                            , "expose.type=nodePort"
-                            , "--set"
-                            , "expose.tls.enabled=false"
-                            , "--set"
-                            , "expose.nodePort.ports.http.nodePort=30080"
-                            , "--set"
-                            , "externalURL=http://" ++ harborRegistryEndpoint
-                            , "--set"
-                            , "harborAdminPassword=Harbor12345"
-                            , "--set"
-                            , "persistence.enabled=false"
-                            ]
-                        ]
+            runSequentially
+                [ runHelmCommandWithRetries repoRoot ["repo", "update"]
+                , runHelmCommandWithRetries
+                    repoRoot
+                    [ "upgrade"
+                    , "--install"
+                    , harborReleaseName
+                    , harborRepositoryName ++ "/harbor"
+                    , "--namespace"
+                    , harborNamespace
+                    , "--create-namespace"
+                    , "--set"
+                    , "expose.type=nodePort"
+                    , "--set"
+                    , "expose.tls.enabled=false"
+                    , "--set"
+                    , "expose.nodePort.ports.http.nodePort=30080"
+                    , "--set"
+                    , "externalURL=http://" ++ harborRegistryEndpoint
+                    , "--set"
+                    , "harborAdminPassword=Harbor12345"
+                    , "--set"
+                    , "persistence.enabled=false"
+                    , "--set"
+                    , "persistence.imageChartStorage.type=s3"
+                    , "--set"
+                    , "persistence.imageChartStorage.disableredirect=true"
+                    , "--set"
+                    , "persistence.imageChartStorage.s3.region=us-east-1"
+                    , "--set"
+                    , "persistence.imageChartStorage.s3.bucket=" ++ harborRegistryStorageBucket
+                    , "--set"
+                    , "persistence.imageChartStorage.s3.regionendpoint=" ++ minioClusterEndpoint
+                    , "--set"
+                    , "persistence.imageChartStorage.s3.existingSecret=" ++ harborRegistryStorageSecretName
+                    , "--set"
+                    , "persistence.imageChartStorage.s3.secure=false"
+                    , "--set"
+                    , "persistence.imageChartStorage.s3.v4auth=true"
+                    ]
+                ]
         case installExit of
             ExitFailure _ -> pure installExit
             ExitSuccess -> do
@@ -905,41 +1131,6 @@ ensureHarborRegistryRuntime repoRoot = do
                                                     [ ensureHarborProject repoRoot projectName
                                                     | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
                                                     ]
-
-harborRuntimeAlreadyHealthy :: FilePath -> IO Bool
-harborRuntimeAlreadyHealthy repoRoot = do
-    deploymentsPresent <- harborDeploymentsExist repoRoot
-    if not deploymentsPresent
-        then pure False
-        else do
-            readyStatusResult <- probeHarborHttpStatus repoRoot harborReadyPath
-            registryStatusResult <- probeHarborHttpStatus repoRoot "/v2/"
-            pure $
-                case (readyStatusResult, registryStatusResult) of
-                    (Right "200", Right registryStatus) -> registryStatus `elem` ["200", "401"]
-                    _ -> False
-
-harborDeploymentsExist :: FilePath -> IO Bool
-harborDeploymentsExist repoRoot = do
-    outputResult <-
-        captureKubectl
-            repoRoot
-            [ "get"
-            , "deployment"
-            , harborComponentName harborReleaseName "core"
-            , harborComponentName harborReleaseName "registry"
-            , harborComponentName harborReleaseName "nginx"
-            , "-n"
-            , harborNamespace
-            , "-o"
-            , "name"
-            ]
-    pure $
-        case outputResult of
-            Left _ -> False
-            Right output ->
-                processExitCode output == ExitSuccess
-                    && trimWhitespace (processStdout output) /= ""
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -3111,6 +3302,17 @@ captureToolOutput repoRoot toolName arguments = do
         case result of
             Failure err -> Left ("failed to start " ++ toolName ++ ": " ++ err)
             Success output -> Right output
+
+runTextCommand :: CommandSpec -> IO (Either String String)
+runTextCommand spec = do
+    result <- captureCommand spec
+    pure $
+        case result of
+            Failure err -> Left ("failed to start " ++ commandPath spec ++ ": " ++ err)
+            Success output ->
+                case processExitCode output of
+                    ExitFailure _ -> Left (outputDetail output)
+                    ExitSuccess -> Right (processStdout output)
 
 readRootFile :: FilePath -> FilePath -> IO (Either String String)
 readRootFile repoRoot path = do

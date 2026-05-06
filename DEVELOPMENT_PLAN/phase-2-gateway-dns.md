@@ -20,9 +20,10 @@ gossip surface, runtime claim/yield emission under the `CanWriteDns` gate, opera
 bounded-clock-skew enforcement, and atomic Orders-promotion coordination across the mesh. The
 gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup`, pinned GHC
 `9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
-`2.1` through `2.7` are now closed on the gateway-daemon, TLA+, single-record Route 53 doctrine,
-peer-transport gossip, claim/yield emission under `CanWriteDns`, time-base discipline, and
-Orders-promotion coordination. This phase does not own the Kubernetes Gateway API or Envoy
+`2.1` through `2.7` now remain closed on the gateway-daemon, native partition validation split,
+single-record Route 53 doctrine, peer-transport runtime closure, claim/yield emission under
+`CanWriteDns`, time-base discipline, and Orders-promotion coordination. This phase
+does not own the Kubernetes Gateway API or Envoy
 Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 
 ## Current Baseline In Worktree
@@ -52,7 +53,10 @@ Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
   configured peer-events port: each daemon pushes its commit log to every other peer at the
   reconnect interval, receivers ingest signed event batches via `appendIfNew`, update
   `stateLastHeartbeatTimes` from inbound timestamps, and refuse events whose timestamps exceed
-  `daemonMaxClockSkewSeconds` or whose senders present an older Orders version.
+  `daemonMaxClockSkewSeconds` or whose senders present an older Orders version. The daemon now
+  validates the retained certificate, key, and CA files at startup and binds the REST plus
+  peer-events listeners on the configured local Orders hosts instead of treating those values as
+  parsed metadata only.
 - The Haskell `prodbox gateway ...` surface remains distinct from the Envoy Gateway public edge
   surface.
 - `src/Prodbox/Dns.hs` owns the public `prodbox dns check` surface. All Python DNS wrappers have
@@ -64,8 +68,10 @@ Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 - Gateway parser, renderer, and CLI proof live in the Haskell test suites under `test/`, while
   the TLA+ artifacts live under `documents/engineering/tla/` and are exercised through
   `prodbox tla-check`.
-- `src/Prodbox/TestPlan.hs` maps the gateway validation names to executable native validations in
-  `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestPlan.hs` maps the gateway validation names into Haskell-owned validation
+  entrypoints in `src/Prodbox/TestValidation.hs`, and `gateway-partition` now runs as a distinct
+  native partition scenario with explicit single-writer and commit-log report markers instead of
+  delegating to `tla-check`.
 - The canonical closure gates for this phase are `prodbox dns check`, the named gateway
   integration validations, and `prodbox tla-check`.
 
@@ -160,8 +166,8 @@ None.
 ## Sprint 2.2: Formal Verification Entrypoint and DNS-Write-Gate Contract ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`
-**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
+**Implementation**: `src/Prodbox/Tla.hs`, `documents/engineering/tla/`, `test/unit/Main.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestValidation.hs`
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/tla/README.md`, `documents/engineering/tla_modelling_assumptions.md`
 
 ### Objective
 
@@ -192,8 +198,9 @@ gateway port.
   gateway wrappers have been removed. The current runtime-to-model boundary is documented in
   `documents/engineering/tla_modelling_assumptions.md`, including the current Haskell
   observability payload and the remaining intentional model/runtime compression points.
-- `src/Prodbox/TestPlan.hs` maps `prodbox test integration gateway-partition` to the Haskell
-  `tla-check` validation surface through `src/Prodbox/TestValidation.hs`.
+- `src/Prodbox/TestValidation.hs` now keeps `prodbox test integration gateway-partition` on a
+  distinct native Haskell partition validation path with explicit report markers, while
+  `src/Prodbox/Tla.hs` continues to own the separate formal `prodbox tla-check` surface.
 
 ### Remaining Work
 
@@ -293,6 +300,10 @@ runtime and the TLA+ model's peer-communication assumptions.
 - `src/Prodbox/Gateway/Daemon.hs` adds `peerListenerLoop` and `peerDialerLoop`, ingests inbound
   events through one atomic STM transaction, refreshes per-peer health, and exposes the new
   fields on `/v1/state`.
+- The daemon now validates the retained certificate, key, and CA files before startup, resolves
+  config-relative trust-material paths through `prodbox gateway start`, and binds the REST plus
+  peer-events listeners on the configured local Orders hosts so the retained socket fields close
+  on the authoritative runtime transport contract described by this sprint.
 - `test/unit/Main.hs` proves disposition computation, the runtime `canWriteDns` predicate, peer
   batch round-trip, and rejection paths for unknown emitters, signature mismatches, and
   excessive timestamp skew.
@@ -441,16 +452,17 @@ None.
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/cli_command_surface.md` - Haskell gateway command surface.
+- `documents/engineering/cli_command_surface.md` - Haskell gateway command surface, including the
+  distinct native `gateway-partition` validation contract.
 - `documents/engineering/dependency_management.md` - gateway container-build posture under the
   canonical Docker doctrine, including the `ghcup` pin and no-symlink rule.
-- `documents/engineering/distributed_gateway_architecture.md` - Haskell gateway implementation and
-  retained DNS ownership doctrine.
+- `documents/engineering/distributed_gateway_architecture.md` - Haskell gateway implementation,
+  retained DNS ownership doctrine, and the authoritative peer-transport plus REST surface.
 - `documents/engineering/local_registry_pipeline.md` - gateway-container build, Harbor loading, and
   native-host-architecture delivery doctrine.
 - `documents/engineering/tla/README.md` - formal model entrypoint and execution contract.
 - `documents/engineering/tla_modelling_assumptions.md` - correspondence between the Haskell runtime
-  and the model.
+  and the model, including the split between native partition validation and `tla-check`.
 - `documents/engineering/unit_testing_policy.md` - Haskell gateway integration-suite ownership.
 
 **Product docs to create/update:**

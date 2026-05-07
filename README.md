@@ -177,6 +177,9 @@ Use this sequence for a first supported local bring-up:
 
 ```bash
 cabal build --builddir=.build exe:prodbox
+mkdir -p .build
+cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
+chmod +x .build/prodbox
 
 ./.build/prodbox config setup
 ./.build/prodbox config validate

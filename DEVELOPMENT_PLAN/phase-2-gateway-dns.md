@@ -22,9 +22,11 @@ gateway container doctrine is implemented on `ubuntu:24.04` with in-image `ghcup
 `9.14.1`, no symlinked Haskell tool shims, and the retained in-image AWS CLI bundle. Sprints
 `2.1` through `2.7` now remain closed on the gateway-daemon, native partition validation split,
 single-record Route 53 doctrine, peer-transport runtime closure, claim/yield emission under
-`CanWriteDns`, time-base discipline, and Orders-promotion coordination. This phase
-does not own the Kubernetes Gateway API or Envoy
-Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
+`CanWriteDns`, time-base discipline, and Orders-promotion coordination. Sprint `2.8` is now
+closed as the cleanup follow-up that removed the retained legacy `NTP synchronized` timedatectl
+parser branch from `src/Prodbox/Host.hs`, so the supported host doctrine closes only on Ubuntu
+24.04's `System clock synchronized: yes/no` field. This phase does not own the Kubernetes Gateway
+API or Envoy Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
 
 ## Current Baseline In Worktree
 
@@ -72,6 +74,9 @@ Gateway public edge; those surfaces remain in Phases `1`, `3`, `4`, and `5`.
   entrypoints in `src/Prodbox/TestValidation.hs`, and `gateway-partition` now runs as a distinct
   native partition scenario with explicit single-writer and commit-log report markers instead of
   delegating to `tla-check`.
+- `src/Prodbox/Host.hs` now accepts only the supported `System clock synchronized` timedatectl
+  field in `parseTimedatectlNtpDisposition`, so the Phase `2` host-info path closes on the Ubuntu
+  24.04 field format named by the current doctrine.
 - The canonical closure gates for this phase are `prodbox dns check`, the named gateway
   integration validations, and `prodbox tla-check`.
 
@@ -443,6 +448,49 @@ disagree with a peer's view of `RankOrder`.
 - `gatewayLoop` blocks ownership claims while the latest observed Orders version is newer than
   the local one, and `/v1/state` reports both `orders_version_utc` and
   `latest_observed_orders_version_utc`.
+
+### Remaining Work
+
+None.
+
+## Sprint 2.8: Remove Legacy `timedatectl` NTP Field Fallback ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Host.hs`, `test/unit/Main.hs`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`, `DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Remove the retained compatibility branch for older `timedatectl status` output from the supported
+host-info path so the time-base-discipline surface closes only on the Ubuntu 24.04 field format
+described by the current doctrine.
+
+### Deliverables
+
+- `parseTimedatectlNtpDisposition` recognizes only the supported
+  `System clock synchronized: yes/no` field on the supported host gate.
+- The legacy cleanup ledger entry for the `NTP synchronized` fallback is moved to `Completed`
+  once the compatibility branch is deleted.
+- Unit coverage keeps the supported host-info parsing contract explicit after the fallback branch
+  is removed.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox host info` reports the supported NTP synchronization state on hosts whose
+   `timedatectl status` exposes `System clock synchronized`
+4. Repository text-search proof shows `src/Prodbox/Host.hs` no longer accepts the legacy
+   `NTP synchronized` field on the supported path
+
+### Current Validation State
+
+- `parseTimedatectlNtpDisposition` now recognizes only `System clock synchronized: yes/no` and
+  returns `NtpUnknown` when only the legacy `NTP synchronized` field is present.
+- `test/unit/Main.hs` keeps the supported-field and legacy-field parsing outcomes explicit in the
+  host NTP disposition suite.
+- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) records the fallback removal
+  in `Completed`, and the pending-removal ledger is back at zero items.
 
 ### Remaining Work
 

@@ -1554,6 +1554,16 @@ main = hspec $ do
                 )
                 `shouldBe` NtpUnsynced "timedatectl reports system clock not synchronized"
 
+        it "treats the legacy `NTP synchronized` field as unsupported" $ do
+            parseTimedatectlNtpDisposition
+                ( unlines
+                    [ "               Local time: Mon 2026-04-06 10:00:00 UTC"
+                    , "           NTP synchronized: yes"
+                    , "                NTP service: active"
+                    ]
+                )
+                `shouldBe` NtpUnknown "timedatectl output did not include synchronization state"
+
         it "renders deterministic host info disposition output" $ do
             renderHostInfoReport "Linux test 6.17.0 #1 x86_64 GNU/Linux" NtpSynchronized
                 `shouldBe` unlines

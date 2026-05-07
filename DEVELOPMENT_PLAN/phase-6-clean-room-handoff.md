@@ -16,9 +16,10 @@ repository. It owns the destructive rerun contract, the final zero-Python handof
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
 The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
 The cleanup ledger is back at zero pending supported-path residue. Sprint `6.1`, Sprint `6.2`,
-and Sprint `6.3` are closed on their repository-owned rerun orchestration, zero-Python baseline,
-and single-host handoff cleanup. The Phase `6` doc-harmony follow-up to the
-`METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
+and Sprint `6.3` remain closed on their repository-owned rerun orchestration, zero-Python
+baseline, and single-host handoff surfaces. The overall plan is fully closed again, and the
+Phase `6` rerun and Python-removal surfaces retain no open work. The Phase `6` doc-harmony
+follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Current Baseline In Worktree
@@ -31,7 +32,7 @@ and single-host handoff cleanup. The Phase `6` doc-harmony follow-up to the
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history and
-  carries zero pending supported-path cleanup items.
+  is back at zero pending supported-path cleanup items.
 - Root guidance aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -136,8 +137,8 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
-  removal history while keeping Python-removal residue at zero; the reopened non-Python
-  single-host cleanup now closes in Sprint `6.3`.
+  removal history while keeping Python-removal residue at zero and the supported-path cleanup
+  ledger back at zero pending items.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain explicit repo-review gates alongside the
   Haskell command-surface validations, and Sprint `6.1` continues to own the destructive rerun
@@ -165,8 +166,10 @@ supported path.
   edge rather than the retired multi-host contract.
 - The authoritative rerun builds and publishes only the native container architecture of the host
   performing the rerun, with no supported `docker buildx` or cross-arch emulation step.
-- The cleanup ledger returns to zero pending removal after `example.com`, dedicated-host
-  public-edge residue, and the final dead supported-runtime helper module are removed.
+- At Sprint `6.3` closure, the cleanup ledger returned to zero pending removal after
+  `example.com`, dedicated-host public-edge residue, and the final dead supported-runtime helper
+  module were removed. Any later supported-path residue remains owned by its originating phase
+  rather than reopening Phase `6`.
 - The final handoff proves that any number of supported application or admin services remain
   reachable through one DNS name and one certificate, distinguished only by path and Keycloak-
   backed RBAC.

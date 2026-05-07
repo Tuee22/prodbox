@@ -87,6 +87,9 @@ Canonical developer entrypoints:
 
 ```bash
 cabal build --builddir=.build exe:prodbox
+mkdir -p .build
+cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
+chmod +x .build/prodbox
 ./.build/prodbox --help
 ./.build/prodbox check-code
 ./.build/prodbox test unit

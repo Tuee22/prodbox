@@ -30,6 +30,9 @@ Do not describe removed Python directories as the current or target architecture
 ```bash
 # Build the operator binary
 cabal build --builddir=.build exe:prodbox
+mkdir -p .build
+cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
+chmod +x .build/prodbox
 
 # Run the canonical quality gate
 ./.build/prodbox check-code

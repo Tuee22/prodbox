@@ -71,13 +71,19 @@ The current repository closes on the implemented self-managed public-edge doctri
 3. The current shipped public workloads are `vscode`, `api`, `websocket`, Harbor, and MinIO,
    each delivered through shared-host Gateway API `HTTPRoute` resources on
    `test.resolvefintech.com`.
-4. Keycloak publishes the identity flow on the shared hostname under `/auth`.
-5. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
+4. The current supported shared public edge is anchored in the `vscode` namespace: the `vscode`
+   stack publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity route,
+   while `api` and `websocket` attach `HTTPRoute` resources from their own namespaces.
+5. Keycloak publishes the identity flow on the shared hostname under `/auth`.
+6. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
    `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode
    state across the browser, API, WebSocket, Harbor, and MinIO routes.
-6. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
+7. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
    prove the shipped JWT-only API and Redis-backed WebSocket paths externally, while
    `prodbox test integration admin-routes` proves the Harbor and MinIO auth gates externally.
+8. The current `websocket` workload uses workload-managed OIDC bootstrap on `/ws/oidc` and a
+   private in-cluster token-endpoint backchannel to `keycloak.vscode.svc.cluster.local:8080`; this
+   is a current runtime boundary, not a second public identity surface.
 
 ## 3. Component Responsibilities
 
@@ -208,6 +214,10 @@ Example hostname routing inside this model may look like:
 The supported architecture no longer treats an app-local nginx auth proxy or Traefik `Ingress`
 surface as the canonical public edge.
 
+In the current implementation, the shared `public-edge` `Gateway` and listener certificate live in
+the `vscode` namespace. `api` and `websocket` keep their workloads in their own namespaces, but
+their `HTTPRoute` resources attach to that shared `Gateway` through cross-namespace `parentRefs`.
+
 The earlier edge pattern:
 
 ```text
@@ -278,7 +288,8 @@ The current worktree ships all three supported public-edge auth shapes:
   JWKS, audience, and route claims.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
   `/ws/oidc`, then a JWT-protected `/ws` upgrade path plus Redis-backed shared state for upgraded
-  connections.
+  connections; the current token exchange path uses private in-cluster access to
+  `keycloak.vscode.svc.cluster.local:8080`.
 
 The shared-host Keycloak route on `/auth` remains the external identity surface for issuer
 metadata, browser login, and workload-managed redirect flows.
@@ -483,13 +494,17 @@ Lifecycle and chart implications:
 2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
    and Envoy data-plane images rather than Traefik images.
 3. The current chart platform ships Keycloak, `vscode`, `api`, and `websocket` on one shared
-   public hostname, keeps the Keycloak public route limited to the identity surfaces browser or
-   OIDC workloads need under `/auth`, and no longer depends on `vscode-nginx`.
+   public hostname, anchors the shared `Gateway`, listener certificate, and `/auth` Keycloak route
+   in the `vscode` namespace, attaches `api` and `websocket` `HTTPRoute` resources through
+   cross-namespace `parentRefs`, keeps the Keycloak public route limited to the identity surfaces
+   browser or OIDC workloads need under `/auth`, and no longer depends on `vscode-nginx`.
 4. The Haskell distributed gateway daemon remains a separate chart and runtime surface; it is not
    the Envoy Gateway public edge.
 5. Additional JWT-only API routes, Redis-backed workloads, or WebSocket services must be added
    only when a real workload needs them and must follow this doctrine rather than inventing a
    parallel edge model.
+6. The current `websocket` workload uses a private token-endpoint backchannel to
+   `keycloak.vscode.svc.cluster.local:8080` rather than exposing a second public Keycloak route.
 
 Typical WebSocket drain flow is:
 

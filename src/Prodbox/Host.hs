@@ -510,16 +510,14 @@ detectNtpDisposition repoRoot = do
                             )
 
 {- | Pure helper that parses @timedatectl status@ output into a
-'NtpDisposition'.  Recognises both the modern @System clock
-synchronized: yes/no@ field and the legacy @NTP synchronized@ field.
+'NtpDisposition'. Recognizes the supported Ubuntu 24.04
+@System clock synchronized: yes/no@ field.
 -}
 parseTimedatectlNtpDisposition :: String -> NtpDisposition
 parseTimedatectlNtpDisposition raw =
     let fieldLines = lines raw
         synchronized = lookupField fieldLines "system clock synchronized"
-        legacyNtp = lookupField fieldLines "ntp synchronized"
-        firstAvailable = synchronized `mplus` legacyNtp
-     in case firstAvailable of
+     in case synchronized of
             Just value
                 | normalize value == "yes" -> NtpSynchronized
                 | normalize value == "no" ->
@@ -540,10 +538,6 @@ parseTimedatectlNtpDisposition raw =
 
     normalize :: String -> String
     normalize = map toLowerAscii . trim
-
-    mplus :: Maybe a -> Maybe a -> Maybe a
-    mplus (Just a) _ = Just a
-    mplus Nothing b = b
 
 runPrerequisites :: FilePath -> [String] -> IO (Result ())
 runPrerequisites repoRoot rootIds =

@@ -8,7 +8,7 @@
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md)
 
-> **Purpose**: Define the singleton chart identity, namespace isolation, external Patroni
+> **Purpose**: Define the singleton chart identity, shared public-edge attachment model, external Patroni
 > PostgreSQL dependency model, storage lifecycle, and delete semantics for `prodbox charts`.
 
 ## 1. Canonical Doctrine Statements
@@ -33,12 +33,18 @@ The supported chart doctrine is:
 4. `keycloak` depends on that namespace-local Patroni cluster.
 5. `vscode` depends on `keycloak`, does not talk directly to PostgreSQL, and targets an
    Envoy-authenticated public browser path rather than a permanent app-local nginx auth proxy.
-6. `api` runs from the shared `prodbox-public-edge-workload` image and targets the shared-host
-   JWT-protected `/api` route.
-7. `websocket` runs from the shared `prodbox-public-edge-workload` image, depends on the internal
-   `redis` release for shared state, owns workload-managed OIDC bootstrap on `/ws/oidc`, and
-   targets the shared-host JWT-protected `/ws` route.
-8. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
+6. `api` runs from the shared `prodbox-public-edge-workload` image, keeps its workload resources
+   namespace-local in `api`, and targets the shared-host JWT-protected `/api` route by attaching
+   to the shared `public-edge` `Gateway` published from the `vscode` namespace.
+7. `websocket` runs from the shared `prodbox-public-edge-workload` image, keeps its workload and
+   `redis` resources namespace-local in `websocket`, owns workload-managed OIDC bootstrap on
+   `/ws/oidc`, targets the shared-host JWT-protected `/ws` route by attaching to the shared
+   `public-edge` `Gateway` in `vscode`, and currently exchanges tokens through a private in-cluster
+   backchannel to `keycloak.vscode.svc.cluster.local`.
+8. The current supported shared public edge is anchored in the `vscode` namespace, where the chart
+   platform publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity
+   route consumed by the shipped browser, API, WebSocket, Harbor, and MinIO surfaces.
+9. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
    path is `prodbox rke2 install`.
 
 ## 2. Singleton Chart Identity Rule
@@ -50,22 +56,30 @@ One Helm release per chart name exists cluster-wide at any time.
   operations begin.
 - Reinstall requires an explicit `prodbox charts delete <chart>` first.
 
-## 3. Root-Chart-Owned Namespace Rule
+## 3. Root-Chart Workload Namespace and Shared Public-Edge Attachment Rule
 
-The namespace for a root chart stack equals the root chart name.
+The root chart name still determines the owning workload namespace for chart-local resources, but
+the current supported public edge is shared.
 
 - `prodbox charts deploy gateway` deploys into the `gateway` namespace.
 - `prodbox charts deploy keycloak` deploys `keycloak-postgres` plus `keycloak` into the
   `keycloak` namespace.
 - `prodbox charts deploy vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the
-  `vscode` namespace.
-- `prodbox charts deploy api` deploys `api` into the `api` namespace.
-- `prodbox charts deploy websocket` deploys `redis` plus `websocket` into the `websocket`
-  namespace.
+  `vscode` namespace and publishes the shared `public-edge` `Gateway`, listener certificate, and
+  `/auth` Keycloak route used by the supported shared-host edge.
+- `prodbox charts deploy api` deploys its workload and JWT `SecurityPolicy` into the `api`
+  namespace, then attaches its `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`
+  through a cross-namespace `parentRef`.
+- `prodbox charts deploy websocket` deploys `redis`, its workload, and JWT `SecurityPolicy` into
+  the `websocket` namespace, then attaches its `/ws` and `/ws/oidc` `HTTPRoute` resources to the
+  shared `public-edge` `Gateway` in `vscode` through cross-namespace `parentRefs`.
 
-Repo-owned chart templates do not render resources into foreign namespaces. The only cluster-wide
-dependency is the lifecycle-owned Percona PostgreSQL operator in the `postgres-operator`
-namespace.
+Repo-owned charts keep workload resources in their owning namespaces, but the current shared-host
+doctrine explicitly allows cross-namespace `HTTPRoute` attachment to the shared `public-edge`
+`Gateway` in `vscode`. The WebSocket workload also carries one current private cross-namespace
+runtime contract to `keycloak.vscode.svc.cluster.local` for token exchange. The only cluster-wide
+dependency beyond that shared-edge model is the lifecycle-owned Percona PostgreSQL operator in the
+`postgres-operator` namespace.
 
 ## 4. Patroni PostgreSQL Dependency Contract
 
@@ -178,19 +192,23 @@ chart names.
 | `redis` | internal | none | none | none | no |
 | `keycloak` | root | `keycloak-postgres` | none beyond dependency | none | yes |
 | `vscode` | root | `keycloak` | none beyond dependency chain | 50Gi | yes |
-| `api` | root | none | none beyond shared edge prerequisites | none | yes |
-| `websocket` | root | `redis` | none beyond shared edge prerequisites | none | yes |
+| `api` | root | none | shared `vscode`-anchored public edge plus shared Keycloak contract | none | yes |
+| `websocket` | root | `redis` | shared `vscode`-anchored public edge plus shared Keycloak contract | none | yes |
 | `gateway` | root | none | none | none | yes |
 
 Root charts:
 
 - `gateway` deploys the in-cluster distributed gateway stack into the `gateway` namespace.
 - `keycloak` deploys `keycloak-postgres` plus `keycloak` into the `keycloak` namespace.
-- `vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace.
-- `api` deploys the JWT-protected public API workload into the `api` namespace.
-- `websocket` deploys the Redis-backed public WebSocket workload into the `websocket` namespace.
+- `vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace and
+  anchors the shared public-edge `Gateway`, certificate, and `/auth` route there.
+- `api` deploys the JWT-protected public API workload into the `api` namespace and attaches its
+  `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`.
+- `websocket` deploys the Redis-backed public WebSocket workload into the `websocket` namespace,
+  attaches its `HTTPRoute` resources to the shared `public-edge` `Gateway` in `vscode`, and uses a
+  private token-endpoint backchannel to `keycloak.vscode.svc.cluster.local`.
 
-## 9. Supported Public Auth Model For `vscode`
+## 9. Supported Public Auth Model
 
 The supported `vscode` public path is:
 
@@ -206,14 +224,19 @@ The supported `vscode` public path is:
 The current implementation boundary is:
 
 - `vscode` uses Envoy-managed browser OIDC enforcement through `SecurityPolicy`.
-- `api` uses Envoy-local JWT validation plus route-claim authorization through `SecurityPolicy`.
+- `api` uses Envoy-local JWT validation plus route-claim authorization through `SecurityPolicy`,
+  with its `HTTPRoute` attached from namespace `api` to the shared `public-edge` `Gateway` in
+  `vscode`.
 - `websocket` uses workload-managed OIDC bootstrap and cookie-backed session ownership on
   `/ws/oidc`, Envoy-local JWT validation plus route-claim authorization on `/ws`, Redis-backed
-  reconnect-safe workload state, and readiness-based drain for live upgraded connections.
+  reconnect-safe workload state, readiness-based drain for live upgraded connections, and a private
+  token-endpoint backchannel to `keycloak.vscode.svc.cluster.local`.
 - `keycloak` stays on the shared public hostname under `/auth` and publicly exposes only the
-  identity-route surfaces the shipped browser and workload-managed OIDC flows require.
+  identity-route surfaces the shipped browser and workload-managed OIDC flows require; on the
+  current supported public-edge path, the shared `Gateway`, listener certificate, and identity
+  route are anchored in the `vscode` namespace.
 - Public API and WebSocket workloads still follow the same public-edge doctrine and do not add
-  chart-local auth proxies or a parallel ingress model.
+  chart-local auth proxies, extra public `Gateway` resources, or a parallel ingress model.
 
 The canonical public-edge doctrine and Redis, JWT, or WebSocket guidance live in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md).
@@ -249,8 +272,11 @@ data. The rendered Kubernetes secret names are:
 - `prodbox-<root-chart>-pg-primaryuser`
 
 When `api` or `websocket` deploy as separate root charts, the chart platform reuses the shared
-`keycloak_*` values from `.prodbox-state/vscode/.secrets.json` so the shared-host Keycloak
-client contracts stay aligned across the shipped public workloads.
+`keycloak_*` values from `.prodbox-state/vscode/.secrets.json`, attaches their public
+`HTTPRoute` resources to the shared `public-edge` `Gateway` in `vscode`, and keeps the shared-host
+Keycloak client contracts aligned across the shipped public workloads. The current `websocket`
+workload also uses a private in-cluster token-endpoint backchannel to
+`keycloak.vscode.svc.cluster.local:8080` rather than a second public identity surface.
 
 ## 11. Planning Ownership
 

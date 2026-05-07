@@ -108,11 +108,11 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Alignment Status
 
-The earlier alignment follow-up on Phases `2`, `3`, and `4` is now closed. Phase `5` continues to
-own the shared-host public-edge closure, Phase `6` continues to own the clean-room rerun
-contract, and Phase `7` continues to own interactive onboarding and AWS administration, but those
-later surfaces remain closed while the earlier gateway, chart, and lifecycle implementation gaps
-are now resolved in code and governed docs.
+The earlier implementation-alignment follow-up on Phases `2`, `3`, and `4` is now closed in code
+and governed docs, and the later Phase `2` cleanup follow-up that removed the retained legacy
+`NTP synchronized` timedatectl parser branch in `src/Prodbox/Host.hs` is closed as well. Phases
+`0` through `7` are now closed on their owned surfaces, and the cleanup ledger is back at zero
+pending supported-path items.
 
 ## Architecture Summary
 
@@ -151,13 +151,14 @@ are now resolved in code and governed docs.
 ## Current Repository State
 
 The target Haskell-only rewrite architecture is implemented in the worktree, and the repository
-is now closed against this plan. The supported operator surface is `prodbox`, the supported configuration contract is direct
-`Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and the supported build topology
-remains `.build/prodbox` on the host plus `/opt/build` inside repository-owned Dockerfiles.
-`prodbox check-code` enforces the governed doctrine-alignment gate, the Haskell gateway runtime
-plus status path close on the implemented bounded HTTP `/v1/state` payload and daemon timing-
-validation contract, the final clean-room handoff closes on the canonical rerun surface, and the earlier
-unsupported Python runtime and tooling surfaces remain removed.
+is now fully closed against this plan. The supported operator surface is `prodbox`, the supported
+configuration contract is direct `Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and
+the supported build topology remains `.build/prodbox` on the host plus `/opt/build` inside
+repository-owned Dockerfiles. `prodbox check-code` enforces the governed doctrine-alignment gate,
+the Haskell gateway runtime plus status path close on the implemented bounded HTTP `/v1/state`
+payload and daemon timing-validation contract, the final clean-room handoff closes on the
+canonical rerun surface, and the earlier unsupported Python runtime and tooling surfaces remain
+removed.
 
 The supported public edge uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
 Keycloak on the single public hostname `test.resolvefintech.com`. Every externally reachable
@@ -172,18 +173,17 @@ contract.
 
 Root guidance plus the governed public-edge, gateway, chart-platform, registry, and testing docs
 now describe that same shared-host route catalog and credential boundary, and the earlier Phase
-`2`, `3`, and `4` implementation gaps are now closed in the same authoritative code paths.
+`2`, `3`, and `4` implementation gaps plus the later Phase `2` host-info cleanup follow-up are
+closed in the same authoritative code paths.
 
 The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus
 its storage backend bootstrap from public registries, every later Helm deployment pulls through
 Harbor, and `amd64` or `arm64` hosts build and publish only their own architecture. The stack
-closes on in-image `ghcup`
-with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the Percona operator-backed
-Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP advertisement. The cleanup
-ledger preserves completed history and currently lists no pending supported-path cleanup items
-after the Phase `6` doc-harmony follow-up removed the stale governed-doc backlinks to the deleted
-`METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning doc. The separate Haskell distributed
-gateway daemon remains distinct from the Envoy Gateway public edge.
+closes on in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the
+Percona operator-backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP
+advertisement. The cleanup ledger preserves completed history and is back at zero pending
+supported-path items. The separate Haskell distributed gateway daemon remains distinct from the
+Envoy Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
@@ -329,7 +329,9 @@ Phases `0` through `7` are closed on the implemented repository architecture:
   `/v1/state` payload, a distinct native `gateway-partition` validation path, peer-transport
   gossip through `Prodbox.Gateway.Peer`, runtime claim/yield emission under the `canWriteDns`
   predicate, operator-verifiable bounded-clock-skew enforcement, config-relative trust-material
-  validation, listener-host closure from Orders, and Orders-version coordination across the mesh.
+  validation, listener-host closure from Orders, Orders-version coordination across the mesh, and
+  the host-info parser cleanup that limits `parseTimedatectlNtpDisposition` to the supported
+  `System clock synchronized` field.
 - Phase 3 owns the chart platform, retained state model, supported public workload delivery, and
   the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. The Phase
   `3` surfaces include the root-chart-only public `prodbox charts ...` surface, the JWT-protected

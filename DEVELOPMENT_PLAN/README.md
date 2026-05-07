@@ -29,7 +29,9 @@ govern this plan suite.
 Phases `0` through `7` are closed on their owned Haskell-only surfaces. The earlier Phase `2`,
 `3`, and `4` alignment follow-up on native `gateway-partition` validation, peer trust-material
 runtime closure, root-chart-only public chart commands, and the Harbor-plus-storage-backend
-bootstrap contract is now complete in both governed docs and code.
+bootstrap contract is complete in both governed docs and code, and the later Phase `2` cleanup
+follow-up that removed the retained legacy `NTP synchronized` timedatectl parser branch in
+`src/Prodbox/Host.hs` is closed as well.
 
 The authoritative target still closes on:
 
@@ -60,7 +62,7 @@ The authoritative target still closes on:
 - one Redis surface that currently backs WebSocket shared state and may later back an explicit
   external rate-limit service, but does not yet ship a standalone rate-limit-service workload or
   validation surface
-- one cleanup ledger that preserves completed removal history and currently lists no pending
+- one cleanup ledger that preserves completed removal history and currently lists zero pending
   supported-path cleanup items
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
@@ -130,13 +132,13 @@ A sprint can move to `Done` only when all of the following are true:
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: the Haskell-only rewrite baseline plus the later public-edge,
-clean-room, and AWS-administration surfaces are now validated on the supported Haskell command
-surface with no reopened earlier-phase alignment gap remaining.
+clean-room, and AWS-administration surfaces are validated on the supported Haskell command
+surface with no reopened earlier-phase cleanup follow-up remaining.
 
 ## Current Plan Status
 
-The development plan remains authoritative, and the repository worktree is now closed against it.
-The following implemented surfaces remain current on the supported path:
+The development plan remains authoritative, and the repository worktree is now fully closed
+against it. The following implemented surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -271,6 +273,10 @@ The following implemented surfaces remain current on the supported path:
 - `src/Prodbox/Host.hs` and `src/Prodbox/TestValidation.hs` now classify and validate the
   current Keycloak identity, `vscode`, `api`, `websocket`, Harbor, and MinIO routes through named
   external validations on one shared hostname.
+- `src/Prodbox/Host.hs` now recognizes only the supported
+  `System clock synchronized` timedatectl field in `parseTimedatectlNtpDisposition`, so the
+  Phase `2` host-info path closes on the Ubuntu 24.04 field format described by the current
+  doctrine.
 - `charts/gateway/` and `prodbox gateway start|status|config-gen` remain the separate Haskell
   distributed gateway daemon surface; they are not the Envoy Gateway public edge.
 - The canonical validation surfaces are `prodbox check-code`, `prodbox test unit`,
@@ -284,8 +290,7 @@ The following implemented surfaces remain current on the supported path:
 - The final Phase `6` destructive rerun and handoff validation are closed on that aggregate rerun
   contract and the supported postflight restore path.
 - The legacy ledger preserves completed cleanup history and is back at zero pending supported-path
-  residue after the Phase `6` doc-harmony follow-up removed the stale governed-doc backlinks to the
-  deleted `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning doc.
+  residue.
 
 ## Exit Definition
 

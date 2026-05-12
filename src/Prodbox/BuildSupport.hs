@@ -5,6 +5,12 @@ module Prodbox.BuildSupport
   )
 where
 
+import Prodbox.Result (Result (..))
+import Prodbox.Subprocess
+  ( CommandSpec (..)
+  , ProcessOutput (..)
+  , captureCommand
+  )
 import System.Directory
   ( Permissions (..)
   , copyFile
@@ -18,11 +24,6 @@ import System.Exit
   ( ExitCode (..)
   )
 import System.FilePath ((</>))
-import System.Process
-  ( CreateProcess (cwd, env)
-  , proc
-  , readCreateProcessWithExitCode
-  )
 
 addBuildSupportEnvironment :: FilePath -> [(String, String)] -> IO [(String, String)]
 addBuildSupportEnvironment repoRoot environment = do
@@ -40,22 +41,26 @@ canonicalOperatorBinaryPath repoRoot = repoRoot </> ".build" </> "prodbox"
 syncBuiltOperatorBinary :: FilePath -> [(String, String)] -> IO (Either String FilePath)
 syncBuiltOperatorBinary repoRoot environment = do
   createDirectoryIfMissing True (repoRoot </> ".build")
-  (exitCode, stdoutText, stderrText) <-
-    readCreateProcessWithExitCode
-      (proc "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"])
-        { cwd = Just repoRoot
-        , env = Just environment
+  captureResult <-
+    captureCommand
+      CommandSpec
+        { commandPath = "cabal"
+        , commandArguments = ["list-bin", "--builddir=.build", "exe:prodbox"]
+        , commandEnvironment = Just environment
+        , commandWorkingDirectory = Just repoRoot
         }
-      ""
-  case exitCode of
-    ExitFailure _ -> pure (Left stderrText)
-    ExitSuccess -> do
-      let builtBinaryPath = trim stdoutText
-          targetBinaryPath = canonicalOperatorBinaryPath repoRoot
-      copyFile builtBinaryPath targetBinaryPath
-      sourcePermissions <- getPermissions builtBinaryPath
-      setPermissions targetBinaryPath sourcePermissions {executable = True}
-      pure (Right targetBinaryPath)
+  case captureResult of
+    Failure err -> pure (Left err)
+    Success output ->
+      case processExitCode output of
+        ExitFailure _ -> pure (Left (trim (processStderr output)))
+        ExitSuccess -> do
+          let builtBinaryPath = trim (processStdout output)
+              targetBinaryPath = canonicalOperatorBinaryPath repoRoot
+          copyFile builtBinaryPath targetBinaryPath
+          sourcePermissions <- getPermissions builtBinaryPath
+          setPermissions targetBinaryPath sourcePermissions {executable = True}
+          pure (Right targetBinaryPath)
 
 ensureBuildSupportDirectory :: FilePath -> IO FilePath
 ensureBuildSupportDirectory repoRoot = do

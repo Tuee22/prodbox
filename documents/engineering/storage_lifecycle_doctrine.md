@@ -133,18 +133,19 @@ Rules:
 2. The internal `keycloak-postgres` release uses the deterministic path
    `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/<ordinal>/data/`.
 3. The `vscode` StatefulSet uses the deterministic path `.data/vscode/vscode/vscode/0/data/`.
-4. `.prodbox-state/` is retained non-PV chart state.
-5. `.prodbox-state/<namespace>/.secrets.json` retains chart secrets plus the Patroni application,
+4. Deterministic PV and Patroni resource names flow through `src/Prodbox/Naming.hs`.
+5. `.prodbox-state/` is retained non-PV chart state.
+6. `.prodbox-state/<namespace>/.secrets.json` retains chart secrets plus the Patroni application,
    superuser, and standby passwords that must remain stable when preserved PostgreSQL volumes are
    rebound.
-6. The `api`, `redis`, and `websocket` workloads do not currently allocate deterministic
+7. The `api`, `redis`, and `websocket` workloads do not currently allocate deterministic
    `.data/` roots on the supported path.
-7. The retained Patroni anchor path is `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/0/data/`;
+8. The retained Patroni anchor path is `.data/<namespace>/keycloak-postgres/prodbox-<root-chart>-pg/0/data/`;
    follower paths for ordinals `1` and `2` are preserved on disk but must be reset before those
    replicas rejoin a restored cluster.
-8. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes either retained
+9. `prodbox charts delete <chart>` deletes PV/PVC objects but never removes either retained
    host-state root.
-9. Full cluster delete preserves both retained roots so reinstall can reconnect stateful services.
+10. Full cluster delete preserves both retained roots so reinstall can reconnect stateful services.
 
 ## Cross-References
 

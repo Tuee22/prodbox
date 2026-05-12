@@ -19,12 +19,15 @@ the reconciler discipline to `prodbox charts deploy|delete`, surface `--dry-run`
 operations, and add the `prodbox lint chart` Helm-chart structural-invariants linter together
 with marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
 artifacts via the existing `generatedSectionRule` registry. Current worktree evidence puts
-Sprints `3.10`, `3.11`, and `3.12` in `Done` state: the chart reconciler surface now treats
-already-deployed healthy releases as a success no-op and rejects the doctrine-forbidden flags
-and sister commands, chart dry-run plans are rendered and golden-covered, the structural-lint
-implementation is live on `prodbox lint chart`, and the marker-delimited route inventory
-generated from `src/Prodbox/PublicEdge.hs` is now emitted into the consuming chart templates.
-The remaining reopened Phase `3` sprints stay `Planned`.
+Sprint `3.8` in `Active` state and Sprints `3.10`, `3.11`, and `3.12` in `Done` state:
+`src/Prodbox/Lib/Storage.hs` already centralizes much of the PV or PVC pairing through
+`storageBinding`, but naming-helper centralization and the full paired-resource audit remain
+incomplete; the chart reconciler surface now treats already-deployed healthy releases as a
+success no-op and rejects the doctrine-forbidden flags and sister commands, chart dry-run
+plans are rendered and golden-covered, the structural-lint implementation is live on
+`prodbox lint chart`, and the marker-delimited route inventory generated from
+`src/Prodbox/PublicEdge.hs` is now emitted into the consuming chart templates. The remaining
+reopened Phase `3` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -493,9 +496,10 @@ one public hostname, one DNS entry, and one certificate.
 
 None.
 
-## Sprint 3.8: Smart Constructors for Paired Chart Resources 📋
+## Sprint 3.8: Smart Constructors for Paired Chart Resources 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`,
 `documents/engineering/helm_chart_platform_doctrine.md`
 
@@ -518,6 +522,17 @@ Resources](../HASKELL_CLI_TOOL.md) on the chart platform.
 1. Unit tests confirm that the paired resources are derived from the smart constructor only.
 2. Hand-constructed PV/PVC pairs outside the smart constructor are enqueued in the legacy
    ledger and removed.
+
+### Remaining Work
+
+- `src/Prodbox/Lib/Storage.hs` already routes much of the PV or PVC pairing through
+  `storageBinding`, and `test/unit/Main.hs` already exercises deterministic binding output.
+- `src/Prodbox/Naming.hs` now owns the shared DNS-1123 or 63-character helper surface, and
+  `src/Prodbox/Lib/Storage.hs` plus `src/Prodbox/PostgresPlatform.hs` now consume it for PV and
+  Patroni naming.
+- The paired-resource audit is still incomplete: `src/Prodbox/Lib/ChartPlatform.hs` continues to
+  build related names and paired resources inline instead of routing every pair through the
+  doctrine-owned smart-constructor layer.
 
 ## Sprint 3.9: Capability Classes Applied to Redis and Postgres 📋
 

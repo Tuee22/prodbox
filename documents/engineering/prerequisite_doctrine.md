@@ -95,6 +95,7 @@ Avoid:
 
 Prerequisite failures should be actionable and specific.
 
+- surface the failing node ID, the node description, and the node-owned remedy hint
 - name the missing or invalid requirement
 - explain what the operator must fix
 - avoid repeating the same remediation text at every dependent node

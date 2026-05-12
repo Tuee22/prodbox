@@ -159,6 +159,8 @@ Repo-owned charts never create `PersistentVolume` objects directly.
 - Percona-managed PostgreSQL clusters create their own PVC objects through the operator.
 - After the Percona cluster creates those PVCs, the Haskell runtime discovers the actual claim
   names and binds the deterministic retained PVs to those claims.
+- Deterministic PV names and Patroni cluster or secret names flow through
+  `src/Prodbox/Naming.hs` rather than through open-coded string concatenation.
 
 There is no Pulumi-owned PostgreSQL exception on the supported path.
 
@@ -183,7 +185,7 @@ Rules:
 
 1. The CLI creates host directories before storage manifests are applied.
 2. `.data/` is reserved for PV contents only.
-3. PV names are deterministic.
+3. PV names are deterministic and flow through `src/Prodbox/Naming.hs`.
 4. `manual` is the only supported `StorageClass`.
 5. `vscode` remains single-replica retained storage on the supported path.
 

@@ -35,6 +35,8 @@ import Prodbox.CLI.Command
   , GatewayCommand (..)
   , PlanOptions (..)
   )
+import Prodbox.CLI.Output (writeError)
+import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
@@ -65,7 +67,6 @@ import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
-import System.IO (hPutStrLn, stderr)
 import Text.Read (readMaybe)
 
 runGatewayCommand :: FilePath -> GatewayCommand -> IO ExitCode
@@ -449,5 +450,5 @@ mapLeft transform value =
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

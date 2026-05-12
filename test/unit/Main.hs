@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Main (main) where
 
@@ -11,11 +12,17 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.IORef
+  ( modifyIORef'
+  , newIORef
+  , readIORef
+  )
 import Data.List
   ( sort
   )
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
+import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Options.Applicative
   ( ParserResult (..)
@@ -58,6 +65,7 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
+import Prodbox.CLI.Output (renderError)
 import Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
@@ -88,6 +96,13 @@ import Prodbox.EffectDAG
 import Prodbox.EffectInterpreter
   ( InterpreterContext (..)
   , runEffect
+  )
+import Prodbox.Error
+  ( ErrorKind (..)
+  , errorCause
+  , errorKind
+  , fatalError
+  , recoverableError
   )
 import Prodbox.Gateway
   ( renderGatewayConfigTemplate
@@ -146,10 +161,24 @@ import Prodbox.Lib.Storage
   , ChartStorageSpec (..)
   , storageBinding
   )
+import Prodbox.Naming
+  ( boundedResourceName
+  , hashSuffix
+  , sanitizeResourceName
+  )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
 import Prodbox.Result qualified as Result
+import Prodbox.Retry
+  ( RetryPolicy (..)
+  , retryDelayMicros
+  )
+import Prodbox.Service
+  ( RedisError (..)
+  , ServiceError (..)
+  , retryServiceAction
+  )
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -163,6 +192,10 @@ import Prodbox.Settings
   , renderSettingsDisplay
   , validateAndLoadSettings
   , validatePublicEdgeDeployment
+  )
+import Prodbox.Subprocess
+  ( renderSubprocess
+  , pattern Subprocess
   )
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
@@ -875,8 +908,9 @@ main = mainWithSuite "prodbox-unit" $ do
       repoRoot <- getCurrentDirectory
       rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
 
-      rke2Source `shouldContain` "customImagePushRetryAttempts = 3"
-      rke2Source `shouldContain` "customImagePushRetryDelayMicroseconds = 5000000"
+      rke2Source `shouldContain` "customImagePushRetryPolicy :: RetryPolicy"
+      rke2Source `shouldContain` "retryPolicyMaxAttempts = 3"
+      rke2Source `shouldContain` "retryPolicyBaseDelayMicros = 5000000"
       rke2Source `shouldContain` "pushDockerImageWithRetry"
       rke2Source `shouldContain` "isRetryableHarborPublicationFailure"
       rke2Source `shouldContain` "Retrying Harbor publication for "
@@ -1076,6 +1110,7 @@ main = mainWithSuite "prodbox-unit" $ do
         ( \(key, node) -> do
             effectNodeId node `shouldBe` key
             effectNodeDescription node `shouldNotBe` ""
+            effectNodeRemedyHint node `shouldNotBe` ""
         )
         (Map.toList prerequisiteRegistry)
 
@@ -1206,6 +1241,85 @@ main = mainWithSuite "prodbox-unit" $ do
           , "tool_aws"
           , "tool_kubectl"
           ]
+
+    it "fails fast when a prerequisite id is missing from the registry" $ do
+      transitiveClosureIds ["definitely_missing_node"] prerequisiteRegistry
+        `shouldBe` Left "Missing effect node in registry: definitely_missing_node"
+
+  describe "shared runtime helpers" $ do
+    it "sanitizes resource names into DNS-1123 labels" $ do
+      sanitizeResourceName "Hello, World_123"
+        `shouldBe` "hello-world-123"
+
+    it "bounds resource names to 63 characters without losing determinism" $ do
+      let longName =
+            boundedResourceName
+              "prodbox"
+              "this-is-a-very-long-component-name-that-needs-truncation"
+              "primary"
+      Text.length longName `shouldSatisfy` (<= 63)
+      Text.unpack longName
+        `shouldContain` Text.unpack
+          (hashSuffix "prodbox-this-is-a-very-long-component-name-that-needs-truncation-primary")
+
+    it "keeps distinct long resource names collision-resistant" $ do
+      let firstName =
+            boundedResourceName
+              "prodbox"
+              "this-is-a-very-long-component-name-that-needs-truncation"
+              "primary"
+          secondName =
+            boundedResourceName
+              "prodbox"
+              "this-is-a-very-long-component-name-that-needs-truncation"
+              "replica"
+      firstName `shouldNotBe` secondName
+
+    it "computes exponential retry delays from a first-class policy" $ do
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 5
+              , retryPolicyBaseDelayMicros = 100
+              , retryPolicyMultiplier = 2
+              , retryPolicyMaxDelayMicros = 1000
+              }
+      map (retryDelayMicros policy) [0, 1, 2, 3, 4]
+        `shouldBe` [100, 200, 400, 800, 1000]
+
+    it "retries retryable service actions through the shared service helper" $ do
+      attemptsRef <- newIORef (0 :: Int)
+      let policy =
+            RetryPolicy
+              { retryPolicyMaxAttempts = 3
+              , retryPolicyBaseDelayMicros = 0
+              , retryPolicyMultiplier = 1
+              , retryPolicyMaxDelayMicros = 0
+              }
+      result <-
+        retryServiceAction policy $ do
+          modifyIORef' attemptsRef (+ 1)
+          attempts <- readIORef attemptsRef
+          pure $
+            if attempts < 3
+              then Left (RedisError (ServiceError "transient" True))
+              else Right ("ready" :: String)
+      attempts <- readIORef attemptsRef
+      result `shouldBe` Right "ready"
+      attempts `shouldBe` 3
+
+    it "renders AppError values through the shared CLI output boundary" $ do
+      let fatalAppError = fatalError "fatal message"
+          recoverableAppError = recoverableError "recoverable message"
+      renderError fatalAppError `shouldBe` "fatal message"
+      errorKind recoverableAppError `shouldBe` Recoverable
+      case errorCause fatalAppError of
+        Nothing -> pure ()
+        Just _ -> expectationFailure "expected fatalError to omit an exception cause"
+
+    it "renders subprocesses through the shared typed-value boundary" $ do
+      let subprocess =
+            Subprocess "kubectl" ["get", "pods", "-A"] Nothing (Just "/tmp/prodbox")
+      renderSubprocess subprocess `shouldBe` "kubectl get pods -A"
 
   describe "native chart platform helpers" $ do
     it "extracts deleted MinIO export host paths from mountinfo" $ do

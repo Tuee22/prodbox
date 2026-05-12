@@ -23,13 +23,15 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 `execParserPure` parser-test category, and the `renderError` error-boundary discipline. Sprint
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
-compare, respectively. Current worktree evidence puts Sprints `1.6`, `1.7`, and `1.11`
-in `Active` state: the parser remains hand-authored rather than rendered from
-`CommandSpec`, the full build/apply split is not yet generalized across state-changing
-surfaces, the doctrinal single `prodbox-integration` stanza plus full property-invariant
-closure remain incomplete. Sprints `1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27` are now
-implemented in code and validated locally. The remaining reopened Phase `1` sprints stay
-`Planned`.
+compare, respectively. Current worktree evidence puts Sprints `1.6`, `1.7`, `1.8`, `1.9`,
+`1.11`, `1.12`, `1.13`, `1.14`, `1.15`, and `1.26` in `Active` state: the parser remains
+hand-authored rather than rendered from `CommandSpec`, the full build/apply split is not yet
+generalized across state-changing surfaces, the subprocess and prerequisite surfaces still
+retain compatibility or consolidation residue, the service/retry/error/naming foundations are
+now implemented but not yet fully migrated through their call sites, and the doctrinal single
+`prodbox-integration` stanza plus full property-invariant closure remain incomplete. Sprints
+`1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27` are now implemented in code and
+validated locally. The remaining reopened Phase `1` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -455,7 +457,7 @@ None.
 ## Sprint 1.6: CommandSpec Source-of-Truth Split 🔄
 
 **Status**: Active
-**Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, `src/Prodbox/CLI/Json.hs`, `src/Prodbox/App.hs`, `src/Prodbox/CLI/Parser.hs`, `test/unit/Main.hs`
+**Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, `src/Prodbox/CLI/Json.hs`, `src/Prodbox/App.hs`, `src/Prodbox/CLI/Parser.hs`, `test/unit/Main.hs`, `test/unit/Parser.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`
 
@@ -516,18 +518,19 @@ Module layout` so the CLI surface is generated from a single typed specification
 - `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, and
   `src/Prodbox/CLI/Json.hs` are implemented, and `prodbox commands` / `prodbox help <path>`
   already run from `src/Prodbox/App.hs`.
+- The command-registry test surface now includes deterministic tree or JSON goldens, a
+  leaf-help golden assembled from every registered leaf command, and the leaf-`Example`
+  completeness property in `test/unit/Parser.hs`.
 - `src/Prodbox/CLI/Parser.hs` remains a hand-authored source of truth rather than a renderer of
-  `CommandSpec`, and the parser has already drifted from the registry on doctrine-added surfaces
-  such as Pulumi `--dry-run` / `--plan-file` and daemon flags.
-- `src/Prodbox/CLI/Command.hs` still routes gateway operations through ad-hoc `GatewayCommand`
-  constructors instead of a typed daemon-command value produced directly from the registry.
-- `test/unit/Main.hs` contains selective parser assertions only; full leaf help/tree/json golden
-  coverage and the leaf-`Example` completeness property test are still absent.
+  `CommandSpec`; the registry drives docs, introspection, and generated artifacts, but not parser
+  construction.
+- `src/Prodbox/CLI/Command.hs` still keeps the command ADTs and parser wiring separate from the
+  registry, so the doctrine's one-structure parser-generation closure is not yet complete.
 
 ## Sprint 1.7: Plan / Apply Discipline with --dry-run 🔄
 
 **Status**: Active
-**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Rke2.hs`, `test/unit/Main.hs`
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Aws.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/refactoring_patterns.md`,
 `documents/engineering/effect_interpreter.md`
 
@@ -553,14 +556,20 @@ command.
 ### Remaining Work
 
 - `PlanOptions`, `--dry-run`, `--plan-file`, and deterministic rendered plans are already wired
-  through `prodbox charts deploy|delete` and `prodbox rke2 reconcile|install`.
+  through `prodbox charts deploy|delete`, `prodbox rke2 reconcile|install`, `prodbox gateway start`,
+  `prodbox pulumi ...`, `prodbox aws setup|teardown`, and `prodbox config setup`.
+- Golden fixtures now cover the chart, Pulumi, gateway-start, and RKE2 plan renderers in
+  `test/unit/Main.hs`.
 - The doctrine's `build :: Inputs -> Either AppError Plan` / `apply :: Env -> Plan -> IO ExitCode`
-  split is still absent from gateway, Pulumi, AWS, and interactive config surfaces.
-- The rendered plans are not yet covered by golden fixtures.
+  split is still absent as a shared boundary: the current commands still gather inputs, render
+  plans, and execute side effects inline rather than passing through one typed plan API.
+- AWS and interactive-config plan renderers are not yet golden-covered, and the current command
+  modules do not share a doctrine-owned `Plan` ADT.
 
-## Sprint 1.8: Subprocess ADT Formalization 📋
+## Sprint 1.8: Subprocess ADT Formalization 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway.hs`
 **Docs to update**: `documents/engineering/effect_interpreter.md`,
 `documents/engineering/streaming_doctrine.md`
 
@@ -593,9 +602,23 @@ Values](../HASKELL_CLI_TOOL.md).
 1. `cabal test prodbox-unit` covers the rendered subprocess golden tests.
 2. The legacy ledger lists the migrated call sites.
 
-## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/Subprocess.hs` now exposes the doctrine-shaped `Subprocess` surface through the
+  `Subprocess` type alias, `pattern Subprocess`, `renderSubprocess`, `runStreaming`, `capture`,
+  and background-process helpers, while compatibility wrappers (`CommandSpec`,
+  `runStreamingCommand`, `captureCommand`) keep the existing call sites working.
+- `test/unit/Main.hs` now covers rendered subprocess output, and `src/Prodbox/CheckCode.hs`
+  refuses direct `System.Process` construction outside `src/Prodbox/Subprocess.hs`.
+- The supported path still retains the pre-doctrine compatibility names (`CommandSpec`,
+  `Result`) for the migrated call sites, and the negative-space enforcement lives in the
+  governed `prodbox check-code` scan rather than in the custom `.hlint.yaml` rule stack named
+  by the sprint deliverables.
+
+## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/EffectDAG.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/prerequisite_doctrine.md`,
 `documents/engineering/prerequisite_dag_system.md`
 
@@ -616,6 +639,18 @@ Effects](../HASKELL_CLI_TOOL.md), including the required error-message contract.
 
 1. Every prerequisite failure surfaces `nodeId`, `nodeDescription`, and the remedy hint.
 2. Unit tests cover registry-typo detection at expansion time.
+
+### Remaining Work
+
+- `src/Prodbox/Prerequisite.hs` already centralizes the prerequisite registry, and
+  `src/Prodbox/EffectDAG.hs` already rejects unknown node IDs during transitive-closure expansion.
+- `test/unit/Main.hs` already exercises registry integrity, closure determinism, cycle absence,
+  and missing-ID failure behavior.
+- `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`,
+  and `src/Prodbox/K8s.hs` now carry remedy hints through the effect-node surface so
+  prerequisite failures include the required node-id / description / remedy triple.
+- Inline prerequisite-style checks still survive outside the registry, so the registry is not yet
+  the sole source of truth for readiness guidance.
 
 ## Sprint 1.10: Lint, Generated-Section, and Forbidden-Path Stack ✅
 
@@ -740,9 +775,10 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
   `test/unit/Main.hs`, and the deeper lifecycle or ephemeral-stack behavior owned by Sprints
   `2.14` and `4.7` is still scaffold-only in their new stanzas.
 
-## Sprint 1.12: Capability Classes and AsServiceError 📋
+## Sprint 1.12: Capability Classes and AsServiceError 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/Service.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
 ### Objective
@@ -772,9 +808,20 @@ Errors](../HASKELL_CLI_TOOL.md).
 1. `cabal test prodbox-unit` covers retry behavior using `Env` test hooks (Sprint 2.X).
 2. Direct MinIO / Redis / Postgres call sites outside the capability classes are absent.
 
-## Sprint 1.13: RetryPolicy as First-Class Values 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/Service.hs` now defines `ServiceError`, the `MinIOError` / `RedisError` /
+  `PgError` newtypes, `AsServiceError`, the three capability classes, and
+  `retryServiceAction`.
+- `test/unit/Main.hs` now exercises `retryServiceAction` on a retryable `ServiceError`.
+- No supported-path MinIO, Redis, or Postgres call sites consume the new capability classes yet,
+  and `retryServiceAction` is not yet the shared entrypoint for the chart-platform or
+  infrastructure service consumers.
+
+## Sprint 1.13: RetryPolicy as First-Class Values 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Retry.hs`, `src/Prodbox/Service.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
 ### Objective
@@ -795,9 +842,20 @@ Values](../HASKELL_CLI_TOOL.md).
 1. Property tests confirm exponential backoff for the default policy.
 2. The retry surface is consumed only through the `RetryPolicy` API.
 
-## Sprint 1.14: Recoverable / Fatal ErrorKind 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/Retry.hs` now defines the shared `RetryPolicy` ADT plus pure
+  `retryDelayMicros`, and `src/Prodbox/CLI/Rke2.hs` plus `src/Prodbox/Lib/ChartPlatform.hs`
+  now use explicit `RetryPolicy` values instead of hardcoded retry-attempt or delay constants.
+- `src/Prodbox/Service.hs` now exposes `retryServiceAction` so retry behavior can be shared with
+  service-specific errors instead of open-coded loops.
+- Many retrying call sites still use ad-hoc loops and string classification rather than one
+  doctrine-owned retry API, so the retry surface is not yet fully centralized.
+
+## Sprint 1.14: Recoverable / Fatal ErrorKind 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Error.hs`, `src/Prodbox/Retry.hs`, `src/Prodbox/CLI/Output.hs`, `src/Prodbox/App.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/effect_interpreter.md`
 
@@ -827,9 +885,22 @@ short-running commands too.
 2. The gateway daemon and chart reconcile surface fatal errors to the supervisor without
    silently retrying.
 
-## Sprint 1.15: Naming Helpers and Smart-Constructor Module 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/Error.hs` now defines `AppError` with the doctrinal `errorKind`, `errorMsg`, and
+  `errorCause` fields, `src/Prodbox/CLI/Output.hs` renders that value at the CLI boundary, and
+  `src/Prodbox/App.hs` plus the shared `failWith` helpers now route fatal CLI failures through
+  the shared boundary.
+- `src/Prodbox/Retry.hs` and `test/unit/Main.hs` now exercise the `Recoverable` / `Fatal`
+  distinction on the shared error type.
+- Worker loops on the daemon, chart-reconcile, and lifecycle surfaces still operate on ad-hoc
+  `Either String ...` results rather than classifying `AppError` values at the call site, so
+  the fatal-vs-recoverable behavior is not yet enforced across the long-running runtime.
+
+## Sprint 1.15: Naming Helpers and Smart-Constructor Module 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Naming.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
 ### Objective
@@ -865,6 +936,16 @@ Resources](../HASKELL_CLI_TOOL.md), including the prescribed naming helpers.
 
 1. Unit tests cover the DNS-1123 length and character invariants.
 2. Hand-constructed resource names outside the helper module are absent.
+
+### Remaining Work
+
+- `src/Prodbox/Naming.hs` now provides `boundedResourceName`, `sanitizeResourceName`, and
+  `hashSuffix`, and `test/unit/Main.hs` covers the DNS-1123, 63-character, and collision-
+  resistance invariants.
+- `src/Prodbox/Lib/Storage.hs` and `src/Prodbox/PostgresPlatform.hs` now use the shared naming
+  helpers for persistent-volume and Patroni naming.
+- `src/Prodbox/Lib/ChartPlatform.hs` still contains inline related-name construction, so the
+  naming helper module is not yet the sole source of truth for chart-platform resource naming.
 
 ## Sprint 1.16: GADT-Indexed State Machines for Multi-State Workflows 📋
 
@@ -1293,9 +1374,10 @@ Sprint 1.6.
 
 None.
 
-## Sprint 1.26: Error Rendering Boundary Discipline 📋
+## Sprint 1.26: Error Rendering Boundary Discipline 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Output.hs`, `src/Prodbox/Error.hs`, `src/Prodbox/App.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/code_quality.md`
 
@@ -1335,6 +1417,17 @@ so error rendering happens only at the CLI boundary and core code is free of
    variants.
 3. `prodbox check-code` continues to enforce the governed doctrine-alignment
    contract after the boundary rules land.
+
+### Remaining Work
+
+- `src/Prodbox/CLI/Output.hs` now provides `renderError` / `writeError`, `src/Prodbox/App.hs`
+  plus the shared `failWith` helpers now route fatal command failures through the output layer,
+  and `test/unit/Main.hs` covers representative `AppError` rendering.
+- `src/Prodbox/CheckCode.hs` now refuses `print` and `exitFailure` under `src/Prodbox/` outside
+  the dedicated output layer.
+- The wider direct-terminal-formatting cleanup is still incomplete: many one-shot and daemon
+  code paths still print diagnostics directly, and the negative-space enforcement currently lives
+  in `prodbox check-code` rather than in the custom `.hlint.yaml` rule set named by the sprint.
 
 ## Sprint 1.27: Toolchain Pin Declarations and Library-First Layout ✅
 

@@ -41,6 +41,8 @@ text at each dependent node.
 - The root-cause prerequisite owns the actionable error.
 - Dependent nodes may add context, but should not overwrite the root-cause signal.
 - Command runners decide how to render interpreter failures to the operator.
+- The interpreter preserves the node description and remedy hint owned by the failing prerequisite
+  so the CLI boundary can surface one consistent node-id / description / remedy triple.
 
 ## 4. Effect Outcome ADT Contract
 

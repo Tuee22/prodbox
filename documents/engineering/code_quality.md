@@ -67,6 +67,10 @@ Current enforced quality surfaces:
 - committed repo-root Dhall imports must carry `sha256:` annotations produced by
   `dhall freeze --all --inplace`
 - thin-`app/prodbox/Main.hs` and tracked generated-path drift
+- direct `System.Process` construction is forbidden under `src/Prodbox/` outside
+  `src/Prodbox/Subprocess.hs`
+- `print` and `exitFailure` are forbidden under `src/Prodbox/` outside
+  `src/Prodbox/CLI/Output.hs`
 - generated renderer source modules must remain free of forbidden nondeterministic inputs
   (`getCurrentTime`, `randomIO`, `sort`, `System.Console.Terminal.Size`, `getEnv`, and the
   other doctrine-named classes exercised by `prodbox-haskell-style`)

@@ -3,6 +3,7 @@ module Prodbox.App
   )
 where
 
+import Data.Text qualified as Text
 import Options.Applicative
   ( customExecParser
   , prefs
@@ -18,6 +19,7 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
+import Prodbox.CLI.Output (writeError)
 import Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
@@ -29,11 +31,11 @@ import Prodbox.CLI.Spec
   , findCommandSpec
   )
 import Prodbox.CLI.Tree (renderCommandTree)
+import Prodbox.Error (fatalError)
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot)
 import System.Environment (getArgs)
-import System.Exit (exitFailure, exitWith)
-import System.IO (hPutStrLn, stderr)
+import System.Exit (ExitCode (ExitFailure), exitWith)
 
 main :: IO ()
 main = do
@@ -79,8 +81,8 @@ canRunWithoutRepoRoot _ = False
 
 failWith :: String -> IO ()
 failWith message = do
-  hPutStrLn stderr message
-  exitFailure
+  writeError (fatalError (Text.pack message))
+  exitWith (ExitFailure 1)
 
 renderCommandsPlain :: CommandSpec -> String
 renderCommandsPlain = unlines . go []

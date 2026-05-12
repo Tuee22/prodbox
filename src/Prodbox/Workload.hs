@@ -80,16 +80,20 @@ import Prodbox.CLI.Command
   ( WorkloadCommand (..)
   , WorkloadOptions (..)
   )
+import Prodbox.CLI.Output (writeError)
+import Prodbox.Error (fatalError)
+import Prodbox.Result (Result (..))
+import Prodbox.Subprocess
+  ( CommandSpec (..)
+  , ProcessOutput (..)
+  , captureCommand
+  )
 import System.Environment (lookupEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
 import System.IO (hPutStrLn, stderr)
 import System.Posix.Types (Fd (..))
-import System.Process
-  ( proc
-  , readCreateProcessWithExitCode
-  )
 import System.Timeout (timeout)
 
 data WorkloadMode
@@ -1220,41 +1224,44 @@ exchangeAuthorizationCode runtime authorizationCode = do
   let config = websocketRuntimeOidcConfig runtime
       callbackUrl = oidcPublicBaseUrl config ++ "/oidc/callback"
       tokenUrl = oidcTokenEndpoint config
-  (exitCode, stdoutText, stderrText) <-
-    readCreateProcessWithExitCode
-      ( proc
-          "curl"
-          [ "-sS"
-          , "--fail-with-body"
-          , "-X"
-          , "POST"
-          , "--data-urlencode"
-          , "grant_type=authorization_code"
-          , "--data-urlencode"
-          , "client_id=" ++ oidcClientId config
-          , "--data-urlencode"
-          , "client_secret=" ++ oidcClientSecret config
-          , "--data-urlencode"
-          , "code=" ++ authorizationCode
-          , "--data-urlencode"
-          , "redirect_uri=" ++ callbackUrl
-          , tokenUrl
-          ]
-      )
-      ""
-  case exitCode of
-    ExitFailure _ ->
-      pure
-        ( Left
-            ( "failed to exchange authorization code with Keycloak: "
-                ++ trim (stdoutText ++ " " ++ stderrText)
-            )
-        )
-    ExitSuccess ->
-      pure $
-        case eitherDecode (BL8.pack stdoutText) of
-          Left _ -> Left "token exchange response was not valid JSON"
-          Right payload -> parseOidcTokenResponse payload
+  outputResult <-
+    captureCommand
+      CommandSpec
+        { commandPath = "curl"
+        , commandArguments =
+            [ "-sS"
+            , "--fail-with-body"
+            , "-X"
+            , "POST"
+            , "--data-urlencode"
+            , "grant_type=authorization_code"
+            , "--data-urlencode"
+            , "client_id=" ++ oidcClientId config
+            , "--data-urlencode"
+            , "client_secret=" ++ oidcClientSecret config
+            , "--data-urlencode"
+            , "code=" ++ authorizationCode
+            , "--data-urlencode"
+            , "redirect_uri=" ++ callbackUrl
+            , tokenUrl
+            ]
+        , commandEnvironment = Nothing
+        , commandWorkingDirectory = Nothing
+        }
+  pure $
+    case outputResult of
+      Failure err -> Left ("failed to exchange authorization code with Keycloak: " ++ trim err)
+      Success output ->
+        case processExitCode output of
+          ExitFailure _ ->
+            Left
+              ( "failed to exchange authorization code with Keycloak: "
+                  ++ trim (processStdout output ++ " " ++ processStderr output)
+              )
+          ExitSuccess ->
+            case eitherDecode (BL8.pack (processStdout output)) of
+              Left _ -> Left "token exchange response was not valid JSON"
+              Right payload -> parseOidcTokenResponse payload
 
 parseOidcTokenResponse :: Value -> Either String OidcTokenResponse
 parseOidcTokenResponse payload =
@@ -1825,7 +1832,7 @@ mapLeft mapper eitherValue =
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
 firstJust :: [Maybe a] -> Maybe a
 firstJust [] = Nothing

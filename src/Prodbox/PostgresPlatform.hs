@@ -19,6 +19,9 @@ module Prodbox.PostgresPlatform
   )
 where
 
+import Data.Text qualified as Text
+import Prodbox.Naming (boundedResourceName)
+
 patroniOperatorNamespace :: String
 patroniOperatorNamespace = "postgres-operator"
 
@@ -53,7 +56,9 @@ patroniFsGroup :: Int
 patroniFsGroup = 1001
 
 patroniClusterName :: String -> String
-patroniClusterName rootChart = patroniTeamId ++ "-" ++ rootChart ++ "-pg"
+patroniClusterName rootChart =
+  Text.unpack
+    (boundedResourceName (Text.pack patroniTeamId) (Text.pack rootChart) (Text.pack "pg"))
 
 patroniPrimaryServiceHost :: String -> String -> String
 patroniPrimaryServiceHost namespace rootChart =
@@ -65,12 +70,27 @@ patroniReplicaServiceHost namespace rootChart =
 
 patroniCredentialsSecretName :: String -> String
 patroniCredentialsSecretName rootChart =
-  patroniClusterName rootChart ++ "-pguser-" ++ patroniUsername
+  Text.unpack
+    ( boundedResourceName
+        (Text.pack (patroniClusterName rootChart))
+        (Text.pack "pguser")
+        (Text.pack patroniUsername)
+    )
 
 patroniSuperuserSecretName :: String -> String
 patroniSuperuserSecretName rootChart =
-  patroniClusterName rootChart ++ "-pguser-postgres"
+  Text.unpack
+    ( boundedResourceName
+        (Text.pack (patroniClusterName rootChart))
+        (Text.pack "pguser")
+        (Text.pack "postgres")
+    )
 
 patroniStandbySecretName :: String -> String
 patroniStandbySecretName rootChart =
-  patroniClusterName rootChart ++ "-primaryuser"
+  Text.unpack
+    ( boundedResourceName
+        (Text.pack (patroniClusterName rootChart))
+        (Text.pack "primaryuser")
+        Text.empty
+    )

@@ -6,10 +6,13 @@ module Prodbox.K8s
 where
 
 import Data.Map.Strict qualified as Map
+import Data.Text qualified as Text
 import Prodbox.CLI.Command (K8sCommand (..))
+import Prodbox.CLI.Output (writeError)
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (EffectNode (..), fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffectDAG)
+import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
@@ -20,7 +23,6 @@ import Prodbox.Subprocess
   , runStreamingCommand
   )
 import System.Exit (ExitCode (..))
-import System.IO (hPutStrLn, stderr)
 
 defaultInfrastructureNamespaces :: [String]
 defaultInfrastructureNamespaces = ["metallb-system", "envoy-gateway-system", "cert-manager", "postgres-operator"]
@@ -138,6 +140,8 @@ waitNode repoRoot timeout namespaces =
   EffectNode
     { effectNodeId = "k8s_wait"
     , effectNodeDescription = "Wait for deployments to become available"
+    , effectNodeRemedyHint =
+        "Wait for the requested deployments to reach `Available=True` or inspect the failing namespace."
     , effectNodePrerequisites = k8sPrerequisiteRoots
     , effectNodeEffect =
         Sequence
@@ -190,5 +194,5 @@ trimWhitespace = reverse . dropWhile (== ' ') . reverse . dropWhile (== ' ')
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

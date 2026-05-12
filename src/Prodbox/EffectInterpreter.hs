@@ -135,6 +135,8 @@ runEffectDAG context dag = go initialPending Set.empty
                   ++ effectNodeDescription node
                   ++ "): "
                   ++ err
+                  ++ "\nRemedy: "
+                  ++ effectNodeRemedyHint node
               )
           )
       Success () -> runReady remaining (Set.delete effectId pending) (Set.insert effectId completed)

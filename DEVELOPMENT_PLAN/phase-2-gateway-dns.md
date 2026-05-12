@@ -32,11 +32,13 @@ backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscriber
 prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
 top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
 refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence puts Sprint
-`2.14` in `Active` state and closes Sprint `2.15`: the dedicated daemon-lifecycle stanza now
-exists and validates CLI/env precedence, but the doctrine's real `typed-process` lifecycle
-assertions plus health-endpoint goldens are still pending, while the daemon flag and
-`PRODBOX_*` precedence contract is now implemented in parser/runtime code and covered locally.
-The remaining reopened Phase `2` sprints stay `Planned`.
+`2.9` and Sprint `2.14` in `Active` state and closes Sprint `2.15`: the gateway daemon now
+launches its worker loops from one async entrypoint, but the doctrine's explicit lifecycle tree,
+signal-driven drain contract, retry/backoff wrapping, and drain-deadline closure are still
+pending; the dedicated daemon-lifecycle stanza now exists and validates CLI/env precedence, but
+the doctrine's real `typed-process` lifecycle assertions plus health-endpoint goldens are still
+pending, while the daemon flag and `PRODBOX_*` precedence contract is now implemented in
+parser/runtime code and covered locally. The remaining reopened Phase `2` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -526,9 +528,10 @@ described by the current doctrine.
 
 None.
 
-## Sprint 2.9: Explicit Daemon Lifecycle 📋
+## Sprint 2.9: Explicit Daemon Lifecycle 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/effect_interpreter.md`
 
@@ -585,6 +588,19 @@ Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Li
    `LiveConfig` value is unset and tracks a `LiveConfig` override when one is provided.
 5. A unit test confirms that an exception raised inside the `bracketOnError`-guarded
    acquire of a representative external-side-effect resource runs the release path.
+
+### Remaining Work
+
+- `runGatewayDaemon` already owns one multi-loop entrypoint and launches the heartbeat, gateway,
+  DNS-write, REST, peer-listener, and peer-dialer workers through `async`.
+- The runtime still does not render the doctrine's explicit
+  `load→prereq→acquire→ready→serve→drain→exit` lifecycle as a top-level `bracket` /
+  `withAsync` tree, and it has no shared SIGTERM or SIGINT drain coordinator.
+- Worker loops still rely on naked `forever` / `threadDelay` patterns and unrestricted `async`
+  usage rather than the doctrine's bounded retry-with-backoff and restricted
+  `withAsync` / `race` / `concurrently` / `replicateConcurrently` set.
+- The default 30-second drain deadline, `LiveConfig`-sourced override, and
+  `bracketOnError` audit for external-side-effect resources are still absent.
 
 ## Sprint 2.10: /healthz, /readyz, /metrics Endpoints 📋
 

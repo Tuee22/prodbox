@@ -49,6 +49,9 @@ Terminal records must remain legible and attributable.
 - each phase banner is its own stdout line
 - user-facing summaries should be emitted before a command exits successfully
 - hard failures should preserve the underlying error context where possible
+- subprocess-driven output should construct commands as structured values in
+  `src/Prodbox/Subprocess.hs` and render operator-facing command identity through
+  `renderSubprocess` rather than by concatenating ad-hoc shell strings at each call site
 
 ## 6. Intent Ownership
 

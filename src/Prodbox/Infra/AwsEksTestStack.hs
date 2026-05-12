@@ -32,6 +32,8 @@ import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
+import Prodbox.CLI.Output (writeError)
+import Prodbox.Error (fatalError)
 import Prodbox.Infra.MinioBackend
   ( bucketObjectCount
   , ensureMinioBackendBucket
@@ -1238,7 +1240,7 @@ finalizeDestroy repoRoot currentSnapshot = do
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
 
 joinComma :: [String] -> String

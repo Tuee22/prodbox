@@ -27,6 +27,7 @@ import Prodbox.Effect
 data EffectNode = EffectNode
   { effectNodeId :: String
   , effectNodeDescription :: String
+  , effectNodeRemedyHint :: String
   , effectNodePrerequisites :: [String]
   , effectNodeEffect :: Effect
   }

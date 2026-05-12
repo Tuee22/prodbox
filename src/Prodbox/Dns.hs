@@ -26,6 +26,8 @@ import Prodbox.AwsEnvironment
   ( isolatedAwsEnvironment
   )
 import Prodbox.CLI.Command (DnsCommand (..))
+import Prodbox.CLI.Output (writeError)
+import Prodbox.Error (fatalError)
 import Prodbox.PublicEdge
   ( publicFqdn
   , sharedPublicHostFqdns
@@ -48,7 +50,6 @@ import System.Directory (findExecutable)
 import System.Exit
   ( ExitCode (..)
   )
-import System.IO (hPutStrLn, stderr)
 
 runDnsCommand :: FilePath -> DnsCommand -> IO ExitCode
 runDnsCommand repoRoot command =
@@ -210,5 +211,5 @@ trim = f . f
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

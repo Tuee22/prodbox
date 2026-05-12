@@ -21,11 +21,7 @@ module Prodbox.Infra.MinioBackend
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception
-  ( IOException
-  , bracket
-  , try
-  )
+import Control.Exception (bracket)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -36,24 +32,17 @@ import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (isSuffixOf)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
+  ( BackgroundProcess
+  , CommandSpec (..)
   , ProcessOutput (..)
   , captureCommand
+  , startBackgroundProcess
+  , stopBackgroundProcess
   )
 import System.Directory (doesFileExist)
 import System.Environment (getEnvironment, lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-import System.IO (Handle, hClose)
-import System.Process
-  ( CreateProcess (..)
-  , ProcessHandle
-  , StdStream (..)
-  , createProcess
-  , proc
-  , terminateProcess
-  , waitForProcess
-  )
 
 minioBackendBucket :: String
 minioBackendBucket = "prodbox-test-pulumi-backends"
@@ -154,43 +143,40 @@ withMinioPortForward action = do
         Left err -> pure (Left err)
         Right () -> do
           let localPort = minioBackendLocalPort
-              portForwardProc =
-                ( proc
-                    "kubectl"
-                    [ "port-forward"
-                    , "-n"
-                    , minioNamespace
-                    , "svc/" ++ minioServiceName
-                    , show localPort ++ ":9000"
-                    ]
-                )
-                  { std_out = CreatePipe
-                  , std_err = CreatePipe
-                  , env = Just environment
-                  , delegate_ctlc = False
-                  }
           bracket
-            ( try (createProcess portForwardProc)
-                :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle))
+            ( startBackgroundProcess
+                CommandSpec
+                  { commandPath = "kubectl"
+                  , commandArguments =
+                      [ "port-forward"
+                      , "-n"
+                      , minioNamespace
+                      , "svc/" ++ minioServiceName
+                      , show localPort ++ ":9000"
+                      ]
+                  , commandEnvironment = Just environment
+                  , commandWorkingDirectory = Nothing
+                  }
             )
+            cleanupBackgroundProcess
             ( \result ->
                 case result of
-                  Left _ -> pure ()
-                  Right (_, stdoutHandle, stderrHandle, processHandle) -> do
-                    terminateProcess processHandle
-                    _ <- try (waitForProcess processHandle) :: IO (Either IOException ExitCode)
-                    maybe (pure ()) hClose stdoutHandle
-                    maybe (pure ()) hClose stderrHandle
-            )
-            ( \result ->
-                case result of
-                  Left exc -> pure (Left ("failed to start kubectl port-forward: " ++ show exc))
-                  Right (_, _, _, _) -> do
+                  Left err -> pure (Left (showBackgroundProcessError err))
+                  Right _ -> do
                     ready <- waitForPort localPort 60
                     if ready
                       then Right <$> action localPort
                       else pure (Left "timed out waiting for MinIO port-forward readiness")
             )
+
+cleanupBackgroundProcess :: Either a BackgroundProcess -> IO ()
+cleanupBackgroundProcess result =
+  case result of
+    Left _ -> pure ()
+    Right process -> stopBackgroundProcess process
+
+showBackgroundProcessError :: (Show errorType) => errorType -> String
+showBackgroundProcessError = show
 
 repairDeletedMinioExportMountIfNeeded :: [(String, String)] -> IO (Either String ())
 repairDeletedMinioExportMountIfNeeded environment = do

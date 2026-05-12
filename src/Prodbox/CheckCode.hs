@@ -20,6 +20,7 @@ where
 import Control.Monad (forM)
 import Data.Char (isAlphaNum)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort)
+import Data.Text qualified as Text
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , syncBuiltOperatorBinary
@@ -36,8 +37,12 @@ import Prodbox.CLI.Docs
   , renderTopLevelManpage
   , renderZshCompletion
   )
+import Prodbox.CLI.Output (writeError)
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
+import Prodbox.Error (fatalError)
 import Prodbox.PublicEdge (renderHelmRouteInventory)
+import Prodbox.Result (Result (..))
+import Prodbox.Subprocess qualified as Subprocess
 import System.Directory
   ( copyFile
   , createDirectoryIfMissing
@@ -57,22 +62,7 @@ import System.FilePath
   , takeFileName
   , (</>)
   )
-import System.IO (hPutStrLn, stderr)
 import System.IO.Error (tryIOError)
-import System.Process
-  ( CreateProcess
-      ( cwd
-      , delegate_ctlc
-      , env
-      , std_err
-      , std_in
-      , std_out
-      )
-  , StdStream (Inherit)
-  , createProcess
-  , proc
-  , waitForProcess
-  )
 
 data DoctrineViolation
   = ForbiddenWorkflowDirectory FilePath
@@ -369,11 +359,15 @@ haskellStyleViolations repoRoot = do
   thinMainResult <- verifyThinMainEntrypoint repoRoot
   parserModuleViolation <- checkParserModuleImports repoRoot
   daemonRuntimeViolations <- checkDaemonRuntimeImports repoRoot
+  subprocessViolations <- checkSubprocessBoundaries repoRoot
+  errorBoundaryViolations <- checkErrorBoundaryViolations repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ maybeToList parserModuleViolation
         ++ daemonRuntimeViolations
+        ++ subprocessViolations
+        ++ errorBoundaryViolations
         ++ testSuiteTypeViolations
     )
 
@@ -437,6 +431,60 @@ checkDaemonRuntimeImports repoRoot = do
             | "setsid" `isInfixOf` contents
             ]
       pure (importViolations ++ forkViolations ++ sessionViolations)
+
+checkSubprocessBoundaries :: FilePath -> IO [String]
+checkSubprocessBoundaries repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  concat
+    <$> forM
+      [ path
+      | path <- repoPaths
+      , "src/Prodbox/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/Subprocess.hs"
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \relativePath -> do
+          contents <- readFile (repoRoot </> relativePath)
+          let tokens = tokenizeSource contents
+              hasSystemProcessImport = "import System.Process" `isInfixOf` contents
+              forbiddenTokens =
+                [ token
+                | token <-
+                    [ "callProcess"
+                    , "readCreateProcess"
+                    , "readCreateProcessWithExitCode"
+                    , "createProcess"
+                    , "shell"
+                    ]
+                , token `elem` tokens
+                ]
+          pure $
+            [ relativePath ++ " must route subprocess creation through `src/Prodbox/Subprocess.hs`."
+            | hasSystemProcessImport || not (null forbiddenTokens)
+            ]
+      )
+
+checkErrorBoundaryViolations :: FilePath -> IO [String]
+checkErrorBoundaryViolations repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  concat
+    <$> forM
+      [ path
+      | path <- repoPaths
+      , "src/Prodbox/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CLI/Output.hs"
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \relativePath -> do
+          contents <- readFile (repoRoot </> relativePath)
+          let tokens = tokenizeSource contents
+          pure $
+            [ relativePath ++ " must route error rendering through `src/Prodbox/CLI/Output.hs`."
+            | any (`elem` tokens) ["print", "exitFailure"]
+            ]
+      )
 
 checkTestSuiteInterfaces :: FilePath -> IO [String]
 checkTestSuiteInterfaces repoRoot = do
@@ -839,17 +887,18 @@ renderDoctrineViolation violation =
 
 runStreaming :: FilePath -> [(String, String)] -> FilePath -> [String] -> IO ExitCode
 runStreaming repoRoot environment commandPath arguments = do
-  (_, _, _, handle) <-
-    createProcess
-      (proc commandPath arguments)
-        { cwd = Just repoRoot
-        , env = Just environment
-        , std_in = Inherit
-        , std_out = Inherit
-        , std_err = Inherit
-        , delegate_ctlc = True
+  runResult <-
+    Subprocess.runStreamingCommand
+      Subprocess.CommandSpec
+        { Subprocess.commandPath = commandPath
+        , Subprocess.commandArguments = arguments
+        , Subprocess.commandEnvironment = Just environment
+        , Subprocess.commandWorkingDirectory = Just repoRoot
         }
-  waitForProcess handle
+  pure $
+    case runResult of
+      Failure _ -> ExitFailure 1
+      Success exitCode -> exitCode
 
 requireTool :: String -> IO (Either String ())
 requireTool toolName = do
@@ -866,5 +915,5 @@ requireTool toolName = do
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

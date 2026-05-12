@@ -111,6 +111,10 @@ import Prodbox.PublicEdge
 import Prodbox.Result
   ( Result (..)
   )
+import Prodbox.Retry
+  ( RetryPolicy (..)
+  , retryDelayMicros
+  )
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -719,7 +723,7 @@ ensurePerconaPatroniStorageBindingsWithExpectedClaims namespace rootChart logica
 
 waitForPerconaPatroniClaims :: String -> Int -> IO (Either String [PerconaPatroniClaim])
 waitForPerconaPatroniClaims namespace expectedClaimCount =
-  wait perconaPatroniClaimAttempts
+  wait (retryPolicyMaxAttempts perconaPatroniClaimRetryPolicy)
  where
   clusterName = patroniClusterName namespace
 
@@ -731,7 +735,11 @@ waitForPerconaPatroniClaims namespace expectedClaimCount =
         if attemptsLeft <= 1
           then pure (Left err)
           else do
-            threadDelay perconaPatroniClaimDelayMicros
+            threadDelay
+              ( retryDelayMicros
+                  perconaPatroniClaimRetryPolicy
+                  (retryPolicyMaxAttempts perconaPatroniClaimRetryPolicy - attemptsLeft)
+              )
             wait (attemptsLeft - 1)
       Right claims
         | length claims == expectedClaimCount ->
@@ -751,7 +759,11 @@ waitForPerconaPatroniClaims namespace expectedClaimCount =
                   )
               )
         | otherwise -> do
-            threadDelay perconaPatroniClaimDelayMicros
+            threadDelay
+              ( retryDelayMicros
+                  perconaPatroniClaimRetryPolicy
+                  (retryPolicyMaxAttempts perconaPatroniClaimRetryPolicy - attemptsLeft)
+              )
             wait (attemptsLeft - 1)
 
 discoverPerconaPatroniClaims :: String -> IO (Either String [PerconaPatroniClaim])
@@ -879,11 +891,14 @@ dropSuffix :: (Eq a) => [a] -> [a] -> Maybe [a]
 dropSuffix suffix value =
   reverse <$> stripPrefix (reverse suffix) (reverse value)
 
-perconaPatroniClaimAttempts :: Int
-perconaPatroniClaimAttempts = 60
-
-perconaPatroniClaimDelayMicros :: Int
-perconaPatroniClaimDelayMicros = 5 * 1000000
+perconaPatroniClaimRetryPolicy :: RetryPolicy
+perconaPatroniClaimRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 60
+    , retryPolicyBaseDelayMicros = 5 * 1000000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 5 * 1000000
+    }
 
 validatePatroniPlatformReady :: IO (Either String ())
 validatePatroniPlatformReady = do
@@ -934,10 +949,14 @@ waitForPatroniClusterReady namespace =
 
 waitForPatroniClusterReadyWithReplicaCount :: String -> Int -> IO (Either String ())
 waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
-  wait patroniClusterReadyAttempts
+  wait (retryPolicyMaxAttempts patroniClusterReadyRetryPolicy)
  where
   clusterName = patroniClusterName namespace
-  timeoutSeconds = (patroniClusterReadyAttempts * patroniClusterReadyDelayMicros) `div` 1000000
+  timeoutSeconds =
+    ( retryPolicyMaxAttempts patroniClusterReadyRetryPolicy
+        * retryPolicyBaseDelayMicros patroniClusterReadyRetryPolicy
+    )
+      `div` 1000000
 
   wait :: Int -> IO (Either String ())
   wait attemptsLeft = do
@@ -947,7 +966,11 @@ waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
         if attemptsLeft <= 1
           then pure (Left ("Patroni cluster " ++ clusterName ++ " did not converge: " ++ err))
           else do
-            threadDelay patroniClusterReadyDelayMicros
+            threadDelay
+              ( retryDelayMicros
+                  patroniClusterReadyRetryPolicy
+                  (retryPolicyMaxAttempts patroniClusterReadyRetryPolicy - attemptsLeft)
+              )
             wait (attemptsLeft - 1)
       Right PatroniClusterReady -> pure (Right ())
       Right (PatroniClusterPending detail) ->
@@ -965,14 +988,21 @@ waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
                   )
               )
           else do
-            threadDelay patroniClusterReadyDelayMicros
+            threadDelay
+              ( retryDelayMicros
+                  patroniClusterReadyRetryPolicy
+                  (retryPolicyMaxAttempts patroniClusterReadyRetryPolicy - attemptsLeft)
+              )
             wait (attemptsLeft - 1)
 
-patroniClusterReadyAttempts :: Int
-patroniClusterReadyAttempts = 180
-
-patroniClusterReadyDelayMicros :: Int
-patroniClusterReadyDelayMicros = 10 * 1000000
+patroniClusterReadyRetryPolicy :: RetryPolicy
+patroniClusterReadyRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 180
+    , retryPolicyBaseDelayMicros = 10 * 1000000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 10 * 1000000
+    }
 
 patroniClusterReadiness :: String -> Int -> IO (Either String PatroniClusterReadiness)
 patroniClusterReadiness namespace expectedReadyReplicas = do

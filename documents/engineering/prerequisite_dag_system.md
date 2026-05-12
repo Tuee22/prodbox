@@ -30,6 +30,7 @@ Prerequisite failures propagate from the root cause upward.
 
 For a fixed root set and registry, prerequisite expansion must be deterministic.
 
+- missing prerequisite IDs fail at expansion time rather than being discovered later at execution
 - no missing prerequisite IDs
 - no cycles
 - no duplicate execution of the same satisfied node within one run

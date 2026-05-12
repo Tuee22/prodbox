@@ -17,6 +17,10 @@ import Data.Aeson
   , object
   , (.=)
   )
+import Data.Text qualified as Text
+import Prodbox.Naming
+  ( boundedResourceName
+  )
 import System.FilePath ((</>))
 
 chartStorageClassName :: String
@@ -52,16 +56,19 @@ storageBinding manualPvRoot namespace releaseName spec =
     { chartStorageBindingStatefulSetName = chartStorageSpecStatefulSetName spec
     , chartStorageBindingReleaseName = releaseName
     , chartStorageBindingPersistentVolumeName =
-        "prodbox-chart-"
-          ++ namespace
-          ++ "-"
-          ++ releaseName
-          ++ "-"
-          ++ chartStorageSpecStatefulSetName spec
-          ++ "-"
-          ++ show (chartStorageSpecOrdinal spec)
-          ++ "-"
-          ++ chartStorageSpecClaimSuffix spec
+        Text.unpack
+          ( boundedResourceName
+              "prodbox-chart"
+              ( Text.intercalate
+                  "-"
+                  [ Text.pack namespace
+                  , Text.pack releaseName
+                  , Text.pack (chartStorageSpecStatefulSetName spec)
+                  , Text.pack (show (chartStorageSpecOrdinal spec))
+                  ]
+              )
+              (Text.pack (chartStorageSpecClaimSuffix spec))
+          )
     , chartStorageBindingPersistentVolumeClaimName = chartStorageSpecPersistentVolumeClaimName spec
     , chartStorageBindingStorageSize = chartStorageSpecStorageSize spec
     , chartStorageBindingHostPath =

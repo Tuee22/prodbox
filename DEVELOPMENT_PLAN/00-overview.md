@@ -252,11 +252,11 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
 not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
-Sprints `1.6`, `1.7`, `1.11`, `2.14`, and `4.7` in `Active` state because those surfaces have
-started in code but still retain sprint-owned implementation or validation gaps. Sprints
-`1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`,
-`4.5`, and `4.6` are now locally validated and doc-aligned. The supported operator surface is
-`prodbox`, the
+Sprints `1.6`, `1.7`, `1.8`, `1.9`, `1.11`, `1.12`, `1.13`, `1.14`, `1.15`, `1.26`, `2.9`,
+`2.14`, `3.8`, and `4.7` in `Active` state because those surfaces have started in code but
+still retain sprint-owned implementation or validation gaps. Sprints `1.10`, `1.20`, `1.21`,
+`1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are now
+locally validated and doc-aligned. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -278,7 +278,9 @@ contract.
 
 Root guidance and the governed public-edge, gateway, chart-platform, registry, and testing docs
 agree on the pre-reopen Haskell-only baseline, but several doctrine-adoption surfaces still lag
-code or document future behavior ahead of implementation. Those mismatches remain scheduled
+code or document future behavior ahead of implementation. The active reopen set now includes the
+partial `Subprocess` wrapper, prerequisite registry, daemon lifecycle scaffold, and paired-chart-
+resource smart-constructor work already present in the tree. Those mismatches remain scheduled
 through the active reopen sprints and the pending-removal ledger.
 
 The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus

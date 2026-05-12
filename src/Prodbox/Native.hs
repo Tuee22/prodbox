@@ -3,6 +3,7 @@ module Prodbox.Native
   )
 where
 
+import Data.Text qualified as Text
 import Prodbox.Aws
   ( runAwsCommand
   , runInteractiveConfigSetupWithPlan
@@ -12,6 +13,7 @@ import Prodbox.CLI.Command
   ( ConfigCommand (..)
   , NativeCommand (..)
   )
+import Prodbox.CLI.Output (writeError)
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.CLI.Rke2 (runRke2Command)
 import Prodbox.CheckCode
@@ -20,6 +22,7 @@ import Prodbox.CheckCode
   , runLintCommand
   )
 import Prodbox.Dns (runDnsCommand)
+import Prodbox.Error (fatalError)
 import Prodbox.Gateway (runGatewayCommand)
 import Prodbox.Host (runHostCommand)
 import Prodbox.K8s (runK8sCommand)
@@ -33,7 +36,6 @@ import Prodbox.Workload (runWorkloadCommand)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
-import System.IO (hPutStrLn, stderr)
 
 runNativeCommand :: FilePath -> NativeCommand -> IO ExitCode
 runNativeCommand repoRoot command =
@@ -71,5 +73,5 @@ runConfigCommand repoRoot configCommand =
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

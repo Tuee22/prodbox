@@ -8,10 +8,13 @@ where
 import Control.Exception (IOException, try)
 import Data.Char (toLower)
 import Data.List (intercalate)
+import Data.Text qualified as Text
 import Prodbox.CLI.Command
   ( ChartsCommand (..)
   , PlanOptions (..)
   )
+import Prodbox.CLI.Output (writeError)
+import Prodbox.Error (fatalError)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
@@ -34,8 +37,6 @@ import System.Exit
   )
 import System.IO
   ( hFlush
-  , hPutStrLn
-  , stderr
   , stdout
   )
 
@@ -170,5 +171,5 @@ renderChartDeletePlan plan =
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

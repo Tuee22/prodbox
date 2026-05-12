@@ -63,6 +63,7 @@ platformLinux =
   EffectNode
     { effectNodeId = "platform_linux"
     , effectNodeDescription = "Require Linux operating system"
+    , effectNodeRemedyHint = "Run the supported command surface on a Linux host."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireLinux
     }
@@ -72,6 +73,7 @@ systemdAvailable =
   EffectNode
     { effectNodeId = "systemd_available"
     , effectNodeDescription = "Require systemd availability"
+    , effectNodeRemedyHint = "Use a systemd-managed host or container with `/run/systemd/system` present."
     , effectNodePrerequisites = ["platform_linux"]
     , effectNodeEffect = Validate RequireSystemd
     }
@@ -81,6 +83,7 @@ supportedUbuntu2404 =
   EffectNode
     { effectNodeId = "supported_ubuntu_2404"
     , effectNodeDescription = "Require Ubuntu 24.04 LTS"
+    , effectNodeRemedyHint = "Run the supported workflow on Ubuntu 24.04 LTS."
     , effectNodePrerequisites = ["platform_linux"]
     , effectNodeEffect = Validate RequireUbuntu2404
     }
@@ -90,6 +93,7 @@ machineIdentity =
   EffectNode
     { effectNodeId = "machine_identity"
     , effectNodeDescription = "Resolve machine-id and derived prodbox-id"
+    , effectNodeRemedyHint = "Ensure `/etc/machine-id` exists and contains the host identity."
     , effectNodePrerequisites = ["platform_linux"]
     , effectNodeEffect = Validate RequireMachineIdentity
     }
@@ -150,6 +154,7 @@ settingsLoaded =
   EffectNode
     { effectNodeId = "settings_loaded"
     , effectNodeDescription = "Validate prodbox settings are loaded"
+    , effectNodeRemedyHint = "Run `prodbox config setup` or repair `prodbox-config.dhall`."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireSettings
     }
@@ -159,6 +164,7 @@ settingsObject =
   EffectNode
     { effectNodeId = "settings_object"
     , effectNodeDescription = "Load validated prodbox settings"
+    , effectNodeRemedyHint = "Run `prodbox config validate` until the repository config loads cleanly."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireSettings
     }
@@ -168,6 +174,8 @@ awsIamHarnessReady =
   EffectNode
     { effectNodeId = "aws_iam_harness_ready"
     , effectNodeDescription = "Validate native IAM harness config and test-simulation admin credentials"
+    , effectNodeRemedyHint =
+        "Configure the AWS IAM harness inputs in `prodbox-config.dhall` before rerunning."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireAwsIamHarnessReady
     }
@@ -177,6 +185,7 @@ kubeconfigExists =
   EffectNode
     { effectNodeId = "kubeconfig_exists"
     , effectNodeDescription = "Check kubeconfig file exists"
+    , effectNodeRemedyHint = "Create `/etc/rancher/rke2/rke2.yaml` by reconciling the local RKE2 runtime."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate (RequireFileExists "/etc/rancher/rke2/rke2.yaml")
     }
@@ -186,6 +195,7 @@ kubeconfigHomeExists =
   EffectNode
     { effectNodeId = "kubeconfig_home_exists"
     , effectNodeDescription = "Check user kubeconfig exists"
+    , effectNodeRemedyHint = "Copy or export a kubeconfig into `$HOME/.kube/config`."
     , effectNodePrerequisites = []
     , effectNodeEffect = Validate RequireHomeKubeconfig
     }
@@ -195,6 +205,8 @@ rke2ConfigExists =
   EffectNode
     { effectNodeId = "rke2_config_exists"
     , effectNodeDescription = "Check RKE2 config file exists"
+    , effectNodeRemedyHint =
+        "Create `/etc/rancher/rke2/config.yaml` through the supported lifecycle path."
     , effectNodePrerequisites = ["platform_linux"]
     , effectNodeEffect = Validate (RequireFileExists "/etc/rancher/rke2/config.yaml")
     }
@@ -204,6 +216,7 @@ awsCredentialsValid =
   EffectNode
     { effectNodeId = "aws_credentials_valid"
     , effectNodeDescription = "Validate AWS credentials are configured"
+    , effectNodeRemedyHint = "Run `prodbox aws setup` or refresh the repo-owned AWS credentials in Dhall."
     , effectNodePrerequisites = ["settings_loaded", "tool_aws"]
     , effectNodeEffect = Validate RequireAwsCredentials
     }
@@ -213,6 +226,7 @@ route53Accessible =
   EffectNode
     { effectNodeId = "route53_accessible"
     , effectNodeDescription = "Validate Route 53 is accessible"
+    , effectNodeRemedyHint = "Verify the configured AWS credentials can read the target hosted zone."
     , effectNodePrerequisites = ["aws_credentials_valid"]
     , effectNodeEffect = Validate RequireRoute53Access
     }
@@ -222,6 +236,8 @@ route53LifecycleCapable =
   EffectNode
     { effectNodeId = "route53_lifecycle_capable"
     , effectNodeDescription = "Validate Route 53 hosted-zone lifecycle capability"
+    , effectNodeRemedyHint =
+        "Grant the configured IAM principal the Route 53 record-write permissions required by the lifecycle surface."
     , effectNodePrerequisites = ["route53_accessible"]
     , effectNodeEffect = Validate RequireRoute53LifecycleCapability
     }
@@ -231,6 +247,7 @@ rke2Installed =
   EffectNode
     { effectNodeId = "rke2_installed"
     , effectNodeDescription = "Check RKE2 binary is installed"
+    , effectNodeRemedyHint = "Install RKE2 on the supported host or rerun `prodbox rke2 reconcile`."
     , effectNodePrerequisites = ["supported_ubuntu_2404"]
     , effectNodeEffect = Validate (RequireFileExists "/usr/local/bin/rke2")
     }
@@ -240,6 +257,8 @@ rke2ServiceExists =
   EffectNode
     { effectNodeId = "rke2_service_exists"
     , effectNodeDescription = "Check RKE2 service exists"
+    , effectNodeRemedyHint =
+        "Install the `rke2-server.service` unit through the supported lifecycle path."
     , effectNodePrerequisites = ["rke2_installed", "systemd_available", "supported_ubuntu_2404"]
     , effectNodeEffect = Validate (RequireServiceExists "rke2-server.service")
     }
@@ -249,6 +268,7 @@ rke2ServiceActive =
   EffectNode
     { effectNodeId = "rke2_service_active"
     , effectNodeDescription = "Check RKE2 service is active"
+    , effectNodeRemedyHint = "Start the RKE2 service and confirm it reaches the active state."
     , effectNodePrerequisites = ["rke2_service_exists"]
     , effectNodeEffect = Validate (RequireServiceActive "rke2-server.service")
     }
@@ -258,6 +278,7 @@ k8sClusterReachable =
   EffectNode
     { effectNodeId = "k8s_cluster_reachable"
     , effectNodeDescription = "Confirm Kubernetes API access via kubectl cluster-info"
+    , effectNodeRemedyHint = "Export a working kubeconfig and confirm `kubectl cluster-info` succeeds."
     , effectNodePrerequisites = ["tool_kubectl", "kubeconfig_exists", "rke2_service_active"]
     , effectNodeEffect = Validate RequireKubectlClusterReachable
     }
@@ -267,6 +288,7 @@ pulumiLoggedIn =
   EffectNode
     { effectNodeId = "pulumi_logged_in"
     , effectNodeDescription = "Validate Pulumi is logged in"
+    , effectNodeRemedyHint = "Log Pulumi into the supported backend before rerunning."
     , effectNodePrerequisites = ["tool_pulumi", "k8s_cluster_reachable"]
     , effectNodeEffect = Validate RequirePulumiLogin
     }
@@ -276,6 +298,7 @@ k8sReady =
   EffectNode
     { effectNodeId = "k8s_ready"
     , effectNodeDescription = "Validate Kubernetes cluster is fully ready"
+    , effectNodeRemedyHint = "Wait for the cluster control plane and core workloads to become ready."
     , effectNodePrerequisites = ["k8s_cluster_reachable", "rke2_service_active"]
     , effectNodeEffect = Noop
     }
@@ -285,6 +308,8 @@ infraReady =
   EffectNode
     { effectNodeId = "infra_ready"
     , effectNodeDescription = "Validate all infrastructure prerequisites"
+    , effectNodeRemedyHint =
+        "Resolve the upstream Kubernetes or AWS prerequisite failures first, then rerun the validation."
     , effectNodePrerequisites = ["k8s_ready", "aws_credentials_valid"]
     , effectNodeEffect = Noop
     }
@@ -294,6 +319,7 @@ toolNode effectId description toolName versionArgs prerequisites =
   EffectNode
     { effectNodeId = effectId
     , effectNodeDescription = description
+    , effectNodeRemedyHint = "Install `" ++ toolName ++ "` on the host and confirm it is on `PATH`."
     , effectNodePrerequisites = prerequisites
     , effectNodeEffect = Validate (RequireTool toolName versionArgs)
     }

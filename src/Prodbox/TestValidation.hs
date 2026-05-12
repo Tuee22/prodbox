@@ -59,11 +59,13 @@ import Prodbox.AwsEnvironment
 import Prodbox.BuildSupport
   ( canonicalOperatorBinaryPath
   )
+import Prodbox.CLI.Output (writeError)
 import Prodbox.Dns
   ( configuredPublicHostFqdns
   , fetchPublicIp
   , queryRoute53Record
   )
+import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
   , handlePeerRequest
@@ -105,11 +107,14 @@ import Prodbox.Settings
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
+  ( BackgroundProcess
+  , CommandSpec (..)
   , ProcessOutput (..)
   , captureCommand
   , commandDisplay
   , runStreamingCommand
+  , startBackgroundProcess
+  , stopBackgroundProcess
   )
 import Prodbox.TestPlan
   ( NativeValidation (..)
@@ -128,14 +133,6 @@ import System.IO
   , hPutStrLn
   , openTempFile
   , stderr
-  )
-import System.Process
-  ( CreateProcess (..)
-  , ProcessHandle
-  , createProcess
-  , proc
-  , terminateProcess
-  , waitForProcess
   )
 import System.Timeout (timeout)
 import Wuss qualified
@@ -1691,27 +1688,26 @@ renderGatewayValidationConfig settings nodeId ordersPath =
 
 withGatewayPortForward :: FilePath -> [(String, String)] -> PeerEndpoint -> Int -> IO a -> IO a
 withGatewayPortForward repoRoot environment localPeer localPort action = do
-  (_, _, _, processHandle) <-
-    createProcess
-      ( proc
-          "kubectl"
-          [ "--namespace"
-          , gatewayValidationNamespace
-          , "port-forward"
-          , "service/gateway-" ++ peerNodeId localPeer
-          , show localPort ++ ":" ++ show (peerRestPort localPeer)
-          ]
-      )
-        { env = Just environment
-        , cwd = Just repoRoot
+  processResult <-
+    startBackgroundProcess
+      CommandSpec
+        { commandPath = "kubectl"
+        , commandArguments =
+            [ "--namespace"
+            , gatewayValidationNamespace
+            , "port-forward"
+            , "service/gateway-" ++ peerNodeId localPeer
+            , show localPort ++ ":" ++ show (peerRestPort localPeer)
+            ]
+        , commandEnvironment = Just environment
+        , commandWorkingDirectory = Just repoRoot
         }
-  action `finally` cleanupGatewayPortForward processHandle
+  case processResult of
+    Left err -> fail (show err)
+    Right process -> action `finally` cleanupGatewayPortForward process
 
-cleanupGatewayPortForward :: ProcessHandle -> IO ()
-cleanupGatewayPortForward processHandle = do
-  _ <- try (terminateProcess processHandle) :: IO (Either SomeException ())
-  _ <- try (waitForProcess processHandle) :: IO (Either SomeException ExitCode)
-  pure ()
+cleanupGatewayPortForward :: BackgroundProcess -> IO ()
+cleanupGatewayPortForward = stopBackgroundProcess
 
 reserveLocalTcpPort :: IO Int
 reserveLocalTcpPort =
@@ -2125,5 +2121,5 @@ outputDetail output =
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

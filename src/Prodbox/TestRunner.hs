@@ -11,6 +11,7 @@ import Control.Exception
   )
 import Control.Monad (foldM, unless)
 import Data.List (dropWhileEnd, isInfixOf, isPrefixOf)
+import Data.Text qualified as Text
 import Prodbox.Aws
   ( runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
@@ -26,6 +27,7 @@ import Prodbox.CLI.Command
   , TestScope (..)
   , validateCoverage
   )
+import Prodbox.CLI.Output (writeError)
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.EffectDAG
   ( fromRootIds
@@ -34,6 +36,7 @@ import Prodbox.EffectInterpreter
   ( InterpreterContext (..)
   , runEffectDAG
   )
+import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
   )
@@ -630,5 +633,5 @@ ensureCanonicalOperatorBinary repoRoot environment = do
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

@@ -45,10 +45,12 @@ import Prodbox.CLI.Command
   , PulumiCommand (..)
   , Rke2Command (..)
   )
+import Prodbox.CLI.Output (writeError)
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
 import Prodbox.Dns qualified as Dns
+import Prodbox.Error (fatalError)
 import Prodbox.Host
   ( LanAddressing (..)
   , detectLanAddressing
@@ -72,6 +74,10 @@ import Prodbox.PublicEdge
   , publicRouteUrl
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Retry
+  ( RetryPolicy (..)
+  , retryDelayMicros
+  )
 import Prodbox.Settings
   ( AcmeSection (..)
   , ConfigFile (..)
@@ -2325,7 +2331,7 @@ helmUpgradeInstallWithJsonValues repoRoot releaseName chartRef chartVersion name
       ]
 
 runHelmCommandWithRetries :: FilePath -> [String] -> IO ExitCode
-runHelmCommandWithRetries repoRoot arguments = go helmTransientRetryAttempts
+runHelmCommandWithRetries repoRoot arguments = go (retryPolicyMaxAttempts helmTransientRetryPolicy)
  where
   go attemptsRemaining = do
     outputResult <- captureToolOutput repoRoot "helm" arguments
@@ -2343,13 +2349,17 @@ runHelmCommandWithRetries repoRoot arguments = go helmTransientRetryAttempts
                   ( "Retrying helm "
                       ++ unwords arguments
                       ++ " after transient upstream failure ("
-                      ++ show (helmTransientRetryAttempts - attemptsRemaining + 1)
+                      ++ show (retryPolicyMaxAttempts helmTransientRetryPolicy - attemptsRemaining + 1)
                       ++ "/"
-                      ++ show helmTransientRetryAttempts
+                      ++ show (retryPolicyMaxAttempts helmTransientRetryPolicy)
                       ++ "): "
                       ++ outputDetail output
                   )
-                threadDelay helmTransientRetryDelayMicroseconds
+                threadDelay
+                  ( retryDelayMicros
+                      helmTransientRetryPolicy
+                      (retryPolicyMaxAttempts helmTransientRetryPolicy - attemptsRemaining)
+                  )
                 go (attemptsRemaining - 1)
             | otherwise -> do
                 emitCapturedProcessOutput output
@@ -2580,7 +2590,7 @@ buildCustomImageOnce repoRoot hostArchitecture buildPlan taggedRefs = do
             )
 
 pushDockerImageWithRetry :: FilePath -> String -> String -> IO ExitCode
-pushDockerImageWithRetry repoRoot imageRef description = go customImagePushRetryAttempts
+pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttempts customImagePushRetryPolicy)
  where
   go attemptsRemaining = do
     outputResult <- captureToolOutput repoRoot "docker" ["push", imageRef]
@@ -2598,13 +2608,17 @@ pushDockerImageWithRetry repoRoot imageRef description = go customImagePushRetry
                   ( "Retrying Harbor publication for "
                       ++ description
                       ++ " ("
-                      ++ show (customImagePushRetryAttempts - attemptsRemaining + 1)
+                      ++ show (retryPolicyMaxAttempts customImagePushRetryPolicy - attemptsRemaining + 1)
                       ++ "/"
-                      ++ show customImagePushRetryAttempts
+                      ++ show (retryPolicyMaxAttempts customImagePushRetryPolicy)
                       ++ "): "
                       ++ outputDetail output
                   )
-                threadDelay customImagePushRetryDelayMicroseconds
+                threadDelay
+                  ( retryDelayMicros
+                      customImagePushRetryPolicy
+                      (retryPolicyMaxAttempts customImagePushRetryPolicy - attemptsRemaining)
+                  )
                 go (attemptsRemaining - 1)
             | otherwise -> do
                 emitCapturedProcessOutput output
@@ -3748,17 +3762,23 @@ harborEndpointStabilitySuccesses = 6
 harborEndpointStabilityDelayMicroseconds :: Int
 harborEndpointStabilityDelayMicroseconds = 5000000
 
-helmTransientRetryAttempts :: Int
-helmTransientRetryAttempts = 3
+helmTransientRetryPolicy :: RetryPolicy
+helmTransientRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 3
+    , retryPolicyBaseDelayMicros = 10000000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 10000000
+    }
 
-helmTransientRetryDelayMicroseconds :: Int
-helmTransientRetryDelayMicroseconds = 10000000
-
-customImagePushRetryAttempts :: Int
-customImagePushRetryAttempts = 3
-
-customImagePushRetryDelayMicroseconds :: Int
-customImagePushRetryDelayMicroseconds = 5000000
+customImagePushRetryPolicy :: RetryPolicy
+customImagePushRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 3
+    , retryPolicyBaseDelayMicros = 5000000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 5000000
+    }
 
 runCommand :: CommandSpec -> IO ExitCode
 runCommand spec = do
@@ -3775,5 +3795,5 @@ requireLinux action =
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

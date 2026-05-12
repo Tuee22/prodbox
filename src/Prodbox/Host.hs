@@ -25,6 +25,7 @@ import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Numeric (readHex)
 import Prodbox.CLI.Command (HostCommand (..))
+import Prodbox.CLI.Output (writeError)
 import Prodbox.Dns
   ( fetchPublicIp
   , queryRoute53Record
@@ -32,6 +33,7 @@ import Prodbox.Dns
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
+import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PublicEdge (publicFqdn)
 import Prodbox.Result (Result (..))
@@ -46,7 +48,6 @@ import Prodbox.Settings
 import Prodbox.Subprocess (CommandSpec (..), ProcessOutput (..), captureCommand)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
-import System.IO (hPutStrLn, stderr)
 
 data PortStatus = PortStatus
   { portNumber :: Int
@@ -1050,5 +1051,5 @@ trim = f . f
 
 failWith :: String -> IO ExitCode
 failWith message = do
-  hPutStrLn stderr message
+  writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)

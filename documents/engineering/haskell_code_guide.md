@@ -59,6 +59,22 @@ Current review guidance includes:
 
 The build must not pretend to enforce guidance that it cannot actually prove.
 
+### 2.3 Shared Runtime Foundations
+
+The current supported worktree has started converging on a small shared foundation layer:
+
+- `src/Prodbox/Subprocess.hs` owns structured subprocess construction and the `runStreaming` /
+  `capture` interpreter boundary.
+- `src/Prodbox/Error.hs` owns `AppError` plus the `Recoverable` / `Fatal` split.
+- `src/Prodbox/CLI/Output.hs` owns user-facing error rendering at the CLI boundary.
+- `src/Prodbox/Retry.hs` owns `RetryPolicy` and pure backoff calculation.
+- `src/Prodbox/Service.hs` owns `ServiceError`, capability classes, and service-level retry
+  helpers.
+- `src/Prodbox/Naming.hs` owns DNS-1123-safe resource naming helpers.
+
+These modules are active doctrine-adoption surfaces. New code should prefer them over ad-hoc
+reimplementations even where repository-wide migration is not yet complete.
+
 ## 3. Repository-Owned Inputs
 
 The current repository-owned Haskell style and lint inputs are:

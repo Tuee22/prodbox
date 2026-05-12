@@ -3,10 +3,35 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md)
+[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
-> **Purpose**: Capture the Haskell gateway runtime, its formal verification path, and the
-> canonical Route 53 ownership or update flow.
+> **Purpose**: Capture the Haskell gateway runtime, its formal verification path, the canonical
+> Route 53 ownership or update flow, and the CLI-doctrine adoption sprints that align the gateway
+> daemon with [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same
+> Binary](../HASKELL_CLI_TOOL.md).
+
+## Phase Status
+
+🔄 **Active** — Sprints `2.1`–`2.8` remain `Done` on the gateway runtime, Route 53 ownership,
+peer-transport, claim/yield, time-base, Orders-promotion, and host-info cleanup surfaces. The
+phase is reopened by Sprint 0.2 to schedule Sprints `2.9`–`2.16`, which adopt the long-running
+daemon discipline from [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md): the explicit
+`load→prereq→acquire→ready→serve→drain→exit` lifecycle with worker loops wrapped in
+`try`/`catch` plus bounded retry-with-backoff, `/healthz` / `/readyz` / `/metrics` endpoints
+with golden-captured response shapes, the `BootConfig` / `LiveConfig` split with `SIGHUP` hot
+reload and atomic-swap discipline on `envLiveConfig`, `co-log` structured JSON logging, test
+hooks in `Env`, the `prodbox-daemon-lifecycle` test stanza asserting that single SIGTERM
+begins drain and second SIGTERM (or drain deadline) forces exit, the daemon CLI plumbing
+(`--config`, `--log-level`, `--port`, `--foreground`) plus `PRODBOX_*` env-var precedence
+rule, and the formal at-least-once event-processing module
+(`src/Prodbox/Daemon/Events.hs`) introduced in Sprint `2.16`. Sprint 0.3 extends the
+deliverable lists of Sprints `2.9`–`2.12` with the doctrine items surfaced by the May 2026
+audit: the default 30 s drain deadline plus explicit `bracketOnError` for resources with
+external side effects (2.9), the `envMetrics :: MetricsRegistry` typed daemon `Env` field
+backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscribers plus the
+prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
+top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
+refreshed from `LiveConfig` on every hot reload (2.12).
 
 ## Phase Summary
 
@@ -495,6 +520,428 @@ described by the current doctrine.
 ### Remaining Work
 
 None.
+
+## Sprint 2.9: Explicit Daemon Lifecycle 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/effect_interpreter.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Lifecycle](../HASKELL_CLI_TOOL.md).
+
+### Deliverables
+
+- Refactor `Prodbox.Gateway.Daemon` so the seven-step
+  `load→prereq→acquire→ready→serve→drain→exit` lifecycle is visible in the top-level
+  `bracket` / `withAsync` tree.
+- The prerequisite registry (Sprint 1.9) gates `acquire`.
+- SIGTERM/SIGINT install a shared `TMVar`; drain is bounded by the configured deadline.
+- `Control.Concurrent.Async` only; `forkIO` is forbidden in daemon code paths (hlint custom
+  rule enforced via Sprint 1.10 lint stack, with the negative-space symbol rules introduced
+  in Sprint 1.19).
+- Worker loops (peer listener, peer dialer, gateway ownership loop, DNS write loop) are
+  wrapped in `try`/`catch` plus bounded retry-with-backoff using the `RetryPolicy` values
+  from Sprint 1.13; no naked `forever` survives on the supported path per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Structured Concurrency](../HASKELL_CLI_TOOL.md)
+  §1244–1245.
+- The graceful-drain deadline defaults to **30 seconds** per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Lifecycle → Drain
+  Semantics](../HASKELL_CLI_TOOL.md) §1235–1236 and is sourced from `LiveConfig`
+  (Sprint 2.11) so operators tune it without a restart.
+- Resources with external side effects (DB connections, file locks, message-broker
+  consumer registrations) use `bracketOnError` per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Structured
+  Concurrency](../HASKELL_CLI_TOOL.md) §1218–1220 so cleanup runs on every exit path,
+  including exceptions raised mid-acquire. Plain `bracket` continues to govern resources
+  without external side effects.
+- Sprint 0.4 round-3 extension: enumerate the structured-concurrency primitive set
+  as the closed set worker loops may use:
+  `Control.Concurrent.Async.withAsync`, `race`, `concurrently`, and
+  `replicateConcurrently`, per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Lifecycle →
+  Structured Concurrency](../HASKELL_CLI_TOOL.md) §1313–1324. The
+  `.hlint.yaml` negative-space rules from Sprint 1.19 (which already refuse
+  `forkIO`) extend with a positive-space rule requiring every `Async` primitive
+  used in daemon paths to come from this set; introducing `async`/`wait` without
+  a surrounding `withAsync`, or `mapConcurrently_` in place of
+  `replicateConcurrently`, fails `prodbox lint haskell` with the doctrine-named
+  rule.
+
+### Validation
+
+1. The `prodbox-daemon-lifecycle` stanza (Sprint 2.14) exercises a full lifecycle.
+2. Lint refuses `forkIO` under `src/Prodbox/Gateway/`.
+3. Injecting a synthetic recoverable error into a worker loop confirms the
+   `try`/`catch` plus backoff wrapper restarts the loop within the retry policy and that
+   sustained failures classify the error as `Fatal` (Sprint 1.14) and propagate.
+4. The lifecycle stanza asserts the drain deadline defaults to 30 seconds when the
+   `LiveConfig` value is unset and tracks a `LiveConfig` override when one is provided.
+5. A unit test confirms that an exception raised inside the `bracketOnError`-guarded
+   acquire of a representative external-side-effect resource runs the release path.
+
+## Sprint 2.10: /healthz, /readyz, /metrics Endpoints 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Logging and
+observability](../HASKELL_CLI_TOOL.md).
+
+### Deliverables
+
+- Expose `/healthz`, `/readyz`, and `/metrics` (Prometheus exposition format) alongside the
+  existing `/v1/state` surface in `src/Prodbox/Gateway/Daemon.hs`.
+- `/readyz` returns 200 only after `serve` is entered and 503 during drain.
+- Golden tests over response shapes in `prodbox-unit` (per
+  [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) §1618–1619 and
+  `Test Categories → Daemon Lifecycle Tests` §2252–2253). The captured fixtures cover
+  `/healthz`, `/readyz` (both pre-ready and ready states), and `/metrics` exposition form.
+- Filesystem readiness markers and `sd_notify(READY=1)` are explicitly forbidden; the
+  HTTP `/readyz` endpoint is the only supported readiness signal per
+  [../HASKELL_CLI_TOOL.md → Lifecycle](../HASKELL_CLI_TOOL.md) §1222–1225. A
+  `prodbox-haskell-style` rule refuses any reintroduction of those forbidden surfaces.
+- Add `envMetrics :: MetricsRegistry` as a typed field on the daemon `Env` record per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → The Env Record
+  Grows](../HASKELL_CLI_TOOL.md) §1357–1366. The `/metrics` endpoint reads counter
+  values from `envMetrics`; module-local mutable counter state (top-level `IORef`,
+  `MVar`, or hidden registry) is forbidden via a custom `.hlint.yaml` rule extending
+  the negative-space rules introduced by Sprint 1.19.
+
+### Validation
+
+1. Lifecycle test (Sprint 2.14) asserts `/readyz` flips through the expected states.
+2. `/metrics` exposes the doctrine's minimum daemon counters.
+3. Golden tests over `/healthz`, `/readyz`, and `/metrics` response shapes pass on a clean
+   tree and visibly diff when the response surface changes.
+4. Introducing a module-local mutable counter (top-level `IORef`/`MVar` outside `Env`)
+   under `src/Prodbox/Gateway/` fails `prodbox lint haskell` with the negative-space
+   rule that backs `envMetrics`.
+
+## Sprint 2.11: BootConfig / LiveConfig Split with SIGHUP Hot Reload 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration:
+Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
+
+### Deliverables
+
+- Split `DaemonConfig` into immutable `BootConfig` fields (listen host/port, cert/key/CA
+  paths, peer transport, schema version) and hot-reloadable `LiveConfig` fields (log level,
+  intervals, feature flags).
+- Store live config as `envLiveConfig :: TVar LiveConfig`. SIGHUP enqueues a reload through a
+  dedicated `withAsync` worker that re-parses Dhall, validates `schemaVersion`, atomically
+  swaps the `TVar`, and emits a `config_reloaded` structured log event.
+- Reload rejections (boot-field changes, parse failures, schema mismatch) keep the running
+  config and emit `config_reload_failed`, `config_boot_changes_ignored`, or
+  `config_schema_mismatch`.
+- Live-config consumers re-read `readTVarIO envLiveConfig` at each use site and never cache
+  the dereferenced value across `await`/`yield`, per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Configuration → Atomic Swap
+  Discipline](../HASKELL_CLI_TOOL.md) §1533–1538. Reviewed surfaces (`heartbeatLoop`,
+  `gatewayLoop`, `dnsWriteLoop`, `peerListenerLoop`, `peerDialerLoop`) are enumerated as
+  Sprint deliverables so the discipline is auditable.
+- Reload step 8 publishes on an STM broadcast channel (`TChan` or `TBQueue`) so
+  subscribers that derive internal state from `LiveConfig` — rate limiters, routing
+  caches, anywhere a worker precomputes from live values — can refresh, per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Configuration → Reload
+  Procedure](../HASKELL_CLI_TOOL.md) §1528–1531. The broadcast channel is exposed
+  through `Env`; subscribers `atomically` block on it inside their own loops without
+  polling.
+- The on-disk Dhall configuration file follows the prescribed shape per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Configuration → Prescribed Dhall
+  File Shape](../HASKELL_CLI_TOOL.md) §1551–1574: a frozen `./types.dhall` plus
+  `./defaults.dhall` import, a top-level `schemaVersion : Natural`, and `boot` / `live`
+  sub-records mirroring the `BootConfig` / `LiveConfig` Haskell split. This composes
+  with Sprint 1.23's `dhall freeze` discipline so the imports carry SHA-256 hashes.
+  Operators editing the prodbox-config.dhall now produce a doctrine-conformant shape
+  without ad-hoc layout drift.
+- Sprint 0.4 round-3 extension: add `fsnotify`, `inotify`, and `mtime` polling to
+  the forbidden reload-trigger set; SIGHUP via the dedicated `TBQueue ()` worker
+  is the only sanctioned trigger per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration
+  → Reload Trigger](../HASKELL_CLI_TOOL.md) §1491–1500. The `.hlint.yaml`
+  negative-space set (Sprint 1.19) and the `forbiddenPathRegistry` (Sprint 1.10)
+  each grow rules refusing imports of `System.FSNotify`,
+  `System.INotify`/`Linux.INotify`, and any reachable `getModificationTime` /
+  `mtime` polling loop inside `src/Prodbox/Gateway/` or `src/Prodbox/Workload.hs`.
+- Sprint 0.4 round-3 extension: bind the typed Dhall field
+  `schemaVersion : Natural` as the top-level required field; a `schemaVersion`
+  mismatch during reload is treated as a parse failure per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration
+  → Schema Versioning](../HASKELL_CLI_TOOL.md) §1530–1538. The reload worker emits
+  `config_schema_mismatch` and keeps the running config rather than partially
+  applying the mismatched values.
+- Sprint 0.4 round-3 extension: bind the eight-step reload procedure step-by-step
+  per [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary →
+  Configuration → Reload Procedure](../HASKELL_CLI_TOOL.md) §1502–1530:
+  1. Read the config path from `BootConfig`.
+  2. `Dhall.inputFile` parse + typecheck + decode against the
+     `Prodbox.Daemon.Config` schema type.
+  3. On parse / typecheck / decode failure: log warn, keep the current
+     `LiveConfig`, emit `config_reload_failed`.
+  4. If `BootConfig` fields differ from the running value: log warn that they are
+     ignored, keep `BootConfig`, still apply the `LiveConfig` portion of the new
+     value, emit `config_boot_changes_ignored`.
+  5. Validate `schemaVersion`; mismatch is handled as a parse failure (step 3)
+     plus the `config_schema_mismatch` event from the binding above.
+  6. `atomically (writeTVar envLiveConfig newLiveConfig)` to swap atomically.
+  7. Emit `config_reloaded` with a diff summary of the changed `LiveConfig`
+     fields.
+  8. Publish on the STM broadcast channel so subscribers refresh.
+  The `prodbox-daemon-lifecycle` stanza (Sprint 2.14) exercises each step
+  individually so a regression in any step surfaces a distinct test name.
+
+### Validation
+
+1. Lifecycle test sends SIGHUP after writing a modified Dhall config and asserts only the
+   live portion takes effect.
+2. Boot-field reloads are explicitly rejected with the doctrine's structured log event.
+3. A unit test asserts every live-config consumer reads `readTVarIO envLiveConfig` at use
+   site (text-search proof against the enumerated surfaces).
+4. A subscriber registered against the broadcast channel observes a refresh event after a
+   successful reload; the lifecycle test exercises this assertion alongside the live-
+   field swap.
+5. `prodbox check-code` (Sprint 1.23 doctrine-alignment scan) recognizes the prescribed
+   `types.dhall` / `defaults.dhall` / `boot` / `live` shape and rejects any committed
+   defaults file that diverges from the doctrine-named layout.
+
+## Sprint 2.12: Structured JSON Logging via co-log 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/code_quality.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Logging and
+observability / Structured logging field helpers](../HASKELL_CLI_TOOL.md).
+
+### Deliverables
+
+- Adopt `co-log` as the daemon logger; replace ad-hoc logging with the doctrine's typed-field
+  helper (`field`, `logInfo`, `logWarn`, `logError`).
+- Daemon logs are JSON to stderr; stdout is reserved for protocol surfaces or unused.
+- Forbid `putStrLn` / `Text.IO.hPutStrLn` in daemon code paths via a custom hlint rule and a
+  legacy-ledger entry.
+- The daemon log level is set by `BootConfig` at startup (with the CLI flag > env var >
+  Dhall default > built-in default precedence rule from Sprint 2.15) and **refreshed
+  from `LiveConfig` on every hot reload** per [../HASKELL_CLI_TOOL.md → Long-Running
+  Daemons → Logging and Observability](../HASKELL_CLI_TOOL.md) §1275–1276. The reload
+  worker scheduled by Sprint 2.11 sets the new level on the `co-log` logger inside its
+  atomic-swap step, so every subsequent log call observes the refreshed level without
+  cached state.
+- Sprint 0.4 round-3 extension: bind the typed field helper API on the daemon
+  logging module per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary →
+  Logging](../HASKELL_CLI_TOOL.md) §1370–1410. `src/Prodbox/Gateway/Logging.hs`
+  (or the dedicated daemon logging module) exposes
+  `field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)` for typed
+  structured-log field construction plus the convenience wrappers
+  `logStructured :: Severity -> Text -> [(Text, Aeson.Value)] -> App ()`,
+  `logDebug`, `logInfo`, `logWarn`, and `logError` (each a thin specialization
+  of `logStructured`). Daemon code never constructs an `Aeson.Object` inline at
+  a log site; every structured field flows through `field` so the type is enforced
+  at compile time. A `prodbox-haskell-style` rule refuses
+  `Aeson.object` / `Aeson.fromList` invocations inside daemon-path log calls.
+
+### Validation
+
+1. Lifecycle test asserts structured JSON shape on stderr.
+2. The forbidden-call hlint rule blocks reintroduction of `putStrLn` in
+   `src/Prodbox/Gateway/`.
+3. The lifecycle test sends SIGHUP after writing a Dhall config with a changed
+   `live.logLevel` value and asserts subsequent log lines reflect the new level
+   without restart.
+
+## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/distributed_gateway_architecture.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
+`At-Least-Once Event Processing`.
+
+### Deliverables
+
+- Extend the daemon `Env` with no-op-in-production hook fields
+  (`envAfterPeerEventCommit`, `envBeforeOrdersAdoption`, `envOnPeerConnectionEstablished`,
+  and any timing-sensitive points currently relying on `threadDelay`).
+- Replace `threadDelay`-based test waits with hook injection.
+- Make the commit log's at-least-once contract explicit: every persisted event carries a
+  processed marker, handlers are documented idempotent, and replay orders by `created_at ASC`.
+- Sprint 0.4 round-3 extension: bind the production-no-op / test-injected hook
+  contract pattern explicitly per
+  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Test
+  Hooks](../HASKELL_CLI_TOOL.md) §1284–1300. Every hook field on the daemon `Env`
+  has a no-op default that production startup installs unchanged; tests override
+  the default at `Env` construction only. A `prodbox-haskell-style` rule and a
+  `prodbox-unit` assertion together enforce that no module under
+  `src/Prodbox/Gateway/` (or any other daemon path) reads a hook field except
+  through the `Env` it was injected into, and that the production startup path
+  constructs `Env` with the no-op values literally (so tests cannot accidentally
+  leak instrumented hooks into a production binary).
+
+### Validation
+
+1. `prodbox-unit` / `prodbox-integration` tests rely only on hooks for timing-sensitive
+   assertions.
+2. Replaying an already-processed peer event is a no-op at the handler boundary.
+
+## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) and
+`Test Organization`.
+
+### Deliverables
+
+- New `test-suite prodbox-daemon-lifecycle` stanza with `type: exitcode-stdio-1.0`. Spawn the
+  daemon via `typed-process`, poll `/readyz`, exercise the protocol surface, send SIGTERM,
+  assert graceful drain within the configured deadline, assert exit `0`.
+- Assert the two-SIGTERM shutdown contract from
+  [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) §1620 and
+  §2254: single SIGTERM begins drain and the daemon exits `0` within the deadline; a
+  second SIGTERM (or the drain deadline) forces exit. The test exercises both branches:
+  graceful drain on the first signal, forced exit on the second.
+- Health-endpoint response shapes belong in `prodbox-unit` golden tests (Sprint 2.10).
+- Forbid `terminateProcess` without prior graceful shutdown, `threadDelay`-based readiness
+  probes, and filesystem readiness markers.
+- Sprint 0.4 round-3 extension: capture the `/healthz`, `/readyz`, and `/metrics`
+  response shapes as golden tests inside the `prodbox-daemon-lifecycle` stanza per
+  [../HASKELL_CLI_TOOL.md → Test Categories → Golden
+  Tests](../HASKELL_CLI_TOOL.md) §2243 and `Long-Running Daemons in the Same
+  Binary → Health Endpoints`. The captured fixtures assert:
+  - `/healthz` returns `200 OK` with the doctrine's alive body once the daemon
+    enters `serve`,
+  - `/readyz` returns `200 OK` with the doctrine's ready body once `serve` is
+    entered, and `503 Service Unavailable` with the doctrine's draining body
+    after the first SIGTERM,
+  - `/metrics` returns the Prometheus-exposition-format text with the daemon's
+    minimum counter set (the counters bound by `envMetrics` in Sprint 2.10).
+  Golden capture lives under `test/golden/daemon-health/` and is regenerated by
+  `prodbox docs generate` for the response-shape registry. (The endpoint
+  implementations themselves remain owned by Sprint 2.10; this extension owns
+  only the golden-test capture inside the lifecycle stanza.)
+
+### Validation
+
+1. `cabal test prodbox-daemon-lifecycle` succeeds on a clean worktree.
+2. Forbidden test patterns are absent (enforced via the lint stack from Sprint 1.10).
+3. The two-SIGTERM assertion exercises both graceful-drain and forced-exit branches and
+   surfaces a distinct test name for each branch so a regression is visible in test
+   summaries.
+
+## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → CLI-to-Daemon
+Plumbing](../HASKELL_CLI_TOOL.md) so every daemon-launching `prodbox` command exposes the
+doctrine's standard flag set with the prescribed startup-precedence rule.
+
+### Deliverables
+
+- Replace the positional `<config-path>` argument on `prodbox gateway start` and
+  `prodbox gateway status` with `--config <path>`, declared in the `CommandSpec` registry
+  (Sprint 1.6). Daemons refuse to start on missing or unparseable config.
+- Add `--log-level <level>`, `--port <int>`, and `--foreground` flags on every daemon-
+  launching command (`prodbox gateway start`, `prodbox workload start`). `--foreground` is
+  the default per [../HASKELL_CLI_TOOL.md → CLI-to-Daemon Plumbing](../HASKELL_CLI_TOOL.md)
+  §1591–1599, and self-daemonization (double-fork, `setsid`, `forkProcess`) is forbidden;
+  the daemon rejects `--detach` per the doctrine's supervisor-owned process model. A
+  `prodbox-haskell-style` unit test asserts no daemon-path module imports
+  `System.Posix.Process` `forkProcess` or invokes `setsid` directly (paired with the
+  parser-side enforcement landed in Sprint 1.23).
+- Add `PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`, and `PRODBOX_PORT` env-var overrides
+  limited to `BootConfig` defaults (Sprint 2.11). Document the precedence rule: CLI flag >
+  env var > Dhall file default > built-in default.
+- Update `documents/engineering/cli_command_surface.md` so the canonical daemon flag set
+  and env-var precedence are explicit on the supported surface.
+- Enqueue the positional-`<config-path>` parser shape in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal` with
+  Sprint 2.15 as owner.
+
+### Validation
+
+1. `prodbox gateway start --config <path>` and the env-var path agree at startup; the
+   in-process `BootConfig` reflects the precedence rule.
+2. `prodbox gateway start` exits non-zero with a doctrine-style three-element error message
+   when `--config` points at a missing or unparseable file.
+3. The `prodbox-daemon-lifecycle` stanza (Sprint 2.14) exercises both flag and env-var
+   startup paths.
+
+## Sprint 2.16: At-Least-Once Event-Processing Module 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/effect_interpreter.md`, `documents/engineering/pure_fp_standards.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Formalize the at-least-once event-processing pattern from
+[../HASKELL_CLI_TOOL.md → At-Least-Once Event
+Processing](../HASKELL_CLI_TOOL.md) §1624–1739 so the gateway commit log and any future
+daemon event-consuming surface (workload runtime, future workers) share one canonical
+module rather than ad-hoc per-call-site patterns. Sprint 2.13 already names at-least-once
+formalization on the commit log; this sprint owns the module that backs it.
+
+### Deliverables
+
+- New module `src/Prodbox/Daemon/Events.hs` exposing:
+  - `data StoredEvent = StoredEvent { eventId :: EventId, eventAggregateId :: AggregateId,
+    eventType :: EventType, eventPayload :: Aeson.Value, eventCreatedAt :: UTCTime,
+    eventProcessedAt :: Maybe UTCTime }` matching doctrine §1653–1660.
+  - `newtype EventHandler = EventHandler (StoredEvent -> App ())` with the idempotency
+    precondition encoded in the haddock comment per doctrine §1720.
+  - `recordEvent`, `markEventProcessed`, `fetchUnprocessedEvents`, and a top-level
+    `processEvents :: EventHandler -> App Int` consumer that fetches unprocessed events,
+    invokes the handler, marks each `processed_at`, and returns the count processed.
+- `src/Prodbox/Gateway/Daemon.hs` peer-event ingestion in `peerListenerLoop` consumes the
+  new module (or records in `documents/engineering/distributed_gateway_architecture.md`
+  why the gateway intentionally uses the in-memory peer-gossip variant rather than the
+  database-backed `processed_at` form; both options are doctrine-legal, the outcome is
+  recorded in this sprint's deliverables and propagated to the doctrine correspondence
+  notes).
+- `documents/engineering/pure_fp_standards.md` cross-references
+  `src/Prodbox/Daemon/Events.hs` as the canonical at-least-once pattern for any future
+  daemon event-consumer.
+- Enqueue any pre-doctrine event-processing call site under `src/Prodbox/Gateway/` or
+  `src/Prodbox/Workload.hs` that does not consume the new module in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`
+  with Sprint 2.16 as owner.
+
+### Validation
+
+1. `cabal test prodbox-unit` covers the `recordEvent` / `markEventProcessed` /
+   `fetchUnprocessedEvents` triad against a deterministic clock test hook (Sprint 2.13).
+2. A property test asserts that running `processEvents` twice in a row over the same set
+   of unprocessed events is a no-op on the second invocation (idempotent-replay
+   contract).
+3. The `documents/engineering/distributed_gateway_architecture.md` correspondence section
+   names whether the gateway commit log adopts the module or intentionally keeps the
+   in-memory variant, with explicit doctrine-citation either way.
 
 ## Documentation Requirements
 

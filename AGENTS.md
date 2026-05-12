@@ -2,12 +2,15 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/pure_fp_standards.md
+**Referenced by**: README.md, CLAUDE.md, HASKELL_CLI_TOOL.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/pure_fp_standards.md
+**Generated sections**: none
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
 `DEVELOPMENT_PLAN/README.md` is the authoritative source for target architecture, sprint status,
-and cleanup ownership. The repository is Haskell-only on the supported path.
+and cleanup ownership. [HASKELL_CLI_TOOL.md](HASKELL_CLI_TOOL.md) is the authoritative source
+for the CLI doctrine — command topology, generated artifacts, daemon lifecycle, lint
+discipline, and the testing stack. The repository is Haskell-only on the supported path.
 
 ## Current Worktree Structure
 
@@ -107,6 +110,7 @@ development.
 ## Cross-References
 
 - **CLAUDE.md**: Detailed AI assistant guidelines
+- **[HASKELL_CLI_TOOL.md](HASKELL_CLI_TOOL.md)**: Canonical Haskell CLI doctrine
 - **documents/documentation_standards.md**: Documentation rules
 - **documents/engineering/**: Architecture and doctrine documentation
 - **[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md)**: Development plan, sprint status, and cleanup ownership

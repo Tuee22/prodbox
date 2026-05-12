@@ -2,7 +2,8 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md
+**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, HASKELL_CLI_TOOL.md
+**Generated sections**: none
 
 > **Purpose**: Project overview, operator guide, installation guide, and documentation index for
 > `prodbox`.
@@ -19,6 +20,10 @@ validation environments.
 
 - The authoritative target architecture, sprint status, and cleanup ownership live in
   [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
+- The authoritative CLI doctrine — command topology, generated artifacts, daemon lifecycle,
+  lint discipline, and the testing stack — lives in
+  [HASKELL_CLI_TOOL.md](./HASKELL_CLI_TOOL.md). Phase documents in `DEVELOPMENT_PLAN/` cite
+  doctrine sections by name when scheduling adoption work.
 - The repository is Haskell-only on the supported path: the public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
@@ -492,6 +497,8 @@ prodbox/
 ## Documentation
 
 - [Development Plan](./DEVELOPMENT_PLAN/README.md)
+- [Haskell CLI Doctrine](./HASKELL_CLI_TOOL.md)
+- [Documentation Standards](./documents/documentation_standards.md)
 - [Engineering Docs Index](./documents/engineering/README.md)
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Code Quality Doctrine](./documents/engineering/code_quality.md)

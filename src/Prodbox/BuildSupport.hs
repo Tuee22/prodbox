@@ -1,89 +1,92 @@
-module Prodbox.BuildSupport (
-    addBuildSupportEnvironment,
-    canonicalOperatorBinaryPath,
-    syncBuiltOperatorBinary,
-)
+module Prodbox.BuildSupport
+  ( addBuildSupportEnvironment
+  , canonicalOperatorBinaryPath
+  , syncBuiltOperatorBinary
+  )
 where
 
-import System.Directory (
-    Permissions (..),
-    copyFile,
-    createDirectoryIfMissing,
-    createFileLink,
-    doesFileExist,
-    getPermissions,
-    setPermissions,
- )
-import System.Exit (
-    ExitCode (..),
- )
+import System.Directory
+  ( Permissions (..)
+  , copyFile
+  , createDirectoryIfMissing
+  , createFileLink
+  , doesFileExist
+  , getPermissions
+  , setPermissions
+  )
+import System.Exit
+  ( ExitCode (..)
+  )
 import System.FilePath ((</>))
-import System.Process (
-    CreateProcess (cwd, env),
-    proc,
-    readCreateProcessWithExitCode,
- )
+import System.Process
+  ( CreateProcess (cwd, env)
+  , proc
+  , readCreateProcessWithExitCode
+  )
 
 addBuildSupportEnvironment :: FilePath -> [(String, String)] -> IO [(String, String)]
 addBuildSupportEnvironment repoRoot environment = do
-    supportDir <- ensureBuildSupportDirectory repoRoot
-    let existingLibraryPath = maybe "" id (lookup "LIBRARY_PATH" environment)
-        updatedLibraryPath =
-            if existingLibraryPath == ""
-                then supportDir
-                else supportDir ++ ":" ++ existingLibraryPath
-    pure (("LIBRARY_PATH", updatedLibraryPath) : filter ((/= "LIBRARY_PATH") . fst) environment)
+  supportDir <- ensureBuildSupportDirectory repoRoot
+  let existingLibraryPath = maybe "" id (lookup "LIBRARY_PATH" environment)
+      updatedLibraryPath =
+        if existingLibraryPath == ""
+          then supportDir
+          else supportDir ++ ":" ++ existingLibraryPath
+  pure (("LIBRARY_PATH", updatedLibraryPath) : filter ((/= "LIBRARY_PATH") . fst) environment)
 
 canonicalOperatorBinaryPath :: FilePath -> FilePath
 canonicalOperatorBinaryPath repoRoot = repoRoot </> ".build" </> "prodbox"
 
 syncBuiltOperatorBinary :: FilePath -> [(String, String)] -> IO (Either String FilePath)
 syncBuiltOperatorBinary repoRoot environment = do
-    createDirectoryIfMissing True (repoRoot </> ".build")
-    (exitCode, stdoutText, stderrText) <-
-        readCreateProcessWithExitCode
-            (proc "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"]){cwd = Just repoRoot, env = Just environment}
-            ""
-    case exitCode of
-        ExitFailure _ -> pure (Left stderrText)
-        ExitSuccess -> do
-            let builtBinaryPath = trim stdoutText
-                targetBinaryPath = canonicalOperatorBinaryPath repoRoot
-            copyFile builtBinaryPath targetBinaryPath
-            sourcePermissions <- getPermissions builtBinaryPath
-            setPermissions targetBinaryPath sourcePermissions{executable = True}
-            pure (Right targetBinaryPath)
+  createDirectoryIfMissing True (repoRoot </> ".build")
+  (exitCode, stdoutText, stderrText) <-
+    readCreateProcessWithExitCode
+      (proc "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"])
+        { cwd = Just repoRoot
+        , env = Just environment
+        }
+      ""
+  case exitCode of
+    ExitFailure _ -> pure (Left stderrText)
+    ExitSuccess -> do
+      let builtBinaryPath = trim stdoutText
+          targetBinaryPath = canonicalOperatorBinaryPath repoRoot
+      copyFile builtBinaryPath targetBinaryPath
+      sourcePermissions <- getPermissions builtBinaryPath
+      setPermissions targetBinaryPath sourcePermissions {executable = True}
+      pure (Right targetBinaryPath)
 
 ensureBuildSupportDirectory :: FilePath -> IO FilePath
 ensureBuildSupportDirectory repoRoot = do
-    let supportDir = repoRoot </> ".build" </> "support"
-        supportLink = supportDir </> "libtinfo.so"
-    createDirectoryIfMissing True supportDir
-    linkExists <- doesFileExist supportLink
-    if linkExists
-        then pure supportDir
-        else do
-            sourceLib <- firstExistingSystemLib
-            case sourceLib of
-                Nothing -> pure supportDir
-                Just sourcePath -> do
-                    createFileLink sourcePath supportLink
-                    pure supportDir
+  let supportDir = repoRoot </> ".build" </> "support"
+      supportLink = supportDir </> "libtinfo.so"
+  createDirectoryIfMissing True supportDir
+  linkExists <- doesFileExist supportLink
+  if linkExists
+    then pure supportDir
+    else do
+      sourceLib <- firstExistingSystemLib
+      case sourceLib of
+        Nothing -> pure supportDir
+        Just sourcePath -> do
+          createFileLink sourcePath supportLink
+          pure supportDir
 
 firstExistingSystemLib :: IO (Maybe FilePath)
 firstExistingSystemLib =
-    firstExistingFile
-        [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6"
-        , "/lib/x86_64-linux-gnu/libtinfo.so.6"
-        ]
+  firstExistingFile
+    [ "/usr/lib/x86_64-linux-gnu/libtinfo.so.6"
+    , "/lib/x86_64-linux-gnu/libtinfo.so.6"
+    ]
 
 firstExistingFile :: [FilePath] -> IO (Maybe FilePath)
 firstExistingFile paths = go paths
-  where
-    go [] = pure Nothing
-    go (path : remaining) = do
-        exists <- doesFileExist path
-        if exists then pure (Just path) else go remaining
+ where
+  go [] = pure Nothing
+  go (path : remaining) = do
+    exists <- doesFileExist path
+    if exists then pure (Just path) else go remaining
 
 trim :: String -> String
 trim = reverse . dropWhile (`elem` ['\n', '\r', ' ']) . reverse

@@ -3,11 +3,23 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
 > Haskell stack and a cleanup ledger where any surviving supported-path residue is explicitly
 > owned by its originating phase.
+
+## Phase Status
+
+✅ **Done on owned surfaces** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
+contract and zero-Python handoff surfaces. Per
+[development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 6 stays
+`Done` on its owned scope while Phases `0`–`4` are reopened by Sprint 0.2 to adopt
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). Final handoff cannot be reclaimed until the
+reopened phases close: the rerun contract depends on the `CommandSpec` split (Sprint 1.6), the
+hspec → tasty migration (Sprint 1.11), the lifecycle reconcile rename (Sprint 4.5), and the
+`prodbox-pulumi` stanza (Sprint 4.7) before the doctrine alignment is complete.
 
 ## Phase Summary
 

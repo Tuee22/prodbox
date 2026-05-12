@@ -5,7 +5,8 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [system-components.md](system-components.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[../documents/documentation_standards.md](../documents/documentation_standards.md)
+[../documents/documentation_standards.md](../documents/documentation_standards.md),
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Define the maintenance rules for the prodbox development plan so the repository
 > keeps one coherent, execution-ordered plan and one explicit ledger of cleanup/removal work.
@@ -198,10 +199,31 @@ If a change adds or edits a Mermaid block in this directory, closure requires:
 This standards document describes Mermaid rules with prose, inline code, or `markdown` examples
 only. Do not add live Mermaid blocks here.
 
+### L. CLI Doctrine Alignment
+
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) is the authoritative CLI doctrine. Phase
+documents and sprint blocks that schedule adoption work must cite the doctrine sections they
+implement by name (for example, `CommandSpec`, `Plan / Apply`, `Long-Running Daemons in the Same
+Binary → Lifecycle`, `Lint, Format, and Code-Quality Stack → Forbidden Surfaces`,
+`Generated Artifacts → The generated-section registry`).
+
+- Governed engineering docs under `documents/engineering/` referenced from the doctrine's
+  `Supersedes` line must defer to the doctrine for the patterns it owns and retain only
+  project-specific elaborations such as exact file paths, retained-state roots, or named
+  validation flows.
+- When the doctrine prescribes a behavior that the implemented worktree does not yet honor, the
+  gap is scheduled through a new sprint in the appropriate phase. Closing the gap silently
+  without a sprint block is forbidden.
+- Doctrine-driven removals — superseded helpers, deprecated command aliases, parallel workflow
+  surfaces — flow through [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+  like any other cleanup.
+- If a doctrine section changes, the same change updates every governed doc that references it.
+
 ## Related Documents
 
 - [README.md](README.md)
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+- [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 ## Cross-Reference Conventions
 

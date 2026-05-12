@@ -6,9 +6,13 @@
 [development_plan_standards.md](development_plan_standards.md),
 [system-components.md](system-components.md),
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md),
+[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
+[phase-2-gateway-dns.md](phase-2-gateway-dns.md),
+[phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
 [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
+[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md),
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Record the completed Python-removal work and every surviving compatibility helper,
 > duplicate surface, or tooling residue that is still slated for deletion during the Haskell
@@ -18,12 +22,84 @@
 
 ## Ledger Status
 
-The cleanup ledger preserves completed removal history. Python-removal work remains closed, and no
-supported-path cleanup items remain pending.
+The cleanup ledger preserves completed removal history. Python-removal work remains closed.
+Pending-removal items capture the doctrine-deviation residue scheduled for removal as Phases
+`1`–`4` reopen to adopt [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md), including the
+audit-driven residue scheduled by Sprint 0.3 (durable CLI documentation artifacts, parser-
+test category via `execParserPure`, `renderError` boundary discipline, per-command
+`Example` entries, `cabal format` round-trip, default 30 s drain deadline plus
+`bracketOnError`, `envMetrics` typed `Env` field, STM broadcast channel for `LiveConfig`
+subscribers, daemon log-level refresh, and the prescribed on-disk Dhall file shape).
+
+Sprint 0.4 introduces no new pending-removal rows: the round-3 audit bindings are
+green-field plan-text additions that narrow existing doctrine prescriptions rather than
+deprecating implemented surfaces. The implementation residue addressed by Sprint 0.4's
+extensions — pre-doctrine `CommandSpec` shape without bound `OptionSpec` fields,
+daemon-as-separate-parser dispatch, direct `System.Process` smart-constructor usage,
+unpinned `fourmolu.yaml`, ad-hoc property-test invariants, unbound `AppError` record
+shape, unsignatured naming helpers, non-deterministic renderer inputs, unrestricted
+`Async` primitive usage, polling-based reload triggers, unbound `schemaVersion`, ad-hoc
+log-field construction, threadDelay-based test waits, missing health-endpoint goldens,
+and reconciler `--force` / `--reinstall` / sister-command surfaces — is already captured
+by existing rows under owning Sprints 1.6, 1.8, 1.10, 1.11, 1.12, 1.14, 1.15, 1.21,
+2.9, 2.11, 2.12, 2.13, 2.14, 3.10, and 4.5 either by direct mention or by the broader
+"pre-doctrine residue" framing those rows use. Sprint 1.27 likewise adds no new
+removal row because no pre-existing `Main.hs` logic survives on the current worktree;
+should later auditing find any, the row will be enqueued under Sprint 1.27 at that time.
 
 ## Pending Removal
 
-None.
+| Item | Location | Reason | Owning Sprint |
+|------|----------|--------|---------------|
+| `hspec` test framework plus `hspec-discover` dependency | `prodbox.cabal`, `test/` Main modules | Doctrine prescribes `tasty` + `tasty-hunit` + `tasty-quickcheck` + `tasty-golden`; the existing stanza names (`prodbox-unit`, `prodbox-integration-cli`, `prodbox-integration-env`) do not match the doctrine's `prodbox-unit` / `prodbox-integration` / `prodbox-haskell-style` / `prodbox-daemon-lifecycle` / `prodbox-pulumi` layout. | Sprint 1.11 |
+| Monolithic pre-`CommandSpec` CLI parser shape | `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Command.hs` | The doctrine requires `CommandSpec` as the canonical source of truth that drives parser, docs, manpage, JSON schema, and command-tree generation. The current parser is the source of truth, not a renderer of one. | Sprint 1.6 |
+| `prodbox rke2 install` command alias | `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Rke2.hs`, `CLAUDE.md`, root guidance | Doctrine reconciler discipline forbids install/upgrade/repair/reconcile splits; the rename to `reconcile` lands in Sprint 4.5 and the alias remains for one cycle for backward compatibility. | Sprint 4.5 |
+| Direct `System.Process` / `typed-process` smart-constructor call sites outside the subprocess interpreter | Any `src/Prodbox/**.hs` file that constructs subprocesses inline | Doctrine `Subprocesses as Typed Values` requires the `Subprocess` ADT plus the two interpreter functions (`runStreaming`, `capture`) as the only IO boundary. | Sprint 1.8 |
+| Ad-hoc `putStrLn` / `Text.IO.hPutStrLn` logging in daemon code paths | `src/Prodbox/Gateway/`, `src/Prodbox/Workload.hs`, daemon-adjacent helpers | Doctrine prescribes `co-log` structured JSON logs to stderr for long-running daemons. | Sprint 2.12 |
+| Hardcoded retry constants and inline retry loops in lifecycle and chart paths | `src/Prodbox/CLI/Rke2.hs` (Harbor mirror fallback, Helm fetch retry), other ad-hoc retry sites | Doctrine prescribes `RetryPolicy` as a first-class value with pure backoff calculation and explicit error classification. | Sprint 1.13 |
+| Inline `unless toolExists` / `when (not present)` prerequisite checks outside the registry | Any call site that bypasses `src/Prodbox/Prerequisite.hs` | Doctrine prescribes a single typed DAG with one `prerequisiteRegistry :: Map Text PrerequisiteNode` as the source of truth. | Sprint 1.9 |
+| Pre-doctrine ad-hoc `fourmolu` invocations and unpinned formatting | `src/Prodbox/CheckCode.hs` plus any developer tooling that runs `fourmolu` without the pinned `fourmolu.yaml` and the `prodbox-haskell-style` test stanza | Doctrine pins `fourmolu.yaml` at the repo root, exposes haskell-style enforcement as both `prodbox lint haskell` and a `prodbox-haskell-style` cabal `test-suite`, and forbids parallel formatting paths. | Sprint 1.10 / Sprint 1.11 |
+| Hand-constructed PV / PVC pairs and resource names outside the smart constructor and naming helpers | `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Doctrine prescribes smart constructors for paired resources and centralized naming helpers (`boundedResourceName`, `sanitizeResourceName`, `hashSuffix`). | Sprint 1.15 / Sprint 3.8 |
+| Direct Redis / Postgres call sites outside the capability classes | `src/Prodbox/PostgresPlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, any `redis-cli` invocation site | Doctrine prescribes capability classes (`HasMinIO`, `HasRedis`, `HasPg`) plus `AsServiceError` for unified retry and error handling. | Sprint 1.12 / Sprint 3.9 |
+| Untyped string-comparison state machines for workflows with >2 states | `src/Prodbox/Gateway/`, lifecycle and chart deploy phases | Doctrine prescribes GADT-indexed state machines with singleton witnesses; runtime status enums with manual validation are forbidden. | Sprint 1.16 |
+| Stdout / stderr discipline violations and missing `--format` / `--color` flags on one-shot CLI commands | Any `src/Prodbox/CLI/` runner that writes diagnostics to stdout or emits format-flag-less machine output | Doctrine `Output Rules` prescribes stdout for primary output, stderr for diagnostics, plus `--format` and `--color` on every output-emitting command. | Sprint 1.17 |
+| Ad-hoc per-command `Settings` / logging-handle threading without a shared `Env` record | Command runners under `src/Prodbox/CLI/`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Rke2.hs` | Doctrine `Application Environment` prescribes a shared `Env` record threaded via `ReaderT Env IO` for one-shot CLI work. | Sprint 1.18 |
+| Host-installed `fourmolu` / `hlint` use and absent custom `.hlint.yaml` nesting rules | Any developer tooling outside `.build/prodbox-style-tools/`, `src/Prodbox/CheckCode.hs` paths that re-invoke the formatter outside the sandbox, repo-root with no committed `.hlint.yaml` | Doctrine `Lint, Format, and Code-Quality Stack → Tool Bootstrap` requires a sandboxed pinned-GHC formatter; the `Readability and Nesting` subsection requires custom hlint rules in `.hlint.yaml`. | Sprint 1.19 |
+| `prodbox test all` running `cabal test` before lint and absent `prodbox test lint` alias | `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/CLI/Command.hs` | Doctrine `Lint, Format, and Code-Quality Stack → Aggregate Dispatch` requires lint to be the first step of `prodbox test all` and exposes a `prodbox test lint` alias. | Sprint 1.20 |
+| Renderer determinism violations and absent `trackingGeneratedPaths` registry | `src/Prodbox/CheckCode.hs`, any rendered-doc producer | Doctrine `Generated Artifacts → Determinism Requirements` and `Two Categories of Generation` require pure renderers plus a fully-generated-paths registry. | Sprint 1.21 |
+| Non-doctrine libraries on the supported path | `prodbox.cabal` and the modules that import them | Doctrine `Standardized Stack` pins the library set; non-doctrine dependencies must be justified or replaced. | Sprint 1.22 |
+| Test-suite stanzas missing `type: exitcode-stdio-1.0` | `prodbox.cabal` | Doctrine `Test Organization` requires the interface on every stanza. | Sprint 1.11 |
+| Positional `<config-path>` parser shape on daemon-launching commands plus absent `PRODBOX_*` env-var precedence | `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/Gateway/Daemon.hs` | Doctrine `Long-Running Daemons in the Same Binary → CLI-to-Daemon Plumbing` requires `--config`, `--log-level`, `--port`, `--foreground` flags and a documented CLI / env-var / Dhall precedence rule. | Sprint 2.15 |
+| Unfrozen Dhall imports in `prodbox-config-types.dhall` and any committed defaults file | `prodbox-config-types.dhall`, repository root | Doctrine `Long-Running Daemons → Configuration → Dhall file organization` (§1571–1574) requires `dhall freeze` on committed schema and defaults files so every import carries a SHA-256 hash. `prodbox check-code` enforces the rule once Sprint 1.23 closes. | Sprint 1.23 |
+| Unwrapped peer worker loops in the gateway daemon (potential naked `forever`) | `src/Prodbox/Gateway/Daemon.hs` (`heartbeatLoop`, `gatewayLoop`, `dnsWriteLoop`, `peerListenerLoop`, `peerDialerLoop`) | Doctrine `Long-Running Daemons → Structured Concurrency` (§1244–1245) requires `try` / `catch` + bounded retry-with-backoff wrapping; naked `forever` is forbidden. Lands on Sprint 2.9; verification consolidates in Sprint 2.16 alongside the at-least-once module. | Sprint 2.9 / Sprint 2.16 |
+| In-memory commit-log without `processed_at` formalisation against the at-least-once doctrine | `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs` | Doctrine `At-Least-Once Event Processing` (§1624–1739) prescribes immutable event records with `created_at`, a `processed_at` tracking column, idempotent `EventHandler`, and the `recordEvent` / `markEventProcessed` / `fetchUnprocessedEvents` triad. Sprint 2.16 introduces `src/Prodbox/Daemon/Events.hs`; the gateway either consumes it or records the intentional deviation. | Sprint 2.16 |
+| Live-config cached dereferences across `await`/`yield` (audit) | `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Workload.hs` | Doctrine `Long-Running Daemons → Configuration → Atomic Swap Discipline` (§1533–1538) forbids caching the dereferenced live-config value across yield points. Sprint 2.11 audits and removes any cached references in the enumerated daemon surfaces. | Sprint 2.11 |
+| Missing `prodbox lint chart` Helm-chart structural-invariants linter | `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Lint/`, `prodbox.cabal` | Doctrine `Lint, Format, and Code-Quality Stack → CLI Surface` (§1820–1823, §1870) prescribes a `tool lint chart` surface alongside `lint files / docs / proto / haskell`. Sprint 3.12 adds `src/Prodbox/Lint/Chart.hs` and the subcommand. | Sprint 3.12 |
+| Route catalog rendered only as a Haskell value, not as marker-delimited content inside chart manifests | `src/Prodbox/PublicEdge.hs`, `charts/keycloak/`, `charts/vscode/`, `charts/api/`, `charts/websocket/`, shared-host admin manifests | Doctrine `Generated Artifacts` (§341–343) enumerates "route inventories" as a generation surface. Sprint 3.12 registers `route-registry` in `generatedSectionRule` so the inventory is emitted into chart artifacts via marker-delimited blocks. | Sprint 3.12 |
+| Unrecognised `--no-color` flag and ambiguous `--color` value matrix (audit) | `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Output.hs` (new) | Doctrine `Output Rules` (§785–792) prescribes `--color {auto,always,never}` plus a `--no-color` alias. Sprint 1.17 adds the flag matrix; Sprint 1.23 confirms enumeration completeness and parser-level rejection of unknown color values. | Sprint 1.17 / Sprint 1.23 |
+| Missing HLint custom rules refusing `forkIO`, `unsafePerformIO`, and module-level `IORef` inside daemon paths | `.hlint.yaml`, `src/Prodbox/Lint.hs` (new) | Doctrine `Long-Running Daemons` (§1243 forbids raw `forkIO`; §1370 / §1450 forbid module-level `IORef` for resources or test coordination). Sprint 1.19 introduces the custom rules alongside the nested-case warnings. | Sprint 1.19 / Sprint 1.23 |
+| Missing two-SIGTERM lifecycle assertion in the daemon stanza | `test/integration/daemon-lifecycle/Main.hs` (created in Sprint 2.14) | Doctrine `Daemon Lifecycle Tests` (§1620 / §2254) requires asserting that single SIGTERM begins drain and that a second SIGTERM (or drain deadline) forces exit. Sprint 2.14 adds the stanza; Sprint 2.16 enumerates the assertion as a stanza deliverable. | Sprint 2.14 / Sprint 2.16 |
+| Health-endpoint response shapes not captured as golden tests | `test/golden/`, `prodbox-unit` stanza | Doctrine `Daemon Lifecycle Tests` (§1618–1619, §2252–2253) places `/healthz`, `/readyz`, `/metrics` response shapes in the golden-test category. Sprint 2.10 owns the endpoint deliverable; the golden capture lands in Sprint 2.16 alongside the lifecycle cleanup. | Sprint 2.10 / Sprint 2.16 |
+| Absent durable CLI documentation artifacts (Markdown command reference, manpages, shell completion scripts) | `documents/cli/`, `share/man/`, `share/completion/`, `src/Prodbox/CLI/Docs.hs` | Doctrine `Automatically Generated Documentation` (§269–318) and `The Architecture` summary (§2349–2356) prescribe durable external artifacts derived from `CommandSpec`. Sprint 1.24 registers them in `trackingGeneratedPaths` and emits them through `prodbox docs generate`. | Sprint 1.24 |
+| Subprocess-driven parser tests where `execParserPure` is the doctrinal API | `test/unit/`, `test/integration/cli/Main.hs` | Doctrine `Parser Tests` (§2116–2138) names parser tests as a distinct category using parser-level APIs (`execParserPure`) rather than spawning the binary. Sprint 1.25 introduces `test/unit/Parser.hs` and the category enumeration in `documents/engineering/unit_testing_policy.md`. | Sprint 1.25 |
+| `print` / `exitFailure` / direct terminal formatting in non-boundary code | Any `src/Prodbox/**.hs` outside `src/Prodbox/CLI/Output.hs` | Doctrine `Error Handling` (§815–831) confines `putStrLn`, `print`, `exitFailure`, and direct terminal formatting to the CLI boundary; `renderError :: AppError -> Text` carries the boundary rendering. Sprint 1.17 forbids `Text.IO.putStrLn`; Sprint 1.26 closes the remaining three. | Sprint 1.26 |
+| Per-command `Examples` absent on `CommandSpec` entries | `src/Prodbox/CLI/Spec.hs` (created in Sprint 1.6) | Doctrine `Automatically Generated Documentation` (§299–303) treats `Example` records with `exampleCommand` and `exampleDescription` as part of the `CommandSpec` contract. Sprint 1.6 (extended by Sprint 0.3) populates an example for every leaf command and adds a `prodbox-unit` property test asserting non-empty `examples`. | Sprint 1.6 |
+| `cabal format` invoked without temp-file round-trip / byte-equality check during the check pass | `src/Prodbox/CheckCode.hs`, `src/Prodbox/Lint.hs` | Doctrine `Lint, Format, and Code-Quality Stack → Tool Bootstrap` (§1834–1837) prescribes a temp-file round-trip plus byte-equality compare with no in-place rewrite during check; rewrite-in-place is reserved for the `--write` variant. Sprint 1.10 (extended by Sprint 0.3) closes the check workflow. | Sprint 1.10 |
+| Hardcoded or absent default for the daemon graceful-drain deadline | `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Workload.hs` | Doctrine `Long-Running Daemons → Lifecycle → Drain Semantics` (§1235–1236) prescribes a default 30 s drain bound; the value is sourced from `LiveConfig` so operators tune it without restart. Sprint 2.9 (extended by Sprint 0.3) sets the default and wires the `LiveConfig` source. | Sprint 2.9 |
+| Plain `bracket` on resources with external side effects where `bracketOnError` is required | Daemon-path modules under `src/Prodbox/Gateway/`, `src/Prodbox/Workload.hs` | Doctrine `Long-Running Daemons → Structured Concurrency` (§1218–1220) names `bracketOnError` for DB connections, file locks, message-broker consumer registrations, and similar resources, so cleanup runs on every exit path including exceptions raised mid-acquire. Sprint 2.9 audits and migrates the relevant acquire sites. | Sprint 2.9 |
+| Module-local mutable counter state behind `/metrics` instead of `envMetrics :: MetricsRegistry` | `src/Prodbox/Gateway/Daemon.hs` (post-Sprint-2.10) | Doctrine `Long-Running Daemons → The Env Record Grows` (§1357–1366) names `envMetrics` as a typed `Env` baseline field; module-level `IORef`/`MVar` counters are forbidden. Sprint 2.10 adds the field and the negative-space hlint rule. | Sprint 2.10 |
+| Absent STM broadcast channel for `LiveConfig` subscribers on hot reload | `src/Prodbox/Gateway/Daemon.hs` (reload worker) | Doctrine `Long-Running Daemons → Configuration → Reload Procedure` step 8 (§1528–1531) prescribes a `TChan` / `TBQueue` notification surface so subscribers deriving internal state from `LiveConfig` (rate limiters, routing caches) refresh without polling. Sprint 2.11 adds the channel and exposes it through `Env`. | Sprint 2.11 |
+| Daemon log level not refreshed from `LiveConfig` on hot reload | `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Workload.hs` | Doctrine `Long-Running Daemons → Logging and Observability` (§1275–1276) prescribes the level set by `BootConfig` at startup and refreshed from `LiveConfig` on every hot reload. Sprint 2.12 (extended by Sprint 0.3) wires the refresh into the Sprint 2.11 reload worker. | Sprint 2.12 |
+| Ad-hoc on-disk Dhall config shape that does not follow the prescribed `types`/`defaults`/`schemaVersion`/`boot`/`live` layout | `prodbox-config.dhall`, `prodbox-config-types.dhall`, any committed defaults file | Doctrine `Long-Running Daemons → Configuration → Prescribed Dhall File Shape` (§1551–1574) prescribes the file layout. Sprint 2.11 (extended by Sprint 0.3) brings the on-disk files into shape; composes with Sprint 1.23's `dhall freeze` discipline for the SHA-256-pinned imports. | Sprint 2.11 |
+
+## Pending Removal Notes
+
+Each pending-removal row resolves on the closure of the owning sprint listed in
+[phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
+[phase-2-gateway-dns.md](phase-2-gateway-dns.md),
+[phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md), or
+[phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md). Each row will move
+to `Completed` when the owning sprint closes and the doctrine-required replacement is verified.
 
 ## Completed
 

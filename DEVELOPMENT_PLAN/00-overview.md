@@ -12,7 +12,8 @@
 [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
 [phase-5-public-host-validation.md](phase-5-public-host-validation.md),
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
+[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md),
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Provide the target architecture, current baseline, clean-room sequence, and hard
 > constraints for the Haskell rewrite of `prodbox`.
@@ -108,11 +109,107 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Alignment Status
 
-The earlier implementation-alignment follow-up on Phases `2`, `3`, and `4` is now closed in code
-and governed docs, and the later Phase `2` cleanup follow-up that removed the retained legacy
-`NTP synchronized` timedatectl parser branch in `src/Prodbox/Host.hs` is closed as well. Phases
-`0` through `7` are now closed on their owned surfaces, and the cleanup ledger is back at zero
-pending supported-path items.
+Phases `0` through `4` are **reopened** by Sprint 0.2 to adopt
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, and further
+extended by Sprint 0.3 to close the residual doctrine items surfaced by the May 2026
+doctrine-vs-plan audit. Sprint 0.4 extends the doctrine-adoption scope again with the
+residual items surfaced by the November 2026 round-3 doctrine-vs-plan audit, scheduling them
+through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
+planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints, per
+[development_plan_standards.md](development_plan_standards.md) standards rule L. Phases
+`5`–`7` remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract,
+AWS IAM and quota administration) per standards rule E. The earlier implementation-alignment
+follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup follow-up that
+removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
+`src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens
+add new planned sprints across Phases `0`–`4`; until those sprints close, the cleanup ledger
+shows doctrine-deviation residue under
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`.
+
+The doctrine's cross-language type-bridge full-file generation surface
+([../HASKELL_CLI_TOOL.md → Generated Artifacts → Two categories of
+generation → Full generation](../HASKELL_CLI_TOOL.md) §395–400) lists cross-language type
+bridges (e.g. PureScript or TypeScript contracts) as the canonical example of full-file
+generation. The supported worktree intentionally keeps that registry empty today because no
+non-Haskell consumer exists on the supported path; the registry will be populated when one
+does. Sprint 1.23 records the equivalent deferral for the marker-delimited generation
+surface; Sprint 0.4 names the full-file branch explicitly so future contributors do not
+silently introduce a non-Haskell consumer without re-opening the registry.
+
+The reopened ranges close on the following sprint sets:
+
+- Phase 1: Sprints 1.6–1.27. Sprint 1.23 adds `dhall freeze` discipline on
+  `prodbox-config-types.dhall`, HLint negative-space symbol rules refusing `forkIO`,
+  `unsafePerformIO`, and module-level `IORef` in daemon paths
+  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1243, §1370, §1450), the parser
+  `--color {auto,always,never}` plus `--no-color` enumeration (§785–792), the parser
+  `--foreground` default plus self-daemonization-forbidden rule (§1591–1599), and the explicit
+  `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision (§381–390, §2321).
+  Sprints 1.24–1.26 close the audit-driven residue: durable CLI documentation artifacts
+  derived from `CommandSpec` per [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §269–318 and
+  §2349–2356, the `execParserPure` parser-test category per §2116–2138, and the
+  `renderError` error-rendering boundary discipline plus hlint rules refusing `print`,
+  `exitFailure`, and direct terminal formatting outside the dedicated output layer per
+  §815–831. Sprint 0.3 also extends Sprint 1.6 with per-leaf-command `CommandSpec` `Example`
+  entries (§299–303) and Sprint 1.10 with the `cabal format` temp-file round-trip
+  byte-equality compare (§1834–1837). Sprint 1.27 (added by Sprint 0.4) binds the
+  cabal-manifest toolchain pin declarations `tested-with: ghc ==9.14.1` and
+  `with-compiler: ghc-9.14.1`, the literal `Cabal 3.16.1.0` reference, and the
+  library-first / thin-`Main.hs` layout check in `src/Prodbox/CheckCode.hs` per
+  [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §70–84 and §86–115. Sprint 0.4 also
+  extends Sprint 1.6 with the `CommandSpec` / `OptionSpec` record-field bindings
+  (§283–304) plus the daemon-as-typed-`Command` dispatch pattern (§1156–1196), Sprint 1.8
+  with the named forbidden subprocess primitives `callProcess`, `readCreateProcess`, and
+  direct `System.Process` smart constructors (§531), Sprint 1.10 with the twelve minimum
+  `fourmolu.yaml` settings (§1834–1860), Sprint 1.11 with the canonical property-test
+  invariants `decode . encode == id`, `render is deterministic`, and `parser roundtrips`
+  (§2179–2188), Sprint 1.12 with the service-error newtype inventory `MinIOError`,
+  `RedisError`, and `PgError` wrapping `ServiceError` (§867–890), Sprint 1.14 with the
+  `AppError` record shape `errorKind` / `errorMsg` / `errorCause :: Maybe SomeException`
+  (§1300–1340), Sprint 1.15 with the naming-helper signatures `boundedResourceName` /
+  `sanitizeResourceName` / `hashSuffix` plus DNS-1123 / 63-character constraints (§565–630),
+  and Sprint 1.21 with the enumerated forbidden renderer inputs — timestamps, random IDs,
+  locale-dependent ordering, terminal-width-dependent wrapping, environment-dependent
+  paths (§459–470).
+- Phase 2: Sprints 2.9–2.16. Sprint 2.16 introduces `src/Prodbox/Daemon/Events.hs` for the
+  doctrine at-least-once event-processing pattern
+  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1624–1739), wraps gateway peer worker loops
+  in `try`/`catch` + bounded retry-with-backoff (§1244–1245), pins the atomic-swap discipline
+  for `envLiveConfig` (§1533–1538), and extends the `prodbox-daemon-lifecycle` stanza with
+  golden capture of `/healthz`/`/readyz`/`/metrics` responses (§1618–1619, §2252–2253) and
+  the single-SIGTERM-drains-/-second-SIGTERM-forces-exit assertion (§1620, §2254). Sprint 0.3
+  extends Sprints 2.9–2.12 with the audit-driven residue: the default 30 s drain deadline
+  (§1235–1236) plus explicit `bracketOnError` on external-side-effect resources (§1218–1220)
+  in Sprint 2.9; the `envMetrics :: MetricsRegistry` typed daemon `Env` field (§1357–1366)
+  in Sprint 2.10; the STM broadcast channel for `LiveConfig` subscribers (§1528–1531) plus
+  the prescribed on-disk Dhall file shape (§1551–1574) in Sprint 2.11; and the daemon log
+  level refreshed from `LiveConfig` on every hot reload (§1275–1276) in Sprint 2.12.
+  Sprint 0.4 extends Sprints 2.9, 2.11, 2.12, 2.13, and 2.14 with the round-3 residue:
+  the enumerated structured-concurrency primitive set `withAsync` / `race` / `concurrently` /
+  `replicateConcurrently` (§1313–1324) in Sprint 2.9; the forbidden reload triggers
+  `fsnotify`, `inotify`, and `mtime` polling (§1491–1500), the typed Dhall field
+  `schemaVersion : Natural` with mismatch-as-parse-failure (§1530–1538), and the eight-step
+  reload procedure bound step-by-step (§1502–1530) in Sprint 2.11; the typed field helper
+  `field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)` plus `logStructured`,
+  `logDebug`, `logInfo`, `logWarn`, `logError` wrappers (§1370–1410) in Sprint 2.12; the
+  production-no-op / test-injected hook contract pattern (§1284–1300) in Sprint 2.13; and
+  the `/healthz` / `/readyz` / `/metrics` response shapes captured as golden tests inside
+  the lifecycle stanza (§2243) in Sprint 2.14.
+- Phase 3: Sprints 3.8–3.12. Sprint 3.12 adds `src/Prodbox/Lint/Chart.hs` plus the
+  `prodbox lint chart` subcommand for Helm chart structural invariants
+  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1820–1823, §1870) and emits the
+  `src/Prodbox/PublicEdge.hs` route catalog into chart manifests via marker-delimited
+  generation under the existing `generatedSectionRule` registry (§341–343, §394–443). The
+  "cross-language types" generation target (§341–343, §395–400) is explicitly deferred
+  until a non-Haskell consumer enters scope; the full-file generation branch of the
+  registry is intentionally empty today and is documented as such by Sprint 0.4.
+  Sprint 0.4 extends Sprint 3.10 with the named forbidden reconciler flags `--force`
+  and `--reinstall` plus the forbidden sister commands `install`, `upgrade`, `repair`,
+  and `force-install` on the chart surface (§1781–1803).
+- Phase 4: Sprints 4.5–4.7. Sprint 0.4 extends Sprint 4.5 with the same forbidden-flag
+  and sister-command discipline on the lifecycle reconciler so the one-cycle deprecation
+  alias preserves only the name `prodbox rke2 install`, not the forbidden flags
+  (§1781–1803).
 
 ## Architecture Summary
 
@@ -318,12 +415,46 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 
 ## Current Execution State
 
-Phases `0` through `7` are closed on the implemented repository architecture:
+The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phases
+`0`–`4` are reopened by Sprint 0.2 to adopt
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md), further extended by Sprint 0.3 to schedule
+the residual doctrine items surfaced by the May 2026 doctrine-vs-plan audit, and further
+extended by Sprint 0.4 to schedule the residual items surfaced by the November 2026 round-3
+audit; the new sprints are `Planned` and not yet implemented:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
   Haskell test and quality framework, the local edge foundations, the one-host config contract,
-  and config-selected MetalLB BGP support.
+  and config-selected MetalLB BGP support. The Phase `1` doctrine-adoption reopen covers
+  Sprints 1.6–1.27, including `CommandSpec`, Plan / Apply, Subprocess ADT, prerequisite
+  remedy-hint contract, the lint/generated-section/forbidden-path stack, the tasty stanza
+  migration, capability classes and `AsServiceError`, `RetryPolicy`, `Recoverable` / `Fatal`
+  errors, naming helpers, GADT-indexed state machines, one-shot output discipline with
+  `--format` / `--color` / `--no-color`, the shared one-shot `Env` plus `ReaderT App`, the
+  style-tools sandbox and custom `.hlint.yaml` nesting warnings plus negative-space symbol
+  rules refusing `forkIO`, `unsafePerformIO`, and module-level `IORef` in daemon paths, the
+  aggregate `prodbox test lint` dispatch with lint-first ordering, the
+  `trackingGeneratedPaths` registry plus renderer determinism property test, the
+  standardized library audit of `prodbox.cabal`, the residual doctrine cleanup in
+  Sprint 1.23 covering `dhall freeze` discipline on `prodbox-config-types.dhall`, the
+  `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision, the parser
+  `--foreground` default plus self-daemonization-forbidden rule, and — added by Sprint 0.3 —
+  the durable CLI documentation artifacts under `documents/cli/`, `share/man/`, and
+  `share/completion/` (Sprint 1.24), the `execParserPure` parser-test category in the
+  `prodbox-unit` stanza (Sprint 1.25), and the `renderError` error-rendering boundary
+  discipline plus hlint rules refusing `print`, `exitFailure`, and direct terminal
+  formatting outside the dedicated output layer (Sprint 1.26). Sprint 0.4 adds Sprint 1.27
+  (cabal-manifest `tested-with: ghc ==9.14.1`, `with-compiler: ghc-9.14.1`, the literal
+  `Cabal 3.16.1.0` reference, and the library-first / thin-`Main.hs` audit) and threads
+  round-3 extensions through Sprints 1.6, 1.8, 1.10, 1.11, 1.12, 1.14, 1.15, and 1.21
+  binding the `CommandSpec` / `OptionSpec` record shape, daemon-as-typed-`Command`
+  dispatch, forbidden subprocess primitives (`callProcess`, `readCreateProcess`, direct
+  `System.Process` constructors), the twelve minimum `fourmolu.yaml` settings, the
+  canonical property-test invariants (`decode . encode == id`, `render is deterministic`,
+  `parser roundtrips`), the service-error newtype inventory (`MinIOError`, `RedisError`,
+  `PgError`), the `AppError` record shape (`errorKind`, `errorMsg`, `errorCause :: Maybe
+  SomeException`), the naming-helper signatures with DNS-1123 / 63-character constraints,
+  and the enumerated forbidden renderer inputs.
 - Phase 2 owns the gateway runtime, DNS inspection surface, the single-record Route 53 doctrine,
   and the TLA+ validation entrypoint. The Phase `2` gateway surfaces close on the bounded HTTP
   `/v1/state` payload, a distinct native `gateway-partition` validation path, peer-transport
@@ -331,7 +462,34 @@ Phases `0` through `7` are closed on the implemented repository architecture:
   predicate, operator-verifiable bounded-clock-skew enforcement, config-relative trust-material
   validation, listener-host closure from Orders, Orders-version coordination across the mesh, and
   the host-info parser cleanup that limits `parseTimedatectlNtpDisposition` to the supported
-  `System clock synchronized` field.
+  `System clock synchronized` field. The Phase `2` doctrine-adoption reopen covers Sprints
+  2.9–2.16, including the explicit daemon lifecycle with worker loops wrapped in
+  `try`/`catch` + bounded retry-with-backoff, `/healthz` / `/readyz` / `/metrics` endpoints
+  with response shapes captured as golden tests, the `BootConfig` / `LiveConfig` split with
+  `SIGHUP` hot reload and atomic-swap discipline on `envLiveConfig`, `co-log` structured
+  logging, test hooks in `Env`, the `prodbox-daemon-lifecycle` stanza asserting single
+  SIGTERM begins drain and second SIGTERM (or drain deadline) forces exit, the daemon CLI
+  plumbing (`--config`, `--log-level`, `--port`, `--foreground`) plus `PRODBOX_*` env-var
+  precedence rule, and the at-least-once event-processing module
+  (`src/Prodbox/Daemon/Events.hs`) introduced in Sprint 2.16 covering `StoredEvent`,
+  `recordEvent`, `markEventProcessed`, `fetchUnprocessedEvents`, and the idempotent
+  `EventHandler` precondition. Sprint 0.3 extends Sprints 2.9–2.12 with the audit-driven
+  residue: the default 30 s drain deadline plus explicit `bracketOnError` on
+  external-side-effect resources (Sprint 2.9), the `envMetrics :: MetricsRegistry` typed
+  daemon `Env` field backing `/metrics` (Sprint 2.10), the STM broadcast channel for
+  `LiveConfig` subscribers plus the prescribed on-disk Dhall file shape (Sprint 2.11), and
+  the daemon log level refreshed from `LiveConfig` on every hot reload (Sprint 2.12).
+  Sprint 0.4 extends Sprints 2.9, 2.11, 2.12, 2.13, and 2.14 with the round-3 residue:
+  the enumerated structured-concurrency primitive set `withAsync` / `race` /
+  `concurrently` / `replicateConcurrently` (Sprint 2.9); the forbidden reload triggers
+  `fsnotify`, `inotify`, and `mtime` polling, the typed Dhall field
+  `schemaVersion : Natural` with mismatch-as-parse-failure, and the eight-step reload
+  procedure bound step-by-step (Sprint 2.11); the typed field helper
+  `field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)` plus `logStructured`,
+  `logDebug`, `logInfo`, `logWarn`, and `logError` wrappers (Sprint 2.12); the
+  production-no-op / test-injected hook contract pattern (Sprint 2.13); and the
+  `/healthz` / `/readyz` / `/metrics` response shapes captured as golden tests inside the
+  lifecycle stanza (Sprint 2.14).
 - Phase 3 owns the chart platform, retained state model, supported public workload delivery, and
   the Percona-operator-backed Patroni PostgreSQL doctrine for Helm-managed workloads. The Phase
   `3` surfaces include the root-chart-only public `prodbox charts ...` surface, the JWT-protected
@@ -340,13 +498,24 @@ Phases `0` through `7` are closed on the implemented repository architecture:
   the mixed-auth doctrine boundary between Envoy-managed browser auth and app-managed OIDC
   workloads, the explicit JWT carrier plus Keycloak JWKS-availability boundary, the shared-host
   Keycloak contract, real WebSocket upgrade handling, one-connection-per-pod lifetime,
-  readiness-based drain, and path-routed Harbor plus MinIO admin delivery.
+  readiness-based drain, and path-routed Harbor plus MinIO admin delivery. The Phase `3`
+  doctrine-adoption reopen covers Sprints 3.8–3.12, including smart constructors for paired
+  chart resources, capability classes on Redis and Postgres call sites, reconciler discipline
+  on `prodbox charts deploy` / `delete`, `--dry-run` on chart operations, the
+  `prodbox lint chart` Helm-chart structural-invariants linter in Sprint 3.12, and
+  marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
+  artifacts via the `generatedSectionRule` registry. Sprint 0.4 extends Sprint 3.10 with
+  the named forbidden reconciler flags `--force` and `--reinstall` plus the forbidden
+  sister commands `install`, `upgrade`, `repair`, and `force-install` on the chart surface.
 - Phase 4 owns Harbor-first lifecycle hardening, the narrowed Harbor-plus-storage-backend
   bootstrap exception, the public AWS-validation Pulumi surface, lifecycle-owned bootstrap DNS
   and ACME projection, Python removal, and the native-host-architecture container-build doctrine.
   The Phase `4` lifecycle now installs MinIO first, bootstraps Harbor's registry bucket plus
   credential secret, reconciles Harbor on S3-backed registry storage, and keeps its later AWS-
-  validation and Python-removal surfaces closed on the supported path.
+  validation and Python-removal surfaces closed on the supported path. Sprint 0.4 extends
+  Sprint 4.5 with the same forbidden-flag and sister-command discipline on the lifecycle
+  reconciler so the one-cycle deprecation alias preserves only the name `prodbox rke2
+  install`, not the forbidden flags.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation. It includes API, WebSocket,
   Harbor, and MinIO route classification plus named external proofs for those workloads.

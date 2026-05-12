@@ -296,6 +296,66 @@ runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data
 
 `src/Prodbox/Tla.hs` owns the public TLA+ validation surface.
 
+## 4. Doctrine-Adoption Command Surface
+
+The CLI doctrine in [../../HASKELL_CLI_TOOL.md](../../HASKELL_CLI_TOOL.md) introduces several
+commands that land through the Phase `1`–`3` reopens. They are listed here as the canonical
+surface; per-sprint deliverables live in
+[../../DEVELOPMENT_PLAN/](../../DEVELOPMENT_PLAN/).
+
+### `prodbox lint`
+
+| Command | Arguments | Options | Owning Sprint |
+|---------|-----------|---------|---------------|
+| `prodbox lint files` | none | `--write` | Sprint 1.10 |
+| `prodbox lint docs` | none | `--write` | Sprint 1.10 |
+| `prodbox lint haskell` | none | `--write` | Sprint 1.19 |
+| `prodbox lint chart` | none | none | Sprint 3.12 |
+| `prodbox lint all` | none | none | Sprint 1.10 / Sprint 1.20 |
+
+`src/Prodbox/Lint/` modules own the lint surfaces (Sprint 1.10 / Sprint 1.19 / Sprint 3.12),
+each consuming the canonical registries: `forbiddenPathRegistry`, `generatedSectionRule`,
+and `trackingGeneratedPaths`.
+
+### `prodbox docs`
+
+| Command | Arguments | Options | Owning Sprint |
+|---------|-----------|---------|---------------|
+| `prodbox docs check` | none | `--write` | Sprint 1.10 |
+| `prodbox docs generate` | none | none | Sprint 1.10 |
+
+`prodbox lint docs [--write]` is implemented as a thin alias over the same Haskell function
+that backs `prodbox docs check` / `prodbox docs generate`; both surfaces consume the single
+`GeneratedSectionRule` registry per
+[../../HASKELL_CLI_TOOL.md → Generated Artifacts](../../HASKELL_CLI_TOOL.md) §381–390 and
+§2321. Operators may use either name; future contributors must not split the surfaces or add
+a third validator command.
+
+### Daemon-launching flags
+
+Per Sprint 2.15, every daemon-launching command (`prodbox gateway start`,
+`prodbox workload start`) accepts `--config <path>`, `--log-level <level>`, `--port <int>`,
+and `--foreground` (default). Self-daemonization (`--detach`, double-fork, `setsid`,
+`forkProcess`) is forbidden per
+[../../HASKELL_CLI_TOOL.md → CLI-to-Daemon Plumbing](../../HASKELL_CLI_TOOL.md) §1591–1599.
+Startup precedence: CLI flag > env var (`PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`,
+`PRODBOX_PORT`) > Dhall file default > built-in default.
+
+### One-shot output flags
+
+Per Sprint 1.17, every one-shot command that emits human- or machine-readable output accepts
+`--format {json,table,plain}` (default `table`) and `--color {auto,always,never}` plus the
+`--no-color` alias. Daemon-launching commands do not expose these flags; daemons emit
+structured JSON logs to stderr per Sprint 2.12.
+
+### Cross-language types generation deferral
+
+[../../HASKELL_CLI_TOOL.md → Generated Artifacts](../../HASKELL_CLI_TOOL.md) §341–343
+enumerates "cross-language types" as a generation surface (e.g. TypeScript or Go type
+mirrors of Haskell ADTs). No non-Haskell consumer is currently in scope; the supported
+plan does not schedule cross-language-type generation. The `generatedSectionRule` registry
+remains ready when such a consumer enters scope.
+
 ## Cross-References
 
 - [Development Plan](../../DEVELOPMENT_PLAN/README.md)
@@ -303,3 +363,4 @@ runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data
 - [Code Quality Doctrine](./code_quality.md)
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Haskell Code Guide](./haskell_code_guide.md)
+- [Haskell CLI Doctrine](../../HASKELL_CLI_TOOL.md)

@@ -56,6 +56,15 @@ In the current repository:
 | Built-frontend integration tests | CLI routing and subprocess behavior against fake tools | `test/integration/cli/Main.hs` |
 | Built-frontend config tests | Direct-Dhall config masking and validation behavior | `test/integration/env/Main.hs` |
 | Native real-world validations | AWS, DNS, gateway, chart, lifecycle, and public-edge proofs | `src/Prodbox/TestValidation.hs` via `prodbox test integration ...` |
+| Daemon lifecycle tests | Spawn the daemon via `typed-process`, poll `/readyz`, exercise protocol, send SIGTERM, assert graceful drain plus exit `0`, and assert second SIGTERM (or drain deadline) forces exit | `test/integration/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
+| Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
+
+Daemon lifecycle and golden treatment of health-endpoint responses are landed by
+Sprints `2.10`, `2.14`, and `2.16` per
+[../../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../../HASKELL_CLI_TOOL.md) §1618–1620
+and `Test Categories → Daemon Lifecycle Tests` §2252–2254. Filesystem readiness markers,
+`sd_notify(READY=1)`, and `threadDelay`-based readiness probes are explicitly forbidden;
+`/readyz` polling is the only supported readiness signal.
 
 ### Integration Execution Policy (Fail-Fast)
 

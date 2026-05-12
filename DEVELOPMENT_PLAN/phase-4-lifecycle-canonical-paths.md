@@ -2,10 +2,23 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md), [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), [system-components.md](system-components.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
+[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
-> **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, and Python-removal
-> work that leave one supported Haskell surface per major capability.
+> **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, Python-removal
+> work, and the CLI-doctrine adoption sprints that bring the local-cluster lifecycle and AWS
+> validation surfaces in line with [../HASKELL_CLI_TOOL.md →
+> Reconcilers](../HASKELL_CLI_TOOL.md) and `Test Organization`.
+
+## Phase Status
+
+🔄 **Active** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
+repository-wide Python toolchain removal, and the single-record DNS / single-certificate
+contract. The phase is reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
+`prodbox rke2 install` → `prodbox rke2 reconcile` per doctrine, apply the Plan / Apply +
+`--dry-run` discipline (Sprint 1.7) to the lifecycle reconcile, and migrate AWS-validation
+infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza.
 
 ## Phase Summary
 
@@ -281,6 +294,95 @@ routes behind Envoy.
 ### Remaining Work
 
 None.
+
+## Sprint 4.5: Rename `prodbox rke2 install` → `prodbox rke2 reconcile` 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/local_registry_pipeline.md`, `CLAUDE.md`, `README.md`, `AGENTS.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
+Command](../HASKELL_CLI_TOOL.md) on the canonical local-cluster lifecycle entrypoint.
+
+### Deliverables
+
+- Introduce `prodbox rke2 reconcile` as the canonical idempotent reconcile entrypoint that
+  owns install, repair, and drift reconciliation on the supported self-managed cluster path.
+- Keep `prodbox rke2 install` as a hard-deprecation alias for exactly one cycle that emits a
+  doctrine pointer on `stderr` and execs the reconcile path. Enqueue the alias in the legacy
+  ledger with the owning sprint and target removal cycle.
+- Update CLAUDE.md, root `README.md`, AGENTS.md, governed engineering docs, Pulumi
+  orchestration call sites, integration tests, and any documentation referencing the old name.
+- Sprint 0.4 round-3 extension: apply the same forbidden-flag and
+  sister-command discipline to the lifecycle reconciler per
+  [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
+  Patterns](../HASKELL_CLI_TOOL.md) §1781–1803. `prodbox rke2 reconcile` refuses
+  the literal flag names `--force` and `--reinstall` at parse time; no
+  `prodbox rke2 upgrade`, `prodbox rke2 repair`, or `prodbox rke2 force-install`
+  sister command is added. The one-cycle deprecation alias preserves
+  `prodbox rke2 install` only as an alias that calls the reconciler; it does not
+  preserve any of the forbidden flags (an operator who passes `--force` to the
+  alias receives the same parse-time rejection as on the canonical
+  `reconcile` entrypoint). A `prodbox-unit` parser test asserts the rejection
+  for both `install` and `reconcile`.
+
+### Validation
+
+1. `prodbox rke2 reconcile` is fully idempotent across repeated runs.
+2. `prodbox rke2 install` continues to work for one cycle and emits the deprecation pointer.
+3. No supported-path documentation refers to `install` as the canonical name after the rename.
+
+## Sprint 4.6: Lifecycle Plan / Apply + --dry-run 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/local_registry_pipeline.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Apply [../HASKELL_CLI_TOOL.md → Plan / Apply](../HASKELL_CLI_TOOL.md) (Sprint 1.7) to the
+lifecycle reconcile.
+
+### Deliverables
+
+- `prodbox rke2 reconcile --dry-run` renders the full subprocess, Helm, Pulumi, and Kubernetes
+  plan and exits `0` without mutation.
+- Each existing reconcile step under `src/Prodbox/CLI/Rke2.hs` adopts the doctrine's
+  check-before-mutate shape literally.
+
+### Validation
+
+1. Golden tests cover the rendered lifecycle plan.
+2. Re-running `prodbox rke2 reconcile` after a successful run performs zero mutating work.
+
+## Sprint 4.7: prodbox-pulumi Test Stanza 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_test_environment.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Pulumi-Orchestrated Infrastructure
+Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
+
+### Deliverables
+
+- New `test-suite prodbox-pulumi` stanza with `type: exitcode-stdio-1.0`. Move the AWS-IaC
+  validation flows (`aws-eks`, `aws-test`, HA-RKE2) into the stanza. Each run uses an
+  isolated ephemeral stack, generates a unique stack name, and tears down via `bracket` /
+  `finally`.
+- Pulumi outputs flow as the typed contract between provisioning and test execution.
+
+### Validation
+
+1. `cabal test prodbox-pulumi` provisions, tests, and tears down successfully.
+2. No leaked stacks survive a failing run; `bracket` cleanup is verified by a forced-failure
+   test.
 
 ## Documentation Requirements
 

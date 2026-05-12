@@ -1,5 +1,33 @@
 # Haskell CLI Tool Design Notes
 
+**Status**: Authoritative CLI doctrine
+**Supersedes**: Prior CLI architecture guidance distributed across
+[documents/engineering/code_quality.md](documents/engineering/code_quality.md),
+[documents/engineering/cli_command_surface.md](documents/engineering/cli_command_surface.md),
+[documents/engineering/unit_testing_policy.md](documents/engineering/unit_testing_policy.md),
+[documents/engineering/prerequisite_doctrine.md](documents/engineering/prerequisite_doctrine.md),
+[documents/engineering/haskell_code_guide.md](documents/engineering/haskell_code_guide.md),
+[documents/engineering/refactoring_patterns.md](documents/engineering/refactoring_patterns.md), and
+[documents/engineering/effect_interpreter.md](documents/engineering/effect_interpreter.md). Those
+governed docs now reference this doctrine for the patterns it owns and retain only project-specific
+elaborations.
+**Referenced by**: [README.md](README.md), [AGENTS.md](AGENTS.md), [CLAUDE.md](CLAUDE.md),
+[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md),
+[DEVELOPMENT_PLAN/00-overview.md](DEVELOPMENT_PLAN/00-overview.md),
+[DEVELOPMENT_PLAN/development_plan_standards.md](DEVELOPMENT_PLAN/development_plan_standards.md),
+[DEVELOPMENT_PLAN/system-components.md](DEVELOPMENT_PLAN/system-components.md),
+[DEVELOPMENT_PLAN/phase-0-planning-documentation.md](DEVELOPMENT_PLAN/phase-0-planning-documentation.md),
+[DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md),
+[DEVELOPMENT_PLAN/phase-2-gateway-dns.md](DEVELOPMENT_PLAN/phase-2-gateway-dns.md),
+[DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
+[DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
+[documents/documentation_standards.md](documents/documentation_standards.md)
+
+> **Purpose**: Define the canonical CLI doctrine for every Haskell tool authored under this
+> repository, including command topology, generated artifacts, daemon lifecycle, lint discipline,
+> and the testing stack. Phase documents under `DEVELOPMENT_PLAN/` cite specific sections of this
+> file when scheduling adoption work.
+
 ## Overview
 
 The best practice for writing CLI tools in Haskell is to keep the command-line layer thin, make the core logic testable, and treat the command topology as structured data that can be used for parsing, help, documentation, completions, and introspection.

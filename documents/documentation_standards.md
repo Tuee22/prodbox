@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/development_plan_standards.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, HASKELL_CLI_TOOL.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/development_plan_standards.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
+**Generated sections**: none
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
 
@@ -74,6 +75,7 @@ Every document must include:
 **Status**: [Authoritative source | Reference only | Deprecated]
 **Supersedes**: [N/A | path/to/old/doc.md]
 **Referenced by**: [comma-separated list]
+**Generated sections**: [comma-separated list of generated-section keys | none]
 
 > **Purpose**: One-sentence description.
 ```
@@ -85,6 +87,17 @@ Every document must include:
 | `Authoritative source` | This is the SSoT for this topic |
 | `Reference only` | Points to authoritative sources |
 | `Deprecated` | Scheduled for removal |
+
+### Generated sections metadata field
+
+`**Generated sections**:` is mandatory in every governed document. The value is either
+`none` or a comma-separated list of the `<key>` portion of every marker pair the document
+contains (see Section 11). The lint pass owned by `prodbox lint docs` enforces that the
+metadata and the markers physically present in the file agree: declaring `none` when
+markers are present is a lint failure, and declaring a key whose markers are missing is a
+lint failure. The reference list of generated sections per file is the
+`GeneratedSectionRule` registry described in
+[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md).
 
 ---
 
@@ -219,9 +232,98 @@ This SSoT co-owns documentation-topology doctrine intention.
 
 ---
 
+## 11. Generated Sections
+
+This section documents the generated-sections discipline mandated by
+[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) and
+[../HASKELL_CLI_TOOL.md → Project-level documentation
+standards](../HASKELL_CLI_TOOL.md). The doctrine is the authoritative source for the
+underlying registry shape, marker conventions, paired check/write commands, and drift
+enforcement; this section restates the contract for documentation contributors who do not
+need to read the full doctrine.
+
+### Marker conventions
+
+Generated sections are delimited by paired sentinel comments in the host syntax of the
+target file. The marker key is dotted, hierarchical, and unique across the
+`GeneratedSectionRule` registry.
+
+| File type | Start marker | End marker |
+|-----------|--------------|------------|
+| Markdown | `<!-- prodbox:<key>:start -->` | `<!-- prodbox:<key>:end -->` |
+| Helm / Go templates | `{{/* prodbox:<key>:start */}}` | `{{/* prodbox:<key>:end */}}` |
+| YAML | `# prodbox:<key>:start` | `# prodbox:<key>:end` |
+| Haskell / PureScript / TypeScript | `-- prodbox:<key>:start` (or `//`) | mirror of the start marker |
+
+Example: a generated command-registry table inside this file might look like:
+
+```markdown
+<!-- prodbox:command-registry:start -->
+| Command | Summary |
+|---------|---------|
+| `prodbox config setup` | Interactively author the Dhall config |
+<!-- prodbox:command-registry:end -->
+```
+
+### Authoritative list of files with generated regions
+
+The single source of truth is the in-code `GeneratedSectionRule` registry consumed by
+`prodbox docs check` and `prodbox docs generate`. Every file that contains markers must
+declare its keys in its `**Generated sections**:` metadata field (Section 3); the lint
+pass enforces agreement.
+
+Generation targets enumerated by
+[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) §341–343 include CLI
+help, command reference docs, route inventories, Helm chart sections, JSON schemas, and
+cross-language types. The currently scheduled registry entries are:
+
+| Generation target | Marker key prefix | Owning sprint |
+|-------------------|-------------------|---------------|
+| CLI command reference | `command-registry`, `cli-help.*` | Sprint 1.6 / Sprint 1.10 |
+| Generated section index in this file | `documentation-standards.*` | Sprint 0.2 / Sprint 1.10 |
+| Public-edge route inventory rendered into chart manifests | `route-registry` | Sprint 3.12 |
+| Cross-language types (TypeScript / Go / PureScript mirrors) | `cross-language-types.*` | **Deferred** — no non-Haskell consumer in scope |
+
+The `prodbox lint docs --write` and `prodbox docs generate` surfaces share one Haskell
+function; either name regenerates the registered sections.
+
+### How to regenerate
+
+Run `prodbox docs generate` to splice the current renderer output between every marker
+pair declared in the registry. Hand edits between markers are reverted on the next
+regenerate and fail `prodbox docs check` until reverted.
+
+The check command emits the doctrine's three-element error message on drift:
+
+1. The file path that drifted.
+2. The marker key (so the contributor knows which renderer is responsible).
+3. A literal remedy hint: ``Run `prodbox docs generate` to update.``
+
+### How to add a new generated section
+
+The doctrine's five-step extension protocol:
+
+1. Define or extend the renderer in the relevant Haskell library module.
+2. Add the marker pair to the target file using the conventions above.
+3. Register a new `GeneratedSectionRule` entry in the in-code registry.
+4. Run `prodbox docs generate` to populate the section.
+5. Confirm `prodbox docs check` and `cabal test` pass.
+
+### Fully generated, do-not-hand-edit paths
+
+A separate tracked-generated-paths registry names files that are owned wholly by code
+generators (no markers required because the entire file is generated). Examples include
+cross-language type bridges (PureScript / TypeScript contracts derived from Haskell types)
+and proto-derived Haskell modules. `prodbox lint files` refuses hand edits to any path on
+this registry. The current registry contents are the authoritative source; consult the
+in-code `trackedGeneratedPaths :: [PathPattern]` value for the live list.
+
+---
+
 ## Cross-References
 
 - [Engineering docs index](./engineering/README.md)
 - [Development Plan](../DEVELOPMENT_PLAN/README.md)
+- [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) - canonical CLI doctrine
 - [CLAUDE.md](../CLAUDE.md) - AI assistant guidelines
 - [AGENTS.md](../AGENTS.md) - Agent guidelines

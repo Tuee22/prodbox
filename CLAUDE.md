@@ -2,7 +2,8 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, HASKELL_CLI_TOOL.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
+**Generated sections**: none
 
 > **Purpose**: Guide for Claude Code development on the current `prodbox` worktree baseline.
 
@@ -10,6 +11,10 @@
 
 - `DEVELOPMENT_PLAN/README.md` is the authoritative live tracker for target architecture, status,
   blockers, and cleanup ownership.
+- [HASKELL_CLI_TOOL.md](HASKELL_CLI_TOOL.md) is the authoritative CLI doctrine — command
+  topology, generated artifacts, daemon lifecycle, lint discipline, and the testing stack.
+  Phase documents in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling
+  adoption work.
 - The repository is Haskell-only on the supported path. The public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
@@ -117,6 +122,8 @@ contracts.
 ## Documentation
 
 - [Development Plan](./DEVELOPMENT_PLAN/README.md)
+- [Haskell CLI Doctrine](./HASKELL_CLI_TOOL.md)
+- [Documentation Standards](./documents/documentation_standards.md)
 - [Engineering Docs Index](./documents/engineering/README.md)
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)

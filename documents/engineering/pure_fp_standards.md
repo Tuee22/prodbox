@@ -194,6 +194,25 @@ calls belong in the narrowest boundary that can own them.
 - The boundary layer performs `docker`, `kubectl`, `helm`, `aws`, or `curl`.
 - Output is translated back into typed success or failure for the caller.
 
+## 6.3 At-Least-Once Event Processing
+
+Daemons that consume events (peer commit log, future workload event surfaces, any future
+worker) consume the canonical at-least-once pattern from
+[../../HASKELL_CLI_TOOL.md → At-Least-Once Event
+Processing](../../HASKELL_CLI_TOOL.md) §1624–1739, exposed by
+`src/Prodbox/Daemon/Events.hs` (introduced by Sprint 2.16 in
+[../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md)).
+
+The module provides `StoredEvent`, `recordEvent`, `markEventProcessed`,
+`fetchUnprocessedEvents`, and the `EventHandler` newtype with the idempotency precondition
+encoded in its haddock. Handlers must be idempotent: events may be delivered multiple times
+(process crash before ack, network partition during ack, explicit replay). Idempotency
+strategies include database constraints, check-then-act with a dedup key, or pure
+projections of the event payload.
+
+Pure planning logic must not duplicate the at-least-once pattern; consume the canonical
+module instead.
+
 ## 7. Testing Implications
 
 Pure-functional structure is not stylistic only; it determines how code is tested.

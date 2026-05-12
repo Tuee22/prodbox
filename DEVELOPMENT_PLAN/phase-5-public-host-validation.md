@@ -2,10 +2,24 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md)
+**Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Capture the public-host diagnostic and named external proof path after the
 > gateway, chart, and infrastructure ownership have moved to Haskell.
+
+## Phase Status
+
+✅ **Done on owned surfaces** — Sprints `5.1`–`5.4` are closed on the public-host diagnostic and
+external proof contracts. Per [development_plan_standards.md](development_plan_standards.md)
+standards rule E, this phase remains `Done` while Phases `0`–`4` are reopened by Sprint 0.2 to
+adopt [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). When upstream-phase reopens land —
+specifically the `CommandSpec` source-of-truth split (Sprint 1.6), the Plan / Apply
+discipline (Sprint 1.7), the lint and forbidden-path stack (Sprint 1.10), the `tasty`
+stanza migration (Sprint 1.11), and the public-edge command renames flowing from Sprint
+4.5 — the Phase 5 external proof commands re-validate without surface changes. No new
+Sprint 5.X is scheduled; Phase 5 absorbs upstream-phase doctrine adoption through the
+canonical command surface alone.
 
 ## Phase Summary
 

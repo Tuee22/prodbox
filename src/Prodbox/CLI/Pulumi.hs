@@ -1,6 +1,6 @@
-module Prodbox.CLI.Pulumi (
-    runPulumiCommand,
-)
+module Prodbox.CLI.Pulumi
+  ( runPulumiCommand
+  )
 where
 
 import Prodbox.CLI.Command (PulumiCommand (..))
@@ -10,8 +10,8 @@ import System.Exit (ExitCode)
 
 runPulumiCommand :: FilePath -> PulumiCommand -> IO ExitCode
 runPulumiCommand repoRoot command =
-    case command of
-        PulumiEksResources -> EksStack.ensureAwsEksTestStackResources repoRoot
-        PulumiEksDestroy summary -> EksStack.destroyAwsEksTestStack repoRoot summary
-        PulumiTestResources -> TestStack.ensureAwsTestStackResources repoRoot
-        PulumiTestDestroy summary -> TestStack.destroyAwsTestStack repoRoot summary
+  case command of
+    PulumiEksResources -> EksStack.ensureAwsEksTestStackResources repoRoot
+    PulumiEksDestroy summary -> EksStack.destroyAwsEksTestStack repoRoot summary
+    PulumiTestResources -> TestStack.ensureAwsTestStackResources repoRoot
+    PulumiTestDestroy summary -> TestStack.destroyAwsTestStack repoRoot summary

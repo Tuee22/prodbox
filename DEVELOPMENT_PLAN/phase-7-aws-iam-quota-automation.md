@@ -4,10 +4,22 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [system-components.md](system-components.md),
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Define the supported Haskell onboarding wizard, standalone AWS IAM and quota command
 > surface, and the elevated-credential validation harness for real IAM lifecycle proof.
+
+## Phase Status
+
+✅ **Done on owned surfaces** — Sprints `7.1`–`7.N` remain closed on interactive onboarding,
+AWS IAM management, quota automation, and the elevated-credential validation harness. Per
+[development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 7 stays
+`Done` on its owned scope while Phases `0`–`4` are reopened by Sprint 0.2 to adopt
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). The interactive onboarding flow and standalone
+`prodbox aws ...` surface inherit the Plan / Apply + `--dry-run` discipline (Sprint 1.7), the
+`CommandSpec` source-of-truth split (Sprint 1.6), and the capability classes for AWS subsystems
+(Sprint 1.12) without scheduling a new Sprint 7.X.
 
 ## Phase Summary
 

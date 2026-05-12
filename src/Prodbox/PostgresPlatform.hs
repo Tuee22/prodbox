@@ -1,22 +1,22 @@
-module Prodbox.PostgresPlatform (
-    patroniClusterName,
-    patroniCredentialsSecretName,
-    patroniDatabaseName,
-    patroniFsGroup,
-    patroniOperatorDeploymentName,
-    patroniOperatorNamespace,
-    patroniOperatorReleaseName,
-    patroniPostgresqlCrdName,
-    patroniPrimaryServiceHost,
-    patroniReplicaServiceHost,
-    patroniRunAsGroup,
-    patroniRunAsUser,
-    patroniStorageSize,
-    patroniStandbySecretName,
-    patroniSuperuserSecretName,
-    patroniTeamId,
-    patroniUsername,
-)
+module Prodbox.PostgresPlatform
+  ( patroniClusterName
+  , patroniCredentialsSecretName
+  , patroniDatabaseName
+  , patroniFsGroup
+  , patroniOperatorDeploymentName
+  , patroniOperatorNamespace
+  , patroniOperatorReleaseName
+  , patroniPostgresqlCrdName
+  , patroniPrimaryServiceHost
+  , patroniReplicaServiceHost
+  , patroniRunAsGroup
+  , patroniRunAsUser
+  , patroniStorageSize
+  , patroniStandbySecretName
+  , patroniSuperuserSecretName
+  , patroniTeamId
+  , patroniUsername
+  )
 where
 
 patroniOperatorNamespace :: String
@@ -57,20 +57,20 @@ patroniClusterName rootChart = patroniTeamId ++ "-" ++ rootChart ++ "-pg"
 
 patroniPrimaryServiceHost :: String -> String -> String
 patroniPrimaryServiceHost namespace rootChart =
-    patroniClusterName rootChart ++ "-ha." ++ namespace ++ ".svc.cluster.local"
+  patroniClusterName rootChart ++ "-ha." ++ namespace ++ ".svc.cluster.local"
 
 patroniReplicaServiceHost :: String -> String -> String
 patroniReplicaServiceHost namespace rootChart =
-    patroniClusterName rootChart ++ "-replicas." ++ namespace ++ ".svc.cluster.local"
+  patroniClusterName rootChart ++ "-replicas." ++ namespace ++ ".svc.cluster.local"
 
 patroniCredentialsSecretName :: String -> String
 patroniCredentialsSecretName rootChart =
-    patroniClusterName rootChart ++ "-pguser-" ++ patroniUsername
+  patroniClusterName rootChart ++ "-pguser-" ++ patroniUsername
 
 patroniSuperuserSecretName :: String -> String
 patroniSuperuserSecretName rootChart =
-    patroniClusterName rootChart ++ "-pguser-postgres"
+  patroniClusterName rootChart ++ "-pguser-postgres"
 
 patroniStandbySecretName :: String -> String
 patroniStandbySecretName rootChart =
-    patroniClusterName rootChart ++ "-primaryuser"
+  patroniClusterName rootChart ++ "-primaryuser"

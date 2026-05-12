@@ -3,10 +3,22 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md)
+[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
-> **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, and the
-> supported public workload delivery path.
+> **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
+> supported public workload delivery path, and the CLI-doctrine adoption sprints that align chart
+> orchestration with [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md).
+
+## Phase Status
+
+🔄 **Active** — Sprints `3.1`–`3.7` remain `Done` on the chart runtime, retained storage, browser
+delivery, JWT-API, WebSocket, admin surfaces, and the Patroni doctrine. The phase is reopened by
+Sprint 0.2 to schedule Sprints `3.8`–`3.12`, which adopt the doctrine's smart-constructor pattern
+for paired chart resources, route Redis and Postgres call sites through capability classes, apply
+the reconciler discipline to `prodbox charts deploy|delete`, surface `--dry-run` plans on chart
+operations, and add the `prodbox lint chart` Helm-chart structural-invariants linter together
+with marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
+artifacts via the existing `generatedSectionRule` registry.
 
 ## Phase Summary
 
@@ -470,6 +482,175 @@ one public hostname, one DNS entry, and one certificate.
 ### Remaining Work
 
 None.
+
+## Sprint 3.8: Smart Constructors for Paired Chart Resources 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Smart Constructors for Paired
+Resources](../HASKELL_CLI_TOOL.md) on the chart platform.
+
+### Deliverables
+
+- Refactor PV/PVC pair construction in `src/Prodbox/Lib/Storage.hs` and
+  `src/Prodbox/PostgresPlatform.hs` to flow through a single `mkStorageBinding`-style smart
+  constructor that derives both resources from one set of inputs and uses the naming helpers
+  introduced in Sprint 1.15.
+- Apply the same discipline to any other paired resources (database user + grants, queue +
+  dead-letter queue, etc.) observable in the chart platform.
+
+### Validation
+
+1. Unit tests confirm that the paired resources are derived from the smart constructor only.
+2. Hand-constructed PV/PVC pairs outside the smart constructor are enqueued in the legacy
+   ledger and removed.
+
+## Sprint 3.9: Capability Classes Applied to Redis and Postgres 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Apply [../HASKELL_CLI_TOOL.md → Capability Classes and Service
+Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
+
+### Deliverables
+
+- Replace direct Redis / Postgres call sites in `src/Prodbox/PostgresPlatform.hs` and
+  `src/Prodbox/Lib/ChartPlatform.hs` with `HasRedis` / `HasPg` method calls.
+- Wire `retryServiceAction` into transient failure paths.
+
+### Validation
+
+1. `cabal test prodbox-unit` covers the new abstraction with `Env` test hooks.
+2. Direct `redis-cli` / raw Postgres subprocess invocations outside the capability classes are
+   absent.
+
+## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
+Command](../HASKELL_CLI_TOOL.md).
+
+### Deliverables
+
+- `prodbox charts deploy <chart>` is the canonical idempotent reconcile; re-running it on a
+  healthy chart is a documented no-op.
+- `prodbox charts delete <chart> [--yes]` is the explicit teardown.
+- Forbid any `--force` / `--reinstall` flag flavor on the chart surface; document
+  already-deployed as the success case.
+- Sprint 0.4 round-3 extension: name the forbidden flags and sister commands
+  explicitly per [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
+  Patterns](../HASKELL_CLI_TOOL.md) §1781–1803. The chart reconciler surface
+  refuses the literal flag names `--force` and `--reinstall` at parse time
+  (Sprint 1.6 `CommandSpec` for `prodbox charts deploy|delete` does not register
+  them; `execParserPure` returns a doctrine-named error if they are passed). The
+  reconciler surface also refuses any sister command named `install`, `upgrade`,
+  `repair`, or `force-install` on the `prodbox charts ...` family; the only
+  mutation entrypoints are `deploy` and `delete`. A `prodbox-unit` parser test
+  asserts that each forbidden flag and each forbidden sister-command name yields
+  a parse-time rejection with the doctrine pointer.
+
+### Validation
+
+1. Integration test runs `prodbox charts deploy <chart>` twice in succession; the second run
+   completes with no mutations applied.
+2. The lint stack from Sprint 1.10 rejects the forbidden flag names.
+
+## Sprint 3.11: --dry-run on Chart Operations 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Apply the Plan / Apply discipline from Sprint 1.7 to chart operations.
+
+### Deliverables
+
+- `prodbox charts deploy --dry-run <chart>` and `prodbox charts delete --dry-run <chart>`
+  render the full Helm + Kubernetes + Pulumi plan and exit `0` without mutation.
+- Golden tests cover the rendered plans.
+
+### Validation
+
+1. `cabal test prodbox-unit` validates the rendered chart plans.
+2. The dry-run output is deterministic and free of timestamps or environment leakage.
+
+## Sprint 3.12: prodbox lint chart and Route-Inventory Generation 📋
+
+**Status**: Planned
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/documentation_standards.md`
+
+### Objective
+
+Adopt [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → CLI Surface →
+`tool lint chart`](../HASKELL_CLI_TOOL.md) §1820–1823 and §1870, and apply
+[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) §341–343 / §394–443
+to the `src/Prodbox/PublicEdge.hs` route catalog so chart artifacts consume the route
+inventory through marker-delimited generation rather than hand-maintained YAML.
+
+### Deliverables
+
+- New module `src/Prodbox/Lint/Chart.hs` exposes a `prodbox lint chart` subcommand
+  declared in the `CommandSpec` registry (Sprint 1.6). The linter validates Helm chart
+  structural invariants for every chart under `charts/`:
+  - `Chart.yaml` parses, declares `apiVersion: v2`, and carries the required
+    `name` / `version` / `appVersion` fields.
+  - Every chart includes the mandatory `app.kubernetes.io/name`,
+    `app.kubernetes.io/managed-by: prodbox`, and the phase-3 retained-storage label set.
+  - No chart renders an embedded chart-local PostgreSQL subchart on the supported path
+    (already required by Sprint 3.3; this becomes a programmatic lint instead of a
+    review-time check).
+  - No chart references a manual PV path outside the configured manual PV root
+    (`src/Prodbox/Lib/Storage.hs` exports the canonical predicate the linter consumes).
+  - Marker-delimited generated sections inside charts are reachable through the
+    `generatedSectionRule` registry (Sprint 1.10) so drift fails closed.
+- `prodbox.cabal` re-exports `Prodbox.Lint.Chart` from the library and includes it in the
+  existing `prodbox-haskell-style` test-suite stanza (Sprint 1.11), so the lint surface
+  runs from both `prodbox lint chart` and `cabal test prodbox-haskell-style`.
+- `src/Prodbox/PublicEdge.hs` rendering helpers emit the route catalog into chart
+  manifests through marker-delimited blocks (`{{/* prodbox:route-registry:start */}}` /
+  `{{/* prodbox:route-registry:end */}}` in Helm-template files,
+  `# prodbox:route-registry:start` / `# prodbox:route-registry:end` in YAML manifests),
+  registered in `generatedSectionRule` alongside CLI docs. Consumers in `charts/keycloak/`,
+  `charts/vscode/`, `charts/api/`, `charts/websocket/`, and the shared-host admin manifests
+  consume the generated section rather than hand-maintaining path prefixes.
+- `documents/engineering/cli_command_surface.md` enumerates the new `prodbox lint chart`
+  subcommand and the route-inventory generation surface.
+- `documents/documentation_standards.md` adds route inventory to its enumerated list of
+  generated files.
+- "Cross-language types" generation (doctrine §341–343) is **deferred**: no non-Haskell
+  consumer is in scope; the deferral is recorded in `system-components.md` and in
+  `documents/engineering/cli_command_surface.md`. The `generatedSectionRule` registry
+  remains ready for that consumer when one appears.
+- Enqueue any pre-doctrine hand-maintained route catalog inside chart manifests in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`
+  with Sprint 3.12 as owner.
+
+### Validation
+
+1. `prodbox lint chart` succeeds on a clean tree and fails on a chart with a missing
+   mandatory label, a malformed `Chart.yaml`, or a manual PV reference outside the
+   configured root.
+2. Hand-editing the route inventory inside any consuming chart manifest fails
+   `prodbox lint docs` with the doctrine's path / registry-key / remedy-hint triple.
+3. Regenerating the route inventory via `prodbox lint docs --write` (or
+   `prodbox docs generate`) produces byte-identical output for the same `PublicEdge.hs`
+   inputs (idempotent renderer property test from Sprint 1.21 covers this).
 
 ## Documentation Requirements
 

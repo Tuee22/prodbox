@@ -31,7 +31,12 @@ external side effects (2.9), the `envMetrics :: MetricsRegistry` typed daemon `E
 backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscribers plus the
 prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
 top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
-refreshed from `LiveConfig` on every hot reload (2.12).
+refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence puts Sprint
+`2.14` in `Active` state and closes Sprint `2.15`: the dedicated daemon-lifecycle stanza now
+exists and validates CLI/env precedence, but the doctrine's real `typed-process` lifecycle
+assertions plus health-endpoint goldens are still pending, while the daemon flag and
+`PRODBOX_*` precedence contract is now implemented in parser/runtime code and covered locally.
+The remaining reopened Phase `2` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -799,9 +804,10 @@ Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
    assertions.
 2. Replaying an already-processed peer event is a no-op at the handler boundary.
 
-## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza 📋
+## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `prodbox.cabal`, `test/daemon-lifecycle/Main.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -847,9 +853,18 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
    surfaces a distinct test name for each branch so a regression is visible in test
    summaries.
 
-## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence 📋
+### Remaining Work
 
-**Status**: Planned
+- The `prodbox-daemon-lifecycle` stanza now exists and passes locally, but it is still a
+  scaffold suite: it validates source ownership plus CLI/env precedence rather than spawning
+  the daemon through `typed-process`, polling `/readyz`, and driving the full drain contract.
+- The doctrine-owned two-SIGTERM assertion, forbidden readiness-pattern enforcement, and
+  `/healthz` / `/readyz` / `/metrics` golden capture are still pending.
+
+## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`, `test/daemon-lifecycle/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
@@ -890,6 +905,10 @@ doctrine's standard flag set with the prescribed startup-precedence rule.
    when `--config` points at a missing or unparseable file.
 3. The `prodbox-daemon-lifecycle` stanza (Sprint 2.14) exercises both flag and env-var
    startup paths.
+
+### Remaining Work
+
+None.
 
 ## Sprint 2.16: At-Least-Once Event-Processing Module 📋
 

@@ -45,7 +45,7 @@ The supported chart doctrine is:
    platform publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity
    route consumed by the shipped browser, API, WebSocket, Harbor, and MinIO surfaces.
 9. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
-   path is `prodbox rke2 install`.
+   path is `prodbox rke2 reconcile`.
 
 ## 2. Singleton Chart Identity Rule
 
@@ -88,7 +88,7 @@ same namespace as the consuming chart stack.
 
 The supported contract is:
 
-- `prodbox rke2 install` installs the cluster-wide `percona/pg-operator` Helm release into the
+- `prodbox rke2 reconcile` installs the cluster-wide `percona/pg-operator` Helm release into the
   `postgres-operator` namespace.
 - `prodbox charts deploy keycloak` and `prodbox charts deploy vscode` include the internal
   `keycloak-postgres` release before `keycloak`.

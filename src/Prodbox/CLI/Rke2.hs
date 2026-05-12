@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.CLI.Rke2
-  ( runRke2Command
+  ( renderNativeInstallPlan
+  , runRke2Command
   )
 where
 
@@ -579,8 +580,8 @@ runNativeDelete repoRoot = do
   retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
   putStrLn "Deleting local RKE2 environment..."
   runSequentially
-    [ runPulumiCommand repoRoot (PulumiEksDestroy True)
-    , runPulumiCommand repoRoot (PulumiTestDestroy True)
+    [ runPulumiCommand repoRoot (PulumiEksDestroy True (PlanOptions False Nothing))
+    , runPulumiCommand repoRoot (PulumiTestDestroy True (PlanOptions False Nothing))
     , deleteRke2ClusterSubstrate repoRoot
     , removeCalicoEndpointStatusResidue
     , removeManagedKubeconfig

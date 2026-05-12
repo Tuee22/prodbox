@@ -273,7 +273,7 @@ runNativeValidation repoRoot environment validation = do
     ValidationLifecycle ->
       runSequentially
         [ runNativeCliCommandForExitCode repoRoot environment ["rke2", "delete", "--yes"]
-        , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+        , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
         , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
         ]
 
@@ -1606,7 +1606,7 @@ runGatewayDaemonValidation repoRoot environment = do
                                   Right () -> do
                                     statusExit <-
                                       waitForCommandOutputContainsAll
-                                        (nativeCliCommandSpec repoRoot environment ["gateway", "status", configPath])
+                                        (nativeCliCommandSpec repoRoot environment ["gateway", "status", "--config", configPath])
                                         [ "Gateway status"
                                         , "NODE_ID=" ++ peerNodeId localPeer
                                         , "DNS_WRITE_GATE=" ++ publicFqdn settings ++ "@"

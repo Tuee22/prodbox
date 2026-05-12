@@ -1,3 +1,5 @@
+{-# LANGUAGE DuplicateRecordFields #-}
+
 module Prodbox.CLI.Spec
   ( CommandListingFormat (..)
   , CommandSpec (..)
@@ -21,7 +23,7 @@ data OptionSpec = OptionSpec
   { longName :: String
   , shortName :: Maybe Char
   , metavar :: Maybe String
-  , optionDescription :: String
+  , description :: String
   , required :: Bool
   }
   deriving (Eq, Show)
@@ -54,9 +56,11 @@ commandRegistry =
         , checkCodeLeaf
         , configGroup
         , dnsGroup
+        , docsGroup
         , gatewayGroup
         , hostGroup
         , k8sGroup
+        , lintGroup
         , pulumiGroup
         , rke2Group
         , testGroupSpec
@@ -99,7 +103,7 @@ flag long shortName' metavar' helpText =
     { longName = long
     , shortName = shortName'
     , metavar = metavar'
-    , optionDescription = helpText
+    , description = helpText
     , required = False
     }
 
@@ -109,7 +113,7 @@ requiredOption long shortName' metavar' helpText =
     { longName = long
     , shortName = shortName'
     , metavar = Just metavar'
-    , optionDescription = helpText
+    , description = helpText
     , required = True
     }
 
@@ -119,7 +123,7 @@ optionalOption long shortName' metavar' helpText =
     { longName = long
     , shortName = shortName'
     , metavar = Just metavar'
-    , optionDescription = helpText
+    , description = helpText
     , required = False
     }
 
@@ -158,7 +162,9 @@ configGroup =
         "setup"
         "Interactively author config"
         "Write the supported prodbox Dhall config."
-        []
+        [ flag "dry-run" Nothing Nothing "Render the config-setup plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
         [example ["config", "setup"] "Create or refresh the config interactively."]
     , leaf
         "show"
@@ -192,13 +198,18 @@ awsGroup =
         "setup"
         "Create or refresh operational IAM user"
         "Provision or refresh the operational IAM user."
-        [optionalOption "tier" Nothing "TIER" "Operational IAM policy tier to provision"]
+        [ optionalOption "tier" Nothing "TIER" "Operational IAM policy tier to provision"
+        , flag "dry-run" Nothing Nothing "Render the IAM setup plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
         [example ["aws", "setup", "--tier", "full"] "Create or refresh the operational IAM user."]
     , leaf
         "teardown"
         "Delete operational IAM user"
         "Delete the operational IAM user."
-        []
+        [ flag "dry-run" Nothing Nothing "Render the IAM teardown plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
         [example ["aws", "teardown"] "Delete the operational IAM user."]
     , leaf
         "check-quotas"
@@ -314,17 +325,19 @@ gatewayGroup =
         "start"
         "Start gateway daemon"
         "Start the distributed gateway daemon."
-        [ requiredOption "config" Nothing "PATH" "Gateway config path"
+        [ optionalOption "config" Nothing "PATH" "Gateway config path"
         , optionalOption "log-level" Nothing "LEVEL" "Override daemon log level"
         , optionalOption "port" Nothing "INTEGER" "Override daemon port"
         , flag "foreground" Nothing Nothing "Run in the foreground"
+        , flag "dry-run" Nothing Nothing "Render the daemon-start plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["gateway", "start", "--config", "gateway.dhall"] "Start the gateway daemon."]
     , leaf
         "status"
         "Query gateway daemon status"
         "Query the gateway daemon status surface."
-        [requiredOption "config" Nothing "PATH" "Gateway config path"]
+        [optionalOption "config" Nothing "PATH" "Gateway config path"]
         [example ["gateway", "status", "--config", "gateway.dhall"] "Inspect the gateway daemon state."]
     , leaf
         "config-gen"
@@ -587,3 +600,65 @@ tlaCheckLeaf =
     "Run the TLA+ model checks."
     []
     [example ["tla-check"] "Run the TLA+ model checks."]
+
+docsGroup :: CommandSpec
+docsGroup =
+  group
+    "docs"
+    "Generated-documentation maintenance"
+    "Check or regenerate marker-delimited documentation sections."
+    [ leaf
+        "check"
+        "Check generated docs for drift"
+        "Check marker-delimited documentation sections for drift."
+        []
+        [example ["docs", "check"] "Fail when generated documentation has drifted."]
+    , leaf
+        "generate"
+        "Regenerate generated docs"
+        "Rewrite marker-delimited documentation sections from their renderers."
+        []
+        [example ["docs", "generate"] "Regenerate marker-delimited documentation sections."]
+    ]
+    []
+    [example ["docs", "check"] "Check generated documentation sections for drift."]
+
+lintGroup :: CommandSpec
+lintGroup =
+  group
+    "lint"
+    "Doctrine lint surfaces"
+    "Run doctrine-owned lint surfaces."
+    [ leaf
+        "all"
+        "Run every lint surface"
+        "Run every doctrine-owned lint surface."
+        []
+        [example ["lint", "all"] "Run every doctrine-owned lint surface."]
+    , leaf
+        "files"
+        "Run repository-policy lint checks"
+        "Check forbidden paths and library-first policy invariants."
+        [flag "write" Nothing Nothing "Rewrite the target surface instead of only checking for drift"]
+        [example ["lint", "files"] "Run repository-policy lint checks."]
+    , leaf
+        "docs"
+        "Check generated documentation sections"
+        "Check or rewrite marker-delimited documentation sections."
+        [flag "write" Nothing Nothing "Rewrite the generated documentation sections"]
+        [example ["lint", "docs"] "Check generated documentation sections for drift."]
+    , leaf
+        "haskell"
+        "Run Haskell formatter and lint checks"
+        "Run the formatter, hlint, and cabal-format consistency checks."
+        [flag "write" Nothing Nothing "Rewrite Haskell formatting surfaces in place"]
+        [example ["lint", "haskell"] "Run Haskell formatter and lint checks."]
+    , leaf
+        "chart"
+        "Run Helm chart structural lint checks"
+        "Run the Helm chart structural invariants linter."
+        []
+        [example ["lint", "chart"] "Run the Helm chart structural invariants linter."]
+    ]
+    []
+    [example ["lint", "all"] "Run every doctrine-owned lint surface."]

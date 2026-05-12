@@ -1,5 +1,8 @@
+{-# LANGUAGE DuplicateRecordFields #-}
+
 module Prodbox.CLI.Docs
   ( renderCommandHelp
+  , renderMarkdownCommandReference
   )
 where
 
@@ -61,7 +64,7 @@ renderOption optionSpec =
     { longName = optionLongName
     , shortName = optionShortName
     , metavar = optionMetavar
-    , optionDescription = optionDescription
+    , description = optionDescription
     } = optionSpec
 
   shortFragment =
@@ -87,3 +90,25 @@ renderExample exampleSpec =
     ++ unwords (exampleCommand exampleSpec)
     ++ "  # "
     ++ exampleDescription exampleSpec
+
+renderMarkdownCommandReference :: CommandSpec -> String
+renderMarkdownCommandReference spec =
+  unlines
+    ( [ "| Command | Summary |"
+      , "|---------|---------|"
+      ]
+        ++ map renderRow (gatherRows ["prodbox"] spec)
+    )
+ where
+  gatherRows prefix node =
+    let commandPath = prefix ++ [name node | name node /= "prodbox"]
+        currentRow =
+          [(unwords commandPath, summary node) | null (children node)]
+        nextPrefix =
+          if name node == "prodbox"
+            then prefix
+            else commandPath
+     in currentRow ++ concatMap (gatherRows nextPrefix) (children node)
+
+  renderRow (commandPath, commandSummary) =
+    "| `" ++ commandPath ++ "` | " ++ commandSummary ++ " |"

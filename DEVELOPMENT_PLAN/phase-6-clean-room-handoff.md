@@ -72,7 +72,7 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
 1. `prodbox rke2 delete --yes`
 2. Repository artifact proof starts with no supported-path `prodbox-config.json` and no supported
    command recreates it during `prodbox config show` or `prodbox config validate`.
-3. `prodbox rke2 install`
+3. `prodbox rke2 reconcile`
 4. `prodbox config show`
 5. `prodbox config validate`
 6. `prodbox pulumi eks-resources`
@@ -189,7 +189,7 @@ supported path.
 ### Validation
 
 1. `prodbox rke2 delete --yes`
-2. `prodbox rke2 install`
+2. `prodbox rke2 reconcile`
 3. `prodbox config show`
 4. `prodbox config validate`
 5. `prodbox test all`

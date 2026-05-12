@@ -18,7 +18,12 @@ repository-wide Python toolchain removal, and the single-record DNS / single-cer
 contract. The phase is reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
 `prodbox rke2 install` → `prodbox rke2 reconcile` per doctrine, apply the Plan / Apply +
 `--dry-run` discipline (Sprint 1.7) to the lifecycle reconcile, and migrate AWS-validation
-infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza.
+infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza. Current worktree
+evidence closes Sprints `4.5` and `4.6`: `prodbox rke2 reconcile` is now the canonical
+entrypoint, the deprecated `install` alias preserves only the old name, the lifecycle plan is
+golden-covered, and the governed docs and validation call sites now reference `reconcile`.
+Sprint `4.7` is `Active`: the dedicated Pulumi stanza exists and passes locally as a scaffold,
+but the real ephemeral-stack lifecycle proof is still pending.
 
 ## Phase Summary
 
@@ -109,7 +114,7 @@ contract without reintroducing Python, duplicate runtime paths, or cross-arch co
 3. `prodbox test integration cli`
 4. `prodbox test integration lifecycle`
 5. `prodbox rke2 delete --yes`
-6. `prodbox rke2 install`
+6. `prodbox rke2 reconcile`
 7. `prodbox dns check`
 8. `prodbox host public-edge`
 9. `prodbox test integration all`
@@ -278,7 +283,7 @@ routes behind Envoy.
 
 1. `prodbox check-code`
 2. `prodbox test integration lifecycle`
-3. `prodbox rke2 install`
+3. `prodbox rke2 reconcile`
 4. `prodbox host public-edge`
 5. `prodbox test integration public-dns`
 6. `prodbox test all`
@@ -295,9 +300,10 @@ routes behind Envoy.
 
 None.
 
-## Sprint 4.5: Rename `prodbox rke2 install` → `prodbox rke2 reconcile` 📋
+## Sprint 4.5: Rename `prodbox rke2 install` → `prodbox rke2 reconcile` ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestRunner.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/local_registry_pipeline.md`, `CLAUDE.md`, `README.md`, `AGENTS.md`
 
@@ -334,9 +340,14 @@ Command](../HASKELL_CLI_TOOL.md) on the canonical local-cluster lifecycle entryp
 2. `prodbox rke2 install` continues to work for one cycle and emits the deprecation pointer.
 3. No supported-path documentation refers to `install` as the canonical name after the rename.
 
-## Sprint 4.6: Lifecycle Plan / Apply + --dry-run 📋
+### Remaining Work
 
-**Status**: Planned
+None.
+
+## Sprint 4.6: Lifecycle Plan / Apply + --dry-run ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Rke2.hs`
 **Docs to update**: `documents/engineering/local_registry_pipeline.md`,
 `documents/engineering/storage_lifecycle_doctrine.md`,
 `documents/engineering/cli_command_surface.md`
@@ -358,9 +369,14 @@ lifecycle reconcile.
 1. Golden tests cover the rendered lifecycle plan.
 2. Re-running `prodbox rke2 reconcile` after a successful run performs zero mutating work.
 
-## Sprint 4.7: prodbox-pulumi Test Stanza 📋
+### Remaining Work
 
-**Status**: Planned
+None.
+
+## Sprint 4.7: prodbox-pulumi Test Stanza 🔄
+
+**Status**: Active
+**Implementation**: `prodbox.cabal`, `test/pulumi/Main.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/aws_test_environment.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
@@ -383,6 +399,14 @@ Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
 1. `cabal test prodbox-pulumi` provisions, tests, and tears down successfully.
 2. No leaked stacks survive a failing run; `bracket` cleanup is verified by a forced-failure
    test.
+
+### Remaining Work
+
+- The `prodbox-pulumi` Cabal stanza now exists and passes locally, but it is still a scaffold
+  suite that checks repository ownership of the YAML Pulumi programs and parser surface.
+- The doctrine-owned ephemeral-stack behavior is still absent: isolated stack creation,
+  typed-output handoff into test execution, and forced-failure cleanup proof remain to be
+  implemented.
 
 ## Documentation Requirements
 

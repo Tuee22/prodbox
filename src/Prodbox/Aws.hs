@@ -8,6 +8,7 @@ module Prodbox.Aws
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   , runInteractiveConfigSetup
+  , runInteractiveConfigSetupWithPlan
   )
 where
 
@@ -50,6 +51,7 @@ import Prodbox.AwsEnvironment
   )
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , PlanOptions (..)
   , PolicyTier (..)
   )
 import Prodbox.Repo
@@ -284,7 +286,11 @@ runAwsCommand repoRoot command = do
 
 runInteractiveConfigSetup :: FilePath -> IO ExitCode
 runInteractiveConfigSetup repoRoot = do
-  result <- try (executeConfigSetup repoRoot) :: IO (Either SomeException ExitCode)
+  runInteractiveConfigSetupWithPlan repoRoot (PlanOptions False Nothing)
+
+runInteractiveConfigSetupWithPlan :: FilePath -> PlanOptions -> IO ExitCode
+runInteractiveConfigSetupWithPlan repoRoot planOptions = do
+  result <- try (executeConfigSetup repoRoot planOptions) :: IO (Either SomeException ExitCode)
   case result of
     Left err -> do
       hPutStrLn stderr (displayException err)
@@ -297,16 +303,24 @@ executeAwsCommand repoRoot command =
     AwsPolicy policyTier -> do
       putStr (buildIamPolicyJson policyTier)
       pure ExitSuccess
-    AwsSetup policyTier -> do
+    AwsSetup policyTier planOptions -> do
       input <- interactiveAwsSetupInput repoRoot policyTier
-      result <- applyAwsSetup repoRoot input
-      putStr (renderAwsSetupResult result)
-      pure ExitSuccess
-    AwsTeardown -> do
+      runPlannedInteractiveAction
+        planOptions
+        (renderAwsSetupPlan repoRoot input)
+        $ do
+          result <- applyAwsSetup repoRoot input
+          putStr (renderAwsSetupResult result)
+          pure ExitSuccess
+    AwsTeardown planOptions -> do
       input <- interactiveAwsTeardownInput repoRoot
-      result <- applyAwsTeardown repoRoot input
-      putStr (renderAwsTeardownResult result)
-      pure ExitSuccess
+      runPlannedInteractiveAction
+        planOptions
+        (renderAwsTeardownPlan repoRoot input)
+        $ do
+          result <- applyAwsTeardown repoRoot input
+          putStr (renderAwsTeardownResult result)
+          pure ExitSuccess
     AwsCheckQuotas -> do
       input <- interactiveAwsCheckQuotasInput repoRoot
       statuses <- applyAwsCheckQuotas repoRoot input
@@ -318,12 +332,56 @@ executeAwsCommand repoRoot command =
       putStr (renderQuotaTable "Requested AWS Quotas" statuses)
       pure ExitSuccess
 
-executeConfigSetup :: FilePath -> IO ExitCode
-executeConfigSetup repoRoot = do
+executeConfigSetup :: FilePath -> PlanOptions -> IO ExitCode
+executeConfigSetup repoRoot planOptions = do
   input <- interactiveConfigSetupInput repoRoot
-  result <- applyConfigSetup repoRoot input
-  putStr (renderConfigSetupResult result)
-  pure ExitSuccess
+  runPlannedInteractiveAction
+    planOptions
+    (renderConfigSetupPlan repoRoot input)
+    $ do
+      result <- applyConfigSetup repoRoot input
+      putStr (renderConfigSetupResult result)
+      pure ExitSuccess
+
+runPlannedInteractiveAction :: PlanOptions -> String -> IO ExitCode -> IO ExitCode
+runPlannedInteractiveAction planOptions renderedPlan applyAction = do
+  maybePersistPlan (planFile planOptions) renderedPlan
+  if dryRun planOptions
+    then do
+      putStr renderedPlan
+      pure ExitSuccess
+    else applyAction
+
+renderAwsSetupPlan :: FilePath -> AwsSetupInput -> String
+renderAwsSetupPlan repoRoot input =
+  unlines
+    [ "AWS_SETUP_PLAN"
+    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+    , "POLICY_TIER=" ++ renderPolicyTier (awsSetupPolicyTierInput input)
+    , "ACCESS_KEY_ID=" ++ Text.unpack (access_key_id (awsSetupAdminCredentials input))
+    ]
+
+renderAwsTeardownPlan :: FilePath -> AwsTeardownInput -> String
+renderAwsTeardownPlan repoRoot input =
+  unlines
+    [ "AWS_TEARDOWN_PLAN"
+    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+    , "ACCESS_KEY_ID=" ++ Text.unpack (access_key_id (awsTeardownAdminCredentials input))
+    ]
+
+renderConfigSetupPlan :: FilePath -> ConfigSetupInput -> String
+renderConfigSetupPlan repoRoot input =
+  unlines
+    [ "CONFIG_SETUP_PLAN"
+    , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+    , "ZONE_ID=" ++ Text.unpack (configSetupRoute53ZoneIdInput input)
+    , "PUBLIC_HOST=" ++ Text.unpack (configSetupDemoFqdnInput input)
+    , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTierInput input)
+    ]
+
+maybePersistPlan :: Maybe FilePath -> String -> IO ()
+maybePersistPlan Nothing _ = pure ()
+maybePersistPlan (Just path) contents = writeFile path contents
 
 corePolicyStatements :: [Value]
 corePolicyStatements =

@@ -1,3 +1,4 @@
+{-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.CLI.Json
@@ -52,7 +53,7 @@ encodeOption optionSpec =
     { longName = optionLongName
     , shortName = optionShortName
     , metavar = optionMetavar
-    , optionDescription = optionDescription
+    , description = optionDescription
     , required = optionRequired
     } = optionSpec
 

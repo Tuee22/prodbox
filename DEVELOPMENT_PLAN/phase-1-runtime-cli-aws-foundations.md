@@ -23,7 +23,13 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 `execParserPure` parser-test category, and the `renderError` error-boundary discipline. Sprint
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
-compare, respectively.
+compare, respectively. Current worktree evidence puts Sprints `1.6`, `1.7`, `1.11`, and
+`1.24` in `Active` state: the parser remains hand-authored rather than rendered from
+`CommandSpec`, the full build/apply split is not yet generalized across state-changing
+surfaces, the doctrinal single `prodbox-integration` stanza plus full property-invariant
+closure remain incomplete, and durable CLI documentation currently stops at the generated
+Markdown command reference. Sprints `1.10`, `1.20`, `1.25`, and `1.27` are now implemented in
+code and validated locally. The remaining reopened Phase `1` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -269,7 +275,7 @@ the supported product scope.
 
 ### Deliverables
 
-- `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` are implemented in Haskell.
+- `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` are implemented in Haskell.
 - `prodbox pulumi test-resources|test-destroy --yes` and
   `prodbox pulumi eks-resources|eks-destroy --yes` are implemented in Haskell.
 - The local-cluster-first MinIO backend doctrine is preserved.
@@ -333,7 +339,7 @@ extended that baseline.
 
 ### Deliverables
 
-- `prodbox rke2 install` targets Envoy Gateway as the self-managed public-edge controller.
+- `prodbox rke2 reconcile` targets Envoy Gateway as the self-managed public-edge controller.
 - The closed sprint baseline keeps the public-edge control-plane split intact, while Sprint `1.5`
   extends that baseline with config-selected MetalLB BGP support.
 - The local lifecycle mirrors or publishes the Envoy Gateway target image set and no longer treats
@@ -355,7 +361,7 @@ extended that baseline.
 3. `prodbox test integration cli`
 4. `prodbox test integration env`
 5. `prodbox test integration lifecycle`
-6. Self-managed edge proof: `prodbox rke2 install` reconciles MetalLB, Envoy Gateway,
+6. Self-managed edge proof: `prodbox rke2 reconcile` reconciles MetalLB, Envoy Gateway,
    cert-manager, and the Percona operator on the supported local path
 7. Image-source proof: Harbor-backed lifecycle ownership includes the Envoy Gateway target image
    set and no longer requires Traefik on the supported edge path
@@ -400,7 +406,7 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
 - The foundational config contract derives public destinations from shared-host path prefixes such
   as `/vscode`, `/api`, `/ws`, `/auth`, and later supported admin paths rather than from separate
   FQDN inputs.
-- `prodbox rke2 install` supports config-selected MetalLB L2 or BGP rendering on the supported
+- `prodbox rke2 reconcile` supports config-selected MetalLB L2 or BGP rendering on the supported
   self-managed path.
 - The BGP path renders the required peer and advertisement resources from repo-owned settings
   rather than relying on manual cluster-side edits.
@@ -429,7 +435,7 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
   with no dedicated public-FQDN config fields on the supported path.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
   public-edge replica counts into validated settings, and builds or imports both the gateway image
-  and the shared public-edge workload image during `prodbox rke2 install`.
+  and the shared public-edge workload image during `prodbox rke2 reconcile`.
 - `src/Prodbox/Aws.hs` now validates Route 53 hosted-zone alignment for the canonical hostname
   during `prodbox config setup`, while `src/Prodbox/TestValidation.hs` and the built-frontend
   suites align the config and lifecycle proofs with the one-host doctrine.
@@ -441,9 +447,10 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
 
 None.
 
-## Sprint 1.6: CommandSpec Source-of-Truth Split 📋
+## Sprint 1.6: CommandSpec Source-of-Truth Split 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, `src/Prodbox/CLI/Json.hs`, `src/Prodbox/App.hs`, `src/Prodbox/CLI/Parser.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`
 
@@ -499,9 +506,23 @@ Module layout` so the CLI surface is generated from a single typed specification
 5. The leaf-`Example` property test fails when any new leaf `CommandSpec` is registered
    without at least one example.
 
-## Sprint 1.7: Plan / Apply Discipline with --dry-run 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, and
+  `src/Prodbox/CLI/Json.hs` are implemented, and `prodbox commands` / `prodbox help <path>`
+  already run from `src/Prodbox/App.hs`.
+- `src/Prodbox/CLI/Parser.hs` remains a hand-authored source of truth rather than a renderer of
+  `CommandSpec`, and the parser has already drifted from the registry on doctrine-added surfaces
+  such as Pulumi `--dry-run` / `--plan-file` and daemon flags.
+- `src/Prodbox/CLI/Command.hs` still routes gateway operations through ad-hoc `GatewayCommand`
+  constructors instead of a typed daemon-command value produced directly from the registry.
+- `test/unit/Main.hs` contains selective parser assertions only; full leaf help/tree/json golden
+  coverage and the leaf-`Example` completeness property test are still absent.
+
+## Sprint 1.7: Plan / Apply Discipline with --dry-run 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Rke2.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/refactoring_patterns.md`,
 `documents/engineering/effect_interpreter.md`
 
@@ -523,6 +544,14 @@ command.
 
 1. `--dry-run` of every Plan/Apply command exits `0` without mutating state.
 2. Golden plan renderings remain byte-stable.
+
+### Remaining Work
+
+- `PlanOptions`, `--dry-run`, `--plan-file`, and deterministic rendered plans are already wired
+  through `prodbox charts deploy|delete` and `prodbox rke2 reconcile|install`.
+- The doctrine's `build :: Inputs -> Either AppError Plan` / `apply :: Env -> Plan -> IO ExitCode`
+  split is still absent from gateway, Pulumi, AWS, and interactive config surfaces.
+- The rendered plans are not yet covered by golden fixtures.
 
 ## Sprint 1.8: Subprocess ADT Formalization 📋
 
@@ -583,9 +612,10 @@ Effects](../HASKELL_CLI_TOOL.md), including the required error-message contract.
 1. Every prerequisite failure surfaces `nodeId`, `nodeDescription`, and the remedy hint.
 2. Unit tests cover registry-typo detection at expansion time.
 
-## Sprint 1.10: Lint, Generated-Section, and Forbidden-Path Stack 📋
+## Sprint 1.10: Lint, Generated-Section, and Forbidden-Path Stack ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `fourmolu.yaml`, `.hlint.yaml`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/CLI/Docs.hs`, `test/unit/Main.hs`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/code_quality.md`,
 `documents/documentation_standards.md`
 
@@ -642,9 +672,14 @@ Stack](../HASKELL_CLI_TOOL.md) and `Generated Artifacts → The generated-sectio
    output fails `prodbox lint haskell` with the byte-equality compare; running
    `prodbox lint haskell --write` repairs the divergence and the next check pass succeeds.
 
-## Sprint 1.11: hspec → tasty Test-Stanza Migration 📋
+### Remaining Work
 
-**Status**: Planned
+None.
+
+## Sprint 1.11: hspec → tasty Test-Stanza Migration 🔄
+
+**Status**: Active
+**Implementation**: `prodbox.cabal`, `test/unit/Main.hs`, `test/unit/Parser.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `test/haskell-style/Main.hs`, `test/daemon-lifecycle/Main.hs`, `test/pulumi/Main.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/code_quality.md`
 
@@ -688,6 +723,17 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
 2. `prodbox test all` delegates to `cabal test` per doctrine.
 3. `prodbox lint files` fails when a test-suite stanza in `prodbox.cabal` omits
    `type: exitcode-stdio-1.0`.
+
+### Remaining Work
+
+- The repository has already migrated off `hspec`: the current public suites are tasty-based and
+  every existing test-suite stanza uses `type: exitcode-stdio-1.0`.
+- `prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` now exist as Cabal
+  stanzas, but the doctrinal single `prodbox-integration` stanza has not replaced the current
+  split CLI and env suites.
+- The doctrine-named property-test invariants remain only partially implemented in
+  `test/unit/Main.hs`, and the deeper lifecycle or ephemeral-stack behavior owned by Sprints
+  `2.14` and `4.7` is still scaffold-only in their new stanzas.
 
 ## Sprint 1.12: Capability Classes and AsServiceError 📋
 
@@ -955,9 +1001,10 @@ project-specific `.hlint.yaml` rule pattern.
    any daemon-path module fails `prodbox lint haskell` with the negative-space symbol
    rule.
 
-## Sprint 1.20: Aggregate Test and Lint Dispatch Alignment 📋
+## Sprint 1.20: Aggregate Test and Lint Dispatch Alignment ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/TestRunner.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/unit_testing_policy.md`
 
@@ -984,6 +1031,10 @@ Dispatch](../HASKELL_CLI_TOOL.md) and the doctrine's `Testing Doctrine` requirem
    suite would pass.
 2. `prodbox test lint` is reachable from the `prodbox commands --tree` introspection
    surface.
+
+### Remaining Work
+
+None.
 
 ## Sprint 1.21: Tracked-Generated Paths Registry and Renderer Determinism 📋
 
@@ -1122,9 +1173,10 @@ type generation (§341–343) until a non-Haskell consumer enters scope.
 3. `documents/engineering/cli_command_surface.md` lists the cross-language-types deferral as
    an explicit doctrine-aware no-op rather than as a silent gap.
 
-## Sprint 1.24: Durable CLI Documentation Artifacts 📋
+## Sprint 1.24: Durable CLI Documentation Artifacts 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CheckCode.hs`, `documents/cli/commands.md`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/documentation_standards.md`
 
@@ -1174,9 +1226,19 @@ documentation artifact, not only the in-process introspection commands.
 4. `documents/engineering/cli_command_surface.md` lists the HTML deferral as an
    explicit doctrine-aware no-op rather than as a silent gap.
 
-## Sprint 1.25: Parser-Test Category via execParserPure 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/CLI/Docs.hs` now renders the Markdown command reference at
+  `documents/cli/commands.md`, and `prodbox docs check|generate` already maintain that
+  marker-delimited artifact through the generated-section registry.
+- The doctrine-owned manpages, shell completion scripts, and `trackingGeneratedPaths`
+  registration are still absent, and `prodbox-haskell-style` does not yet carry the
+  byte-for-byte artifact golden coverage scheduled for this sprint.
+
+## Sprint 1.25: Parser-Test Category via execParserPure ✅
+
+**Status**: Done
+**Implementation**: `test/unit/Main.hs`, `test/unit/Parser.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CheckCode.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -1215,6 +1277,10 @@ Sprint 1.6.
    `prodbox-haskell-style`.
 3. A property test asserts that every leaf in the `CommandSpec` registry is
    covered by at least one happy-path parser test.
+
+### Remaining Work
+
+None.
 
 ## Sprint 1.26: Error Rendering Boundary Discipline 📋
 
@@ -1259,10 +1325,10 @@ so error rendering happens only at the CLI boundary and core code is free of
 3. `prodbox check-code` continues to enforce the governed doctrine-alignment
    contract after the boundary rules land.
 
-## Sprint 1.27: Toolchain Pin Declarations and Library-First Layout 📋
+## Sprint 1.27: Toolchain Pin Declarations and Library-First Layout ✅
 
-**Status**: Planned
-**Implementation**: `prodbox.cabal`, `cabal.project`, `src/Prodbox/CheckCode.hs`
+**Status**: Done
+**Implementation**: `prodbox.cabal`, `cabal.project`, `app/prodbox/Main.hs`, `src/Prodbox/App.hs`, `src/Prodbox/CheckCode.hs`
 **Docs to update**: `documents/engineering/dependency_management.md`,
 `documents/engineering/haskell_code_guide.md`
 
@@ -1313,6 +1379,10 @@ A13 (library-first layout) per
 3. Doctrine identifiers `tested-with`, `with-compiler`, `Cabal 3.16.1.0`,
    `library-first`, and `thin Main.hs` each appear at least once in the plan
    suite after Sprint 1.27 lands.
+
+### Remaining Work
+
+None.
 
 ## Documentation Requirements
 

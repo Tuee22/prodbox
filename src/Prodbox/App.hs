@@ -21,6 +21,7 @@ import Prodbox.CLI.Json (renderCommandJson)
 import Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
+  , validateCommandArgv
   )
 import Prodbox.CLI.Spec
   ( CommandSpec (..)
@@ -30,13 +31,18 @@ import Prodbox.CLI.Spec
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot)
+import System.Environment (getArgs)
 import System.Exit (exitFailure, exitWith)
 import System.IO (hPutStrLn, stderr)
 
 main :: IO ()
 main = do
-  options <- customExecParser parserPrefs parserInfo
-  runCommandRequest (optRequest options)
+  argv <- getArgs
+  case validateCommandArgv argv of
+    Left err -> failWith err
+    Right () -> do
+      options <- customExecParser parserPrefs parserInfo
+      runCommandRequest (optRequest options)
  where
   parserPrefs = prefs (showHelpOnEmpty <> showHelpOnError)
 
@@ -66,9 +72,9 @@ runCommandRequest request =
     exitWith exitCode
 
 canRunWithoutRepoRoot :: NativeCommand -> Bool
-canRunWithoutRepoRoot (NativeGateway (GatewayStart _)) = True
-canRunWithoutRepoRoot (NativeGateway (GatewayStatus _)) = True
-canRunWithoutRepoRoot (NativeWorkload WorkloadStart) = True
+canRunWithoutRepoRoot (NativeGateway (GatewayDaemonCommand _)) = True
+canRunWithoutRepoRoot (NativeGateway (GatewayStatusCommand _)) = True
+canRunWithoutRepoRoot (NativeWorkload (WorkloadStart _)) = True
 canRunWithoutRepoRoot _ = False
 
 failWith :: String -> IO ()

@@ -1,5 +1,7 @@
 module Prodbox.CLI.Charts
-  ( runChartsCommand
+  ( renderChartDeletePlan
+  , renderChartDeploymentPlan
+  , runChartsCommand
   )
 where
 

@@ -24,7 +24,7 @@ Build a clean-room Haskell `prodbox` repository with:
 
 1. One explicit `prodbox` CLI surface implemented in Haskell.
 2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd.
-3. One host-owned `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` surface for
+3. One host-owned `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` surface for
    the local RKE2 cluster.
 4. Two AWS-backed cluster deployment and validation patterns under `prodbox`: one EKS-backed path
    and one SSH-driven HA RKE2 path on exactly three Pulumi-managed `Ubuntu 24.04 LTS` EC2
@@ -109,20 +109,23 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Alignment Status
 
-Phases `0` through `4` are **reopened** by Sprint 0.2 to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, and further
-extended by Sprint 0.3 to close the residual doctrine items surfaced by the May 2026
-doctrine-vs-plan audit. Sprint 0.4 extends the doctrine-adoption scope again with the
-residual items surfaced by the November 2026 round-3 doctrine-vs-plan audit, scheduling them
-through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
-planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints, per
+Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
+governed docs and plan suite with that doctrine, and schedule every currently known code-level
+adoption gap onto explicit downstream sprints. That planning and documentation work is now
+`Done`. Phases `1` through `4` remain **reopened** on the scheduled implementation work:
+Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced by the May
+2026 doctrine-vs-plan audit, and Sprint 0.4 extended it again with the residual items
+surfaced by the November 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
+sprint (1.27) plus deliverable extensions to existing planned Phase `1`, Phase `2`, Phase
+`3`, and Phase `4` sprints, per
 [development_plan_standards.md](development_plan_standards.md) standards rule L. Phases
 `5`–`7` remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract,
 AWS IAM and quota administration) per standards rule E. The earlier implementation-alignment
 follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup follow-up that
 removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
 `src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens
-add new planned sprints across Phases `0`–`4`; until those sprints close, the cleanup ledger
+add new planned sprints across Phases `1`–`4`; until those sprints close, the cleanup ledger
 shows doctrine-deviation residue under
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`.
 
@@ -208,7 +211,7 @@ The reopened ranges close on the following sprint sets:
   and `force-install` on the chart surface (§1781–1803).
 - Phase 4: Sprints 4.5–4.7. Sprint 0.4 extends Sprint 4.5 with the same forbidden-flag
   and sister-command discipline on the lifecycle reconciler so the one-cycle deprecation
-  alias preserves only the name `prodbox rke2 install`, not the forbidden flags
+  alias preserves only the legacy name, not the forbidden flags
   (§1781–1803).
 
 ## Architecture Summary
@@ -221,19 +224,19 @@ The reopened ranges close on the following sprint sets:
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | `prodbox` supported-host gate |
 | Configuration | Operator-authored repository-root `prodbox-config.dhall` decoded directly into Haskell types, with `prodbox-config-types.dhall` as the shared schema and no supported `prodbox-config.json` artifact | Repository root |
 | Host diagnostics | `prodbox host ensure-tools|check-ports|info|firewall|public-edge` | Haskell CLI |
-| Local RKE2 lifecycle | `prodbox rke2 install|delete --yes|status|start|stop|restart|logs` | Haskell CLI with summary-oriented delete reporting |
+| Local RKE2 lifecycle | `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` | Haskell CLI with summary-oriented delete reporting |
 | Registry and image reconcile | Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, plus idempotent post-bootstrap public-image populate with alternate-source retry and native-host-architecture image publication for the Envoy Gateway target edge and chart workloads | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Haskell CLI |
 | AWS-backed EKS validation | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | Haskell orchestration plus Pulumi |
 | AWS-backed HA RKE2 validation | `prodbox pulumi test-resources|test-destroy --yes` plus `prodbox test integration ha-rke2-aws` | Haskell orchestration plus Pulumi |
 | Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
 | Retained repo-local validation state | `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Haskell Pulumi orchestration and AWS validation helpers |
-| Gateway runtime operations | `prodbox gateway start <config-path>|status <config-path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
+| Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
 | Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate for the single canonical public record |
 | DNS check | `prodbox dns check` | Haskell CLI |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Haskell-owned shared-host path catalog and issuer derivation for application and admin routes |
-| Chart delivery | `prodbox charts list|status <chart>|deploy <chart>|delete <chart> [--yes]` | Haskell chart platform over the supported `gateway`, `keycloak`, `vscode`, `api`, and `websocket` chart surfaces, with `gateway` kept separate from the Envoy public edge and the shared-host browser, API, WebSocket, and admin paths delivered behind Envoy |
+| Chart delivery | `prodbox charts list|status <chart>|deploy <chart> [--dry-run] [--plan-file <path>]|delete <chart> [--yes] [--dry-run] [--plan-file <path>]` | Haskell chart platform over the supported `gateway`, `keycloak`, `vscode`, `api`, and `websocket` chart surfaces, with `gateway` kept separate from the Envoy public edge and the shared-host browser, API, WebSocket, and admin paths delivered behind Envoy |
 | Public-edge diagnostics | `prodbox host public-edge` | Haskell CLI on a single-host Gateway API and Envoy Gateway doctrine, including path-route classification for app and admin surfaces |
 | Public-edge auth model | Envoy-enforced Keycloak JWT auth and RBAC on the shared hostname, with explicit bearer-token carriers, browser return paths, and JWKS metadata ownership | Keycloak issuer plus Envoy policy |
 | Public-edge transport boundary | Public listener TLS terminates at Envoy on the supported path; backend HTTP remains the current workload default and backend TLS or mTLS requires later explicit doctrine ownership | Haskell lifecycle plus chart doctrine |
@@ -247,15 +250,19 @@ The reopened ranges close on the following sprint sets:
 
 ## Current Repository State
 
-The target Haskell-only rewrite architecture is implemented in the worktree, and the repository
-is now fully closed against this plan. The supported operator surface is `prodbox`, the supported
-configuration contract is direct `Dhall -> Haskell types` rooted at `prodbox-config.dhall`, and
-the supported build topology remains `.build/prodbox` on the host plus `/opt/build` inside
-repository-owned Dockerfiles. `prodbox check-code` enforces the governed doctrine-alignment gate,
-the Haskell gateway runtime plus status path close on the implemented bounded HTTP `/v1/state`
-payload and daemon timing-validation contract, the final clean-room handoff closes on the
-canonical rerun surface, and the earlier unsupported Python runtime and tooling surfaces remain
-removed.
+The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
+not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
+Sprints `1.6`, `1.7`, `1.11`, `1.24`, `2.14`, `3.10`, `3.12`, and `4.7` in `Active` state
+because those surfaces have started in code but still retain sprint-owned implementation or
+validation gaps. Sprints `1.10`, `1.20`, `1.25`, `1.27`, `2.15`, `3.11`, `4.5`, and `4.6` are
+now locally validated and doc-aligned. The supported operator surface is `prodbox`, the
+supported configuration contract is direct `Dhall -> Haskell types` rooted at
+`prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
+plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
+governed doctrine-alignment gate, the Haskell gateway runtime plus status path close on the
+implemented bounded HTTP `/v1/state` payload and daemon timing-validation contract, the final
+clean-room handoff closes on the canonical rerun surface, and the earlier unsupported Python
+runtime and tooling surfaces remain removed.
 
 The supported public edge uses MetalLB, Envoy Gateway, Gateway API, cert-manager, and
 Keycloak on the single public hostname `test.resolvefintech.com`. Every externally reachable
@@ -268,19 +275,19 @@ on a true `/ws` upgrade with Redis-backed shared state and readiness-based drain
 terminates at Envoy while backend TLS or mTLS remains outside the supported chart-workload
 contract.
 
-Root guidance plus the governed public-edge, gateway, chart-platform, registry, and testing docs
-now describe that same shared-host route catalog and credential boundary, and the earlier Phase
-`2`, `3`, and `4` implementation gaps plus the later Phase `2` host-info cleanup follow-up are
-closed in the same authoritative code paths.
+Root guidance and the governed public-edge, gateway, chart-platform, registry, and testing docs
+agree on the pre-reopen Haskell-only baseline, but several doctrine-adoption surfaces still lag
+code or document future behavior ahead of implementation. Those mismatches remain scheduled
+through the active reopen sprints and the pending-removal ledger.
 
 The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus
 its storage backend bootstrap from public registries, every later Helm deployment pulls through
 Harbor, and `amd64` or `arm64` hosts build and publish only their own architecture. The stack
 closes on in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the
 Percona operator-backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP
-advertisement. The cleanup ledger preserves completed history and is back at zero pending
-supported-path items. The separate Haskell distributed gateway daemon remains distinct from the
-Envoy Gateway public edge.
+advertisement. The cleanup ledger preserves completed history and still carries the doctrine-
+adoption pending-removal items scheduled through Phases `1`–`4`. The separate Haskell
+distributed gateway daemon remains distinct from the Envoy Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
@@ -415,12 +422,13 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 
 ## Current Execution State
 
-The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phases
-`0`–`4` are reopened by Sprint 0.2 to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md), further extended by Sprint 0.3 to schedule
-the residual doctrine items surfaced by the May 2026 doctrine-vs-plan audit, and further
-extended by Sprint 0.4 to schedule the residual items surfaced by the November 2026 round-3
-audit; the new sprints are `Planned` and not yet implemented:
+The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
+`0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
+Phases `1`–`4` remain reopened on the downstream implementation scope scheduled by those
+sprints; that reopened scope is now mixed: Sprints `1.6`, `1.7`, `1.11`, `1.24`, `2.14`,
+`3.10`, `3.12`, and `4.7` are `Active` on partially landed code paths, Sprints `1.10`,
+`1.20`, `1.25`, `1.27`, `2.15`, `3.11`, `4.5`, and `4.6` are locally validated and
+doc-aligned, and the remaining reopened sprints stay `Planned`:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the

@@ -40,7 +40,7 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 **This machine is the home Kubernetes cluster that prodbox manages.** Prodbox owns the full
 local-cluster lifecycle on this host.
 
-- `prodbox rke2 install` is the canonical idempotent reconcile entrypoint. Running it on this
+- `prodbox rke2 reconcile` is the canonical idempotent reconcile entrypoint. Running it on this
   machine — including installing RKE2 if it is absent, or reconciling the existing cluster — is
   the supported, expected operation, not an unauthorized state change.
 - `prodbox rke2 delete --yes` is the canonical teardown.

@@ -2,11 +2,16 @@
 
 module Prodbox.Gateway
   ( renderGatewayConfigTemplate
+  , renderGatewayStartPlan
   , renderGatewayStatusReport
+  , resolveGatewayConfigPath
+  , resolveGatewayLogLevel
+  , resolveGatewayPortOverride
   , runGatewayCommand
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Exception (IOException, try)
 import Data.Aeson
   ( Value (..)
@@ -24,7 +29,12 @@ import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific, floatingOrInteger)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
-import Prodbox.CLI.Command (GatewayCommand (..))
+import Prodbox.CLI.Command
+  ( DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
+  , GatewayCommand (..)
+  , PlanOptions (..)
+  )
 import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
@@ -52,51 +62,80 @@ import Prodbox.Subprocess
   , captureCommand
   )
 import System.Directory (findExecutable)
+import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr)
+import Text.Read (readMaybe)
 
 runGatewayCommand :: FilePath -> GatewayCommand -> IO ExitCode
 runGatewayCommand repoRoot command =
   case command of
-    GatewayStart configPath -> runGatewayStart repoRoot configPath
-    GatewayStatus configPath -> runGatewayStatus configPath
+    GatewayDaemonCommand options -> runGatewayStart repoRoot options
+    GatewayStatusCommand options -> runGatewayStatus options
     GatewayConfigGen outputPath nodeId -> runGatewayConfigGen repoRoot outputPath nodeId
 
-runGatewayStart :: FilePath -> FilePath -> IO ExitCode
-runGatewayStart _repoRoot configPath = do
-  configResult <- loadDaemonConfig configPath
-  case configResult of
+runGatewayStart :: FilePath -> DaemonLaunchOptions -> IO ExitCode
+runGatewayStart _repoRoot options = do
+  configPathResult <- resolveGatewayConfigPath (daemonConfigPath options)
+  case configPathResult of
     Left err -> failWith err
-    Right config -> Daemon.runGatewayDaemon (resolveDaemonInputPaths configPath config)
-
-runGatewayStatus :: FilePath -> IO ExitCode
-runGatewayStatus configPath = do
-  configResult <- loadDaemonConfig configPath
-  case configResult of
-    Left err -> failWith err
-    Right config -> do
-      let configDirectory = takeDirectory configPath
-          ordersPath = resolveRelativePath configDirectory (daemonOrdersFile config)
-      ordersResult <- loadOrdersFile ordersPath
-      case ordersResult of
+    Right configPath -> do
+      portResult <- resolveGatewayPortOverride (daemonPort options)
+      case portResult of
         Left err -> failWith err
-        Right orders ->
-          case validateDaemonTimingAgainstOrders config orders of
+        Right portOverride -> do
+          logLevel <- resolveGatewayLogLevel (daemonLogLevel options)
+          configResult <- loadDaemonConfig configPath
+          case configResult of
             Left err -> failWith err
-            Right () ->
-              case lookupPeerEndpoint (daemonNodeId config) orders of
-                Nothing -> failWith ("Node " ++ daemonNodeId config ++ " not in orders")
-                Just endpoint -> do
-                  stateResult <- queryGatewayState configPath endpoint
-                  case stateResult of
-                    Left err -> failWith err
-                    Right gatewayState ->
-                      case renderGatewayStatusReport gatewayState of
+            Right config -> do
+              let resolvedConfig = resolveDaemonInputPaths configPath config
+                  renderedPlan =
+                    renderGatewayStartPlan
+                      configPath
+                      logLevel
+                      portOverride
+                      (daemonForeground options)
+                      resolvedConfig
+              maybePersistPlan (planFile (daemonPlanOptions options)) renderedPlan
+              if dryRun (daemonPlanOptions options)
+                then do
+                  putStr renderedPlan
+                  pure ExitSuccess
+                else Daemon.runGatewayDaemon portOverride logLevel resolvedConfig
+
+runGatewayStatus :: DaemonStatusOptions -> IO ExitCode
+runGatewayStatus options = do
+  configPathResult <- resolveGatewayConfigPath (daemonStatusConfigPath options)
+  case configPathResult of
+    Left err -> failWith err
+    Right configPath -> do
+      configResult <- loadDaemonConfig configPath
+      case configResult of
+        Left err -> failWith err
+        Right config -> do
+          let configDirectory = takeDirectory configPath
+              ordersPath = resolveRelativePath configDirectory (daemonOrdersFile config)
+          ordersResult <- loadOrdersFile ordersPath
+          case ordersResult of
+            Left err -> failWith err
+            Right orders ->
+              case validateDaemonTimingAgainstOrders config orders of
+                Left err -> failWith err
+                Right () ->
+                  case lookupPeerEndpoint (daemonNodeId config) orders of
+                    Nothing -> failWith ("Node " ++ daemonNodeId config ++ " not in orders")
+                    Just endpoint -> do
+                      stateResult <- queryGatewayState configPath endpoint
+                      case stateResult of
                         Left err -> failWith err
-                        Right report -> do
-                          putStr report
-                          pure ExitSuccess
+                        Right gatewayState ->
+                          case renderGatewayStatusReport gatewayState of
+                            Left err -> failWith err
+                            Right report -> do
+                              putStr report
+                              pure ExitSuccess
 
 runGatewayConfigGen :: FilePath -> FilePath -> String -> IO ExitCode
 runGatewayConfigGen repoRoot outputPath nodeId = do
@@ -108,6 +147,50 @@ runGatewayConfigGen repoRoot outputPath nodeId = do
       case writeResult of
         Left err -> failWith err
         Right () -> pure ExitSuccess
+
+renderGatewayStartPlan :: FilePath -> String -> Maybe Int -> Bool -> DaemonConfig -> String
+renderGatewayStartPlan configPath logLevel portOverride foreground config =
+  unlines
+    [ "GATEWAY_START_PLAN"
+    , "CONFIG_PATH=" ++ configPath
+    , "NODE_ID=" ++ daemonNodeId config
+    , "LOG_LEVEL=" ++ logLevel
+    , "PORT_OVERRIDE=" ++ maybe "<config-default>" show portOverride
+    , "FOREGROUND=" ++ boolText foreground
+    ]
+
+resolveGatewayConfigPath :: Maybe FilePath -> IO (Either String FilePath)
+resolveGatewayConfigPath maybeCliPath = do
+  maybeEnvPath <- lookupEnv "PRODBOX_CONFIG_PATH"
+  pure $
+    case maybeCliPath <|> maybeEnvPath of
+      Just configPath -> Right configPath
+      Nothing ->
+        Left
+          "Missing gateway config path. Pass `--config <path>` or set `PRODBOX_CONFIG_PATH`."
+
+resolveGatewayLogLevel :: Maybe String -> IO String
+resolveGatewayLogLevel maybeCliLevel = do
+  maybeEnvLevel <- lookupEnv "PRODBOX_LOG_LEVEL"
+  pure (fromMaybe "info" (maybeCliLevel <|> maybeEnvLevel))
+
+resolveGatewayPortOverride :: Maybe Int -> IO (Either String (Maybe Int))
+resolveGatewayPortOverride maybeCliPort = do
+  maybeEnvPort <- lookupEnv "PRODBOX_PORT"
+  pure $
+    case maybeCliPort of
+      Just portOverride -> Right (Just portOverride)
+      Nothing ->
+        case maybeEnvPort of
+          Nothing -> Right Nothing
+          Just portText ->
+            case readMaybe portText of
+              Just parsedPort -> Right (Just parsedPort)
+              Nothing -> Left ("Invalid PRODBOX_PORT value: " ++ portText)
+
+maybePersistPlan :: Maybe FilePath -> String -> IO ()
+maybePersistPlan Nothing _ = pure ()
+maybePersistPlan (Just path) contents = writeFile path contents
 
 renderGatewayConfigTemplate :: ValidatedSettings -> String -> String
 renderGatewayConfigTemplate settings nodeId =

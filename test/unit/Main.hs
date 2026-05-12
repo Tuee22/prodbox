@@ -23,6 +23,7 @@ import Options.Applicative
   , execParserPure
   , renderFailure
   )
+import Parser (parserSuite)
 import Prodbox.Aws
   ( buildIamPolicyDocument
   )
@@ -30,12 +31,18 @@ import Prodbox.AwsEnvironment
   ( isolatedAwsEnvironment
   , overlayAwsCredentials
   )
+import Prodbox.CLI.Charts
+  ( renderChartDeletePlan
+  , renderChartDeploymentPlan
+  )
 import Prodbox.CLI.Command
   ( AwsCommand (..)
   , ChartsCommand (..)
   , CommandRequest (..)
   , ConfigCommand (..)
   , CoverageFlags (..)
+  , DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
   , DnsCommand (..)
   , GatewayCommand (..)
   , HostCommand (..)
@@ -49,10 +56,21 @@ import Prodbox.CLI.Command
   , TestCommand (..)
   , TestScope (..)
   )
+import Prodbox.CLI.Docs (renderCommandHelp)
+import Prodbox.CLI.Json (renderCommandJson)
 import Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
+  , validateCommandArgv
   )
+import Prodbox.CLI.Pulumi (renderPulumiPlan)
+import Prodbox.CLI.Rke2 (renderNativeInstallPlan)
+import Prodbox.CLI.Spec
+  ( commandRegistry
+  , findCommandSpec
+  , leafCommandPaths
+  )
+import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CheckCode
   ( DoctrineViolation (..)
   , doctrineViolationsInPaths
@@ -73,6 +91,7 @@ import Prodbox.EffectInterpreter
   )
 import Prodbox.Gateway
   ( renderGatewayConfigTemplate
+  , renderGatewayStartPlan
   , renderGatewayStatusReport
   )
 import Prodbox.Gateway.Peer
@@ -176,6 +195,7 @@ import TestSupport
 
 main :: IO ()
 main = mainWithSuite "prodbox-unit" $ do
+  parserSuite
   describe "CLI parser" $ do
     it "routes config show to the native Haskell command" $ do
       parseArgs ["config", "show", "--show-secrets"]
@@ -195,11 +215,31 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "routes gateway status through the native Haskell runtime" $ do
       parseArgs ["gateway", "status", "--config", "/tmp/gateway.json"]
-        `shouldBe` Right (Options False (RunNative (NativeGateway (GatewayStatus "/tmp/gateway.json"))))
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativeGateway (GatewayStatusCommand (DaemonStatusOptions (Just "/tmp/gateway.json")))))
+          )
 
     it "routes gateway start through the native Haskell runtime" $ do
       parseArgs ["gateway", "start", "--config", "/tmp/gateway.json"]
-        `shouldBe` Right (Options False (RunNative (NativeGateway (GatewayStart "/tmp/gateway.json"))))
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeGateway
+                      ( GatewayDaemonCommand
+                          DaemonLaunchOptions
+                            { daemonConfigPath = Just "/tmp/gateway.json"
+                            , daemonLogLevel = Nothing
+                            , daemonPort = Nothing
+                            , daemonForeground = True
+                            , daemonPlanOptions = PlanOptions False Nothing
+                            }
+                      )
+                  )
+              )
+          )
 
     it "routes gateway config-gen through the native Haskell runtime" $ do
       parseArgs ["gateway", "config-gen", "/tmp/gateway.json", "--node-id", "node-a"]
@@ -207,7 +247,8 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "routes config setup to the native Haskell runtime" $ do
       parseArgs ["config", "setup"]
-        `shouldBe` Right (Options False (RunNative (NativeConfig ConfigSetup)))
+        `shouldBe` Right
+          (Options False (RunNative (NativeConfig (ConfigSetup (PlanOptions False Nothing)))))
 
     it "routes aws policy to the native Haskell runtime" $ do
       parseArgs ["aws", "policy", "--tier", "full"]
@@ -215,11 +256,16 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "routes aws setup to the native Haskell runtime" $ do
       parseArgs ["aws", "setup", "--tier", "full"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsSetup PolicyFull))))
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativeAws (AwsSetup PolicyFull (PlanOptions False Nothing))))
+          )
 
     it "routes aws teardown to the native Haskell runtime" $ do
       parseArgs ["aws", "teardown"]
-        `shouldBe` Right (Options False (RunNative (NativeAws AwsTeardown)))
+        `shouldBe` Right
+          (Options False (RunNative (NativeAws (AwsTeardown (PlanOptions False Nothing)))))
 
     it "routes aws check-quotas to the native Haskell runtime" $ do
       parseArgs ["aws", "check-quotas"]
@@ -239,10 +285,15 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "routes pulumi commands through the native Haskell runtime" $ do
       parseArgs ["pulumi", "test-resources"]
-        `shouldBe` Right (Options False (RunNative (NativePulumi PulumiTestResources)))
+        `shouldBe` Right
+          (Options False (RunNative (NativePulumi (PulumiTestResources (PlanOptions False Nothing)))))
 
       parseArgs ["pulumi", "eks-destroy", "--yes"]
-        `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiEksDestroy True))))
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativePulumi (PulumiEksDestroy True (PlanOptions False Nothing))))
+          )
 
     it "routes charts commands through the native Haskell runtime" $ do
       parseArgs ["charts", "delete", "gateway", "--yes"]
@@ -296,6 +347,76 @@ main = mainWithSuite "prodbox-unit" $ do
             _ -> expectationFailure "expected Statement array"
         _ -> expectationFailure "expected policy document object"
 
+  describe "CLI generated output" $ do
+    goldenTest
+      "renders the command tree deterministically"
+      "test/golden/cli/commands-tree.txt"
+      (pure (BL8.pack (renderCommandTree commandRegistry)))
+
+    goldenTest
+      "renders the command registry JSON deterministically"
+      "test/golden/cli/commands.json"
+      (pure (BL8.pack (renderCommandJson commandRegistry)))
+
+    goldenTest
+      "renders every leaf help page deterministically"
+      "test/golden/cli/help-all.txt"
+      (pure (BL8.pack renderAllLeafHelpPages))
+
+  describe "plan renderers" $ do
+    goldenTest
+      "renders the chart deployment plan deterministically"
+      "test/golden/plans/chart-deploy-vscode.txt"
+      $ do
+        result <-
+          buildChartDeploymentPlan
+            "/tmp/prodbox"
+            (testValidatedSettings "/tmp/prodbox/.data")
+            "vscode"
+            testChartSecrets
+            Map.empty
+        case result of
+          Left err -> fail err
+          Right plan -> pure (BL8.pack (renderChartDeploymentPlan plan))
+
+    goldenTest
+      "renders the chart deletion plan deterministically"
+      "test/golden/plans/chart-delete-vscode.txt"
+      $ do
+        case buildChartDeletePlan "/tmp/prodbox" (Just (testValidatedSettings "/tmp/prodbox/.data")) "vscode" of
+          Left err -> fail err
+          Right plan -> pure (BL8.pack (renderChartDeletePlan plan))
+
+    goldenTest
+      "renders the pulumi plan deterministically"
+      "test/golden/plans/pulumi-eks-resources.txt"
+      (pure (BL8.pack (renderPulumiPlan "eks-resources" False)))
+
+    goldenTest
+      "renders the gateway start plan deterministically"
+      "test/golden/plans/gateway-start.txt"
+      $ do
+        let configText = renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"
+        case parseDaemonConfig configText of
+          Left err -> fail err
+          Right config ->
+            pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.json" "warn" (Just 4200) True config))
+
+    goldenTest
+      "renders the rke2 reconcile plan deterministically"
+      "test/golden/plans/rke2-reconcile.txt"
+      ( pure
+          ( BL8.pack
+              ( renderNativeInstallPlan
+                  "/tmp/prodbox"
+                  (testValidatedSettings "/tmp/prodbox/.data")
+                  "machine-id-123"
+                  "prodbox-123"
+                  "prodbox-123"
+              )
+          )
+      )
+
   describe "frontend scaffold doctrine" $ do
     it "keeps the Phase 1.1 Haskell frontend scaffold in the repository" $ do
       repoRoot <- getCurrentDirectory
@@ -341,15 +462,15 @@ main = mainWithSuite "prodbox-unit" $ do
     it "keeps the Haskell quality gate on repo-owned formatter and lint inputs" $ do
       repoRoot <- getCurrentDirectory
       checkCode <- readFile (repoRoot </> "src" </> "Prodbox" </> "CheckCode.hs")
-      fourmoluConfig <- readFile (repoRoot </> "fourmolu.toml")
+      fourmoluConfig <- readFile (repoRoot </> "fourmolu.yaml")
       hlintConfig <- readFile (repoRoot </> ".hlint.yaml")
       editorConfig <- readFile (repoRoot </> ".editorconfig")
 
       checkCode `shouldContain` "fourmolu"
       checkCode `shouldContain` "hlint"
       checkCode `shouldContain` "--ghc-options=-Werror"
-      fourmoluConfig `shouldContain` "indentation = 2"
-      fourmoluConfig `shouldContain` "column-limit = 100"
+      fourmoluConfig `shouldContain` "indentation: 2"
+      fourmoluConfig `shouldContain` "column-limit: 100"
       hlintConfig `shouldContain` "--cpp-simple"
       editorConfig `shouldContain` "indent_style = space"
       editorConfig `shouldContain` "indent_size = 2"
@@ -1914,14 +2035,32 @@ main = mainWithSuite "prodbox-unit" $ do
             err `shouldContain` "./.build/prodbox config setup"
           Right _ -> expectationFailure "expected missing-config failure"
 
+renderAllLeafHelpPages :: String
+renderAllLeafHelpPages =
+  unlines
+    ( concatMap renderLeafSection leafCommandPaths
+        ++ ["-- end --"]
+    )
+ where
+  renderLeafSection commandPath =
+    case findCommandSpec commandPath of
+      Just spec ->
+        [ "## prodbox " ++ unwords commandPath
+        , renderCommandHelp spec
+        ]
+      Nothing -> ["## missing " ++ unwords commandPath]
+
 parseArgs :: [String] -> Either String Options
 parseArgs argv =
-  case execParserPure defaultPrefs parserInfo argv of
-    Success options -> Right options
-    Failure failure ->
-      let (message, _) = renderFailure failure "prodbox"
-       in Left message
-    CompletionInvoked _ -> Left "shell completion requested"
+  case validateCommandArgv argv of
+    Left err -> Left err
+    Right () ->
+      case execParserPure defaultPrefs parserInfo argv of
+        Success options -> Right options
+        Failure failure ->
+          let (message, _) = renderFailure failure "prodbox"
+           in Left message
+        CompletionInvoked _ -> Left "shell completion requested"
 
 -- | Build a 'SignedEvent' whose hash and HMAC signature match the
 -- canonical unsigned-payload encoding the daemon uses.  Used by the

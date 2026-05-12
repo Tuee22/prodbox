@@ -1,0 +1,6 @@
+GATEWAY_START_PLAN
+CONFIG_PATH=/tmp/prodbox/gateway.json
+NODE_ID=node-a
+LOG_LEVEL=warn
+PORT_OVERRIDE=4200
+FOREGROUND=true

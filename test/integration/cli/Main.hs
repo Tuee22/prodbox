@@ -393,7 +393,7 @@ main = mainWithSuite "prodbox-integration-cli" $ do
         journalctlRecord `shouldContain` "-u|rke2-server.service|-n|25|--no-pager"
 
     it
-      "runs native rke2 install and delete through the built frontend with fake host, kubectl, helm, docker, and native AWS destroy helpers"
+      "runs native rke2 reconcile and delete through the built frontend with fake host, kubectl, helm, docker, and native AWS destroy helpers"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
         binary <- resolveBinaryPath
@@ -403,7 +403,7 @@ main = mainWithSuite "prodbox-integration-cli" $ do
 
         (installExitCode, installStdout, installStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "install"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["rke2", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let installOutput =
@@ -586,7 +586,7 @@ main = mainWithSuite "prodbox-integration-cli" $ do
 
         (installExitCode, installStdout, installStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "install"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["rke2", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         let installOutput =
@@ -694,7 +694,7 @@ main = mainWithSuite "prodbox-integration-cli" $ do
 
         (upExitCode, upStdout, upStderr) <-
           readCreateProcessWithExitCode
-            (proc binary ["rke2", "install"]) {cwd = Just tmpDir, env = Just envVars}
+            (proc binary ["rke2", "reconcile"]) {cwd = Just tmpDir, env = Just envVars}
             ""
 
         upExitCode `shouldBe` ExitSuccess

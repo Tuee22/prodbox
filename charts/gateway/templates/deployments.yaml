@@ -41,6 +41,7 @@ spec:
           image: "{{ $.Values.image.repository }}:{{ $.Values.image.tag }}"
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           args:
+            - --config
             - /etc/gateway/config.json
           ports:
             - name: rest

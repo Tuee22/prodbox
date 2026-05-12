@@ -1,9 +1,12 @@
 module TestSupport
   ( Expectation
+  , SuiteBuilder
   , describe
   , expectationFailure
+  , goldenTest
   , it
   , mainWithSuite
+  , propertyTest
   , shouldBe
   , shouldContain
   , shouldNotBe
@@ -13,9 +16,11 @@ module TestSupport
   )
 where
 
+import Data.ByteString.Lazy (ByteString)
 import Data.List (isInfixOf)
 import GHC.Stack (HasCallStack)
 import Test.Tasty (TestName, TestTree, defaultMain, testGroup)
+import Test.Tasty.Golden (goldenVsString)
 import Test.Tasty.HUnit
   ( Assertion
   , assertBool
@@ -23,6 +28,7 @@ import Test.Tasty.HUnit
   , assertFailure
   , testCase
   )
+import Test.Tasty.QuickCheck (Testable, testProperty)
 
 type Expectation = Assertion
 
@@ -52,6 +58,14 @@ describe groupName builder =
 it :: TestName -> Expectation -> SuiteBuilder ()
 it testName expectation =
   appendTree (testCase testName expectation)
+
+goldenTest :: TestName -> FilePath -> IO ByteString -> SuiteBuilder ()
+goldenTest testName goldenPath renderAction =
+  appendTree (goldenVsString testName goldenPath renderAction)
+
+propertyTest :: (Testable prop) => TestName -> prop -> SuiteBuilder ()
+propertyTest testName propertyValue =
+  appendTree (testProperty testName propertyValue)
 
 expectationFailure :: String -> Expectation
 expectationFailure = assertFailure

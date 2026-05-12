@@ -1,6 +1,7 @@
 module Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
+  , validateCommandArgv
   )
 where
 
@@ -12,6 +13,7 @@ import Options.Applicative
   , auto
   , command
   , eitherReader
+  , flag
   , flag'
   , fullDesc
   , help
@@ -41,11 +43,15 @@ import Prodbox.CLI.Command
   , CommandRequest (..)
   , ConfigCommand (..)
   , CoverageFlags (..)
+  , DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
   , DnsCommand (..)
+  , DocsCommand (..)
   , GatewayCommand (..)
   , HostCommand (..)
   , IntegrationSuite (..)
   , K8sCommand (..)
+  , LintCommand (..)
   , NativeCommand (..)
   , PlanOptions (..)
   , PolicyTier (..)
@@ -54,6 +60,7 @@ import Prodbox.CLI.Command
   , TestCommand (..)
   , TestScope (..)
   , WorkloadCommand (..)
+  , WorkloadOptions (..)
   )
 import Prodbox.K8s (defaultInfrastructureNamespaces)
 
@@ -71,6 +78,12 @@ parserInfo =
         <> progDesc
           "prodbox - Haskell CLI frontend for the current repository command surface"
     )
+
+validateCommandArgv :: [String] -> Either String ()
+validateCommandArgv argv =
+  case forbiddenArgvMessage argv of
+    Just message -> Left message
+    Nothing -> Right ()
 
 optionsParser :: Parser Options
 optionsParser =
@@ -101,10 +114,12 @@ commandParser =
         <> command "commands" (info commandsParser (progDesc "Render the command registry"))
         <> command "config" (info configParser (progDesc "Configuration management"))
         <> command "dns" (info dnsParser (progDesc "Route 53 inspection"))
+        <> command "docs" (info docsParser (progDesc "Generated-documentation maintenance"))
         <> command "gateway" (info gatewayParser (progDesc "Gateway daemon operations"))
         <> command "help" (info helpParser (progDesc "Render help for a command path"))
         <> command "host" (info hostParser (progDesc "Host prerequisite checks"))
         <> command "k8s" (info k8sParser (progDesc "Kubernetes health and log utilities"))
+        <> command "lint" (info lintParser (progDesc "Doctrine lint surfaces"))
         <> command "pulumi" (info pulumiParser (progDesc "AWS validation infrastructure"))
         <> command "rke2" (info rke2Parser (progDesc "Local cluster lifecycle"))
         <> command "test" (info testParser (progDesc "Named test suites"))
@@ -169,6 +184,15 @@ planOptionsParser =
           )
       )
 
+foregroundParser :: Parser Bool
+foregroundParser =
+  flag
+    True
+    True
+    ( long "foreground"
+        <> help "Run in the foreground"
+    )
+
 withCoverage :: TestScope -> Parser CommandRequest
 withCoverage scope =
   fmap (RunNative . NativeTest . TestCommand scope) coverageFlagsParser
@@ -176,12 +200,16 @@ withCoverage scope =
 configParser :: Parser CommandRequest
 configParser =
   hsubparser
-    ( command "setup" (info (native (NativeConfig ConfigSetup)) (progDesc "Interactively author config"))
+    ( command "setup" (info configSetupParser (progDesc "Interactively author config"))
         <> command "show" (info configShowParser (progDesc "Display current config"))
         <> command
           "validate"
           (info (native (NativeConfig ConfigValidate)) (progDesc "Validate current config"))
     )
+
+configSetupParser :: Parser CommandRequest
+configSetupParser =
+  fmap (RunNative . NativeConfig . ConfigSetup) planOptionsParser
 
 configShowParser :: Parser CommandRequest
 configShowParser =
@@ -198,7 +226,7 @@ awsParser =
   hsubparser
     ( command "policy" (info awsPolicyParser (progDesc "Render IAM policy JSON"))
         <> command "setup" (info awsSetupParser (progDesc "Create or refresh operational IAM user"))
-        <> command "teardown" (info (native (NativeAws AwsTeardown)) (progDesc "Delete operational IAM user"))
+        <> command "teardown" (info awsTeardownParser (progDesc "Delete operational IAM user"))
         <> command
           "check-quotas"
           (info (native (NativeAws AwsCheckQuotas)) (progDesc "Inspect supported AWS quotas"))
@@ -214,8 +242,13 @@ awsPolicyParser =
 awsSetupParser :: Parser CommandRequest
 awsSetupParser =
   fmap
-    (RunNative . NativeAws . AwsSetup)
-    (tierOptionParser PolicyFull "Operational IAM policy tier to provision")
+    (\(policyTier, planOptions') -> RunNative (NativeAws (AwsSetup policyTier planOptions')))
+    ( (,) <$> tierOptionParser PolicyFull "Operational IAM policy tier to provision" <*> planOptionsParser
+    )
+
+awsTeardownParser :: Parser CommandRequest
+awsTeardownParser =
+  fmap (RunNative . NativeAws . AwsTeardown) planOptionsParser
 
 awsRequestQuotasParser :: Parser CommandRequest
 awsRequestQuotasParser =
@@ -284,24 +317,33 @@ pulumiParser =
   hsubparser
     ( command
         "eks-resources"
-        (info (native (NativePulumi PulumiEksResources)) (progDesc "Provision or inspect EKS test stack"))
+        (info pulumiEksResourcesParser (progDesc "Provision or inspect EKS test stack"))
         <> command "eks-destroy" (info pulumiYesParserEksDestroy (progDesc "Destroy EKS test stack"))
         <> command
           "test-resources"
-          ( info
-              (native (NativePulumi PulumiTestResources))
-              (progDesc "Provision or inspect HA RKE2 test stack")
-          )
+          (info pulumiTestResourcesParser (progDesc "Provision or inspect HA RKE2 test stack"))
         <> command "test-destroy" (info pulumiYesParserTestDestroy (progDesc "Destroy HA RKE2 test stack"))
     )
 
+pulumiEksResourcesParser :: Parser CommandRequest
+pulumiEksResourcesParser =
+  fmap (RunNative . NativePulumi . PulumiEksResources) planOptionsParser
+
 pulumiYesParserEksDestroy :: Parser CommandRequest
 pulumiYesParserEksDestroy =
-  fmap (RunNative . NativePulumi . PulumiEksDestroy) (yesSwitchParser "Skip confirmation prompts")
+  fmap
+    (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiEksDestroy confirmed planOptions')))
+    ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+
+pulumiTestResourcesParser :: Parser CommandRequest
+pulumiTestResourcesParser =
+  fmap (RunNative . NativePulumi . PulumiTestResources) planOptionsParser
 
 pulumiYesParserTestDestroy :: Parser CommandRequest
 pulumiYesParserTestDestroy =
-  fmap (RunNative . NativePulumi . PulumiTestDestroy) (yesSwitchParser "Skip confirmation prompts")
+  fmap
+    (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiTestDestroy confirmed planOptions')))
+    ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
 
 dnsParser :: Parser CommandRequest
 dnsParser =
@@ -362,24 +404,14 @@ gatewayParser =
 gatewayStartParser :: Parser CommandRequest
 gatewayStartParser =
   fmap
-    (RunNative . NativeGateway . GatewayStart)
-    ( strOption
-        ( long "config"
-            <> metavar "PATH"
-            <> help "Gateway config path"
-        )
-    )
+    (RunNative . NativeGateway . GatewayDaemonCommand)
+    daemonLaunchOptionsParser
 
 gatewayStatusParser :: Parser CommandRequest
 gatewayStatusParser =
   fmap
-    (RunNative . NativeGateway . GatewayStatus)
-    ( strOption
-        ( long "config"
-            <> metavar "PATH"
-            <> help "Gateway config path"
-        )
-    )
+    (RunNative . NativeGateway . GatewayStatusCommand)
+    daemonStatusOptionsParser
 
 gatewayConfigGenParser :: Parser CommandRequest
 gatewayConfigGenParser =
@@ -399,9 +431,12 @@ workloadParser =
   hsubparser
     ( command
         "start"
-        ( info (native (NativeWorkload WorkloadStart)) (progDesc "Start the internal public workload runtime")
-        )
+        (info workloadStartParser (progDesc "Start the internal public workload runtime"))
     )
+
+workloadStartParser :: Parser CommandRequest
+workloadStartParser =
+  fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser
 
 chartsParser :: Parser CommandRequest
 chartsParser =
@@ -442,6 +477,107 @@ testParser =
           )
         <> command "unit" (info (withCoverage TestUnit) (progDesc "Run unit tests"))
         <> command "integration" (info integrationParser (progDesc "Run named integration suites"))
+    )
+
+docsParser :: Parser CommandRequest
+docsParser =
+  hsubparser
+    ( command "check" (info (native (NativeDocs DocsCheck)) (progDesc "Check generated docs for drift"))
+        <> command
+          "generate"
+          (info (native (NativeDocs DocsGenerate)) (progDesc "Regenerate generated docs"))
+    )
+
+lintParser :: Parser CommandRequest
+lintParser =
+  hsubparser
+    ( command "all" (info (native (NativeLint LintAll)) (progDesc "Run every lint surface"))
+        <> command "files" (info lintFilesParser (progDesc "Run repository-policy lint checks"))
+        <> command "docs" (info lintDocsParser (progDesc "Check generated documentation sections"))
+        <> command "haskell" (info lintHaskellParser (progDesc "Run Haskell formatter and lint checks"))
+        <> command
+          "chart"
+          (info (native (NativeLint LintChart)) (progDesc "Run Helm chart structural lint checks"))
+    )
+
+lintFilesParser :: Parser CommandRequest
+lintFilesParser =
+  fmap (RunNative . NativeLint . LintFiles) writeSwitchParser
+
+lintDocsParser :: Parser CommandRequest
+lintDocsParser =
+  fmap (RunNative . NativeLint . LintDocs) writeSwitchParser
+
+lintHaskellParser :: Parser CommandRequest
+lintHaskellParser =
+  fmap (RunNative . NativeLint . LintHaskell) writeSwitchParser
+
+daemonLaunchOptionsParser :: Parser DaemonLaunchOptions
+daemonLaunchOptionsParser =
+  DaemonLaunchOptions
+    <$> optional
+      ( strOption
+          ( long "config"
+              <> metavar "PATH"
+              <> help "Gateway config path"
+          )
+      )
+    <*> optional
+      ( strOption
+          ( long "log-level"
+              <> metavar "LEVEL"
+              <> help "Override daemon log level"
+          )
+      )
+    <*> optional
+      ( option
+          auto
+          ( long "port"
+              <> metavar "INTEGER"
+              <> help "Override daemon port"
+          )
+      )
+    <*> foregroundParser
+    <*> planOptionsParser
+
+daemonStatusOptionsParser :: Parser DaemonStatusOptions
+daemonStatusOptionsParser =
+  fmap
+    DaemonStatusOptions
+    ( optional
+        ( strOption
+            ( long "config"
+                <> metavar "PATH"
+                <> help "Gateway config path"
+            )
+        )
+    )
+
+workloadOptionsParser :: Parser WorkloadOptions
+workloadOptionsParser =
+  WorkloadOptions
+    <$> optional
+      ( strOption
+          ( long "log-level"
+              <> metavar "LEVEL"
+              <> help "Override daemon log level"
+          )
+      )
+    <*> optional
+      ( option
+          auto
+          ( long "port"
+              <> metavar "INTEGER"
+              <> help "Override daemon port"
+          )
+      )
+    <*> foregroundParser
+
+writeSwitchParser :: Parser Bool
+writeSwitchParser =
+  switch
+    ( long "write"
+        <> help "Rewrite the target surface instead of only checking for drift"
     )
 
 integrationParser :: Parser CommandRequest
@@ -585,3 +721,45 @@ manyStringsOption longName shortName helpText =
             <> help helpText
         )
     )
+
+forbiddenArgvMessage :: [String] -> Maybe String
+forbiddenArgvMessage argv
+  | isRke2ForbiddenFlag argv =
+      Just
+        "Forbidden lifecycle flags: use `prodbox rke2 reconcile` as the idempotent reconciler; `--force` and `--reinstall` are not supported."
+  | isRke2ForbiddenSister argv =
+      Just
+        "Forbidden lifecycle command: use `prodbox rke2 reconcile`; `upgrade`, `repair`, and `force-install` are not supported."
+  | isChartsForbiddenFlag argv =
+      Just
+        "Forbidden chart reconciler flags: use `prodbox charts deploy` or `prodbox charts delete`; `--force` and `--reinstall` are not supported."
+  | isChartsForbiddenSister argv =
+      Just
+        "Forbidden chart command: use `prodbox charts deploy` or `prodbox charts delete`; `install`, `upgrade`, `repair`, and `force-install` are not supported."
+  | otherwise = Nothing
+
+isRke2ForbiddenFlag :: [String] -> Bool
+isRke2ForbiddenFlag argv =
+  case argv of
+    "rke2" : commandName : remaining ->
+      commandName `elem` ["reconcile", "install"] && any (`elem` remaining) ["--force", "--reinstall"]
+    _ -> False
+
+isRke2ForbiddenSister :: [String] -> Bool
+isRke2ForbiddenSister argv =
+  case argv of
+    ["rke2", commandName] -> commandName `elem` ["upgrade", "repair", "force-install"]
+    _ -> False
+
+isChartsForbiddenFlag :: [String] -> Bool
+isChartsForbiddenFlag argv =
+  case argv of
+    "charts" : commandName : remaining ->
+      commandName `elem` ["deploy", "delete"] && any (`elem` remaining) ["--force", "--reinstall"]
+    _ -> False
+
+isChartsForbiddenSister :: [String] -> Bool
+isChartsForbiddenSister argv =
+  case argv of
+    "charts" : commandName : _ -> commandName `elem` ["install", "upgrade", "repair", "force-install"]
+    _ -> False

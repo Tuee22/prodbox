@@ -1,0 +1,12 @@
+CHART_DEPLOY_PLAN
+ROOT_CHART=vscode
+NAMESPACE=vscode
+RELEASE=keycloak-postgres
+CHART=keycloak-postgres
+CHART_DIR=/tmp/prodbox/charts/keycloak-postgres
+RELEASE=keycloak
+CHART=keycloak
+CHART_DIR=/tmp/prodbox/charts/keycloak
+RELEASE=vscode
+CHART=vscode
+CHART_DIR=/tmp/prodbox/charts/vscode

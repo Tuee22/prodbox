@@ -10,17 +10,15 @@
 
 ## Phase Status
 
-🔄 **Active** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`. Sprint 0.2
-reopens the phase to adopt [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the authoritative
-CLI doctrine, align governed engineering docs and `documents/documentation_standards.md` with the
-doctrine, and declare the downstream phase reopens that schedule code-level adoption work.
-Sprint 0.3 closes the residual doctrine items identified by the May 2026 doctrine-vs-plan audit
-that Sprint 0.2's enumeration did not cover, scheduling them through new and extended sprint
-blocks under Phases `1` and `2`. Sprint 0.4 closes the round-3 residual doctrine items
-surfaced by the November 2026 doctrine-vs-plan audit, scheduling them through one new
-Phase `1` sprint (1.27) and deliverable extensions to existing planned Phase `1`, Phase `2`,
-Phase `3`, and Phase `4` sprints so every doctrine prescription is owned by an explicit
-sprint block per [development_plan_standards.md](development_plan_standards.md) rule L.
+✅ **Done** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
+Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, and `0.4` are also
+now `Done`. Those sprints adopted [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the
+authoritative CLI doctrine, aligned the governed docs and plan suite with that doctrine,
+and scheduled every currently known code-level adoption gap onto explicit downstream sprints
+under Phases `1`–`4` per
+[development_plan_standards.md](development_plan_standards.md) rule L. Phase `0` is
+therefore re-closed while the downstream implementation phases remain reopened on the
+scheduled doctrine work.
 
 ## Phase Summary
 
@@ -67,9 +65,9 @@ removal of Python from the supported architecture.
 
 None.
 
-## Sprint 0.2: Adopt HASKELL_CLI_TOOL.md as Governed CLI Doctrine 🔄
+## Sprint 0.2: Adopt HASKELL_CLI_TOOL.md as Governed CLI Doctrine ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `HASKELL_CLI_TOOL.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`,
 `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
 `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
@@ -143,13 +141,11 @@ adoption through declared phase reopens.
 
 ### Remaining Work
 
-- Apply the Sprint 0.2 edits across the files listed in `Implementation`.
-- Render every Mermaid block in `DEVELOPMENT_PLAN/` after the edits to confirm no diagram
-  regressed (standards rule K).
+None.
 
-## Sprint 0.3: Audit-Driven Doctrine-Gap Scheduling 📋
+## Sprint 0.3: Audit-Driven Doctrine-Gap Scheduling ✅
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
 `DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
 `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`, `DEVELOPMENT_PLAN/README.md`,
@@ -226,11 +222,11 @@ not yet honor is owned by an explicit sprint block, per
 
 ### Remaining Work
 
-- Apply the Sprint 0.3 edits across the files listed in `Implementation`.
+None.
 
-## Sprint 0.4: Round-3 Doctrine Adoption Closure 📋
+## Sprint 0.4: Round-3 Doctrine Adoption Closure ✅
 
-**Status**: Planned
+**Status**: Done
 **Implementation**: `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
 `DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
 `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
@@ -419,11 +415,7 @@ thirteen deliverable extensions to existing planned sprints.
 
 ### Remaining Work
 
-- Apply the Sprint 0.4 edits across the files listed in `Implementation`.
-- Sweep `documents/engineering/` per standards rule L for any doc whose "defers to
-  doctrine" stance now spans a newly bound doctrine section; if a governed doc
-  currently restates a value the round-3 bindings narrow, fold the touch into
-  Sprint 0.4's `Docs to update` so the sweep is explicit.
+None.
 
 ## Documentation Requirements
 

@@ -36,6 +36,7 @@ import Data.Char (intToDigit, toLower)
 import Data.List (intercalate, isPrefixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
@@ -141,9 +142,11 @@ initialState ordersVersion =
     , stateLatestObservedOrdersVersion = ordersVersion
     }
 
-runGatewayDaemon :: DaemonConfig -> IO ExitCode
-runGatewayDaemon config = withSocketsDo $ do
-  hPutStrLn stderr ("Gateway daemon starting: node_id=" ++ daemonNodeId config)
+runGatewayDaemon :: Maybe Int -> String -> DaemonConfig -> IO ExitCode
+runGatewayDaemon restPortOverride logLevel config = withSocketsDo $ do
+  hPutStrLn
+    stderr
+    ("Gateway daemon starting: node_id=" ++ daemonNodeId config ++ " log_level=" ++ logLevel)
   ordersText <- readFile (daemonOrdersFile config)
   case parseOrders ordersText of
     Left err -> do
@@ -189,7 +192,7 @@ runGatewayDaemon config = withSocketsDo $ do
                   heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
                   gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
                   dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
-                  restThread <- async (restServerLoop localPeer config stateVar)
+                  restThread <- async (restServerLoop restPortOverride localPeer config stateVar)
                   peerListenerThread <- async (peerListenerLoop localPeer config orders stateVar eventKeys)
                   peerDialerThread <- async (peerDialerLoop config orders stateVar)
 
@@ -390,10 +393,10 @@ dnsWriteLoop config _orders stateVar = forever $ do
                   hPutStrLn stderr ("DNS write: " ++ dnsWriteGateFqdn gate ++ " -> " ++ currentIp)
   threadDelay (round (daemonSyncInterval config * 1000000))
 
-restServerLoop :: PeerEndpoint -> DaemonConfig -> TVar DaemonState -> IO ()
-restServerLoop localPeer config stateVar = do
+restServerLoop :: Maybe Int -> PeerEndpoint -> DaemonConfig -> TVar DaemonState -> IO ()
+restServerLoop restPortOverride localPeer config stateVar = do
   let host = peerRestHost localPeer
-      port = peerRestPort localPeer
+      port = fromMaybe (peerRestPort localPeer) restPortOverride
   sock <- openListeningSocket "REST server" host port
   hPutStrLn stderr ("REST server listening on " ++ host ++ ":" ++ show port)
   forever $ do

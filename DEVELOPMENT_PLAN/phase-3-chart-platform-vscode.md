@@ -18,7 +18,12 @@ for paired chart resources, route Redis and Postgres call sites through capabili
 the reconciler discipline to `prodbox charts deploy|delete`, surface `--dry-run` plans on chart
 operations, and add the `prodbox lint chart` Helm-chart structural-invariants linter together
 with marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
-artifacts via the existing `generatedSectionRule` registry.
+artifacts via the existing `generatedSectionRule` registry. Current worktree evidence puts
+Sprints `3.10` and `3.12` in `Active` state and closes Sprint `3.11`: the chart reconciler
+surface now rejects the doctrine-forbidden flags and sister commands, chart dry-run plans are
+rendered and golden-covered, and the `lint chart` command is surfaced, while the explicit
+idempotence proof, the actual structural-lint implementation, and route-inventory generation
+remain incomplete. The remaining reopened Phase `3` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -196,7 +201,7 @@ Patroni HA surface.
 2. `prodbox test unit`
 3. `prodbox test integration charts-platform`
 4. `prodbox test integration charts-vscode`
-5. Helm proof: `prodbox rke2 install` reconciles the cluster-wide Percona operator before
+5. Helm proof: `prodbox rke2 reconcile` reconciles the cluster-wide Percona operator before
    namespace-local application charts deploy
 6. Manifest proof: supported chart renders disable embedded PostgreSQL and target
    Percona-operator-managed service endpoints and custom resources
@@ -531,9 +536,10 @@ Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
 2. Direct `redis-cli` / raw Postgres subprocess invocations outside the capability classes are
    absent.
 
-## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete 📋
+## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Lib/ChartPlatform.hs`
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/cli_command_surface.md`
 
@@ -567,9 +573,21 @@ Command](../HASKELL_CLI_TOOL.md).
    completes with no mutations applied.
 2. The lint stack from Sprint 1.10 rejects the forbidden flag names.
 
-## Sprint 3.11: --dry-run on Chart Operations 📋
+### Remaining Work
 
-**Status**: Planned
+- `prodbox charts deploy` and `prodbox charts delete` are already the only public chart-mutation
+  commands, and `requirePublicRootChartName` keeps internal dependency charts off the
+  operator-facing surface.
+- The doctrine-specific rejection coverage for forbidden flags and sister-command names is now
+  implemented in `test/unit/Parser.hs`, and governed docs are aligned with the public
+  reconciler surface.
+- The remaining gap is explicit idempotence proof for a repeated `prodbox charts deploy <chart>`
+  run in the named validation surface.
+
+## Sprint 3.11: --dry-run on Chart Operations ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Lib/ChartPlatform.hs`
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/cli_command_surface.md`
 
@@ -588,9 +606,14 @@ Apply the Plan / Apply discipline from Sprint 1.7 to chart operations.
 1. `cabal test prodbox-unit` validates the rendered chart plans.
 2. The dry-run output is deterministic and free of timestamps or environment leakage.
 
-## Sprint 3.12: prodbox lint chart and Route-Inventory Generation 📋
+### Remaining Work
 
-**Status**: Planned
+None.
+
+## Sprint 3.12: prodbox lint chart and Route-Inventory Generation 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `documents/engineering/cli_command_surface.md`, `documents/documentation_standards.md`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/documentation_standards.md`
@@ -651,6 +674,14 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 3. Regenerating the route inventory via `prodbox lint docs --write` (or
    `prodbox docs generate`) produces byte-identical output for the same `PublicEdge.hs`
    inputs (idempotent renderer property test from Sprint 1.21 covers this).
+
+### Remaining Work
+
+- The `prodbox lint chart` CLI surface is now present in the command registry and
+  `src/Prodbox/CheckCode.hs` runs a scaffold chart lint, but the sprint still lacks the
+  dedicated `Prodbox.Lint.Chart` module and the full structural invariants named above.
+- Marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into the chart
+  manifests is still absent; the route catalog remains a Haskell-only value today.
 
 ## Documentation Requirements
 

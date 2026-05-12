@@ -1,10 +1,13 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Workload
-  ( runWorkloadCommand
+  ( resolveHttpPort
+  , resolveWorkloadLogLevel
+  , runWorkloadCommand
   )
 where
 
+import Control.Applicative ((<|>))
 import Control.Concurrent (forkFinally, threadDelay)
 import Control.Concurrent.STM
   ( TVar
@@ -73,7 +76,10 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
-import Prodbox.CLI.Command (WorkloadCommand (..))
+import Prodbox.CLI.Command
+  ( WorkloadCommand (..)
+  , WorkloadOptions (..)
+  )
 import System.Environment (lookupEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -194,21 +200,30 @@ websocketDrainTimeoutMicroseconds = 25000000
 runWorkloadCommand :: WorkloadCommand -> IO ExitCode
 runWorkloadCommand command =
   case command of
-    WorkloadStart -> withSocketsDo runWorkloadServer
+    WorkloadStart options -> withSocketsDo (runWorkloadServer options)
 
-runWorkloadServer :: IO ExitCode
-runWorkloadServer = do
+runWorkloadServer :: WorkloadOptions -> IO ExitCode
+runWorkloadServer options = do
   modeResult <- resolveWorkloadMode
   case modeResult of
     Left err -> failWith err
     Right mode -> do
-      port <- resolveHttpPort
+      port <- resolveHttpPort options
       podName <- resolvePodName
       websocketRuntimeResult <- resolveWebsocketRuntime mode podName
       case websocketRuntimeResult of
         Left err -> failWith err
         Right maybeRuntime -> do
-          hPutStrLn stderr ("Public workload starting: mode=" ++ renderMode mode ++ " port=" ++ show port)
+          logLevel <- resolveWorkloadLogLevel options
+          hPutStrLn
+            stderr
+            ( "Public workload starting: mode="
+                ++ renderMode mode
+                ++ " port="
+                ++ show port
+                ++ " log_level="
+                ++ logLevel
+            )
           serverSocketResult <- openListeningSocket port
           case serverSocketResult of
             Left err -> failWith err
@@ -636,13 +651,19 @@ resolveWorkloadMode = do
           )
       Nothing -> Left "PRODBOX_WORKLOAD_MODE must be set to `api` or `websocket`"
 
-resolveHttpPort :: IO Int
-resolveHttpPort = do
-  maybePort <- lookupEnv "PRODBOX_HTTP_PORT"
+resolveHttpPort :: WorkloadOptions -> IO Int
+resolveHttpPort options = do
+  maybeModernPort <- lookupEnv "PRODBOX_PORT"
+  maybeLegacyPort <- lookupEnv "PRODBOX_HTTP_PORT"
   pure $
-    case maybePort >>= readMaybeInt of
+    case firstJust [workloadPort options, maybeModernPort >>= readMaybeInt, maybeLegacyPort >>= readMaybeInt] of
       Just portNumber | portNumber > 0 -> portNumber
       _ -> 8080
+
+resolveWorkloadLogLevel :: WorkloadOptions -> IO String
+resolveWorkloadLogLevel options = do
+  maybeEnvLogLevel <- lookupEnv "PRODBOX_LOG_LEVEL"
+  pure (fromMaybe "info" (workloadLogLevel options <|> maybeEnvLogLevel))
 
 resolvePodName :: IO String
 resolvePodName = do
@@ -1806,3 +1827,9 @@ failWith :: String -> IO ExitCode
 failWith message = do
   hPutStrLn stderr message
   pure (ExitFailure 1)
+firstJust :: [Maybe a] -> Maybe a
+firstJust [] = Nothing
+firstJust (value : remaining) =
+  case value of
+    Just _ -> value
+    Nothing -> firstJust remaining

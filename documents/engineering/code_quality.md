@@ -63,7 +63,7 @@ Current enforced quality surfaces:
 
 - repository-owned workflow and hook policy surfaces forbidden by
   [Section 2A](#2a-development-tooling-policy)
-- Fourmolu formatting through `fourmolu.toml`
+- Fourmolu formatting through `fourmolu.yaml`
 - HLint through `.hlint.yaml`
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox`

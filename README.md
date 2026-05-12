@@ -113,7 +113,7 @@ Router port forwarding:
 
 The current worktree closes on the supported edge architecture. Today:
 
-- local `rke2 install` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+- local `rke2 reconcile` reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
   Percona PostgreSQL operator
 - the public `vscode` path uses Gateway API `HTTPRoute` plus Envoy Gateway `SecurityPolicy`
 - the public `api` route uses Gateway API `HTTPRoute` plus Envoy-local JWT validation and
@@ -163,7 +163,7 @@ operator path is the explicit `prodbox` command surface documented here and in
 
 - Most commands load and validate the repository-root `prodbox-config.dhall` before they do any
   work.
-- `prodbox rke2 install` is the idempotent local lifecycle entrypoint. Use it to create or
+- `prodbox rke2 reconcile` is the idempotent local lifecycle entrypoint. Use it to create or
   reconcile the supported local cluster.
 - `prodbox charts ...` manages the supported root chart stacks: `gateway`, `keycloak`, `vscode`,
   `api`, and `websocket`.
@@ -173,7 +173,7 @@ operator path is the explicit `prodbox` command surface documented here and in
 - `prodbox pulumi ...` manages only the AWS validation stacks. It does not manage the local
   cluster or the application chart stacks.
 - The AWS validation stacks use the repo-backed MinIO backend in the local RKE2 cluster, so
-  `prodbox rke2 install` must succeed before `prodbox pulumi eks-resources` or
+  `prodbox rke2 reconcile` must succeed before `prodbox pulumi eks-resources` or
   `prodbox pulumi test-resources` can succeed.
 
 ## Quick Start
@@ -194,7 +194,7 @@ chmod +x .build/prodbox
 ./.build/prodbox host check-ports
 ./.build/prodbox host firewall
 
-./.build/prodbox rke2 install
+./.build/prodbox rke2 reconcile
 ./.build/prodbox rke2 status
 
 ./.build/prodbox charts deploy vscode
@@ -211,7 +211,7 @@ What this does:
 
 - `config setup` writes the supported Dhall config file.
 - `host ...` verifies the host toolchain, port availability, and firewall assumptions.
-- `rke2 install` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
+- `rke2 reconcile` reconciles the local substrate, including Harbor, MinIO, MetalLB, Envoy Gateway,
   cert-manager, and the Percona PostgreSQL operator.
 - `charts deploy vscode` deploys the `vscode` stack plus its supported dependencies:
   `keycloak` and the internal `keycloak-postgres` Patroni release, with the browser path protected
@@ -295,14 +295,14 @@ Validate the repository config:
 |------|----------|----------|
 | Config | `config setup`, `config show`, `config validate` | You need to create, inspect, or validate `prodbox-config.dhall` |
 | Host checks | `host ensure-tools`, `host check-ports`, `host firewall`, `host info`, `host public-edge` | You need to verify the host runtime or diagnose the public edge and certificate state |
-| Local cluster lifecycle | `rke2 install`, `rke2 status`, `rke2 start`, `rke2 stop`, `rke2 restart`, `rke2 logs`, `rke2 delete --yes` | You need to create, reconcile, inspect, or remove the local RKE2 environment |
+| Local cluster lifecycle | `rke2 reconcile`, `rke2 install` (deprecated alias), `rke2 status`, `rke2 start`, `rke2 stop`, `rke2 restart`, `rke2 logs`, `rke2 delete --yes` | You need to create, reconcile, inspect, or remove the local RKE2 environment |
 | Chart lifecycle | `charts list`, `charts status`, `charts deploy`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, `vscode`, `api`, or `websocket` chart stacks |
 | Kubernetes helpers | `k8s health`, `k8s wait`, `k8s logs` | You need cluster or workload diagnostics without dropping into raw `kubectl` |
-| Gateway operations | `gateway config-gen`, `gateway start`, `gateway status` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
+| Gateway operations | `gateway config-gen`, `gateway start --config <path>`, `gateway status --config <path>` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws check-quotas`, `aws request-quotas` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
 | AWS validation stacks | `pulumi eks-resources`, `pulumi eks-destroy --yes`, `pulumi test-resources`, `pulumi test-destroy --yes` | You need to create, inspect, or destroy the AWS EKS or HA-RKE2 validation stacks |
-| Validation | `check-code`, `test ...`, `tla-check` | You need quality gates, Haskell tests, native integration validation, or TLA+ checks |
+| Validation | `check-code`, `lint ...`, `docs ...`, `test lint`, `test ...`, `tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows
 
@@ -311,7 +311,7 @@ Validate the repository config:
 Bring up or reconcile the supported local substrate:
 
 ```bash
-./.build/prodbox rke2 install
+./.build/prodbox rke2 reconcile
 ./.build/prodbox rke2 status
 ./.build/prodbox k8s health
 ```
@@ -380,8 +380,8 @@ Generate a gateway config and inspect a daemon:
 
 ```bash
 ./.build/prodbox gateway config-gen gateway.json --node-id node-a
-./.build/prodbox gateway start gateway.json
-./.build/prodbox gateway status gateway.json
+./.build/prodbox gateway start --config gateway.json
+./.build/prodbox gateway status --config gateway.json
 ```
 
 `gateway status` queries the daemon's HTTP `/v1/state` endpoint on the configured REST port.
@@ -409,7 +409,7 @@ The supported public `aws ...` flow prompts for temporary elevated credentials w
 Use the local cluster-backed MinIO backend to create or inspect the AWS validation stacks:
 
 ```bash
-./.build/prodbox rke2 install
+./.build/prodbox rke2 reconcile
 
 ./.build/prodbox pulumi eks-resources
 ./.build/prodbox pulumi test-resources

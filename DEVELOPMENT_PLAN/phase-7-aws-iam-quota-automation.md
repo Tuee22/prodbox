@@ -217,7 +217,7 @@ or operational `aws.*` credentials behind.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/Prerequisite.hs` now
   split the aggregate and cluster-backed suite prerequisite contract into an initial fail-fast
   gate plus a deferred backend proof, so `pulumi_logged_in` no longer runs before the visible
-  `rke2 install` phase has created or repaired the supported local MinIO backend.
+  `rke2 reconcile` phase has created or repaired the supported local MinIO backend.
 - `src/Prodbox/EffectInterpreter.hs` now checks bounded `pulumi login ... --non-interactive`
   against the canonical repo-backed MinIO backend during deferred prerequisites, and the shared
   `src/Prodbox/Infra/MinioBackend.hs` helper recreates a deleted MinIO export host path plus

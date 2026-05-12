@@ -63,7 +63,7 @@ This doctrine applies to the self-managed local-cluster path only. The AWS valid
 
 The current repository closes on the implemented self-managed public-edge doctrine:
 
-1. `prodbox rke2 install` installs Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
+1. `prodbox rke2 reconcile` installs or reconciles Harbor, MinIO, MetalLB, Envoy Gateway, cert-manager, and the
    Percona PostgreSQL operator.
 2. The current MetalLB runtime supports config-selected L2 or BGP advertisement from repo-owned
    settings, rendered through `IPAddressPool` plus `L2Advertisement` on the L2 path and
@@ -489,7 +489,7 @@ The supported operational model is:
 
 Lifecycle and chart implications:
 
-1. `prodbox rke2 install` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
+1. `prodbox rke2 reconcile` owns MetalLB, Envoy Gateway, cert-manager, and the Percona PostgreSQL
    operator on the self-managed cluster path.
 2. Harbor-backed steady-state image sourcing mirrors or publishes the Envoy Gateway control-plane
    and Envoy data-plane images rather than Traefik images.

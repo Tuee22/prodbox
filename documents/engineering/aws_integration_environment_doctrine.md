@@ -188,7 +188,7 @@ the declared host path, reapplies the ownership and mode contract, restarts `dep
 and then reruns the login proof before stack operations continue.
 
 On aggregate or cluster-backed suite paths, the public test runner may satisfy the local backend
-contract by running the visible `prodbox rke2 install` phase before it executes the deferred
+contract by running the visible `prodbox rke2 reconcile` phase before it executes the deferred
 `pulumi_logged_in` prerequisite proof. The local-cluster-first rule still holds: remote AWS stack
 creation does not begin until that post-runbook backend proof succeeds.
 
@@ -219,7 +219,7 @@ canonical Pulumi stack flows.
 
 Minimum rule:
 
-1. `prodbox rke2 install` creates or reconciles the local backend cluster first
+1. `prodbox rke2 reconcile` creates or reconciles the local backend cluster first
 2. `prodbox pulumi eks-resources` is the only supported surface for creating or inspecting the AWS
    EKS test stack
 3. `prodbox pulumi eks-destroy --yes` is the only supported surface for destroying that stack

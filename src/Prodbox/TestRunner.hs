@@ -241,7 +241,7 @@ runbookActions repoRoot environment suitePlan =
   if nativeRequiresIntegrationRunbook suitePlan
     then
       [ emitLineAction phaseOnePointFiveMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
       ]
     else []
 
@@ -251,7 +251,7 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
   if nativeRequiresSupportedRuntimeBootstrap suitePlan
     then
       [ emitLineAction phaseOnePointSixMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
@@ -274,7 +274,7 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
   if nativeRequiresSupportedRuntimePostflight suitePlan
     then
       [ emitLineAction postTestRestoreMessage
-      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "install"]
+      , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "websocket", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]

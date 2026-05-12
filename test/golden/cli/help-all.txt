@@ -1,0 +1,663 @@
+## prodbox aws policy
+policy - Render IAM policy JSON
+
+Render the doctrine-owned IAM policy document.
+Options:
+- --tier <TIER> - Operational IAM policy tier to render
+
+Examples:
+- prodbox aws policy --tier full  # Render the full IAM policy document.
+
+## prodbox aws setup
+setup - Create or refresh operational IAM user
+
+Provision or refresh the operational IAM user.
+Options:
+- --tier <TIER> - Operational IAM policy tier to provision
+- --dry-run - Render the IAM setup plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws setup --tier full  # Create or refresh the operational IAM user.
+
+## prodbox aws teardown
+teardown - Delete operational IAM user
+
+Delete the operational IAM user.
+Options:
+- --dry-run - Render the IAM teardown plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox aws teardown  # Delete the operational IAM user.
+
+## prodbox aws check-quotas
+check-quotas - Inspect supported AWS quotas
+
+Inspect supported AWS quotas.
+Examples:
+- prodbox aws check-quotas  # Inspect AWS quotas.
+
+## prodbox aws request-quotas
+request-quotas - Request supported AWS quotas
+
+Request supported AWS quota increases.
+Options:
+- --tier <TIER> - Quota target tier to request
+
+Examples:
+- prodbox aws request-quotas --tier core  # Request core-tier quota increases.
+
+## prodbox charts list
+list - List supported charts
+
+List supported root charts.
+Examples:
+- prodbox charts list  # List supported root charts.
+
+## prodbox charts status
+status - Show detailed chart status
+
+Inspect the current state of a root chart.
+Examples:
+- prodbox charts status vscode  # Inspect the vscode chart status.
+
+## prodbox charts deploy
+deploy - Deploy a root chart stack
+
+Reconcile a root chart to the supported state.
+Options:
+- --dry-run - Render the deployment plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox charts deploy vscode  # Deploy the vscode stack.
+- prodbox charts deploy --dry-run vscode  # Render the chart deployment plan.
+
+## prodbox charts delete
+delete - Delete a root chart stack
+
+Delete a root chart stack.
+Options:
+- --yes, -y - Skip confirmation prompt
+- --dry-run - Render the deletion plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox charts delete vscode --yes  # Delete the vscode stack.
+- prodbox charts delete --dry-run vscode  # Render the chart deletion plan.
+
+## prodbox check-code
+check-code - Run policy, lint, and type checks
+
+Run the canonical quality gate.
+Examples:
+- prodbox check-code  # Run the canonical quality gate.
+
+## prodbox config setup
+setup - Interactively author config
+
+Write the supported prodbox Dhall config.
+Options:
+- --dry-run - Render the config-setup plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox config setup  # Create or refresh the config interactively.
+
+## prodbox config show
+show - Display current config
+
+Render the decoded config with secrets masked by default.
+Options:
+- --show-secrets - Show full secret values
+
+Examples:
+- prodbox config show  # Render the current config with secrets masked.
+
+## prodbox config validate
+validate - Validate current config
+
+Validate the repository-root config file.
+Examples:
+- prodbox config validate  # Validate the current config.
+
+## prodbox dns check
+check - Inspect Route 53 state
+
+Inspect Route 53 ownership state.
+Examples:
+- prodbox dns check  # Inspect Route 53 state.
+
+## prodbox docs check
+check - Check generated docs for drift
+
+Check marker-delimited documentation sections for drift.
+Examples:
+- prodbox docs check  # Fail when generated documentation has drifted.
+
+## prodbox docs generate
+generate - Regenerate generated docs
+
+Rewrite marker-delimited documentation sections from their renderers.
+Examples:
+- prodbox docs generate  # Regenerate marker-delimited documentation sections.
+
+## prodbox gateway start
+start - Start gateway daemon
+
+Start the distributed gateway daemon.
+Options:
+- --config <PATH> - Gateway config path
+- --log-level <LEVEL> - Override daemon log level
+- --port <INTEGER> - Override daemon port
+- --foreground - Run in the foreground
+- --dry-run - Render the daemon-start plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox gateway start --config gateway.dhall  # Start the gateway daemon.
+
+## prodbox gateway status
+status - Query gateway daemon status
+
+Query the gateway daemon status surface.
+Options:
+- --config <PATH> - Gateway config path
+
+Examples:
+- prodbox gateway status --config gateway.dhall  # Inspect the gateway daemon state.
+
+## prodbox gateway config-gen
+config-gen - Generate gateway config
+
+Generate a gateway config template.
+Options:
+- --node-id <NODE_ID> - Node ID for the generated config
+
+Examples:
+- prodbox gateway config-gen gateway.json --node-id node-a  # Generate a gateway config template.
+
+## prodbox host ensure-tools
+ensure-tools - Verify required host tools
+
+Check the supported host toolchain.
+Examples:
+- prodbox host ensure-tools  # Verify required host tools are installed.
+
+## prodbox host check-ports
+check-ports - Check required ports
+
+Check required host ports.
+Examples:
+- prodbox host check-ports  # Inspect required host ports.
+
+## prodbox host info
+info - Display host diagnostics
+
+Show host diagnostics.
+Examples:
+- prodbox host info  # Render host diagnostics.
+
+## prodbox host firewall
+firewall - Check firewall requirements
+
+Inspect required firewall rules.
+Examples:
+- prodbox host firewall  # Inspect firewall expectations.
+
+## prodbox host public-edge
+public-edge - Check public DNS/TLS edge state
+
+Inspect Route 53, certificate, and shared-host readiness.
+Examples:
+- prodbox host public-edge  # Inspect public-edge readiness.
+
+## prodbox k8s health
+health - Check cluster health
+
+Inspect Kubernetes health.
+Examples:
+- prodbox k8s health  # Inspect cluster health.
+
+## prodbox k8s wait
+wait - Wait for deployments to be ready
+
+Wait for named namespaces to become ready.
+Options:
+- --timeout, -t <INTEGER> - Timeout in seconds
+- --namespace, -n <VALUE> - Namespace to wait for
+
+Examples:
+- prodbox k8s wait --timeout 300  # Wait for infrastructure workloads.
+
+## prodbox k8s logs
+logs - Show recent infrastructure logs
+
+Show recent logs from infrastructure namespaces.
+Options:
+- --namespace, -n <VALUE> - Namespace to get logs from
+- --tail <INTEGER> - Number of log lines per container
+
+Examples:
+- prodbox k8s logs --tail 25  # Show recent infrastructure logs.
+
+## prodbox lint all
+all - Run every lint surface
+
+Run every doctrine-owned lint surface.
+Examples:
+- prodbox lint all  # Run every doctrine-owned lint surface.
+
+## prodbox lint files
+files - Run repository-policy lint checks
+
+Check forbidden paths and library-first policy invariants.
+Options:
+- --write - Rewrite the target surface instead of only checking for drift
+
+Examples:
+- prodbox lint files  # Run repository-policy lint checks.
+
+## prodbox lint docs
+docs - Check generated documentation sections
+
+Check or rewrite marker-delimited documentation sections.
+Options:
+- --write - Rewrite the generated documentation sections
+
+Examples:
+- prodbox lint docs  # Check generated documentation sections for drift.
+
+## prodbox lint haskell
+haskell - Run Haskell formatter and lint checks
+
+Run the formatter, hlint, and cabal-format consistency checks.
+Options:
+- --write - Rewrite Haskell formatting surfaces in place
+
+Examples:
+- prodbox lint haskell  # Run Haskell formatter and lint checks.
+
+## prodbox lint chart
+chart - Run Helm chart structural lint checks
+
+Run the Helm chart structural invariants linter.
+Examples:
+- prodbox lint chart  # Run the Helm chart structural invariants linter.
+
+## prodbox pulumi eks-resources
+eks-resources - Provision or inspect EKS test stack
+
+Reconcile the EKS validation stack.
+Options:
+- --dry-run - Render the Pulumi plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi eks-resources  # Reconcile the EKS validation stack.
+
+## prodbox pulumi eks-destroy
+eks-destroy - Destroy EKS test stack
+
+Destroy the EKS validation stack.
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi eks-destroy --yes  # Destroy the EKS validation stack.
+
+## prodbox pulumi test-resources
+test-resources - Provision or inspect HA RKE2 test stack
+
+Reconcile the HA RKE2 validation stack.
+Options:
+- --dry-run - Render the Pulumi plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi test-resources  # Reconcile the HA RKE2 validation stack.
+
+## prodbox pulumi test-destroy
+test-destroy - Destroy HA RKE2 test stack
+
+Destroy the HA RKE2 validation stack.
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi test-destroy --yes  # Destroy the HA RKE2 validation stack.
+
+## prodbox rke2 status
+status - Check RKE2 status
+
+Inspect the local cluster status.
+Examples:
+- prodbox rke2 status  # Inspect RKE2 status.
+
+## prodbox rke2 start
+start - Start RKE2
+
+Start the local cluster service.
+Examples:
+- prodbox rke2 start  # Start RKE2.
+
+## prodbox rke2 stop
+stop - Stop RKE2
+
+Stop the local cluster service.
+Examples:
+- prodbox rke2 stop  # Stop RKE2.
+
+## prodbox rke2 restart
+restart - Restart RKE2
+
+Restart the local cluster service.
+Examples:
+- prodbox rke2 restart  # Restart RKE2.
+
+## prodbox rke2 reconcile
+reconcile - Reconcile RKE2
+
+Reconcile the supported local cluster state.
+Options:
+- --dry-run - Render the lifecycle plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox rke2 reconcile  # Reconcile the supported local cluster.
+- prodbox rke2 reconcile --dry-run  # Render the lifecycle plan.
+
+## prodbox rke2 install
+install - Deprecated alias for reconcile
+
+Deprecated alias for `prodbox rke2 reconcile`.
+Options:
+- --dry-run - Render the lifecycle plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox rke2 install  # Use the one-cycle reconcile alias.
+
+## prodbox rke2 delete
+delete - Delete RKE2
+
+Delete the local cluster.
+Options:
+- --yes, -y - Confirm full RKE2 cluster deletion
+
+Examples:
+- prodbox rke2 delete --yes  # Delete the local cluster.
+
+## prodbox rke2 logs
+logs - Show RKE2 logs
+
+Show RKE2 service logs.
+Options:
+- --lines, -n <INTEGER> - Number of log lines to show
+
+Examples:
+- prodbox rke2 logs --lines 50  # Show recent RKE2 logs.
+
+## prodbox test all
+all - Run the full test suite
+
+Run lint and then the full test surface.
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test all  # Run lint and the full test surface.
+
+## prodbox test lint
+lint - Run lint and build checks
+
+Run the full lint surface plus a build.
+Examples:
+- prodbox test lint  # Run lint and build checks.
+
+## prodbox test unit
+unit - Run unit tests
+
+Run unit tests.
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test unit  # Run unit tests.
+
+## prodbox test integration all
+all - Run all integration suites
+
+Run all integration suites
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration all  # Run the `all` integration suite.
+
+## prodbox test integration cli
+cli - Run CLI integration tests
+
+Run CLI integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration cli  # Run the `cli` integration suite.
+
+## prodbox test integration aws-iam
+aws-iam - Run AWS IAM integration tests
+
+Run AWS IAM integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration aws-iam  # Run the `aws-iam` integration suite.
+
+## prodbox test integration dns-aws
+dns-aws - Run Route 53 integration tests
+
+Run Route 53 integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration dns-aws  # Run the `dns-aws` integration suite.
+
+## prodbox test integration aws-eks
+aws-eks - Run EKS integration tests
+
+Run EKS integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration aws-eks  # Run the `aws-eks` integration suite.
+
+## prodbox test integration env
+env - Run environment integration tests
+
+Run environment integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration env  # Run the `env` integration suite.
+
+## prodbox test integration gateway-daemon
+gateway-daemon - Run gateway-daemon integration tests
+
+Run gateway-daemon integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration gateway-daemon  # Run the `gateway-daemon` integration suite.
+
+## prodbox test integration gateway-pods
+gateway-pods - Run gateway pod integration tests
+
+Run gateway pod integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration gateway-pods  # Run the `gateway-pods` integration suite.
+
+## prodbox test integration gateway-partition
+gateway-partition - Run gateway partition integration tests
+
+Run gateway partition integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration gateway-partition  # Run the `gateway-partition` integration suite.
+
+## prodbox test integration ha-rke2-aws
+ha-rke2-aws - Run HA RKE2 AWS integration tests
+
+Run HA RKE2 AWS integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration ha-rke2-aws  # Run the `ha-rke2-aws` integration suite.
+
+## prodbox test integration lifecycle
+lifecycle - Run lifecycle integration tests
+
+Run lifecycle integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration lifecycle  # Run the `lifecycle` integration suite.
+
+## prodbox test integration pulumi
+pulumi - Run Pulumi integration tests
+
+Run Pulumi integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration pulumi  # Run the `pulumi` integration suite.
+
+## prodbox test integration charts-storage
+charts-storage - Run chart-storage integration tests
+
+Run chart-storage integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration charts-storage  # Run the `charts-storage` integration suite.
+
+## prodbox test integration charts-platform
+charts-platform - Run chart-platform integration tests
+
+Run chart-platform integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration charts-platform  # Run the `charts-platform` integration suite.
+
+## prodbox test integration charts-vscode
+charts-vscode - Run vscode stack integration tests
+
+Run vscode stack integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration charts-vscode  # Run the `charts-vscode` integration suite.
+
+## prodbox test integration charts-api
+charts-api - Run API stack integration tests
+
+Run API stack integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration charts-api  # Run the `charts-api` integration suite.
+
+## prodbox test integration charts-websocket
+charts-websocket - Run WebSocket stack integration tests
+
+Run WebSocket stack integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration charts-websocket  # Run the `charts-websocket` integration suite.
+
+## prodbox test integration admin-routes
+admin-routes - Run shared-host admin-route integration tests
+
+Run shared-host admin-route integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration admin-routes  # Run the `admin-routes` integration suite.
+
+## prodbox test integration public-dns
+public-dns - Run public DNS integration tests
+
+Run public DNS integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+
+Examples:
+- prodbox test integration public-dns  # Run the `public-dns` integration suite.
+
+## prodbox tla-check
+tla-check - Run TLA+ checks
+
+Run the TLA+ model checks.
+Examples:
+- prodbox tla-check  # Run the TLA+ model checks.
+
+## prodbox workload start
+start - Start internal workload runtime
+
+Start the internal workload daemon.
+Options:
+- --log-level <LEVEL> - Override daemon log level
+- --port <INTEGER> - Override daemon port
+- --foreground - Run in the foreground
+
+Examples:
+- prodbox workload start --foreground  # Start the workload runtime in the foreground.
+
+-- end --

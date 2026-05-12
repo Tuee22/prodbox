@@ -410,15 +410,15 @@ TLS material set, and the secret or config inputs required by the daemon at runt
 The chart's liveness and readiness probes query `GET /v1/state` over HTTP on the in-pod REST
 port.
 
-`prodbox gateway start <config.json>` is the Haskell daemon entrypoint and remains the in-pod
-startup path invoked by the gateway chart's container. `prodbox gateway status <config.json>`
+`prodbox gateway start --config <path>` is the Haskell daemon entrypoint and remains the in-pod
+startup path invoked by the gateway chart's container. `prodbox gateway status --config <path>`
 queries that same HTTP `/v1/state` endpoint for operator inspection, and
 `prodbox gateway config-gen <path> --node-id <id>` provides template generation. Direct
 host-process invocation remains a development mode, not the supported steady state.
 
 Containerization is first-class for integration/runtime image publishing:
 
-- `prodbox rke2 install` builds the gateway image from `docker/gateway.Dockerfile`
+- `prodbox rke2 reconcile` builds the gateway image from `docker/gateway.Dockerfile`
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting Harbor
   tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
   pinned GHC `9.14.1`
@@ -433,8 +433,8 @@ native-host-architecture publish flow, explicit public-image reconcile, and RKE2
 ### CLI Management
 
 ```bash
-prodbox gateway start <config.json>           # In-pod daemon entrypoint
-prodbox gateway status <config.json>          # Query running daemon
+prodbox gateway start --config <path>         # In-pod daemon entrypoint
+prodbox gateway status --config <path>        # Query running daemon
 prodbox gateway config-gen <path> --node-id <id>  # Generate template config
 prodbox charts deploy gateway                 # Install/upgrade in-cluster gateway workload
 prodbox charts status gateway                 # Inspect installed gateway release

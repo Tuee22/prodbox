@@ -3,6 +3,9 @@ module Prodbox.CLI.Command
   , ChartsCommand (..)
   , CommandListingFormat (..)
   , DnsCommand (..)
+  , DocsCommand (..)
+  , DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
   , GatewayCommand (..)
   , CommandRequest (..)
   , ConfigCommand (..)
@@ -10,6 +13,7 @@ module Prodbox.CLI.Command
   , HostCommand (..)
   , IntegrationSuite (..)
   , K8sCommand (..)
+  , LintCommand (..)
   , NativeCommand (..)
   , PolicyTier (..)
   , PulumiCommand (..)
@@ -18,6 +22,7 @@ module Prodbox.CLI.Command
   , TestCommand (..)
   , TestScope (..)
   , WorkloadCommand (..)
+  , WorkloadOptions (..)
   , validateCoverage
   )
 where
@@ -36,9 +41,11 @@ data NativeCommand
   | NativeCheckCode
   | NativeConfig ConfigCommand
   | NativeDns DnsCommand
+  | NativeDocs DocsCommand
   | NativeGateway GatewayCommand
   | NativeHost HostCommand
   | NativeK8s K8sCommand
+  | NativeLint LintCommand
   | NativePulumi PulumiCommand
   | NativeRke2 Rke2Command
   | NativeTest TestCommand
@@ -65,14 +72,35 @@ data DnsCommand
   = DnsCheck
   deriving (Eq, Show)
 
+data DaemonLaunchOptions = DaemonLaunchOptions
+  { daemonConfigPath :: Maybe FilePath
+  , daemonLogLevel :: Maybe String
+  , daemonPort :: Maybe Int
+  , daemonForeground :: Bool
+  , daemonPlanOptions :: PlanOptions
+  }
+  deriving (Eq, Show)
+
+data DaemonStatusOptions = DaemonStatusOptions
+  { daemonStatusConfigPath :: Maybe FilePath
+  }
+  deriving (Eq, Show)
+
 data GatewayCommand
-  = GatewayStart FilePath
-  | GatewayStatus FilePath
+  = GatewayDaemonCommand DaemonLaunchOptions
+  | GatewayStatusCommand DaemonStatusOptions
   | GatewayConfigGen FilePath String
   deriving (Eq, Show)
 
+data WorkloadOptions = WorkloadOptions
+  { workloadLogLevel :: Maybe String
+  , workloadPort :: Maybe Int
+  , workloadForeground :: Bool
+  }
+  deriving (Eq, Show)
+
 data WorkloadCommand
-  = WorkloadStart
+  = WorkloadStart WorkloadOptions
   deriving (Eq, Show)
 
 data K8sCommand
@@ -82,7 +110,7 @@ data K8sCommand
   deriving (Eq, Show)
 
 data ConfigCommand
-  = ConfigSetup
+  = ConfigSetup PlanOptions
   | ConfigShow Bool
   | ConfigValidate
   deriving (Eq, Show)
@@ -94,17 +122,17 @@ data PolicyTier
 
 data AwsCommand
   = AwsPolicy PolicyTier
-  | AwsSetup PolicyTier
-  | AwsTeardown
+  | AwsSetup PolicyTier PlanOptions
+  | AwsTeardown PlanOptions
   | AwsCheckQuotas
   | AwsRequestQuotas PolicyTier
   deriving (Eq, Show)
 
 data PulumiCommand
-  = PulumiEksResources
-  | PulumiEksDestroy Bool
-  | PulumiTestResources
-  | PulumiTestDestroy Bool
+  = PulumiEksResources PlanOptions
+  | PulumiEksDestroy Bool PlanOptions
+  | PulumiTestResources PlanOptions
+  | PulumiTestDestroy Bool PlanOptions
   deriving (Eq, Show)
 
 data Rke2Command
@@ -122,6 +150,19 @@ data PlanOptions = PlanOptions
   { dryRun :: Bool
   , planFile :: Maybe FilePath
   }
+  deriving (Eq, Show)
+
+data DocsCommand
+  = DocsCheck
+  | DocsGenerate
+  deriving (Eq, Show)
+
+data LintCommand
+  = LintAll
+  | LintFiles Bool
+  | LintDocs Bool
+  | LintHaskell Bool
+  | LintChart
   deriving (Eq, Show)
 
 data TestCommand = TestCommand

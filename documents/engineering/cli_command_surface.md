@@ -45,15 +45,19 @@ Top-level commands:
 |---------|------|---------|
 | `aws` | Group | IAM policy, IAM user lifecycle, and service quota management |
 | `config` | Group | Dhall configuration management |
+| `docs` | Group | Generated-documentation maintenance |
 | `host` | Group | Host prerequisite checks and public-edge diagnostics |
 | `rke2` | Group | Local cluster lifecycle |
 | `pulumi` | Group | AWS validation stack lifecycle |
 | `dns` | Group | Route 53 inspection |
 | `k8s` | Group | Kubernetes health and log utilities |
 | `gateway` | Group | Gateway daemon operations |
+| `lint` | Group | Doctrine-owned lint surfaces |
 | `workload` | Group | Internal public-edge workload runtime |
 | `charts` | Group | Bespoke Helm chart lifecycle |
 | `test` | Group | Explicit named test suites |
+| `commands` | Command | Render command-registry introspection output |
+| `help` | Command | Render help for a command path |
 | `check-code` | Command | Doctrine-policy, formatter, lint, warning-clean build, and operator-binary sync gate |
 | `tla-check` | Command | TLA+ model checking via Docker |
 
@@ -63,7 +67,7 @@ Top-level commands:
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox config setup` | none | none |
+| `prodbox config setup` | none | `--dry-run`, `--plan-file` |
 | `prodbox config show` | none | `--show-secrets` |
 | `prodbox config validate` | none | none |
 
@@ -78,8 +82,8 @@ that prompt input, with the native IAM test harness as the only supported runtim
 | Command | Arguments | Options |
 |---------|-----------|---------|
 | `prodbox aws policy` | none | `--tier` |
-| `prodbox aws setup` | none | `--tier` |
-| `prodbox aws teardown` | none | none |
+| `prodbox aws setup` | none | `--tier`, `--dry-run`, `--plan-file` |
+| `prodbox aws teardown` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws check-quotas` | none | none |
 | `prodbox aws request-quotas` | none | `--tier` |
 
@@ -113,11 +117,15 @@ and `/minio` routes, and readiness for named external proof.
 | `prodbox rke2 start` | none | none |
 | `prodbox rke2 stop` | none | none |
 | `prodbox rke2 restart` | none | none |
-| `prodbox rke2 install` | none | none |
+| `prodbox rke2 reconcile` | none | `--dry-run`, `--plan-file` |
+| `prodbox rke2 install` | none | `--dry-run`, `--plan-file` |
 | `prodbox rke2 delete` | none | `--yes` |
 | `prodbox rke2 logs` | none | `--lines`, `-n` |
 
 `src/Prodbox/CLI/Rke2.hs` owns the full public `prodbox rke2 ...` surface.
+
+`prodbox rke2 reconcile` is the canonical lifecycle reconciler. `prodbox rke2 install` is a
+one-cycle deprecated alias that delegates to the same implementation.
 
 `prodbox rke2 delete --yes` is summary-oriented on success: it reports AWS validation destroy
 disposition, local substrate cleanup, managed kubeconfig handling, and preserved host roots
@@ -127,10 +135,10 @@ without streaming raw uninstall-script trace output.
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox pulumi eks-resources` | none | none |
-| `prodbox pulumi eks-destroy` | none | `--yes`, `-y` |
-| `prodbox pulumi test-resources` | none | none |
-| `prodbox pulumi test-destroy` | none | `--yes`, `-y` |
+| `prodbox pulumi eks-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi eks-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi test-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi test-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox pulumi ...` surface.
 
@@ -161,8 +169,8 @@ No supported local-cluster platform or application deployment depends on a root 
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox gateway start` | `CONFIG_PATH` | none |
-| `prodbox gateway status` | `CONFIG_PATH` | none |
+| `prodbox gateway start` | none | `--config`, `--log-level`, `--port`, `--foreground`, `--dry-run`, `--plan-file` |
+| `prodbox gateway status` | none | `--config` |
 | `prodbox gateway config-gen` | `OUTPUT_PATH` | `--node-id` |
 
 `src/Prodbox/Gateway.hs` owns the public gateway surface and `src/Prodbox/Gateway/Daemon.hs`
@@ -176,7 +184,7 @@ Kubernetes Gateway API or Envoy Gateway controller.
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox workload start` | none | none |
+| `prodbox workload start` | none | `--log-level`, `--port`, `--foreground` |
 
 `src/Prodbox/Workload.hs` owns the internal public workload runtime used by the `api` and
 `websocket` chart surfaces. It is repo-rootless and selected through environment such as
@@ -190,8 +198,8 @@ live upgraded connections.
 |---------|-----------|---------|
 | `prodbox charts list` | none | none |
 | `prodbox charts status` | `CHART` | none |
-| `prodbox charts deploy` | `CHART` | none |
-| `prodbox charts delete` | `CHART` | `--yes`, `-y` |
+| `prodbox charts deploy` | `CHART` | `--dry-run`, `--plan-file` |
+| `prodbox charts delete` | `CHART` | `--yes`, `-y`, `--dry-run`, `--plan-file` |
 
 `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
 `src/Prodbox/Lib/Storage.hs`, and `src/Prodbox/PostgresPlatform.hs` own the public chart surface
@@ -205,7 +213,7 @@ public CLI arguments.
 
 The supported chart doctrine does not permit embedded chart-local PostgreSQL subcharts.
 `keycloak-postgres` is an internal namespace-local Patroni dependency release, and chart deploy
-fails fast until `prodbox rke2 install` has reconciled the cluster-wide `postgres-operator`
+fails fast until `prodbox rke2 reconcile` has reconciled the cluster-wide `postgres-operator`
 platform.
 
 The current public chart surface ships:
@@ -216,6 +224,18 @@ The current public chart surface ships:
 - `websocket` on `/ws`, with workload-managed OIDC bootstrap on `/ws/oidc`, a JWT-protected `/ws`
   upgrade path, and an internal `redis` dependency for shared state
 - the separate Haskell distributed `gateway` chart, which is not the Envoy Gateway public edge
+
+### `prodbox commands` and `prodbox help`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox commands` | none | `--tree`, `--json` |
+| `prodbox help` | `COMMAND_PATH ...` | none |
+
+`src/Prodbox/App.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`,
+`src/Prodbox/CLI/Tree.hs`, and `src/Prodbox/CLI/Json.hs` own the introspection surface. The
+registry-backed `commands`, `commands --tree`, `commands --json`, and `help <path>` outputs are
+the canonical in-process CLI documentation surface.
 
 ### `prodbox test`
 
@@ -234,6 +254,7 @@ Named suite commands:
 | Command | Scope |
 |---------|-------|
 | `prodbox test all` | Aggregate Haskell unit and integration surface |
+| `prodbox test lint` | `prodbox check-code` plus `cabal build --builddir=.build all` |
 | `prodbox test unit` | `test:prodbox-unit` |
 | `prodbox test integration all` | Aggregate integration surface |
 | `prodbox test integration cli` | `test:prodbox-integration-cli` |
@@ -258,6 +279,8 @@ Named suite commands:
 `src/Prodbox/TestRunner.hs` owns the public `prodbox test` entrypoint. It:
 
 - runs Haskell suites through `cabal test`
+- runs `prodbox test lint` before any Haskell or native validation payload when `prodbox test all`
+  is selected
 - enforces an initial fail-fast prerequisite gate, visible runbook/bootstrap steps when required,
   and deferred cluster-backed backend proofs such as `pulumi_logged_in` before payload execution
 - provisions the shared IAM harness for `prodbox test integration aws-iam`,
@@ -313,15 +336,14 @@ surface; per-sprint deliverables live in
 | `prodbox lint chart` | none | none | Sprint 3.12 |
 | `prodbox lint all` | none | none | Sprint 1.10 / Sprint 1.20 |
 
-`src/Prodbox/Lint/` modules own the lint surfaces (Sprint 1.10 / Sprint 1.19 / Sprint 3.12),
-each consuming the canonical registries: `forbiddenPathRegistry`, `generatedSectionRule`,
-and `trackingGeneratedPaths`.
+`src/Prodbox/CheckCode.hs` currently owns the lint surfaces and the canonical
+`forbiddenPathRegistry` plus `GeneratedSectionRule` registry.
 
 ### `prodbox docs`
 
 | Command | Arguments | Options | Owning Sprint |
 |---------|-----------|---------|---------------|
-| `prodbox docs check` | none | `--write` | Sprint 1.10 |
+| `prodbox docs check` | none | none | Sprint 1.10 |
 | `prodbox docs generate` | none | none | Sprint 1.10 |
 
 `prodbox lint docs [--write]` is implemented as a thin alias over the same Haskell function
@@ -333,13 +355,15 @@ a third validator command.
 
 ### Daemon-launching flags
 
-Per Sprint 2.15, every daemon-launching command (`prodbox gateway start`,
-`prodbox workload start`) accepts `--config <path>`, `--log-level <level>`, `--port <int>`,
-and `--foreground` (default). Self-daemonization (`--detach`, double-fork, `setsid`,
+Per Sprint 2.15, `prodbox gateway start` and `prodbox gateway status` accept `--config <path>`,
+while the daemon-launching commands `prodbox gateway start` and `prodbox workload start`
+accept `--log-level <level>`, `--port <int>`, and `--foreground` (default). Self-daemonization (`--detach`, double-fork, `setsid`,
 `forkProcess`) is forbidden per
 [../../HASKELL_CLI_TOOL.md → CLI-to-Daemon Plumbing](../../HASKELL_CLI_TOOL.md) §1591–1599.
-Startup precedence: CLI flag > env var (`PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`,
-`PRODBOX_PORT`) > Dhall file default > built-in default.
+Startup precedence is command-specific: CLI flag > env var > config-file default > built-in
+default. `PRODBOX_CONFIG_PATH` applies to gateway commands, `PRODBOX_LOG_LEVEL` applies to
+gateway and workload startup, and `PRODBOX_PORT` applies to both gateway and workload port
+resolution.
 
 ### One-shot output flags
 

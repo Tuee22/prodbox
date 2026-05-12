@@ -12,7 +12,7 @@
 - Retained storage is reconciled via the static `manual` no-provisioner `StorageClass` plus
   deterministic PV resources to guarantee stable PVC-to-PV rebinding across cluster
   delete/reinstall.
-- `prodbox rke2 install` recreates the cluster-scoped `manual` `StorageClass` and removes every
+- `prodbox rke2 reconcile` recreates the cluster-scoped `manual` `StorageClass` and removes every
   other `StorageClass` before retained-storage reconciliation succeeds.
 - The configured manual PV host root (default repository `.data/`) stores PV contents only.
 - Namespace-local Patroni PostgreSQL clusters created for Helm-managed application stacks use
@@ -33,10 +33,10 @@
 
 This doctrine governs:
 
-1. retained local storage resources created by `prodbox rke2 install`
+1. retained local storage resources created by `prodbox rke2 reconcile`
 2. retained local storage resources created by `prodbox charts deploy keycloak|vscode` for the
    namespace-local Patroni PostgreSQL cluster and `vscode` data
-3. rebinding guarantees expected after `prodbox rke2 delete --yes` plus `prodbox rke2 install`
+3. rebinding guarantees expected after `prodbox rke2 delete --yes` plus `prodbox rke2 reconcile`
 4. the boundary between the PV-only manual host root and the repo-local `.prodbox-state/` retained
    chart-state root
 5. MinIO persistence behavior on the supported single-node RKE2 machine
@@ -46,7 +46,7 @@ Harbor registry details remain in [Local Registry Pipeline](./local_registry_pip
 
 ## 3. eDAG Contract
 
-`rke2 install` reconciles Harbor, retained storage, and MinIO using the Haskell lifecycle runtime.
+`rke2 reconcile` reconciles Harbor, retained storage, and MinIO using the Haskell lifecycle runtime.
 The Harbor portion of that lifecycle must reach a stable external-serving state before public-image
 mirror, custom-image publication, or Harbor-backed steady-state workload reconcile continues. The
 bootstrap MinIO install that establishes the local backend may pull its images from public
@@ -103,7 +103,7 @@ Deterministic rebinding is guaranteed only when all of these hold:
 Lifecycle-oriented validation should prove:
 
 1. the real MinIO PVC remains bound to the same PV across delete/reinstall
-2. only the `manual` `StorageClass` remains after `prodbox rke2 install`
+2. only the `manual` `StorageClass` remains after `prodbox rke2 reconcile`
 3. the `keycloak-postgres` and `vscode` storage bindings remain deterministic for their root
    namespaces
 4. Percona PostgreSQL PVC discovery binds retained PVs to the operator-created claim names before
@@ -114,7 +114,7 @@ Lifecycle-oriented validation should prove:
 6. `prodbox rke2 delete --yes` succeeds on the first operator invocation
 7. temporary validation resources are fully removed at test end
 8. baseline runtime after test completion matches the post-install state defined by
-   `prodbox rke2 install`
+   `prodbox rke2 reconcile`
 9. a deleted MinIO export host-path mount is repaired back onto the declared retained directory
    before Pulumi backend login or stack operations continue
 

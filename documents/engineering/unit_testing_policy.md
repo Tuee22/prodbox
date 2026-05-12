@@ -53,10 +53,11 @@ In the current repository:
 | Category | What Gets Tested | Location |
 |----------|------------------|----------|
 | Pure helper tests | Parsing, rendering, ADTs, DAG logic, validation helpers | `test/unit/Main.hs` |
+| Parser tests | `argv -> Command` coverage through `execParserPure`, including happy-path and unhappy-path leaf-command cases | `test/unit/Parser.hs` via `prodbox-unit` |
 | Built-frontend integration tests | CLI routing and subprocess behavior against fake tools | `test/integration/cli/Main.hs` |
 | Built-frontend config tests | Direct-Dhall config masking and validation behavior | `test/integration/env/Main.hs` |
 | Native real-world validations | AWS, DNS, gateway, chart, lifecycle, and public-edge proofs | `src/Prodbox/TestValidation.hs` via `prodbox test integration ...` |
-| Daemon lifecycle tests | Spawn the daemon via `typed-process`, poll `/readyz`, exercise protocol, send SIGTERM, assert graceful drain plus exit `0`, and assert second SIGTERM (or drain deadline) forces exit | `test/integration/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
+| Daemon lifecycle tests | Daemon startup-precedence and lifecycle-focused coverage, including the `PRODBOX_*` flag/env resolution contract and later drain or signal assertions | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
 | Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
 
 Daemon lifecycle and golden treatment of health-endpoint responses are landed by
@@ -81,7 +82,7 @@ Integration-selected `prodbox test` commands execute in two phases:
    cluster-backed backend proof when the deferred proof depends on a visible runbook-created local
    runtime such as the RKE2-backed MinIO Pulumi backend.
 2. **Phase 1.5 - integration runbook gate**: cluster-backed suites may enforce
-   `prodbox rke2 install`.
+   `prodbox rke2 reconcile`.
 3. **Phase 1.6 - supported runtime bootstrap**: aggregate or destructive flows may repair the
    supported runtime before validation.
 4. **Phase 2 - test execution**: run Haskell suites and named validation payloads only after the

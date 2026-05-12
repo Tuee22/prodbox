@@ -13,7 +13,7 @@
 
 This document is the SSoT for the local image-registry doctrine:
 
-1. Harbor is installed or reconciled during `prodbox rke2 install`.
+1. Harbor is installed or reconciled during `prodbox rke2 reconcile`.
 2. Direct public-registry pulls are permitted only for Harbor itself and the current Harbor
    storage-backend bootstrap, presently MinIO, before Harbor is healthy and externally serving.
 3. After Harbor is healthy and externally serving, later supported Helm workloads use Harbor-backed
@@ -29,7 +29,7 @@ Retained storage and MinIO persistence doctrine remain defined in
 
 ## 2. Runtime Contract
 
-The authoritative `prodbox rke2 install` contract is owned by
+The authoritative `prodbox rke2 reconcile` contract is owned by
 `src/Prodbox/CLI/Rke2.hs`.
 
 The native Haskell lifecycle reconciles Harbor state in this order:
@@ -78,7 +78,7 @@ Policy:
 
 ## 3. Runtime Outputs
 
-`prodbox rke2 install` derives Harbor image targets deterministically from machine identity:
+`prodbox rke2 reconcile` derives Harbor image targets deterministically from machine identity:
 
 - `prodbox-id` source: `/etc/machine-id`
 - image ref form: `127.0.0.1:30080/prodbox/prodbox-gateway:<prodbox-id-label>`
@@ -105,7 +105,7 @@ The supported public-edge doctrine uses this image set:
 
 ## 4. RKE2 Mirror Behavior
 
-`rke2 install` reconciles:
+`rke2 reconcile` reconciles:
 
 - file: `/etc/rancher/rke2/registries.yaml`
 - mirror target: local Harbor endpoint (`127.0.0.1:30080`)
@@ -158,7 +158,7 @@ Container build requirements:
 Recommended flow before gateway or public-edge workload integration tests:
 
 ```bash
-prodbox rke2 install
+prodbox rke2 reconcile
 prodbox test integration gateway-pods
 prodbox test integration charts-api
 prodbox test integration charts-websocket

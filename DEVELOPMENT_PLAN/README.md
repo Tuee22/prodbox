@@ -27,19 +27,22 @@ govern this plan suite.
 
 ## Closure Status
 
-Phases `0` through `4` are **reopened** by Sprint 0.2 (see
+Phase `0` reopened through Sprints `0.2`–`0.4` (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine and to schedule
-the code-level adoption work named below. Sprint 0.3 extends the doctrine-adoption scope with
-the residual items surfaced by the May 2026 doctrine-vs-plan audit, scheduling them through
-new Phase `1` sprints (1.24–1.26) and through deliverable extensions to existing planned
-Phase `1` and Phase `2` sprints. Sprint 0.4 extends the doctrine-adoption scope again with
-the residual items surfaced by the November 2026 round-3 doctrine-vs-plan audit, scheduling
-them through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
+governed docs and plan suite to that doctrine, and schedule every currently known code-level
+adoption gap onto explicit downstream sprints. That Phase-0 doctrine-governance work is now
+`Done`. Phases `1` through `4` remain **reopened** because the scheduled implementation work
+named below is still in progress: Sprint 0.3 extended the doctrine-adoption scope with the
+residual items surfaced by the May 2026 doctrine-vs-plan audit, scheduling them through new
+Phase `1` sprints (1.24–1.26) and through deliverable extensions to existing planned Phase
+`1` and Phase `2` sprints. Sprint 0.4 extended the doctrine-adoption scope again with the
+residual items surfaced by the November 2026 round-3 doctrine-vs-plan audit, scheduling them
+through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
 planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Phases `5`, `6`, and `7`
-remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract, AWS
-IAM and quota administration) per standards rule E; the overall handoff is no longer
-complete until the reopened phases close.
+remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract, AWS IAM
+and quota administration) per standards rule E; the overall handoff is no longer complete
+until the reopened implementation phases close.
 
 Reopened sprints by phase:
 
@@ -141,8 +144,9 @@ Reopened sprints by phase:
   registry. Sprint 0.4 extends Sprint 3.10 with the named forbidden reconciler flags
   (`--force`, `--reinstall`) and forbidden sister commands (`install`, `upgrade`,
   `repair`, `force-install`) on the chart surface.
-- Phase 4 — **Sprints 4.5–4.7**: Rename `prodbox rke2 install` → `prodbox rke2 reconcile`
-  with a one-cycle deprecation alias; lifecycle Plan / Apply + `--dry-run`;
+- Phase 4 — **Sprints 4.5–4.7**: Rename the legacy lifecycle command to
+  `prodbox rke2 reconcile` with a one-cycle deprecation alias; lifecycle Plan / Apply +
+  `--dry-run`;
   `prodbox-pulumi` test stanza. Sprint 0.4 extends Sprint 4.5 with the same
   forbidden-flag and sister-command discipline on the lifecycle reconciler so the
   one-cycle deprecation alias preserves only the name, not the forbidden flags.
@@ -183,8 +187,8 @@ The authoritative target still closes on:
 - one Redis surface that currently backs WebSocket shared state and may later back an explicit
   external rate-limit service, but does not yet ship a standalone rate-limit-service workload or
   validation surface
-- one cleanup ledger that preserves completed removal history and currently lists zero pending
-  supported-path cleanup items
+- one cleanup ledger that preserves completed removal history and tracks any still-open
+  doctrine-adoption residue until the owning sprint closes
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
 `prodbox test all`, `prodbox config show`, `prodbox config validate`, and
@@ -243,7 +247,7 @@ A sprint can move to `Done` only when all of the following are true:
 
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
-| 0 | Planning and Documentation Topology for Haskell Rewrite | 🔄 Active (Sprints 0.2, 0.3, 0.4) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
+| 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.4) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active (Sprints 1.6–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | 🔄 Active (Sprints 2.9–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 Active (Sprints 3.8–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
@@ -252,20 +256,24 @@ A sprint can move to `Done` only when all of the following are true:
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done on owned surfaces | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
-**Status interpretation**: Phases `0`–`4` are reopened by Sprint 0.2 and further extended by
-Sprints 0.3 and 0.4 to adopt [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). The pre-reopen
-Haskell rewrite baseline, public-edge proof, clean-room rerun, and AWS-administration surfaces
-remain validated on the supported Haskell command surface; Phases `5`, `6`, and `7` remain
-`Done` on their owned scope per standards rule E, but final handoff is reclaimed only when the
-doctrine-driven reopens close.
+**Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
+documentation surface. Phases `1`–`4` remain reopened on the downstream doctrine-driven
+implementation work. The pre-reopen Haskell rewrite baseline, public-edge proof, clean-room
+rerun, and AWS-administration surfaces remain validated on the supported Haskell command
+surface; Phases `5`, `6`, and `7` remain `Done` on their owned scope per standards rule E,
+but final handoff is reclaimed only when the reopened implementation phases close.
 
 ## Current Plan Status
 
 The development plan remains authoritative. The repository worktree is fully closed against the
-pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N); the
-doctrine adoption sprints scheduled by Sprint 0.2 plus the audit-driven additions scheduled by
-Sprints 0.3 and 0.4 are `Planned` and not yet implemented in the worktree. The following
-implemented surfaces remain current on the supported path:
+pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
+the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
+evidence puts Sprints `1.6`, `1.7`, `1.11`, `1.24`, `2.14`, `3.10`, `3.12`, and `4.7` in
+`Active` state because those surfaces have started in code but still retain sprint-owned
+implementation or validation gaps. Sprints `1.10`, `1.20`, `1.25`, `1.27`, `2.15`, `3.11`,
+`4.5`, and `4.6` are now locally validated and doc-aligned. The remaining reopened sprints stay
+`Planned`. The following implemented baseline surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -294,7 +302,7 @@ implemented surfaces remain current on the supported path:
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/Prerequisite.hs`, and
   `src/Prodbox/EffectInterpreter.hs` now split the aggregate prerequisite model into an initial
   fail-fast gate plus a deferred cluster-backed backend proof, so `prodbox test integration all`
-  and `prodbox test all` no longer fail at `pulumi_logged_in` before the visible `rke2 install`
+  and `prodbox test all` no longer fail at `pulumi_logged_in` before the visible `rke2 reconcile`
   phase has created or repaired the supported MinIO-backed Pulumi backend.
 - The shared IAM harness deletes any pre-existing dedicated `prodbox` IAM user and that user's
   access keys, uses any pre-existing `aws.*` only to discover and delete the IAM user associated
@@ -364,7 +372,7 @@ implemented surfaces remain current on the supported path:
   protects shared-host browser, API, WebSocket, and admin routes through Envoy auth policy.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
   Envoy Gateway controller and data-plane replica counts into settings, and builds or imports both
-  the gateway image and the shared public-edge workload image during `rke2 install`.
+  the gateway image and the shared public-edge workload image during `rke2 reconcile`.
 - The supported public-edge auth doctrine now makes the carrier and key-discovery boundary
   explicit: JWT-only API routes validate request-carried bearer tokens locally at Envoy from
   Keycloak issuer metadata plus JWKS-backed signing keys, Envoy-managed browser auth returns
@@ -416,8 +424,8 @@ implemented surfaces remain current on the supported path:
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
 - The final Phase `6` destructive rerun and handoff validation are closed on that aggregate rerun
   contract and the supported postflight restore path.
-- The legacy ledger preserves completed cleanup history and is back at zero pending supported-path
-  residue.
+- The legacy ledger preserves completed cleanup history and still tracks the doctrine-adoption
+  residue that remains open on the active reopened sprints.
 
 ## Exit Definition
 

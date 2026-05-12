@@ -5,7 +5,7 @@ where
 
 import Prodbox.Aws
   ( runAwsCommand
-  , runInteractiveConfigSetup
+  , runInteractiveConfigSetupWithPlan
   )
 import Prodbox.CLI.Charts (runChartsCommand)
 import Prodbox.CLI.Command
@@ -14,7 +14,11 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.CLI.Rke2 (runRke2Command)
-import Prodbox.CheckCode (runCheckCode)
+import Prodbox.CheckCode
+  ( runCheckCode
+  , runDocsCommand
+  , runLintCommand
+  )
 import Prodbox.Dns (runDnsCommand)
 import Prodbox.Gateway (runGatewayCommand)
 import Prodbox.Host (runHostCommand)
@@ -39,9 +43,11 @@ runNativeCommand repoRoot command =
     NativeCheckCode -> runCheckCode repoRoot
     NativeConfig configCommand -> runConfigCommand repoRoot configCommand
     NativeDns dnsCommand -> runDnsCommand repoRoot dnsCommand
+    NativeDocs docsCommand -> runDocsCommand repoRoot docsCommand
     NativeGateway gatewayCommand -> runGatewayCommand repoRoot gatewayCommand
     NativeHost hostCommand -> runHostCommand repoRoot hostCommand
     NativeK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
+    NativeLint lintCommand -> runLintCommand repoRoot lintCommand
     NativePulumi pulumiCommand -> runPulumiCommand repoRoot pulumiCommand
     NativeRke2 rke2Command -> runRke2Command repoRoot rke2Command
     NativeTest testCommand -> runTests repoRoot testCommand
@@ -51,7 +57,7 @@ runNativeCommand repoRoot command =
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode
 runConfigCommand repoRoot configCommand =
   case configCommand of
-    ConfigSetup -> runInteractiveConfigSetup repoRoot
+    ConfigSetup planOptions -> runInteractiveConfigSetupWithPlan repoRoot planOptions
     ConfigShow showSecrets -> do
       result <- validateAndLoadSettings repoRoot
       case result of

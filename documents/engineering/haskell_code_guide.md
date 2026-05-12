@@ -35,7 +35,7 @@ Hard gates are enforced mechanically. A change that fails one of these gates is 
 Current hard gates:
 
 - repository-owned workflow and hook policy scan through `prodbox check-code`
-- Fourmolu formatting through the checked-in [`fourmolu.toml`](../../fourmolu.toml)
+- Fourmolu formatting through the checked-in [`fourmolu.yaml`](../../fourmolu.yaml)
 - HLint through the checked-in [`/.hlint.yaml`](../../.hlint.yaml)
 - warning-clean Haskell compilation through
   `cabal build --builddir=.build all --ghc-options=-Werror`
@@ -63,13 +63,13 @@ The build must not pretend to enforce guidance that it cannot actually prove.
 
 The current repository-owned Haskell style and lint inputs are:
 
-- [`fourmolu.toml`](../../fourmolu.toml) for formatting
+- [`fourmolu.yaml`](../../fourmolu.yaml) for formatting
 - [`.hlint.yaml`](../../.hlint.yaml) for lint policy
 - [`.editorconfig`](../../.editorconfig) for editor ergonomics only
 
 Important distinction:
 
-- `fourmolu.toml` is a hard-gate input
+- `fourmolu.yaml` is a hard-gate input
 - `.hlint.yaml` is a hard-gate input
 - `.editorconfig` is not a build-acceptance input
 

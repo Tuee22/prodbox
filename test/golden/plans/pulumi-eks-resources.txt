@@ -1,0 +1,3 @@
+PULUMI_PLAN
+COMMAND=eks-resources
+CONFIRMED=false

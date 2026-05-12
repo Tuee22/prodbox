@@ -1,0 +1,36 @@
+.TH PRODBOX_rke2 1
+.SH NAME
+prodbox-rke2 \- Local cluster lifecycle
+.SH SYNOPSIS
+.B prodbox rke2
+.SH DESCRIPTION
+Local cluster lifecycle commands.
+.SH SUBCOMMANDS
+.TP
+\fBstatus\fR
+Check RKE2 status
+.TP
+\fBstart\fR
+Start RKE2
+.TP
+\fBstop\fR
+Stop RKE2
+.TP
+\fBrestart\fR
+Restart RKE2
+.TP
+\fBreconcile\fR
+Reconcile RKE2
+.TP
+\fBinstall\fR
+Deprecated alias for reconcile
+.TP
+\fBdelete\fR
+Delete RKE2
+.TP
+\fBlogs\fR
+Show RKE2 logs
+.SH EXAMPLES
+.TP
+\fBprodbox rke2 reconcile\fR
+Reconcile the supported local cluster state.

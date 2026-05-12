@@ -166,6 +166,13 @@ Code examples must not use:
 - unsupported toolchains or bridge layers
 - stale commands that bypass the public `prodbox` surface
 
+### Committed Dhall Imports
+
+When documentation or inline guidance refers to the committed repo-root Dhall files, keep the
+`sha256:` freeze annotations on their local imports. `prodbox check-code` enforces the frozen
+form for `prodbox-config.dhall` and any future committed `types.dhall` / `defaults.dhall`
+surfaces, so docs must not direct contributors to delete or hand-edit those hashes.
+
 ---
 
 ## 7. Function Documentation
@@ -305,18 +312,28 @@ The doctrine's five-step extension protocol:
 
 1. Define or extend the renderer in the relevant Haskell library module.
 2. Add the marker pair to the target file using the conventions above.
-3. Register a new `GeneratedSectionRule` entry in the in-code registry.
+3. Register a new `GeneratedSectionRule` or `TrackedGeneratedPath` entry in the in-code registry.
 4. Run `prodbox docs generate` to populate the section.
 5. Confirm `prodbox docs check` and `cabal test` pass.
 
 ### Fully generated, do-not-hand-edit paths
 
 A separate tracked-generated-paths registry names files that are owned wholly by code
-generators (no markers required because the entire file is generated). Examples include
-cross-language type bridges (PureScript / TypeScript contracts derived from Haskell types)
-and proto-derived Haskell modules. `prodbox lint files` refuses hand edits to any path on
-this registry. The current registry contents are the authoritative source; consult the
-in-code `trackedGeneratedPaths :: [PathPattern]` value for the live list.
+generators (no markers required because the entire file is generated). The current worktree
+implements that registry in `src/Prodbox/CheckCode.hs` as `TrackedGeneratedPath` entries, with
+`prodbox lint files` refusing drift on paths such as:
+
+- `share/man/man1/prodbox.1`
+- `share/man/man1/prodbox-*.1`
+- `share/completion/bash/prodbox`
+- `share/completion/zsh/_prodbox`
+- `share/completion/fish/prodbox.fish`
+
+The current registry contents are the authoritative source; future fully generated paths must
+be added there in the same change that introduces them. The `prodbox-haskell-style` suite also
+checks the renderer-source modules named by the registry for forbidden nondeterministic inputs
+such as timestamps, random IDs, locale-dependent ordering, terminal-width state, and
+environment-derived paths.
 
 ---
 

@@ -91,7 +91,7 @@ Reopened sprints by phase:
   symbol rules refusing `forkIO`, `unsafePerformIO`, and module-level `IORef` in daemon paths;
   aggregate `prodbox test lint` dispatch with lint-first ordering of `prodbox test all`;
   `trackingGeneratedPaths` registry plus renderer determinism contract; standardized library
-  audit of `prodbox.cabal`; `dhall freeze` discipline on `prodbox-config-types.dhall`
+  audit of `prodbox.cabal`; `dhall freeze` discipline on the committed repo-root config path
   plus the `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision and the
   parser `--foreground` default plus self-daemonization-forbidden rule; and — added by Sprint
   0.3 — durable CLI documentation artifacts under `documents/cli/`, `share/man/`, and
@@ -269,11 +269,12 @@ but final handoff is reclaimed only when the reopened implementation phases clos
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
 the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
-evidence puts Sprints `1.6`, `1.7`, `1.11`, `1.24`, `2.14`, `3.10`, `3.12`, and `4.7` in
-`Active` state because those surfaces have started in code but still retain sprint-owned
-implementation or validation gaps. Sprints `1.10`, `1.20`, `1.25`, `1.27`, `2.15`, `3.11`,
-`4.5`, and `4.6` are now locally validated and doc-aligned. The remaining reopened sprints stay
-`Planned`. The following implemented baseline surfaces remain current on the supported path:
+evidence puts Sprints `1.6`, `1.7`, `1.11`, `2.14`, and `4.7` in `Active` state because those
+surfaces have started in code but still retain sprint-owned implementation or validation gaps.
+Sprints `1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`,
+`3.12`, `4.5`, and `4.6` are now locally validated and doc-aligned. The remaining reopened
+sprints stay `Planned`. The following implemented baseline surfaces remain current on
+the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing

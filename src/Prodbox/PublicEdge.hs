@@ -12,6 +12,7 @@ module Prodbox.PublicEdge
   , publicFqdn
   , publicRoutePathPrefix
   , publicRouteUrl
+  , renderHelmRouteInventory
   , sharedPublicHostFqdns
   , vscodePathPrefix
   , websocketOidcPathPrefix
@@ -92,3 +93,35 @@ identityIssuerUrl settings = publicRouteUrl settings PublicRouteAuth ++ "/realms
 
 sharedPublicHostFqdns :: ValidatedSettings -> [String]
 sharedPublicHostFqdns settings = [publicFqdn settings]
+
+renderHelmRouteInventory :: String
+renderHelmRouteInventory =
+  unlines $
+    [ "{{/* Canonical public-edge route inventory generated from `src/Prodbox/PublicEdge.hs`. */}}"
+    , "{{/* PUBLIC_FQDN=test.resolvefintech.com */}}"
+    ]
+      ++ map renderRouteComment canonicalPublicRouteCatalog
+      ++ map renderAdminRouteComment adminPublicRoutes
+ where
+  renderRouteComment route =
+    "{{/* ROUTE "
+      ++ renderRouteName route
+      ++ "="
+      ++ publicRoutePathPrefix route
+      ++ " */}}"
+  renderAdminRouteComment route =
+    "{{/* ADMIN_ROUTE "
+      ++ renderRouteName route
+      ++ "="
+      ++ publicRoutePathPrefix route
+      ++ " */}}"
+
+renderRouteName :: PublicEdgeRoute -> String
+renderRouteName route =
+  case route of
+    PublicRouteAuth -> "auth"
+    PublicRouteVscode -> "vscode"
+    PublicRouteApi -> "api"
+    PublicRouteWebsocket -> "websocket"
+    PublicRouteHarbor -> "harbor"
+    PublicRouteMinio -> "minio"

@@ -24,10 +24,11 @@ prodbox check-code
 sequence:
 
 1. repository-owned workflow and hook policy scan
-2. `fourmolu --mode check app src test`
-3. `hlint app src test --hint=.hlint.yaml`
-4. `cabal build --builddir=.build all --ghc-options=-Werror`
-5. sync the built operator binary to `.build/prodbox`
+2. thin-`Main.hs`, committed-Dhall-freeze, and tracked-generated-artifact policy scan
+3. `fourmolu --mode check app src test`
+4. `hlint app src test --hint=.hlint.yaml`
+5. `cabal build --builddir=.build all --ghc-options=-Werror`
+6. sync the built operator binary to `.build/prodbox`
 
 ## 2A. Development Tooling Policy
 
@@ -63,6 +64,12 @@ Current enforced quality surfaces:
 
 - repository-owned workflow and hook policy surfaces forbidden by
   [Section 2A](#2a-development-tooling-policy)
+- committed repo-root Dhall imports must carry `sha256:` annotations produced by
+  `dhall freeze --all --inplace`
+- thin-`app/prodbox/Main.hs` and tracked generated-path drift
+- generated renderer source modules must remain free of forbidden nondeterministic inputs
+  (`getCurrentTime`, `randomIO`, `sort`, `System.Console.Terminal.Size`, `getEnv`, and the
+  other doctrine-named classes exercised by `prodbox-haskell-style`)
 - Fourmolu formatting through `fourmolu.yaml`
 - HLint through `.hlint.yaml`
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`

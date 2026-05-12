@@ -1,0 +1,27 @@
+.TH PRODBOX_aws 1
+.SH NAME
+prodbox-aws \- AWS IAM and quota management
+.SH SYNOPSIS
+.B prodbox aws
+.SH DESCRIPTION
+Operational AWS administration commands.
+.SH SUBCOMMANDS
+.TP
+\fBpolicy\fR
+Render IAM policy JSON
+.TP
+\fBsetup\fR
+Create or refresh operational IAM user
+.TP
+\fBteardown\fR
+Delete operational IAM user
+.TP
+\fBcheck-quotas\fR
+Inspect supported AWS quotas
+.TP
+\fBrequest-quotas\fR
+Request supported AWS quotas
+.SH EXAMPLES
+.TP
+\fBprodbox aws policy\fR
+Inspect the IAM policy without mutating AWS.

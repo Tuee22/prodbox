@@ -211,6 +211,10 @@ root chart names `gateway`, `keycloak`, `vscode`, `api`, or
 releases are runtime-owned implementation details and are not supported
 public CLI arguments.
 
+`prodbox charts deploy <chart>` is the canonical idempotent reconcile for the chart surface:
+rerunning it against an already-deployed healthy release is a success no-op rather than a force
+or reinstall path.
+
 The supported chart doctrine does not permit embedded chart-local PostgreSQL subcharts.
 `keycloak-postgres` is an internal namespace-local Patroni dependency release, and chart deploy
 fails fast until `prodbox rke2 reconcile` has reconciled the cluster-wide `postgres-operator`
@@ -337,7 +341,11 @@ surface; per-sprint deliverables live in
 | `prodbox lint all` | none | none | Sprint 1.10 / Sprint 1.20 |
 
 `src/Prodbox/CheckCode.hs` currently owns the lint surfaces and the canonical
-`forbiddenPathRegistry` plus `GeneratedSectionRule` registry.
+policy scan, marker-delimited generated-section registry, and fully generated path registry.
+`prodbox lint chart` validates `Chart.yaml` metadata, required chart-label helpers
+(`app.kubernetes.io/name`, `app.kubernetes.io/managed-by: prodbox`, and
+`prodbox.io/chart-root`), and route-inventory drift inside the chart templates that consume the
+generated public-edge catalog.
 
 ### `prodbox docs`
 
@@ -347,11 +355,22 @@ surface; per-sprint deliverables live in
 | `prodbox docs generate` | none | none | Sprint 1.10 |
 
 `prodbox lint docs [--write]` is implemented as a thin alias over the same Haskell function
-that backs `prodbox docs check` / `prodbox docs generate`; both surfaces consume the single
-`GeneratedSectionRule` registry per
+that backs `prodbox docs check` / `prodbox docs generate`; both surfaces consume the same
+in-code generation registry per
 [../../HASKELL_CLI_TOOL.md → Generated Artifacts](../../HASKELL_CLI_TOOL.md) §381–390 and
-§2321. Operators may use either name; future contributors must not split the surfaces or add
-a third validator command.
+§2321. The generator owns both marker-delimited artifacts and fully generated files:
+
+- `documents/cli/commands.md`
+- `share/man/man1/prodbox.1`
+- `share/man/man1/prodbox-<group>.1`
+- `share/completion/bash/prodbox`
+- `share/completion/zsh/_prodbox`
+- `share/completion/fish/prodbox.fish`
+- marker-delimited `route-registry` sections in the chart templates that consume the canonical
+  public-edge route catalog
+
+Operators may use either name; future contributors must not split the surfaces or add a third
+validator command.
 
 ### Daemon-launching flags
 
@@ -363,7 +382,9 @@ accept `--log-level <level>`, `--port <int>`, and `--foreground` (default). Self
 Startup precedence is command-specific: CLI flag > env var > config-file default > built-in
 default. `PRODBOX_CONFIG_PATH` applies to gateway commands, `PRODBOX_LOG_LEVEL` applies to
 gateway and workload startup, and `PRODBOX_PORT` applies to both gateway and workload port
-resolution.
+resolution. The committed repo-root Dhall config keeps its local imports frozen with
+`dhall freeze --all --inplace`; `prodbox check-code` refuses unfrozen committed imports after
+intentional schema or defaults edits.
 
 ### One-shot output flags
 
@@ -377,8 +398,8 @@ structured JSON logs to stderr per Sprint 2.12.
 [../../HASKELL_CLI_TOOL.md → Generated Artifacts](../../HASKELL_CLI_TOOL.md) §341–343
 enumerates "cross-language types" as a generation surface (e.g. TypeScript or Go type
 mirrors of Haskell ADTs). No non-Haskell consumer is currently in scope; the supported
-plan does not schedule cross-language-type generation. The `generatedSectionRule` registry
-remains ready when such a consumer enters scope.
+plan does not schedule cross-language-type generation. The generated-artifact registry remains
+ready when such a consumer enters scope.
 
 ## Cross-References
 

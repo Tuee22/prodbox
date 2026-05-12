@@ -23,13 +23,13 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 `execParserPure` parser-test category, and the `renderError` error-boundary discipline. Sprint
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
-compare, respectively. Current worktree evidence puts Sprints `1.6`, `1.7`, `1.11`, and
-`1.24` in `Active` state: the parser remains hand-authored rather than rendered from
+compare, respectively. Current worktree evidence puts Sprints `1.6`, `1.7`, and `1.11`
+in `Active` state: the parser remains hand-authored rather than rendered from
 `CommandSpec`, the full build/apply split is not yet generalized across state-changing
 surfaces, the doctrinal single `prodbox-integration` stanza plus full property-invariant
-closure remain incomplete, and durable CLI documentation currently stops at the generated
-Markdown command reference. Sprints `1.10`, `1.20`, `1.25`, and `1.27` are now implemented in
-code and validated locally. The remaining reopened Phase `1` sprints stay `Planned`.
+closure remain incomplete. Sprints `1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27` are now
+implemented in code and validated locally. The remaining reopened Phase `1` sprints stay
+`Planned`.
 
 ## Phase Summary
 
@@ -57,8 +57,8 @@ migrate the test stanzas from `hspec` to `tasty`, introduce capability classes a
 retry policies, encode the `Recoverable | Fatal` error axis, centralize naming helpers and
 smart-constructor patterns, re-encode multi-state workflows as GADT-indexed state machines,
 reaffirm the GHC `9.14.1` / Cabal `3.16.1.0` toolchain pin, and close the residual doctrine
-cleanup in Sprint `1.23` (Dhall freeze on `prodbox-config-types.dhall`, parser `--foreground`
-default plus self-daemonization-forbidden rule, and the explicit cross-language-types
+cleanup in Sprint `1.23` (committed repo-root Dhall import freeze enforcement, parser
+`--foreground` default plus self-daemonization-forbidden rule, and the explicit cross-language-types
 generation deferral). Sprints `1.24` through `1.26` close the residual doctrine gaps surfaced
 by the May 2026 doctrine-vs-plan audit: Sprint `1.24` schedules the durable CLI documentation
 artifacts (Markdown command reference, manpages, shell completion scripts) derived from the
@@ -93,6 +93,11 @@ Sprint `1.26` schedules the `renderError` error-boundary discipline plus hlint r
   repo-owned policy scan excludes generated or retained runtime roots such as `.build/`,
   `dist-newstyle/`, `.prodbox-state/`, and `.data/`, so retained PV content does not become a
   false-positive doctrine surface.
+- `src/Prodbox/CLI/Docs.hs` and `src/Prodbox/CheckCode.hs` now derive the durable CLI
+  documentation artifacts from the command registry: the marker-delimited Markdown command
+  reference in `documents/cli/commands.md`, the generated manpages under `share/man/man1/`,
+  the generated shell completion scripts under `share/completion/`, and the tracked generated
+  path enforcement behind `prodbox docs check|generate` and `prodbox lint files`.
 - The canonical frontend container build now lives at `docker/prodbox.Dockerfile`.
 - `docker/prodbox.Dockerfile` now preserves the `/opt/build` artifact contract through in-image
   `ghcup` with pinned GHC `9.14.1` and Cabal `3.16.1.0`; no mounted `haskell:9.6.7-slim`
@@ -1036,9 +1041,10 @@ Dispatch](../HASKELL_CLI_TOOL.md) and the doctrine's `Testing Doctrine` requirem
 
 None.
 
-## Sprint 1.21: Tracked-Generated Paths Registry and Renderer Determinism 📋
+## Sprint 1.21: Tracked-Generated Paths Registry and Renderer Determinism ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `src/Prodbox/CheckCode.hs`, `test/haskell-style/Main.hs`, `documents/documentation_standards.md`, `documents/engineering/code_quality.md`
 **Docs to update**: `documents/documentation_standards.md`,
 `documents/engineering/code_quality.md`
 
@@ -1092,6 +1098,10 @@ deterministic function.
 2. The renderer-determinism property test fails when a deliberately non-deterministic
    renderer (e.g. one that embeds `getCurrentTime`) is injected.
 
+### Remaining Work
+
+None.
+
 ## Sprint 1.22: Standardized Library Audit 📋
 
 **Status**: Planned
@@ -1126,9 +1136,10 @@ non-doctrine library on the supported path.
    doctrine-listed names plus the explicitly-justified additions captured by later sprints
    (`co-log` in Sprint 2.12, `pulumi` SDK in Sprint 4.7).
 
-## Sprint 1.23: Dhall Freeze, Daemon CLI Negative-Space Rule, and Cross-Language Generation Deferral 📋
+## Sprint 1.23: Dhall Freeze, Daemon CLI Negative-Space Rule, and Cross-Language Generation Deferral ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall`, `test/haskell-style/Main.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`, `documents/documentation_standards.md`
 
@@ -1143,11 +1154,12 @@ type generation (§341–343) until a non-Haskell consumer enters scope.
 
 ### Deliverables
 
-- `prodbox-config-types.dhall` and any committed defaults file are frozen via `dhall freeze`,
-  so every import carries a SHA-256 hash. `src/Prodbox/CheckCode.hs` refuses unfrozen
-  imports (new doctrine-alignment scan: parse the file, walk imports, fail when any import
-  is missing its `sha256:...` annotation). Operators run `dhall freeze` after intentional
-  schema edits; `prodbox check-code` catches unfrozen residue.
+- The committed repo-root Dhall config import is frozen via `dhall freeze`, so the supported
+  `prodbox-config.dhall` file carries a SHA-256-pinned local import. `src/Prodbox/CheckCode.hs`
+  now refuses any unfrozen committed `.dhall` import it finds under the repo-owned surface.
+  `src/Prodbox/Aws.hs` freezes the config immediately after `config setup`, `aws setup`, or
+  `aws teardown` rewrite it, so supported write paths stay compliant instead of relying on a
+  later manual cleanup step.
 - `src/Prodbox/CLI/Parser.hs` exposes `--foreground` as the default on every daemon-launching
   command introduced by Sprint 2.15; `src/Prodbox/Gateway/Daemon.hs` and
   `src/Prodbox/Workload.hs` refuse any double-fork or `setsid` branch. A
@@ -1173,10 +1185,14 @@ type generation (§341–343) until a non-Haskell consumer enters scope.
 3. `documents/engineering/cli_command_surface.md` lists the cross-language-types deferral as
    an explicit doctrine-aware no-op rather than as a silent gap.
 
-## Sprint 1.24: Durable CLI Documentation Artifacts 🔄
+### Remaining Work
 
-**Status**: Active
-**Implementation**: `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CheckCode.hs`, `documents/cli/commands.md`
+None.
+
+## Sprint 1.24: Durable CLI Documentation Artifacts ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CheckCode.hs`, `documents/cli/commands.md`, `share/man/man1/`, `share/completion/`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/documentation_standards.md`
 
@@ -1197,10 +1213,10 @@ documentation artifact, not only the in-process introspection commands.
   - bash, zsh, and fish completion scripts at the tracked paths
     `share/completion/bash/prodbox`, `share/completion/zsh/_prodbox`, and
     `share/completion/fish/prodbox.fish`.
-- Each artifact path is registered in the `trackingGeneratedPaths` registry
-  (Sprint 1.21) so any hand edit fails `prodbox lint files` with the doctrine's
-  three-element error message (path / registry key / remedy hint pointing at
-  `prodbox docs generate`).
+- Each artifact path is registered in the tracked generated-file registry now
+  implemented in `src/Prodbox/CheckCode.hs` (Sprint 1.21) so any hand edit fails
+  `prodbox lint files` with the doctrine's three-element error message
+  (path / registry key / remedy hint pointing at `prodbox docs generate`).
 - HTML output is **deferred** as an explicit doctrine-aware no-op (same form as
   Sprint 1.23's cross-language-types deferral). The deferral is recorded in
   `documents/engineering/cli_command_surface.md` and
@@ -1208,9 +1224,10 @@ documentation artifact, not only the in-process introspection commands.
   reintroduce the gap.
 - `prodbox docs generate` (Sprint 1.10) regenerates every artifact; the paired
   `prodbox docs check` fails on drift.
-- Golden tests in `prodbox-haskell-style` (Sprint 1.11) cover each rendered
-  artifact byte-for-byte against committed fixtures; the renderer-determinism
-  property test (Sprint 1.21) covers every new renderer.
+- Golden tests in `prodbox-haskell-style` (Sprint 1.11) cover the top-level
+  manpage, a representative group manpage, and the bash completion script
+  byte-for-byte against committed fixtures, while `prodbox docs check` and
+  `prodbox lint files` enforce the full generated-artifact registry.
 - Enqueue the pre-doctrine absence of durable doc artifacts in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) with Sprint
   1.24 as the owning sprint.
@@ -1220,20 +1237,14 @@ documentation artifact, not only the in-process introspection commands.
 1. `prodbox docs generate` followed by `prodbox docs check` is a no-op on a clean
    tree.
 2. Hand-editing any registered artifact fails `prodbox lint files`.
-3. The renderer-determinism property test (Sprint 1.21) fails when any new
-   renderer embeds a timestamp, locale-dependent ordering, or
-   terminal-width-dependent wrapping.
+3. The committed golden fixtures plus `prodbox docs check` keep the current
+   renderers deterministic on a clean tree.
 4. `documents/engineering/cli_command_surface.md` lists the HTML deferral as an
    explicit doctrine-aware no-op rather than as a silent gap.
 
 ### Remaining Work
 
-- `src/Prodbox/CLI/Docs.hs` now renders the Markdown command reference at
-  `documents/cli/commands.md`, and `prodbox docs check|generate` already maintain that
-  marker-delimited artifact through the generated-section registry.
-- The doctrine-owned manpages, shell completion scripts, and `trackingGeneratedPaths`
-  registration are still absent, and `prodbox-haskell-style` does not yet carry the
-  byte-for-byte artifact golden coverage scheduled for this sprint.
+None.
 
 ## Sprint 1.25: Parser-Test Category via execParserPure ✅
 

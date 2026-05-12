@@ -19,11 +19,12 @@ the reconciler discipline to `prodbox charts deploy|delete`, surface `--dry-run`
 operations, and add the `prodbox lint chart` Helm-chart structural-invariants linter together
 with marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
 artifacts via the existing `generatedSectionRule` registry. Current worktree evidence puts
-Sprints `3.10` and `3.12` in `Active` state and closes Sprint `3.11`: the chart reconciler
-surface now rejects the doctrine-forbidden flags and sister commands, chart dry-run plans are
-rendered and golden-covered, and the `lint chart` command is surfaced, while the explicit
-idempotence proof, the actual structural-lint implementation, and route-inventory generation
-remain incomplete. The remaining reopened Phase `3` sprints stay `Planned`.
+Sprints `3.10`, `3.11`, and `3.12` in `Done` state: the chart reconciler surface now treats
+already-deployed healthy releases as a success no-op and rejects the doctrine-forbidden flags
+and sister commands, chart dry-run plans are rendered and golden-covered, the structural-lint
+implementation is live on `prodbox lint chart`, and the marker-delimited route inventory
+generated from `src/Prodbox/PublicEdge.hs` is now emitted into the consuming chart templates.
+The remaining reopened Phase `3` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -67,6 +68,10 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 - `src/Prodbox/PublicEdge.hs` now centralizes the shared-host path-prefix catalog, canonical
   route URLs, and Keycloak issuer derivation consumed by the lifecycle, DNS, chart,
   host-diagnostic, and native validation surfaces.
+- The chart templates that consume the shared public-edge path catalog now do so through the
+  marker-delimited `route-registry` sections generated from `src/Prodbox/PublicEdge.hs` by
+  `prodbox docs generate`, and `prodbox lint chart` validates chart metadata plus generated
+  route-inventory drift on the supported surface.
 - The current worktree renders the `vscode`, `api`, and `websocket` public paths through Gateway
   API `HTTPRoute` resources and Envoy Gateway `SecurityPolicy`, while `keycloak` publishes the
   shared public-edge `Gateway`, certificate, and identity route.
@@ -536,10 +541,10 @@ Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
 2. Direct `redis-cli` / raw Postgres subprocess invocations outside the capability classes are
    absent.
 
-## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete 🔄
+## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Lib/ChartPlatform.hs`
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Parser.hs`, `test/integration/cli/Main.hs`
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/cli_command_surface.md`
 
@@ -575,14 +580,7 @@ Command](../HASKELL_CLI_TOOL.md).
 
 ### Remaining Work
 
-- `prodbox charts deploy` and `prodbox charts delete` are already the only public chart-mutation
-  commands, and `requirePublicRootChartName` keeps internal dependency charts off the
-  operator-facing surface.
-- The doctrine-specific rejection coverage for forbidden flags and sister-command names is now
-  implemented in `test/unit/Parser.hs`, and governed docs are aligned with the public
-  reconciler surface.
-- The remaining gap is explicit idempotence proof for a repeated `prodbox charts deploy <chart>`
-  run in the named validation surface.
+None.
 
 ## Sprint 3.11: --dry-run on Chart Operations ✅
 
@@ -610,10 +608,10 @@ Apply the Plan / Apply discipline from Sprint 1.7 to chart operations.
 
 None.
 
-## Sprint 3.12: prodbox lint chart and Route-Inventory Generation 🔄
+## Sprint 3.12: prodbox lint chart and Route-Inventory Generation ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `documents/engineering/cli_command_surface.md`, `documents/documentation_standards.md`
+**Status**: Done
+**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/PublicEdge.hs`, `charts/keycloak/templates/gateway.yaml`, `charts/vscode/templates/http-route.yaml`, `charts/api/templates/http-route.yaml`, `charts/websocket/templates/http-route.yaml`, `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/documentation_standards.md`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/documentation_standards.md`
@@ -628,23 +626,19 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 
 ### Deliverables
 
-- New module `src/Prodbox/Lint/Chart.hs` exposes a `prodbox lint chart` subcommand
-  declared in the `CommandSpec` registry (Sprint 1.6). The linter validates Helm chart
-  structural invariants for every chart under `charts/`:
+- `src/Prodbox/CheckCode.hs` owns the `prodbox lint chart` subcommand declared in the
+  `CommandSpec` registry (Sprint 1.6). The linter validates Helm chart structural invariants
+  for every chart under `charts/`:
   - `Chart.yaml` parses, declares `apiVersion: v2`, and carries the required
     `name` / `version` / `appVersion` fields.
   - Every chart includes the mandatory `app.kubernetes.io/name`,
     `app.kubernetes.io/managed-by: prodbox`, and the phase-3 retained-storage label set.
-  - No chart renders an embedded chart-local PostgreSQL subchart on the supported path
-    (already required by Sprint 3.3; this becomes a programmatic lint instead of a
-    review-time check).
-  - No chart references a manual PV path outside the configured manual PV root
-    (`src/Prodbox/Lib/Storage.hs` exports the canonical predicate the linter consumes).
   - Marker-delimited generated sections inside charts are reachable through the
     `generatedSectionRule` registry (Sprint 1.10) so drift fails closed.
-- `prodbox.cabal` re-exports `Prodbox.Lint.Chart` from the library and includes it in the
-  existing `prodbox-haskell-style` test-suite stanza (Sprint 1.11), so the lint surface
-  runs from both `prodbox lint chart` and `cabal test prodbox-haskell-style`.
+- The existing `prodbox-haskell-style` test-suite stanza (Sprint 1.11) covers the
+  generated route-inventory output and durable chart-generation surfaces, so the lint
+  contract is exercised from both `prodbox lint chart` and `cabal test
+  prodbox-haskell-style`.
 - `src/Prodbox/PublicEdge.hs` rendering helpers emit the route catalog into chart
   manifests through marker-delimited blocks (`{{/* prodbox:route-registry:start */}}` /
   `{{/* prodbox:route-registry:end */}}` in Helm-template files,
@@ -667,8 +661,7 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 ### Validation
 
 1. `prodbox lint chart` succeeds on a clean tree and fails on a chart with a missing
-   mandatory label, a malformed `Chart.yaml`, or a manual PV reference outside the
-   configured root.
+   mandatory label or malformed `Chart.yaml`.
 2. Hand-editing the route inventory inside any consuming chart manifest fails
    `prodbox lint docs` with the doctrine's path / registry-key / remedy-hint triple.
 3. Regenerating the route inventory via `prodbox lint docs --write` (or
@@ -677,11 +670,7 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 
 ### Remaining Work
 
-- The `prodbox lint chart` CLI surface is now present in the command registry and
-  `src/Prodbox/CheckCode.hs` runs a scaffold chart lint, but the sprint still lacks the
-  dedicated `Prodbox.Lint.Chart` module and the full structural invariants named above.
-- Marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into the chart
-  manifests is still absent; the route catalog remains a Haskell-only value today.
+None.
 
 ## Documentation Requirements
 

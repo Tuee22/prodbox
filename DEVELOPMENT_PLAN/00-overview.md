@@ -198,8 +198,8 @@ The reopened ranges close on the following sprint sets:
   production-no-op / test-injected hook contract pattern (§1284–1300) in Sprint 2.13; and
   the `/healthz` / `/readyz` / `/metrics` response shapes captured as golden tests inside
   the lifecycle stanza (§2243) in Sprint 2.14.
-- Phase 3: Sprints 3.8–3.12. Sprint 3.12 adds `src/Prodbox/Lint/Chart.hs` plus the
-  `prodbox lint chart` subcommand for Helm chart structural invariants
+- Phase 3: Sprints 3.8–3.12. Sprint 3.12 adds the `prodbox lint chart` subcommand for Helm
+  chart structural invariants through `src/Prodbox/CheckCode.hs`
   ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1820–1823, §1870) and emits the
   `src/Prodbox/PublicEdge.hs` route catalog into chart manifests via marker-delimited
   generation under the existing `generatedSectionRule` registry (§341–343, §394–443). The
@@ -252,10 +252,11 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
 not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
-Sprints `1.6`, `1.7`, `1.11`, `1.24`, `2.14`, `3.10`, `3.12`, and `4.7` in `Active` state
-because those surfaces have started in code but still retain sprint-owned implementation or
-validation gaps. Sprints `1.10`, `1.20`, `1.25`, `1.27`, `2.15`, `3.11`, `4.5`, and `4.6` are
-now locally validated and doc-aligned. The supported operator surface is `prodbox`, the
+Sprints `1.6`, `1.7`, `1.11`, `2.14`, and `4.7` in `Active` state because those surfaces have
+started in code but still retain sprint-owned implementation or validation gaps. Sprints
+`1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`,
+`4.5`, and `4.6` are now locally validated and doc-aligned. The supported operator surface is
+`prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -425,10 +426,10 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
 `0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
 Phases `1`–`4` remain reopened on the downstream implementation scope scheduled by those
-sprints; that reopened scope is now mixed: Sprints `1.6`, `1.7`, `1.11`, `1.24`, `2.14`,
-`3.10`, `3.12`, and `4.7` are `Active` on partially landed code paths, Sprints `1.10`,
-`1.20`, `1.25`, `1.27`, `2.15`, `3.11`, `4.5`, and `4.6` are locally validated and
-doc-aligned, and the remaining reopened sprints stay `Planned`:
+sprints; that reopened scope is now mixed: Sprints `1.6`, `1.7`, `1.11`, `2.14`, and `4.7`
+are `Active` on partially landed code paths, Sprints `1.10`, `1.20`, `1.21`, `1.23`,
+`1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally
+validated and doc-aligned, and the remaining reopened sprints stay `Planned`:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
@@ -444,7 +445,7 @@ doc-aligned, and the remaining reopened sprints stay `Planned`:
   aggregate `prodbox test lint` dispatch with lint-first ordering, the
   `trackingGeneratedPaths` registry plus renderer determinism property test, the
   standardized library audit of `prodbox.cabal`, the residual doctrine cleanup in
-  Sprint 1.23 covering `dhall freeze` discipline on `prodbox-config-types.dhall`, the
+  Sprint 1.23 covering `dhall freeze` discipline on the committed repo-root config path, the
   `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision, the parser
   `--foreground` default plus self-daemonization-forbidden rule, and — added by Sprint 0.3 —
   the durable CLI documentation artifacts under `documents/cli/`, `share/man/`, and

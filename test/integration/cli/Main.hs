@@ -254,6 +254,41 @@ main = mainWithSuite "prodbox-integration-cli" $ do
         kubectlRecord
           `shouldContain` "get|perconapgclusters.pgv2.percona.com|prodbox-vscode-pg|-n|vscode|-o|jsonpath={.status.postgres.ready}"
 
+        initialChartStateFiles <- listDirectory (tmpDir </> "fake-chart-state")
+        let initialApplyTargetCount =
+              length
+                [ path
+                | path <- initialChartStateFiles
+                , take 13 path == "kubectl-apply"
+                ]
+            alreadyDeployedEnvVars =
+              ( "PRODBOX_FAKE_HELM_LIST_JSON"
+              , "[{\"name\":\"keycloak\",\"namespace\":\"vscode\",\"status\":\"deployed\"},"
+                  ++ "{\"name\":\"vscode\",\"namespace\":\"vscode\",\"status\":\"deployed\"}]"
+              )
+                : filter ((/= "PRODBOX_FAKE_HELM_LIST_JSON") . fst) envVars
+
+        (secondDeployExitCode, secondDeployStdout, secondDeployStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["charts", "deploy", "vscode"]) {cwd = Just tmpDir, env = Just alreadyDeployedEnvVars}
+            ""
+
+        secondDeployExitCode `shouldBe` ExitSuccess
+        secondDeployStderr `shouldBe` ""
+        secondDeployStdout `shouldContain` "CHART_DEPLOYMENT"
+        secondDeployStdout `shouldContain` "ROOT_CHART=vscode"
+
+        upgradeRecordAfterSecondDeploy <- readFile (tmpDir </> "fake-chart-state" </> "helm-upgrade.txt")
+        upgradeRecordAfterSecondDeploy `shouldBe` upgradeRecord
+
+        chartStateFilesAfterSecondDeploy <- listDirectory (tmpDir </> "fake-chart-state")
+        length
+          [ path
+          | path <- chartStateFilesAfterSecondDeploy
+          , take 13 path == "kubectl-apply"
+          ]
+          `shouldBe` initialApplyTargetCount
+
         (deleteExitCode, deleteStdout, deleteStderr) <-
           readCreateProcessWithExitCode
             (proc binary ["charts", "delete", "vscode", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
@@ -790,8 +825,9 @@ main = mainWithSuite "prodbox-integration-cli" $ do
         stdoutText `shouldContain` "ROUTE53_ZONE_ID=Z1234567890ABC"
         stdoutText `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
         configText <- readFile (tmpDir </> "prodbox-config.dhall")
+        configText `shouldContain` "sha256:"
         configText `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
-        configText `shouldContain` "route53 = { zone_id = \"Z1234567890ABC\" }"
+        configText `shouldContain` "route53.zone_id = \"Z1234567890ABC\""
         configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
         configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
         jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
@@ -819,6 +855,7 @@ main = mainWithSuite "prodbox-integration-cli" $ do
         setupStdout `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
 
         configAfterSetup <- readFile (tmpDir </> "prodbox-config.dhall")
+        configAfterSetup `shouldContain` "sha256:"
         configAfterSetup `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
         setupAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_create_user_access_key_id")
         setupAdminKey `shouldContain` "ADMINKEY"
@@ -835,6 +872,7 @@ main = mainWithSuite "prodbox-integration-cli" $ do
         teardownStdout `shouldContain` "DELETED_ACCESS_KEYS=1"
 
         configAfterTeardown <- readFile (tmpDir </> "prodbox-config.dhall")
+        configAfterTeardown `shouldContain` "sha256:"
         configAfterTeardown `shouldContain` "access_key_id = \"\""
         configAfterTeardown `shouldContain` "secret_access_key = \"\""
         teardownAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_delete_user_access_key_id")

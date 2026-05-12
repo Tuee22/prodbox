@@ -5,6 +5,9 @@
 -- Usage:
 --   let Config = ./prodbox-config-types.dhall
 --   in  Config::{ aws = Config.default.aws // { access_key_id = "AKIA...", ... }, ... }
+--   After editing a committed repo-root config file, rerun
+--   `dhall freeze --all --inplace prodbox-config.dhall` so the import keeps its
+--   required `sha256:` annotation.
 
 { Type =
     { aws :

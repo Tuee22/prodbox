@@ -1,0 +1,62 @@
+.TH PRODBOX 1
+.SH NAME
+prodbox \- Home Kubernetes operator
+.SH SYNOPSIS
+.B prodbox
+[GLOBAL OPTIONS] COMMAND
+.SH DESCRIPTION
+Typed command registry for the supported prodbox command surface.
+.SH COMMAND GROUPS
+.SH SUBCOMMANDS
+.TP
+\fBaws\fR
+AWS IAM and quota management
+.TP
+\fBcharts\fR
+Bespoke Helm chart lifecycle
+.TP
+\fBcheck-code\fR
+Run policy, lint, and type checks
+.TP
+\fBconfig\fR
+Configuration management
+.TP
+\fBdns\fR
+Route 53 inspection
+.TP
+\fBdocs\fR
+Generated-documentation maintenance
+.TP
+\fBgateway\fR
+Gateway daemon operations
+.TP
+\fBhost\fR
+Host prerequisite checks
+.TP
+\fBk8s\fR
+Kubernetes helpers
+.TP
+\fBlint\fR
+Doctrine lint surfaces
+.TP
+\fBpulumi\fR
+AWS validation stack lifecycle
+.TP
+\fBrke2\fR
+Local cluster lifecycle
+.TP
+\fBtest\fR
+Named test suites
+.TP
+\fBtla-check\fR
+Run TLA+ checks
+.TP
+\fBworkload\fR
+Internal public workload runtime
+.SH EXAMPLES
+.TP
+\fBprodbox config validate\fR
+Validate the repository Dhall config.
+.TP
+\fBprodbox test all\fR
+Run the full test surface.

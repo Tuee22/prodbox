@@ -1,6 +1,24 @@
 module Main (main) where
 
-import Prodbox.CheckCode (haskellStyleViolations)
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Prodbox.CLI.Docs
+  ( renderBashCompletion
+  , renderGroupManpage
+  , renderTopLevelManpage
+  )
+import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
+import Prodbox.CheckCode
+  ( GeneratedSectionRule
+  , TrackedGeneratedPath
+  , generatedSectionRules
+  , haskellStyleViolations
+  , renderGeneratedSection
+  , renderTrackedGeneratedPath
+  , rendererDeterminismViolations
+  , rendererSourceViolations
+  , trackingGeneratedPaths
+  )
+import Prodbox.PublicEdge (renderHelmRouteInventory)
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import TestSupport
@@ -38,3 +56,100 @@ main = mainWithSuite "prodbox-haskell-style" $ do
       commandDoc <- readFile (repoRoot </> "documents" </> "cli" </> "commands.md")
       commandDoc `shouldContain` "<!-- prodbox:command-registry.markdown:start -->"
       commandDoc `shouldContain` "<!-- prodbox:command-registry.markdown:end -->"
+
+    it "keeps the committed repo-root Dhall import frozen" $ do
+      repoRoot <- getCurrentDirectory
+      configDhall <- readFile (repoRoot </> "prodbox-config.dhall")
+      configDhall `shouldContain` "sha256:"
+
+    it "keeps daemon paths free of self-daemonization primitives" $ do
+      repoRoot <- getCurrentDirectory
+      mapM_
+        (assertNoSelfDaemonization repoRoot)
+        [ "src/Prodbox/Gateway/Daemon.hs"
+        , "src/Prodbox/Workload.hs"
+        ]
+
+    propertyTest "generated renderers stay byte-stable across repeated evaluation" $
+      all generatedSectionStable generatedSectionRules
+        && all trackedGeneratedPathStable trackingGeneratedPaths
+
+    it "keeps generated renderer modules free of forbidden nondeterministic inputs" $ do
+      repoRoot <- getCurrentDirectory
+      violations <- rendererDeterminismViolations repoRoot
+      violations `shouldBe` []
+
+    it "flags forbidden renderer input classes in synthetic examples" $
+      mapM_ assertSyntheticDeterminismViolation syntheticRendererExamples
+
+    goldenTest
+      "keeps the generated top-level manpage byte-stable"
+      "share/man/man1/prodbox.1"
+      (pure (BL8.pack (renderTopLevelManpage commandRegistry)))
+
+    goldenTest
+      "keeps the generated charts manpage byte-stable"
+      "share/man/man1/prodbox-charts.1"
+      (pure (BL8.pack (renderGroupManpage chartsSpec)))
+
+    goldenTest
+      "keeps the generated bash completion byte-stable"
+      "share/completion/bash/prodbox"
+      (pure (BL8.pack (renderBashCompletion commandRegistry)))
+
+    it "keeps the generated route inventory marker-delimited in chart manifests" $ do
+      repoRoot <- getCurrentDirectory
+      apiRouteTemplate <- readFile (repoRoot </> "charts" </> "api" </> "templates" </> "http-route.yaml")
+      apiRouteTemplate `shouldContain` "{{/* prodbox:route-registry:start */}}"
+      apiRouteTemplate `shouldContain` "{{/* prodbox:route-registry:end */}}"
+      apiRouteTemplate `shouldContain` renderHelmRouteInventory
+ where
+  chartsSpec =
+    case filter ((== "charts") . name) (children commandRegistry) of
+      chartGroup : _ -> chartGroup
+      [] -> commandRegistry
+
+assertNoSelfDaemonization :: FilePath -> FilePath -> IO ()
+assertNoSelfDaemonization repoRoot relativePath = do
+  contents <- readFile (repoRoot </> relativePath)
+  contents `shouldNotContain` "System.Posix.Process"
+  contents `shouldNotContain` "forkProcess"
+  contents `shouldNotContain` "setsid"
+
+generatedSectionStable :: GeneratedSectionRule -> Bool
+generatedSectionStable rule =
+  let firstRender = renderGeneratedSection rule
+      secondRender = renderGeneratedSection rule
+   in firstRender == secondRender
+
+trackedGeneratedPathStable :: TrackedGeneratedPath -> Bool
+trackedGeneratedPathStable rule =
+  let firstRender = renderTrackedGeneratedPath rule
+      secondRender = renderTrackedGeneratedPath rule
+   in firstRender == secondRender
+
+assertSyntheticDeterminismViolation :: (String, String, String, String) -> IO ()
+assertSyntheticDeterminismViolation (label, sourceText, expectedClass, expectedInput) = do
+  let violations = rendererSourceViolations ("synthetic-" ++ label) sourceText
+      violationText = unlines violations
+  violationText `shouldContain` expectedClass
+  violationText `shouldContain` expectedInput
+
+syntheticRendererExamples :: [(String, String, String, String)]
+syntheticRendererExamples =
+  [ ("timestamp", "render = getCurrentTime", "timestamps", "getCurrentTime")
+  , ("random", "render = randomIO", "random-ids", "randomIO")
+  , ("locale", "render values = sort values", "locale-dependent-ordering", "sort")
+  ,
+    ( "terminal"
+    , "render = System.Console.Terminal.Size.size"
+    , "terminal-width-dependent-wrapping"
+    , "System.Console.Terminal.Size"
+    )
+  ,
+    ( "environment"
+    , "render = getCurrentDirectory"
+    , "environment-dependent-paths"
+    , "getCurrentDirectory"
+    )
+  ]

@@ -46,15 +46,38 @@ The supported chart doctrine is:
    route consumed by the shipped browser, API, WebSocket, Harbor, and MinIO surfaces.
 9. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
    path is `prodbox rke2 reconcile`.
+10. Chart templates that consume the canonical public-edge path catalog do so through the
+    marker-delimited generated `route-registry` blocks maintained by `prodbox docs generate`,
+    not through hand-maintained inline route inventories.
+11. Chart metadata is doctrine-owned: every chart helper exports
+    `app.kubernetes.io/name`, `app.kubernetes.io/managed-by: prodbox`, and
+    `prodbox.io/chart-root`, and `prodbox lint chart` validates those invariants together with
+    `Chart.yaml` metadata.
+
+## 1A. Chart Lint and Route Inventory Generation
+
+The supported chart-maintenance surface is split between `prodbox lint chart` and
+`prodbox docs generate`.
+
+- `prodbox lint chart` validates every chart under `charts/` for the canonical
+  `Chart.yaml` metadata fields (`apiVersion: v2`, `name`, `version`, `appVersion`), the
+  required chart-label helper lines, and drift on the generated `route-registry` sections.
+- `prodbox docs generate` refreshes the marker-delimited route inventory consumed by:
+  - `charts/keycloak/templates/gateway.yaml`
+  - `charts/vscode/templates/http-route.yaml`
+  - `charts/api/templates/http-route.yaml`
+  - `charts/websocket/templates/http-route.yaml`
+- The generated route inventory is derived from `src/Prodbox/PublicEdge.hs`, so the public
+  path catalog stays synchronized across docs, chart manifests, and validation surfaces.
 
 ## 2. Singleton Chart Identity Rule
 
 One Helm release per chart name exists cluster-wide at any time.
 
 - Before deployment, the Haskell runtime inspects `helm list --all-namespaces`.
-- If any release in the plan already exists, the entire deploy is rejected before Helm mutate
-  operations begin.
-- Reinstall requires an explicit `prodbox charts delete <chart>` first.
+- If any release in the plan already exists, `prodbox charts deploy <chart>` reports the current
+  deployment surface as success and performs no Helm or storage mutation.
+- Resetting the chart stack still requires an explicit `prodbox charts delete <chart>` first.
 
 ## 3. Root-Chart Workload Namespace and Shared Public-Edge Attachment Rule
 

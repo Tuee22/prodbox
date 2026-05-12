@@ -1,3 +1,15 @@
+{{/* prodbox:route-registry:start */}}
+{{/* Canonical public-edge route inventory generated from `src/Prodbox/PublicEdge.hs`. */}}
+{{/* PUBLIC_FQDN=test.resolvefintech.com */}}
+{{/* ROUTE auth=/auth */}}
+{{/* ROUTE vscode=/vscode */}}
+{{/* ROUTE api=/api */}}
+{{/* ROUTE websocket=/ws */}}
+{{/* ROUTE harbor=/harbor */}}
+{{/* ROUTE minio=/minio */}}
+{{/* ADMIN_ROUTE harbor=/harbor */}}
+{{/* ADMIN_ROUTE minio=/minio */}}
+{{/* prodbox:route-registry:end */}}
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:

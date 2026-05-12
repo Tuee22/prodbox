@@ -1,0 +1,24 @@
+.TH PRODBOX_pulumi 1
+.SH NAME
+prodbox-pulumi \- AWS validation stack lifecycle
+.SH SYNOPSIS
+.B prodbox pulumi
+.SH DESCRIPTION
+Pulumi-backed AWS validation stack commands.
+.SH SUBCOMMANDS
+.TP
+\fBeks-resources\fR
+Provision or inspect EKS test stack
+.TP
+\fBeks-destroy\fR
+Destroy EKS test stack
+.TP
+\fBtest-resources\fR
+Provision or inspect HA RKE2 test stack
+.TP
+\fBtest-destroy\fR
+Destroy HA RKE2 test stack
+.SH EXAMPLES
+.TP
+\fBprodbox pulumi eks-resources\fR
+Reconcile the EKS validation stack.

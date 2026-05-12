@@ -1,16 +1,25 @@
 module Prodbox.CheckCode
   ( DoctrineViolation (..)
+  , GeneratedSectionRule (..)
   , doctrineViolationsInPaths
+  , generatedSectionRules
   , haskellStyleViolations
   , listRepoOwnedPaths
+  , renderGeneratedSection
+  , renderTrackedGeneratedPath
+  , rendererDeterminismViolations
+  , rendererSourceViolations
   , runCheckCode
   , runDocsCommand
   , runLintCommand
+  , TrackedGeneratedPath (..)
+  , trackingGeneratedPaths
   )
 where
 
 import Control.Monad (forM)
-import Data.List (isInfixOf, isPrefixOf, sort)
+import Data.Char (isAlphaNum)
+import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , syncBuiltOperatorBinary
@@ -19,8 +28,16 @@ import Prodbox.CLI.Command
   ( DocsCommand (..)
   , LintCommand (..)
   )
-import Prodbox.CLI.Docs (renderMarkdownCommandReference)
-import Prodbox.CLI.Spec (commandRegistry)
+import Prodbox.CLI.Docs
+  ( renderBashCompletion
+  , renderFishCompletion
+  , renderGroupManpage
+  , renderMarkdownCommandReference
+  , renderTopLevelManpage
+  , renderZshCompletion
+  )
+import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
+import Prodbox.PublicEdge (renderHelmRouteInventory)
 import System.Directory
   ( copyFile
   , createDirectoryIfMissing
@@ -68,7 +85,15 @@ data GeneratedSectionRule = GeneratedSectionRule
   , generatedSectionPath :: FilePath
   , generatedSectionStartMarker :: String
   , generatedSectionEndMarker :: String
-  , generatedSectionBody :: String
+  , generatedSectionRender :: () -> String
+  , generatedSectionRendererSources :: [FilePath]
+  }
+
+data TrackedGeneratedPath = TrackedGeneratedPath
+  { trackedGeneratedPathKey :: String
+  , trackedGeneratedPathPath :: FilePath
+  , trackedGeneratedPathRender :: () -> String
+  , trackedGeneratedPathRendererSources :: [FilePath]
   }
 
 generatedSectionRules :: [GeneratedSectionRule]
@@ -78,9 +103,85 @@ generatedSectionRules =
       , generatedSectionPath = "documents/cli/commands.md"
       , generatedSectionStartMarker = "<!-- prodbox:command-registry.markdown:start -->"
       , generatedSectionEndMarker = "<!-- prodbox:command-registry.markdown:end -->"
-      , generatedSectionBody = renderMarkdownCommandReference commandRegistry
+      , generatedSectionRender = const (renderMarkdownCommandReference commandRegistry)
+      , generatedSectionRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "route-registry.api"
+      , generatedSectionPath = "charts/api/templates/http-route.yaml"
+      , generatedSectionStartMarker = "{{/* prodbox:route-registry:start */}}"
+      , generatedSectionEndMarker = "{{/* prodbox:route-registry:end */}}"
+      , generatedSectionRender = const renderHelmRouteInventory
+      , generatedSectionRendererSources = ["src/Prodbox/PublicEdge.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "route-registry.keycloak"
+      , generatedSectionPath = "charts/keycloak/templates/gateway.yaml"
+      , generatedSectionStartMarker = "{{/* prodbox:route-registry:start */}}"
+      , generatedSectionEndMarker = "{{/* prodbox:route-registry:end */}}"
+      , generatedSectionRender = const renderHelmRouteInventory
+      , generatedSectionRendererSources = ["src/Prodbox/PublicEdge.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "route-registry.vscode"
+      , generatedSectionPath = "charts/vscode/templates/http-route.yaml"
+      , generatedSectionStartMarker = "{{/* prodbox:route-registry:start */}}"
+      , generatedSectionEndMarker = "{{/* prodbox:route-registry:end */}}"
+      , generatedSectionRender = const renderHelmRouteInventory
+      , generatedSectionRendererSources = ["src/Prodbox/PublicEdge.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "route-registry.websocket"
+      , generatedSectionPath = "charts/websocket/templates/http-route.yaml"
+      , generatedSectionStartMarker = "{{/* prodbox:route-registry:start */}}"
+      , generatedSectionEndMarker = "{{/* prodbox:route-registry:end */}}"
+      , generatedSectionRender = const renderHelmRouteInventory
+      , generatedSectionRendererSources = ["src/Prodbox/PublicEdge.hs"]
       }
   ]
+
+trackingGeneratedPaths :: [TrackedGeneratedPath]
+trackingGeneratedPaths =
+  TrackedGeneratedPath
+    { trackedGeneratedPathKey = "command-registry.manpage.prodbox"
+    , trackedGeneratedPathPath = "share/man/man1/prodbox.1"
+    , trackedGeneratedPathRender = const (renderTopLevelManpage commandRegistry)
+    , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+    }
+    : map commandGroupManpageRule (children commandRegistry)
+    ++ [ TrackedGeneratedPath
+          { trackedGeneratedPathKey = "command-registry.completion.bash"
+          , trackedGeneratedPathPath = "share/completion/bash/prodbox"
+          , trackedGeneratedPathRender = const (renderBashCompletion commandRegistry)
+          , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+          }
+       , TrackedGeneratedPath
+          { trackedGeneratedPathKey = "command-registry.completion.zsh"
+          , trackedGeneratedPathPath = "share/completion/zsh/_prodbox"
+          , trackedGeneratedPathRender = const (renderZshCompletion commandRegistry)
+          , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+          }
+       , TrackedGeneratedPath
+          { trackedGeneratedPathKey = "command-registry.completion.fish"
+          , trackedGeneratedPathPath = "share/completion/fish/prodbox.fish"
+          , trackedGeneratedPathRender = const (renderFishCompletion commandRegistry)
+          , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+          }
+       ]
+ where
+  commandGroupManpageRule commandGroup =
+    TrackedGeneratedPath
+      { trackedGeneratedPathKey = "command-registry.manpage." ++ name commandGroup
+      , trackedGeneratedPathPath = "share/man/man1/prodbox-" ++ name commandGroup ++ ".1"
+      , trackedGeneratedPathRender = const (renderGroupManpage commandGroup)
+      , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+      }
+
+renderGeneratedSection :: GeneratedSectionRule -> String
+renderGeneratedSection rule = generatedSectionRender rule ()
+
+renderTrackedGeneratedPath :: TrackedGeneratedPath -> String
+renderTrackedGeneratedPath rule = trackedGeneratedPathRender rule ()
 
 doctrineViolationsInPaths :: [FilePath] -> [DoctrineViolation]
 doctrineViolationsInPaths =
@@ -132,8 +233,8 @@ runCheckCode repoRoot = do
 runDocsCommand :: FilePath -> DocsCommand -> IO ExitCode
 runDocsCommand repoRoot command =
   case command of
-    DocsCheck -> runGeneratedSectionLint repoRoot False
-    DocsGenerate -> runGeneratedSectionLint repoRoot True
+    DocsCheck -> runGeneratedArtifactLint repoRoot False
+    DocsGenerate -> runGeneratedArtifactLint repoRoot True
 
 runLintCommand :: FilePath -> LintCommand -> IO ExitCode
 runLintCommand repoRoot command = do
@@ -142,7 +243,7 @@ runLintCommand repoRoot command = do
   case command of
     LintAll -> runLintAll repoRoot environment
     LintFiles _writeEnabled -> runFileLint repoRoot
-    LintDocs writeEnabled -> runGeneratedSectionLint repoRoot writeEnabled
+    LintDocs writeEnabled -> runGeneratedArtifactLint repoRoot writeEnabled
     LintHaskell writeEnabled -> runHaskellLint repoRoot environment writeEnabled
     LintChart -> runChartLint repoRoot
 
@@ -152,7 +253,7 @@ runLintAll repoRoot environment = do
   case filesExit of
     ExitFailure _ -> pure filesExit
     ExitSuccess -> do
-      docsExit <- runGeneratedSectionLint repoRoot False
+      docsExit <- runGeneratedArtifactLint repoRoot False
       case docsExit of
         ExitFailure _ -> pure docsExit
         ExitSuccess -> do
@@ -170,34 +271,29 @@ runFileLint repoRoot = do
       thinMainResult <- verifyThinMainEntrypoint repoRoot
       case thinMainResult of
         Left err -> failWith err
-        Right () -> pure ExitSuccess
+        Right () -> do
+          dhallViolations <- checkFrozenDhallImports repoRoot
+          case dhallViolations of
+            [] -> runTrackedGeneratedPathLint repoRoot
+            _ ->
+              failWith
+                (unlines ("Dhall freeze lint failed:" : map ("- " ++) dhallViolations))
 
-runGeneratedSectionLint :: FilePath -> Bool -> IO ExitCode
-runGeneratedSectionLint repoRoot writeEnabled = do
-  results <-
-    forM generatedSectionRules $ \rule -> do
-      let targetPath = repoRoot </> generatedSectionPath rule
-      fileExists <- doesFileExist targetPath
-      if not fileExists
-        then pure (Left (missingGeneratedTargetMessage rule))
-        else do
-          contents <- readFile targetPath
-          let forcedContents = length contents `seq` contents
-          pure $
-            case spliceGeneratedSection forcedContents rule of
-              Left err -> Left err
-              Right expectedContents ->
-                if writeEnabled
-                  then Right (targetPath, expectedContents, forcedContents /= expectedContents)
-                  else
-                    if forcedContents == expectedContents
-                      then Right (targetPath, expectedContents, False)
-                      else Left (generatedSectionDriftMessage targetPath rule)
+runGeneratedArtifactLint :: FilePath -> Bool -> IO ExitCode
+runGeneratedArtifactLint repoRoot writeEnabled = do
+  results <- processGeneratedArtifacts repoRoot writeEnabled
   case firstLeft results of
     Just err -> failWith err
     Nothing -> do
       whenWriteRepoFiles results
       pure ExitSuccess
+
+runTrackedGeneratedPathLint :: FilePath -> IO ExitCode
+runTrackedGeneratedPathLint repoRoot = do
+  results <- processGeneratedArtifacts repoRoot False
+  case firstLeft results of
+    Just err -> failWith err
+    Nothing -> pure ExitSuccess
 
 runHaskellLint :: FilePath -> [(String, String)] -> Bool -> IO ExitCode
 runHaskellLint repoRoot environment writeEnabled = do
@@ -237,14 +333,21 @@ runChartLint :: FilePath -> IO ExitCode
 runChartLint repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
   let chartFiles =
-        [ path
-        | path <- repoPaths
-        , takeFileName path == "Chart.yaml"
-        , "charts" `isPrefixOf` path
-        ]
+        sort
+          [ path
+          | path <- repoPaths
+          , takeFileName path == "Chart.yaml"
+          , "charts" `isPrefixOf` path
+          ]
   if null chartFiles
     then failWith "No chart manifests found under `charts/`."
-    else pure ExitSuccess
+    else do
+      chartViolations <- fmap concat (forM chartFiles (chartViolationsFor repoRoot))
+      generatedResults <- processChartGeneratedArtifacts repoRoot
+      case chartViolations ++ leftMessages generatedResults of
+        [] -> pure ExitSuccess
+        violations ->
+          failWith (unlines ("Chart lint failed:" : map ("- " ++) violations))
 
 runDoctrineAlignmentCheck :: FilePath -> IO ExitCode
 runDoctrineAlignmentCheck repoRoot = do
@@ -361,6 +464,107 @@ checkTestSuiteInterfaces repoRoot = do
                 _ -> go violations currentSuite remaining
               else go violations currentSuite remaining
 
+checkFrozenDhallImports :: FilePath -> IO [String]
+checkFrozenDhallImports repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  concat
+    <$> forM
+      [ path
+      | path <- repoPaths
+      , ".dhall" `isSuffixOf` path
+      ]
+      ( \relativePath -> do
+          contents <- readFile (repoRoot </> relativePath)
+          pure (unfrozenDhallImportViolations relativePath contents)
+      )
+
+unfrozenDhallImportViolations :: FilePath -> String -> [String]
+unfrozenDhallImportViolations relativePath contents =
+  let fileLines = lines contents
+   in [ relativePath
+        ++ " contains an unfrozen Dhall import on line "
+        ++ show lineNumber
+        ++ ". Run `dhall freeze --all --inplace "
+        ++ relativePath
+        ++ "`."
+      | (lineNumber, lineText) <- zip [1 :: Int ..] fileLines
+      , let trimmedLine = trimLeft lineText
+      , not ("--" `isPrefixOf` trimmedLine)
+      , containsLocalDhallImport lineText
+      , not (dhallImportIsFrozen fileLines lineNumber)
+      ]
+
+containsLocalDhallImport :: String -> Bool
+containsLocalDhallImport =
+  any isLocalImportToken . words
+ where
+  isLocalImportToken token =
+    "./" `isPrefixOf` token || "../" `isPrefixOf` token || "~/" `isPrefixOf` token
+
+dhallImportIsFrozen :: [String] -> Int -> Bool
+dhallImportIsFrozen fileLines lineNumber =
+  any ("sha256:" `isInfixOf`) (take 3 (drop (lineNumber - 1) fileLines))
+
+rendererDeterminismViolations :: FilePath -> IO [String]
+rendererDeterminismViolations repoRoot =
+  fmap concat $
+    forM uniqueRendererSources $ \relativePath -> do
+      contents <- readFile (repoRoot </> relativePath)
+      pure (rendererSourceViolations relativePath contents)
+ where
+  uniqueRendererSources =
+    dedupeSorted
+      ( concatMap generatedSectionRendererSources generatedSectionRules
+          ++ concatMap trackedGeneratedPathRendererSources trackingGeneratedPaths
+      )
+
+rendererSourceViolations :: FilePath -> String -> [String]
+rendererSourceViolations sourceLabel sourceText =
+  concatMap violationsFor forbiddenRendererInputs
+ where
+  sourceTokens = tokenizeSource sourceText
+  violationsFor (inputClass, tokens, substrings) =
+    let matchedTokens = filter (`elem` sourceTokens) tokens
+        matchedSubstrings = filter (`isInfixOf` sourceText) substrings
+        matchedInputs = matchedTokens ++ matchedSubstrings
+     in [ sourceLabel
+          ++ " uses forbidden renderer input class `"
+          ++ inputClass
+          ++ "` via "
+          ++ commaSeparated matchedInputs
+          ++ "."
+        | not (null matchedInputs)
+        ]
+  forbiddenRendererInputs =
+    [ ("timestamps", ["getCurrentTime", "getZonedTime", "getPOSIXTime"], [])
+    , ("random-ids", ["randomIO", "randomRIO"], ["UUID"])
+    , ("locale-dependent-ordering", ["sort"], [])
+    ,
+      ( "terminal-width-dependent-wrapping"
+      , ["getTerminalSize"]
+      , ["System.Console.Terminal.Size", "COLUMNS"]
+      )
+    , ("environment-dependent-paths", ["getCurrentDirectory", "getHomeDirectory", "getEnv"], [])
+    ]
+
+tokenizeSource :: String -> [String]
+tokenizeSource =
+  words . map normalizeCharacter
+ where
+  normalizeCharacter character
+    | isAlphaNum character || character == '_' = character
+    | otherwise = ' '
+
+commaSeparated :: [String] -> String
+commaSeparated = intercalate ", " . sort
+
+dedupeSorted :: [String] -> [String]
+dedupeSorted = go . sort
+ where
+  go [] = []
+  go (value : remaining) =
+    value : go (dropWhile (== value) remaining)
+
 rewriteCabalFile :: FilePath -> [(String, String)] -> IO ExitCode
 rewriteCabalFile repoRoot environment = do
   cabalTextResult <- renderFormattedCabal repoRoot environment
@@ -415,7 +619,7 @@ spliceGeneratedSection contents rule = do
                 ( unlines
                     ( beforeMarker
                         ++ [startMarker]
-                        ++ lines (generatedSectionBody rule)
+                        ++ lines (renderGeneratedSection rule)
                         ++ [endMarker]
                         ++ trailingLines
                     )
@@ -423,19 +627,132 @@ spliceGeneratedSection contents rule = do
 
 generatedSectionDriftMessage :: FilePath -> GeneratedSectionRule -> String
 generatedSectionDriftMessage targetPath rule =
+  generatedAssetDriftMessage targetPath (generatedSectionKey rule)
+
+generatedAssetDriftMessage :: FilePath -> String -> String
+generatedAssetDriftMessage targetPath registryKey =
   unlines
     [ targetPath
-    , generatedSectionKey rule
+    , registryKey
     , "Run `prodbox docs generate` to update."
     ]
 
 missingGeneratedTargetMessage :: GeneratedSectionRule -> String
 missingGeneratedTargetMessage rule =
+  missingGeneratedFileMessage (generatedSectionPath rule) (generatedSectionKey rule)
+
+missingGeneratedFileMessage :: FilePath -> String -> String
+missingGeneratedFileMessage path registryKey =
   "Missing generated documentation target `"
-    ++ generatedSectionPath rule
+    ++ path
     ++ "` for registry key `"
-    ++ generatedSectionKey rule
+    ++ registryKey
     ++ "`."
+
+processGeneratedArtifacts :: FilePath -> Bool -> IO [Either String (FilePath, String, Bool)]
+processGeneratedArtifacts repoRoot writeEnabled = do
+  sectionResults <- forM generatedSectionRules (processGeneratedSection repoRoot writeEnabled)
+  fileResults <- forM trackingGeneratedPaths (processTrackedGeneratedPath repoRoot writeEnabled)
+  pure (sectionResults ++ fileResults)
+
+processGeneratedSection
+  :: FilePath -> Bool -> GeneratedSectionRule -> IO (Either String (FilePath, String, Bool))
+processGeneratedSection repoRoot writeEnabled rule = do
+  let targetPath = repoRoot </> generatedSectionPath rule
+  fileExists <- doesFileExist targetPath
+  if not fileExists
+    then pure (Left (missingGeneratedTargetMessage rule))
+    else do
+      contents <- readFile targetPath
+      let forcedContents = length contents `seq` contents
+      pure $
+        case spliceGeneratedSection forcedContents rule of
+          Left err -> Left err
+          Right expectedContents ->
+            if writeEnabled
+              then Right (targetPath, expectedContents, forcedContents /= expectedContents)
+              else
+                if forcedContents == expectedContents
+                  then Right (targetPath, expectedContents, False)
+                  else Left (generatedSectionDriftMessage targetPath rule)
+
+processTrackedGeneratedPath
+  :: FilePath -> Bool -> TrackedGeneratedPath -> IO (Either String (FilePath, String, Bool))
+processTrackedGeneratedPath repoRoot writeEnabled rule = do
+  let targetPath = repoRoot </> trackedGeneratedPathPath rule
+      expectedContents = renderTrackedGeneratedPath rule
+  fileExists <- doesFileExist targetPath
+  case (fileExists, writeEnabled) of
+    (False, False) ->
+      pure
+        ( Left
+            ( missingGeneratedFileMessage
+                (trackedGeneratedPathPath rule)
+                (trackedGeneratedPathKey rule)
+            )
+        )
+    (False, True) -> pure (Right (targetPath, expectedContents, True))
+    (True, _) -> do
+      currentContents <- readFile targetPath
+      let hasDrift = currentContents /= expectedContents
+      pure $
+        if writeEnabled || not hasDrift
+          then Right (targetPath, expectedContents, hasDrift)
+          else Left (generatedAssetDriftMessage targetPath (trackedGeneratedPathKey rule))
+
+processChartGeneratedArtifacts :: FilePath -> IO [Either String (FilePath, String, Bool)]
+processChartGeneratedArtifacts repoRoot =
+  forM
+    [ rule
+    | rule <- generatedSectionRules
+    , "charts/" `isPrefixOf` generatedSectionPath rule
+    ]
+    (processGeneratedSection repoRoot False)
+
+chartViolationsFor :: FilePath -> FilePath -> IO [String]
+chartViolationsFor repoRoot relativeChartPath = do
+  let absoluteChartPath = repoRoot </> relativeChartPath
+      chartDir = takeDirectory absoluteChartPath
+      helperPath = chartDir </> "templates" </> "_helpers.tpl"
+  chartContents <- readFile absoluteChartPath
+  helperExists <- doesFileExist helperPath
+  helperViolations <-
+    if helperExists
+      then do
+        helperContents <- readFile helperPath
+        pure (labelViolations helperPath helperContents)
+      else pure [helperPath ++ " is missing the shared label helper."]
+  pure (manifestViolations relativeChartPath chartContents ++ helperViolations)
+ where
+  manifestViolations path contents =
+    missingPrefixedFields path contents ["apiVersion: v2", "name:", "version:", "appVersion:"]
+
+labelViolations :: FilePath -> String -> [String]
+labelViolations helperPath contents =
+  missingPrefixedFields
+    helperPath
+    contents
+    [ "app.kubernetes.io/name:"
+    , "app.kubernetes.io/managed-by: prodbox"
+    , "prodbox.io/chart-root:"
+    ]
+
+missingPrefixedFields :: FilePath -> String -> [String] -> [String]
+missingPrefixedFields path contents =
+  map missingFieldMessage . filter (not . containsField)
+ where
+  normalizedLines = map trimLine (lines contents)
+  containsField expectedPrefix =
+    any (expectedPrefix `isPrefixOf`) normalizedLines
+  missingFieldMessage expectedPrefix =
+    path ++ " is missing required chart field `" ++ expectedPrefix ++ "`."
+
+leftMessages :: [Either String right] -> [String]
+leftMessages [] = []
+leftMessages (value : remaining) =
+  case value of
+    Left err -> err : leftMessages remaining
+    Right _ -> leftMessages remaining
 
 whenWriteRepoFiles :: [Either String (FilePath, String, Bool)] -> IO ()
 whenWriteRepoFiles results =

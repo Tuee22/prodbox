@@ -108,7 +108,7 @@ replicas, synchronous replication, and no embedded chart-local PostgreSQL subcha
 ## Sprint 3.1: Haskell Chart Runtime and Deterministic Retained Storage ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -133,7 +133,7 @@ supported platform doctrine.
 ### Current Validation State
 
 - `test/unit/Main.hs` proves deterministic Haskell chart-plan and storage-binding behavior.
-- `test/integration/cli/Main.hs` proves native built-frontend `prodbox charts
+- `test/integration/CliSuite.hs` proves native built-frontend `prodbox charts
   list|status|deploy|delete` behavior against fake `helm` and `kubectl`, including explicit
   failure guidance when operators try to address internal `keycloak-postgres` or `redis`
   dependency releases directly.
@@ -559,7 +559,7 @@ Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
 ## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Parser.hs`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Parser.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
 `documents/engineering/cli_command_surface.md`
 

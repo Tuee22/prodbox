@@ -27,12 +27,16 @@ module Prodbox.CLI.Command
   )
 where
 
-import Prodbox.CLI.Spec (CommandListingFormat (..))
-
 data CommandRequest
   = RunNative NativeCommand
   | ShowCommands CommandListingFormat
   | ShowHelp [String]
+  deriving (Eq, Show)
+
+data CommandListingFormat
+  = CommandsPlain
+  | CommandsTree
+  | CommandsJson
   deriving (Eq, Show)
 
 data NativeCommand

@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="aws charts check-code config dns docs gateway host k8s lint pulumi rke2 test tla-check workload"
+    words="aws charts check-code commands config dns docs gateway help host k8s lint pulumi rke2 test tla-check workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in

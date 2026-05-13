@@ -742,7 +742,8 @@ processTrackedGeneratedPath repoRoot writeEnabled rule = do
     (False, True) -> pure (Right (targetPath, expectedContents, True))
     (True, _) -> do
       currentContents <- readFile targetPath
-      let hasDrift = currentContents /= expectedContents
+      let forcedContents = length currentContents `seq` currentContents
+          hasDrift = forcedContents /= expectedContents
       pure $
         if writeEnabled || not hasDrift
           then Right (targetPath, expectedContents, hasDrift)

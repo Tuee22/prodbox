@@ -23,7 +23,7 @@ module Prodbox.Settings
   )
 where
 
-import Data.Aeson (FromJSON, eitherDecode)
+import Data.Aeson (FromJSON, ToJSON, eitherDecode)
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Text (Text)
@@ -53,18 +53,18 @@ data Credentials = Credentials
   , session_token :: Maybe Text
   , region :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data Route53Section = Route53Section
   { zone_id :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data DomainSection = DomainSection
   { demo_fqdn :: Text
   , demo_ttl :: Natural
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data MetallbBgpPeer = MetallbBgpPeer
   { peer_name :: Text
@@ -73,7 +73,7 @@ data MetallbBgpPeer = MetallbBgpPeer
   , my_asn :: Natural
   , ebgp_multi_hop :: Maybe Bool
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data AcmeSection = AcmeSection
   { email :: Text
@@ -81,7 +81,7 @@ data AcmeSection = AcmeSection
   , eab_key_id :: Maybe Text
   , eab_hmac_key :: Maybe Text
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data DeploymentSection = DeploymentSection
   { dev_mode :: Bool
@@ -94,12 +94,12 @@ data DeploymentSection = DeploymentSection
   , api_replicas :: Maybe Natural
   , websocket_replicas :: Maybe Natural
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data StorageSection = StorageSection
   { manual_pv_host_root :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data ConfigFile = ConfigFile
   { aws :: Credentials
@@ -110,7 +110,7 @@ data ConfigFile = ConfigFile
   , deployment :: DeploymentSection
   , storage :: StorageSection
   }
-  deriving (Eq, Show, Generic, FromJSON)
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data ValidatedSettings = ValidatedSettings
   { validatedConfig :: ConfigFile

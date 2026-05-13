@@ -25,11 +25,7 @@ import Prodbox.CLI.Parser
   , parserInfo
   , validateCommandArgv
   )
-import Prodbox.CLI.Spec
-  ( CommandSpec (..)
-  , commandRegistry
-  , findCommandSpec
-  )
+import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry, findCommandSpec)
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.Error (fatalError)
 import Prodbox.Native (runNativeCommand)
@@ -67,7 +63,7 @@ runCommandRequest request =
     ShowHelp commandPath ->
       case findCommandSpec commandPath of
         Nothing -> failWith ("Unknown help path: " ++ unwords commandPath)
-        Just spec -> putStr (renderCommandHelp spec)
+        Just spec -> putStr (renderCommandHelp commandPath spec)
  where
   dispatch repoRoot command = do
     exitCode <- runNativeCommand repoRoot command

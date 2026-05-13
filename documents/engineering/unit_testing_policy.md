@@ -36,7 +36,7 @@ are owned by [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 In the current repository:
 
 - pure helpers, DAG logic, renderers, and validation helpers should be testable without mocks
-- subprocess fakes belong in built-frontend integration suites such as `test/integration/cli/Main.hs`
+- subprocess fakes belong in the built-frontend integration suite under `test/integration/`
 - prerequisite and runtime orchestration belong in native Haskell modules under `src/Prodbox/`
 
 ## 2. Unit vs Integration Tests
@@ -54,8 +54,7 @@ In the current repository:
 |----------|------------------|----------|
 | Pure helper tests | Parsing, rendering, ADTs, DAG logic, validation helpers | `test/unit/Main.hs` |
 | Parser tests | `argv -> Command` coverage through `execParserPure`, including happy-path and unhappy-path leaf-command cases | `test/unit/Parser.hs` via `prodbox-unit` |
-| Built-frontend integration tests | CLI routing and subprocess behavior against fake tools | `test/integration/cli/Main.hs` |
-| Built-frontend config tests | Direct-Dhall config masking and validation behavior | `test/integration/env/Main.hs` |
+| Built-frontend integration tests | CLI routing, fake-tool subprocess behavior, and direct-Dhall config masking or validation behavior | `test/integration/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs` via `cabal test prodbox-integration` |
 | Native real-world validations | AWS, DNS, gateway, chart, lifecycle, and public-edge proofs | `src/Prodbox/TestValidation.hs` via `prodbox test integration ...` |
 | Daemon lifecycle tests | Daemon startup-precedence and lifecycle-focused coverage, including the `PRODBOX_*` flag/env resolution contract and later drain or signal assertions | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
 | Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
@@ -174,8 +173,8 @@ Avoid:
 Allowed patterns include:
 
 - pure helper tests in `test/unit/Main.hs`
-- fake-tool built-frontend proof in `test/integration/cli/Main.hs`
-- repository-local config proof in `test/integration/env/Main.hs`
+- fake-tool built-frontend proof in `test/integration/CliSuite.hs`
+- repository-local config proof in `test/integration/EnvSuite.hs`
 - real named validation flows behind `prodbox test integration ...`
 - explicit prerequisite and cleanup ownership in native Haskell modules
 
@@ -216,8 +215,8 @@ This SSoT co-owns the public testing doctrine.
 - Owned statement: `prodbox test` is a prerequisite-aware, phase-bannered Haskell test runner with
   explicit named validation ownership.
 - Linked dependents: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
-  `src/Prodbox/TestValidation.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`,
-  `test/integration/env/Main.hs`.
+  `src/Prodbox/TestValidation.hs`, `test/unit/Main.hs`, `test/integration/Main.hs`,
+  `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`.
 
 ## Cross-References
 

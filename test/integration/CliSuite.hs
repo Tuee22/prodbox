@@ -1,4 +1,7 @@
-module Main (main) where
+module CliSuite
+  ( integrationCliSuite
+  )
+where
 
 import Control.Monad (when)
 import Data.List (find, findIndex, isInfixOf, sort)
@@ -28,8 +31,8 @@ import System.Process
   )
 import TestSupport
 
-main :: IO ()
-main = mainWithSuite "prodbox-integration-cli" $ do
+integrationCliSuite :: SuiteBuilder ()
+integrationCliSuite = do
   describe "native Haskell config CLI" $ do
     it "shows masked settings from a repo-root Dhall config" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do

@@ -74,8 +74,8 @@ The Haskell runtime uses explicit success or failure values to move command exec
 Testing splits along the architecture boundary:
 
 - pure helpers and graph behavior are covered in `test/unit/Main.hs`
-- built-frontend command behavior is covered in `test/integration/cli/Main.hs` and
-  `test/integration/env/Main.hs`
+- built-frontend command behavior is covered in `test/integration/Main.hs` through
+  `test/integration/CliSuite.hs` and `test/integration/EnvSuite.hs`
 - real infrastructure-backed validations are covered through the named
   `prodbox test integration ...` commands implemented in `src/Prodbox/TestValidation.hs`
 

@@ -23,15 +23,13 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 `execParserPure` parser-test category, and the `renderError` error-boundary discipline. Sprint
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
-compare, respectively. Current worktree evidence puts Sprints `1.6`, `1.7`, `1.8`, `1.9`,
-`1.11`, `1.12`, `1.13`, `1.14`, `1.15`, and `1.26` in `Active` state: the parser remains
-hand-authored rather than rendered from `CommandSpec`, the full build/apply split is not yet
-generalized across state-changing surfaces, the subprocess and prerequisite surfaces still
-retain compatibility or consolidation residue, the service/retry/error/naming foundations are
-now implemented but not yet fully migrated through their call sites, and the doctrinal single
-`prodbox-integration` stanza plus full property-invariant closure remain incomplete. Sprints
-`1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27` are now implemented in code and
-validated locally. The remaining reopened Phase `1` sprints stay `Planned`.
+compare, respectively. Current worktree evidence puts Sprints `1.7`, `1.8`, `1.12`, `1.13`,
+`1.14`, `1.15`, and `1.26` in `Active` state: the full build/apply split is not yet generalized
+across state-changing surfaces, the subprocess surface still retains compatibility or
+consolidation residue, and the service/retry/error/naming foundations are now implemented but
+not yet fully migrated through their call sites. Sprints `1.6`, `1.9`, `1.10`, `1.11`, `1.20`,
+`1.21`, `1.23`, `1.24`, `1.25`, and `1.27` are now implemented in code and validated locally.
+The remaining reopened Phase `1` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -107,7 +105,7 @@ Sprint `1.26` schedules the `renderError` error-boundary discipline plus hlint r
 - `cabal.project` now carries the repo-level `with-compiler: ghc-9.14.1` pin and the temporary
   `allow-newer: *:base, *:template-haskell` allowance required by the current package set, while
   `prodbox.cabal` carries the package-bound updates required by that toolchain.
-- `test/integration/env/Main.hs` proves built-frontend config masking and validation directly
+- `test/integration/EnvSuite.hs` proves built-frontend config masking and validation directly
   against repository-root Dhall config without recreating `prodbox-config.json`.
 - Named external-proof payloads behind `prodbox test integration ...` run executable native
   Haskell validation flows through `src/Prodbox/TestValidation.hs`.
@@ -132,7 +130,7 @@ Sprint `1.26` schedules the `renderError` error-boundary discipline plus hlint r
 ## Sprint 1.1: Haskell Binary, Build Topology, and Command Surface ✅
 
 **Status**: Done
-**Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `docker/prodbox.Dockerfile`, `docker/`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
+**Implementation**: `app/prodbox/Main.hs`, `src/Prodbox/CLI/`, `src/Prodbox/Native.hs`, `prodbox.cabal`, `cabal.project`, `docker/prodbox.Dockerfile`, `docker/`, `test/unit/Main.hs`, `test/integration/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/dependency_management.md`, `documents/engineering/local_registry_pipeline.md`
 
 ### Objective
@@ -183,7 +181,7 @@ topology on the implemented rewrite path.
   `9.14.1`, and does not create symlinked Haskell tool shims.
 - `prodbox.cabal` and `cabal.project` now implement the explicit repo upgrade required by the
   revised doctrine.
-- `test/unit/Main.hs` and `test/integration/cli/Main.hs` now assert the `docker/prodbox.Dockerfile`
+- `test/unit/Main.hs` and `test/integration/CliSuite.hs` now assert the `docker/prodbox.Dockerfile`
   location and the updated container-build doctrine.
 - Root guidance docs and the governed docs listed in `Docs to update` are aligned in this change
   with the canonical Dockerfile location and the implemented `ghcup` plus `ghc-9.14.1` doctrine.
@@ -261,8 +259,8 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
 - `src/Prodbox/Prerequisite.hs` owns the native prerequisite inventory used by the supported test
   harness, including `tool_curl`, `tool_dig`, AWS access, Pulumi login, kubeconfig-home, and the
   cluster-backed readiness roots used by the named validation flows.
-- `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` remain the built-frontend
-  proof surfaces for the Haskell-owned command surface.
+- `test/integration/Main.hs`, `test/integration/CliSuite.hs`, and `test/integration/EnvSuite.hs`
+  remain the built-frontend proof surfaces for the Haskell-owned command surface.
 - The root guidance docs and governed docs listed in `Docs to update` now describe the Haskell-only
   repository, the current validation harness, and the implemented `check-code` doctrine gate.
 ### Remaining Work
@@ -272,7 +270,7 @@ None.
 ## Sprint 1.3: Local Lifecycle and AWS Validation Foundations on the Haskell Stack ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestRunner.hs`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/`, `src/Prodbox/TestRunner.hs`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/aws_test_environment.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/local_registry_pipeline.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
 ### Objective
@@ -454,9 +452,9 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
 
 None.
 
-## Sprint 1.6: CommandSpec Source-of-Truth Split 🔄
+## Sprint 1.6: CommandSpec Source-of-Truth Split ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, `src/Prodbox/CLI/Json.hs`, `src/Prodbox/App.hs`, `src/Prodbox/CLI/Parser.hs`, `test/unit/Main.hs`, `test/unit/Parser.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`
@@ -508,24 +506,15 @@ Module layout` so the CLI surface is generated from a single typed specification
 2. `prodbox commands --json` emits a stable schema; the golden test passes.
 3. Golden tests cover every leaf command's `--help` output, not just top-level help, per the
    progressive-introspection audit.
-4. The pre-doctrine monolithic `src/Prodbox/CLI/Parser.hs` shape is enqueued in
+4. The pre-doctrine monolithic `src/Prodbox/CLI/Parser.hs` shape is retired from the pending
+   ledger and recorded in the completed cleanup history in
    [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 5. The leaf-`Example` property test fails when any new leaf `CommandSpec` is registered
    without at least one example.
 
 ### Remaining Work
 
-- `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Docs.hs`, `src/Prodbox/CLI/Tree.hs`, and
-  `src/Prodbox/CLI/Json.hs` are implemented, and `prodbox commands` / `prodbox help <path>`
-  already run from `src/Prodbox/App.hs`.
-- The command-registry test surface now includes deterministic tree or JSON goldens, a
-  leaf-help golden assembled from every registered leaf command, and the leaf-`Example`
-  completeness property in `test/unit/Parser.hs`.
-- `src/Prodbox/CLI/Parser.hs` remains a hand-authored source of truth rather than a renderer of
-  `CommandSpec`; the registry drives docs, introspection, and generated artifacts, but not parser
-  construction.
-- `src/Prodbox/CLI/Command.hs` still keeps the command ADTs and parser wiring separate from the
-  registry, so the doctrine's one-structure parser-generation closure is not yet complete.
+None.
 
 ## Sprint 1.7: Plan / Apply Discipline with --dry-run 🔄
 
@@ -615,9 +604,9 @@ Values](../HASKELL_CLI_TOOL.md).
   governed `prodbox check-code` scan rather than in the custom `.hlint.yaml` rule stack named
   by the sprint deliverables.
 
-## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract 🔄
+## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/EffectDAG.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/prerequisite_doctrine.md`,
 `documents/engineering/prerequisite_dag_system.md`
@@ -642,15 +631,7 @@ Effects](../HASKELL_CLI_TOOL.md), including the required error-message contract.
 
 ### Remaining Work
 
-- `src/Prodbox/Prerequisite.hs` already centralizes the prerequisite registry, and
-  `src/Prodbox/EffectDAG.hs` already rejects unknown node IDs during transitive-closure expansion.
-- `test/unit/Main.hs` already exercises registry integrity, closure determinism, cycle absence,
-  and missing-ID failure behavior.
-- `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Prerequisite.hs`,
-  and `src/Prodbox/K8s.hs` now carry remedy hints through the effect-node surface so
-  prerequisite failures include the required node-id / description / remedy triple.
-- Inline prerequisite-style checks still survive outside the registry, so the registry is not yet
-  the sole source of truth for readiness guidance.
+None.
 
 ## Sprint 1.10: Lint, Generated-Section, and Forbidden-Path Stack ✅
 
@@ -716,10 +697,10 @@ Stack](../HASKELL_CLI_TOOL.md) and `Generated Artifacts → The generated-sectio
 
 None.
 
-## Sprint 1.11: hspec → tasty Test-Stanza Migration 🔄
+## Sprint 1.11: hspec → tasty Test-Stanza Migration ✅
 
-**Status**: Active
-**Implementation**: `prodbox.cabal`, `test/unit/Main.hs`, `test/unit/Parser.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `test/haskell-style/Main.hs`, `test/daemon-lifecycle/Main.hs`, `test/pulumi/Main.hs`
+**Status**: Done
+**Implementation**: `prodbox.cabal`, `test/unit/Main.hs`, `test/unit/Parser.hs`, `test/integration/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`, `test/haskell-style/Main.hs`, `test/daemon-lifecycle/Main.hs`, `test/pulumi/Main.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/code_quality.md`
 
@@ -766,14 +747,7 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
 
 ### Remaining Work
 
-- The repository has already migrated off `hspec`: the current public suites are tasty-based and
-  every existing test-suite stanza uses `type: exitcode-stdio-1.0`.
-- `prodbox-haskell-style`, `prodbox-daemon-lifecycle`, and `prodbox-pulumi` now exist as Cabal
-  stanzas, but the doctrinal single `prodbox-integration` stanza has not replaced the current
-  split CLI and env suites.
-- The doctrine-named property-test invariants remain only partially implemented in
-  `test/unit/Main.hs`, and the deeper lifecycle or ephemeral-stack behavior owned by Sprints
-  `2.14` and `4.7` is still scaffold-only in their new stanzas.
+None.
 
 ## Sprint 1.12: Capability Classes and AsServiceError 🔄
 
@@ -1220,7 +1194,7 @@ non-doctrine library on the supported path.
 ## Sprint 1.23: Dhall Freeze, Daemon CLI Negative-Space Rule, and Cross-Language Generation Deferral ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall`, `test/haskell-style/Main.hs`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall`, `test/haskell-style/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`, `documents/documentation_standards.md`
 

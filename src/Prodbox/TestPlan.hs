@@ -67,8 +67,7 @@ testExecutionPlan scope =
       nativeExecutionPlan
         "all"
         [ "test:prodbox-unit"
-        , "test:prodbox-integration-cli"
-        , "test:prodbox-integration-env"
+        , "test:prodbox-integration"
         ]
         NativeSuitePlan
           { nativeSuiteId = "all"
@@ -113,9 +112,7 @@ testExecutionPlan scope =
         IntegrationAll ->
           nativeExecutionPlan
             "integration all"
-            [ "test:prodbox-integration-cli"
-            , "test:prodbox-integration-env"
-            ]
+            ["test:prodbox-integration"]
             NativeSuitePlan
               { nativeSuiteId = "integration-all"
               , nativeValidations = canonicalNativeValidations
@@ -129,7 +126,7 @@ testExecutionPlan scope =
         IntegrationCli ->
           nativeIntegrationPlan
             "integration cli"
-            ["test:prodbox-integration-cli"]
+            ["test:prodbox-integration"]
             "integration-cli"
             []
             []
@@ -166,7 +163,7 @@ testExecutionPlan scope =
         IntegrationEnv ->
           nativeIntegrationPlan
             "integration env"
-            ["test:prodbox-integration-env"]
+            ["test:prodbox-integration"]
             "integration-env"
             []
             []

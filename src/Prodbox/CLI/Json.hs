@@ -52,7 +52,7 @@ encodeOption optionSpec =
   OptionSpec
     { longName = optionLongName
     , shortName = optionShortName
-    , metavar = optionMetavar
+    , optionMetavar = optionMetavar
     , description = optionDescription
     , required = optionRequired
     } = optionSpec

@@ -4,6 +4,9 @@ import Control.Exception (bracket)
 import Prodbox.CLI.Command
   ( WorkloadOptions (..)
   )
+import Prodbox.CLI.Spec
+  ( findCommandSpec
+  )
 import Prodbox.Gateway
   ( resolveGatewayConfigPath
   , resolveGatewayLogLevel
@@ -30,11 +33,9 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
       daemonSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs")
       daemonSource `shouldContain` "runGatewayDaemon"
 
-    it "keeps the gateway start command in the parser" $ do
-      repoRoot <- getCurrentDirectory
-      parserSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Parser.hs")
-      parserSource `shouldContain` "command \"gateway\""
-      parserSource `shouldContain` "command \"start\""
+    it "keeps the gateway start command in the registry-backed parser" $
+      findCommandSpec ["gateway", "start"]
+        `shouldSatisfy` isJust
 
   describe "daemon flag precedence" $ do
     it "prefers gateway CLI flags over PRODBOX_* env vars"
@@ -131,3 +132,9 @@ applyBindings =
           Just value -> setEnv name value
           Nothing -> unsetEnv name
     )
+
+isJust :: Maybe a -> Bool
+isJust maybeValue =
+  case maybeValue of
+    Just _ -> True
+    Nothing -> False

@@ -43,7 +43,7 @@ closed on the single-host onboarding and placeholder-domain removal doctrine for
   `Dhall -> Haskell types` contract through the `dhall-to-json` bridge, display, and validation
   with no supported JSON materialization path.
 - Haskell proof exists in `test/unit/Main.hs`, and the intended built-frontend fake-AWS proof
-  lives in `test/integration/cli/Main.hs`. The real IAM lifecycle named proof runs through the
+  lives in `test/integration/CliSuite.hs`. The real IAM lifecycle named proof runs through the
   native validation harness in `src/Prodbox/TestValidation.hs`.
 - `src/Prodbox/TestPlan.hs` and `src/Prodbox/EffectInterpreter.hs` now gate `aws-iam` on an
   explicit native IAM harness readiness check before the validation body runs. The retired
@@ -68,7 +68,7 @@ closed on the single-host onboarding and placeholder-domain removal doctrine for
 ## Sprint 7.1: Interactive Configuration Wizard and Policy Generation in Haskell ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`
 
 ### Objective
@@ -97,7 +97,7 @@ Make the Haskell stack own guided configuration authoring and policy generation.
   `prodbox aws policy [--tier ...]` rendering path.
 - `test/unit/Main.hs` now proves parser routing for `config setup` plus the native `aws *` command
   family.
-- `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
+- `test/integration/CliSuite.hs` is the intended built-frontend fake-AWS proof surface for
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
   elevated credentials only; stored `aws_admin_for_test_simulation.*` is not read on the
@@ -109,7 +109,7 @@ None.
 ## Sprint 7.2: Standalone IAM Lifecycle and Quota Automation in Haskell ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
@@ -142,9 +142,9 @@ supported contract.
   quota requests, and Dhall updates.
 - `src/Prodbox/CLI/Parser.hs` now routes the full public `prodbox aws ...` surface through
   `RunNative`.
-- `test/integration/cli/Main.hs` is the intended built-frontend fake-AWS proof surface for
+- `test/integration/CliSuite.hs` is the intended built-frontend fake-AWS proof surface for
   setup/teardown and quota flows.
-- `test/integration/cli/Main.hs` now proves the public `prodbox aws ...` commands ignore populated
+- `test/integration/CliSuite.hs` now proves the public `prodbox aws ...` commands ignore populated
   `aws_admin_for_test_simulation.*` config and use the interactively supplied temporary elevated
   credential instead.
 ### Remaining Work
@@ -241,7 +241,7 @@ None.
 ## Sprint 7.4: Single-Hostname Onboarding and Placeholder-Domain Removal ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/cli/Main.hs`, `test/integration/env/Main.hs`, `prodbox-config-types.dhall`
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Settings.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`, `prodbox-config-types.dhall`
 **Docs to update**: `documents/engineering/aws_account_setup_guide.md`, `documents/engineering/acme_provider_guide.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective

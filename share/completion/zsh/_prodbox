@@ -4,7 +4,7 @@ _prodbox() {
   local -a words
   case "$CURRENT" in
     2)
-      words=("aws" "charts" "check-code" "config" "dns" "docs" "gateway" "host" "k8s" "lint" "pulumi" "rke2" "test" "tla-check" "workload")
+      words=("aws" "charts" "check-code" "commands" "config" "dns" "docs" "gateway" "help" "host" "k8s" "lint" "pulumi" "rke2" "test" "tla-check" "workload")
       _describe 'command group' words
       ;;
     3)

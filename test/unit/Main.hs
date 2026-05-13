@@ -8,6 +8,8 @@ import Data.Aeson
   ( Value (..)
   , eitherDecode
   , encode
+  , object
+  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -119,17 +121,24 @@ import Prodbox.Gateway.Peer
   )
 import Prodbox.Gateway.Peer qualified as Peer
 import Prodbox.Gateway.Types
-  ( Disposition (..)
+  ( DaemonConfig (..)
+  , Disposition (..)
+  , DnsWriteGate (..)
+  , GatewayRule (..)
+  , Orders (..)
+  , PeerEndpoint (..)
   , SignedEvent (..)
   , appendIfNew
   , canWriteDns
   , defaultMaxClockSkewSeconds
   , emptyCommitLog
+  , encodeEvent
   , eventTypeClaim
   , eventTypeHeartbeat
   , eventTypeYield
   , nodeDisposition
   , parseDaemonConfig
+  , parseEvent
   , parseOrders
   , validateDaemonTimingAgainstOrders
   )
@@ -140,6 +149,7 @@ import Prodbox.Host
   , renderHostInfoReport
   , renderPortAvailabilityReport
   )
+import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.MinioBackend
   ( parseDeletedMinioExportHostPath
@@ -189,6 +199,8 @@ import Prodbox.Settings
   , StorageSection (..)
   , ValidatedSettings (..)
   , defaultConfigFile
+  , loadConfigFile
+  , renderConfigDhall
   , renderSettingsDisplay
   , validateAndLoadSettings
   , validatePublicEdgeDeployment
@@ -210,6 +222,7 @@ import Prodbox.TestValidation
   )
 import System.Directory
   ( Permissions (..)
+  , copyFile
   , createDirectoryIfMissing
   , doesFileExist
   , getCurrentDirectory
@@ -462,7 +475,7 @@ main = mainWithSuite "prodbox-unit" $ do
           , "prodbox.cabal"
           , "cabal.project"
           , "docker/prodbox.Dockerfile"
-          , "test/integration/env/Main.hs"
+          , "test/integration/Main.hs"
           ]
 
       scaffoldExists `shouldBe` replicate 7 True
@@ -646,10 +659,7 @@ main = mainWithSuite "prodbox-unit" $ do
         testPlan -> do
           testPlanLabel testPlan `shouldBe` "all"
           testPlanHaskellSuites testPlan
-            `shouldBe` [ "test:prodbox-unit"
-                       , "test:prodbox-integration-cli"
-                       , "test:prodbox-integration-env"
-                       ]
+            `shouldBe` ["test:prodbox-unit", "test:prodbox-integration"]
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "all"
@@ -1039,7 +1049,7 @@ main = mainWithSuite "prodbox-unit" $ do
     it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
       case testExecutionPlan (TestIntegration IntegrationCli) of
         testPlan -> do
-          testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration-cli"]
+          testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration"]
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-cli"
@@ -1052,7 +1062,7 @@ main = mainWithSuite "prodbox-unit" $ do
     it "keeps integration-env fully on the Haskell-owned env suite" $ do
       case testExecutionPlan (TestIntegration IntegrationEnv) of
         testPlan -> do
-          testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration-env"]
+          testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration"]
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-env"
@@ -1247,6 +1257,40 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Left "Missing effect node in registry: definitely_missing_node"
 
   describe "shared runtime helpers" $ do
+    it "round-trips the persisted Dhall-derived config through JSON" $ do
+      eitherDecode (encode defaultConfigFile) `shouldBe` Right defaultConfigFile
+
+    it "round-trips the rendered repo-root Dhall config through loadConfigFile" $
+      withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        copyFile
+          (repoRoot </> "prodbox-config-types.dhall")
+          (tmpDir </> "prodbox-config-types.dhall")
+        writeFile (tmpDir </> "prodbox-config.dhall") (renderConfigDhall roundTripConfigFile)
+
+        loadConfigFile tmpDir `shouldReturn` Right roundTripConfigFile
+
+    it "round-trips persisted gateway daemon configs through JSON" $ do
+      parseDaemonConfig (BL8.unpack (encodeJsonValue (daemonConfigJsonValue sampleDaemonConfig)))
+        `shouldBe` Right sampleDaemonConfig
+
+    it "round-trips persisted gateway orders through JSON" $ do
+      parseOrders (BL8.unpack (encodeJsonValue (ordersJsonValue sampleOrders)))
+        `shouldBe` Right sampleOrders
+
+    it "round-trips persisted signed gateway events through JSON" $ do
+      parseEvent (encodeEvent sampleSignedEvent) `shouldBe` Right sampleSignedEvent
+
+    it "round-trips saved AWS validation snapshots through their on-disk JSON contracts" $
+      withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+        AwsTest.saveAwsTestStackSnapshot tmpDir sampleAwsTestStackSnapshot
+        AwsEks.saveAwsEksTestStackSnapshot tmpDir sampleAwsEksTestStackSnapshot
+
+        AwsTest.loadAwsTestStackSnapshot tmpDir
+          `shouldReturn` Just sampleAwsTestStackSnapshot
+        AwsEks.loadAwsEksTestStackSnapshot tmpDir
+          `shouldReturn` Just sampleAwsEksTestStackSnapshot
+
     it "sanitizes resource names into DNS-1123 labels" $ do
       sanitizeResourceName "Hello, World_123"
         `shouldBe` "hello-world-123"
@@ -2160,7 +2204,7 @@ renderAllLeafHelpPages =
     case findCommandSpec commandPath of
       Just spec ->
         [ "## prodbox " ++ unwords commandPath
-        , renderCommandHelp spec
+        , renderCommandHelp commandPath spec
         ]
       Nothing -> ["## missing " ++ unwords commandPath]
 
@@ -2320,6 +2364,181 @@ testValidatedSettings manualRoot =
           }
     , resolvedManualPvHostRoot = manualRoot
     }
+
+roundTripConfigFile :: ConfigFile
+roundTripConfigFile =
+  defaultConfigFile
+    { aws =
+        Credentials
+          { access_key_id = "test-access-key"
+          , secret_access_key = "test-secret-key"
+          , session_token = Just "test-session-token"
+          , region = "us-east-1"
+          }
+    , aws_admin_for_test_simulation =
+        Credentials
+          { access_key_id = "admin-access-key"
+          , secret_access_key = "admin-secret-key"
+          , session_token = Just "admin-session-token"
+          , region = "us-west-2"
+          }
+    , route53 = Route53Section {zone_id = "Z1234567890ABC"}
+    , domain =
+        DomainSection
+          { demo_fqdn = "test.resolvefintech.com"
+          , demo_ttl = 60
+          }
+    , deployment =
+        validDeploymentSection
+          { bootstrap_public_ip_override = Just "203.0.113.10"
+          , public_edge_advertisement_mode = Just "bgp"
+          , public_edge_bgp_peers =
+              Just
+                [ MetallbBgpPeer
+                    { peer_name = "router-a"
+                    , peer_address = "192.0.2.10"
+                    , peer_asn = 64512
+                    , my_asn = 64513
+                    , ebgp_multi_hop = Just True
+                    }
+                ]
+          }
+    , storage = StorageSection {manual_pv_host_root = ".data"}
+    }
+
+samplePeerEndpoint :: PeerEndpoint
+samplePeerEndpoint =
+  PeerEndpoint
+    { peerNodeId = "node-a"
+    , peerStableDnsName = "node-a.example.test"
+    , peerRestHost = "0.0.0.0"
+    , peerRestPort = 31001
+    , peerSocketHost = "0.0.0.0"
+    , peerSocketPort = 32001
+    }
+
+sampleOrders :: Orders
+sampleOrders =
+  Orders
+    { ordersVersionUtc = 1
+    , ordersNodes = [samplePeerEndpoint]
+    , ordersGatewayRule =
+        GatewayRule
+          { rankedNodes = ["node-a"]
+          , heartbeatTimeoutSeconds = 3
+          }
+    }
+
+sampleDaemonConfig :: DaemonConfig
+sampleDaemonConfig =
+  DaemonConfig
+    { daemonNodeId = "node-a"
+    , daemonCertFile = "/tmp/node-a.crt"
+    , daemonKeyFile = "/tmp/node-a.key"
+    , daemonCaFile = "/tmp/ca.crt"
+    , daemonOrdersFile = "/tmp/orders.json"
+    , daemonEventKeys = [("node-a", "fake-key")]
+    , daemonHeartbeatInterval = 1.0
+    , daemonReconnectInterval = 1.0
+    , daemonSyncInterval = 1.0
+    , daemonMaxClockSkewSeconds = defaultMaxClockSkewSeconds
+    , daemonDnsWriteGate =
+        Just
+          DnsWriteGate
+            { dnsWriteGateZoneId = "Z1234567890ABC"
+            , dnsWriteGateFqdn = "test.resolvefintech.com"
+            , dnsWriteGateTtl = 60
+            , dnsWriteGateAwsRegion = "us-east-1"
+            }
+    }
+
+sampleSignedEvent :: SignedEvent
+sampleSignedEvent =
+  signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
+
+sampleAwsTestStackSnapshot :: AwsTest.AwsTestStackSnapshot
+sampleAwsTestStackSnapshot =
+  AwsTest.AwsTestStackSnapshot
+    { AwsTest.testSnapshotStackName = AwsTest.awsTestStackName
+    , AwsTest.testSnapshotBackendBucket = "prodbox-test-pulumi-backends"
+    , AwsTest.testSnapshotVpcId = "vpc-1234567890"
+    , AwsTest.testSnapshotSubnetIds = ["subnet-1", "subnet-2", "subnet-3"]
+    , AwsTest.testSnapshotSecurityGroupId = "sg-1234567890"
+    , AwsTest.testSnapshotNodes =
+        [ AwsTest.AwsTestNode
+            { AwsTest.testNodeName = "aws-test-node-0"
+            , AwsTest.testNodeAvailabilityZone = "us-west-2a"
+            , AwsTest.testNodeInstanceId = "i-1234567890"
+            , AwsTest.testNodePrivateIp = "10.0.0.10"
+            , AwsTest.testNodePublicIp = "203.0.113.10"
+            }
+        ]
+    }
+
+sampleAwsEksTestStackSnapshot :: AwsEks.AwsEksTestStackSnapshot
+sampleAwsEksTestStackSnapshot =
+  AwsEks.AwsEksTestStackSnapshot
+    { AwsEks.eksSnapshotStackName = AwsEks.awsEksTestStackName
+    , AwsEks.eksSnapshotBackendBucket = "prodbox-test-pulumi-backends"
+    , AwsEks.eksSnapshotClusterName = "aws-eks-test-cluster"
+    , AwsEks.eksSnapshotClusterRoleName = "aws-eks-test-cluster-role"
+    , AwsEks.eksSnapshotNodeGroupName = "aws-eks-test-node-group"
+    , AwsEks.eksSnapshotNodeRoleName = "aws-eks-test-node-role"
+    , AwsEks.eksSnapshotVpcId = "vpc-1234567890"
+    , AwsEks.eksSnapshotSubnetIds = ["subnet-a", "subnet-b"]
+    , AwsEks.eksSnapshotClusterSecurityGroupId = "sg-0987654321"
+    }
+
+daemonConfigJsonValue :: DaemonConfig -> Value
+daemonConfigJsonValue config =
+  object
+    [ "node_id" .= daemonNodeId config
+    , "cert_file" .= daemonCertFile config
+    , "key_file" .= daemonKeyFile config
+    , "ca_file" .= daemonCaFile config
+    , "orders_file" .= daemonOrdersFile config
+    , "event_keys" .= object [Key.fromString nodeId .= key | (nodeId, key) <- daemonEventKeys config]
+    , "heartbeat_interval_seconds" .= daemonHeartbeatInterval config
+    , "reconnect_interval_seconds" .= daemonReconnectInterval config
+    , "sync_interval_seconds" .= daemonSyncInterval config
+    , "max_clock_skew_seconds" .= daemonMaxClockSkewSeconds config
+    , "dns_write_gate" .= fmap dnsWriteGateJsonValue (daemonDnsWriteGate config)
+    ]
+
+dnsWriteGateJsonValue :: DnsWriteGate -> Value
+dnsWriteGateJsonValue gate =
+  object
+    [ "zone_id" .= dnsWriteGateZoneId gate
+    , "fqdn" .= dnsWriteGateFqdn gate
+    , "ttl" .= dnsWriteGateTtl gate
+    , "aws_region" .= dnsWriteGateAwsRegion gate
+    ]
+
+ordersJsonValue :: Orders -> Value
+ordersJsonValue orders =
+  object
+    [ "version_utc" .= ordersVersionUtc orders
+    , "nodes" .= map peerEndpointJsonValue (ordersNodes orders)
+    , "gateway_rule" .= gatewayRuleJsonValue (ordersGatewayRule orders)
+    ]
+
+peerEndpointJsonValue :: PeerEndpoint -> Value
+peerEndpointJsonValue peer =
+  object
+    [ "node_id" .= peerNodeId peer
+    , "stable_dns_name" .= peerStableDnsName peer
+    , "rest_host" .= peerRestHost peer
+    , "rest_port" .= peerRestPort peer
+    , "socket_host" .= peerSocketHost peer
+    , "socket_port" .= peerSocketPort peer
+    ]
+
+gatewayRuleJsonValue :: GatewayRule -> Value
+gatewayRuleJsonValue rule =
+  object
+    [ "ranked_nodes" .= rankedNodes rule
+    , "heartbeat_timeout_seconds" .= heartbeatTimeoutSeconds rule
+    ]
 
 testChartSecrets :: Map.Map String String
 testChartSecrets =

@@ -218,8 +218,8 @@ module instead.
 Pure-functional structure is not stylistic only; it determines how code is tested.
 
 - Pure helpers are tested directly in `test/unit/Main.hs`.
-- Built-frontend command behavior is tested in `test/integration/cli/Main.hs` and
-  `test/integration/env/Main.hs`.
+- Built-frontend command behavior is tested in `test/integration/Main.hs` through
+  `test/integration/CliSuite.hs` and `test/integration/EnvSuite.hs`.
 - Real infrastructure-backed behavior is tested through named `prodbox test integration ...`
   validations.
 - Mocks belong at subprocess or interpreter boundaries, not inside pure planners.

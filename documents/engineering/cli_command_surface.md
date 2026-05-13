@@ -20,8 +20,11 @@ The CLI surface is intentionally closed:
 
 Current implementation:
 
-- `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Parser.hs`, and
-  `src/Prodbox/Native.hs` own the public parser, request ADT, and command dispatch.
+- `app/prodbox/Main.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`,
+  `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs` own the public parser, request ADT,
+  registry, and command dispatch.
+- `src/Prodbox/CLI/Spec.hs` is the typed `CommandSpec` source of truth for the supported command
+  tree, and `src/Prodbox/CLI/Parser.hs` renders that registry over `optparse-applicative`.
 - The frontend request ADT routes only to native Haskell commands; no Python delegation branch
   survives in the parser or entrypoint.
 - Runtime ownership lives in Haskell modules under `src/Prodbox/`.
@@ -261,8 +264,8 @@ Named suite commands:
 | `prodbox test lint` | `prodbox check-code` plus `cabal build --builddir=.build all` |
 | `prodbox test unit` | `test:prodbox-unit` |
 | `prodbox test integration all` | Aggregate integration surface |
-| `prodbox test integration cli` | `test:prodbox-integration-cli` |
-| `prodbox test integration env` | `test:prodbox-integration-env` |
+| `prodbox test integration cli` | `test:prodbox-integration` |
+| `prodbox test integration env` | `test:prodbox-integration` |
 | `prodbox test integration aws-iam` | Native IAM lifecycle validation |
 | `prodbox test integration dns-aws` | Native Route 53 lifecycle validation |
 | `prodbox test integration aws-eks` | Native EKS validation |

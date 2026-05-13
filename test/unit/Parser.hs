@@ -10,8 +10,28 @@ import Options.Applicative
   , execParserPure
   , renderFailure
   )
+import Prodbox.CLI.Command
+  ( AwsCommand (..)
+  , ChartsCommand (..)
+  , CommandListingFormat (..)
+  , CommandRequest (..)
+  , ConfigCommand (..)
+  , DnsCommand (..)
+  , DocsCommand (..)
+  , GatewayCommand (..)
+  , HostCommand (..)
+  , IntegrationSuite (..)
+  , K8sCommand (..)
+  , LintCommand (..)
+  , NativeCommand (..)
+  , PulumiCommand (..)
+  , Rke2Command (..)
+  , TestCommand (..)
+  , TestScope (..)
+  , WorkloadCommand (..)
+  )
 import Prodbox.CLI.Parser
-  ( Options
+  ( Options (..)
   , parserInfo
   , validateCommandArgv
   )
@@ -27,6 +47,9 @@ parserSuite :: SuiteBuilder ()
 parserSuite =
   describe "CLI parser coverage" $ do
     propertyTest "every leaf command has at least one example" leafExampleCoverageProperty
+    propertyTest
+      "every leaf example roundtrips to its registered command path"
+      leafParserRoundtripProperty
     mapM_ happyCase (collectLeafExamples commandRegistry)
     mapM_ unhappyCase (collectLeafExamples commandRegistry)
     mapM_ forbiddenCase forbiddenArgvCases
@@ -72,6 +95,15 @@ leafExampleCoverageProperty :: Bool
 leafExampleCoverageProperty =
   Set.fromList (map fst (collectLeafExamples commandRegistry)) == Set.fromList leafCommandPaths
 
+leafParserRoundtripProperty :: Bool
+leafParserRoundtripProperty =
+  all roundtrips (collectLeafExamples commandRegistry)
+ where
+  roundtrips (commandPath, exampleSpec) =
+    case parseArgs (exampleCommand exampleSpec) of
+      Right options -> commandPathOfRequest (optRequest options) == commandPath
+      Left _ -> False
+
 collectLeafExamples :: CommandSpec -> [([String], Example)]
 collectLeafExamples = go []
  where
@@ -108,3 +140,125 @@ isRight eitherValue =
   case eitherValue of
     Left _ -> False
     Right _ -> True
+
+commandPathOfRequest :: CommandRequest -> [String]
+commandPathOfRequest request =
+  case request of
+    ShowCommands format ->
+      case format of
+        CommandsPlain -> ["commands"]
+        CommandsTree -> ["commands"]
+        CommandsJson -> ["commands"]
+    ShowHelp _ -> ["help"]
+    RunNative nativeCommand ->
+      case nativeCommand of
+        NativeAws awsCommand ->
+          "aws"
+            : case awsCommand of
+              AwsPolicy _ -> ["policy"]
+              AwsSetup _ _ -> ["setup"]
+              AwsTeardown _ -> ["teardown"]
+              AwsCheckQuotas -> ["check-quotas"]
+              AwsRequestQuotas _ -> ["request-quotas"]
+        NativeCharts chartsCommand ->
+          "charts"
+            : case chartsCommand of
+              ChartsList -> ["list"]
+              ChartsStatus _ -> ["status"]
+              ChartsDeploy _ _ -> ["deploy"]
+              ChartsDelete {} -> ["delete"]
+        NativeCheckCode -> ["check-code"]
+        NativeConfig configCommand ->
+          "config"
+            : case configCommand of
+              ConfigSetup _ -> ["setup"]
+              ConfigShow _ -> ["show"]
+              ConfigValidate -> ["validate"]
+        NativeDns dnsCommand ->
+          "dns"
+            : case dnsCommand of
+              DnsCheck -> ["check"]
+        NativeDocs docsCommand ->
+          "docs"
+            : case docsCommand of
+              DocsCheck -> ["check"]
+              DocsGenerate -> ["generate"]
+        NativeGateway gatewayCommand ->
+          "gateway"
+            : case gatewayCommand of
+              GatewayDaemonCommand _ -> ["start"]
+              GatewayStatusCommand _ -> ["status"]
+              GatewayConfigGen _ _ -> ["config-gen"]
+        NativeHost hostCommand ->
+          "host"
+            : case hostCommand of
+              HostEnsureTools -> ["ensure-tools"]
+              HostCheckPorts -> ["check-ports"]
+              HostInfo -> ["info"]
+              HostFirewall -> ["firewall"]
+              HostPublicEdge -> ["public-edge"]
+        NativeK8s k8sCommand ->
+          "k8s"
+            : case k8sCommand of
+              K8sHealth -> ["health"]
+              K8sWait _ _ -> ["wait"]
+              K8sLogs _ _ -> ["logs"]
+        NativeLint lintCommand ->
+          "lint"
+            : case lintCommand of
+              LintAll -> ["all"]
+              LintFiles _ -> ["files"]
+              LintDocs _ -> ["docs"]
+              LintHaskell _ -> ["haskell"]
+              LintChart -> ["chart"]
+        NativePulumi pulumiCommand ->
+          "pulumi"
+            : case pulumiCommand of
+              PulumiEksResources _ -> ["eks-resources"]
+              PulumiEksDestroy _ _ -> ["eks-destroy"]
+              PulumiTestResources _ -> ["test-resources"]
+              PulumiTestDestroy _ _ -> ["test-destroy"]
+        NativeRke2 rke2Command ->
+          "rke2"
+            : case rke2Command of
+              Rke2Status -> ["status"]
+              Rke2Start -> ["start"]
+              Rke2Stop -> ["stop"]
+              Rke2Restart -> ["restart"]
+              Rke2Reconcile _ -> ["reconcile"]
+              Rke2Install _ -> ["install"]
+              Rke2Delete _ -> ["delete"]
+              Rke2Logs _ -> ["logs"]
+        NativeTest testCommand ->
+          "test"
+            : case testScope testCommand of
+              TestAll -> ["all"]
+              TestLint -> ["lint"]
+              TestUnit -> ["unit"]
+              TestIntegration integrationSuite ->
+                "integration"
+                  : case integrationSuite of
+                    IntegrationAll -> ["all"]
+                    IntegrationCli -> ["cli"]
+                    IntegrationAwsIam -> ["aws-iam"]
+                    IntegrationDnsAws -> ["dns-aws"]
+                    IntegrationAwsEks -> ["aws-eks"]
+                    IntegrationEnv -> ["env"]
+                    IntegrationGatewayDaemon -> ["gateway-daemon"]
+                    IntegrationGatewayPods -> ["gateway-pods"]
+                    IntegrationGatewayPartition -> ["gateway-partition"]
+                    IntegrationHaRke2Aws -> ["ha-rke2-aws"]
+                    IntegrationLifecycle -> ["lifecycle"]
+                    IntegrationPulumi -> ["pulumi"]
+                    IntegrationChartsStorage -> ["charts-storage"]
+                    IntegrationChartsPlatform -> ["charts-platform"]
+                    IntegrationChartsVscode -> ["charts-vscode"]
+                    IntegrationChartsApi -> ["charts-api"]
+                    IntegrationChartsWebsocket -> ["charts-websocket"]
+                    IntegrationAdminRoutes -> ["admin-routes"]
+                    IntegrationPublicDns -> ["public-dns"]
+        NativeTlaCheck -> ["tla-check"]
+        NativeWorkload workloadCommand ->
+          "workload"
+            : case workloadCommand of
+              WorkloadStart _ -> ["start"]

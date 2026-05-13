@@ -1,5 +1,8 @@
 module Main (main) where
 
+import Prodbox.CLI.Spec
+  ( findCommandSpec
+  )
 import System.Directory (getCurrentDirectory)
 import System.FilePath ((</>))
 import TestSupport
@@ -14,8 +17,12 @@ main = mainWithSuite "prodbox-pulumi" $ do
       eksProgram `shouldContain` "runtime: yaml"
       testProgram `shouldContain` "runtime: yaml"
 
-    it "keeps the Pulumi CLI surface in the parser" $ do
-      repoRoot <- getCurrentDirectory
-      parserSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Parser.hs")
-      parserSource `shouldContain` "\"pulumi\""
-      parserSource `shouldContain` "\"eks-resources\""
+    it "keeps the Pulumi CLI surface in the registry-backed parser" $ do
+      findCommandSpec ["pulumi", "eks-resources"] `shouldSatisfy` isJust
+      findCommandSpec ["pulumi", "test-resources"] `shouldSatisfy` isJust
+
+isJust :: Maybe a -> Bool
+isJust maybeValue =
+  case maybeValue of
+    Just _ -> True
+    Nothing -> False

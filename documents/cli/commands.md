@@ -20,6 +20,7 @@
 | `prodbox charts deploy` | Deploy a root chart stack |
 | `prodbox charts delete` | Delete a root chart stack |
 | `prodbox check-code` | Run policy, lint, and type checks |
+| `prodbox commands` | Render the command registry |
 | `prodbox config setup` | Interactively author config |
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |
@@ -29,6 +30,7 @@
 | `prodbox gateway start` | Start gateway daemon |
 | `prodbox gateway status` | Query gateway daemon status |
 | `prodbox gateway config-gen` | Generate gateway config |
+| `prodbox help` | Render help for a command path |
 | `prodbox host ensure-tools` | Verify required host tools |
 | `prodbox host check-ports` | Check required ports |
 | `prodbox host info` | Display host diagnostics |

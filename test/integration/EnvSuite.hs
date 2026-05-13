@@ -1,4 +1,7 @@
-module Main (main) where
+module EnvSuite
+  ( integrationEnvSuite
+  )
+where
 
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
@@ -21,8 +24,8 @@ import System.Process
   )
 import TestSupport
 
-main :: IO ()
-main = mainWithSuite "prodbox-integration-env" $ do
+integrationEnvSuite :: SuiteBuilder ()
+integrationEnvSuite = do
   describe "native Haskell env integration suite" $ do
     it "shows masked settings without materializing JSON from the operator-facing binary" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do

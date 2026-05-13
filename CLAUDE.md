@@ -113,8 +113,8 @@ contracts.
 > **SSoT**: [Unit Testing Policy](documents/engineering/unit_testing_policy.md)
 
 - Pure code should be testable without mocks.
-- Built-frontend CLI and env proof lives in `test/integration/cli/Main.hs` and
-  `test/integration/env/Main.hs`.
+- Built-frontend CLI and env proof lives in `test/integration/Main.hs` through
+  `test/integration/CliSuite.hs` and `test/integration/EnvSuite.hs`.
 - Named `prodbox test integration ...` commands execute native validation flows through
   `src/Prodbox/TestValidation.hs`.
 - Missing prerequisites must fail fast with actionable errors.

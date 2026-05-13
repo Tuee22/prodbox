@@ -1,17 +1,68 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 
 module Prodbox.CLI.Spec
-  ( CommandListingFormat (..)
-  , CommandSpec (..)
+  ( CommandSpec (..)
   , Example (..)
   , OptionSpec (..)
+  , commandRequestParser
   , commandRegistry
   , findCommandSpec
   , leafCommandPaths
   )
 where
 
+import Control.Applicative ((<|>))
 import Data.List (find)
+import Options.Applicative
+  ( Parser
+  , auto
+  , command
+  , eitherReader
+  , flag
+  , flag'
+  , help
+  , hsubparser
+  , info
+  , long
+  , many
+  , metavar
+  , option
+  , optional
+  , progDesc
+  , short
+  , some
+  , strArgument
+  , strOption
+  , switch
+  , value
+  )
+import Prodbox.CLI.Command
+  ( AwsCommand (..)
+  , ChartsCommand (..)
+  , CommandListingFormat (..)
+  , CommandRequest (..)
+  , ConfigCommand (..)
+  , CoverageFlags (..)
+  , DaemonLaunchOptions (..)
+  , DaemonStatusOptions (..)
+  , DnsCommand (..)
+  , DocsCommand (..)
+  , GatewayCommand (..)
+  , HostCommand (..)
+  , IntegrationSuite (..)
+  , K8sCommand (..)
+  , LintCommand (..)
+  , NativeCommand (..)
+  , PlanOptions (..)
+  , PolicyTier (..)
+  , PulumiCommand (..)
+  , Rke2Command (..)
+  , TestCommand (..)
+  , TestScope (..)
+  , WorkloadCommand (..)
+  , WorkloadOptions (..)
+  )
+import Prodbox.K8s (defaultInfrastructureNamespaces)
 
 data Example = Example
   { exampleCommand :: [String]
@@ -22,7 +73,7 @@ data Example = Example
 data OptionSpec = OptionSpec
   { longName :: String
   , shortName :: Maybe Char
-  , metavar :: Maybe String
+  , optionMetavar :: Maybe String
   , description :: String
   , required :: Bool
   }
@@ -38,12 +89,6 @@ data CommandSpec = CommandSpec
   }
   deriving (Eq, Show)
 
-data CommandListingFormat
-  = CommandsPlain
-  | CommandsTree
-  | CommandsJson
-  deriving (Eq, Show)
-
 commandRegistry :: CommandSpec
 commandRegistry =
   CommandSpec
@@ -54,10 +99,12 @@ commandRegistry =
         [ awsGroup
         , chartsGroup
         , checkCodeLeaf
+        , commandsLeaf
         , configGroup
         , dnsGroup
         , docsGroup
         , gatewayGroup
+        , helpLeaf
         , hostGroup
         , k8sGroup
         , lintGroup
@@ -68,8 +115,8 @@ commandRegistry =
         , workloadGroup
         ]
     , options =
-        [ flag "verbose" (Just 'v') Nothing "Enable verbose output"
-        , flag "version" Nothing Nothing "Show version"
+        [ flagOption "verbose" (Just 'v') Nothing "Enable verbose output"
+        , flagOption "version" Nothing Nothing "Show version"
         ]
     , examples =
         [ example ["config", "validate"] "Validate the repository Dhall config."
@@ -97,32 +144,416 @@ leafCommandPaths = gather [] commandRegistry
        where
         nextPrefix = [name spec | name spec /= "prodbox"]
 
-flag :: String -> Maybe Char -> Maybe String -> String -> OptionSpec
-flag long shortName' metavar' helpText =
+commandRequestParser :: Parser CommandRequest
+commandRequestParser = renderCommandRequestParser [] commandRegistry
+
+renderCommandRequestParser :: [String] -> CommandSpec -> Parser CommandRequest
+renderCommandRequestParser prefix spec =
+  case children spec of
+    [] ->
+      case parserForPath currentPath of
+        Just parser -> parser
+        Nothing ->
+          error ("Missing parser binding for command path: prodbox " ++ unwords currentPath)
+    nested ->
+      hsubparser
+        ( mconcat
+            [ command
+              (name child)
+              (info (renderCommandRequestParser currentPath child) (progDesc (summary child)))
+            | child <- nested
+            ]
+        )
+ where
+  currentPath =
+    if name spec == "prodbox"
+      then prefix
+      else prefix ++ [name spec]
+
+parserForPath :: [String] -> Maybe (Parser CommandRequest)
+parserForPath path =
+  case path of
+    ["aws", "policy"] ->
+      Just $
+        fmap
+          (RunNative . NativeAws . AwsPolicy)
+          (tierOptionParser PolicyCore "Operational IAM policy tier to render")
+    ["aws", "setup"] ->
+      Just $
+        fmap
+          (\(policyTier, planOptions') -> RunNative (NativeAws (AwsSetup policyTier planOptions')))
+          ( (,) <$> tierOptionParser PolicyFull "Operational IAM policy tier to provision" <*> planOptionsParser
+          )
+    ["aws", "teardown"] ->
+      Just (fmap (RunNative . NativeAws . AwsTeardown) planOptionsParser)
+    ["aws", "check-quotas"] -> Just (pure (RunNative (NativeAws AwsCheckQuotas)))
+    ["aws", "request-quotas"] ->
+      Just $
+        fmap
+          (RunNative . NativeAws . AwsRequestQuotas)
+          (tierOptionParser PolicyFull "Quota target tier to request")
+    ["charts", "list"] -> Just (pure (RunNative (NativeCharts ChartsList)))
+    ["charts", "status"] ->
+      Just (fmap (RunNative . NativeCharts . ChartsStatus) (strArgument (metavar "CHART")))
+    ["charts", "deploy"] ->
+      Just $
+        fmap
+          (\(chartName, options') -> RunNative (NativeCharts (ChartsDeploy chartName options')))
+          ((,) <$> strArgument (metavar "CHART") <*> planOptionsParser)
+    ["charts", "delete"] ->
+      Just $
+        ( \chartName confirmed options' -> RunNative (NativeCharts (ChartsDelete chartName confirmed options'))
+        )
+          <$> strArgument (metavar "CHART")
+          <*> yesSwitchParser "Skip confirmation prompt"
+          <*> planOptionsParser
+    ["check-code"] -> Just (pure (RunNative NativeCheckCode))
+    ["commands"] ->
+      Just $
+        commandsTreeParser
+          <|> commandsJsonParser
+          <|> pure (ShowCommands CommandsPlain)
+    ["config", "setup"] ->
+      Just (fmap (RunNative . NativeConfig . ConfigSetup) planOptionsParser)
+    ["config", "show"] ->
+      Just $
+        fmap
+          (\showSecrets -> RunNative (NativeConfig (ConfigShow showSecrets)))
+          ( switch
+              ( long "show-secrets"
+                  <> help "Show full secret values"
+              )
+          )
+    ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
+    ["dns", "check"] -> Just (pure (RunNative (NativeDns DnsCheck)))
+    ["docs", "check"] -> Just (pure (RunNative (NativeDocs DocsCheck)))
+    ["docs", "generate"] -> Just (pure (RunNative (NativeDocs DocsGenerate)))
+    ["gateway", "start"] ->
+      Just (fmap (RunNative . NativeGateway . GatewayDaemonCommand) daemonLaunchOptionsParser)
+    ["gateway", "status"] ->
+      Just (fmap (RunNative . NativeGateway . GatewayStatusCommand) daemonStatusOptionsParser)
+    ["gateway", "config-gen"] ->
+      Just $
+        fmap
+          (\(outputPath, nodeId) -> RunNative (NativeGateway (GatewayConfigGen outputPath nodeId)))
+          ( (,)
+              <$> strArgument (metavar "OUTPUT_PATH")
+              <*> strOption
+                ( long "node-id"
+                    <> metavar "NODE_ID"
+                    <> help "Node ID for the generated config"
+                )
+          )
+    ["help"] -> Just (ShowHelp <$> some (strArgument (metavar "COMMAND_PATH")))
+    ["host", "ensure-tools"] -> Just (pure (RunNative (NativeHost HostEnsureTools)))
+    ["host", "check-ports"] -> Just (pure (RunNative (NativeHost HostCheckPorts)))
+    ["host", "info"] -> Just (pure (RunNative (NativeHost HostInfo)))
+    ["host", "firewall"] -> Just (pure (RunNative (NativeHost HostFirewall)))
+    ["host", "public-edge"] -> Just (pure (RunNative (NativeHost HostPublicEdge)))
+    ["k8s", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
+    ["k8s", "wait"] ->
+      Just $
+        fmap
+          ( \(timeoutSeconds, namespaces) ->
+              RunNative (NativeK8s (K8sWait (maybe 300 id timeoutSeconds) (defaultNamespaces namespaces)))
+          )
+          ( (,)
+              <$> optional
+                ( option
+                    auto
+                    ( long "timeout"
+                        <> short 't'
+                        <> metavar "INTEGER"
+                        <> help "Timeout in seconds"
+                    )
+                )
+              <*> manyStringsOption "namespace" 'n' "Namespace to wait for"
+          )
+    ["k8s", "logs"] ->
+      Just $
+        fmap
+          ( \(namespaces, tailLines) ->
+              RunNative (NativeK8s (K8sLogs (defaultNamespaces namespaces) (maybe 10 id tailLines)))
+          )
+          ( (,)
+              <$> manyStringsOption "namespace" 'n' "Namespace to get logs from"
+              <*> optional
+                ( option
+                    auto
+                    ( long "tail"
+                        <> metavar "INTEGER"
+                        <> help "Number of log lines per container"
+                    )
+                )
+          )
+    ["lint", "all"] -> Just (pure (RunNative (NativeLint LintAll)))
+    ["lint", "files"] -> Just (fmap (RunNative . NativeLint . LintFiles) writeSwitchParser)
+    ["lint", "docs"] -> Just (fmap (RunNative . NativeLint . LintDocs) writeSwitchParser)
+    ["lint", "haskell"] -> Just (fmap (RunNative . NativeLint . LintHaskell) writeSwitchParser)
+    ["lint", "chart"] -> Just (pure (RunNative (NativeLint LintChart)))
+    ["pulumi", "eks-resources"] ->
+      Just (fmap (RunNative . NativePulumi . PulumiEksResources) planOptionsParser)
+    ["pulumi", "eks-destroy"] ->
+      Just $
+        fmap
+          (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiEksDestroy confirmed planOptions')))
+          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+    ["pulumi", "test-resources"] ->
+      Just (fmap (RunNative . NativePulumi . PulumiTestResources) planOptionsParser)
+    ["pulumi", "test-destroy"] ->
+      Just $
+        fmap
+          (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiTestDestroy confirmed planOptions')))
+          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+    ["rke2", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
+    ["rke2", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
+    ["rke2", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
+    ["rke2", "restart"] -> Just (pure (RunNative (NativeRke2 Rke2Restart)))
+    ["rke2", "reconcile"] ->
+      Just (fmap (RunNative . NativeRke2 . Rke2Reconcile) planOptionsParser)
+    ["rke2", "install"] ->
+      Just (fmap (RunNative . NativeRke2 . Rke2Install) planOptionsParser)
+    ["rke2", "delete"] ->
+      Just
+        (fmap (RunNative . NativeRke2 . Rke2Delete) (yesSwitchParser "Confirm full RKE2 cluster deletion"))
+    ["rke2", "logs"] ->
+      Just $
+        fmap
+          (RunNative . NativeRke2 . Rke2Logs)
+          ( optional
+              ( option
+                  auto
+                  ( long "lines"
+                      <> short 'n'
+                      <> metavar "INTEGER"
+                      <> help "Number of log lines to show"
+                  )
+              )
+          )
+    ["test", "all"] -> Just (withCoverage TestAll)
+    ["test", "lint"] ->
+      Just (pure (RunNative (NativeTest (TestCommand TestLint (CoverageFlags False Nothing)))))
+    ["test", "unit"] -> Just (withCoverage TestUnit)
+    ["test", "integration", "all"] -> Just (withCoverage (TestIntegration IntegrationAll))
+    ["test", "integration", "cli"] -> Just (withCoverage (TestIntegration IntegrationCli))
+    ["test", "integration", "aws-iam"] -> Just (withCoverage (TestIntegration IntegrationAwsIam))
+    ["test", "integration", "dns-aws"] -> Just (withCoverage (TestIntegration IntegrationDnsAws))
+    ["test", "integration", "aws-eks"] -> Just (withCoverage (TestIntegration IntegrationAwsEks))
+    ["test", "integration", "env"] -> Just (withCoverage (TestIntegration IntegrationEnv))
+    ["test", "integration", "gateway-daemon"] -> Just (withCoverage (TestIntegration IntegrationGatewayDaemon))
+    ["test", "integration", "gateway-pods"] -> Just (withCoverage (TestIntegration IntegrationGatewayPods))
+    ["test", "integration", "gateway-partition"] -> Just (withCoverage (TestIntegration IntegrationGatewayPartition))
+    ["test", "integration", "ha-rke2-aws"] -> Just (withCoverage (TestIntegration IntegrationHaRke2Aws))
+    ["test", "integration", "lifecycle"] -> Just (withCoverage (TestIntegration IntegrationLifecycle))
+    ["test", "integration", "pulumi"] -> Just (withCoverage (TestIntegration IntegrationPulumi))
+    ["test", "integration", "charts-storage"] -> Just (withCoverage (TestIntegration IntegrationChartsStorage))
+    ["test", "integration", "charts-platform"] -> Just (withCoverage (TestIntegration IntegrationChartsPlatform))
+    ["test", "integration", "charts-vscode"] -> Just (withCoverage (TestIntegration IntegrationChartsVscode))
+    ["test", "integration", "charts-api"] -> Just (withCoverage (TestIntegration IntegrationChartsApi))
+    ["test", "integration", "charts-websocket"] -> Just (withCoverage (TestIntegration IntegrationChartsWebsocket))
+    ["test", "integration", "admin-routes"] -> Just (withCoverage (TestIntegration IntegrationAdminRoutes))
+    ["test", "integration", "public-dns"] -> Just (withCoverage (TestIntegration IntegrationPublicDns))
+    ["tla-check"] -> Just (pure (RunNative NativeTlaCheck))
+    ["workload", "start"] ->
+      Just (fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser)
+    _ -> Nothing
+
+commandsTreeParser :: Parser CommandRequest
+commandsTreeParser =
+  flag'
+    (ShowCommands CommandsTree)
+    ( long "tree"
+        <> help "Render the command registry as a tree"
+    )
+
+commandsJsonParser :: Parser CommandRequest
+commandsJsonParser =
+  flag'
+    (ShowCommands CommandsJson)
+    ( long "json"
+        <> help "Render the command registry as JSON"
+    )
+
+coverageFlagsParser :: Parser CoverageFlags
+coverageFlagsParser =
+  CoverageFlags
+    <$> switch
+      ( long "coverage"
+          <> help "Enable coverage reporting for the selected test scope"
+      )
+    <*> optional
+      ( option
+          auto
+          ( long "cov-fail-under"
+              <> metavar "INTEGER"
+              <> help "Require a minimum coverage percentage"
+          )
+      )
+
+planOptionsParser :: Parser PlanOptions
+planOptionsParser =
+  PlanOptions
+    <$> switch
+      ( long "dry-run"
+          <> help "Render the plan without mutating state"
+      )
+    <*> optional
+      ( strOption
+          ( long "plan-file"
+              <> metavar "PATH"
+              <> help "Write the rendered plan to a file"
+          )
+      )
+
+foregroundParser :: Parser Bool
+foregroundParser =
+  flag
+    True
+    True
+    ( long "foreground"
+        <> help "Run in the foreground"
+    )
+
+withCoverage :: TestScope -> Parser CommandRequest
+withCoverage scope =
+  fmap (RunNative . NativeTest . TestCommand scope) coverageFlagsParser
+
+daemonLaunchOptionsParser :: Parser DaemonLaunchOptions
+daemonLaunchOptionsParser =
+  DaemonLaunchOptions
+    <$> optional
+      ( strOption
+          ( long "config"
+              <> metavar "PATH"
+              <> help "Gateway config path"
+          )
+      )
+    <*> optional
+      ( strOption
+          ( long "log-level"
+              <> metavar "LEVEL"
+              <> help "Override daemon log level"
+          )
+      )
+    <*> optional
+      ( option
+          auto
+          ( long "port"
+              <> metavar "INTEGER"
+              <> help "Override daemon port"
+          )
+      )
+    <*> foregroundParser
+    <*> planOptionsParser
+
+daemonStatusOptionsParser :: Parser DaemonStatusOptions
+daemonStatusOptionsParser =
+  fmap
+    DaemonStatusOptions
+    ( optional
+        ( strOption
+            ( long "config"
+                <> metavar "PATH"
+                <> help "Gateway config path"
+            )
+        )
+    )
+
+workloadOptionsParser :: Parser WorkloadOptions
+workloadOptionsParser =
+  WorkloadOptions
+    <$> optional
+      ( strOption
+          ( long "log-level"
+              <> metavar "LEVEL"
+              <> help "Override daemon log level"
+          )
+      )
+    <*> optional
+      ( option
+          auto
+          ( long "port"
+              <> metavar "INTEGER"
+              <> help "Override daemon port"
+          )
+      )
+    <*> foregroundParser
+
+writeSwitchParser :: Parser Bool
+writeSwitchParser =
+  switch
+    ( long "write"
+        <> help "Rewrite the target surface instead of only checking for drift"
+    )
+
+yesSwitchParser :: String -> Parser Bool
+yesSwitchParser helpText =
+  switch
+    ( long "yes"
+        <> short 'y'
+        <> help helpText
+    )
+
+defaultNamespaces :: [String] -> [String]
+defaultNamespaces namespaces =
+  case namespaces of
+    [] -> defaultInfrastructureNamespaces
+    _ -> namespaces
+
+tierOptionParser :: PolicyTier -> String -> Parser PolicyTier
+tierOptionParser defaultTier helpText =
+  option
+    (eitherReader parseTier)
+    ( long "tier"
+        <> value defaultTier
+        <> metavar "TIER"
+        <> help helpText
+    )
+
+parseTier :: String -> Either String PolicyTier
+parseTier rawTier =
+  case rawTier of
+    "core" -> Right PolicyCore
+    "full" -> Right PolicyFull
+    _ -> Left "--tier must be one of: core, full"
+
+manyStringsOption :: String -> Char -> String -> Parser [String]
+manyStringsOption longName shortName helpText =
+  many
+    ( strOption
+        ( long longName
+            <> short shortName
+            <> metavar "VALUE"
+            <> help helpText
+        )
+    )
+
+flagOption :: String -> Maybe Char -> Maybe String -> String -> OptionSpec
+flagOption longName' shortName' metavar' helpText =
   OptionSpec
-    { longName = long
+    { longName = longName'
     , shortName = shortName'
-    , metavar = metavar'
+    , optionMetavar = metavar'
     , description = helpText
     , required = False
     }
 
 requiredOption :: String -> Maybe Char -> String -> String -> OptionSpec
-requiredOption long shortName' metavar' helpText =
+requiredOption longName' shortName' metavar' helpText =
   OptionSpec
-    { longName = long
+    { longName = longName'
     , shortName = shortName'
-    , metavar = Just metavar'
+    , optionMetavar = Just metavar'
     , description = helpText
     , required = True
     }
 
 optionalOption :: String -> Maybe Char -> String -> String -> OptionSpec
-optionalOption long shortName' metavar' helpText =
+optionalOption longName' shortName' metavar' helpText =
   OptionSpec
-    { longName = long
+    { longName = longName'
     , shortName = shortName'
-    , metavar = Just metavar'
+    , optionMetavar = Just metavar'
     , description = helpText
     , required = False
     }
@@ -162,7 +593,7 @@ configGroup =
         "setup"
         "Interactively author config"
         "Write the supported prodbox Dhall config."
-        [ flag "dry-run" Nothing Nothing "Render the config-setup plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the config-setup plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["config", "setup"] "Create or refresh the config interactively."]
@@ -170,7 +601,7 @@ configGroup =
         "show"
         "Display current config"
         "Render the decoded config with secrets masked by default."
-        [flag "show-secrets" Nothing Nothing "Show full secret values"]
+        [flagOption "show-secrets" Nothing Nothing "Show full secret values"]
         [example ["config", "show"] "Render the current config with secrets masked."]
     , leaf
         "validate"
@@ -199,7 +630,7 @@ awsGroup =
         "Create or refresh operational IAM user"
         "Provision or refresh the operational IAM user."
         [ optionalOption "tier" Nothing "TIER" "Operational IAM policy tier to provision"
-        , flag "dry-run" Nothing Nothing "Render the IAM setup plan without mutating state"
+        , flagOption "dry-run" Nothing Nothing "Render the IAM setup plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["aws", "setup", "--tier", "full"] "Create or refresh the operational IAM user."]
@@ -207,7 +638,7 @@ awsGroup =
         "teardown"
         "Delete operational IAM user"
         "Delete the operational IAM user."
-        [ flag "dry-run" Nothing Nothing "Render the IAM teardown plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the IAM teardown plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["aws", "teardown"] "Delete the operational IAM user."]
@@ -328,8 +759,8 @@ gatewayGroup =
         [ optionalOption "config" Nothing "PATH" "Gateway config path"
         , optionalOption "log-level" Nothing "LEVEL" "Override daemon log level"
         , optionalOption "port" Nothing "INTEGER" "Override daemon port"
-        , flag "foreground" Nothing Nothing "Run in the foreground"
-        , flag "dry-run" Nothing Nothing "Render the daemon-start plan without mutating state"
+        , flagOption "foreground" Nothing Nothing "Run in the foreground"
+        , flagOption "dry-run" Nothing Nothing "Render the daemon-start plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["gateway", "start", "--config", "gateway.dhall"] "Start the gateway daemon."]
@@ -364,7 +795,7 @@ workloadGroup =
         "Start the internal workload daemon."
         [ optionalOption "log-level" Nothing "LEVEL" "Override daemon log level"
         , optionalOption "port" Nothing "INTEGER" "Override daemon port"
-        , flag "foreground" Nothing Nothing "Run in the foreground"
+        , flagOption "foreground" Nothing Nothing "Run in the foreground"
         ]
         [example ["workload", "start", "--foreground"] "Start the workload runtime in the foreground."]
     ]
@@ -393,7 +824,7 @@ chartsGroup =
         "deploy"
         "Deploy a root chart stack"
         "Reconcile a root chart to the supported state."
-        [ flag "dry-run" Nothing Nothing "Render the deployment plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the deployment plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [ example ["charts", "deploy", "vscode"] "Deploy the vscode stack."
@@ -403,8 +834,8 @@ chartsGroup =
         "delete"
         "Delete a root chart stack"
         "Delete a root chart stack."
-        [ flag "yes" (Just 'y') Nothing "Skip confirmation prompt"
-        , flag "dry-run" Nothing Nothing "Render the deletion plan without mutating state"
+        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompt"
+        , flagOption "dry-run" Nothing Nothing "Render the deletion plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [ example ["charts", "delete", "vscode", "--yes"] "Delete the vscode stack."
@@ -424,7 +855,7 @@ pulumiGroup =
         "eks-resources"
         "Provision or inspect EKS test stack"
         "Reconcile the EKS validation stack."
-        [ flag "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "eks-resources"] "Reconcile the EKS validation stack."]
@@ -432,8 +863,8 @@ pulumiGroup =
         "eks-destroy"
         "Destroy EKS test stack"
         "Destroy the EKS validation stack."
-        [ flag "yes" (Just 'y') Nothing "Skip confirmation prompts"
-        , flag "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
+        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
+        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "eks-destroy", "--yes"] "Destroy the EKS validation stack."]
@@ -441,7 +872,7 @@ pulumiGroup =
         "test-resources"
         "Provision or inspect HA RKE2 test stack"
         "Reconcile the HA RKE2 validation stack."
-        [ flag "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the Pulumi plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "test-resources"] "Reconcile the HA RKE2 validation stack."]
@@ -449,8 +880,8 @@ pulumiGroup =
         "test-destroy"
         "Destroy HA RKE2 test stack"
         "Destroy the HA RKE2 validation stack."
-        [ flag "yes" (Just 'y') Nothing "Skip confirmation prompts"
-        , flag "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
+        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
+        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "test-destroy", "--yes"] "Destroy the HA RKE2 validation stack."]
@@ -487,7 +918,7 @@ rke2Group =
         "reconcile"
         "Reconcile RKE2"
         "Reconcile the supported local cluster state."
-        [ flag "dry-run" Nothing Nothing "Render the lifecycle plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the lifecycle plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [ example ["rke2", "reconcile"] "Reconcile the supported local cluster."
@@ -497,7 +928,7 @@ rke2Group =
         "install"
         "Deprecated alias for reconcile"
         "Deprecated alias for `prodbox rke2 reconcile`."
-        [ flag "dry-run" Nothing Nothing "Render the lifecycle plan without mutating state"
+        [ flagOption "dry-run" Nothing Nothing "Render the lifecycle plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["rke2", "install"] "Use the one-cycle reconcile alias."]
@@ -505,7 +936,7 @@ rke2Group =
         "delete"
         "Delete RKE2"
         "Delete the local cluster."
-        [flag "yes" (Just 'y') Nothing "Confirm full RKE2 cluster deletion"]
+        [flagOption "yes" (Just 'y') Nothing "Confirm full RKE2 cluster deletion"]
         [example ["rke2", "delete", "--yes"] "Delete the local cluster."]
     , leaf
         "logs"
@@ -572,7 +1003,7 @@ testGroupSpec =
     [example ["test", "all"] "Run the full supported test surface."]
  where
   coverageOptions =
-    [ flag "coverage" Nothing Nothing "Enable coverage reporting for the selected test scope"
+    [ flagOption "coverage" Nothing Nothing "Enable coverage reporting for the selected test scope"
     , optionalOption "cov-fail-under" Nothing "INTEGER" "Require a minimum coverage percentage"
     ]
   integrationLeaf leafName leafSummary =
@@ -591,6 +1022,29 @@ checkCodeLeaf =
     "Run the canonical quality gate."
     []
     [example ["check-code"] "Run the canonical quality gate."]
+
+commandsLeaf :: CommandSpec
+commandsLeaf =
+  leaf
+    "commands"
+    "Render the command registry"
+    "Render the command registry in plain text, tree, or JSON form."
+    [ flagOption "tree" Nothing Nothing "Render the command registry as a tree"
+    , flagOption "json" Nothing Nothing "Render the command registry as JSON"
+    ]
+    [ example ["commands"] "Render the command registry in plain-text form."
+    , example ["commands", "--tree"] "Render the command registry as a tree."
+    , example ["commands", "--json"] "Render the command registry as JSON."
+    ]
+
+helpLeaf :: CommandSpec
+helpLeaf =
+  leaf
+    "help"
+    "Render help for a command path"
+    "Render detailed help for a registered command path."
+    []
+    [example ["help", "charts", "deploy"] "Render detailed help for `prodbox charts deploy`."]
 
 tlaCheckLeaf :: CommandSpec
 tlaCheckLeaf =
@@ -639,19 +1093,19 @@ lintGroup =
         "files"
         "Run repository-policy lint checks"
         "Check forbidden paths and library-first policy invariants."
-        [flag "write" Nothing Nothing "Rewrite the target surface instead of only checking for drift"]
+        [flagOption "write" Nothing Nothing "Rewrite the target surface instead of only checking for drift"]
         [example ["lint", "files"] "Run repository-policy lint checks."]
     , leaf
         "docs"
         "Check generated documentation sections"
         "Check or rewrite marker-delimited documentation sections."
-        [flag "write" Nothing Nothing "Rewrite the generated documentation sections"]
+        [flagOption "write" Nothing Nothing "Rewrite the generated documentation sections"]
         [example ["lint", "docs"] "Check generated documentation sections for drift."]
     , leaf
         "haskell"
         "Run Haskell formatter and lint checks"
         "Run the formatter, hlint, and cabal-format consistency checks."
-        [flag "write" Nothing Nothing "Rewrite Haskell formatting surfaces in place"]
+        [flagOption "write" Nothing Nothing "Rewrite Haskell formatting surfaces in place"]
         [example ["lint", "haskell"] "Run Haskell formatter and lint checks."]
     , leaf
         "chart"

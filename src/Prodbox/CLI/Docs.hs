@@ -11,17 +11,16 @@ module Prodbox.CLI.Docs
   )
 where
 
-import Data.List (intercalate)
 import Prodbox.CLI.Spec
   ( CommandSpec (..)
   , Example (..)
   , OptionSpec (..)
   )
 
-renderCommandHelp :: CommandSpec -> String
-renderCommandHelp spec =
+renderCommandHelp :: [String] -> CommandSpec -> String
+renderCommandHelp commandPath spec =
   unlines
-    ( [ commandHeader spec
+    ( [ commandHeader commandPath spec
       , ""
       , commandDescription
       ]
@@ -32,12 +31,9 @@ renderCommandHelp spec =
  where
   CommandSpec {description = commandDescription} = spec
 
-commandHeader :: CommandSpec -> String
-commandHeader spec =
-  unwords (pathToNode spec) ++ " - " ++ summary spec
-
-pathToNode :: CommandSpec -> [String]
-pathToNode spec = [name spec]
+commandHeader :: [String] -> CommandSpec -> String
+commandHeader commandPath spec =
+  unwords ("prodbox" : commandPath) ++ " - " ++ summary spec
 
 renderChildren :: CommandSpec -> [String]
 renderChildren spec =
@@ -69,7 +65,7 @@ renderOption optionSpec =
   OptionSpec
     { longName = optionLongName
     , shortName = optionShortName
-    , metavar = optionMetavar
+    , optionMetavar = optionMetavar
     , description = optionDescription
     } = optionSpec
 
@@ -229,7 +225,7 @@ renderManpageOption optionSpec =
       Nothing -> ""
       Just shortFlag -> ", \\fB-" ++ [shortFlag] ++ "\\fR"
   metavarFragment =
-    case metavar optionSpec of
+    case optionMetavar optionSpec of
       Nothing -> ""
       Just value -> " <" ++ value ++ ">"
 

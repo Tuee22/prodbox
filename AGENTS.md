@@ -78,8 +78,9 @@ development.
 
 ### Integration Tests
 
-- `test/integration/cli/Main.hs` and `test/integration/env/Main.hs` are built-frontend Haskell
-  suites.
+- `test/integration/Main.hs` is the built-frontend Haskell suite entrypoint, with
+  `test/integration/CliSuite.hs` and `test/integration/EnvSuite.hs` covering the CLI and
+  repository-config proof surfaces.
 - Named `prodbox test integration ...` commands run real native Haskell validation flows through
   `src/Prodbox/TestValidation.hs`.
 - Missing prerequisites must fail fast with actionable errors.

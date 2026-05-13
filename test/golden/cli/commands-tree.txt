@@ -11,6 +11,7 @@ prodbox
     deploy
     delete
   check-code
+  commands
   config
     setup
     show
@@ -24,6 +25,7 @@ prodbox
     start
     status
     config-gen
+  help
   host
     ensure-tools
     check-ports

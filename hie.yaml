@@ -15,13 +15,8 @@ cradle:
         cradle:
           cabal:
             component: "prodbox:test:prodbox-unit"
-    - path: "./test/integration/cli"
+    - path: "./test/integration"
       config:
         cradle:
           cabal:
-            component: "prodbox:test:prodbox-integration-cli"
-    - path: "./test/integration/env"
-      config:
-        cradle:
-          cabal:
-            component: "prodbox:test:prodbox-integration-env"
+            component: "prodbox:test:prodbox-integration"

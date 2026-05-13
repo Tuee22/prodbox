@@ -86,8 +86,8 @@ Reopened sprints by phase:
   and smart-constructor module; GADT-indexed state machines for multi-state workflows;
   toolchain pin reaffirmation on GHC `9.14.1` / Cabal `3.16.1.0`; one-shot CLI output
   discipline with `--format` / `--color` / `--no-color` and stdout/stderr split; one-shot
-  `Env` record and `ReaderT App` adoption; style-tools sandbox under
-  `.build/prodbox-style-tools/` plus custom `.hlint.yaml` nesting warnings and negative-space
+  `Env` record and `ReaderT App` adoption; pinned style-tools sandbox under
+  `.build/prodbox-style-tools/` plus custom nesting warnings and negative-space
   symbol rules refusing `forkIO`, `unsafePerformIO`, and module-level `IORef` in daemon paths;
   aggregate `prodbox test lint` dispatch with lint-first ordering of `prodbox test all`;
   `trackingGeneratedPaths` registry plus renderer determinism contract; standardized library
@@ -269,10 +269,10 @@ but final handoff is reclaimed only when the reopened implementation phases clos
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
 the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
-evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.19`, `1.26`, `2.9`, `2.14`, and `4.7`
+evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.14`, and `4.7`
 in `Active` state because those surfaces have started
 in code but still retain sprint-owned implementation or validation gaps. Sprints `1.10`,
-`1.11`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`,
+`1.11`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`,
 `4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.6`, `1.7`, `1.9`,
 `1.15`, and `3.8` now re-close on the supported worktree. The remaining reopened sprints stay
 `Planned`. The following implemented baseline surfaces remain current on

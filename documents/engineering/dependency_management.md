@@ -90,8 +90,11 @@ prodbox check-code
 - Infrastructure tooling: `pulumi`
 - Formal verification tooling: Docker plus the TLA+ runtime documented in `documents/engineering/tla/`
 
-`prodbox lint haskell` and `prodbox check-code` prepend the repo-local style-tool sandbox at
-`.build/prodbox-style-tools/bin/` to `PATH` before invoking `fourmolu` or `hlint`.
+`prodbox lint haskell` and `prodbox check-code` bootstrap the repo-local style-tool sandbox at
+`.build/prodbox-style-tools/bin/` via `src/Prodbox/Lint.hs`, using `ghcup run --install` with
+formatter GHC `9.12.4`, Cabal `3.16.1.0`, Fourmolu `0.19.0.1`, and HLint `3.10`. The lint
+entrypoint invokes those sandboxed binaries directly rather than consulting host-installed
+`fourmolu` or `hlint`.
 
 ## 5. Adding New Dependencies
 

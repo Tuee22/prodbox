@@ -759,13 +759,16 @@ markPeerError stateVar peerId reason =
     s
       { statePeerHealth =
           Map.alter
-            ( \mh -> case mh of
-                Just h -> Just h {peerHealthConnected = False, peerHealthLastError = Just reason}
-                Nothing -> Just (PeerHealth Nothing False (Just reason))
-            )
+            (markPeerHealthError reason)
             peerId
             (statePeerHealth s)
       }
+
+markPeerHealthError :: String -> Maybe PeerHealth -> Maybe PeerHealth
+markPeerHealthError reason mh =
+  case mh of
+    Just h -> Just h {peerHealthConnected = False, peerHealthLastError = Just reason}
+    Nothing -> Just (PeerHealth Nothing False (Just reason))
 
 markPeerOk :: TVar DaemonState -> String -> IO ()
 markPeerOk stateVar peerId = do
@@ -774,20 +777,23 @@ markPeerOk stateVar peerId = do
     s
       { statePeerHealth =
           Map.alter
-            ( \mh -> case mh of
-                Just h ->
-                  Just
-                    h
-                      { peerHealthConnected = True
-                      , peerHealthLastError = Nothing
-                      , peerHealthLastInboundEvent =
-                          Just (maybe now (max now) (peerHealthLastInboundEvent h))
-                      }
-                Nothing -> Just (PeerHealth (Just now) True Nothing)
-            )
+            (markPeerHealthOk now)
             peerId
             (statePeerHealth s)
       }
+
+markPeerHealthOk :: UTCTime -> Maybe PeerHealth -> Maybe PeerHealth
+markPeerHealthOk now mh =
+  case mh of
+    Just h ->
+      Just
+        h
+          { peerHealthConnected = True
+          , peerHealthLastError = Nothing
+          , peerHealthLastInboundEvent =
+              Just (maybe now (max now) (peerHealthLastInboundEvent h))
+          }
+    Nothing -> Just (PeerHealth (Just now) True Nothing)
 
 renderStateJson :: UTCTime -> DaemonConfig -> DaemonState -> BL.ByteString
 renderStateJson now config state =
@@ -899,15 +905,15 @@ writeDnsRecord gate ip = do
             object
               [ "Changes"
                   .= [ object
-                        [ "Action" .= ("UPSERT" :: String)
-                        , "ResourceRecordSet"
-                            .= object
-                              [ "Name" .= dnsWriteGateFqdn gate
-                              , "Type" .= ("A" :: String)
-                              , "TTL" .= dnsWriteGateTtl gate
-                              , "ResourceRecords" .= [object ["Value" .= ip]]
-                              ]
-                        ]
+                         [ "Action" .= ("UPSERT" :: String)
+                         , "ResourceRecordSet"
+                             .= object
+                               [ "Name" .= dnsWriteGateFqdn gate
+                               , "Type" .= ("A" :: String)
+                               , "TTL" .= dnsWriteGateTtl gate
+                               , "ResourceRecords" .= [object ["Value" .= ip]]
+                               ]
+                         ]
                      ]
               ]
   result <-

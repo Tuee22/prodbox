@@ -279,14 +279,18 @@ handlePeerRequest lookupKey knownEmitters maxSkew nowIso (PeerEventBatch events 
                       else Right ev
               _ -> Right ev
       partitioned =
-        foldr
-          ( \ev (acc, rej) -> case check ev of
-              Right okEv -> (okEv : acc, rej)
-              Left reason -> (acc, (eventHash ev, reason) : rej)
-          )
-          ([], [])
-          events
+        foldr (partitionCheckedEvent check) ([], []) events
    in partitioned
+
+partitionCheckedEvent
+  :: (SignedEvent -> Either String SignedEvent)
+  -> SignedEvent
+  -> ([SignedEvent], [(String, String)])
+  -> ([SignedEvent], [(String, String)])
+partitionCheckedEvent check ev (acc, rej) =
+  case check ev of
+    Right okEv -> (okEv : acc, rej)
+    Left reason -> (acc, (eventHash ev, reason) : rej)
 
 bytesToHex :: BS.ByteString -> String
 bytesToHex = concatMap byteToHex . BS.unpack

@@ -24,11 +24,10 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
 compare, respectively. Current worktree evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`,
-`1.19`, and `1.26` in `Active` state: the subprocess surface still retains compatibility or
+`1.26` in `Active` state: the subprocess surface still retains compatibility or
 consolidation residue, the service or retry or error foundations are now implemented but not
-yet fully migrated through their call sites, and the lint stack already consumes a committed
-`.hlint.yaml` but still lacks the doctrine's fully pinned sandbox bootstrap. Sprints `1.6`,
-`1.7`, `1.9`, `1.10`, `1.11`, `1.15`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27`
+yet fully migrated through their call sites. Sprints `1.6`,
+`1.7`, `1.9`, `1.10`, `1.11`, `1.15`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27`
 are now implemented in code and validated locally. The remaining reopened Phase `1` sprints
 stay `Planned`.
 
@@ -1000,10 +999,10 @@ through `ReaderT Env IO` rather than ad-hoc argument lists.
    access.
 2. Spot-check golden tests confirm that command output is unchanged after the migration.
 
-## Sprint 1.19: Style-Tools Sandbox and Custom Nesting Hlint Rules 🔄
+## Sprint 1.19: Style-Tools Sandbox and Custom Nesting Hlint Rules ✅
 
-**Status**: Active
-**Implementation**: `.hlint.yaml`, `src/Prodbox/CheckCode.hs`, `test/haskell-style/Main.hs`
+**Status**: Done
+**Implementation**: `.hlint.yaml`, `src/Prodbox/Lint.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/code_quality.md`,
 `documents/engineering/dependency_management.md`
 
@@ -1021,12 +1020,14 @@ project-specific `.hlint.yaml` rule pattern.
   module). The formatter-tool GHC is isolated from the project compiler so format output is
   reproducible across contributors and CI.
 - Repo-root `.hlint.yaml` exists, committed, and lists the doctrine's nested-case warnings
-  (`Refactor nested case`, `Avoid case inside lambda body`). The file is consumed by both
-  `prodbox lint haskell` and the `prodbox-haskell-style` test-suite stanza (Sprint 1.11) so
-  the rules accumulate over time without parallel surfaces.
-- `.hlint.yaml` carries negative-space symbol rules refusing `forkIO`, `unsafePerformIO`, and
-  module-level `IORef` inside `src/Prodbox/Gateway/`, `src/Prodbox/Workload.hs`, and any new
-  daemon path, per
+  (`Refactor nested case`, `Avoid case inside lambda body`). `src/Prodbox/CheckCode.hs`
+  consumes those markers and performs the path-sensitive custom scans that HLint YAML cannot
+  express safely.
+- The governed Haskell lint scan refuses `case` bodies inside lambdas with the doctrine-named
+  `Avoid case inside lambda body` / `Refactor nested case` message. The supported tree has no
+  surviving `\x -> case ...` call sites.
+- The governed Haskell lint scan refuses `forkIO`, `unsafePerformIO`, and module-level `IORef`
+  inside `src/Prodbox/Gateway/`, `src/Prodbox/Workload.hs`, and any new daemon path, per
   [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Structured Concurrency / Test Hooks in
   Env / The Env Record Grows](../HASKELL_CLI_TOOL.md) §1243, §1370, §1450. Production code
   uses `Control.Concurrent.Async` (`withAsync`, `concurrently`, `race`,
@@ -1035,9 +1036,8 @@ project-specific `.hlint.yaml` rule pattern.
   doctrine.
 - `prodbox check-code` continues to dispatch into the same path; no parallel
   developer-tooling fourmolu invocation survives outside the doctrine-pinned sandbox.
-- Enqueue host-installed `fourmolu` / `hlint` use and any missing doctrine-specific
-  `.hlint.yaml` rule coverage in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- The legacy ledger entry for host-installed `fourmolu` / `hlint` use and missing nesting or
+  daemon negative-space coverage moves to `Completed`.
 
 ### Validation
 
@@ -1049,17 +1049,16 @@ project-specific `.hlint.yaml` rule pattern.
    any daemon-path module fails `prodbox lint haskell` with the negative-space symbol
    rule.
 
-### Remaining Work
+### Completed Work
 
-- The repo now carries a committed `.hlint.yaml`, `prodbox lint haskell` and the
-  `prodbox-haskell-style` suite both consume it through the shared `src/Prodbox/CheckCode.hs`
-  path, the lint entrypoint runs `hlint` with `--with-group=default` plus `--with-group=extra`,
-  and the doctrine-owned marker set for nested-case, daemon-path negative-space, and forbidden
-  subprocess primitives is now enforced by the governed check-code scan.
-- The remaining gap is the tool-bootstrap path itself: `.build/prodbox-style-tools/bin/` is now
-  created and populated on demand, but the bootstrap still copies host-installed `fourmolu` and
-  `hlint` when present rather than installing them through a dedicated pinned formatter-tool GHC
-  declared in a doctrine-owned `src/Prodbox/Lint.hs` module.
+- `src/Prodbox/Lint.hs` declares the isolated formatter-tool GHC `9.12.4`, Cabal `3.16.1.0`,
+  Fourmolu `0.19.0.1`, and HLint `3.10`, and bootstraps them through `ghcup run --install`
+  plus `cabal install --ignore-project`.
+- `src/Prodbox/BuildSupport.hs` no longer copies host-installed style tools; it only adds the
+  repo-local sandbox path to the build environment.
+- `src/Prodbox/CheckCode.hs` invokes the sandboxed binaries by absolute path and enforces the
+  nested-case and daemon negative-space custom scans before running Fourmolu and HLint.
+- `./.build/prodbox check-code` passes with the sandboxed style-tool path.
 
 ## Sprint 1.20: Aggregate Test and Lint Dispatch Alignment ✅
 

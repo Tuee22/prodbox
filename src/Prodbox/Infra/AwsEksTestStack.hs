@@ -219,15 +219,16 @@ requireStringList :: KeyMap.KeyMap Value -> String -> Either String [String]
 requireStringList obj key =
   case KeyMap.lookup (Key.fromString key) obj of
     Just (Array arr) ->
-      mapM
-        ( \v -> case v of
-            String text ->
-              let str = Text.unpack text
-               in if null str then Left ("output " ++ key ++ " contains empty string") else Right str
-            _ -> Left ("output " ++ key ++ " must contain strings only")
-        )
-        (Vector.toList arr)
+      mapM (requireStringListEntry key) (Vector.toList arr)
     _ -> Left ("missing list output " ++ key)
+
+requireStringListEntry :: String -> Value -> Either String String
+requireStringListEntry key value =
+  case value of
+    String text ->
+      let str = Text.unpack text
+       in if null str then Left ("output " ++ key ++ " contains empty string") else Right str
+    _ -> Left ("output " ++ key ++ " must contain strings only")
 
 discoverCanonicalAwsEksResidue :: FilePath -> IO (Either String (Maybe AwsEksCanonicalResidue))
 discoverCanonicalAwsEksResidue repoRoot = do
@@ -317,20 +318,21 @@ requireNestedStringList :: Value -> [String] -> Either String [String]
 requireNestedStringList value [] =
   case value of
     Array entries ->
-      mapM
-        ( \entry -> case entry of
-            String text ->
-              let rendered = Text.unpack text
-               in if null rendered then Left "encountered empty string inside list field" else Right rendered
-            _ -> Left "expected string entries in list field"
-        )
-        (Vector.toList entries)
+      mapM requireNestedStringListEntry (Vector.toList entries)
     _ -> Left "expected list field"
 requireNestedStringList (Object payload) (field : fields) =
   case KeyMap.lookup (Key.fromString field) payload of
     Just nextValue -> requireNestedStringList nextValue fields
     Nothing -> Left ("missing nested list field " ++ field)
 requireNestedStringList _ _ = Left "expected nested object while decoding AWS EKS list field"
+
+requireNestedStringListEntry :: Value -> Either String String
+requireNestedStringListEntry entry =
+  case entry of
+    String text ->
+      let rendered = Text.unpack text
+       in if null rendered then Left "encountered empty string inside list field" else Right rendered
+    _ -> Left "expected string entries in list field"
 
 roleNameFromArn :: String -> String
 roleNameFromArn arn =
@@ -805,12 +807,7 @@ deleteVpcScopedResidue repoRoot residue = do
     Right () -> do
       subnetDeleteResult <-
         foldM
-          ( \acc subnetId ->
-              case acc of
-                Left err -> pure (Left err)
-                Right () ->
-                  runAwsCommandAllowMissing repoRoot ["ec2", "delete-subnet", "--subnet-id", subnetId]
-          )
+          (deleteSubnetResidue repoRoot)
           (Right ())
           (canonicalResidueSubnetIds residue)
       case subnetDeleteResult of
@@ -887,6 +884,13 @@ deleteVpcScopedResidue repoRoot residue = do
                             Left err -> pure (Left err)
                             Right () -> deleteIamRoleResidue repoRoot residue
 
+deleteSubnetResidue :: FilePath -> Either String () -> String -> IO (Either String ())
+deleteSubnetResidue repoRoot acc subnetId =
+  case acc of
+    Left err -> pure (Left err)
+    Right () ->
+      runAwsCommandAllowMissing repoRoot ["ec2", "delete-subnet", "--subnet-id", subnetId]
+
 deleteIamRoleResidue :: FilePath -> AwsEksCanonicalResidue -> IO (Either String ())
 deleteIamRoleResidue repoRoot residue = do
   clusterRoleDeleteResult <-
@@ -912,25 +916,27 @@ deleteRoleWithPolicies :: FilePath -> String -> [String] -> IO (Either String ()
 deleteRoleWithPolicies repoRoot roleName policyArns = do
   detachResult <-
     foldM
-      ( \acc policyArn ->
-          case acc of
-            Left err -> pure (Left err)
-            Right () ->
-              runAwsCommandAllowMissing
-                repoRoot
-                [ "iam"
-                , "detach-role-policy"
-                , "--role-name"
-                , roleName
-                , "--policy-arn"
-                , policyArn
-                ]
-      )
+      (detachRolePolicy repoRoot roleName)
       (Right ())
       policyArns
   case detachResult of
     Left err -> pure (Left err)
     Right () -> runAwsCommandAllowMissing repoRoot ["iam", "delete-role", "--role-name", roleName]
+
+detachRolePolicy :: FilePath -> String -> Either String () -> String -> IO (Either String ())
+detachRolePolicy repoRoot roleName acc policyArn =
+  case acc of
+    Left err -> pure (Left err)
+    Right () ->
+      runAwsCommandAllowMissing
+        repoRoot
+        [ "iam"
+        , "detach-role-policy"
+        , "--role-name"
+        , roleName
+        , "--policy-arn"
+        , policyArn
+        ]
 
 resourceStillExists :: FilePath -> [String] -> IO (Either String Bool)
 resourceStillExists _ [] = pure (Left "resource existence check requires a command")
@@ -1209,8 +1215,7 @@ destroyAwsEksTestStackStatus repoRoot summary = do
           pure (Right "no local Pulumi backend or saved residue snapshot; nothing to destroy")
         Just _ ->
           pure
-            ( Left ("local MinIO backend unavailable while an AWS EKS test stack snapshot still exists: " ++ err)
-            )
+            (Left ("local MinIO backend unavailable while an AWS EKS test stack snapshot still exists: " ++ err))
     Right (Left err) -> pure (Left err)
     Right (Right status) -> pure (Right status)
 

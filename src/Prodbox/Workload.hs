@@ -1056,24 +1056,24 @@ flushNewWebsocketMessages redisSocket clientSocket sessionId lastSeenCount = do
   case messagesResult of
     Left err -> pure (Left err)
     Right newRenderedMessages -> do
-      mapM_
-        ( \renderedMessage ->
-            case parseWebsocketMessage renderedMessage of
-              Left _ -> pure ()
-              Right messageValue ->
-                sendWebSocketText
-                  clientSocket
-                  ( renderJsonText
-                      ( object
-                          [ "type" .= ("message" :: String)
-                          , "pod" .= websocketMessageSenderPod messageValue
-                          , "message" .= websocketMessagePayload messageValue
-                          ]
-                      )
-                  )
-        )
-        newRenderedMessages
+      mapM_ (flushRenderedWebsocketMessage clientSocket) newRenderedMessages
       pure (Right (lastSeenCount + length newRenderedMessages))
+
+flushRenderedWebsocketMessage :: Socket -> String -> IO ()
+flushRenderedWebsocketMessage clientSocket renderedMessage =
+  case parseWebsocketMessage renderedMessage of
+    Left _ -> pure ()
+    Right messageValue ->
+      sendWebSocketText
+        clientSocket
+        ( renderJsonText
+            ( object
+                [ "type" .= ("message" :: String)
+                , "pod" .= websocketMessageSenderPod messageValue
+                , "message" .= websocketMessagePayload messageValue
+                ]
+            )
+        )
 
 readWebSocketFrame :: Socket -> IORef BS.ByteString -> IO (Either String WebSocketFrame)
 readWebSocketFrame clientSocket bufferRef = do

@@ -19,6 +19,7 @@ import Prodbox.CheckCode
   , rendererSourceViolations
   , trackingGeneratedPaths
   )
+import Prodbox.Lint (ensureSandboxedStyleTools, formatterToolGhcVersion, styleToolsBinDir)
 import Prodbox.PublicEdge (renderHelmRouteInventory)
 import System.Directory (doesFileExist, getCurrentDirectory)
 import System.FilePath ((</>))
@@ -54,12 +55,17 @@ main = mainWithSuite "prodbox-haskell-style" $ do
 
     it "bootstraps sandboxed Haskell style tools under .build/prodbox-style-tools/bin" $ do
       repoRoot <- getCurrentDirectory
-      _ <- addBuildSupportEnvironment repoRoot []
-      let sandboxDir = repoRoot </> ".build" </> "prodbox-style-tools" </> "bin"
+      environment <- addBuildSupportEnvironment repoRoot []
+      bootstrapResult <- ensureSandboxedStyleTools repoRoot environment
+      bootstrapResult `shouldBe` Right ()
+      let sandboxDir = styleToolsBinDir repoRoot
       fourmoluExists <- doesFileExist (sandboxDir </> "fourmolu")
       hlintExists <- doesFileExist (sandboxDir </> "hlint")
       fourmoluExists `shouldBe` True
       hlintExists `shouldBe` True
+
+    it "declares the isolated formatter-tool GHC version in source" $
+      formatterToolGhcVersion `shouldBe` "9.12.4"
 
     it "records the doctrine-owned hlint markers" $ do
       repoRoot <- getCurrentDirectory

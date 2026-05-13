@@ -41,6 +41,7 @@ library
         Prodbox.K8s
         Prodbox.Lib.ChartPlatform
         Prodbox.Lib.Storage
+        Prodbox.Lint
         Prodbox.Naming
         Prodbox.Native
         Prodbox.PostgresPlatform

@@ -393,12 +393,7 @@ parseGatewayRule obj =
     Just (Object ruleObj) -> do
       rankedNodesList <- case KeyMap.lookup (Key.fromString "ranked_nodes") ruleObj of
         Just (Array arr) ->
-          mapM
-            ( \v -> case v of
-                String text -> Right (Text.unpack text)
-                _ -> Left "ranked_nodes must contain strings"
-            )
-            (Vector.toList arr)
+          mapM parseRankedNode (Vector.toList arr)
         _ -> Left "gateway_rule.ranked_nodes must be a list"
       if null rankedNodesList
         then Left "gateway_rule.ranked_nodes must be non-empty"
@@ -419,6 +414,12 @@ parseGatewayRule obj =
                       , heartbeatTimeoutSeconds = timeoutValue
                       }
     _ -> Left "orders.gateway_rule must be an object"
+
+parseRankedNode :: Value -> Either String String
+parseRankedNode value =
+  case value of
+    String text -> Right (Text.unpack text)
+    _ -> Left "ranked_nodes must contain strings"
 
 validateIntervals :: Double -> Double -> Double -> Either String ()
 validateIntervals heartbeat reconnect sync

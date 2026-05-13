@@ -6,6 +6,7 @@ module Prodbox.BuildSupport
   )
 where
 
+import Prodbox.Lint (styleToolsBinDir)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( CommandSpec (..)
@@ -18,7 +19,6 @@ import System.Directory
   , createDirectoryIfMissing
   , createFileLink
   , doesFileExist
-  , findExecutable
   , getPermissions
   , setPermissions
   )
@@ -30,7 +30,7 @@ import System.FilePath ((</>))
 addBuildSupportEnvironment :: FilePath -> [(String, String)] -> IO [(String, String)]
 addBuildSupportEnvironment repoRoot environment = do
   supportDir <- ensureBuildSupportDirectory repoRoot
-  ensureStyleToolsDirectory repoRoot
+  createDirectoryIfMissing True (styleToolsBinDir repoRoot)
   let existingLibraryPath = maybe "" id (lookup "LIBRARY_PATH" environment)
       updatedLibraryPath =
         if existingLibraryPath == ""
@@ -49,9 +49,6 @@ addBuildSupportEnvironment repoRoot environment = do
 
 canonicalOperatorBinaryPath :: FilePath -> FilePath
 canonicalOperatorBinaryPath repoRoot = repoRoot </> ".build" </> "prodbox"
-
-styleToolsBinDir :: FilePath -> FilePath
-styleToolsBinDir repoRoot = repoRoot </> ".build" </> "prodbox-style-tools" </> "bin"
 
 syncBuiltOperatorBinary :: FilePath -> [(String, String)] -> IO (Either String FilePath)
 syncBuiltOperatorBinary repoRoot environment = do
@@ -92,28 +89,6 @@ ensureBuildSupportDirectory repoRoot = do
         Just sourcePath -> do
           createFileLink sourcePath supportLink
           pure supportDir
-
-ensureStyleToolsDirectory :: FilePath -> IO ()
-ensureStyleToolsDirectory repoRoot = do
-  let binDir = styleToolsBinDir repoRoot
-  createDirectoryIfMissing True binDir
-  ensureStyleToolBinary binDir "fourmolu"
-  ensureStyleToolBinary binDir "hlint"
-
-ensureStyleToolBinary :: FilePath -> String -> IO ()
-ensureStyleToolBinary binDir toolName = do
-  let targetPath = binDir </> toolName
-  targetExists <- doesFileExist targetPath
-  if targetExists
-    then pure ()
-    else do
-      maybeSourcePath <- findExecutable toolName
-      case maybeSourcePath of
-        Nothing -> pure ()
-        Just sourcePath -> do
-          copyFile sourcePath targetPath
-          sourcePermissions <- getPermissions sourcePath
-          setPermissions targetPath sourcePermissions {executable = True}
 
 firstExistingSystemLib :: IO (Maybe FilePath)
 firstExistingSystemLib =

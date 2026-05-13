@@ -146,16 +146,16 @@ waitNode repoRoot timeout namespaces =
     , effectNodeEffect =
         Sequence
           [ RunCommand
-            ( kubectlSpec
-                repoRoot
-                (Just namespace)
-                [ "wait"
-                , "--all"
-                , "--for=condition=available"
-                , "deployment"
-                , "--timeout=" ++ show timeout ++ "s"
-                ]
-            )
+              ( kubectlSpec
+                  repoRoot
+                  (Just namespace)
+                  [ "wait"
+                  , "--all"
+                  , "--for=condition=available"
+                  , "deployment"
+                  , "--timeout=" ++ show timeout ++ "s"
+                  ]
+              )
           | namespace <- namespaces
           ]
     }

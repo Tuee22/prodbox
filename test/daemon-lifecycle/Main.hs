@@ -126,12 +126,13 @@ withTemporaryEnv bindings action =
 
 applyBindings :: [(String, Maybe String)] -> IO ()
 applyBindings =
-  mapM_
-    ( \(name, maybeValue) ->
-        case maybeValue of
-          Just value -> setEnv name value
-          Nothing -> unsetEnv name
-    )
+  mapM_ applyBinding
+
+applyBinding :: (String, Maybe String) -> IO ()
+applyBinding (name, maybeValue) =
+  case maybeValue of
+    Just value -> setEnv name value
+    Nothing -> unsetEnv name
 
 isJust :: Maybe a -> Bool
 isJust maybeValue =

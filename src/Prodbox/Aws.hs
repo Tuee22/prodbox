@@ -1524,8 +1524,7 @@ deleteUserAccessKey repoRoot adminCredentials userName accessKeyIdValue = do
       ]
   _ <-
     liftAwsEither
-      ( requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput
-      )
+      (requireCommandSuccess ("aws iam delete-access-key " ++ Text.unpack accessKeyIdValue) deleteKeyOutput)
   pure ()
 
 deleteUserPolicyIfPresent :: FilePath -> Credentials -> IO ()

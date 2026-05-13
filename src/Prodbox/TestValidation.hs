@@ -1477,8 +1477,7 @@ changeRoute53Record repoRoot awsEnvironment hostedZoneId action recordName recor
     try
       ( writeFile
           batchPath
-          ( route53ChangeBatch action recordName recordIp
-          )
+          (route53ChangeBatch action recordName recordIp)
       )
       :: IO (Either IOException ())
   case writeResult of
@@ -1754,13 +1753,15 @@ verifyAwsTestSshReachability repoRoot = do
     (_, Nothing) -> failWith "AWS test-stack SSH validation requires an existing saved stack snapshot"
     (Right privateKeyPath, Just current) ->
       foldM
-        ( \exitCode node ->
-            case exitCode of
-              ExitFailure _ -> pure exitCode
-              ExitSuccess -> waitForAwsTestNodeSsh repoRoot privateKeyPath node awsTestSshReadyAttempts
-        )
+        (verifyAwsTestNodeSsh repoRoot privateKeyPath)
         ExitSuccess
         (AwsTest.testSnapshotNodes current)
+
+verifyAwsTestNodeSsh :: FilePath -> FilePath -> ExitCode -> AwsTest.AwsTestNode -> IO ExitCode
+verifyAwsTestNodeSsh repoRoot privateKeyPath exitCode node =
+  case exitCode of
+    ExitFailure _ -> pure exitCode
+    ExitSuccess -> waitForAwsTestNodeSsh repoRoot privateKeyPath node awsTestSshReadyAttempts
 
 waitForAwsTestNodeSsh :: FilePath -> FilePath -> AwsTest.AwsTestNode -> Int -> IO ExitCode
 waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
@@ -2070,14 +2071,14 @@ requireStringArrayField :: KeyMap.KeyMap Value -> String -> Either String [Strin
 requireStringArrayField objectValue key =
   case KeyMap.lookup (Key.fromString key) objectValue of
     Just (Array values) ->
-      mapM
-        ( \value ->
-            case value of
-              String textVal -> Right (textValue textVal)
-              _ -> Left ("field " ++ key ++ " must contain strings only")
-        )
-        (Vector.toList values)
+      mapM (requireStringArrayEntry key) (Vector.toList values)
     _ -> Left ("missing array field " ++ key)
+
+requireStringArrayEntry :: String -> Value -> Either String String
+requireStringArrayEntry key value =
+  case value of
+    String textVal -> Right (textValue textVal)
+    _ -> Left ("field " ++ key ++ " must contain strings only")
 
 validationNonce :: IO String
 validationNonce = show . (round :: Rational -> Integer) . toRational <$> getPOSIXTime

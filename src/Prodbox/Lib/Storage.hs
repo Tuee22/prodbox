@@ -150,8 +150,8 @@ chartPersistentVolumeManifest namespace rootChart bindings nodeHostname =
     , "kind" .= ("List" :: String)
     , "items"
         .= ( namespaceManifestItem namespace rootChart
-              : storageClassManifestItem
-              : map (persistentVolumeManifestItem namespace rootChart nodeHostname) bindings
+               : storageClassManifestItem
+               : map (persistentVolumeManifestItem namespace rootChart nodeHostname) bindings
            )
     ]
 
@@ -230,14 +230,14 @@ persistentVolumeManifestItem namespace rootChart nodeHostname binding =
                     .= object
                       [ "nodeSelectorTerms"
                           .= [ object
-                                [ "matchExpressions"
-                                    .= [ object
-                                          [ "key" .= ("kubernetes.io/hostname" :: String)
-                                          , "operator" .= ("In" :: String)
-                                          , "values" .= [nodeHostname]
-                                          ]
-                                       ]
-                                ]
+                                 [ "matchExpressions"
+                                     .= [ object
+                                            [ "key" .= ("kubernetes.io/hostname" :: String)
+                                            , "operator" .= ("In" :: String)
+                                            , "values" .= [nodeHostname]
+                                            ]
+                                        ]
+                                 ]
                              ]
                       ]
                 ]

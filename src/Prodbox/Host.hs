@@ -704,8 +704,7 @@ securityPolicyAttached routeName maybeValue =
   case maybeValue of
     Just (Object obj) ->
       hasTargetRef obj
-        && ( hasStatusCondition maybeValue ["Accepted", "Programmed"] || not (hasAnyStatusConditions maybeValue)
-           )
+        && (hasStatusCondition maybeValue ["Accepted", "Programmed"] || not (hasAnyStatusConditions maybeValue))
     _ -> False
  where
   hasTargetRef obj =

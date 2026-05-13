@@ -19,11 +19,10 @@ where
 
 import Control.Monad (forM)
 import Data.Char (isAlphaNum)
-import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort)
+import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort, tails)
 import Data.Text qualified as Text
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
-  , styleToolsBinDir
   , syncBuiltOperatorBinary
   )
 import Prodbox.CLI.Command
@@ -41,6 +40,11 @@ import Prodbox.CLI.Docs
 import Prodbox.CLI.Output (writeError)
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
 import Prodbox.Error (fatalError)
+import Prodbox.Lint
+  ( ensureSandboxedStyleTools
+  , missingStyleToolViolations
+  , styleToolsBinDir
+  )
 import Prodbox.PublicEdge (renderHelmRouteInventory)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess qualified as Subprocess
@@ -140,23 +144,23 @@ trackingGeneratedPaths =
     }
     : map commandGroupManpageRule (children commandRegistry)
     ++ [ TrackedGeneratedPath
-          { trackedGeneratedPathKey = "command-registry.completion.bash"
-          , trackedGeneratedPathPath = "share/completion/bash/prodbox"
-          , trackedGeneratedPathRender = const (renderBashCompletion commandRegistry)
-          , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
-          }
+           { trackedGeneratedPathKey = "command-registry.completion.bash"
+           , trackedGeneratedPathPath = "share/completion/bash/prodbox"
+           , trackedGeneratedPathRender = const (renderBashCompletion commandRegistry)
+           , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+           }
        , TrackedGeneratedPath
-          { trackedGeneratedPathKey = "command-registry.completion.zsh"
-          , trackedGeneratedPathPath = "share/completion/zsh/_prodbox"
-          , trackedGeneratedPathRender = const (renderZshCompletion commandRegistry)
-          , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
-          }
+           { trackedGeneratedPathKey = "command-registry.completion.zsh"
+           , trackedGeneratedPathPath = "share/completion/zsh/_prodbox"
+           , trackedGeneratedPathRender = const (renderZshCompletion commandRegistry)
+           , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+           }
        , TrackedGeneratedPath
-          { trackedGeneratedPathKey = "command-registry.completion.fish"
-          , trackedGeneratedPathPath = "share/completion/fish/prodbox.fish"
-          , trackedGeneratedPathRender = const (renderFishCompletion commandRegistry)
-          , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
-          }
+           { trackedGeneratedPathKey = "command-registry.completion.fish"
+           , trackedGeneratedPathPath = "share/completion/fish/prodbox.fish"
+           , trackedGeneratedPathRender = const (renderFishCompletion commandRegistry)
+           , trackedGeneratedPathRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+           }
        ]
  where
   commandGroupManpageRule commandGroup =
@@ -287,40 +291,45 @@ runTrackedGeneratedPathLint repoRoot = do
 
 runHaskellLint :: FilePath -> [(String, String)] -> Bool -> IO ExitCode
 runHaskellLint repoRoot environment writeEnabled = do
-  sandboxViolations <- missingStyleToolViolations (styleToolsBinDir repoRoot)
-  case sandboxViolations of
-    [] -> do
-      styleViolations <- haskellStyleViolations repoRoot
-      case styleViolations of
+  bootstrapResult <- ensureSandboxedStyleTools repoRoot environment
+  case bootstrapResult of
+    Right () -> do
+      sandboxViolations <- missingStyleToolViolations (styleToolsBinDir repoRoot)
+      case sandboxViolations of
         [] -> do
-          formatExit <-
-            runStreaming
-              repoRoot
-              environment
-              "fourmolu"
-              ( ["--mode", if writeEnabled then "inplace" else "check", "app", "src", "test"]
-              )
-          case formatExit of
-            ExitFailure _ -> pure formatExit
-            ExitSuccess -> do
-              lintExit <-
+          styleViolations <- haskellStyleViolations repoRoot
+          case styleViolations of
+            [] -> do
+              formatExit <-
                 runStreaming
                   repoRoot
                   environment
-                  "hlint"
-                  ["app", "src", "test", "--hint=.hlint.yaml", "--with-group=default", "--with-group=extra"]
-              case lintExit of
-                ExitFailure _ -> pure lintExit
-                ExitSuccess ->
-                  if writeEnabled
-                    then rewriteCabalFile repoRoot environment
-                    else checkCabalFormat repoRoot environment
+                  (styleToolsBinDir repoRoot </> "fourmolu")
+                  (["--mode", if writeEnabled then "inplace" else "check", "app", "src", "test"])
+              case formatExit of
+                ExitFailure _ -> pure formatExit
+                ExitSuccess -> do
+                  lintExit <-
+                    runStreaming
+                      repoRoot
+                      environment
+                      (styleToolsBinDir repoRoot </> "hlint")
+                      ["app", "src", "test", "--hint=.hlint.yaml", "--with-group=default", "--with-group=extra"]
+                  case lintExit of
+                    ExitFailure _ -> pure lintExit
+                    ExitSuccess ->
+                      if writeEnabled
+                        then rewriteCabalFile repoRoot environment
+                        else checkCabalFormat repoRoot environment
+            _ ->
+              failWith
+                (unlines ("Haskell style lint failed:" : map ("- " ++) styleViolations))
         _ ->
           failWith
-            (unlines ("Haskell style lint failed:" : map ("- " ++) styleViolations))
-    _ ->
+            (unlines ("Haskell style lint failed:" : map ("- " ++) sandboxViolations))
+    Left err ->
       failWith
-        (unlines ("Haskell style lint failed:" : map ("- " ++) sandboxViolations))
+        (unlines ["Haskell style lint failed:", "- " ++ err])
 
 runChartLint :: FilePath -> IO ExitCode
 runChartLint repoRoot = do
@@ -362,6 +371,7 @@ haskellStyleViolations repoRoot = do
   thinMainResult <- verifyThinMainEntrypoint repoRoot
   hlintConfigViolations <- checkHlintDoctrineCoverage repoRoot
   parserModuleViolation <- checkParserModuleImports repoRoot
+  nestedCaseViolations <- checkNestedCaseViolations repoRoot
   daemonRuntimeViolations <- checkDaemonRuntimeImports repoRoot
   subprocessViolations <- checkSubprocessBoundaries repoRoot
   errorBoundaryViolations <- checkErrorBoundaryViolations repoRoot
@@ -370,6 +380,7 @@ haskellStyleViolations repoRoot = do
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
         ++ maybeToList parserModuleViolation
+        ++ nestedCaseViolations
         ++ daemonRuntimeViolations
         ++ subprocessViolations
         ++ errorBoundaryViolations
@@ -438,6 +449,68 @@ checkParserModuleImports repoRoot = do
         if "typed-process" `isInfixOf` contents
           then Just "`test/unit/Parser.hs` must not import or mention `typed-process`."
           else Nothing
+
+checkNestedCaseViolations :: FilePath -> IO [String]
+checkNestedCaseViolations repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  concat
+    <$> forM
+      [ path
+      | path <- repoPaths
+      , isHaskellSourcePath path
+      ]
+      ( \relativePath -> do
+          contents <- readFile (repoRoot </> relativePath)
+          pure (lambdaCaseViolations relativePath (lines contents))
+      )
+
+lambdaCaseViolations :: FilePath -> [String] -> [String]
+lambdaCaseViolations relativePath sourceLines =
+  [ relativePath
+      ++ " line "
+      ++ show lineNumber
+      ++ " violates `Avoid case inside lambda body`; extract a named helper to satisfy `Refactor nested case`."
+  | (lineNumber, lineText, maybeNextLine) <- withNextLines sourceLines
+  , lambdaIntroducesCase lineText maybeNextLine
+  ]
+
+lambdaIntroducesCase :: String -> Maybe String -> Bool
+lambdaIntroducesCase lineText maybeNextLine =
+  ("\\" `isInfixOf` lineText)
+    && ( ("-> case" `isInfixOf` lineText)
+           || maybe False nextLineStartsLambdaBodyCase maybeNextLine
+       )
+ where
+  currentIndent = leadingWhitespaceCount lineText
+  nextLineStartsLambdaBodyCase nextLine =
+    "->" `isInfixOf` lineText
+      && leadingWhitespaceCount nextLine > currentIndent
+      && startsWithCase (trimLeft nextLine)
+
+startsWithCase :: String -> Bool
+startsWithCase lineText =
+  "case " `isPrefixOf` lineText
+
+withNextLines :: [String] -> [(Int, String, Maybe String)]
+withNextLines sourceLines =
+  [ (lineNumber, lineText, nextMeaningfulLine remaining)
+  | (lineNumber, lineText, remaining) <- zip3 [1 :: Int ..] sourceLines (tails sourceLines)
+  ]
+
+nextMeaningfulLine :: [String] -> Maybe String
+nextMeaningfulLine [] = Nothing
+nextMeaningfulLine (_current : remaining) =
+  case dropWhile (null . trimLeft) remaining of
+    nextLine : _ -> Just nextLine
+    [] -> Nothing
+
+leadingWhitespaceCount :: String -> Int
+leadingWhitespaceCount = length . takeWhile (== ' ')
+
+isHaskellSourcePath :: FilePath -> Bool
+isHaskellSourcePath path =
+  (".hs" `isSuffixOf` path)
+    && any (`isPrefixOf` path) ["app/", "src/", "test/"]
 
 checkDaemonRuntimeImports :: FilePath -> IO [String]
 checkDaemonRuntimeImports repoRoot = do
@@ -580,11 +653,11 @@ unfrozenDhallImportViolations :: FilePath -> String -> [String]
 unfrozenDhallImportViolations relativePath contents =
   let fileLines = lines contents
    in [ relativePath
-        ++ " contains an unfrozen Dhall import on line "
-        ++ show lineNumber
-        ++ ". Run `dhall freeze --all --inplace "
-        ++ relativePath
-        ++ "`."
+          ++ " contains an unfrozen Dhall import on line "
+          ++ show lineNumber
+          ++ ". Run `dhall freeze --all --inplace "
+          ++ relativePath
+          ++ "`."
       | (lineNumber, lineText) <- zip [1 :: Int ..] fileLines
       , let trimmedLine = trimLeft lineText
       , not ("--" `isPrefixOf` trimmedLine)
@@ -626,11 +699,11 @@ rendererSourceViolations sourceLabel sourceText =
         matchedSubstrings = filter (`isInfixOf` sourceText) substrings
         matchedInputs = matchedTokens ++ matchedSubstrings
      in [ sourceLabel
-          ++ " uses forbidden renderer input class `"
-          ++ inputClass
-          ++ "` via "
-          ++ commaSeparated matchedInputs
-          ++ "."
+            ++ " uses forbidden renderer input class `"
+            ++ inputClass
+            ++ "` via "
+            ++ commaSeparated matchedInputs
+            ++ "."
         | not (null matchedInputs)
         ]
   forbiddenRendererInputs =
@@ -946,28 +1019,11 @@ runStreaming repoRoot environment commandPath arguments = do
         , Subprocess.commandEnvironment = Just environment
         , Subprocess.commandWorkingDirectory = Just repoRoot
         }
-  pure $
-    case runResult of
-      Failure _ -> ExitFailure 1
-      Success exitCode -> exitCode
-
-missingStyleToolViolations :: FilePath -> IO [String]
-missingStyleToolViolations sandboxDir =
-  fmap concat $
-    forM
-      ["fourmolu", "hlint"]
-      ( \toolName -> do
-          let toolPath = sandboxDir </> toolName
-          toolExists <- doesFileExist toolPath
-          pure
-            [ "Missing sandboxed style tool `"
-              ++ toolName
-              ++ "` at `"
-              ++ toolPath
-              ++ "`."
-            | not toolExists
-            ]
-      )
+  case runResult of
+    Failure err -> do
+      writeError (fatalError (Text.pack err))
+      pure (ExitFailure 1)
+    Success exitCode -> pure exitCode
 
 failWith :: String -> IO ExitCode
 failWith message = do

@@ -30,6 +30,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (isSuffixOf)
+import Prodbox.Error (AppError)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( BackgroundProcess
@@ -159,15 +160,18 @@ withMinioPortForward action = do
                   }
             )
             cleanupBackgroundProcess
-            ( \result ->
-                case result of
-                  Left err -> pure (Left (showBackgroundProcessError err))
-                  Right _ -> do
-                    ready <- waitForPort localPort 60
-                    if ready
-                      then Right <$> action localPort
-                      else pure (Left "timed out waiting for MinIO port-forward readiness")
-            )
+            (handlePortForwardResult localPort action)
+
+handlePortForwardResult
+  :: Int -> (Int -> IO value) -> Either AppError BackgroundProcess -> IO (Either String value)
+handlePortForwardResult localPort action result =
+  case result of
+    Left err -> pure (Left (showBackgroundProcessError err))
+    Right _ -> do
+      ready <- waitForPort localPort 60
+      if ready
+        then Right <$> action localPort
+        else pure (Left "timed out waiting for MinIO port-forward readiness")
 
 cleanupBackgroundProcess :: Either a BackgroundProcess -> IO ()
 cleanupBackgroundProcess result =

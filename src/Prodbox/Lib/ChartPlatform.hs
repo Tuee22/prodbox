@@ -1366,7 +1366,7 @@ shouldResetPatroniStorage repoRoot namespace existingValues recoveredValues clus
     not (requiredKeysPresent requiredPatroniSecretKeys existingValues)
       && storageExists
       && ( patroniClusterStatusIndicatesFailure clusterStatus
-            || not (requiredKeysPresent requiredPatroniSecretKeys recoveredValues)
+             || not (requiredKeysPresent requiredPatroniSecretKeys recoveredValues)
          )
 
 patroniStorageExists :: FilePath -> String -> IO Bool
@@ -1722,8 +1722,8 @@ valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
             .= object
               [ "repository"
                   .= ( ContainerImage.imageRegistry ContainerImage.harborKeycloakImage
-                        ++ "/"
-                        ++ ContainerImage.imageRepository ContainerImage.harborKeycloakImage
+                         ++ "/"
+                         ++ ContainerImage.imageRepository ContainerImage.harborKeycloakImage
                      )
               , "tag" .= ContainerImage.imageTag ContainerImage.harborKeycloakImage
               ]
@@ -1830,8 +1830,8 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
                   .= object
                     [ "repository"
                         .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresDatabaseImage
-                              ++ "/"
-                              ++ ContainerImage.imageRepository ContainerImage.harborPostgresDatabaseImage
+                               ++ "/"
+                               ++ ContainerImage.imageRepository ContainerImage.harborPostgresDatabaseImage
                            )
                     , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresDatabaseImage
                     ]
@@ -1839,8 +1839,8 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
                   .= object
                     [ "repository"
                         .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresPgbackrestImage
-                              ++ "/"
-                              ++ ContainerImage.imageRepository ContainerImage.harborPostgresPgbackrestImage
+                               ++ "/"
+                               ++ ContainerImage.imageRepository ContainerImage.harborPostgresPgbackrestImage
                            )
                     , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresPgbackrestImage
                     ]
@@ -1848,8 +1848,8 @@ valuesForKeycloakPostgres namespace rootChart settings chartSecrets storageBindi
                   .= object
                     [ "repository"
                         .= ( ContainerImage.imageRegistry ContainerImage.harborPostgresPgbouncerImage
-                              ++ "/"
-                              ++ ContainerImage.imageRepository ContainerImage.harborPostgresPgbouncerImage
+                               ++ "/"
+                               ++ ContainerImage.imageRepository ContainerImage.harborPostgresPgbouncerImage
                            )
                     , "tag" .= ContainerImage.imageTag ContainerImage.harborPostgresPgbouncerImage
                     ]
@@ -2056,8 +2056,8 @@ valuesForRedis namespace rootChart =
             .= object
               [ "repository"
                   .= ( ContainerImage.imageRegistry ContainerImage.harborRedisImage
-                        ++ "/"
-                        ++ ContainerImage.imageRepository ContainerImage.harborRedisImage
+                         ++ "/"
+                         ++ ContainerImage.imageRepository ContainerImage.harborRedisImage
                      )
               , "tag" .= ContainerImage.imageTag ContainerImage.harborRedisImage
               ]
@@ -2115,11 +2115,11 @@ valuesForApi namespace rootChart settings sharedHostFqdn maybePublicEdgeWorkload
               , "audience" .= keycloakApiClientId
               , "jwksUri"
                   .= ( "https://"
-                        ++ sharedHostFqdn
-                        ++ authPathPrefix
-                        ++ "/realms/"
-                        ++ keycloakRealmName
-                        ++ "/protocol/openid-connect/certs"
+                         ++ sharedHostFqdn
+                         ++ authPathPrefix
+                         ++ "/realms/"
+                         ++ keycloakRealmName
+                         ++ "/protocol/openid-connect/certs"
                      )
               , "routeClaimName" .= publicEdgeRouteClaimName
               , "routeClaimValue" .= ("api" :: String)
@@ -2184,11 +2184,11 @@ valuesForWebsocket namespace rootChart settings chartSecrets sharedHostFqdn mayb
               , "audience" .= keycloakWebsocketClientId
               , "jwksUri"
                   .= ( "https://"
-                        ++ sharedHostFqdn
-                        ++ authPathPrefix
-                        ++ "/realms/"
-                        ++ keycloakRealmName
-                        ++ "/protocol/openid-connect/certs"
+                         ++ sharedHostFqdn
+                         ++ authPathPrefix
+                         ++ "/realms/"
+                         ++ keycloakRealmName
+                         ++ "/protocol/openid-connect/certs"
                      )
               , "routeClaimName" .= publicEdgeRouteClaimName
               , "routeClaimValue" .= ("websocket" :: String)
@@ -2198,11 +2198,11 @@ valuesForWebsocket namespace rootChart settings chartSecrets sharedHostFqdn mayb
               [ "issuer" .= ("https://" ++ sharedHostFqdn ++ authPathPrefix ++ "/realms/" ++ keycloakRealmName)
               , "tokenEndpoint"
                   .= ( "http://keycloak.vscode.svc.cluster.local:8080"
-                        ++ authPathPrefix
-                        ++ "/realms/"
-                        ++ keycloakRealmName
-                        ++ "/protocol/openid-connect/token"
-                        :: String
+                         ++ authPathPrefix
+                         ++ "/realms/"
+                         ++ keycloakRealmName
+                         ++ "/protocol/openid-connect/token"
+                         :: String
                      )
               , "clientId" .= keycloakWebsocketClientId
               , "clientSecret" .= websocketClientSecret
@@ -2809,13 +2809,13 @@ requireMapValue key values err =
 
 requiredKeysPresent :: [String] -> Map String String -> Bool
 requiredKeysPresent requiredKeys values =
-  all
-    ( \key ->
-        case Map.lookup key values of
-          Just value -> not (null (trimWhitespace value))
-          Nothing -> False
-    )
-    requiredKeys
+  all (requiredKeyPresent values) requiredKeys
+
+requiredKeyPresent :: Map String String -> String -> Bool
+requiredKeyPresent values key =
+  case Map.lookup key values of
+    Just value -> not (null (trimWhitespace value))
+    Nothing -> False
 
 mapLookupDefault :: (Ord key) => key -> Map key String -> String
 mapLookupDefault key values = maybe "" id (Map.lookup key values)

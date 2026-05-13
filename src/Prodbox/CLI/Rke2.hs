@@ -774,12 +774,12 @@ deleteNonManualStorageClasses repoRoot = do
                 ]
            in runSequentially
                 [ runCommand
-                  CommandSpec
-                    { commandPath = "kubectl"
-                    , commandArguments = ["delete", "storageclass", ref, "--ignore-not-found=true"]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
-                    }
+                    CommandSpec
+                      { commandPath = "kubectl"
+                      , commandArguments = ["delete", "storageclass", ref, "--ignore-not-found=true"]
+                      , commandEnvironment = Nothing
+                      , commandWorkingDirectory = Just repoRoot
+                      }
                 | ref <- refs
                 ]
 
@@ -1086,41 +1086,41 @@ harborStorageBackendManifestItems accessKey secretKey =
                         [ "restartPolicy" .= ("OnFailure" :: String)
                         , "containers"
                             .= [ object
-                                  [ "name" .= ("bucket-bootstrap" :: String)
-                                  , "image" .= ContainerImage.renderImageRef ContainerImage.publicMinioMcImage
-                                  , "command" .= ["sh" :: String, "-c"]
-                                  , "args"
-                                      .= [ unlines
-                                            [ "set -eu"
-                                            , "mc alias set local " ++ minioClusterEndpoint ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
-                                            , "mc mb --ignore-existing local/" ++ harborRegistryStorageBucket
-                                            ]
-                                         ]
-                                  , "env"
-                                      .= [ object
-                                            [ "name" .= ("MINIO_ROOT_USER" :: String)
-                                            , "valueFrom"
-                                                .= object
-                                                  [ "secretKeyRef"
-                                                      .= object
-                                                        [ "name" .= minioReleaseName
-                                                        , "key" .= ("rootUser" :: String)
-                                                        ]
-                                                  ]
-                                            ]
-                                         , object
-                                            [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
-                                            , "valueFrom"
-                                                .= object
-                                                  [ "secretKeyRef"
-                                                      .= object
-                                                        [ "name" .= minioReleaseName
-                                                        , "key" .= ("rootPassword" :: String)
-                                                        ]
-                                                  ]
-                                            ]
-                                         ]
-                                  ]
+                                   [ "name" .= ("bucket-bootstrap" :: String)
+                                   , "image" .= ContainerImage.renderImageRef ContainerImage.publicMinioMcImage
+                                   , "command" .= ["sh" :: String, "-c"]
+                                   , "args"
+                                       .= [ unlines
+                                              [ "set -eu"
+                                              , "mc alias set local " ++ minioClusterEndpoint ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
+                                              , "mc mb --ignore-existing local/" ++ harborRegistryStorageBucket
+                                              ]
+                                          ]
+                                   , "env"
+                                       .= [ object
+                                              [ "name" .= ("MINIO_ROOT_USER" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "secretKeyRef"
+                                                        .= object
+                                                          [ "name" .= minioReleaseName
+                                                          , "key" .= ("rootUser" :: String)
+                                                          ]
+                                                    ]
+                                              ]
+                                          , object
+                                              [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "secretKeyRef"
+                                                        .= object
+                                                          [ "name" .= minioReleaseName
+                                                          , "key" .= ("rootPassword" :: String)
+                                                          ]
+                                                    ]
+                                              ]
+                                          ]
+                                   ]
                                ]
                         ]
                   ]
@@ -1376,28 +1376,28 @@ ensureHarborNginxReadinessContract repoRoot = do
                                       .= object
                                         [ "containers"
                                             .= ( [ object
-                                                    [ "name" .= ("nginx" :: String)
-                                                    , "readinessProbe"
-                                                        .= object
-                                                          [ "httpGet"
-                                                              .= object
-                                                                [ "path" .= harborReadyPath
-                                                                , "port" .= (8080 :: Int)
-                                                                , "scheme" .= ("HTTP" :: String)
-                                                                ]
-                                                          ]
-                                                    , "livenessProbe"
-                                                        .= object
-                                                          [ "httpGet"
-                                                              .= object
-                                                                [ "path" .= harborReadyPath
-                                                                , "port" .= (8080 :: Int)
-                                                                , "scheme" .= ("HTTP" :: String)
-                                                                ]
-                                                          ]
-                                                    ]
+                                                     [ "name" .= ("nginx" :: String)
+                                                     , "readinessProbe"
+                                                         .= object
+                                                           [ "httpGet"
+                                                               .= object
+                                                                 [ "path" .= harborReadyPath
+                                                                 , "port" .= (8080 :: Int)
+                                                                 , "scheme" .= ("HTTP" :: String)
+                                                                 ]
+                                                           ]
+                                                     , "livenessProbe"
+                                                         .= object
+                                                           [ "httpGet"
+                                                               .= object
+                                                                 [ "path" .= harborReadyPath
+                                                                 , "port" .= (8080 :: Int)
+                                                                 , "scheme" .= ("HTTP" :: String)
+                                                                 ]
+                                                           ]
+                                                     ]
                                                  ]
-                                                  :: [Value]
+                                                   :: [Value]
                                                )
                                         ]
                                   ]
@@ -1592,38 +1592,38 @@ adminHttpRouteManifest namespace routeName pathPrefix serviceName servicePort pr
         .= object
           [ "parentRefs"
               .= ( [ object
-                      [ "name" .= ("public-edge" :: String)
-                      , "namespace" .= ("vscode" :: String)
-                      , "sectionName" .= publicEdgeListenerName
-                      ]
+                       [ "name" .= ("public-edge" :: String)
+                       , "namespace" .= ("vscode" :: String)
+                       , "sectionName" .= publicEdgeListenerName
+                       ]
                    ]
-                    :: [Value]
+                     :: [Value]
                  )
           , "hostnames" .= ([hostFqdn] :: [String])
           , "rules"
               .= ( [ object
-                      [ "matches"
-                          .= ( [ object
-                                  [ "path"
-                                      .= object
-                                        [ "type" .= ("PathPrefix" :: String)
-                                        , "value" .= pathPrefix
-                                        ]
-                                  ]
-                               ]
-                                :: [Value]
-                             )
-                      , "backendRefs"
-                          .= ( [ object
-                                  [ "name" .= serviceName
-                                  , "port" .= servicePort
-                                  ]
-                               ]
-                                :: [Value]
-                             )
-                      ]
+                       [ "matches"
+                           .= ( [ object
+                                    [ "path"
+                                        .= object
+                                          [ "type" .= ("PathPrefix" :: String)
+                                          , "value" .= pathPrefix
+                                          ]
+                                    ]
+                                ]
+                                  :: [Value]
+                              )
+                       , "backendRefs"
+                           .= ( [ object
+                                    [ "name" .= serviceName
+                                    , "port" .= servicePort
+                                    ]
+                                ]
+                                  :: [Value]
+                              )
+                       ]
                    ]
-                    :: [Value]
+                     :: [Value]
                  )
           ]
     ]
@@ -1653,12 +1653,12 @@ adminSecurityPolicyManifest namespace policyName routeName secretName baseUrl pr
         .= object
           [ "targetRefs"
               .= ( [ object
-                      [ "group" .= ("gateway.networking.k8s.io" :: String)
-                      , "kind" .= ("HTTPRoute" :: String)
-                      , "name" .= routeName
-                      ]
+                       [ "group" .= ("gateway.networking.k8s.io" :: String)
+                       , "kind" .= ("HTTPRoute" :: String)
+                       , "name" .= routeName
+                       ]
                    ]
-                    :: [Value]
+                     :: [Value]
                  )
           , "oidc"
               .= object
@@ -1684,14 +1684,14 @@ resolveClusterPlatformLanDefaults = do
       pure
         (Left "set both PRODBOX_PULUMI_METALLB_POOL and PRODBOX_PULUMI_EDGE_LB_IP, or set neither")
     (Nothing, Nothing) ->
-      fmap
-        ( \lanResult ->
-            case lanResult of
-              Left err ->
-                Left ("failed to derive MetalLB defaults from host networking: " ++ err)
-              Right lan -> Right (lanMetallbPool lan, lanIngressLbIp lan)
-        )
-        detectLanAddressing
+      fmap renderLanAddressingDefaults detectLanAddressing
+
+renderLanAddressingDefaults :: Either String LanAddressing -> Either String (String, String)
+renderLanAddressingDefaults lanResult =
+  case lanResult of
+    Left err ->
+      Left ("failed to derive MetalLB defaults from host networking: " ++ err)
+    Right lan -> Right (lanMetallbPool lan, lanIngressLbIp lan)
 
 ensureMetalLbRuntime :: FilePath -> ValidatedSettings -> String -> String -> String -> IO ExitCode
 ensureMetalLbRuntime repoRoot settings prodboxId labelValue metallbPool = do
@@ -2169,25 +2169,25 @@ acmeClusterIssuerSpec settings =
     , "privateKeySecretRef" .= object ["name" .= ("letsencrypt-account-key" :: String)]
     , "solvers"
         .= [ object
-              [ "dns01"
-                  .= object
-                    [ "route53"
-                        .= object
-                          [ "region" .= Text.unpack (region awsConfig)
-                          , "hostedZoneID" .= Text.unpack (zone_id (route53 config))
-                          , "accessKeyIDSecretRef"
-                              .= object
-                                [ "name" .= route53CredentialsSecretName
-                                , "key" .= ("access-key-id" :: String)
-                                ]
-                          , "secretAccessKeySecretRef"
-                              .= object
-                                [ "name" .= route53CredentialsSecretName
-                                , "key" .= ("secret-access-key" :: String)
-                                ]
-                          ]
-                    ]
-              ]
+               [ "dns01"
+                   .= object
+                     [ "route53"
+                         .= object
+                           [ "region" .= Text.unpack (region awsConfig)
+                           , "hostedZoneID" .= Text.unpack (zone_id (route53 config))
+                           , "accessKeyIDSecretRef"
+                               .= object
+                                 [ "name" .= route53CredentialsSecretName
+                                 , "key" .= ("access-key-id" :: String)
+                                 ]
+                           , "secretAccessKeySecretRef"
+                               .= object
+                                 [ "name" .= route53CredentialsSecretName
+                                 , "key" .= ("secret-access-key" :: String)
+                                 ]
+                           ]
+                     ]
+               ]
            ]
     ]
       ++ maybe [] (\binding -> ["externalAccountBinding" .= binding]) externalAccountBinding
@@ -2261,32 +2261,42 @@ reconcileDnsBootstrapRecord repoRoot settings =
               ttlValue = fromIntegral (demo_ttl (domain config)) :: Integer
               fqdnValues = Dns.configuredPublicHostFqdns settings
           foldM
-            ( \exitCode fqdn ->
-                case exitCode of
-                  ExitFailure _ -> pure exitCode
-                  ExitSuccess ->
-                    withTemporaryJsonBytes
-                      "prodbox-dns-bootstrap"
-                      (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
-                      ( \payloadPath ->
-                          runCommand
-                            CommandSpec
-                              { commandPath = "aws"
-                              , commandArguments =
-                                  [ "route53"
-                                  , "change-resource-record-sets"
-                                  , "--hosted-zone-id"
-                                  , zoneIdValue
-                                  , "--change-batch"
-                                  , "file://" ++ payloadPath
-                                  ]
-                              , commandEnvironment = Just awsEnvironment
-                              , commandWorkingDirectory = Just repoRoot
-                              }
-                      )
-            )
+            (reconcileDnsBootstrapFqdn repoRoot awsEnvironment zoneIdValue ttlValue publicIp)
             ExitSuccess
             fqdnValues
+
+reconcileDnsBootstrapFqdn
+  :: FilePath
+  -> [(String, String)]
+  -> String
+  -> Integer
+  -> String
+  -> ExitCode
+  -> String
+  -> IO ExitCode
+reconcileDnsBootstrapFqdn repoRoot awsEnvironment zoneIdValue ttlValue publicIp exitCode fqdn =
+  case exitCode of
+    ExitFailure _ -> pure exitCode
+    ExitSuccess ->
+      withTemporaryJsonBytes
+        "prodbox-dns-bootstrap"
+        (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
+        ( \payloadPath ->
+            runCommand
+              CommandSpec
+                { commandPath = "aws"
+                , commandArguments =
+                    [ "route53"
+                    , "change-resource-record-sets"
+                    , "--hosted-zone-id"
+                    , zoneIdValue
+                    , "--change-batch"
+                    , "file://" ++ payloadPath
+                    ]
+                , commandEnvironment = Just awsEnvironment
+                , commandWorkingDirectory = Just repoRoot
+                }
+        )
 
 resolveDnsBootstrapIp :: ValidatedSettings -> IO (Either String String)
 resolveDnsBootstrapIp settings = do
@@ -2304,15 +2314,15 @@ route53AChangeBatch action fqdn publicIp ttlValue =
     [ "Comment" .= ("prodbox bootstrap DNS reconcile" :: String)
     , "Changes"
         .= [ object
-              [ "Action" .= action
-              , "ResourceRecordSet"
-                  .= object
-                    [ "Name" .= fqdn
-                    , "Type" .= ("A" :: String)
-                    , "TTL" .= ttlValue
-                    , "ResourceRecords" .= [object ["Value" .= publicIp]]
-                    ]
-              ]
+               [ "Action" .= action
+               , "ResourceRecordSet"
+                   .= object
+                     [ "Name" .= fqdn
+                     , "Type" .= ("A" :: String)
+                     , "TTL" .= ttlValue
+                     , "ResourceRecords" .= [object ["Value" .= publicIp]]
+                     ]
+               ]
            ]
     ]
 
@@ -3125,14 +3135,14 @@ storageManifestItems hostPath nodeName prodboxId labelValue =
                       .= object
                         [ "nodeSelectorTerms"
                             .= [ object
-                                  [ "matchExpressions"
-                                      .= [ object
-                                            [ "key" .= ("kubernetes.io/hostname" :: String)
-                                            , "operator" .= ("In" :: String)
-                                            , "values" .= ([nodeName] :: [String])
-                                            ]
-                                         ]
-                                  ]
+                                   [ "matchExpressions"
+                                       .= [ object
+                                              [ "key" .= ("kubernetes.io/hostname" :: String)
+                                              , "operator" .= ("In" :: String)
+                                              , "values" .= ([nodeName] :: [String])
+                                              ]
+                                          ]
+                                   ]
                                ]
                         ]
                   ]
@@ -3178,37 +3188,37 @@ ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue =
       , "kind" .= ("List" :: String)
       , "items"
           .= ( [ object
-                  [ "apiVersion" .= ("v1" :: String)
-                  , "kind" .= ("Namespace" :: String)
-                  , "metadata"
-                      .= object
-                        [ "name" .= prodboxNamespace
-                        , "annotations"
-                            .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-                        , "labels"
-                            .= object [Key.fromString prodboxLabelKey .= labelValue]
-                        ]
-                  ]
+                   [ "apiVersion" .= ("v1" :: String)
+                   , "kind" .= ("Namespace" :: String)
+                   , "metadata"
+                       .= object
+                         [ "name" .= prodboxNamespace
+                         , "annotations"
+                             .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                         , "labels"
+                             .= object [Key.fromString prodboxLabelKey .= labelValue]
+                         ]
+                   ]
                , object
-                  [ "apiVersion" .= ("v1" :: String)
-                  , "kind" .= ("ConfigMap" :: String)
-                  , "metadata"
-                      .= object
-                        [ "name" .= prodboxIdentityConfigMap
-                        , "namespace" .= prodboxNamespace
-                        , "annotations"
-                            .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
-                        , "labels"
-                            .= object [Key.fromString prodboxLabelKey .= labelValue]
-                        ]
-                  , "data"
-                      .= object
-                        [ "machine_id" .= machineId
-                        , "prodbox_id" .= prodboxId
-                        ]
-                  ]
+                   [ "apiVersion" .= ("v1" :: String)
+                   , "kind" .= ("ConfigMap" :: String)
+                   , "metadata"
+                       .= object
+                         [ "name" .= prodboxIdentityConfigMap
+                         , "namespace" .= prodboxNamespace
+                         , "annotations"
+                             .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
+                         , "labels"
+                             .= object [Key.fromString prodboxLabelKey .= labelValue]
+                         ]
+                   , "data"
+                       .= object
+                         [ "machine_id" .= machineId
+                         , "prodbox_id" .= prodboxId
+                         ]
+                   ]
                ]
-                :: [Value]
+                 :: [Value]
              )
       ]
 
@@ -3328,8 +3338,7 @@ annotateClusterResource repoRoot instanceName resource prodboxId labelValue = do
             then pure (Right ())
             else
               pure
-                ( Left ("list cluster " ++ resource ++ " for " ++ instanceName ++ " failed: " ++ outputDetail output)
-                )
+                (Left ("list cluster " ++ resource ++ " for " ++ instanceName ++ " failed: " ++ outputDetail output))
         ExitSuccess ->
           if null (parseObjectNames (processStdout output))
             then pure (Right ())
@@ -3436,13 +3445,13 @@ resourceSelectionArgs (Just selector) = ["-l", selector]
 
 runEitherActions :: [IO (Either String ())] -> IO (Either String ())
 runEitherActions =
-  foldM
-    ( \result action ->
-        case result of
-          Left err -> pure (Left err)
-          Right () -> action
-    )
-    (Right ())
+  foldM runEitherAction (Right ())
+
+runEitherAction :: Either String () -> IO (Either String ()) -> IO (Either String ())
+runEitherAction result action =
+  case result of
+    Left err -> pure (Left err)
+    Right () -> action
 
 captureKubectl :: FilePath -> [String] -> IO (Either String ProcessOutput)
 captureKubectl repoRoot arguments = do

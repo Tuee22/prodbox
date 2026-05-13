@@ -459,12 +459,12 @@ renderBgpPeers maybePeers =
         ( Text.intercalate
             ";"
             [ peer_name peer
-              <> "@"
-              <> peer_address peer
-              <> ":peer_asn="
-              <> Text.pack (show (peer_asn peer))
-              <> ":my_asn="
-              <> Text.pack (show (my_asn peer))
+                <> "@"
+                <> peer_address peer
+                <> ":peer_asn="
+                <> Text.pack (show (peer_asn peer))
+                <> ":my_asn="
+                <> Text.pack (show (my_asn peer))
             | peer <- peers
             ]
         )

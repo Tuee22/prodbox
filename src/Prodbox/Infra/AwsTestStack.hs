@@ -233,15 +233,16 @@ requireStringList :: KeyMap.KeyMap Value -> String -> Either String [String]
 requireStringList obj key =
   case KeyMap.lookup (Key.fromString key) obj of
     Just (Array arr) ->
-      mapM
-        ( \v -> case v of
-            String text ->
-              let str = Text.unpack text
-               in if null str then Left ("output " ++ key ++ " contains empty string") else Right str
-            _ -> Left ("output " ++ key ++ " must contain strings only")
-        )
-        (Vector.toList arr)
+      mapM (requireStringListEntry key) (Vector.toList arr)
     _ -> Left ("missing list output " ++ key)
+
+requireStringListEntry :: String -> Value -> Either String String
+requireStringListEntry key value =
+  case value of
+    String text ->
+      let str = Text.unpack text
+       in if null str then Left ("output " ++ key ++ " contains empty string") else Right str
+    _ -> Left ("output " ++ key ++ " must contain strings only")
 
 requireNodeList :: KeyMap.KeyMap Value -> String -> Either String [AwsTestNode]
 requireNodeList obj key =

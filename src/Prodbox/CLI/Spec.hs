@@ -159,8 +159,8 @@ renderCommandRequestParser prefix spec =
       hsubparser
         ( mconcat
             [ command
-              (name child)
-              (info (renderCommandRequestParser currentPath child) (progDesc (summary child)))
+                (name child)
+                (info (renderCommandRequestParser currentPath child) (progDesc (summary child)))
             | child <- nested
             ]
         )
@@ -182,8 +182,7 @@ parserForPath path =
       Just $
         fmap
           (\(policyTier, planOptions') -> RunNative (NativeAws (AwsSetup policyTier planOptions')))
-          ( (,) <$> tierOptionParser PolicyFull "Operational IAM policy tier to provision" <*> planOptionsParser
-          )
+          ((,) <$> tierOptionParser PolicyFull "Operational IAM policy tier to provision" <*> planOptionsParser)
     ["aws", "teardown"] ->
       Just (fmap (RunNative . NativeAws . AwsTeardown) planOptionsParser)
     ["aws", "check-quotas"] -> Just (pure (RunNative (NativeAws AwsCheckQuotas)))

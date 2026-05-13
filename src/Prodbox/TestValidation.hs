@@ -93,6 +93,7 @@ import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , identityIssuerUrl
   , publicFqdn
+  , publicRoutePathPrefix
   , publicRouteUrl
   )
 import Prodbox.Result (Result (..))
@@ -219,15 +220,7 @@ runNativeValidation repoRoot environment validation = do
         , verifyAwsTestSnapshot repoRoot
         ]
     ValidationHaRke2Aws ->
-      runSequentially
-        [ assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["pulumi", "test-resources"]
-            ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
-        , verifyAwsTestSnapshot repoRoot
-        , verifyAwsTestSshReachability repoRoot
-        ]
+      runHaRke2AwsValidation repoRoot environment
     ValidationGatewayDaemon -> runGatewayDaemonValidation repoRoot environment
     ValidationGatewayPods ->
       runSequentially
@@ -273,6 +266,44 @@ runNativeValidation repoRoot environment validation = do
         , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
         , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
         ]
+
+runHaRke2AwsValidation :: FilePath -> [(String, String)] -> IO ExitCode
+runHaRke2AwsValidation repoRoot environment = do
+  stackExit <- provisionAndVerifyAwsTestStack repoRoot environment
+  case stackExit of
+    failure@(ExitFailure _) -> pure failure
+    ExitSuccess -> do
+      sshExit <- verifyAwsTestSshReachability repoRoot
+      case sshExit of
+        ExitSuccess -> pure ExitSuccess
+        firstFailure@(ExitFailure _) -> do
+          hPutStrLn
+            stderr
+            "AWS test-stack SSH validation failed after reconcile; destroying and recreating the retained stack once before retry."
+          destroyExit <-
+            runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
+          case destroyExit of
+            destroyFailure@(ExitFailure _) -> pure destroyFailure
+            ExitSuccess -> do
+              retryStackExit <- provisionAndVerifyAwsTestStack repoRoot environment
+              case retryStackExit of
+                retryFailure@(ExitFailure _) -> pure retryFailure
+                ExitSuccess -> do
+                  retrySshExit <- verifyAwsTestSshReachability repoRoot
+                  case retrySshExit of
+                    ExitSuccess -> pure ExitSuccess
+                    ExitFailure _ -> pure firstFailure
+
+provisionAndVerifyAwsTestStack :: FilePath -> [(String, String)] -> IO ExitCode
+provisionAndVerifyAwsTestStack repoRoot environment =
+  runSequentially
+    [ assertNativeCommandOutputContainsAll
+        repoRoot
+        environment
+        ["pulumi", "test-resources"]
+        ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
+    , verifyAwsTestSnapshot repoRoot
+    ]
 
 runGatewayPartitionValidation :: IO ExitCode
 runGatewayPartitionValidation =
@@ -378,23 +409,26 @@ runChartsVscodeValidation repoRoot = do
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess ->
-          waitForCommandOutputContainsAll
-            CommandSpec
-              { commandPath = "curl"
-              , commandArguments =
-                  [ "-sS"
-                  , "-D"
-                  , "-"
-                  , "-o"
-                  , "/dev/null"
-                  , publicRouteUrl settings PublicRouteVscode
-                  ]
-              , commandEnvironment = Nothing
-              , commandWorkingDirectory = Just repoRoot
-              }
-            (oidcRedirectFragments settings (publicRouteUrl settings PublicRouteVscode ++ "/oauth2/callback"))
-            chartsVscodeCurlAttempts
-            chartsVscodeCurlDelayMicroseconds
+          runSequentially
+            [ assertPublicHttpRedirect repoRoot settings PublicRouteVscode
+            , waitForCommandOutputContainsAll
+                CommandSpec
+                  { commandPath = "curl"
+                  , commandArguments =
+                      [ "-sS"
+                      , "-D"
+                      , "-"
+                      , "-o"
+                      , "/dev/null"
+                      , publicRouteUrl settings PublicRouteVscode
+                      ]
+                  , commandEnvironment = Nothing
+                  , commandWorkingDirectory = Just repoRoot
+                  }
+                (oidcRedirectFragments settings (publicRouteUrl settings PublicRouteVscode ++ "/oauth2/callback"))
+                chartsVscodeCurlAttempts
+                chartsVscodeCurlDelayMicroseconds
+            ]
 
 runChartsApiValidation :: FilePath -> IO ExitCode
 runChartsApiValidation repoRoot = do
@@ -1952,7 +1986,11 @@ waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = 
 
 verifyConfiguredPublicDnsRecords :: FilePath -> ValidatedSettings -> String -> IO ExitCode
 verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
-  foldM verifyHost ExitSuccess (configuredPublicHostFqdns settings)
+  do
+    dnsExit <- foldM verifyHost ExitSuccess (configuredPublicHostFqdns settings)
+    case dnsExit of
+      ExitFailure _ -> pure dnsExit
+      ExitSuccess -> assertPublicHttpRedirect repoRoot settings PublicRouteAuth
  where
   verifyHost :: ExitCode -> String -> IO ExitCode
   verifyHost exitCode fqdn =
@@ -1998,6 +2036,43 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
                                   ++ " but found "
                                   ++ show resolvedIps
                               )
+
+assertPublicHttpRedirect :: FilePath -> ValidatedSettings -> PublicEdgeRoute -> IO ExitCode
+assertPublicHttpRedirect repoRoot settings route = do
+  result <-
+    runTextCommand
+      CommandSpec
+        { commandPath = "curl"
+        , commandArguments = ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl settings route]
+        , commandEnvironment = Nothing
+        , commandWorkingDirectory = Just repoRoot
+        }
+  case result of
+    Left err -> failWith err
+    Right headers ->
+      if publicHttpRedirectMatches settings route headers
+        then pure ExitSuccess
+        else failWith ("public HTTP redirect did not target the canonical HTTPS route: " ++ headers)
+
+publicHttpRouteUrl :: ValidatedSettings -> PublicEdgeRoute -> String
+publicHttpRouteUrl settings route =
+  "http://" ++ publicFqdn settings ++ publicRoutePathPrefix route
+
+publicHttpRedirectMatches :: ValidatedSettings -> PublicEdgeRoute -> String -> Bool
+publicHttpRedirectMatches settings route headers =
+  let lowered = map toLowerAscii headers
+      target = map toLowerAscii ("location: " ++ publicRouteUrl settings route)
+      permanentStatus =
+        any
+          (`isInfixOf` lowered)
+          [ "http/1.1 301"
+          , "http/1.1 308"
+          , "http/2 301"
+          , "http/2 308"
+          , "http/3 301"
+          , "http/3 308"
+          ]
+   in permanentStatus && target `isInfixOf` lowered
 
 runTextCommand :: CommandSpec -> IO (Either String String)
 runTextCommand spec = do

@@ -39,10 +39,12 @@ Phase `1` sprints (1.24–1.26) and through deliverable extensions to existing p
 `1` and Phase `2` sprints. Sprint 0.4 extended the doctrine-adoption scope again with the
 residual items surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, scheduling them
 through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
-planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Phases `5`, `6`, and `7`
-remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract, AWS IAM
-and quota administration) per standards rule E; the overall handoff is no longer complete
-until the reopened implementation phases close.
+planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Phase `5` briefly reopened
+through Sprint `5.5` to add the missing public HTTP listener that redirects port `80` to the
+canonical HTTPS edge, and that redirect follow-up is now `Done` after the May 13, 2026
+aggregate validation. Phases `5`, `6`, and `7` are `Done` on their owned surfaces (public-edge
+proof, clean-room rerun contract, AWS IAM and quota administration); the overall handoff is no
+longer complete until the separately reopened implementation phases `1` through `4` close.
 
 Reopened sprints by phase:
 
@@ -150,6 +152,12 @@ Reopened sprints by phase:
   `prodbox-pulumi` test stanza. Sprint 0.4 extends Sprint 4.5 with the same
   forbidden-flag and sister-command discipline on the lifecycle reconciler so the
   one-cycle deprecation alias preserves only the name, not the forbidden flags.
+- Phase 5 — **Sprint 5.5**: Add a Gateway API HTTP listener on port `80` that never routes
+  plaintext backend traffic and only returns a permanent redirect to the canonical
+  `https://test.resolvefintech.com/<service-path>` URL. Extend `prodbox host public-edge` and
+  the external public-host validation surface to prove the redirect alongside the existing
+  HTTPS-only application traffic contract. This follow-up is `Done` and was validated by the
+  May 13, 2026 `./.build/prodbox test all` run.
 
 The earlier alignment follow-up on native `gateway-partition` validation, peer trust-material
 runtime closure, root-chart-only public chart commands, the Harbor-plus-storage-backend
@@ -169,7 +177,8 @@ The authoritative target still closes on:
 - one supported public-edge doctrine where every externally reachable application or dashboard sits
   behind Envoy Gateway on `test.resolvefintech.com`, distinguished only by explicit path prefixes
   such as `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`, and `/minio`, protected by Keycloak-
-  backed JWT auth or RBAC, and covered by one Route 53 record plus one listener certificate
+  backed JWT auth or RBAC, covered by one Route 53 record plus one listener certificate, and
+  fronted by a port `80` HTTP listener that only redirects to HTTPS
 - one native-host-architecture lifecycle image-publication doctrine where `amd64` hosts build and
   publish only `amd64` images, `arm64` hosts build and publish only `arm64` images, and no
   supported path uses `docker buildx` or cross-arch emulation
@@ -249,34 +258,37 @@ A sprint can move to `Done` only when all of the following are true:
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.4) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active (Sprints 1.6–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
-| 2 | Haskell Gateway Runtime and DNS Ownership | 🔄 Active (Sprints 2.9–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
+| 2 | Haskell Gateway Runtime and DNS Ownership | 🔄 Active (Sprints 2.9, 2.11–2.14) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 Active (Sprints 3.8–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 Active (Sprints 4.5–4.7) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done on owned surfaces | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
+| 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done on owned surfaces | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
 documentation surface. Phases `1`–`4` remain reopened on the downstream doctrine-driven
-implementation work. The pre-reopen Haskell rewrite baseline, public-edge proof, clean-room
-rerun, and AWS-administration surfaces remain validated on the supported Haskell command
-surface; Phases `5`, `6`, and `7` remain `Done` on their owned scope per standards rule E,
-but final handoff is reclaimed only when the reopened implementation phases close.
+implementation work. Phase `5` is re-closed after Sprint `5.5` added and proved the port `80`
+HTTP-to-HTTPS redirect on the existing single-host public edge. The pre-reopen Haskell rewrite
+baseline, clean-room rerun, public-edge proof, and AWS-administration surfaces remain validated
+on the supported Haskell command surface; Phases `5`, `6`, and `7` remain `Done` on their owned
+scope per standards rule E, but final handoff is reclaimed only when the reopened implementation
+phases `1` through `4` close.
 
 ## Current Plan Status
 
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
 the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
-evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.14`, and `4.7`
-in `Active` state because those surfaces have started
+evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.11`,
+`2.12`, `2.13`, `2.14`, and `4.7` in `Active` state because those surfaces have started
 in code but still retain sprint-owned implementation or validation gaps. Sprints `1.10`,
-`1.11`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`,
-`4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.6`, `1.7`, `1.9`,
-`1.15`, and `3.8` now re-close on the supported worktree. The remaining reopened sprints stay
-`Planned`. The following implemented baseline surfaces remain current on
-the supported path:
+`1.11`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.10`, `2.15`,
+`2.16`, `3.10`, `3.11`, `3.12`, `4.5`, `4.6`, and `5.5` are now locally validated and
+doc-aligned, and Sprints `1.6`, `1.7`, `1.9`, `1.15`, and `3.8` now re-close on the supported
+worktree. The remaining reopened Phase `1`–`4` sprints stay in their sprint-owned `Active` or
+`Planned` state until their own remaining-work sections are cleared. The following implemented
+baseline surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -309,8 +321,11 @@ the supported path:
   phase has created or repaired the supported MinIO-backed Pulumi backend.
 - The shared IAM harness deletes any pre-existing dedicated `prodbox` IAM user and that user's
   access keys, uses any pre-existing `aws.*` only to discover and delete the IAM user associated
-  with those credentials, materializes operational `aws.*` only from
-  `aws_admin_for_test_simulation.*`, and clears `aws.*` from `prodbox-config.dhall` before
+  with those credentials, proves STS-federated operational credentials with a compact
+  AWS-validation session policy, waits for the dedicated IAM-user credentials to pass STS and
+  repeated Route 53 hosted-zone probes, materializes IAM-user operational `aws.*` only from
+  `aws_admin_for_test_simulation.*` because cert-manager Route 53 DNS01 credentials do not
+  support an STS session-token field, and clears `aws.*` from `prodbox-config.dhall` before
   returning even on later prerequisite failure.
 - Supported AWS subprocesses now strip ambient AWS auth and profile variables before projecting
   repository-root credentials into the subprocess environment, so supported paths cannot fall back
@@ -346,7 +361,9 @@ the supported path:
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
   retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`.
+  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
+  `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
+  EC2 instances left by interrupted runs or operator network moves.
 - The current gateway runtime surface is Haskell-owned and code-backed in `src/Prodbox/Gateway.hs`,
   `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, and
   `src/Prodbox/Gateway/Types.hs`: config generation, heartbeat recording, in-memory ownership
@@ -453,9 +470,13 @@ This plan is complete only when all of the following are true:
    share one joint idempotent IAM validation harness that deletes any pre-existing dedicated
    `prodbox` IAM user and all of that user's access keys before provisioning, uses any
    pre-existing `aws.*` credentials only to discover and delete the IAM user associated with those
-   credentials, materializes operational `aws.*` only from `aws_admin_for_test_simulation.*` to
-   simulate the interactive public CLI workflow, and clears operational `aws.*` from
-   `prodbox-config.dhall` before returning so no test-created dedicated IAM user or key survives.
+   credentials, proves STS-federated operational credentials with a compact AWS-validation
+   session policy, waits for the dedicated IAM-user credentials to pass STS and repeated Route 53
+   hosted-zone probes, materializes IAM-user operational `aws.*` only from
+   `aws_admin_for_test_simulation.*` to simulate the interactive public CLI workflow because
+   cert-manager Route 53 DNS01 credentials do not support an STS session-token field, and clears
+   operational `aws.*` from `prodbox-config.dhall` before returning so no test-created dedicated
+   IAM user or key survives.
 7. The operator-facing binary lives at `.build/prodbox`, produced by the canonical
    `cabal build --builddir=.build exe:prodbox` invocation plus a copy step.
 8. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile

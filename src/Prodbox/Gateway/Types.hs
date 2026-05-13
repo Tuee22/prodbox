@@ -17,6 +17,7 @@ module Prodbox.Gateway.Types
   , eventTypeYield
   , eventTypeOrdersPromoted
   , defaultMaxClockSkewSeconds
+  , defaultDrainDeadlineSeconds
   , emptyCommitLog
   , appendIfNew
   , sortedEvents
@@ -160,6 +161,7 @@ data DaemonConfig = DaemonConfig
   , daemonReconnectInterval :: Double
   , daemonSyncInterval :: Double
   , daemonMaxClockSkewSeconds :: Double
+  , daemonDrainDeadlineSeconds :: Maybe Int
   , daemonDnsWriteGate :: Maybe DnsWriteGate
   }
   deriving (Eq, Show)
@@ -195,6 +197,9 @@ eventTypeOrdersPromoted = "orders_promoted"
 defaultMaxClockSkewSeconds :: Double
 defaultMaxClockSkewSeconds = 10.0
 
+defaultDrainDeadlineSeconds :: Int
+defaultDrainDeadlineSeconds = 30
+
 parseDaemonConfig :: String -> Either String DaemonConfig
 parseDaemonConfig jsonText =
   case eitherDecode (BL8.pack jsonText) of
@@ -210,9 +215,11 @@ parseDaemonConfig jsonText =
           reconnect = readOptionalFloat obj "reconnect_interval_seconds" 1.0
           sync = readOptionalFloat obj "sync_interval_seconds" 5.0
           maxSkew = readOptionalFloat obj "max_clock_skew_seconds" defaultMaxClockSkewSeconds
+          drainDeadline = readOptionalInt obj "drain_deadline_seconds"
       dnsGate <- parseDnsWriteGate obj
       validateIntervals heartbeat reconnect sync
       validateMaxSkew maxSkew
+      validateDrainDeadline drainDeadline
       Right
         DaemonConfig
           { daemonNodeId = nodeId
@@ -225,6 +232,7 @@ parseDaemonConfig jsonText =
           , daemonReconnectInterval = reconnect
           , daemonSyncInterval = sync
           , daemonMaxClockSkewSeconds = maxSkew
+          , daemonDrainDeadlineSeconds = drainDeadline
           , daemonDnsWriteGate = dnsGate
           }
     Right _ -> Left "daemon config must be a JSON object"
@@ -315,6 +323,12 @@ readOptionalFloat obj key defaultVal =
   case KeyMap.lookup (Key.fromString key) obj of
     Just (Number n) -> toRealFloat n
     _ -> defaultVal
+
+readOptionalInt :: KeyMap.KeyMap Value -> String -> Maybe Int
+readOptionalInt obj key =
+  case KeyMap.lookup (Key.fromString key) obj of
+    Just (Number n) -> Just (round n)
+    _ -> Nothing
 
 parseEventKeys :: KeyMap.KeyMap Value -> Either String [(String, String)]
 parseEventKeys obj =
@@ -432,6 +446,13 @@ validateMaxSkew :: Double -> Either String ()
 validateMaxSkew skew
   | skew < 0.1 = Left "max_clock_skew_seconds must be >= 0.1"
   | skew > 600 = Left "max_clock_skew_seconds must be <= 600"
+  | otherwise = Right ()
+
+validateDrainDeadline :: Maybe Int -> Either String ()
+validateDrainDeadline Nothing = Right ()
+validateDrainDeadline (Just deadline)
+  | deadline < 1 = Left "drain_deadline_seconds must be >= 1"
+  | deadline > 600 = Left "drain_deadline_seconds must be <= 600"
   | otherwise = Right ()
 
 validateDaemonTimingAgainstOrders :: DaemonConfig -> Orders -> Either String ()

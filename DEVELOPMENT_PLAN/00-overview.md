@@ -64,7 +64,8 @@ Build a clean-room Haskell `prodbox` repository with:
     provider, every externally reachable app or dashboard lives under the single hostname
     `test.resolvefintech.com`, Envoy enforces Keycloak-backed JWT auth and RBAC on explicit path
     prefixes such as `/vscode`, `/api`, `/ws`, `/auth`, and later supported admin paths, and the
-    steady-state request path does not synchronously depend on Keycloak or Redis.
+    steady-state request path does not synchronously depend on Keycloak or Redis. Port `80`
+    exists only as an HTTP-to-HTTPS redirect into the same shared-host path model.
 16. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
 17. One retained repo-local state root under `.prodbox-state/`, including namespace-local
@@ -79,7 +80,8 @@ Build a clean-room Haskell `prodbox` repository with:
     Harbor and MinIO, all on the same public hostname.
 20. One explicit single-host routing model for the public edge:
     `https://test.resolvefintech.com/<service-path>`, with one public DNS record, one public
-    certificate, and no dedicated identity, browser-app, API, or WebSocket hostnames.
+    certificate, a port `80` redirect to the HTTPS URL, and no dedicated identity, browser-app,
+    API, or WebSocket hostnames.
 21. One repo-owned Redis workload path for supported realtime workloads and any later explicit
     external rate-limit service, only as shared application state and never as an Envoy JWT cache.
 22. One explicit public-edge transport boundary where public TLS terminates at Envoy, backend HTTP
@@ -119,14 +121,16 @@ Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced
 surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
 sprint (1.27) plus deliverable extensions to existing planned Phase `1`, Phase `2`, Phase
 `3`, and Phase `4` sprints, per
-[development_plan_standards.md](development_plan_standards.md) standards rule L. Phases
-`5`–`7` remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract,
-AWS IAM and quota administration) per standards rule E. The earlier implementation-alignment
-follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup follow-up that
-removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
-`src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens
-add new planned sprints across Phases `1`–`4`; until those sprints close, the cleanup ledger
-shows doctrine-deviation residue under
+[development_plan_standards.md](development_plan_standards.md) standards rule L. Phase `5`
+briefly reopened through Sprint `5.5` to add and prove a port `80` HTTP-to-HTTPS redirect for
+the single-host public edge, and that redirect follow-up is now `Done`. Phases `5`, `6`, and
+`7` remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract, AWS IAM
+and quota administration) per standards rule E. The earlier
+implementation-alignment follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup
+follow-up that removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
+`src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens add
+new planned sprints across Phases `1`–`4`; until those sprints close, the cleanup ledger shows
+doctrine-deviation residue under
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`.
 
 The doctrine's cross-language type-bridge full-file generation surface
@@ -213,6 +217,10 @@ The reopened ranges close on the following sprint sets:
   and sister-command discipline on the lifecycle reconciler so the one-cycle deprecation
   alias preserves only the legacy name, not the forbidden flags
   (§1781–1803).
+- Phase 5: Sprint 5.5. The public edge gains a Gateway API HTTP listener on port `80` that
+  returns only a permanent redirect to the canonical HTTPS URL, with no plaintext backend route,
+  and the public-edge diagnostic plus named external validation prove that behavior. This
+  follow-up is closed by the May 13, 2026 aggregate validation.
 
 ## Architecture Summary
 
@@ -252,12 +260,13 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
 not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
-Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.14`, and `4.7` in `Active`
-state because those surfaces have started in code but still retain sprint-owned
-implementation or validation gaps. Sprints `1.6`, `1.9`, `1.10`, `1.11`, `1.20`, `1.21`,
-`1.19`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are now
-locally validated and doc-aligned, and Sprints `1.7`, `1.15`, and `3.8` have re-closed on their
-owned surfaces. The supported operator surface is `prodbox`, the
+Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.11`, `2.12`,
+`2.13`, `2.14`, and `4.7` in `Active` state because those surfaces have started
+in code but still retain sprint-owned implementation or validation gaps. Sprints `1.6`,
+`1.9`, `1.10`, `1.11`, `1.20`, `1.21`,
+`1.19`, `1.23`, `1.24`, `1.25`, `1.27`, `2.10`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`,
+`4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.7`, `1.15`, and
+`3.8` have re-closed on their owned surfaces. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -324,8 +333,11 @@ than restated here as a fresh rerun log.
   `prodbox test all` through one suite-level Haskell IAM harness.
 - That shared harness now deletes any pre-existing dedicated `prodbox` IAM user and that user's
   access keys before provisioning, uses any pre-existing `aws.*` only to discover and delete the
-  IAM user associated with those credentials, materializes operational `aws.*` only from
-  `aws_admin_for_test_simulation.*`, and clears `aws.*` from `prodbox-config.dhall` before
+  IAM user associated with those credentials, proves STS-federated operational credentials with a
+  compact AWS-validation session policy, waits for the dedicated IAM-user credentials to pass STS
+  and repeated Route 53 hosted-zone probes, materializes IAM-user operational `aws.*` only from
+  `aws_admin_for_test_simulation.*` because cert-manager Route 53 DNS01 credentials do not
+  support an STS session-token field, and clears `aws.*` from `prodbox-config.dhall` before
   returning even when later prerequisites fail.
 - Phase `7` keeps `pulumi_logged_in` behind the visible local runbook on aggregate and
   cluster-backed suite paths.
@@ -363,7 +375,9 @@ than restated here as a fresh rerun log.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
   retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`.
+  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
+  `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
+  EC2 instances left by interrupted runs or operator network moves.
 - `src/Prodbox/CLI/Rke2.hs` now closes the supported lifecycle on the clean-room Envoy Gateway
   and Percona reconcile path with no retained Traefik or pre-Percona operator migration shims.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` now sync only
@@ -430,10 +444,11 @@ The pre-reopen Phases `0`–`7` remain closed on the implemented repository arch
 `0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
 Phases `1`–`4` remain reopened on the downstream implementation scope scheduled by those
 sprints; that reopened scope is now mixed: Sprints `1.8`, `1.12`, `1.13`, `1.14`,
-`1.26`, `2.9`, `2.14`, and `4.7` are `Active` on partially landed code paths,
-Sprints `1.6`, `1.9`, `1.10`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`,
-`3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and doc-aligned, Sprints `1.7`,
-`1.15`, and `3.8` have re-closed on their owned surfaces, and the
+`1.26`, `2.9`, `2.11`, `2.12`, `2.13`, `2.14`, and `4.7` are
+`Active` on partially landed code paths,
+Sprints `1.6`, `1.9`, `1.10`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`,
+`2.10`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and
+doc-aligned, Sprints `1.7`, `1.15`, and `3.8` have re-closed on their owned surfaces, and the
 remaining reopened sprints stay `Planned`:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
@@ -532,7 +547,9 @@ remaining reopened sprints stay `Planned`:
   install`, not the forbidden flags.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation. It includes API, WebSocket,
-  Harbor, and MinIO route classification plus named external proofs for those workloads.
+  Harbor, and MinIO route classification plus named external proofs for those workloads. Sprint
+  `5.5` closes this phase's redirect-only port `80` handling and proof while preserving HTTPS as
+  the only application-traffic route.
 - Phase 6 owns the destructive clean-room rerun and zero-Python repository handoff criteria,
   closed through the aggregate rerun, postflight restore, `config show`, `config validate`,
   `host public-edge`, and supported-path repository review gates for placeholder-domain and Python
@@ -574,8 +591,11 @@ remaining reopened sprints stay `Planned`:
 - The named and aggregate IAM validation surfaces share one joint idempotent harness that deletes
   any pre-existing dedicated `prodbox` IAM user and all of that user's access keys before
   provisioning, uses any pre-existing `aws.*` only to discover and delete the IAM user associated
-  with those credentials, materializes operational `aws.*` only from
-  `aws_admin_for_test_simulation.*` to simulate the interactive public CLI workflow, and clears
+  with those credentials, proves STS-federated operational credentials with a compact
+  AWS-validation session policy, waits for the dedicated IAM-user credentials to pass STS and
+  repeated Route 53 hosted-zone probes, materializes IAM-user operational `aws.*` only from
+  `aws_admin_for_test_simulation.*` to simulate the interactive public CLI workflow because
+  cert-manager Route 53 DNS01 credentials do not support an STS session-token field, and clears
   operational `aws.*` from `prodbox-config.dhall` before returning.
 - Full cluster delete preserves exactly two retained host roots: the configured manual PV root and
   the repo-local `.prodbox-state/` root.

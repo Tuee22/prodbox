@@ -44,12 +44,15 @@ The supported chart doctrine is:
 8. The current supported shared public edge is anchored in the `vscode` namespace, where the chart
    platform publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity
    route consumed by the shipped browser, API, WebSocket, Harbor, and MinIO surfaces.
-9. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
+9. The shared `Gateway` renders a port `80` HTTP listener only for the redirect-only `HTTPRoute`
+   named `public-edge-http-redirect`; all backend routes attach to HTTPS listener sections and the
+   chart platform does not render plaintext application forwarding.
+10. Chart deploy fails fast until the cluster-wide Patroni platform exists. The actionable recovery
    path is `prodbox rke2 reconcile`.
-10. Chart templates that consume the canonical public-edge path catalog do so through the
+11. Chart templates that consume the canonical public-edge path catalog do so through the
     marker-delimited generated `route-registry` blocks maintained by `prodbox docs generate`,
     not through hand-maintained inline route inventories.
-11. Chart metadata is doctrine-owned: every chart helper exports
+12. Chart metadata is doctrine-owned: every chart helper exports
     `app.kubernetes.io/name`, `app.kubernetes.io/managed-by: prodbox`, and
     `prodbox.io/chart-root`, and `prodbox lint chart` validates those invariants together with
     `Chart.yaml` metadata.
@@ -88,8 +91,9 @@ the current supported public edge is shared.
 - `prodbox charts deploy keycloak` deploys `keycloak-postgres` plus `keycloak` into the
   `keycloak` namespace.
 - `prodbox charts deploy vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the
-  `vscode` namespace and publishes the shared `public-edge` `Gateway`, listener certificate, and
-  `/auth` Keycloak route used by the supported shared-host edge.
+  `vscode` namespace and publishes the shared `public-edge` `Gateway`, the HTTPS listener
+  certificate, the redirect-only HTTP listener and route, and the `/auth` Keycloak route used by
+  the supported shared-host edge.
 - `prodbox charts deploy api` deploys its workload and JWT `SecurityPolicy` into the `api`
   namespace, then attaches its `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`
   through a cross-namespace `parentRef`.
@@ -229,7 +233,8 @@ Root charts:
 - `gateway` deploys the in-cluster distributed gateway stack into the `gateway` namespace.
 - `keycloak` deploys `keycloak-postgres` plus `keycloak` into the `keycloak` namespace.
 - `vscode` deploys `keycloak-postgres`, `keycloak`, and `vscode` into the `vscode` namespace and
-  anchors the shared public-edge `Gateway`, certificate, and `/auth` route there.
+  anchors the shared public-edge `Gateway`, HTTPS certificate, redirect-only HTTP route, and
+  `/auth` route there.
 - `api` deploys the JWT-protected public API workload into the `api` namespace and attaches its
   `HTTPRoute` to the shared `public-edge` `Gateway` in `vscode`.
 - `websocket` deploys the Redis-backed public WebSocket workload into the `websocket` namespace,

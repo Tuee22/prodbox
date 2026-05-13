@@ -1,6 +1,33 @@
+{-# LANGUAGE ScopedTypeVariables #-}
+
 module Main (main) where
 
-import Control.Exception (bracket)
+import Control.Concurrent (threadDelay)
+import Control.Exception
+  ( SomeException
+  , bracket
+  , try
+  )
+import Data.ByteString.Char8 qualified as BS8
+import Data.ByteString.Lazy.Char8 qualified as BL8
+import Network.Socket
+  ( Family (AF_INET)
+  , SockAddr (SockAddrInet)
+  , Socket
+  , SocketOption (ReuseAddr)
+  , SocketType (Stream)
+  , bind
+  , close
+  , connect
+  , defaultProtocol
+  , getSocketName
+  , listen
+  , setSocketOption
+  , socket
+  , tupleToHostAddress
+  , withSocketsDo
+  )
+import Network.Socket.ByteString (recv, sendAll)
 import Prodbox.CLI.Command
   ( WorkloadOptions (..)
   )
@@ -12,6 +39,17 @@ import Prodbox.Gateway
   , resolveGatewayLogLevel
   , resolveGatewayPortOverride
   )
+import Prodbox.Result (Result (..))
+import Prodbox.Subprocess
+  ( BackgroundProcess
+  , CommandSpec (..)
+  , ProcessOutput (..)
+  , captureCommand
+  , startBackgroundProcess
+  , stopBackgroundProcess
+  , terminateBackgroundProcess
+  , waitBackgroundProcess
+  )
 import Prodbox.Workload
   ( resolveHttpPort
   , resolveWorkloadLogLevel
@@ -22,7 +60,10 @@ import System.Environment
   , setEnv
   , unsetEnv
   )
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Timeout (timeout)
 import TestSupport
 
 main :: IO ()
@@ -36,6 +77,48 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
     it "keeps the gateway start command in the registry-backed parser" $
       findCommandSpec ["gateway", "start"]
         `shouldSatisfy` isJust
+
+  describe "gateway daemon process lifecycle" $ do
+    it "serves health, readiness, metrics, and drains to exit success on SIGTERM" $
+      withGatewayDaemon 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        readHttp (daemonRestPort daemon) "/healthz"
+          `shouldReturn` HttpResponse 200 "ok\n"
+        metrics <- readHttp (daemonRestPort daemon) "/metrics"
+        responseStatus metrics `shouldBe` 200
+        responseBody metrics `shouldContain` "prodbox_gateway_events_total"
+        terminateGatewayDaemon daemon
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 503
+        waitForProcessExitSuccess daemon 10
+
+    it "forces drain promptly when SIGTERM arrives twice" $
+      withGatewayDaemon 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        terminateGatewayDaemon daemon
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 503
+        terminateGatewayDaemon daemon
+        waitForProcessExitSuccess daemon 10
+
+  describe "gateway daemon health endpoint goldens" $ do
+    goldenTest
+      "keeps /healthz response shape stable"
+      "test/golden/daemon-health/healthz.golden"
+      (renderEndpointGolden "/healthz")
+
+    goldenTest
+      "keeps ready /readyz response shape stable"
+      "test/golden/daemon-health/readyz-ready.golden"
+      (renderEndpointGolden "/readyz")
+
+    goldenTest
+      "keeps draining /readyz response shape stable"
+      "test/golden/daemon-health/readyz-draining.golden"
+      renderDrainingReadyzGolden
+
+    goldenTest
+      "keeps /metrics response shape stable"
+      "test/golden/daemon-health/metrics.golden"
+      renderMetricsGolden
 
   describe "daemon flag precedence" $ do
     it "prefers gateway CLI flags over PRODBOX_* env vars"
@@ -139,3 +222,332 @@ isJust maybeValue =
   case maybeValue of
     Just _ -> True
     Nothing -> False
+
+data RunningGatewayDaemon = RunningGatewayDaemon
+  { daemonBackgroundProcess :: BackgroundProcess
+  , daemonRestPort :: Int
+  }
+
+data HttpResponse = HttpResponse
+  { responseStatus :: Int
+  , responseBody :: String
+  }
+  deriving (Eq, Show)
+
+withGatewayDaemon :: Int -> (RunningGatewayDaemon -> IO a) -> IO a
+withGatewayDaemon drainDeadlineSeconds action =
+  withSystemTempDirectory "prodbox-gateway-daemon" $ \tmpDir -> do
+    repoRoot <- getCurrentDirectory
+    binary <- resolveProdboxBinary repoRoot
+    restPort <- allocateTcpPort
+    peerPort <- allocateTcpPort
+    let certPath = tmpDir </> "node-a.crt"
+        keyPath = tmpDir </> "node-a.key"
+        caPath = tmpDir </> "ca.crt"
+        ordersPath = tmpDir </> "orders.json"
+        configPath = tmpDir </> "gateway.json"
+    writeFile certPath "cert"
+    writeFile keyPath "key"
+    writeFile caPath "ca"
+    writeFile ordersPath (renderOrders restPort peerPort)
+    writeFile configPath (renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds)
+    bracket
+      (startGatewayProcess binary tmpDir configPath restPort)
+      stopGatewayProcess
+      action
+
+resolveProdboxBinary :: FilePath -> IO FilePath
+resolveProdboxBinary repoRoot = do
+  let syncedBinary = repoRoot </> ".build" </> "prodbox"
+  _ <-
+    runCommandSuccess
+      (CommandSpec "cabal" ["build", "--builddir=.build", "exe:prodbox"] Nothing Nothing)
+  listBin <-
+    runCommandSuccess
+      (CommandSpec "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"] Nothing Nothing)
+  let compiledBinary = trim (processStdout listBin)
+  pure $
+    if null compiledBinary
+      then syncedBinary
+      else compiledBinary
+
+runCommandSuccess :: CommandSpec -> IO ProcessOutput
+runCommandSuccess command = do
+  result <- captureCommand command
+  case result of
+    Failure err -> ioError (userError err)
+    Success output ->
+      if processExitCode output == ExitSuccess
+        then pure output
+        else
+          ioError
+            ( userError
+                ( "command failed: "
+                    ++ commandPath command
+                    ++ " "
+                    ++ unwords (commandArguments command)
+                    ++ "\n"
+                    ++ processStderr output
+                )
+            )
+
+startGatewayProcess :: FilePath -> FilePath -> FilePath -> Int -> IO RunningGatewayDaemon
+startGatewayProcess binary workingDir configPath restPort = do
+  startResult <-
+    startBackgroundProcess
+      CommandSpec
+        { commandPath = binary
+        , commandArguments = ["gateway", "start", "--config", configPath, "--port", show restPort]
+        , commandEnvironment = Nothing
+        , commandWorkingDirectory = Just workingDir
+        }
+  case startResult of
+    Left err -> ioError (userError (show err))
+    Right process ->
+      pure
+        RunningGatewayDaemon
+          { daemonBackgroundProcess = process
+          , daemonRestPort = restPort
+          }
+
+stopGatewayProcess :: RunningGatewayDaemon -> IO ()
+stopGatewayProcess daemon =
+  stopBackgroundProcess (daemonBackgroundProcess daemon)
+
+terminateGatewayDaemon :: RunningGatewayDaemon -> IO ()
+terminateGatewayDaemon daemon =
+  terminateBackgroundProcess (daemonBackgroundProcess daemon)
+
+waitForProcessExitSuccess :: RunningGatewayDaemon -> Int -> IO ()
+waitForProcessExitSuccess daemon timeoutSeconds = do
+  result <-
+    timeout
+      (timeoutSeconds * 1000000)
+      (waitBackgroundProcess (daemonBackgroundProcess daemon))
+  case result of
+    Nothing -> expectationFailure "gateway daemon did not exit before the test timeout"
+    Just (Left err) -> expectationFailure (show err)
+    Just (Right exitCode) -> exitCode `shouldBe` ExitSuccess
+
+renderEndpointGolden :: String -> IO BL8.ByteString
+renderEndpointGolden path =
+  withGatewayDaemon 5 $ \daemon -> do
+    waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+    BL8.pack . renderHttpResponseForGolden <$> readHttp (daemonRestPort daemon) path
+
+renderDrainingReadyzGolden :: IO BL8.ByteString
+renderDrainingReadyzGolden =
+  withGatewayDaemon 5 $ \daemon -> do
+    waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+    terminateGatewayDaemon daemon
+    waitForHttpStatus (daemonRestPort daemon) "/readyz" 503
+    BL8.pack . renderHttpResponseForGolden <$> readHttp (daemonRestPort daemon) "/readyz"
+
+renderMetricsGolden :: IO BL8.ByteString
+renderMetricsGolden =
+  withGatewayDaemon 5 $ \daemon -> do
+    waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+    metrics <- readHttp (daemonRestPort daemon) "/metrics"
+    pure
+      ( BL8.pack
+          (renderHttpResponseForGolden metrics {responseBody = normalizeMetricsBody (responseBody metrics)})
+      )
+
+renderHttpResponseForGolden :: HttpResponse -> String
+renderHttpResponseForGolden response =
+  unlines
+    [ "status: " ++ show (responseStatus response)
+    , "body:"
+    , responseBody response
+    ]
+
+normalizeMetricsBody :: String -> String
+normalizeMetricsBody =
+  unlines . map normalizeMetricLine . lines
+ where
+  normalizeMetricLine line
+    | "#" `prefixOf` line = line
+    | null (words line) = line
+    | otherwise =
+        case words line of
+          [metric, _value] -> metric ++ " <number>"
+          _ -> line
+
+allocateTcpPort :: IO Int
+allocateTcpPort =
+  withSocketsDo $
+    bracket
+      (socket AF_INET Stream defaultProtocol)
+      close
+      ( \sock -> do
+          setSocketOption sock ReuseAddr 1
+          bind sock (SockAddrInet 0 (tupleToHostAddress (127, 0, 0, 1)))
+          listen sock 1
+          sockAddr <- getSocketName sock
+          case sockAddr of
+            SockAddrInet port _ -> pure (fromIntegral port)
+            _ -> ioError (userError "expected IPv4 socket address while allocating a test port")
+      )
+
+waitForHttpStatus :: Int -> String -> Int -> IO ()
+waitForHttpStatus port path expectedStatus = go (50 :: Int) Nothing
+ where
+  go attemptsLeft lastResult
+    | attemptsLeft <= 0 =
+        expectationFailure
+          ( "timed out waiting for "
+              ++ path
+              ++ " status "
+              ++ show expectedStatus
+              ++ "; last result: "
+              ++ show lastResult
+          )
+    | otherwise = do
+        result <- tryReadHttp port path
+        case result of
+          Right response
+            | responseStatus response == expectedStatus -> pure ()
+          _ -> do
+            threadDelay 100000
+            go (attemptsLeft - 1) (Just result)
+
+readHttp :: Int -> String -> IO HttpResponse
+readHttp port path = do
+  result <- tryReadHttp port path
+  case result of
+    Right response -> pure response
+    Left err -> ioError (userError err)
+
+tryReadHttp :: Int -> String -> IO (Either String HttpResponse)
+tryReadHttp port path =
+  withSocketsDo $
+    bracket
+      (socket AF_INET Stream defaultProtocol)
+      close
+      ( \sock -> do
+          connectResult <- tryConnect sock port
+          case connectResult of
+            Left err -> pure (Left err)
+            Right () -> do
+              sendAll sock (BS8.pack (httpRequest path))
+              raw <- receiveUntilClose sock []
+              pure (parseHttpResponse (BS8.unpack (BS8.concat (reverse raw))))
+      )
+
+tryConnect :: Socket -> Int -> IO (Either String ())
+tryConnect sock port = do
+  result <-
+    tryAny (connect sock (SockAddrInet (fromIntegral port) (tupleToHostAddress (127, 0, 0, 1))))
+  pure $
+    case result of
+      Left err -> Left err
+      Right () -> Right ()
+
+receiveUntilClose :: Socket -> [BS8.ByteString] -> IO [BS8.ByteString]
+receiveUntilClose sock chunks = do
+  chunk <- recv sock 4096
+  if BS8.null chunk
+    then pure chunks
+    else receiveUntilClose sock (chunk : chunks)
+
+parseHttpResponse :: String -> Either String HttpResponse
+parseHttpResponse raw =
+  case lines raw of
+    statusLine : _ ->
+      let statusCode = parseStatusCode statusLine
+          body = dropHeader raw
+       in case statusCode of
+            Just code -> Right (HttpResponse code body)
+            Nothing -> Left ("could not parse status line: " ++ statusLine)
+    [] -> Left "empty HTTP response"
+
+parseStatusCode :: String -> Maybe Int
+parseStatusCode statusLine =
+  case words statusLine of
+    _httpVersion : codeText : _ -> readMaybeInt codeText
+    _ -> Nothing
+
+dropHeader :: String -> String
+dropHeader raw =
+  case breakOn "\r\n\r\n" raw of
+    Just (_, body) -> body
+    Nothing ->
+      case breakOn "\n\n" raw of
+        Just (_, body) -> body
+        Nothing -> ""
+
+breakOn :: String -> String -> Maybe (String, String)
+breakOn needle haystack = go "" haystack
+ where
+  go _ [] = Nothing
+  go prefix rest
+    | needle `prefixOf` rest = Just (reverse prefix, drop (length needle) rest)
+    | otherwise =
+        case rest of
+          c : remaining -> go (c : prefix) remaining
+
+prefixOf :: String -> String -> Bool
+prefixOf prefix value =
+  take (length prefix) value == prefix
+
+httpRequest :: String -> String
+httpRequest path =
+  "GET " ++ path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+
+renderConfig :: FilePath -> FilePath -> FilePath -> FilePath -> Int -> String
+renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds =
+  unlines
+    [ "{"
+    , "  \"node_id\": \"node-a\","
+    , "  \"cert_file\": " ++ show certPath ++ ","
+    , "  \"key_file\": " ++ show keyPath ++ ","
+    , "  \"ca_file\": " ++ show caPath ++ ","
+    , "  \"orders_file\": " ++ show ordersPath ++ ","
+    , "  \"event_keys\": {\"node-a\": \"test-key\"},"
+    , "  \"heartbeat_interval_seconds\": 0.2,"
+    , "  \"reconnect_interval_seconds\": 0.2,"
+    , "  \"sync_interval_seconds\": 0.2,"
+    , "  \"max_clock_skew_seconds\": 10,"
+    , "  \"drain_deadline_seconds\": " ++ show drainDeadlineSeconds ++ ","
+    , "  \"dns_write_gate\": null"
+    , "}"
+    ]
+
+renderOrders :: Int -> Int -> String
+renderOrders restPort peerPort =
+  unlines
+    [ "{"
+    , "  \"version_utc\": 1,"
+    , "  \"nodes\": ["
+    , "    {"
+    , "      \"node_id\": \"node-a\","
+    , "      \"stable_dns_name\": \"127.0.0.1\","
+    , "      \"rest_host\": \"127.0.0.1\","
+    , "      \"rest_port\": " ++ show restPort ++ ","
+    , "      \"socket_host\": \"127.0.0.1\","
+    , "      \"socket_port\": " ++ show peerPort
+    , "    }"
+    , "  ],"
+    , "  \"gateway_rule\": {"
+    , "    \"ranked_nodes\": [\"node-a\"],"
+    , "    \"heartbeat_timeout_seconds\": 3"
+    , "  }"
+    , "}"
+    ]
+
+tryAny :: IO a -> IO (Either String a)
+tryAny action = do
+  result <- try action
+  pure $
+    case result of
+      Left (err :: SomeException) -> Left (show err)
+      Right value -> Right value
+
+readMaybeInt :: String -> Maybe Int
+readMaybeInt value =
+  case reads value of
+    [(parsed, "")] -> Just parsed
+    _ -> Nothing
+
+trim :: String -> String
+trim = reverse . dropWhile (`elem` ['\n', '\r', ' ', '\t']) . reverse

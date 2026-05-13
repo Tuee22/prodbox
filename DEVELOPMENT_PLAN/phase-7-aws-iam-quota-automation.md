@@ -207,8 +207,11 @@ or operational `aws.*` credentials behind.
 - `src/Prodbox/Aws.hs` now begins the shared managed harness by deleting any pre-existing
   dedicated `prodbox` IAM user and that user's keys, probing pre-existing operational `aws.*`
   only to discover and delete the IAM user associated with those credentials when STS can still
-  resolve it, clearing operational `aws.*`, and then provisioning fresh operational credentials
-  from `aws_admin_for_test_simulation.*`.
+  resolve it, clearing operational `aws.*`, provisioning fresh operational credentials from
+  `aws_admin_for_test_simulation.*`, proving STS-federated operational credentials with a compact
+  AWS-validation session policy, and then waiting for the dedicated IAM-user credentials to pass
+  STS plus repeated Route 53 hosted-zone probes before materializing them in the repository config
+  because cert-manager Route 53 DNS01 credentials do not support an STS session-token field.
 - `src/Prodbox/TestValidation.hs` now limits the `aws-iam` validation body to inspecting the
   managed operational IAM identity, while `src/Prodbox/TestRunner.hs` owns harness teardown so
   aggregate AWS-backed validations can continue to use the temporary operational credentials until

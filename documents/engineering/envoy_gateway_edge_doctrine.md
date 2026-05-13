@@ -75,13 +75,17 @@ The current repository closes on the implemented self-managed public-edge doctri
    stack publishes the shared `Gateway`, listener certificate, and `/auth` Keycloak identity route,
    while `api` and `websocket` attach `HTTPRoute` resources from their own namespaces.
 5. Keycloak publishes the identity flow on the shared hostname under `/auth`.
-6. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
-   `Gateway`, `HTTPRoute`, `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode
-   state across the browser, API, WebSocket, Harbor, and MinIO routes.
-7. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
+6. The shared `public-edge` `Gateway` exposes HTTPS on port `443` for application traffic and
+   HTTP on port `80` only for a redirect-only `HTTPRoute` that returns a permanent redirect to the
+   same shared-host path over HTTPS. Plaintext backend forwarding is unsupported.
+7. `prodbox host public-edge` classifies Route 53, Envoy Gateway deployment, `GatewayClass`,
+   `Gateway`, listener readiness, redirect `HTTPRoute`, application `HTTPRoute`,
+   `SecurityPolicy`, certificate, `LoadBalancer`, and advertisement-mode state across the browser,
+   API, WebSocket, Harbor, and MinIO routes.
+8. `prodbox test integration charts-api` and `prodbox test integration charts-websocket` now
    prove the shipped JWT-only API and Redis-backed WebSocket paths externally, while
    `prodbox test integration admin-routes` proves the Harbor and MinIO auth gates externally.
-8. The current `websocket` workload uses workload-managed OIDC bootstrap on `/ws/oidc` and a
+9. The current `websocket` workload uses workload-managed OIDC bootstrap on `/ws/oidc` and a
    private in-cluster token-endpoint backchannel to `keycloak.vscode.svc.cluster.local:8080`; this
    is a current runtime boundary, not a second public identity surface.
 
@@ -195,6 +199,8 @@ Internet
 The supported route model is explicit:
 
 - one shared public hostname, currently `test.resolvefintech.com`
+- port `80` is redirect-only and returns a permanent redirect to the same path on HTTPS
+- port `443` is the only public application-routing listener
 - Keycloak on `/auth`
 - browser workloads on explicit path prefixes such as `/vscode`
 - API and WebSocket workloads on explicit path prefixes such as `/api` and `/ws`
@@ -217,6 +223,8 @@ surface as the canonical public edge.
 In the current implementation, the shared `public-edge` `Gateway` and listener certificate live in
 the `vscode` namespace. `api` and `websocket` keep their workloads in their own namespaces, but
 their `HTTPRoute` resources attach to that shared `Gateway` through cross-namespace `parentRefs`.
+The HTTP redirect route also lives with the shared `Gateway` and attaches only to the port `80`
+listener, while every backend route attaches to HTTPS listener sections.
 
 The earlier edge pattern:
 

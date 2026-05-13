@@ -104,7 +104,7 @@ runGatewayStart _repoRoot options = do
               runPlanWithOptions
                 (daemonPlanOptions options)
                 plan
-                (applyGatewayStartPlan portOverride logLevel)
+                (applyGatewayStartPlan configPath portOverride logLevel)
 
 runGatewayStatus :: DaemonStatusOptions -> IO ExitCode
 runGatewayStatus options = do
@@ -200,9 +200,9 @@ buildGatewayStartExecutionPlan configPath logLevel portOverride foreground =
   buildPlan
     (renderGatewayStartPlan configPath logLevel portOverride foreground)
 
-applyGatewayStartPlan :: Maybe Int -> String -> DaemonConfig -> IO ExitCode
-applyGatewayStartPlan portOverride logLevel =
-  Daemon.runGatewayDaemon portOverride logLevel
+applyGatewayStartPlan :: FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
+applyGatewayStartPlan configPath portOverride logLevel =
+  Daemon.runGatewayDaemon (Just configPath) portOverride logLevel
 
 renderGatewayConfigTemplate :: ValidatedSettings -> String -> String
 renderGatewayConfigTemplate settings nodeId =
@@ -222,6 +222,7 @@ renderGatewayConfigTemplate settings nodeId =
       , "heartbeat_interval_seconds" .= (1.0 :: Double)
       , "reconnect_interval_seconds" .= (1.0 :: Double)
       , "sync_interval_seconds" .= (5.0 :: Double)
+      , "drain_deadline_seconds" .= (30 :: Int)
       , "dns_write_gate"
           .= object
             [ "zone_id" .= Text.unpack (zone_id (route53 config))

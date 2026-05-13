@@ -82,6 +82,18 @@ main = mainWithSuite "prodbox-haskell-style" $ do
         , "createProcess"
         , "proc"
         , "shell"
+        , "sd_notify"
+        , "READY=1"
+        , "System.FSNotify"
+        , "System.INotify"
+        , "Linux.INotify"
+        , "getModificationTime"
+        , "newIORef"
+        , "newMVar"
+        , "withAsync"
+        , "race"
+        , "concurrently"
+        , "replicateConcurrently"
         ]
 
     it "keeps the generated command registry target marker-delimited" $ do

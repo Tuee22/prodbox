@@ -202,6 +202,20 @@ This provides deterministic convergence.
   (last inbound event timestamp, connect state, last error) and exposes
   it on `/v1/state` as `peer_transport`.
 
+### 7.2.1 At-Least-Once Correspondence
+
+`src/Prodbox/Daemon/Events.hs` is the canonical at-least-once helper for durable daemon event
+consumers that need `processed_at` tracking, idempotent handlers, and replay from a persistent
+store. The gateway peer mesh deliberately keeps its signed commit log as an in-memory
+anti-entropy gossip log rather than adopting that durable store shape directly: peers exchange
+complete signed batches, merge through `appendIfNew`, and derive heartbeat, transport-health, and
+ownership state from the unique event set. That variant remains doctrine-compatible for the peer
+gossip path because delivery idempotence is keyed by signed event hash and there is no separate
+acknowledged work queue to mark processed.
+
+Future daemon consumers that pull work from a durable queue or table use `Prodbox.Daemon.Events`;
+the gateway only shares the idempotency rule and event-ordering discipline.
+
 ## 7.3 Corruption Resistance
 
 - Per-event schema validation.
@@ -398,6 +412,22 @@ port. It is separate from the peer-to-peer event-batch transport used for gatewa
 communication. The REST handler consumes the inbound HTTP request before closing the socket so the
 operator-facing response contract stays intact when queried through `kubectl port-forward`.
 
+### `GET /healthz`, `GET /readyz`, and `GET /metrics`
+
+The gateway REST listener also exposes daemon-health endpoints on the same in-pod REST port:
+
+- `/healthz` returns `200 ok` once the process is alive.
+- `/readyz` returns `200 ready` only after the daemon enters `serve`; after SIGTERM or SIGINT it
+  returns `503 draining` during the bounded drain window.
+- `/metrics` emits Prometheus exposition text from `envMetrics`, including the gateway event
+  counter and peer/heartbeat gauges.
+
+Filesystem readiness markers and `sd_notify` are not supported readiness signals. The
+`prodbox-daemon-lifecycle` Cabal stanza starts the real `prodbox gateway start` process, polls
+`/readyz`, observes drain readiness after SIGTERM, and asserts exit `0` after the configured drain
+deadline or a second SIGTERM. The same stanza captures stable `/healthz`, ready/draining
+`/readyz`, and normalized `/metrics` response-shape goldens under `test/golden/daemon-health/`.
+
 ---
 
 ## 12. Deployment Model
@@ -407,8 +437,9 @@ The canonical steady state for the gateway daemon is the in-cluster
 one Deployment per ranked node id, each backed by a per-node `gateway-<id>`
 Service, an orders ConfigMap, a per-node config ConfigMap, a cert-manager-issued
 TLS material set, and the secret or config inputs required by the daemon at runtime.
-The chart's liveness and readiness probes query `GET /v1/state` over HTTP on the in-pod REST
-port.
+The chart's liveness and readiness probes should query the health endpoints over HTTP on the
+in-pod REST port; `/v1/state` remains the operator-facing state surface consumed by
+`prodbox gateway status`.
 
 `prodbox gateway start --config <path>` is the Haskell daemon entrypoint and remains the in-pod
 startup path invoked by the gateway chart's container. `prodbox gateway status --config <path>`
@@ -447,9 +478,11 @@ prodbox charts status gateway                 # Inspect installed gateway releas
 Gateway verification lives in four canonical places:
 
 1. `test/unit/Main.hs` for daemon logic, rendering, and DNS-write gating support behavior.
-2. `prodbox test integration gateway-daemon` for daemon-oriented validation.
-3. `prodbox test integration gateway-pods` for pod-backed mesh validation.
-4. `prodbox tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
+2. `test/daemon-lifecycle/Main.hs` for process-level startup, readiness, signal drain, and
+   daemon flag/env precedence coverage.
+3. `prodbox test integration gateway-daemon` for daemon-oriented validation.
+4. `prodbox test integration gateway-pods` for pod-backed mesh validation.
+5. `prodbox tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
    for formal safety checks.
 
 ---

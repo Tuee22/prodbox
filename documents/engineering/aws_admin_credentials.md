@@ -98,8 +98,14 @@ When `prodbox test integration aws-iam`, `prodbox test integration all`, or
    provisioning
 2. uses any pre-existing operational `aws.*` only to discover and delete the IAM user associated
    with those credentials when that identity can still be resolved through STS
-3. materializes fresh operational `aws.*` only for the duration of the managed suite run
-4. clears operational `aws.*` again before the suite returns, including prerequisite failure paths
+3. proves STS-federated operational credentials from the elevated test identity with a compact
+   AWS-validation session policy
+4. waits for both STS and repeated Route 53 hosted-zone probes to succeed with the dedicated
+   IAM-user access key before selecting it as the operational key
+5. materializes fresh operational `aws.*` only for the duration of the managed suite run; the
+   selected runtime key is the dedicated IAM-user key because cert-manager Route 53 DNS01
+   credentials do not support an STS session-token field
+6. clears operational `aws.*` again before the suite returns, including prerequisite failure paths
 
 After you finish the native IAM validation task:
 

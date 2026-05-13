@@ -230,7 +230,12 @@ Minimum rule:
 7. the AWS validation Pulumi programs take non-secret operator-CIDR and SSH-public-key inputs
    through explicit stack config synchronized by the Haskell orchestration layer, while AWS
    provider credentials stay in the Haskell-owned subprocess environment
-8. the local `prodbox-pulumi` Cabal stanza proves the retained ephemeral-stack harness and
+8. both retained AWS destroy paths refresh Pulumi state and retry destroy once before surfacing a
+   cleanup failure
+9. the HA-RKE2 validation destroys and recreates the retained AWS test stack once when stack
+   reconcile succeeds but SSH validation still fails, so stale EC2 instances left by an
+   interrupted run or operator network move do not survive as terminal validation state
+10. the local `prodbox-pulumi` Cabal stanza proves the retained ephemeral-stack harness and
    typed-output contract around those stack flows, but end-to-end AWS provisioning remains owned by
    the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces rather than by the
    local unit-style suite
@@ -247,6 +252,13 @@ credential section:
 3. the validation must fail fast when `aws_admin_for_test_simulation.*` is missing or partial
 4. public `prodbox config setup` and public `prodbox aws ...` commands remain outside this
    config-backed test harness and use interactive temporary elevated credentials instead
+5. the managed test harness proves that the elevated test identity can mint an STS-federated
+   validation session, but it persists the dedicated IAM-user access key for downstream runtime
+   setup because the cert-manager Route 53 DNS01 solver has no session-token field
+6. freshly-created operational IAM-user credentials are not released to downstream runtime setup
+   until both STS identity probing and repeated Route 53 hosted-zone probing succeed with that
+   access key; runtime Route 53 bootstrap changes also keep a bounded retry window for later IAM
+   propagation
 
 ## 5. Ownership And Cleanup
 

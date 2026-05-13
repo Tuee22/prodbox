@@ -33,6 +33,13 @@ metadata:
 spec:
   gatewayClassName: {{ .Values.gateway.className | quote }}
   listeners:
+    - name: {{ .Values.gateway.httpRedirectListenerName | quote }}
+      hostname: {{ .Values.gateway.host | quote }}
+      port: 80
+      protocol: HTTP
+      allowedRoutes:
+        namespaces:
+          from: All
     - name: {{ .Values.gateway.listenerName | quote }}
       hostname: {{ .Values.gateway.host | quote }}
       port: 443
@@ -45,6 +52,29 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ .Values.gateway.httpRedirectRouteName | quote }}
+  labels:
+    {{- include "keycloak.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.gateway.name | quote }}
+      sectionName: {{ .Values.gateway.httpRedirectListenerName | quote }}
+  hostnames:
+    - {{ .Values.gateway.host | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute

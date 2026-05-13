@@ -10,16 +10,12 @@
 
 ## Phase Status
 
-✅ **Done on owned surfaces** — Sprints `5.1`–`5.4` are closed on the public-host diagnostic and
-external proof contracts. Per [development_plan_standards.md](development_plan_standards.md)
-standards rule E, this phase remains `Done` while Phases `0`–`4` are reopened by Sprint 0.2 to
-adopt [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). When upstream-phase reopens land —
-specifically the `CommandSpec` source-of-truth split (Sprint 1.6), the Plan / Apply
-discipline (Sprint 1.7), the lint and forbidden-path stack (Sprint 1.10), the `tasty`
-stanza migration (Sprint 1.11), and the public-edge command renames flowing from Sprint
-4.5 — the Phase 5 external proof commands re-validate without surface changes. No new
-Sprint 5.X is scheduled; Phase 5 absorbs upstream-phase doctrine adoption through the
-canonical command surface alone.
+✅ **Done on owned surfaces** — Sprints `5.1`–`5.5` are closed on the public-host diagnostic,
+external proof, shared-host route, admin-route, and HTTP-to-HTTPS redirect contracts. Sprint
+`5.5` added the public HTTP listener on port `80` and proved that it only redirects to the
+canonical HTTPS edge. Per [development_plan_standards.md](development_plan_standards.md)
+standards rule E, Phases `6` and `7` remain `Done` on their owned surfaces, while the overall
+handoff still depends on the separately reopened implementation phases `1`–`4`.
 
 ## Phase Summary
 
@@ -53,6 +49,8 @@ baseline, and the shared-host application plus admin proof surfaces.
 - The current proof surface intentionally closes on Envoy listener TLS and route behavior only;
   backend TLS or mTLS is outside the current supported chart-workload contract and is not claimed
   by this phase.
+- The current implemented Gateway exposes HTTPS application routing on port `443` and a port `80`
+  HTTP listener only for redirect behavior; plaintext backend routing remains unsupported.
 
 ## Sprint 5.1: Public Hostname Closure and External Proof on the Haskell Stack ✅
 
@@ -248,6 +246,60 @@ Envoy on `test.resolvefintech.com`, protected by Keycloak-backed auth and RBAC.
   through the shared-host admin edge.
 - `src/Prodbox/TestPlan.hs` exposes `admin-routes` as the named external validation surface for
   the supported admin catalog.
+
+### Remaining Work
+
+None.
+
+## Sprint 5.5: Public HTTP Redirect to HTTPS ✅
+
+**Status**: Done
+**Implementation**: `charts/keycloak/templates/gateway.yaml`, `src/Prodbox/Host.hs`, `src/Prodbox/TestValidation.hs`, `test/`
+**Docs to update**: `documents/engineering/envoy_gateway_edge_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Make the public edge listen on port `80` only to redirect clients to the canonical HTTPS URL for
+the same shared-host path.
+
+### Deliverables
+
+- The shared `public-edge` Gateway renders an HTTP listener on port `80` in addition to the
+  existing HTTPS listener on port `443`.
+- The port `80` listener attaches only to redirect routes and never forwards plaintext HTTP traffic
+  to Keycloak, workloads, Harbor, or MinIO.
+- HTTP requests for `test.resolvefintech.com/<service-path>` receive a permanent redirect to
+  `https://test.resolvefintech.com/<service-path>`.
+- `prodbox host public-edge` reports the HTTP redirect listener and distinguishes redirect
+  readiness from HTTPS application-route readiness.
+- The named public-host validations prove both the redirect behavior on port `80` and the existing
+  HTTPS route, certificate, auth, and RBAC behavior on port `443`.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox host public-edge`
+4. `prodbox test integration public-dns`
+5. `prodbox test integration charts-vscode`
+6. `prodbox test integration charts-api`
+7. `prodbox test integration charts-websocket`
+8. `prodbox test integration admin-routes`
+9. External proof: `http://test.resolvefintech.com/<service-path>` returns a permanent redirect to
+   `https://test.resolvefintech.com/<service-path>` without exposing any plaintext backend route.
+
+### Current Validation State
+
+- The Gateway API HTTP listener and redirect-only `HTTPRoute` now render from the Keycloak chart.
+- `prodbox host public-edge` now reports Envoy service port readiness, HTTP redirect listener
+  readiness, HTTPS listener readiness, and redirect `HTTPRoute` acceptance.
+- `src/Prodbox/TestValidation.hs` now proves the port `80` redirect before the `charts-vscode`
+  HTTPS proof and after the `public-dns` record proof.
+- On May 13, 2026, `./.build/prodbox test all` deployed the chart changes into the supported
+  runtime, proved `ENVOY_SERVICE_HTTP_PORT_READY=true`,
+  `HTTP_REDIRECT_LISTENER_READY=true`, `HTTP_REDIRECT_HTTPROUTE_ACCEPTED=true`, and
+  `CLASSIFICATION=ready-for-external-proof`, then completed the aggregate validation
+  successfully.
 
 ### Remaining Work
 

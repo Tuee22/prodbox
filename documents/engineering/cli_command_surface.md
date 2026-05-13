@@ -108,7 +108,8 @@ is prompt-driven for temporary elevated AWS credentials; stored
 
 The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
-classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, `SecurityPolicy`
+classifies Route 53 ownership, Envoy Gateway readiness, Gateway API attachment, HTTP redirect
+listener readiness, HTTPS listener readiness, redirect `HTTPRoute` acceptance, `SecurityPolicy`
 attachment, certificate readiness, the shared-host `/auth`, `/vscode`, `/api`, `/ws`, `/harbor`,
 and `/minio` routes, and readiness for named external proof.
 
@@ -146,7 +147,9 @@ without streaming raw uninstall-script trace output.
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox pulumi ...` surface.
 
 `prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes` report one-line stack
-destroy disposition instead of replaying Pulumi login chatter on successful cleanup.
+destroy disposition instead of replaying Pulumi login chatter on successful cleanup. On destroy
+failure, each path refreshes Pulumi state and retries destroy once before surfacing the cleanup
+error.
 
 No supported local-cluster platform or application deployment depends on a root Pulumi project.
 
@@ -226,6 +229,8 @@ platform.
 The current public chart surface ships:
 
 - Keycloak on the shared hostname `test.resolvefintech.com` under `/auth`
+- redirect-only HTTP on port `80`, which permanently redirects to the same shared-host path over
+  HTTPS
 - `vscode` on `/vscode`, protected by Envoy Gateway `SecurityPolicy`
 - `api` on `/api`, protected by Envoy-local JWT validation plus route claims
 - `websocket` on `/ws`, with workload-managed OIDC bootstrap on `/ws/oidc`, a JWT-protected `/ws`
@@ -300,6 +305,8 @@ Named suite commands:
 - waits for `prodbox host public-edge` to report `CLASSIFICATION=ready-for-external-proof` before
   external `charts-vscode`, `charts-api`, `charts-websocket`, or `admin-routes` proof continues
   on the supported-runtime path
+- proves the public HTTP-to-HTTPS redirect on port `80` as part of the public-host validation
+  surface, while preserving the HTTPS auth, route, certificate, and RBAC proofs on port `443`
 - dispatches named real-world validations through `src/Prodbox/TestValidation.hs`
 
 ### `prodbox check-code`

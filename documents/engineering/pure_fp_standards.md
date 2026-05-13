@@ -211,7 +211,12 @@ strategies include database constraints, check-then-act with a dedup key, or pur
 projections of the event payload.
 
 Pure planning logic must not duplicate the at-least-once pattern; consume the canonical
-module instead.
+module instead. The gateway peer-gossip commit log intentionally remains the in-memory
+anti-entropy variant documented in
+[Distributed Gateway Architecture](./distributed_gateway_architecture.md#721-at-least-once-correspondence):
+it shares the idempotency and ordering discipline but does not need durable `processed_at`
+tracking because peers merge complete signed batches by event hash rather than acknowledging a
+work queue.
 
 ## 7. Testing Implications
 

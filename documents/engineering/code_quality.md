@@ -80,9 +80,17 @@ Current enforced quality surfaces:
   HLint `3.10`
 - HLint through `.hlint.yaml`, including the doctrine-owned marker set for nested-case and
   daemon-path negative-space rules
+- daemon-path guardrails for forbidden filesystem readiness markers, `sd_notify`, reload polling
+  triggers (`fsnotify`, `inotify`, and `getModificationTime`), module-local mutable metrics
+  counters, and unrestricted Async primitives outside the closed daemon set
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory
+
+Phase 2 has introduced `src/Prodbox/Gateway/Logging.hs` as the typed structured-log helper for
+the gateway daemon. The remaining daemon logging guards — `co-log` adoption, log-level filtering
+on hot reload, daemon-path `putStrLn` / `Text.IO.hPutStrLn` rejection, and inline log-object
+rejection — remain scheduled under Sprint 2.12 rather than counted as current guard coverage.
 
 Detailed Haskell hard-gate doctrine and the review-guidance split live in
 [Haskell Code Guide](./haskell_code_guide.md).

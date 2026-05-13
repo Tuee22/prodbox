@@ -15,7 +15,7 @@ module Prodbox.Infra.AwsTestStack
   )
 where
 
-import Control.Monad (foldM, forM, void)
+import Control.Monad (foldM, forM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -488,6 +488,10 @@ pulumiDestroyQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
 pulumiDestroyQuiet projectDir environment =
   runPulumiCommandQuiet projectDir environment ["destroy", "--yes", "--stack", awsTestStackName]
 
+pulumiRefreshQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
+pulumiRefreshQuiet projectDir environment =
+  runPulumiCommandQuiet projectDir environment ["refresh", "--yes", "--stack", awsTestStackName]
+
 pulumiStackRemoveQuiet :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
 pulumiStackRemoveQuiet projectDir environment force =
   runPulumiCommandQuiet
@@ -506,6 +510,13 @@ pulumiDestroyEither projectDir environment summary
   | otherwise =
       exitToEither "pulumi destroy"
         <$> runPulumiCommand projectDir environment ["destroy", "--yes", "--stack", awsTestStackName]
+
+pulumiRefreshEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
+pulumiRefreshEither projectDir environment summary
+  | summary = pulumiRefreshQuiet projectDir environment
+  | otherwise =
+      exitToEither "pulumi refresh"
+        <$> runPulumiCommand projectDir environment ["refresh", "--yes", "--stack", awsTestStackName]
 
 pulumiStackRemoveEither :: FilePath -> [(String, String)] -> Bool -> Bool -> IO (Either String ())
 pulumiStackRemoveEither projectDir environment force summary
@@ -897,10 +908,14 @@ destroyAwsTestStackStatus repoRoot summary = do
                               ExitSuccess -> do
                                 destroyResult <- pulumiDestroyEither projectDir providerEnvironment summary
                                 case destroyResult of
-                                  Left err -> pure (Left ("pulumi destroy failed: " ++ err))
-                                  Right () -> do
-                                    void (pulumiStackRemoveEither projectDir providerEnvironment False summary)
-                                    finalizeDestroy repoRoot currentSnapshot
+                                  Left _ -> do
+                                    _ <- pulumiRefreshEither projectDir providerEnvironment summary
+                                    retryResult <- pulumiDestroyEither projectDir providerEnvironment summary
+                                    case retryResult of
+                                      Left err -> pure (Left ("pulumi destroy failed after refresh: " ++ err))
+                                      Right () -> completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary
+                                  Right () ->
+                                    completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary
                   PulumiStackMissing -> do
                     case currentSnapshot of
                       Nothing ->
@@ -918,6 +933,17 @@ destroyAwsTestStackStatus repoRoot summary = do
             (Left ("local MinIO backend unavailable while an AWS test stack snapshot still exists: " ++ err))
     Right (Left err) -> pure (Left err)
     Right (Right status) -> pure (Right status)
+
+completeDestroy
+  :: FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe AwsTestStackSnapshot
+  -> Bool
+  -> IO (Either String String)
+completeDestroy repoRoot projectDir environment currentSnapshot summary = do
+  _ <- pulumiStackRemoveEither projectDir environment False summary
+  finalizeDestroy repoRoot currentSnapshot
 
 finalizeDestroy :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Either String String)
 finalizeDestroy repoRoot currentSnapshot = do

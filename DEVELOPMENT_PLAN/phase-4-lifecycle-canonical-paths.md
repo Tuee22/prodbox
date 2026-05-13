@@ -52,7 +52,9 @@ Route 53 record, and one listener certificate for `test.resolvefintech.com`.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
   retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`.
+  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
+  `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
+  EC2 instances left by interrupted runs or operator network moves.
 - `src/Prodbox/CLI/Rke2.hs` retains lifecycle-owned bootstrap DNS reconcile through
   `deployment.pulumi_enable_dns_bootstrap` plus ACME `ClusterIssuer` projection; these helpers do
   not expand the public `prodbox pulumi ...` surface.
@@ -176,7 +178,8 @@ local-cluster supported ownership from the public Pulumi path.
 - The AWS validation-stack paths continue to close through `prodbox pulumi ...`.
 - AWS validation local state remains repo-local under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`.
+  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
+  `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails.
 - No supported root `Pulumi.yaml`, `pulumi/home`, or broad local-cluster public operator flow
   depends on Pulumi.
 - No supported Pulumi program depends on Python.
@@ -205,7 +208,9 @@ local-cluster supported ownership from the public Pulumi path.
   projected into Pulumi through the Haskell-owned subprocess environment.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` retain stack
   snapshots under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the
-  HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`.
+  HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`; stale retained EC2 nodes are
+  repaired by one destroy-and-recreate retry when HA-RKE2 SSH validation fails after a successful
+  Pulumi reconcile.
 - The retained AWS validation stack helpers now write only the supported operator-CIDR and
   SSH-public-key inputs and no longer remove older Pulumi provider-key layouts on the supported
   path.
@@ -377,7 +382,7 @@ None.
 ## Sprint 4.7: prodbox-pulumi Test Stanza 🔄
 
 **Status**: Active
-**Implementation**: `prodbox.cabal`, `test/pulumi/Main.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/TestValidation.hs`
+**Implementation**: `prodbox.cabal`, `test/pulumi/Main.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/aws_test_environment.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
@@ -406,6 +411,9 @@ Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
 - The `prodbox-pulumi` Cabal stanza now passes locally with the doctrine-owned ephemeral-stack
   harness: each test run creates isolated local stack state, round-trips typed outputs through
   the `EphemeralPulumiOutputs` contract, and proves forced-failure cleanup.
+- The retained AWS test-stack destroy path now refreshes Pulumi state and retries destroy once
+  before surfacing failure, matching the existing AWS EKS cleanup behavior and protecting
+  `prodbox rke2 delete --yes` from stale-state teardown races.
 - The remaining gap is the deeper infrastructure proof: the stanza still validates the harness
   and retained Pulumi-program ownership locally rather than provisioning the retained AWS IaC
   flows (`aws-eks`, `aws-test`, HA-RKE2) end-to-end through the Cabal test suite itself.

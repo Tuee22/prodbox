@@ -90,7 +90,8 @@ Deterministic rebinding is guaranteed only when all of these hold:
 
 `prodbox rke2 delete --yes`:
 
-1. runs `prodbox pulumi eks-destroy --yes`, then `prodbox pulumi test-destroy --yes`
+1. runs `prodbox pulumi eks-destroy --yes`, then `prodbox pulumi test-destroy --yes`; both
+   destroy paths refresh Pulumi state and retry once before surfacing failure
 2. removes the RKE2 substrate and managed kubeconfig residue
 3. preserves the configured manual PV host root
 4. preserves `.prodbox-state/`

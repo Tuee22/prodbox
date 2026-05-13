@@ -31,14 +31,13 @@ external side effects (2.9), the `envMetrics :: MetricsRegistry` typed daemon `E
 backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscribers plus the
 prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
 top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
-refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence puts Sprint
-`2.9` and Sprint `2.14` in `Active` state and closes Sprint `2.15`: the gateway daemon now
-launches its worker loops from one async entrypoint, but the doctrine's explicit lifecycle tree,
-signal-driven drain contract, retry/backoff wrapping, and drain-deadline closure are still
-pending; the dedicated daemon-lifecycle stanza now exists and validates CLI/env precedence, but
-the doctrine's real `typed-process` lifecycle assertions plus health-endpoint goldens are still
-pending, while the daemon flag and `PRODBOX_*` precedence contract is now implemented in
-parser/runtime code and covered locally. The remaining reopened Phase `2` sprints stay `Planned`.
+refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence puts Sprints
+`2.9`, `2.11`, `2.12`, `2.13`, and `2.14` in `Active` state: the gateway daemon now launches
+from one structured async entrypoint with bounded drain and endpoint coverage, while
+prerequisite-registry acquire gating, Dhall-shaped hot reload, `co-log` adoption, injected
+test-hook closure, and the remaining lifecycle polling guardrails are still open. Sprints `2.10`,
+`2.15`, and `2.16` are implemented, locally validated, and doc-aligned. The remaining reopened
+Phase `2` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -196,6 +195,7 @@ while preserving the implemented runtime contract and container doctrine.
 - `charts/gateway/` now keeps the pod contract repo-rootless by removing the stale
   `prodbox-config.json` mount, rendering the `gateway-aws-credentials` secret, wiring AWS auth
   through env vars, and probing the daemon's `/v1/state` health endpoint over HTTP.
+
 ### Remaining Work
 
 None.
@@ -589,22 +589,50 @@ Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Li
 5. A unit test confirms that an exception raised inside the `bracketOnError`-guarded
    acquire of a representative external-side-effect resource runs the release path.
 
+### Current Validation State
+
+- Current local validation for the active daemon-lifecycle slice has passed
+  `cabal test --builddir=.build prodbox-daemon-lifecycle --test-options=--hide-successes`,
+  `cabal test --builddir=.build prodbox-unit --test-options=--hide-successes`,
+  `cabal test --builddir=.build prodbox-haskell-style --test-options=--hide-successes`,
+  `cabal build --builddir=.build all --ghc-options=-Werror`, and `./.build/prodbox check-code`.
+- The May 13, 2026 `./.build/prodbox test all` run restored the supported runtime, reached
+  `CLASSIFICATION=ready-for-external-proof` in `prodbox host public-edge`, passed the Cabal
+  `prodbox-unit` and `prodbox-integration` suites, and reached the final lifecycle validation.
+  The aggregate exited non-zero during AWS test-stack cleanup when `pulumi destroy --stack
+  aws-test` returned AWS `AuthFailure` while waiting on EC2 instance deletion. The AWS test-stack
+  destroy path now matches the EKS destroy path by refreshing Pulumi state and retrying destroy
+  once before reporting failure.
+- A later May 13, 2026 `./.build/prodbox test all` rerun completed successfully. The shared AWS
+  setup path proves STS-federated operational credentials from the elevated test identity, waits
+  for repeated Route 53 stability on the dedicated IAM-user key, persists the IAM-user key for
+  runtime because cert-manager Route 53 DNS01 credentials do not support an STS session-token
+  field, proves `CLASSIFICATION=ready-for-external-proof`, completes the AWS EKS and HA RKE2
+  validations, destroys retained AWS validation stacks, and clears operational `aws.*` before
+  returning.
+
 ### Remaining Work
 
-- `runGatewayDaemon` already owns one multi-loop entrypoint and launches the heartbeat, gateway,
-  DNS-write, REST, peer-listener, and peer-dialer workers through `async`.
-- The runtime still does not render the doctrine's explicit
-  `load→prereq→acquire→ready→serve→drain→exit` lifecycle as a top-level `bracket` /
-  `withAsync` tree, and it has no shared SIGTERM or SIGINT drain coordinator.
-- Worker loops still rely on naked `forever` / `threadDelay` patterns and unrestricted `async`
-  usage rather than the doctrine's bounded retry-with-backoff and restricted
-  `withAsync` / `race` / `concurrently` / `replicateConcurrently` set.
-- The default 30-second drain deadline, `LiveConfig`-sourced override, and
-  `bracketOnError` audit for external-side-effect resources are still absent.
+- `runGatewayDaemon` now builds a daemon `Env`, installs SIGTERM/SIGINT/SIGHUP handlers, marks
+  readiness through `Starting` / `Ready` / `Draining`, and runs the heartbeat, ownership,
+  DNS-write, REST, peer-listener, peer-dialer, and reload workers through the restricted
+  `withAsync` / `race` / `concurrently` set.
+- Worker entrypoints are wrapped by `runWorkerWithRetry`, which uses the shared `RetryPolicy`
+  calculation and treats cancellation during `Draining` as intentional shutdown.
+- The REST and peer listeners acquire sockets through `bracketOnError`; the REST listener stays
+  available during the drain window so `/readyz` reports `503 draining`, while the peer listener
+  stops accepting new work.
+- The graceful-drain deadline defaults to 30 seconds and is read from `envLiveConfig` so the
+  daemon can adopt the live override without restart.
+- Remaining closure work: route daemon acquire prerequisites through the Sprint 1.9 prerequisite
+  registry, add the synthetic recoverable/fatal worker-failure tests, and finish the broader
+  daemon-path audit for any still-plain external-side-effect `bracket` usage outside the gateway
+  listener sockets.
 
-## Sprint 2.10: /healthz, /readyz, /metrics Endpoints 📋
+## Sprint 2.10: /healthz, /readyz, /metrics Endpoints ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/CheckCode.hs`, `test/daemon-lifecycle/Main.hs`, `test/golden/daemon-health/`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`
 
 ### Objective
@@ -617,10 +645,10 @@ observability](../HASKELL_CLI_TOOL.md).
 - Expose `/healthz`, `/readyz`, and `/metrics` (Prometheus exposition format) alongside the
   existing `/v1/state` surface in `src/Prodbox/Gateway/Daemon.hs`.
 - `/readyz` returns 200 only after `serve` is entered and 503 during drain.
-- Golden tests over response shapes in `prodbox-unit` (per
+- Golden tests over response shapes in `prodbox-daemon-lifecycle` (per
   [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) §1618–1619 and
   `Test Categories → Daemon Lifecycle Tests` §2252–2253). The captured fixtures cover
-  `/healthz`, `/readyz` (both pre-ready and ready states), and `/metrics` exposition form.
+  `/healthz`, `/readyz` in ready and draining states, and `/metrics` exposition form.
 - Filesystem readiness markers and `sd_notify(READY=1)` are explicitly forbidden; the
   HTTP `/readyz` endpoint is the only supported readiness signal per
   [../HASKELL_CLI_TOOL.md → Lifecycle](../HASKELL_CLI_TOOL.md) §1222–1225. A
@@ -642,9 +670,22 @@ observability](../HASKELL_CLI_TOOL.md).
    under `src/Prodbox/Gateway/` fails `prodbox lint haskell` with the negative-space
    rule that backs `envMetrics`.
 
-## Sprint 2.11: BootConfig / LiveConfig Split with SIGHUP Hot Reload 📋
+### Current Validation State
 
-**Status**: Planned
+- `cabal test --builddir=.build prodbox-daemon-lifecycle --test-options=--hide-successes` passes
+  with `/healthz`, ready/draining `/readyz`, and normalized `/metrics` response-shape goldens.
+- `cabal test --builddir=.build prodbox-haskell-style --test-options=--hide-successes` passes
+  with the filesystem-readiness, `sd_notify`, reload-trigger, mutable-metrics, and daemon Async
+  primitive markers enforced through `src/Prodbox/CheckCode.hs`.
+
+### Remaining Work
+
+None.
+
+## Sprint 2.11: BootConfig / LiveConfig Split with SIGHUP Hot Reload 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
 
@@ -735,9 +776,22 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
    `types.dhall` / `defaults.dhall` / `boot` / `live` shape and rejects any committed
    defaults file that diverges from the doctrine-named layout.
 
-## Sprint 2.12: Structured JSON Logging via co-log 📋
+### Remaining Work
 
-**Status**: Planned
+- The daemon now stores live intervals, clock-skew, log-level, and drain-deadline fields in
+  `envLiveConfig :: TVar LiveConfig`; SIGHUP enqueues a reload worker; successful reloads swap
+  the TVar and publish on `envLiveConfigReloads :: TChan LiveConfig`.
+- Live consumers reread `envLiveConfig` at their use sites for heartbeat, ownership, DNS-write,
+  peer-ingest, peer-dial, and drain timing.
+- Remaining closure work: replace the interim JSON daemon-config reload with the prescribed
+  Dhall `types` / `defaults` / `schemaVersion` / `boot` / `live` file shape, validate
+  `schemaVersion` as a top-level Dhall field, and add lifecycle tests for every reload-procedure
+  branch.
+
+## Sprint 2.12: Structured JSON Logging via co-log 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Gateway/Logging.hs`, `src/Prodbox/Gateway/Daemon.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/code_quality.md`
 
@@ -783,9 +837,20 @@ observability / Structured logging field helpers](../HASKELL_CLI_TOOL.md).
    `live.logLevel` value and asserts subsequent log lines reflect the new level
    without restart.
 
-## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization 📋
+### Remaining Work
 
-**Status**: Planned
+- Gateway daemon log sites now use typed helpers from `src/Prodbox/Gateway/Logging.hs` and emit
+  JSON lines to stderr through `field`, `logInfo`, `logWarn`, and `logError`; ad-hoc daemon
+  `hPutStrLn stderr` calls in `src/Prodbox/Gateway/Daemon.hs` have been removed.
+- Remaining closure work: adopt `co-log` itself rather than the interim Aeson-backed helper,
+  make log-level filtering observe the hot-reloaded `LiveConfig`, capture structured-log shape
+  in the lifecycle stanza, and add the daemon-path forbidden-call rules for `putStrLn`,
+  `Text.IO.hPutStrLn`, and inline log-object construction.
+
+## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Daemon/Events.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/distributed_gateway_architecture.md`
 
@@ -820,6 +885,17 @@ Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
    assertions.
 2. Replaying an already-processed peer event is a no-op at the handler boundary.
 
+### Remaining Work
+
+- The daemon `Env` now carries no-op production hooks for peer-event commits, Orders adoption,
+  and peer-connection establishment; peer ingestion calls the commit hook after the STM state
+  update.
+- The at-least-once helper module now carries the handler idempotency precondition and
+  `processed_at` tracking for future daemon consumers.
+- Remaining closure work: replace timing-sensitive lifecycle waits with injected hooks where
+  practical, expose test-only hook injection without leaking it into production startup, and add
+  the style/unit assertions that all hook reads flow through the injected daemon `Env`.
+
 ## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza 🔄
 
 **Status**: Active
@@ -841,7 +917,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
   §2254: single SIGTERM begins drain and the daemon exits `0` within the deadline; a
   second SIGTERM (or the drain deadline) forces exit. The test exercises both branches:
   graceful drain on the first signal, forced exit on the second.
-- Health-endpoint response shapes belong in `prodbox-unit` golden tests (Sprint 2.10).
+- Health-endpoint response shapes belong in daemon-lifecycle golden tests (Sprint 2.10).
 - Forbid `terminateProcess` without prior graceful shutdown, `threadDelay`-based readiness
   probes, and filesystem readiness markers.
 - Sprint 0.4 round-3 extension: capture the `/healthz`, `/readyz`, and `/metrics`
@@ -856,11 +932,8 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
     after the first SIGTERM,
   - `/metrics` returns the Prometheus-exposition-format text with the daemon's
     minimum counter set (the counters bound by `envMetrics` in Sprint 2.10).
-  The planned golden capture lands under `test/golden/daemon-health/` once the
-  endpoint surface exists; the current worktree does not contain that directory
-  yet. (The endpoint implementations themselves remain owned by Sprint 2.10;
-  this extension owns only the golden-test capture inside the lifecycle
-  stanza.)
+  The golden capture lives under `test/golden/daemon-health/`. The endpoint implementations
+  themselves remain owned by Sprint 2.10; this extension owns the lifecycle-stanza capture.
 
 ### Validation
 
@@ -872,11 +945,16 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
 
 ### Remaining Work
 
-- The `prodbox-daemon-lifecycle` stanza now exists and passes locally, but it is still a
-  scaffold suite: it validates source ownership plus CLI/env precedence rather than spawning
-  the daemon through `typed-process`, polling `/readyz`, and driving the full drain contract.
-- The doctrine-owned two-SIGTERM assertion, forbidden readiness-pattern enforcement, and
-  `/healthz` / `/readyz` / `/metrics` golden capture are still pending.
+- The `prodbox-daemon-lifecycle` stanza now spawns the built `prodbox gateway start` process,
+  polls `/readyz`, asserts `/healthz` and `/metrics`, sends SIGTERM, observes `503 draining`,
+  and verifies `ExitSuccess` after the configured drain deadline.
+- The stanza also exercises the second-SIGTERM branch with a distinct test name and keeps the
+  daemon CLI/env precedence coverage from Sprint 2.15.
+- The process driver now uses the repository's typed subprocess boundary, and the endpoint
+  response shapes are captured under `test/golden/daemon-health/`.
+- Remaining closure work: replace the remaining timing-sensitive lifecycle polling with injected
+  hooks where practical and add an explicit style assertion for any forbidden test-only process
+  shutdown pattern that is not already confined to `src/Prodbox/Subprocess.hs`.
 
 ## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence ✅
 
@@ -927,9 +1005,10 @@ doctrine's standard flag set with the prescribed startup-precedence rule.
 
 None.
 
-## Sprint 2.16: At-Least-Once Event-Processing Module 📋
+## Sprint 2.16: At-Least-Once Event-Processing Module ✅
 
-**Status**: Planned
+**Status**: Done
+**Implementation**: `src/Prodbox/Daemon/Events.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/effect_interpreter.md`, `documents/engineering/pure_fp_standards.md`,
 `documents/engineering/unit_testing_policy.md`
@@ -949,11 +1028,11 @@ formalization on the commit log; this sprint owns the module that backs it.
   - `data StoredEvent = StoredEvent { eventId :: EventId, eventAggregateId :: AggregateId,
     eventType :: EventType, eventPayload :: Aeson.Value, eventCreatedAt :: UTCTime,
     eventProcessedAt :: Maybe UTCTime }` matching doctrine §1653–1660.
-  - `newtype EventHandler = EventHandler (StoredEvent -> App ())` with the idempotency
+  - `newtype EventHandler = EventHandler (StoredEvent -> IO ())` with the idempotency
     precondition encoded in the haddock comment per doctrine §1720.
   - `recordEvent`, `markEventProcessed`, `fetchUnprocessedEvents`, and a top-level
-    `processEvents :: EventHandler -> App Int` consumer that fetches unprocessed events,
-    invokes the handler, marks each `processed_at`, and returns the count processed.
+    `processEvents` consumer that fetches unprocessed events, invokes the handler, marks each
+    `processed_at`, and returns the count processed.
 - `src/Prodbox/Gateway/Daemon.hs` peer-event ingestion in `peerListenerLoop` consumes the
   new module (or records in `documents/engineering/distributed_gateway_architecture.md`
   why the gateway intentionally uses the in-memory peer-gossip variant rather than the
@@ -978,6 +1057,21 @@ formalization on the commit log; this sprint owns the module that backs it.
 3. The `documents/engineering/distributed_gateway_architecture.md` correspondence section
    names whether the gateway commit log adopts the module or intentionally keeps the
    in-memory variant, with explicit doctrine-citation either way.
+
+### Current Validation State
+
+- `src/Prodbox/Daemon/Events.hs` exposes `StoredEvent`, `EventId`, `AggregateId`,
+  `EventType`, `EventHandler`, `recordEvent`, `markEventProcessed`,
+  `fetchUnprocessedEvents`, and `processEvents` over a deterministic in-memory `EventStore`.
+- `prodbox-unit` covers event recording, duplicate suppression by event id, processed-state
+  filtering, chronological replay, and idempotent second `processEvents` runs.
+- `documents/engineering/distributed_gateway_architecture.md` records that the gateway commit log
+  intentionally remains the in-memory anti-entropy peer-gossip variant while future durable event
+  consumers use `Prodbox.Daemon.Events`.
+
+### Remaining Work
+
+None.
 
 ## Documentation Requirements
 

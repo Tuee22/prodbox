@@ -5,6 +5,10 @@
 # - Avoid case inside lambda body
 # - forbid forkIO / unsafePerformIO / module-level IORef in daemon paths
 # - forbid direct subprocess primitives: callProcess / readCreateProcess / createProcess / proc / shell
+# - forbid daemon readiness markers: sd_notify / READY=1 / readiness_marker / ready_file
+# - forbid reload polling triggers: System.FSNotify / System.INotify / Linux.INotify / getModificationTime
+# - forbid module-local mutable metrics: newIORef / newMVar outside envMetrics
+# - require daemon Async primitive set: withAsync / race / concurrently / replicateConcurrently
 - ignore: {name: "Use fromMaybe"}
 - ignore: {name: "Eta reduce"}
 - ignore: {name: "Redundant bracket"}

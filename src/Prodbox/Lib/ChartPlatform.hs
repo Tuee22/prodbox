@@ -182,6 +182,12 @@ publicEdgeKeycloakRouteName = "keycloak"
 publicEdgeKeycloakListenerName :: String
 publicEdgeKeycloakListenerName = "https"
 
+publicEdgeHttpRedirectListenerName :: String
+publicEdgeHttpRedirectListenerName = "http"
+
+publicEdgeHttpRedirectRouteName :: String
+publicEdgeHttpRedirectRouteName = "public-edge-http-redirect"
+
 publicEdgeTlsSecretName :: String
 publicEdgeTlsSecretName = "public-edge-tls"
 
@@ -1740,6 +1746,8 @@ valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
               [ "className" .= publicEdgeGatewayClassName
               , "name" .= publicEdgeGatewayName
               , "listenerName" .= publicEdgeKeycloakListenerName
+              , "httpRedirectListenerName" .= publicEdgeHttpRedirectListenerName
+              , "httpRedirectRouteName" .= publicEdgeHttpRedirectRouteName
               , "apiListenerName" .= publicEdgeApiListenerName
               , "websocketListenerName" .= publicEdgeWebsocketListenerName
               , "routeName" .= publicEdgeKeycloakRouteName

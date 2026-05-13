@@ -81,9 +81,14 @@ data EdgeRuntime = EdgeRuntime
   , edgeMetallbAdvertisementMode :: String
   , edgeExpectedLbIp :: String
   , edgeEnvoyServiceIp :: String
+  , edgeEnvoyServiceHttpPortReady :: Bool
+  , edgeEnvoyServiceHttpsPortReady :: Bool
   , edgeEnvoyGatewayDeploymentReady :: Bool
   , edgeGatewayClassAccepted :: Bool
   , edgeGatewayReady :: Bool
+  , edgeHttpRedirectListenerReady :: Bool
+  , edgeHttpsListenerReady :: Bool
+  , edgeHttpRedirectRouteAccepted :: Bool
   , edgeAuthRouteAccepted :: Bool
   , edgeVscodeRouteAccepted :: Bool
   , edgeApiRouteAccepted :: Bool
@@ -185,6 +190,11 @@ runHostPublicEdge repoRoot = do
                   repoRoot
                   (Just "vscode")
                   ["get", "httproute", "keycloak", "-o", "json", "--ignore-not-found=true"]
+              httpRedirectRouteResult <-
+                optionalKubectlJson
+                  repoRoot
+                  (Just "vscode")
+                  ["get", "httproute", "public-edge-http-redirect", "-o", "json", "--ignore-not-found=true"]
               apiRouteResult <-
                 optionalKubectlJson
                   repoRoot
@@ -243,6 +253,7 @@ runHostPublicEdge repoRoot = do
                 , toUnit gatewayResult
                 , toUnit vscodeRouteResult
                 , toUnit authRouteResult
+                , toUnit httpRedirectRouteResult
                 , toUnit apiRouteResult
                 , toUnit websocketRouteResult
                 , toUnit harborRouteResult
@@ -264,6 +275,7 @@ runHostPublicEdge repoRoot = do
                        , gatewayResult
                        , vscodeRouteResult
                        , authRouteResult
+                       , httpRedirectRouteResult
                        , apiRouteResult
                        , websocketRouteResult
                        , harborRouteResult
@@ -283,6 +295,7 @@ runHostPublicEdge repoRoot = do
                       , Right gatewayDoc
                       , Right vscodeRouteDoc
                       , Right authRouteDoc
+                      , Right httpRedirectRouteDoc
                       , Right apiRouteDoc
                       , Right websocketRouteDoc
                       , Right harborRouteDoc
@@ -306,9 +319,14 @@ runHostPublicEdge repoRoot = do
                                 , edgeMetallbAdvertisementMode = configuredMetallbAdvertisementMode settings
                                 , edgeExpectedLbIp = lanIngressLbIp lan
                                 , edgeEnvoyServiceIp = serviceLoadBalancerIp envoyServiceDoc
+                                , edgeEnvoyServiceHttpPortReady = serviceExposesPort 80 envoyServiceDoc
+                                , edgeEnvoyServiceHttpsPortReady = serviceExposesPort 443 envoyServiceDoc
                                 , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
                                 , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
                                 , edgeGatewayReady = gatewayReady gatewayDoc
+                                , edgeHttpRedirectListenerReady = gatewayListenerReady "http" gatewayDoc
+                                , edgeHttpsListenerReady = gatewayListenerReady "https" gatewayDoc
+                                , edgeHttpRedirectRouteAccepted = httpRouteAccepted httpRedirectRouteDoc
                                 , edgeAuthRouteAccepted = httpRouteAccepted authRouteDoc
                                 , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
                                 , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
@@ -363,9 +381,14 @@ renderPublicEdgeReport runtime =
     , "METALLB_ADVERTISEMENT_MODE=" ++ edgeMetallbAdvertisementMode runtime
     , "EDGE_LB_IP=" ++ edgeExpectedLbIp runtime
     , "ENVOY_SERVICE_IP=" ++ edgeEnvoyServiceIp runtime
+    , "ENVOY_SERVICE_HTTP_PORT_READY=" ++ boolText (edgeEnvoyServiceHttpPortReady runtime)
+    , "ENVOY_SERVICE_HTTPS_PORT_READY=" ++ boolText (edgeEnvoyServiceHttpsPortReady runtime)
     , "ENVOY_GATEWAY_DEPLOYMENT_READY=" ++ boolText (edgeEnvoyGatewayDeploymentReady runtime)
     , "GATEWAYCLASS_ACCEPTED=" ++ boolText (edgeGatewayClassAccepted runtime)
     , "GATEWAY_READY=" ++ boolText (edgeGatewayReady runtime)
+    , "HTTP_REDIRECT_LISTENER_READY=" ++ boolText (edgeHttpRedirectListenerReady runtime)
+    , "HTTPS_LISTENER_READY=" ++ boolText (edgeHttpsListenerReady runtime)
+    , "HTTP_REDIRECT_HTTPROUTE_ACCEPTED=" ++ boolText (edgeHttpRedirectRouteAccepted runtime)
     , "AUTH_HTTPROUTE_ACCEPTED=" ++ boolText (edgeAuthRouteAccepted runtime)
     , "VSCODE_HTTPROUTE_ACCEPTED=" ++ boolText (edgeVscodeRouteAccepted runtime)
     , "API_HTTPROUTE_ACCEPTED=" ++ boolText (edgeApiRouteAccepted runtime)
@@ -401,10 +424,19 @@ renderPublicEdgeReport runtime =
   adminPoliciesReady =
     edgeHarborSecurityPolicyAttached runtime
       && edgeMinioSecurityPolicyAttached runtime
+  redirectReady =
+    edgeEnvoyServiceHttpPortReady runtime
+      && edgeHttpRedirectListenerReady runtime
+      && edgeHttpRedirectRouteAccepted runtime
+  httpsListenerReady =
+    edgeEnvoyServiceHttpsPortReady runtime
+      && edgeHttpsListenerReady runtime
   privateEdgeReady =
     edgeEnvoyGatewayDeploymentReady runtime
       && edgeGatewayClassAccepted runtime
       && edgeGatewayReady runtime
+      && redirectReady
+      && httpsListenerReady
       && coreRoutesReady
       && adminRoutesReady
       && corePoliciesReady
@@ -416,6 +448,8 @@ renderPublicEdgeReport runtime =
   classification
     | privateEdgeReady && publicDnsStale = "private-edge-ready-public-dns-stale"
     | edgeCertificateReady runtime /= "true" = "certificate-not-ready"
+    | not httpsListenerReady = "https-listener-not-ready"
+    | not redirectReady = "http-redirect-not-ready"
     | not corePoliciesReady = "auth-policy-not-ready"
     | not adminPoliciesReady = "admin-auth-policy-not-ready"
     | not coreRoutesReady = "gateway-route-not-ready"
@@ -657,6 +691,36 @@ serviceLoadBalancerIp maybeValue =
         _ -> "<missing>"
     Nothing -> "<missing>"
 
+serviceExposesPort :: Int -> Maybe Value -> Bool
+serviceExposesPort expectedPort maybeValue =
+  case edgeObject maybeValue of
+    Just obj ->
+      case KeyMap.lookup "items" obj of
+        Just (Array items) | not (Vector.null items) -> serviceValueExposesPort expectedPort (Vector.head items)
+        _ -> False
+    Nothing -> False
+
+serviceValueExposesPort :: Int -> Value -> Bool
+serviceValueExposesPort expectedPort value =
+  case value of
+    Object obj ->
+      case KeyMap.lookup "spec" obj of
+        Just (Object specObj) ->
+          case KeyMap.lookup "ports" specObj of
+            Just (Array ports) -> any (servicePortMatches expectedPort) (Vector.toList ports)
+            _ -> False
+        _ -> False
+    _ -> False
+
+servicePortMatches :: Int -> Value -> Bool
+servicePortMatches expectedPort value =
+  case value of
+    Object obj ->
+      case KeyMap.lookup "port" obj of
+        Just (Number portValue) -> round portValue == expectedPort
+        _ -> False
+    _ -> False
+
 deploymentReady :: Maybe Value -> Bool
 deploymentReady maybeValue =
   case maybeStatusObject maybeValue of
@@ -671,6 +735,35 @@ gatewayClassAccepted maybeValue = hasStatusCondition maybeValue ["Accepted"]
 
 gatewayReady :: Maybe Value -> Bool
 gatewayReady maybeValue = hasStatusCondition maybeValue ["Accepted", "Programmed", "Ready"]
+
+gatewayListenerReady :: Text.Text -> Maybe Value -> Bool
+gatewayListenerReady listenerName maybeValue =
+  case maybeValue of
+    Just (Object obj) ->
+      case KeyMap.lookup "status" obj of
+        Just (Object statusObj) ->
+          case KeyMap.lookup "listeners" statusObj of
+            Just (Array listeners) -> any listenerReady (Vector.toList listeners)
+            _ -> False
+        _ -> False
+    _ -> False
+ where
+  listenerReady value =
+    case value of
+      Object listenerObj ->
+        KeyMap.lookup "name" listenerObj == Just (String listenerName)
+          && case KeyMap.lookup "conditions" listenerObj of
+            Just (Array conditions) -> any listenerConditionReady (Vector.toList conditions)
+            _ -> False
+      _ -> False
+  listenerConditionReady value =
+    case value of
+      Object conditionObj ->
+        case (KeyMap.lookup "type" conditionObj, KeyMap.lookup "status" conditionObj) of
+          (Just (String conditionType), Just (String "True")) ->
+            conditionType `elem` ["Accepted", "Programmed", "Ready"]
+          _ -> False
+      _ -> False
 
 httpRouteAccepted :: Maybe Value -> Bool
 httpRouteAccepted maybeValue =

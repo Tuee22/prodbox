@@ -118,7 +118,9 @@ adoption through declared phase reopens.
   reopened for doctrine adoption, enumerate the new sprints in each (Phase 1 Sprints
   1.6–1.22 and Phase 2 Sprints 2.9–2.15, where 1.17–1.22 and 2.15 close the doctrine gaps
   identified by the HASKELL_CLI_TOOL.md adoption audit), and call out the surfaces in
-  Phases 5–7 that remain closed on their owned scope per standards rule E.
+  Phases 5–7 that originally remained closed on their owned scope per standards rule E. Phase
+  `5` later reopened separately through Sprint `5.5` for the public HTTP-to-HTTPS redirect and
+  re-closed after the May 13, 2026 aggregate validation.
 - `DEVELOPMENT_PLAN/system-components.md` lists the new components introduced by the doctrine
   (CLI Spec registry, `GeneratedSectionRule` registry, `forbiddenPathRegistry`, daemon
   `/healthz` / `/readyz` / `/metrics` endpoints, `BootConfig` / `LiveConfig` split, `co-log`

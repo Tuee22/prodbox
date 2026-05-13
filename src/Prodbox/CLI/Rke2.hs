@@ -2282,21 +2282,72 @@ reconcileDnsBootstrapFqdn repoRoot awsEnvironment zoneIdValue ttlValue publicIp 
         "prodbox-dns-bootstrap"
         (encode (route53AChangeBatch "UPSERT" fqdn publicIp ttlValue))
         ( \payloadPath ->
-            runCommand
-              CommandSpec
-                { commandPath = "aws"
-                , commandArguments =
-                    [ "route53"
-                    , "change-resource-record-sets"
-                    , "--hosted-zone-id"
-                    , zoneIdValue
-                    , "--change-batch"
-                    , "file://" ++ payloadPath
-                    ]
-                , commandEnvironment = Just awsEnvironment
-                , commandWorkingDirectory = Just repoRoot
-                }
+            runAwsRoute53ChangeWithRetries
+              repoRoot
+              awsEnvironment
+              [ "route53"
+              , "change-resource-record-sets"
+              , "--hosted-zone-id"
+              , zoneIdValue
+              , "--change-batch"
+              , "file://" ++ payloadPath
+              ]
         )
+
+runAwsRoute53ChangeWithRetries :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
+runAwsRoute53ChangeWithRetries repoRoot awsEnvironment arguments =
+  go (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy)
+ where
+  go attemptsRemaining = do
+    outputResult <-
+      captureCommand
+        CommandSpec
+          { commandPath = "aws"
+          , commandArguments = arguments
+          , commandEnvironment = Just awsEnvironment
+          , commandWorkingDirectory = Just repoRoot
+          }
+    case outputResult of
+      Failure err -> failWith ("failed to start aws: " ++ err)
+      Success output ->
+        case processExitCode output of
+          ExitSuccess -> do
+            emitCapturedProcessOutput output
+            pure ExitSuccess
+          failure@(ExitFailure _)
+            | attemptsRemaining > 1 && isRetryableRoute53CredentialFailure output -> do
+                hPutStrLn
+                  stderr
+                  ( "Retrying aws "
+                      ++ unwords arguments
+                      ++ " after AWS credential propagation failure ("
+                      ++ show (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy - attemptsRemaining + 1)
+                      ++ "/"
+                      ++ show (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy)
+                      ++ "): "
+                      ++ outputDetail output
+                  )
+                threadDelay
+                  ( retryDelayMicros
+                      route53CredentialPropagationRetryPolicy
+                      (retryPolicyMaxAttempts route53CredentialPropagationRetryPolicy - attemptsRemaining)
+                  )
+                go (attemptsRemaining - 1)
+            | otherwise -> do
+                emitCapturedProcessOutput output
+                pure failure
+
+isRetryableRoute53CredentialFailure :: ProcessOutput -> Bool
+isRetryableRoute53CredentialFailure output =
+  let detail = map toLower (outputDetail output)
+   in any
+        (`isInfixOf` detail)
+        [ "invalidclienttokenid"
+        , "security token included in the request is invalid"
+        , "unrecognizedclientexception"
+        , "accessdenied"
+        , "not authorized to perform: route53:"
+        ]
 
 resolveDnsBootstrapIp :: ValidatedSettings -> IO (Either String String)
 resolveDnsBootstrapIp settings = do
@@ -3808,6 +3859,15 @@ customImagePushRetryPolicy =
     , retryPolicyBaseDelayMicros = 5000000
     , retryPolicyMultiplier = 1
     , retryPolicyMaxDelayMicros = 5000000
+    }
+
+route53CredentialPropagationRetryPolicy :: RetryPolicy
+route53CredentialPropagationRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 30
+    , retryPolicyBaseDelayMicros = 10000000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 10000000
     }
 
 runCommand :: CommandSpec -> IO ExitCode

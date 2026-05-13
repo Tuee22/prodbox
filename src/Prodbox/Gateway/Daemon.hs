@@ -6,17 +6,33 @@ module Prodbox.Gateway.Daemon
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.Async (async, cancel, waitAnyCancel)
+import Control.Concurrent.Async (concurrently, race, withAsync)
 import Control.Concurrent.STM
-  ( TVar
+  ( TChan
+  , TQueue
+  , TVar
   , atomically
   , modifyTVar'
+  , newTChanIO
+  , newTQueueIO
   , newTVarIO
+  , readTQueue
   , readTVar
   , readTVarIO
+  , writeTChan
+  , writeTQueue
   , writeTVar
   )
-import Control.Exception (IOException, SomeException, displayException, try)
+import Control.Exception
+  ( AsyncException
+  , IOException
+  , SomeException
+  , bracketOnError
+  , displayException
+  , fromException
+  , throwIO
+  , try
+  )
 import Control.Monad (forever, void, when)
 import Crypto.Hash.SHA256 (hash, hmac)
 import Data.Aeson
@@ -41,6 +57,7 @@ import Data.Text qualified as Text
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
 import Data.Word (Word8)
+import GHC.Conc (threadWaitRead)
 import Network.Socket
   ( AddrInfo (..)
   , AddrInfoFlag (AI_PASSIVE)
@@ -63,9 +80,16 @@ import Network.Socket
   , listen
   , setSocketOption
   , socket
+  , withFdSocket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
+import Prodbox.Gateway.Logging
+  ( field
+  , logError
+  , logInfo
+  , logWarn
+  )
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
   , PeerTransportRequest (..)
@@ -87,6 +111,7 @@ import Prodbox.Gateway.Types
   , SignedEvent (..)
   , appendIfNew
   , canWriteDns
+  , defaultDrainDeadlineSeconds
   , emptyCommitLog
   , eventTimestampUtc
   , eventTypeClaim
@@ -94,11 +119,16 @@ import Prodbox.Gateway.Types
   , eventTypeYield
   , extractOrdersVersionFromEvent
   , nodeDisposition
+  , parseDaemonConfig
   , parseOrders
   , peerDialSocketHost
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Retry
+  ( RetryPolicy (..)
+  , retryDelayMicros
+  )
 import Prodbox.Subprocess
   ( CommandSpec (..)
   , ProcessOutput (..)
@@ -106,7 +136,15 @@ import Prodbox.Subprocess
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
-import System.IO (hPutStrLn, stderr)
+import System.Posix.Signals
+  ( Handler (Catch)
+  , installHandler
+  , sigHUP
+  , sigINT
+  , sigTERM
+  )
+import System.Posix.Types (Fd (..))
+import System.Timeout (timeout)
 
 -- | In-memory daemon state.  Updated through STM by the loops and HTTP
 -- listeners, and rendered onto @/v1/state@ for operator inspection.
@@ -125,6 +163,60 @@ data DaemonState = DaemonState
   , stateLatestObservedOrdersVersion :: Int
   }
 
+data ReadinessState
+  = Starting
+  | Ready
+  | Draining
+  deriving (Eq, Show)
+
+data LiveConfig = LiveConfig
+  { liveLogLevel :: String
+  , liveHeartbeatInterval :: Double
+  , liveReconnectInterval :: Double
+  , liveSyncInterval :: Double
+  , liveMaxClockSkewSeconds :: Double
+  , liveDrainDeadlineSeconds :: Int
+  }
+  deriving (Eq, Show)
+
+data MetricsRegistry = MetricsRegistry
+  { metricsDaemonName :: String
+  }
+  deriving (Eq, Show)
+
+data DaemonHooks = DaemonHooks
+  { envAfterPeerEventCommit :: Int -> IO ()
+  , envBeforeOrdersAdoption :: Int -> IO ()
+  , envOnPeerConnectionEstablished :: String -> IO ()
+  }
+
+data DaemonEnv = DaemonEnv
+  { envConfigPath :: Maybe FilePath
+  , envBootConfig :: DaemonConfig
+  , envOrders :: Orders
+  , envState :: TVar DaemonState
+  , envReadiness :: TVar ReadinessState
+  , envLiveConfig :: TVar LiveConfig
+  , envLiveConfigReloads :: TChan LiveConfig
+  , envMetrics :: MetricsRegistry
+  , envDrainSignals :: TQueue DrainSignal
+  , envReloadSignals :: TQueue ()
+  , envHooks :: DaemonHooks
+  }
+
+data DrainSignal
+  = BeginDrain
+  | ForceDrain
+  deriving (Eq, Show)
+
+noopDaemonHooks :: DaemonHooks
+noopDaemonHooks =
+  DaemonHooks
+    { envAfterPeerEventCommit = \_ -> pure ()
+    , envBeforeOrdersAdoption = \_ -> pure ()
+    , envOnPeerConnectionEstablished = \_ -> pure ()
+    }
+
 initialState :: Int -> DaemonState
 initialState ordersVersion =
   DaemonState
@@ -142,31 +234,37 @@ initialState ordersVersion =
     , stateLatestObservedOrdersVersion = ordersVersion
     }
 
-runGatewayDaemon :: Maybe Int -> String -> DaemonConfig -> IO ExitCode
-runGatewayDaemon restPortOverride logLevel config = withSocketsDo $ do
-  hPutStrLn
-    stderr
-    ("Gateway daemon starting: node_id=" ++ daemonNodeId config ++ " log_level=" ++ logLevel)
+runGatewayDaemon :: Maybe FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
+runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsDo $ do
+  logInfo
+    "gateway_starting"
+    [ field "node_id" (daemonNodeId config)
+    , field "log_level" logLevel
+    ]
   ordersText <- readFile (daemonOrdersFile config)
   case parseOrders ordersText of
     Left err -> do
-      hPutStrLn stderr ("Failed to parse orders: " ++ err)
+      logError "orders_parse_failed" [field "detail" err]
       pure (ExitFailure 1)
     Right orders ->
       case validateDaemonTimingAgainstOrders config orders of
         Left err -> do
-          hPutStrLn stderr ("Failed to validate gateway timing: " ++ err)
+          logError "gateway_timing_invalid" [field "detail" err]
           pure (ExitFailure 1)
         Right () ->
           case resolveLocalPeerEndpoint config orders of
             Left err -> do
-              hPutStrLn stderr ("Failed to resolve local gateway node: " ++ err)
+              logError "local_gateway_node_invalid" [field "detail" err]
               pure (ExitFailure 1)
             Right localPeer -> do
               startupValidationResult <- validateDaemonStartupInputs config
               case startupValidationResult of
                 Left err -> do
-                  hPutStrLn stderr ("Failed to validate gateway startup inputs: " ++ err)
+                  logError
+                    "gateway_startup_inputs_invalid"
+                    [ field "message" ("Failed to validate gateway startup inputs: " ++ err)
+                    , field "detail" err
+                    ]
                   pure (ExitFailure 1)
                 Right () -> do
                   now <- getCurrentTime
@@ -185,35 +283,231 @@ runGatewayDaemon restPortOverride logLevel config = withSocketsDo $ do
                                 [(p, PeerHealth Nothing False Nothing) | p <- meshPeers]
                           }
                   stateVar <- newTVarIO initialDaemonState
-                  let eventKeys = Map.fromList (daemonEventKeys config)
+                  readinessVar <- newTVarIO Starting
+                  liveConfigVar <- newTVarIO (liveConfigFromDaemonConfig logLevel config)
+                  reloadBroadcast <- newTChanIO
+                  drainSignals <- newTQueueIO
+                  reloadSignals <- newTQueueIO
+                  signalCount <- newTVarIO (0 :: Int)
+                  let env =
+                        DaemonEnv
+                          { envConfigPath = maybeConfigPath
+                          , envBootConfig = config
+                          , envOrders = orders
+                          , envState = stateVar
+                          , envReadiness = readinessVar
+                          , envLiveConfig = liveConfigVar
+                          , envLiveConfigReloads = reloadBroadcast
+                          , envMetrics = MetricsRegistry "gateway"
+                          , envDrainSignals = drainSignals
+                          , envReloadSignals = reloadSignals
+                          , envHooks = noopDaemonHooks
+                          }
+                  installDaemonSignalHandlers env signalCount
 
-                  hPutStrLn stderr ("Orders loaded: " ++ show (length (ordersNodes orders)) ++ " nodes")
+                  logInfo
+                    "orders_loaded"
+                    [ field "node_count" (length (ordersNodes orders))
+                    , field "orders_version_utc" (ordersVersionUtc orders)
+                    ]
 
-                  heartbeatThread <- async (heartbeatLoop config orders stateVar eventKeys)
-                  gatewayThread <- async (gatewayLoop config orders stateVar eventKeys)
-                  dnsWriteThread <- async (dnsWriteLoop config orders stateVar)
-                  restThread <- async (restServerLoop restPortOverride localPeer config stateVar)
-                  peerListenerThread <- async (peerListenerLoop localPeer config orders stateVar eventKeys)
-                  peerDialerThread <- async (peerDialerLoop config orders stateVar)
-
-                  let allThreads =
-                        [ heartbeatThread
-                        , gatewayThread
-                        , dnsWriteThread
-                        , restThread
-                        , peerListenerThread
-                        , peerDialerThread
-                        ]
-
-                  result <- try (void (waitAnyCancel allThreads)) :: IO (Either SomeException ())
+                  result <- try (serveGatewayDaemon restPortOverride localPeer env) :: IO (Either SomeException ())
                   case result of
                     Left exc -> do
-                      hPutStrLn stderr ("Gateway daemon error: " ++ show exc)
-                      mapM_ cancel allThreads
+                      logError "gateway_daemon_error" [field "detail" (show exc)]
                       pure (ExitFailure 1)
                     Right () -> do
-                      hPutStrLn stderr "Gateway daemon stopped"
+                      logInfo "gateway_stopped" []
                       pure ExitSuccess
+
+liveConfigFromDaemonConfig :: String -> DaemonConfig -> LiveConfig
+liveConfigFromDaemonConfig logLevel config =
+  LiveConfig
+    { liveLogLevel = logLevel
+    , liveHeartbeatInterval = daemonHeartbeatInterval config
+    , liveReconnectInterval = daemonReconnectInterval config
+    , liveSyncInterval = daemonSyncInterval config
+    , liveMaxClockSkewSeconds = daemonMaxClockSkewSeconds config
+    , liveDrainDeadlineSeconds =
+        fromMaybe defaultDrainDeadlineSeconds (daemonDrainDeadlineSeconds config)
+    }
+
+installDaemonSignalHandlers
+  :: DaemonEnv
+  -> TVar Int
+  -> IO ()
+installDaemonSignalHandlers env signalCount = do
+  let drainHandler =
+        Catch $
+          do
+            previousCount <- updateSignalCount
+            if previousCount == 0
+              then do
+                atomically (writeTVar (envReadiness env) Draining)
+                pure ()
+              else pure ()
+      reloadHandler = Catch (atomically (writeTQueue (envReloadSignals env) ()))
+  _ <- installHandler sigTERM drainHandler Nothing
+  _ <- installHandler sigINT drainHandler Nothing
+  _ <- installHandler sigHUP reloadHandler Nothing
+  pure ()
+ where
+  updateSignalCount =
+    atomically $ do
+      previousCount <- readTVar signalCount
+      writeTVar signalCount (previousCount + 1)
+      writeTQueue (envDrainSignals env) $
+        if previousCount == 0
+          then BeginDrain
+          else ForceDrain
+      pure previousCount
+
+serveGatewayDaemon :: Maybe Int -> PeerEndpoint -> DaemonEnv -> IO ()
+serveGatewayDaemon restPortOverride localPeer env = do
+  atomically (writeTVar (envReadiness env) Ready)
+  race (drainCoordinator env) (daemonWorkers restPortOverride localPeer env)
+    >>= either pure pure
+
+daemonWorkers :: Maybe Int -> PeerEndpoint -> DaemonEnv -> IO ()
+daemonWorkers restPortOverride localPeer env =
+  withAsync (worker "heartbeat" (heartbeatLoop env)) $ \_ ->
+    withAsync (worker "gateway_ownership" (gatewayLoop env)) $ \_ ->
+      withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
+        withAsync (worker "rest_server" (restServerLoop restPortOverride localPeer env)) $ \_ ->
+          withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
+            void $
+              concurrently
+                (worker "peer_dialer" (peerDialerLoop env))
+                (worker "config_reload" (reloadLoop env))
+ where
+  worker = runWorkerWithRetry env
+
+drainCoordinator :: DaemonEnv -> IO ()
+drainCoordinator env = do
+  firstSignal <- atomically (readTQueue (envDrainSignals env))
+  case firstSignal of
+    ForceDrain -> logWarn "gateway_force_draining" []
+    BeginDrain -> do
+      liveConfig <- readTVarIO (envLiveConfig env)
+      atomically (writeTVar (envReadiness env) Draining)
+      logInfo
+        "gateway_draining"
+        [field "deadline_seconds" (liveDrainDeadlineSeconds liveConfig)]
+      race
+        (threadDelay (liveDrainDeadlineSeconds liveConfig * 1000000))
+        waitForForceDrain
+        >>= either pure pure
+ where
+  waitForForceDrain = do
+    signal <- atomically (readTQueue (envDrainSignals env))
+    case signal of
+      ForceDrain -> logWarn "gateway_force_draining" []
+      BeginDrain -> waitForForceDrain
+
+runWorkerWithRetry :: DaemonEnv -> String -> IO () -> IO ()
+runWorkerWithRetry env workerName action = go 0
+ where
+  go attemptIndex = do
+    result <- try action :: IO (Either SomeException ())
+    case result of
+      Right () -> do
+        readiness <- readTVarIO (envReadiness env)
+        if readiness == Draining
+          then pure ()
+          else do
+            logWarn "daemon_worker_returned" [field "worker" workerName]
+            go 0
+      Left exc ->
+        do
+          readiness <- readTVarIO (envReadiness env)
+          if readiness == Draining
+            then pure ()
+            else case fromException exc :: Maybe AsyncException of
+              Just _ -> throwIO exc
+              Nothing ->
+                if attemptIndex + 1 < retryPolicyMaxAttempts daemonWorkerRetryPolicy
+                  then do
+                    logWarn
+                      "daemon_worker_restarting"
+                      [ field "worker" workerName
+                      , field "attempt" (attemptIndex + 1)
+                      , field "detail" (displayException exc)
+                      ]
+                    threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
+                    go (attemptIndex + 1)
+                  else do
+                    logError
+                      "daemon_worker_failed"
+                      [ field "worker" workerName
+                      , field "detail" (displayException exc)
+                      ]
+                    throwIO exc
+
+daemonWorkerRetryPolicy :: RetryPolicy
+daemonWorkerRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 5
+    , retryPolicyBaseDelayMicros = 500000
+    , retryPolicyMultiplier = 2
+    , retryPolicyMaxDelayMicros = 5000000
+    }
+
+reloadLoop :: DaemonEnv -> IO ()
+reloadLoop env = forever $ do
+  atomically (readTQueue (envReloadSignals env))
+  reloadResult <- reloadLiveConfig env
+  case reloadResult of
+    Left eventName ->
+      logWarn (Text.pack eventName) []
+    Right liveConfig -> do
+      atomically $ do
+        writeTVar (envLiveConfig env) liveConfig
+        writeTChan (envLiveConfigReloads env) liveConfig
+      logInfo
+        "config_reloaded"
+        [ field "log_level" (liveLogLevel liveConfig)
+        , field "heartbeat_interval_seconds" (liveHeartbeatInterval liveConfig)
+        , field "reconnect_interval_seconds" (liveReconnectInterval liveConfig)
+        , field "sync_interval_seconds" (liveSyncInterval liveConfig)
+        , field "drain_deadline_seconds" (liveDrainDeadlineSeconds liveConfig)
+        ]
+
+reloadLiveConfig :: DaemonEnv -> IO (Either String LiveConfig)
+reloadLiveConfig env =
+  case envConfigPath env of
+    Nothing -> pure (Left "config_reload_failed")
+    Just path -> do
+      fileResult <- try (readFile path) :: IO (Either IOException String)
+      case fileResult of
+        Left _ -> pure (Left "config_reload_failed")
+        Right rawConfig ->
+          case parseDaemonConfig rawConfig of
+            Left _ -> pure (Left "config_reload_failed")
+            Right newConfig -> do
+              currentLiveConfig <- readTVarIO (envLiveConfig env)
+              let bootEvent =
+                    if daemonBootFieldsChanged (envBootConfig env) newConfig
+                      then Just "config_boot_changes_ignored"
+                      else Nothing
+                  liveConfig =
+                    liveConfigFromDaemonConfig
+                      (liveLogLevel currentLiveConfig)
+                      newConfig
+              case validateDaemonTimingAgainstOrders newConfig (envOrders env) of
+                Left _ -> pure (Left "config_schema_mismatch")
+                Right () -> do
+                  maybe (pure ()) (\eventName -> logWarn (Text.pack eventName) []) bootEvent
+                  pure (Right liveConfig)
+
+daemonBootFieldsChanged :: DaemonConfig -> DaemonConfig -> Bool
+daemonBootFieldsChanged old new =
+  daemonNodeId old /= daemonNodeId new
+    || daemonCertFile old /= daemonCertFile new
+    || daemonKeyFile old /= daemonKeyFile new
+    || daemonCaFile old /= daemonCaFile new
+    || daemonOrdersFile old /= daemonOrdersFile new
+    || daemonEventKeys old /= daemonEventKeys new
+    || daemonDnsWriteGate old /= daemonDnsWriteGate new
 
 validateDaemonStartupInputs :: DaemonConfig -> IO (Either String ())
 validateDaemonStartupInputs config = do
@@ -258,8 +552,11 @@ resolveLocalPeerEndpoint config orders =
     [] -> Left ("local node " ++ daemonNodeId config ++ " not found in orders")
     _ -> Left ("local node " ++ daemonNodeId config ++ " appeared multiple times in orders")
 
-heartbeatLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map String String -> IO ()
-heartbeatLoop config _orders stateVar eventKeys = forever $ do
+heartbeatLoop :: DaemonEnv -> IO ()
+heartbeatLoop env = forever $ do
+  let config = envBootConfig env
+      stateVar = envState env
+      eventKeys = Map.fromList (daemonEventKeys config)
   now <- getCurrentTime
   let nodeId = daemonNodeId config
       heartbeatPayload =
@@ -268,7 +565,7 @@ heartbeatLoop config _orders stateVar eventKeys = forever $ do
           , "timestamp" .= formatUtcIso now
           ]
   case Map.lookup nodeId eventKeys of
-    Nothing -> hPutStrLn stderr ("No event key for local node " ++ nodeId)
+    Nothing -> logWarn "event_key_missing" [field "node_id" nodeId]
     Just key -> do
       let event = createSignedEvent nodeId eventTypeHeartbeat heartbeatPayload key now
       atomically $ modifyTVar' stateVar $ \state ->
@@ -277,24 +574,29 @@ heartbeatLoop config _orders stateVar eventKeys = forever $ do
           , stateLastHeartbeatTimes =
               Map.insert nodeId now (stateLastHeartbeatTimes state)
           }
-  threadDelay (round (daemonHeartbeatInterval config * 1000000))
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
 
 -- | Recompute the elected owner from heartbeat freshness, emit signed
 -- @claim@/@yield@ events on transitions, and update the in-memory owner
 -- view.  Closes the model's ownership-event lifecycle in the runtime.
-gatewayLoop :: DaemonConfig -> Orders -> TVar DaemonState -> Map String String -> IO ()
-gatewayLoop config orders stateVar eventKeys = forever $ do
+gatewayLoop :: DaemonEnv -> IO ()
+gatewayLoop env = forever $ do
+  let config = envBootConfig env
+      orders = envOrders env
+      stateVar = envState env
+      eventKeys = Map.fromList (daemonEventKeys config)
   now <- getCurrentTime
   state <- readTVarIO stateVar
   let nodeId = daemonNodeId config
       rule = ordersGatewayRule orders
-      timeout = fromIntegral (heartbeatTimeoutSeconds rule)
+      heartbeatTimeout = fromIntegral (heartbeatTimeoutSeconds rule)
       ordersOk = stateLatestObservedOrdersVersion state <= stateOrdersVersionUtc state
       activeNodes =
         [ rankedId
         | rankedId <- rankedNodes rule
         , case Map.lookup rankedId (stateLastHeartbeatTimes state) of
-            Just lastHeartbeat -> diffUTCTime now lastHeartbeat < timeout
+            Just lastHeartbeat -> diffUTCTime now lastHeartbeat < heartbeatTimeout
             Nothing -> rankedId == nodeId
         ]
       owner =
@@ -335,7 +637,8 @@ gatewayLoop config orders stateVar eventKeys = forever $ do
       { stateGatewayOwner = owner
       , statePreviousOwner = previous
       }
-  threadDelay 1000000
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
 
 toMaybeString :: Maybe String -> Value
 toMaybeString Nothing = Null
@@ -351,18 +654,24 @@ appendOwnershipEvent
   -> IO ()
 appendOwnershipEvent stateVar eventKeys nodeId evType now payload =
   case Map.lookup nodeId eventKeys of
-    Nothing -> hPutStrLn stderr ("No event key for local node " ++ nodeId)
+    Nothing -> logWarn "event_key_missing" [field "node_id" nodeId]
     Just key -> do
       let ev = createSignedEvent nodeId evType payload key now
       atomically $ modifyTVar' stateVar $ \s ->
         s {stateCommitLog = appendIfNew (stateCommitLog s) ev}
-      hPutStrLn stderr ("Gateway emitted " ++ evType ++ " event from " ++ nodeId)
+      logInfo
+        "gateway_ownership_event_emitted"
+        [ field "event_type" evType
+        , field "node_id" nodeId
+        ]
 
 -- | Write Route 53 only when the runtime CanWriteDns predicate holds: the
 -- local node must be the elected owner AND the most recent claim/yield
 -- event from the local node must be a claim.
-dnsWriteLoop :: DaemonConfig -> Orders -> TVar DaemonState -> IO ()
-dnsWriteLoop config _orders stateVar = forever $ do
+dnsWriteLoop :: DaemonEnv -> IO ()
+dnsWriteLoop env = forever $ do
+  let config = envBootConfig env
+      stateVar = envState env
   state <- readTVarIO stateVar
   let nodeId = daemonNodeId config
       eligible = canWriteDns nodeId (stateGatewayOwner state) (stateCommitLog state)
@@ -372,7 +681,7 @@ dnsWriteLoop config _orders stateVar = forever $ do
       Just gate -> do
         publicIpResult <- fetchPublicIp
         case publicIpResult of
-          Left err -> hPutStrLn stderr ("DNS write skipped: " ++ err)
+          Left err -> logWarn "dns_write_skipped" [field "detail" err]
           Right currentIp -> do
             atomically $ modifyTVar' stateVar $ \s -> s {stateLastPublicIp = Just currentIp}
             let shouldWrite = case stateLastDnsWriteIp state of
@@ -381,7 +690,7 @@ dnsWriteLoop config _orders stateVar = forever $ do
             when shouldWrite $ do
               writeResult <- writeDnsRecord gate currentIp
               case writeResult of
-                Left err -> hPutStrLn stderr ("DNS write failed: " ++ err)
+                Left err -> logError "dns_write_failed" [field "detail" err]
                 Right () -> do
                   now <- getCurrentTime
                   atomically $ modifyTVar' stateVar $ \s ->
@@ -390,58 +699,149 @@ dnsWriteLoop config _orders stateVar = forever $ do
                       , stateLastDnsWriteIp = Just currentIp
                       , stateLastDnsWriteTime = Just now
                       }
-                  hPutStrLn stderr ("DNS write: " ++ dnsWriteGateFqdn gate ++ " -> " ++ currentIp)
-  threadDelay (round (daemonSyncInterval config * 1000000))
+                  logInfo
+                    "dns_write_succeeded"
+                    [ field "fqdn" (dnsWriteGateFqdn gate)
+                    , field "ip" currentIp
+                    ]
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveSyncInterval liveConfig * 1000000))
 
-restServerLoop :: Maybe Int -> PeerEndpoint -> DaemonConfig -> TVar DaemonState -> IO ()
-restServerLoop restPortOverride localPeer config stateVar = do
+restServerLoop :: Maybe Int -> PeerEndpoint -> DaemonEnv -> IO ()
+restServerLoop restPortOverride localPeer env = do
   let host = peerRestHost localPeer
       port = fromMaybe (peerRestPort localPeer) restPortOverride
-  sock <- openListeningSocket "REST server" host port
-  hPutStrLn stderr ("REST server listening on " ++ host ++ ":" ++ show port)
-  forever $ do
-    (clientSock, _) <- accept sock
-    void $ async $ handleRestClient clientSock config stateVar
+  withListeningSocket "REST server" host port $ \sock -> do
+    logInfo "rest_server_listening" [field "host" host, field "port" port]
+    acceptWhileServing True sock env (`handleRestClient` env)
 
-handleRestClient :: Socket -> DaemonConfig -> TVar DaemonState -> IO ()
-handleRestClient sock config stateVar = do
+handleRestClient :: Socket -> DaemonEnv -> IO ()
+handleRestClient sock env = do
   _ <- try handleRequest :: IO (Either SomeException ())
   close sock
  where
   handleRequest = do
-    -- Consume the inbound request before closing the socket so the
-    -- response does not get reset under kubectl port-forward.
-    _ <- receiveAll sock
-    state <- readTVarIO stateVar
+    rawRequest <- receiveAll sock
     now <- getCurrentTime
-    let responseBody = renderStateJson now config state
-        responseHeaders =
-          "HTTP/1.1 200 OK\r\n"
-            ++ "Content-Type: application/json\r\n"
-            ++ "Content-Length: "
-            ++ show (BL.length responseBody)
-            ++ "\r\n"
-            ++ "Connection: close\r\n"
-            ++ "\r\n"
-    sendAll sock (BS8.pack responseHeaders)
-    sendAll sock (BL.toStrict responseBody)
+    case requestPath rawRequest of
+      "/healthz" ->
+        sendHttpResponse sock 200 "text/plain" "ok\n"
+      "/readyz" -> do
+        readiness <- readTVarIO (envReadiness env)
+        case readiness of
+          Ready -> sendHttpResponse sock 200 "text/plain" "ready\n"
+          Draining -> sendHttpResponse sock 503 "text/plain" "draining\n"
+          Starting -> sendHttpResponse sock 503 "text/plain" "starting\n"
+      "/metrics" -> do
+        state <- readTVarIO (envState env)
+        sendHttpResponse sock 200 "text/plain" (renderMetricsText now env state)
+      "/v1/state" -> do
+        state <- readTVarIO (envState env)
+        sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
+      _ ->
+        sendHttpResponse sock 404 "text/plain" "not found\n"
+
+sendHttpResponse :: Socket -> Int -> String -> String -> IO ()
+sendHttpResponse sock statusCode contentType responseBody =
+  sendLazyHttpResponse sock statusCode contentType (BL8.pack responseBody)
+
+sendLazyHttpResponse :: Socket -> Int -> String -> BL.ByteString -> IO ()
+sendLazyHttpResponse sock statusCode contentType responseBody = do
+  let responseHeaders =
+        "HTTP/1.1 "
+          ++ show statusCode
+          ++ " "
+          ++ statusReason statusCode
+          ++ "\r\n"
+          ++ "Content-Type: "
+          ++ contentType
+          ++ "\r\n"
+          ++ "Content-Length: "
+          ++ show (BL.length responseBody)
+          ++ "\r\n"
+          ++ "Connection: close\r\n"
+          ++ "\r\n"
+  sendAll sock (BS8.pack responseHeaders)
+  sendAll sock (BL.toStrict responseBody)
+
+statusReason :: Int -> String
+statusReason statusCode =
+  case statusCode of
+    200 -> "OK"
+    404 -> "Not Found"
+    503 -> "Service Unavailable"
+    _ -> "OK"
+
+requestPath :: BS.ByteString -> String
+requestPath rawRequest =
+  case words (takeWhile (/= '\r') (takeWhile (/= '\n') (BS8.unpack rawRequest))) of
+    _method : path : _ -> path
+    _ -> "/v1/state"
+
+renderMetricsText :: UTCTime -> DaemonEnv -> DaemonState -> String
+renderMetricsText now env state =
+  unlines
+    [ "# TYPE prodbox_gateway_events_total counter"
+    , "prodbox_gateway_events_total{daemon=\""
+        ++ metricsDaemonName (envMetrics env)
+        ++ "\"} "
+        ++ show (length (commitLogEvents (stateCommitLog state)))
+    , "# TYPE prodbox_gateway_peer_connected gauge"
+    ]
+    ++ unlines
+      [ "prodbox_gateway_peer_connected{peer=\""
+          ++ peer
+          ++ "\"} "
+          ++ if peerHealthConnected health then "1" else "0"
+      | (peer, health) <- Map.toList (statePeerHealth state)
+      ]
+    ++ unlines
+      [ "# TYPE prodbox_gateway_heartbeat_age_seconds gauge"
+      ]
+    ++ unlines
+      [ "prodbox_gateway_heartbeat_age_seconds{node=\""
+          ++ nodeId
+          ++ "\"} "
+          ++ show (realToFrac (diffUTCTime now timestamp) :: Double)
+      | (nodeId, timestamp) <- Map.toList (stateLastHeartbeatTimes state)
+      ]
 
 -- | Bind the peer-events HTTP listener on the configured socket port.
 peerListenerLoop
   :: PeerEndpoint
-  -> DaemonConfig
-  -> Orders
-  -> TVar DaemonState
-  -> Map String String
+  -> DaemonEnv
   -> IO ()
-peerListenerLoop localPeer config orders stateVar eventKeys = do
+peerListenerLoop localPeer env = do
   let host = peerSocketHost localPeer
       port = peerSocketPort localPeer
-  sock <- openListeningSocket "Peer events listener" host port
-  hPutStrLn stderr ("Peer events listener on " ++ host ++ ":" ++ show port)
-  forever $ do
-    (clientSock, _) <- accept sock
-    void $ async $ handlePeerClient clientSock config orders stateVar eventKeys
+  withListeningSocket "Peer events listener" host port $ \sock -> do
+    logInfo "peer_listener_listening" [field "host" host, field "port" port]
+    acceptWhileServing False sock env (`handlePeerClient` env)
+
+acceptWhileServing :: Bool -> Socket -> DaemonEnv -> (Socket -> IO ()) -> IO ()
+acceptWhileServing allowDuringDrain sock env handleClient = go
+ where
+  go = do
+    readiness <- readTVarIO (envReadiness env)
+    case readiness of
+      Draining
+        | not allowDuringDrain -> pure ()
+      _ -> do
+        maybeReadable <- waitForSocketRead sock
+        case maybeReadable of
+          Nothing -> go
+          Just () -> do
+            (clientSock, _) <- accept sock
+            handleClient clientSock
+            go
+
+waitForSocketRead :: Socket -> IO (Maybe ())
+waitForSocketRead sock =
+  withFdSocket sock $
+    \socketFd -> timeout listenerPollMicros (threadWaitRead (Fd socketFd))
+
+listenerPollMicros :: Int
+listenerPollMicros = 100000
 
 openListeningSocket :: String -> String -> Int -> IO Socket
 openListeningSocket label host port = do
@@ -449,6 +849,12 @@ openListeningSocket label host port = do
   case socketResult of
     Left err -> ioError (userError (label ++ " failed to bind on " ++ host ++ ":" ++ show port ++ ": " ++ err))
     Right sock -> pure sock
+
+withListeningSocket :: String -> String -> Int -> (Socket -> IO value) -> IO value
+withListeningSocket label host port =
+  bracketOnError
+    (openListeningSocket label host port)
+    close
 
 bindListeningSocket :: String -> Int -> IO (Either String Socket)
 bindListeningSocket host port = do
@@ -496,26 +902,24 @@ bindListeningSocket host port = do
 
 handlePeerClient
   :: Socket
-  -> DaemonConfig
-  -> Orders
-  -> TVar DaemonState
-  -> Map String String
+  -> DaemonEnv
   -> IO ()
-handlePeerClient sock config orders stateVar eventKeys = do
+handlePeerClient sock env = do
   _ <- try handleOne :: IO (Either SomeException ())
   close sock
  where
   handleOne = do
+    envOnPeerConnectionEstablished (envHooks env) "inbound"
     raw <- receiveAll sock
     case parsePeerHttpRequest raw of
       Left err -> do
         let response = renderPeerHttpResponse (PeerResponseError err)
         sendAll sock (BL.toStrict response)
       Right (PeerPushEvents batch) -> do
-        response <- ingestPeerBatch config orders stateVar eventKeys batch
+        response <- ingestPeerBatch env batch
         sendAll sock (BL.toStrict response)
       Right PeerPullEvents -> do
-        state <- readTVarIO stateVar
+        state <- readTVarIO (envState env)
         let batch =
               PeerEventBatch
                 (commitLogEvents (stateCommitLog state))
@@ -581,17 +985,19 @@ receiveAll sock = loop BS.empty
   tails xs@(_ : rest) = xs : tails rest
 
 ingestPeerBatch
-  :: DaemonConfig
-  -> Orders
-  -> TVar DaemonState
-  -> Map String String
+  :: DaemonEnv
   -> PeerEventBatch
   -> IO BL.ByteString
-ingestPeerBatch config orders stateVar eventKeys batch = do
+ingestPeerBatch env batch = do
   now <- getCurrentTime
+  liveConfig <- readTVarIO (envLiveConfig env)
+  let config = envBootConfig env
+      orders = envOrders env
+      stateVar = envState env
+      eventKeys = Map.fromList (daemonEventKeys config)
+      senderOrdersVersion = peerEventBatchSenderOrdersVersionUtc batch
   state0 <- readTVarIO stateVar
   let receiverOrdersVersion = stateOrdersVersionUtc state0
-      senderOrdersVersion = peerEventBatchSenderOrdersVersionUtc batch
   if senderOrdersVersion > 0 && senderOrdersVersion < receiverOrdersVersion
     then
       pure
@@ -606,7 +1012,7 @@ ingestPeerBatch config orders stateVar eventKeys batch = do
             handlePeerRequest
               lookupKey
               knownEmitters
-              (daemonMaxClockSkewSeconds config)
+              (liveMaxClockSkewSeconds liveConfig)
               nowIso
               batch
       appliedCount <- atomically $ do
@@ -618,6 +1024,7 @@ ingestPeerBatch config orders stateVar eventKeys batch = do
             postCount = length (commitLogEvents (stateCommitLog updated))
         writeTVar stateVar updated
         pure (postCount - preCount)
+      envAfterPeerEventCommit (envHooks env) appliedCount
       pure (renderPeerHttpResponse (PeerResponseEventsAccepted appliedCount rejected))
 
 noteSenderOrdersAdvert :: DaemonState -> Int -> DaemonState
@@ -685,15 +1092,19 @@ updateOrdersAdvert acc ev =
 -- | Periodically push the local commit log to every other peer in the
 -- mesh.  Each cycle marks unreachable peers as disconnected so
 -- @/v1/state@ exposes per-peer transport health.
-peerDialerLoop :: DaemonConfig -> Orders -> TVar DaemonState -> IO ()
-peerDialerLoop config orders stateVar = forever $ do
+peerDialerLoop :: DaemonEnv -> IO ()
+peerDialerLoop env = forever $ do
+  let config = envBootConfig env
+      orders = envOrders env
+      stateVar = envState env
   state <- readTVarIO stateVar
   let nodeId = daemonNodeId config
       peers = [p | p <- ordersNodes orders, peerNodeId p /= nodeId]
       events = commitLogEvents (stateCommitLog state)
       batch = PeerEventBatch events (stateOrdersVersionUtc state)
   mapM_ (pushToPeer stateVar batch) peers
-  threadDelay (round (daemonReconnectInterval config * 1000000))
+  liveConfig <- readTVarIO (envLiveConfig env)
+  threadDelay (round (liveReconnectInterval liveConfig * 1000000))
 
 pushToPeer :: TVar DaemonState -> PeerEventBatch -> PeerEndpoint -> IO ()
 pushToPeer stateVar batch peer = do

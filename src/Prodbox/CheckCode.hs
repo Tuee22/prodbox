@@ -546,6 +546,49 @@ checkDaemonRuntimeImports repoRoot = do
             [ path ++ " must not call `setsid`."
             | "setsid" `isInfixOf` contents
             ]
+          readinessSignalViolations =
+            [ path
+                ++ " must use HTTP `/readyz` as the only readiness signal; filesystem readiness markers and `sd_notify` are forbidden."
+            | any
+                (`isInfixOf` contents)
+                [ "sd_notify"
+                , "READY=1"
+                , "readiness_marker"
+                , "readinessMarker"
+                , "ready_file"
+                , "readyFile"
+                ]
+            ]
+          reloadTriggerViolations =
+            [ path
+                ++ " must use SIGHUP for config reload; fsnotify, inotify, and mtime polling are forbidden."
+            | any
+                (`isInfixOf` contents)
+                [ "System.FSNotify"
+                , "System.INotify"
+                , "Linux.INotify"
+                , "getModificationTime"
+                ]
+            ]
+          mutableMetricsViolations =
+            [ path
+                ++ " must keep daemon metrics behind `envMetrics`; module-local `IORef`/`MVar` counters are forbidden."
+            | "metrics" `isInfixOf` contents || "MetricsRegistry" `isInfixOf` contents
+            , any (`elem` tokenizeSource contents) ["newIORef", "newMVar"]
+            ]
+          asyncPrimitiveViolations =
+            [ path
+                ++ " must use only the daemon structured-concurrency primitive set: `withAsync`, `race`, `concurrently`, and `replicateConcurrently`."
+            | any
+                (`elem` tokenizeSource contents)
+                [ "async"
+                , "wait"
+                , "waitAny"
+                , "waitEither"
+                , "mapConcurrently"
+                , "mapConcurrently_"
+                ]
+            ]
       pure
         ( importViolations
             ++ forkViolations
@@ -553,6 +596,10 @@ checkDaemonRuntimeImports repoRoot = do
             ++ unsafeViolations
             ++ moduleLevelIoRefViolations
             ++ sessionViolations
+            ++ readinessSignalViolations
+            ++ reloadTriggerViolations
+            ++ mutableMetricsViolations
+            ++ asyncPrimitiveViolations
         )
 
 checkSubprocessBoundaries :: FilePath -> IO [String]

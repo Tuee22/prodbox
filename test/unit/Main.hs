@@ -26,6 +26,8 @@ import Data.List
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Data.Text qualified as Text
+import Data.Time.Calendar (fromGregorian)
+import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
 import Options.Applicative
   ( ParserResult (..)
@@ -96,6 +98,7 @@ import Prodbox.CheckCode
   , listRepoOwnedPaths
   )
 import Prodbox.ContainerImage qualified as ContainerImage
+import Prodbox.Daemon.Events qualified as DaemonEvents
 import Prodbox.Effect
   ( Effect (..)
   , Validation (..)
@@ -707,6 +710,15 @@ main = mainWithSuite "prodbox-unit" $ do
       awsTestInfra `shouldContain` "\"terminated\""
       awsTestInfra `shouldContain` "Just _ -> finalizeDestroy repoRoot currentSnapshot"
 
+    it "retries AWS test stack destroy after a Pulumi refresh" $ do
+      repoRoot <- getCurrentDirectory
+      awsTestInfra <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "AwsTestStack.hs")
+
+      awsTestInfra `shouldContain` "pulumiRefreshEither"
+      awsTestInfra `shouldContain` "pulumi destroy failed after refresh"
+      awsTestInfra
+        `shouldContain` "Right () -> completeDestroy repoRoot projectDir providerEnvironment currentSnapshot summary"
+
   describe "test planning" $ do
     it "maps aggregate all to the native ordered validation workflow" $ do
       case testExecutionPlan TestAll of
@@ -887,8 +899,8 @@ main = mainWithSuite "prodbox-unit" $ do
       daemonSource `shouldContain` "daemonCaFile"
       daemonSource `shouldContain` "peerRestHost localPeer"
       daemonSource `shouldContain` "peerSocketHost localPeer"
-      daemonSource `shouldContain` "openListeningSocket \"REST server\""
-      daemonSource `shouldContain` "openListeningSocket \"Peer events listener\""
+      daemonSource `shouldContain` "withListeningSocket \"REST server\""
+      daemonSource `shouldContain` "withListeningSocket \"Peer events listener\""
       gatewaySource `shouldContain` "resolveDaemonInputPaths"
 
     it "keeps charts-vscode on the supported runtime bootstrap path" $ do
@@ -1418,6 +1430,44 @@ main = mainWithSuite "prodbox-unit" $ do
       result `shouldBe` Right "ready"
       attempts `shouldBe` 3
 
+    it "records, fetches, and marks daemon events by processed_at state" $ do
+      store <-
+        DaemonEvents.newEventStore
+          [ storedDaemonEvent "event-a" 20 Nothing
+          , storedDaemonEvent "event-processed" 5 (Just (testUtc 30))
+          ]
+      DaemonEvents.recordEvent store (storedDaemonEvent "event-b" 10 Nothing)
+      DaemonEvents.recordEvent store (storedDaemonEvent "event-b" 10 Nothing)
+
+      initialEvents <- DaemonEvents.fetchUnprocessedEvents store
+      map DaemonEvents.eventId initialEvents
+        `shouldBe` [DaemonEvents.EventId "event-b", DaemonEvents.EventId "event-a"]
+
+      DaemonEvents.markEventProcessed store (DaemonEvents.EventId "event-b") (testUtc 40)
+      remainingEvents <- DaemonEvents.fetchUnprocessedEvents store
+      map DaemonEvents.eventId remainingEvents
+        `shouldBe` [DaemonEvents.EventId "event-a"]
+
+    it "processes unprocessed daemon events once across repeated runs" $ do
+      handledRef <- newIORef []
+      store <-
+        DaemonEvents.newEventStore
+          [ storedDaemonEvent "event-a" 20 Nothing
+          , storedDaemonEvent "event-b" 10 Nothing
+          ]
+      let handler =
+            DaemonEvents.EventHandler $ \event ->
+              modifyIORef' handledRef (DaemonEvents.eventId event :)
+
+      firstCount <- DaemonEvents.processEvents store (pure (testUtc 50)) handler
+      secondCount <- DaemonEvents.processEvents store (pure (testUtc 60)) handler
+      handled <- readIORef handledRef
+
+      firstCount `shouldBe` 2
+      secondCount `shouldBe` 0
+      reverse handled
+        `shouldBe` [DaemonEvents.EventId "event-b", DaemonEvents.EventId "event-a"]
+
     it "renders AppError values through the shared CLI output boundary" $ do
       let fatalAppError = fatalError "fatal message"
           recoverableAppError = recoverableError "recoverable message"
@@ -1608,6 +1658,10 @@ main = mainWithSuite "prodbox-unit" $ do
                     `shouldBe` Just (String "prodbox-public-edge")
                   KeyMap.lookup (Key.fromString "host") gatewayPayload
                     `shouldBe` Just (String "test.resolvefintech.com")
+                  KeyMap.lookup (Key.fromString "httpRedirectListenerName") gatewayPayload
+                    `shouldBe` Just (String "http")
+                  KeyMap.lookup (Key.fromString "httpRedirectRouteName") gatewayPayload
+                    `shouldBe` Just (String "public-edge-http-redirect")
                   KeyMap.lookup (Key.fromString "authPathPrefix") gatewayPayload
                     `shouldBe` Just (String "/auth")
                 _ -> expectationFailure "expected keycloak gateway payload"
@@ -2561,6 +2615,7 @@ sampleDaemonConfig =
     , daemonReconnectInterval = 1.0
     , daemonSyncInterval = 1.0
     , daemonMaxClockSkewSeconds = defaultMaxClockSkewSeconds
+    , daemonDrainDeadlineSeconds = Just 30
     , daemonDnsWriteGate =
         Just
           DnsWriteGate
@@ -2574,6 +2629,21 @@ sampleDaemonConfig =
 sampleSignedEvent :: SignedEvent
 sampleSignedEvent =
   signedEventStub "node-a" eventTypeHeartbeat "2026-04-06T10:00:00Z"
+
+storedDaemonEvent :: String -> Integer -> Maybe UTCTime -> DaemonEvents.StoredEvent
+storedDaemonEvent eventName createdSecond processedAt =
+  DaemonEvents.StoredEvent
+    { DaemonEvents.eventId = DaemonEvents.EventId eventName
+    , DaemonEvents.eventAggregateId = DaemonEvents.AggregateId "aggregate-a"
+    , DaemonEvents.eventType = DaemonEvents.EventType "heartbeat"
+    , DaemonEvents.eventPayload = object ["event_name" .= eventName]
+    , DaemonEvents.eventCreatedAt = testUtc createdSecond
+    , DaemonEvents.eventProcessedAt = processedAt
+    }
+
+testUtc :: Integer -> UTCTime
+testUtc seconds =
+  UTCTime (fromGregorian 2026 5 13) (secondsToDiffTime seconds)
 
 sampleAwsTestStackSnapshot :: AwsTest.AwsTestStackSnapshot
 sampleAwsTestStackSnapshot =
@@ -2621,6 +2691,7 @@ daemonConfigJsonValue config =
     , "reconnect_interval_seconds" .= daemonReconnectInterval config
     , "sync_interval_seconds" .= daemonSyncInterval config
     , "max_clock_skew_seconds" .= daemonMaxClockSkewSeconds config
+    , "drain_deadline_seconds" .= daemonDrainDeadlineSeconds config
     , "dns_write_gate" .= fmap dnsWriteGateJsonValue (daemonDnsWriteGate config)
     ]
 

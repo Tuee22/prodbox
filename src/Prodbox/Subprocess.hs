@@ -14,6 +14,7 @@ module Prodbox.Subprocess
   , runStreamingCommand
   , startBackgroundProcess
   , stopBackgroundProcess
+  , terminateBackgroundProcess
   , subprocessArguments
   , subprocessEnvironment
   , subprocessPath
@@ -212,7 +213,7 @@ startBackgroundProcess spec = do
 
 stopBackgroundProcess :: BackgroundProcess -> IO ()
 stopBackgroundProcess process = do
-  _ <- try (terminateProcess (backgroundProcessHandle process)) :: IO (Either IOException ())
+  terminateBackgroundProcess process
   _ <- try (waitForProcess (backgroundProcessHandle process)) :: IO (Either IOException ExitCode)
   maybe (pure ()) closeHandle (backgroundStdoutHandle process)
   maybe (pure ()) closeHandle (backgroundStderrHandle process)
@@ -220,6 +221,11 @@ stopBackgroundProcess process = do
   closeHandle handle = do
     _ <- try (hClose handle) :: IO (Either IOException ())
     pure ()
+
+terminateBackgroundProcess :: BackgroundProcess -> IO ()
+terminateBackgroundProcess process = do
+  _ <- try (terminateProcess (backgroundProcessHandle process)) :: IO (Either IOException ())
+  pure ()
 
 waitBackgroundProcess :: BackgroundProcess -> IO (Either AppError ExitCode)
 waitBackgroundProcess process = do

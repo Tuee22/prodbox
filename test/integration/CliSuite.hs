@@ -862,6 +862,9 @@ integrationCliSuite = do
         configAfterSetup `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
         setupAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_create_user_access_key_id")
         setupAdminKey `shouldContain` "ADMINKEY"
+        route53ProbeKey <-
+          readFile (tmpDir </> "fake-aws-state" </> "route53_get_hosted_zone_access_key_id")
+        route53ProbeKey `shouldContain` "AKIAFAKESETUP"
 
         let teardownInput = unlines ["ADMINKEY", "admin-secret", "", ""]
         (teardownExitCode, teardownStdout, teardownStderr) <-
@@ -906,6 +909,8 @@ integrationCliSuite = do
         stdoutText `shouldContain` "PREEXISTING_OPERATIONAL_USER=leaked-user"
         stdoutText `shouldContain` "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED=true"
         stdoutText `shouldContain` "IAM_USER=prodbox"
+        stdoutText `shouldContain` "CREDENTIAL_SOURCE=iam-user"
+        stdoutText `shouldContain` "IAM_PRINCIPAL=iam-user"
         stdoutText `shouldContain` "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true"
 
         configAfterHarness <- readFile (tmpDir </> "prodbox-config.dhall")
@@ -1893,6 +1898,17 @@ fakeAwsScript stateDir =
     , "{\"HostedZones\":[{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"}]}"
     , "JSON"
     , "    ;;"
+    , "  \"route53 get-hosted-zone\")"
+    , "    access_key_id=${AWS_ACCESS_KEY_ID:-}"
+    , "    if [[ -f \"$(identity_file \"$access_key_id\")\" || \"$access_key_id\" == 'ASIAFAKEFED' || \"$access_key_id\" == 'ADMINKEY' || \"$access_key_id\" == 'CONFIGADMINKEY' ]]; then"
+    , "      printf '%s\\n' \"$access_key_id\" > \"$STATE_DIR/route53_get_hosted_zone_access_key_id\""
+    , "      cat <<'JSON'"
+    , "{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"resolvefintech.com\"},\"DelegationSet\":{\"NameServers\":[\"ns-1.awsdns-01.com\"]}}"
+    , "JSON"
+    , "    else"
+    , "      aws_error 'InvalidClientTokenId' 'GetHostedZone' 'The security token included in the request is invalid.'"
+    , "    fi"
+    , "    ;;"
     , "  \"iam create-user\")"
     , "    user_name=${4:-}"
     , "    if [[ -f \"$(user_exists_file \"$user_name\")\" ]]; then"
@@ -1975,7 +1991,11 @@ fakeAwsScript stateDir =
     , "    ;;"
     , "  \"sts get-caller-identity\")"
     , "    access_key_id=${AWS_ACCESS_KEY_ID:-}"
-    , "    if [[ -f \"$(identity_file \"$access_key_id\")\" ]]; then"
+    , "    if [[ \"$access_key_id\" == 'ASIAFAKEFED' ]]; then"
+    , "      cat <<'JSON'"
+    , "{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:sts::123456789012:federated-user/prodbox\",\"UserId\":\"AIDAFederated:prodbox\"}"
+    , "JSON"
+    , "    elif [[ -f \"$(identity_file \"$access_key_id\")\" ]]; then"
     , "      user_name=$(cat \"$(identity_file \"$access_key_id\")\")"
     , "      printf '{\"Account\":\"123456789012\",\"Arn\":\"arn:aws:iam::123456789012:user/%s\",\"UserId\":\"AIDAFake\"}\\n' \"$user_name\""
     , "    elif [[ \"$access_key_id\" == 'ADMINKEY' || \"$access_key_id\" == 'CONFIGADMINKEY' ]]; then"
@@ -1985,6 +2005,11 @@ fakeAwsScript stateDir =
     , "    else"
     , "      aws_error 'InvalidClientTokenId' 'GetCallerIdentity' 'The security token included in the request is invalid.'"
     , "    fi"
+    , "    ;;"
+    , "  \"sts get-federation-token\")"
+    , "    cat <<'JSON'"
+    , "{\"Credentials\":{\"AccessKeyId\":\"ASIAFAKEFED\",\"SecretAccessKey\":\"fake-federated-secret\",\"SessionToken\":\"fake-federated-session\"}}"
+    , "JSON"
     , "    ;;"
     , "  *)"
     , "    printf 'unsupported fake aws command: %s %s\\n' \"$service\" \"$action\" >&2"

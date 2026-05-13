@@ -34,6 +34,7 @@ import Data.Aeson
   , Object
   , Value (..)
   , eitherDecode
+  , encode
   , object
   , (.=)
   )
@@ -157,6 +158,7 @@ data IamSetupResult = IamSetupResult
   { iamSetupUserName :: Text
   , iamSetupPolicyTier :: PolicyTier
   , iamSetupAccessKeyId :: Text
+  , iamSetupCredentialSource :: Text
   , iamSetupQuotaStatuses :: [QuotaStatus]
   , iamSetupDhallPath :: FilePath
   }
@@ -182,6 +184,7 @@ data OperationalIdentityProbe
   | OperationalIdentityProbeFailed String
   | OperationalIdentityNonUserArn Text
   | OperationalIdentityIamUser Text
+  | OperationalIdentityFederatedUser Text
   deriving (Eq, Show)
 
 data ConfigSetupResult = ConfigSetupResult
@@ -261,6 +264,15 @@ operationalCredentialReadyAttempts = 30
 operationalCredentialRetryDelayMicros :: Int
 operationalCredentialRetryDelayMicros = 2000000
 
+route53CredentialReadyAttempts :: Int
+route53CredentialReadyAttempts = 90
+
+route53CredentialReadyConsecutiveSuccesses :: Int
+route53CredentialReadyConsecutiveSuccesses = 3
+
+route53CredentialRetryDelayMicros :: Int
+route53CredentialRetryDelayMicros = 10000000
+
 baselineQuotaSpecs :: [QuotaSpec]
 baselineQuotaSpecs =
   [ QuotaSpec "Running On-Demand Standard vCPU" "ec2" "L-1216C47A" 32.0
@@ -287,6 +299,18 @@ buildIamPolicyDocument policyTier =
 buildIamPolicyJson :: PolicyTier -> String
 buildIamPolicyJson policyTier =
   BL8.unpack (AesonPretty.encodePretty' prettyConfig (buildIamPolicyDocument policyTier)) ++ "\n"
+
+buildFederatedSessionPolicyDocument :: PolicyTier -> Value
+buildFederatedSessionPolicyDocument policyTier =
+  object
+    [ "Version" .= ("2012-10-17" :: String)
+    , "Statement" .= [statement "FederatedValidationSession" actions "*"]
+    ]
+ where
+  actions =
+    case policyTier of
+      PolicyCore -> ["sts:GetCallerIdentity", "route53:*"]
+      PolicyFull -> ["sts:GetCallerIdentity", "route53:*", "ec2:*", "eks:*", "iam:*"]
 
 runAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
 runAwsCommand repoRoot command = do
@@ -734,7 +758,7 @@ runAwsIamHarnessSetup repoRoot policyTier = do
         "AWS IAM harness preflight cleanup did not clear operational aws.* credentials from prodbox-config.dhall."
     )
   result <-
-    applyAwsSetup
+    applyAwsSetupWithFederatedFallback
       repoRoot
       AwsSetupInput
         { awsSetupAdminCredentials = credentials
@@ -774,6 +798,15 @@ runAwsIamHarnessInspect repoRoot = do
           pure
             ( unlines
                 [ "IAM_USER=" ++ Text.unpack userName
+                , "IAM_PRINCIPAL=iam-user"
+                , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
+                ]
+            )
+        OperationalIdentityFederatedUser userName ->
+          pure
+            ( unlines
+                [ "IAM_USER=" ++ Text.unpack userName
+                , "IAM_PRINCIPAL=federated-user"
                 , "CONFIG_PATH=" ++ configDhallPath (canonicalConfigPaths repoRoot)
                 ]
             )
@@ -1077,24 +1110,28 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
       }
 
 applyAwsSetup :: FilePath -> AwsSetupInput -> IO IamSetupResult
-applyAwsSetup repoRoot input = do
+applyAwsSetup = applyAwsSetupWithFallbackMode False
+
+applyAwsSetupWithFederatedFallback :: FilePath -> AwsSetupInput -> IO IamSetupResult
+applyAwsSetupWithFederatedFallback = applyAwsSetupWithFallbackMode True
+
+applyAwsSetupWithFallbackMode :: Bool -> FilePath -> AwsSetupInput -> IO IamSetupResult
+applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
   (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
     ensureOperationalIamUser repoRoot (awsSetupAdminCredentials input) (awsSetupPolicyTierInput input)
-  waitForOperationalCredentialsReady
-    repoRoot
-    (awsSetupAdminCredentials input)
-    newAccessKeyId
-    newSecretAccessKey
   currentConfig <- loadConfigForWrite repoRoot
+  (operationalCredentials, credentialSource) <-
+    operationalCredentialsAfterReadiness
+      allowFederatedFallback
+      repoRoot
+      (awsSetupAdminCredentials input)
+      (awsSetupPolicyTierInput input)
+      (nonEmptyText (zone_id (route53 currentConfig)))
+      newAccessKeyId
+      newSecretAccessKey
   let updatedConfig =
         currentConfig
-          { aws =
-              Credentials
-                { access_key_id = newAccessKeyId
-                , secret_access_key = newSecretAccessKey
-                , session_token = Nothing
-                , region = region (awsSetupAdminCredentials input)
-                }
+          { aws = operationalCredentials
           }
       paths = canonicalConfigPaths repoRoot
   writeConfigFile (configDhallPath paths) updatedConfig
@@ -1112,7 +1149,8 @@ applyAwsSetup repoRoot input = do
         IamSetupResult
           { iamSetupUserName = prodboxIamUserName
           , iamSetupPolicyTier = awsSetupPolicyTierInput input
-          , iamSetupAccessKeyId = newAccessKeyId
+          , iamSetupAccessKeyId = access_key_id operationalCredentials
+          , iamSetupCredentialSource = credentialSource
           , iamSetupQuotaStatuses = quotaStatuses
           , iamSetupDhallPath = configDhallPath paths
           }
@@ -1164,7 +1202,12 @@ applyConfigSetup repoRoot input = do
   let adminCredentials = configSetupAdminCredentialsInput input
   (newAccessKeyId, newSecretAccessKey, quotaStatuses) <-
     ensureOperationalIamUser repoRoot adminCredentials (configSetupPolicyTierInput input)
-  waitForOperationalCredentialsReady repoRoot adminCredentials newAccessKeyId newSecretAccessKey
+  waitForOperationalCredentialsReady
+    repoRoot
+    adminCredentials
+    (Just (configSetupRoute53ZoneIdInput input))
+    newAccessKeyId
+    newSecretAccessKey
   currentConfig <- loadConfigForWrite repoRoot
   let updatedConfig =
         currentConfig
@@ -1275,9 +1318,9 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
     mapM (\spec -> ensureServiceQuota repoRoot adminCredentials spec True) baselineQuotaSpecs
   pure (newAccessKeyId, newSecretKey, quotaStatuses)
 
-waitForOperationalCredentialsReady :: FilePath -> Credentials -> Text -> Text -> IO ()
-waitForOperationalCredentialsReady repoRoot adminCredentials newAccessKeyId newSecretAccessKey =
-  go operationalCredentialReadyAttempts "STS validation did not return a result"
+waitForOperationalCredentialsReady :: FilePath -> Credentials -> Maybe Text -> Text -> Text -> IO ()
+waitForOperationalCredentialsReady repoRoot adminCredentials maybeRoute53ZoneId newAccessKeyId newSecretAccessKey =
+  waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials
  where
   operationalCredentials =
     Credentials
@@ -1286,30 +1329,152 @@ waitForOperationalCredentialsReady repoRoot adminCredentials newAccessKeyId newS
       , session_token = Nothing
       , region = region adminCredentials
       }
-  go attemptsRemaining lastError = do
-    environment <- operationalAwsEnvironment operationalCredentials
-    stsOutput <-
+
+operationalCredentialsAfterReadiness
+  :: Bool
+  -> FilePath
+  -> Credentials
+  -> PolicyTier
+  -> Maybe Text
+  -> Text
+  -> Text
+  -> IO (Credentials, Text)
+operationalCredentialsAfterReadiness
+  allowFederatedFallback
+  repoRoot
+  adminCredentials
+  policyTier
+  maybeRoute53ZoneId
+  newAccessKeyId
+  newSecretAccessKey =
+    if allowFederatedFallback
+      then do
+        federatedCredentials <- createFederatedOperationalCredentials repoRoot adminCredentials policyTier
+        waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId federatedCredentials
+        waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials
+        pure (operationalCredentials, "iam-user")
+      else do
+        waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials
+        pure (operationalCredentials, "iam-user")
+   where
+    operationalCredentials =
+      Credentials
+        { access_key_id = newAccessKeyId
+        , secret_access_key = newSecretAccessKey
+        , session_token = Nothing
+        , region = region adminCredentials
+        }
+
+waitForOperationalCredentialsValueReady :: FilePath -> Maybe Text -> Credentials -> IO ()
+waitForOperationalCredentialsValueReady repoRoot maybeRoute53ZoneId operationalCredentials = do
+  environment <- operationalAwsEnvironment operationalCredentials
+  waitForOperationalAwsProbe
+    repoRoot
+    environment
+    "STS validation"
+    ["sts", "get-caller-identity"]
+  case maybeRoute53ZoneId of
+    Nothing -> pure ()
+    Just route53ZoneId ->
+      waitForOperationalAwsProbeWithStability
+        route53CredentialReadyAttempts
+        route53CredentialReadyConsecutiveSuccesses
+        route53CredentialRetryDelayMicros
+        repoRoot
+        environment
+        "Route 53 hosted-zone validation"
+        ["route53", "get-hosted-zone", "--id", Text.unpack route53ZoneId]
+
+createFederatedOperationalCredentials :: FilePath -> Credentials -> PolicyTier -> IO Credentials
+createFederatedOperationalCredentials repoRoot adminCredentials policyTier = do
+  federatedOutput <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "sts"
+      , "get-federation-token"
+      , "--name"
+      , Text.unpack prodboxIamUserName
+      , "--duration-seconds"
+      , "3600"
+      , "--policy"
+      , BL8.unpack (encode (buildFederatedSessionPolicyDocument policyTier))
+      ]
+  federatedPayloadText <-
+    liftAwsEither (requireCommandSuccess "aws sts get-federation-token" federatedOutput)
+  federatedValue <-
+    liftAwsEither (decodeJsonPayload "aws sts get-federation-token" federatedPayloadText)
+  federatedObject <- liftAwsEither (requireObject "get-federation-token" federatedValue)
+  credentialsObject <-
+    liftAwsEither (requireObjectField "get-federation-token" "Credentials" federatedObject)
+  newAccessKeyId <- liftAwsEither (requireTextField "Credentials" "AccessKeyId" credentialsObject)
+  newSecretKey <- liftAwsEither (requireTextField "Credentials" "SecretAccessKey" credentialsObject)
+  newSessionToken <- liftAwsEither (requireTextField "Credentials" "SessionToken" credentialsObject)
+  pure
+    Credentials
+      { access_key_id = newAccessKeyId
+      , secret_access_key = newSecretKey
+      , session_token = Just newSessionToken
+      , region = region adminCredentials
+      }
+
+waitForOperationalAwsProbe :: FilePath -> [(String, String)] -> String -> [String] -> IO ()
+waitForOperationalAwsProbe repoRoot environment label arguments =
+  waitForOperationalAwsProbeWithStability
+    operationalCredentialReadyAttempts
+    1
+    operationalCredentialRetryDelayMicros
+    repoRoot
+    environment
+    label
+    arguments
+
+waitForOperationalAwsProbeWithStability
+  :: Int -> Int -> Int -> FilePath -> [(String, String)] -> String -> [String] -> IO ()
+waitForOperationalAwsProbeWithStability maxAttempts requiredSuccesses retryDelay repoRoot environment label arguments =
+  go maxAttempts 0 (label ++ " did not return a result")
+ where
+  go attemptsRemaining consecutiveSuccesses lastError = do
+    output <-
       runAwsCliCompletedWithEnvironment
         repoRoot
         environment
-        ["sts", "get-caller-identity"]
-    case processExitCode stsOutput of
-      ExitSuccess -> pure ()
+        arguments
+    case processExitCode output of
+      ExitSuccess
+        | consecutiveSuccesses + 1 >= max 1 requiredSuccesses -> pure ()
+        | attemptsRemaining <= 1 ->
+            throwAws
+              ( "Generated operational AWS credentials did not remain stable via "
+                  ++ "`aws "
+                  ++ unwords arguments
+                  ++ "`."
+              )
+        | otherwise -> do
+            threadDelay retryDelay
+            go (attemptsRemaining - 1) (consecutiveSuccesses + 1) lastError
       ExitFailure _ ->
         let nextError =
-              if errorDetail stsOutput == "command failed"
+              if errorDetail output == "command failed"
                 then lastError
-                else errorDetail stsOutput
+                else errorDetail output
          in if attemptsRemaining <= 1
               then
                 throwAws
                   ( "Generated operational AWS credentials failed validation via "
-                      ++ "`aws sts get-caller-identity`: "
+                      ++ "`aws "
+                      ++ unwords arguments
+                      ++ "`: "
                       ++ nextError
                   )
               else do
-                threadDelay operationalCredentialRetryDelayMicros
-                go (attemptsRemaining - 1) nextError
+                threadDelay retryDelay
+                go (attemptsRemaining - 1) 0 nextError
+
+nonEmptyText :: Text -> Maybe Text
+nonEmptyText value =
+  let stripped = Text.strip value
+   in if Text.null stripped then Nothing else Just stripped
 
 ensureServiceQuota :: FilePath -> Credentials -> QuotaSpec -> Bool -> IO QuotaStatus
 ensureServiceQuota repoRoot adminCredentials spec requestIfNeeded = do
@@ -1608,8 +1773,8 @@ probeOperationalIdentity repoRoot credentials =
           payloadObject <- liftAwsEither (requireObject "aws sts get-caller-identity" payload)
           arn <- liftAwsEither (requireTextField "aws sts get-caller-identity" "Arn" payloadObject)
           pure $
-            case iamUserNameFromArn arn of
-              Just userName -> OperationalIdentityIamUser userName
+            case operationalIdentityFromArn arn of
+              Just identity -> identity
               Nothing -> OperationalIdentityNonUserArn arn
 
 operationalCredentialsConfigured :: Credentials -> Bool
@@ -1628,14 +1793,24 @@ operationalCredentialsCleared repoRoot = do
         && session_token credentials == Nothing
     )
 
-iamUserNameFromArn :: Text -> Maybe Text
-iamUserNameFromArn arn = do
+operationalIdentityFromArn :: Text -> Maybe OperationalIdentityProbe
+operationalIdentityFromArn arn = do
   resource <- case reverse (Text.splitOn ":" arn) of
     resourceValue : _ -> Just resourceValue
     [] -> Nothing
-  resourceSuffix <- Text.stripPrefix "user/" resource
-  case reverse (filter (/= "") (Text.splitOn "/" resourceSuffix)) of
-    userName : _ -> Just userName
+  case Text.stripPrefix "user/" resource of
+    Just userResource ->
+      OperationalIdentityIamUser <$> finalPathSegment userResource
+    Nothing ->
+      case Text.stripPrefix "federated-user/" resource of
+        Just federatedResource ->
+          OperationalIdentityFederatedUser <$> finalPathSegment federatedResource
+        Nothing -> Nothing
+
+finalPathSegment :: Text -> Maybe Text
+finalPathSegment value =
+  case reverse (filter (/= "") (Text.splitOn "/" value)) of
+    segment : _ -> Just segment
     [] -> Nothing
 
 quotaSpecsForTier :: PolicyTier -> [QuotaSpec]
@@ -1649,6 +1824,7 @@ renderAwsSetupResult result =
   unlines
     [ "IAM_USER=" ++ Text.unpack (iamSetupUserName result)
     , "POLICY_TIER=" ++ renderPolicyTier (iamSetupPolicyTier result)
+    , "CREDENTIAL_SOURCE=" ++ Text.unpack (iamSetupCredentialSource result)
     , "AWS_ACCESS_KEY_ID=" ++ Text.unpack (iamSetupAccessKeyId result)
     , "CONFIG_PATH=" ++ iamSetupDhallPath result
     , "QUOTA_REQUESTS_SUBMITTED=" ++ show (length (filter quotaRequested (iamSetupQuotaStatuses result)))
@@ -1713,6 +1889,11 @@ renderOperationalIdentityProbe probe =
       unlines
         [ "PREEXISTING_OPERATIONAL_USER=" ++ Text.unpack userName
         , "PREEXISTING_OPERATIONAL_PROBE=iam-user"
+        ]
+    OperationalIdentityFederatedUser userName ->
+      unlines
+        [ "PREEXISTING_OPERATIONAL_USER=" ++ Text.unpack userName
+        , "PREEXISTING_OPERATIONAL_PROBE=federated-user"
         ]
 
 renderConfigSetupResult :: ConfigSetupResult -> String

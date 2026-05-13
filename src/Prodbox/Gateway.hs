@@ -33,7 +33,9 @@ import Prodbox.CLI.Command
   ( DaemonLaunchOptions (..)
   , DaemonStatusOptions (..)
   , GatewayCommand (..)
-  , PlanOptions (..)
+  , Plan
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.CLI.Output (writeError)
 import Prodbox.Error (fatalError)
@@ -92,19 +94,17 @@ runGatewayStart _repoRoot options = do
             Left err -> failWith err
             Right config -> do
               let resolvedConfig = resolveDaemonInputPaths configPath config
-                  renderedPlan =
-                    renderGatewayStartPlan
+                  plan =
+                    buildGatewayStartExecutionPlan
                       configPath
                       logLevel
                       portOverride
                       (daemonForeground options)
                       resolvedConfig
-              maybePersistPlan (planFile (daemonPlanOptions options)) renderedPlan
-              if dryRun (daemonPlanOptions options)
-                then do
-                  putStr renderedPlan
-                  pure ExitSuccess
-                else Daemon.runGatewayDaemon portOverride logLevel resolvedConfig
+              runPlanWithOptions
+                (daemonPlanOptions options)
+                plan
+                (applyGatewayStartPlan portOverride logLevel)
 
 runGatewayStatus :: DaemonStatusOptions -> IO ExitCode
 runGatewayStatus options = do
@@ -189,9 +189,20 @@ resolveGatewayPortOverride maybeCliPort = do
               Just parsedPort -> Right (Just parsedPort)
               Nothing -> Left ("Invalid PRODBOX_PORT value: " ++ portText)
 
-maybePersistPlan :: Maybe FilePath -> String -> IO ()
-maybePersistPlan Nothing _ = pure ()
-maybePersistPlan (Just path) contents = writeFile path contents
+buildGatewayStartExecutionPlan
+  :: FilePath
+  -> String
+  -> Maybe Int
+  -> Bool
+  -> DaemonConfig
+  -> Plan DaemonConfig
+buildGatewayStartExecutionPlan configPath logLevel portOverride foreground =
+  buildPlan
+    (renderGatewayStartPlan configPath logLevel portOverride foreground)
+
+applyGatewayStartPlan :: Maybe Int -> String -> DaemonConfig -> IO ExitCode
+applyGatewayStartPlan portOverride logLevel =
+  Daemon.runGatewayDaemon portOverride logLevel
 
 renderGatewayConfigTemplate :: ValidatedSettings -> String -> String
 renderGatewayConfigTemplate settings nodeId =

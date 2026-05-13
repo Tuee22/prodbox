@@ -1,6 +1,7 @@
 module Prodbox.CLI.Command
   ( AwsCommand (..)
   , ChartsCommand (..)
+  , buildPlan
   , CommandListingFormat (..)
   , DnsCommand (..)
   , DocsCommand (..)
@@ -15,10 +16,12 @@ module Prodbox.CLI.Command
   , K8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
+  , Plan (..)
   , PolicyTier (..)
   , PulumiCommand (..)
   , Rke2Command (..)
   , PlanOptions (..)
+  , runPlanWithOptions
   , TestCommand (..)
   , TestScope (..)
   , WorkloadCommand (..)
@@ -26,6 +29,10 @@ module Prodbox.CLI.Command
   , validateCoverage
   )
 where
+
+import System.Exit
+  ( ExitCode (ExitSuccess)
+  )
 
 data CommandRequest
   = RunNative NativeCommand
@@ -155,6 +162,32 @@ data PlanOptions = PlanOptions
   , planFile :: Maybe FilePath
   }
   deriving (Eq, Show)
+
+data Plan payload = Plan
+  { planPayload :: payload
+  , planRendered :: String
+  }
+  deriving (Eq, Show)
+
+buildPlan :: (payload -> String) -> payload -> Plan payload
+buildPlan render payload =
+  Plan
+    { planPayload = payload
+    , planRendered = render payload
+    }
+
+runPlanWithOptions :: PlanOptions -> Plan payload -> (payload -> IO ExitCode) -> IO ExitCode
+runPlanWithOptions options plan applyPlan = do
+  persistPlanIfRequested (planFile options) (planRendered plan)
+  if dryRun options
+    then do
+      putStr (planRendered plan)
+      pure ExitSuccess
+    else applyPlan (planPayload plan)
+
+persistPlanIfRequested :: Maybe FilePath -> String -> IO ()
+persistPlanIfRequested Nothing _ = pure ()
+persistPlanIfRequested (Just path) contents = writeFile path contents
 
 data DocsCommand
   = DocsCheck

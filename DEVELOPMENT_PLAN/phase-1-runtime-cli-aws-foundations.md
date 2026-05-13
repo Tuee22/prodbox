@@ -23,13 +23,14 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 `execParserPure` parser-test category, and the `renderError` error-boundary discipline. Sprint
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
-compare, respectively. Current worktree evidence puts Sprints `1.7`, `1.8`, `1.12`, `1.13`,
-`1.14`, `1.15`, and `1.26` in `Active` state: the full build/apply split is not yet generalized
-across state-changing surfaces, the subprocess surface still retains compatibility or
-consolidation residue, and the service/retry/error/naming foundations are now implemented but
-not yet fully migrated through their call sites. Sprints `1.6`, `1.9`, `1.10`, `1.11`, `1.20`,
-`1.21`, `1.23`, `1.24`, `1.25`, and `1.27` are now implemented in code and validated locally.
-The remaining reopened Phase `1` sprints stay `Planned`.
+compare, respectively. Current worktree evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`,
+`1.19`, and `1.26` in `Active` state: the subprocess surface still retains compatibility or
+consolidation residue, the service or retry or error foundations are now implemented but not
+yet fully migrated through their call sites, and the lint stack already consumes a committed
+`.hlint.yaml` but still lacks the doctrine's fully pinned sandbox bootstrap. Sprints `1.6`,
+`1.7`, `1.9`, `1.10`, `1.11`, `1.15`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27`
+are now implemented in code and validated locally. The remaining reopened Phase `1` sprints
+stay `Planned`.
 
 ## Phase Summary
 
@@ -516,9 +517,9 @@ Module layout` so the CLI surface is generated from a single typed specification
 
 None.
 
-## Sprint 1.7: Plan / Apply Discipline with --dry-run 🔄
+## Sprint 1.7: Plan / Apply Discipline with --dry-run ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Aws.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/refactoring_patterns.md`,
 `documents/engineering/effect_interpreter.md`
@@ -544,16 +545,7 @@ command.
 
 ### Remaining Work
 
-- `PlanOptions`, `--dry-run`, `--plan-file`, and deterministic rendered plans are already wired
-  through `prodbox charts deploy|delete`, `prodbox rke2 reconcile|install`, `prodbox gateway start`,
-  `prodbox pulumi ...`, `prodbox aws setup|teardown`, and `prodbox config setup`.
-- Golden fixtures now cover the chart, Pulumi, gateway-start, and RKE2 plan renderers in
-  `test/unit/Main.hs`.
-- The doctrine's `build :: Inputs -> Either AppError Plan` / `apply :: Env -> Plan -> IO ExitCode`
-  split is still absent as a shared boundary: the current commands still gather inputs, render
-  plans, and execute side effects inline rather than passing through one typed plan API.
-- AWS and interactive-config plan renderers are not yet golden-covered, and the current command
-  modules do not share a doctrine-owned `Plan` ADT.
+None.
 
 ## Sprint 1.8: Subprocess ADT Formalization 🔄
 
@@ -871,9 +863,9 @@ short-running commands too.
   `Either String ...` results rather than classifying `AppError` values at the call site, so
   the fatal-vs-recoverable behavior is not yet enforced across the long-running runtime.
 
-## Sprint 1.15: Naming Helpers and Smart-Constructor Module 🔄
+## Sprint 1.15: Naming Helpers and Smart-Constructor Module ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Naming.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
@@ -913,13 +905,7 @@ Resources](../HASKELL_CLI_TOOL.md), including the prescribed naming helpers.
 
 ### Remaining Work
 
-- `src/Prodbox/Naming.hs` now provides `boundedResourceName`, `sanitizeResourceName`, and
-  `hashSuffix`, and `test/unit/Main.hs` covers the DNS-1123, 63-character, and collision-
-  resistance invariants.
-- `src/Prodbox/Lib/Storage.hs` and `src/Prodbox/PostgresPlatform.hs` now use the shared naming
-  helpers for persistent-volume and Patroni naming.
-- `src/Prodbox/Lib/ChartPlatform.hs` still contains inline related-name construction, so the
-  naming helper module is not yet the sole source of truth for chart-platform resource naming.
+None.
 
 ## Sprint 1.16: GADT-Indexed State Machines for Multi-State Workflows 📋
 
@@ -1014,9 +1000,10 @@ through `ReaderT Env IO` rather than ad-hoc argument lists.
    access.
 2. Spot-check golden tests confirm that command output is unchanged after the migration.
 
-## Sprint 1.19: Style-Tools Sandbox and Custom Nesting Hlint Rules 📋
+## Sprint 1.19: Style-Tools Sandbox and Custom Nesting Hlint Rules 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `.hlint.yaml`, `src/Prodbox/CheckCode.hs`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/code_quality.md`,
 `documents/engineering/dependency_management.md`
 
@@ -1048,7 +1035,8 @@ project-specific `.hlint.yaml` rule pattern.
   doctrine.
 - `prodbox check-code` continues to dispatch into the same path; no parallel
   developer-tooling fourmolu invocation survives outside the doctrine-pinned sandbox.
-- Enqueue host-installed `fourmolu` / `hlint` use and the absence of `.hlint.yaml` in
+- Enqueue host-installed `fourmolu` / `hlint` use and any missing doctrine-specific
+  `.hlint.yaml` rule coverage in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ### Validation
@@ -1060,6 +1048,18 @@ project-specific `.hlint.yaml` rule pattern.
 3. Introducing a `forkIO`, `unsafePerformIO`, or module-level `IORef` declaration inside
    any daemon-path module fails `prodbox lint haskell` with the negative-space symbol
    rule.
+
+### Remaining Work
+
+- The repo now carries a committed `.hlint.yaml`, `prodbox lint haskell` and the
+  `prodbox-haskell-style` suite both consume it through the shared `src/Prodbox/CheckCode.hs`
+  path, the lint entrypoint runs `hlint` with `--with-group=default` plus `--with-group=extra`,
+  and the doctrine-owned marker set for nested-case, daemon-path negative-space, and forbidden
+  subprocess primitives is now enforced by the governed check-code scan.
+- The remaining gap is the tool-bootstrap path itself: `.build/prodbox-style-tools/bin/` is now
+  created and populated on demand, but the bootstrap still copies host-installed `fourmolu` and
+  `hlint` when present rather than installing them through a dedicated pinned formatter-tool GHC
+  declared in a doctrine-owned `src/Prodbox/Lint.hs` module.
 
 ## Sprint 1.20: Aggregate Test and Lint Dispatch Alignment ✅
 

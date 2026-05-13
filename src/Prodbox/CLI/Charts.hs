@@ -11,7 +11,8 @@ import Data.List (intercalate)
 import Data.Text qualified as Text
 import Prodbox.CLI.Command
   ( ChartsCommand (..)
-  , PlanOptions (..)
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.CLI.Output (writeError)
 import Prodbox.Error (fatalError)
@@ -71,7 +72,10 @@ runChartsCommand repoRoot command =
                     case buildResult of
                       Left err -> failWith err
                       Right plan ->
-                        runPlanApply planOptions plan deployChartPlan renderChartDeploymentPlan
+                        runPlanWithOptions
+                          planOptions
+                          (buildPlan renderChartDeploymentPlan plan)
+                          (applyChartPlanOutput deployChartPlan)
     ChartsDelete chartName confirmed planOptions ->
       case requirePublicRootChartName chartName of
         Left err -> failWith err
@@ -83,7 +87,10 @@ runChartsCommand repoRoot command =
               else case buildChartDeletePlan repoRoot (Just settings) rootChart of
                 Left err -> failWith err
                 Right plan ->
-                  runPlanApply planOptions plan deleteChartPlan renderChartDeletePlan
+                  runPlanWithOptions
+                    planOptions
+                    (buildPlan renderChartDeletePlan plan)
+                    (applyChartPlanOutput deleteChartPlan)
 
 requirePublicRootChartName :: String -> Either String String
 requirePublicRootChartName chartName
@@ -126,24 +133,13 @@ writeSuccess output = do
   putStr output
   pure ExitSuccess
 
-runPlanApply
-  :: PlanOptions
+applyChartPlanOutput
+  :: (ChartDeploymentPlan -> IO (Either String String))
   -> ChartDeploymentPlan
-  -> (ChartDeploymentPlan -> IO (Either String String))
-  -> (ChartDeploymentPlan -> String)
   -> IO ExitCode
-runPlanApply planOptions plan applyPlan renderPlan = do
-  let renderedPlan = renderPlan plan
-  maybePersistPlan (planFile planOptions) renderedPlan
-  if dryRun planOptions
-    then writeSuccess renderedPlan
-    else do
-      applyResult <- applyPlan plan
-      either failWith writeSuccess applyResult
-
-maybePersistPlan :: Maybe FilePath -> String -> IO ()
-maybePersistPlan Nothing _ = pure ()
-maybePersistPlan (Just path) contents = writeFile path contents
+applyChartPlanOutput applyPlan plan = do
+  applyResult <- applyPlan plan
+  either failWith writeSuccess applyResult
 
 renderChartDeploymentPlan :: ChartDeploymentPlan -> String
 renderChartDeploymentPlan plan =

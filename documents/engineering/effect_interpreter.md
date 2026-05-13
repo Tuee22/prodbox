@@ -25,6 +25,12 @@ The interpreter executes effect DAGs in dependency order:
 The interpreter is allowed to perform subprocesses, environment reads, and user-facing output. Pure
 planning logic is not.
 
+State-changing one-shot command families follow the same split on their own surface:
+
+1. pure `buildPlan`-style plan construction
+2. shared `runPlanWithOptions` handling for `--dry-run` and `--plan-file`
+3. effectful apply functions that consume the typed plan payload only after the plan boundary
+
 ## 3. Prerequisite Reduction Contract
 
 Prerequisite execution must be deterministic for a fixed registry and selected root set.

@@ -23,6 +23,7 @@ import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, sort)
 import Data.Text qualified as Text
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
+  , styleToolsBinDir
   , syncBuiltOperatorBinary
   )
 import Prodbox.CLI.Command
@@ -48,7 +49,6 @@ import System.Directory
   , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
-  , findExecutable
   , listDirectory
   )
 import System.Environment (getEnvironment)
@@ -287,37 +287,40 @@ runTrackedGeneratedPathLint repoRoot = do
 
 runHaskellLint :: FilePath -> [(String, String)] -> Bool -> IO ExitCode
 runHaskellLint repoRoot environment writeEnabled = do
-  fourmoluResult <- requireTool "fourmolu"
-  case fourmoluResult of
-    Left err -> failWith err
-    Right () -> do
-      hlintResult <- requireTool "hlint"
-      case hlintResult of
-        Left err -> failWith err
-        Right () -> do
-          styleViolations <- haskellStyleViolations repoRoot
-          case styleViolations of
-            [] -> do
-              formatExit <-
+  sandboxViolations <- missingStyleToolViolations (styleToolsBinDir repoRoot)
+  case sandboxViolations of
+    [] -> do
+      styleViolations <- haskellStyleViolations repoRoot
+      case styleViolations of
+        [] -> do
+          formatExit <-
+            runStreaming
+              repoRoot
+              environment
+              "fourmolu"
+              ( ["--mode", if writeEnabled then "inplace" else "check", "app", "src", "test"]
+              )
+          case formatExit of
+            ExitFailure _ -> pure formatExit
+            ExitSuccess -> do
+              lintExit <-
                 runStreaming
                   repoRoot
                   environment
-                  "fourmolu"
-                  ( ["--mode", if writeEnabled then "inplace" else "check", "app", "src", "test"]
-                  )
-              case formatExit of
-                ExitFailure _ -> pure formatExit
-                ExitSuccess -> do
-                  lintExit <- runStreaming repoRoot environment "hlint" ["app", "src", "test", "--hint=.hlint.yaml"]
-                  case lintExit of
-                    ExitFailure _ -> pure lintExit
-                    ExitSuccess ->
-                      if writeEnabled
-                        then rewriteCabalFile repoRoot environment
-                        else checkCabalFormat repoRoot environment
-            _ ->
-              failWith
-                (unlines ("Haskell style lint failed:" : map ("- " ++) styleViolations))
+                  "hlint"
+                  ["app", "src", "test", "--hint=.hlint.yaml", "--with-group=default", "--with-group=extra"]
+              case lintExit of
+                ExitFailure _ -> pure lintExit
+                ExitSuccess ->
+                  if writeEnabled
+                    then rewriteCabalFile repoRoot environment
+                    else checkCabalFormat repoRoot environment
+        _ ->
+          failWith
+            (unlines ("Haskell style lint failed:" : map ("- " ++) styleViolations))
+    _ ->
+      failWith
+        (unlines ("Haskell style lint failed:" : map ("- " ++) sandboxViolations))
 
 runChartLint :: FilePath -> IO ExitCode
 runChartLint repoRoot = do
@@ -357,6 +360,7 @@ runDoctrineAlignmentCheck repoRoot = do
 haskellStyleViolations :: FilePath -> IO [String]
 haskellStyleViolations repoRoot = do
   thinMainResult <- verifyThinMainEntrypoint repoRoot
+  hlintConfigViolations <- checkHlintDoctrineCoverage repoRoot
   parserModuleViolation <- checkParserModuleImports repoRoot
   daemonRuntimeViolations <- checkDaemonRuntimeImports repoRoot
   subprocessViolations <- checkSubprocessBoundaries repoRoot
@@ -364,12 +368,38 @@ haskellStyleViolations repoRoot = do
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   pure
     ( either pure (const []) thinMainResult
+        ++ hlintConfigViolations
         ++ maybeToList parserModuleViolation
         ++ daemonRuntimeViolations
         ++ subprocessViolations
         ++ errorBoundaryViolations
         ++ testSuiteTypeViolations
     )
+
+checkHlintDoctrineCoverage :: FilePath -> IO [String]
+checkHlintDoctrineCoverage repoRoot = do
+  let hintPath = repoRoot </> ".hlint.yaml"
+  fileExists <- doesFileExist hintPath
+  if not fileExists
+    then pure ["Missing `/.hlint.yaml` doctrine configuration file."]
+    else do
+      contents <- readFile hintPath
+      pure
+        [ "`.hlint.yaml` must mention `" ++ marker ++ "`."
+        | marker <-
+            [ "Refactor nested case"
+            , "Avoid case inside lambda body"
+            , "forkIO"
+            , "unsafePerformIO"
+            , "module-level IORef"
+            , "callProcess"
+            , "readCreateProcess"
+            , "createProcess"
+            , "proc"
+            , "shell"
+            ]
+        , null (filter (isInfixOf marker) (lines contents))
+        ]
 
 verifyThinMainEntrypoint :: FilePath -> IO (Either String ())
 verifyThinMainEntrypoint repoRoot = do
@@ -426,11 +456,31 @@ checkDaemonRuntimeImports repoRoot = do
             [ path ++ " must not call `forkProcess`."
             | "forkProcess" `isInfixOf` contents
             ]
+          rawThreadViolations =
+            [ path ++ " must not call `forkIO`."
+            | "forkIO" `isInfixOf` contents
+            ]
+          unsafeViolations =
+            [ path ++ " must not call `unsafePerformIO`."
+            | "unsafePerformIO" `isInfixOf` contents
+            ]
+          moduleLevelIoRefViolations =
+            [ path ++ " must not define a module-level `IORef`."
+            | "unsafePerformIO" `isInfixOf` contents
+                && "IORef" `isInfixOf` contents
+            ]
           sessionViolations =
             [ path ++ " must not call `setsid`."
             | "setsid" `isInfixOf` contents
             ]
-      pure (importViolations ++ forkViolations ++ sessionViolations)
+      pure
+        ( importViolations
+            ++ forkViolations
+            ++ rawThreadViolations
+            ++ unsafeViolations
+            ++ moduleLevelIoRefViolations
+            ++ sessionViolations
+        )
 
 checkSubprocessBoundaries :: FilePath -> IO [String]
 checkSubprocessBoundaries repoRoot = do
@@ -901,18 +951,23 @@ runStreaming repoRoot environment commandPath arguments = do
       Failure _ -> ExitFailure 1
       Success exitCode -> exitCode
 
-requireTool :: String -> IO (Either String ())
-requireTool toolName = do
-  executable <- findExecutable toolName
-  pure $
-    case executable of
-      Just _ -> Right ()
-      Nothing ->
-        Left
-          ( "Missing required tool `"
+missingStyleToolViolations :: FilePath -> IO [String]
+missingStyleToolViolations sandboxDir =
+  fmap concat $
+    forM
+      ["fourmolu", "hlint"]
+      ( \toolName -> do
+          let toolPath = sandboxDir </> toolName
+          toolExists <- doesFileExist toolPath
+          pure
+            [ "Missing sandboxed style tool `"
               ++ toolName
-              ++ "`. Install the Haskell quality tools and rerun `./.build/prodbox check-code`."
-          )
+              ++ "` at `"
+              ++ toolPath
+              ++ "`."
+            | not toolExists
+            ]
+      )
 
 failWith :: String -> IO ExitCode
 failWith message = do

@@ -1,0 +1,5 @@
+CONFIG_SETUP_PLAN
+CONFIG_PATH=/tmp/prodbox/prodbox-config.dhall
+ZONE_ID=Z1234567890ABC
+PUBLIC_HOST=test.resolvefintech.com
+POLICY_TIER=full

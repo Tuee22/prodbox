@@ -240,7 +240,7 @@ None.
 ### Objective
 
 Schedule the residual [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) items surfaced by the
-November 2026 round-3 doctrine-vs-plan audit so every doctrine-prescribed behavior that the
+May 12, 2026 round-3 doctrine-vs-plan audit so every doctrine-prescribed behavior that the
 worktree does not yet honor is owned by an explicit sprint block, per
 [development_plan_standards.md](development_plan_standards.md) rule L. The audit identified
 fifteen doctrine prescriptions returning zero hits across the prior plan suite plus five

@@ -57,6 +57,7 @@ In the current repository:
 | Built-frontend integration tests | CLI routing, fake-tool subprocess behavior, and direct-Dhall config masking or validation behavior | `test/integration/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs` via `cabal test prodbox-integration` |
 | Native real-world validations | AWS, DNS, gateway, chart, lifecycle, and public-edge proofs | `src/Prodbox/TestValidation.hs` via `prodbox test integration ...` |
 | Daemon lifecycle tests | Daemon startup-precedence and lifecycle-focused coverage, including the `PRODBOX_*` flag/env resolution contract and later drain or signal assertions | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
+| Pulumi harness tests | Ephemeral stack-state ownership, typed output handoff, and forced-failure cleanup around the retained AWS Pulumi validation surface | `test/pulumi/Main.hs` via `cabal test prodbox-pulumi` |
 | Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
 
 Daemon lifecycle and golden treatment of health-endpoint responses are landed by

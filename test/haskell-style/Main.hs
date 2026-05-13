@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Prodbox.BuildSupport (addBuildSupportEnvironment)
 import Prodbox.CLI.Docs
   ( renderBashCompletion
   , renderGroupManpage
@@ -19,7 +20,7 @@ import Prodbox.CheckCode
   , trackingGeneratedPaths
   )
 import Prodbox.PublicEdge (renderHelmRouteInventory)
-import System.Directory (getCurrentDirectory)
+import System.Directory (doesFileExist, getCurrentDirectory)
 import System.FilePath ((</>))
 import TestSupport
 
@@ -49,6 +50,32 @@ main = mainWithSuite "prodbox-haskell-style" $ do
         , "in-style: right-align"
         , "unicode: never"
         , "respectful: true"
+        ]
+
+    it "bootstraps sandboxed Haskell style tools under .build/prodbox-style-tools/bin" $ do
+      repoRoot <- getCurrentDirectory
+      _ <- addBuildSupportEnvironment repoRoot []
+      let sandboxDir = repoRoot </> ".build" </> "prodbox-style-tools" </> "bin"
+      fourmoluExists <- doesFileExist (sandboxDir </> "fourmolu")
+      hlintExists <- doesFileExist (sandboxDir </> "hlint")
+      fourmoluExists `shouldBe` True
+      hlintExists `shouldBe` True
+
+    it "records the doctrine-owned hlint markers" $ do
+      repoRoot <- getCurrentDirectory
+      hintContents <- readFile (repoRoot </> ".hlint.yaml")
+      mapM_
+        (hintContents `shouldContain`)
+        [ "Refactor nested case"
+        , "Avoid case inside lambda body"
+        , "forkIO"
+        , "unsafePerformIO"
+        , "module-level IORef"
+        , "callProcess"
+        , "readCreateProcess"
+        , "createProcess"
+        , "proc"
+        , "shell"
         ]
 
     it "keeps the generated command registry target marker-delimited" $ do

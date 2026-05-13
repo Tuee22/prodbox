@@ -41,9 +41,12 @@ import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
 import Prodbox.CLI.Command
-  ( PlanOptions (..)
+  ( Plan (..)
+  , PlanOptions (..)
   , PulumiCommand (..)
   , Rke2Command (..)
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.CLI.Output (writeError)
 import Prodbox.CLI.Pulumi (runPulumiCommand)
@@ -498,51 +501,11 @@ runNativeInstall repoRoot planOptions = do
         Left err -> failWith err
         Right (machineId, prodboxId) ->
           let labelValue = prodboxIdToLabelValue prodboxId
-              renderedPlan = renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue
-              applyInstall =
-                runSequentially
-                  [ ensureRke2ServerInstalled repoRoot
-                  , ensureRke2IngressController repoRoot
-                  , runCommand
-                      CommandSpec
-                        { commandPath = "sudo"
-                        , commandArguments = ["systemctl", "enable", rke2ServiceName]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
-                        }
-                  , runCommand
-                      CommandSpec
-                        { commandPath = "sudo"
-                        , commandArguments = ["systemctl", "restart", rke2ServiceName]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
-                        }
-                  , syncUserKubeconfig repoRoot
-                  , verifyClusterInfo repoRoot
-                  , waitForClusterNodesReady repoRoot
-                  , deleteNonManualStorageClasses repoRoot
-                  , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
-                  , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
-                  , ensureMinioRuntime repoRoot MinioBootstrapPublic
-                  , ensureHarborRegistryStorageBackend repoRoot
-                  , ensureHarborRegistryRuntime repoRoot
-                  , mirrorClusterImagesOnce repoRoot
-                  , ensureGatewayImages repoRoot prodboxId
-                  , ensurePublicEdgeWorkloadImage repoRoot prodboxId
-                  , ensureRke2RegistriesConfig repoRoot
-                  , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
-                  , reconcileDnsBootstrapRecord repoRoot settings
-                  , ensureMinioRuntime repoRoot MinioSteadyStateHarbor
-                  , ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue
-                  , reconcileManagedAnnotations repoRoot prodboxId labelValue
-                  ]
-           in do
-                maybePersistPlanFile (planFile planOptions) renderedPlan
-                if dryRun planOptions
-                  then do
-                    putStr renderedPlan
-                    pure ExitSuccess
-                  else applyInstall
+              plan = buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue
+           in runPlanWithOptions
+                planOptions
+                plan
+                (applyNativeInstallPlan repoRoot settings)
 
 renderNativeInstallPlan :: FilePath -> ValidatedSettings -> String -> String -> String -> String
 renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue =
@@ -577,9 +540,67 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue =
     , "STEP=reconcile_managed_annotations"
     ]
 
-maybePersistPlanFile :: Maybe FilePath -> String -> IO ()
-maybePersistPlanFile Nothing _ = pure ()
-maybePersistPlanFile (Just path) renderedPlan = writeFile path renderedPlan
+buildNativeInstallExecutionPlan
+  :: FilePath
+  -> ValidatedSettings
+  -> String
+  -> String
+  -> String
+  -> Plan (String, String, String)
+buildNativeInstallExecutionPlan repoRoot settings machineId prodboxId labelValue =
+  buildPlan
+    ( \(resolvedMachineId, resolvedProdboxId, resolvedLabelValue) ->
+        renderNativeInstallPlan
+          repoRoot
+          settings
+          resolvedMachineId
+          resolvedProdboxId
+          resolvedLabelValue
+    )
+    (machineId, prodboxId, labelValue)
+
+applyNativeInstallPlan
+  :: FilePath
+  -> ValidatedSettings
+  -> (String, String, String)
+  -> IO ExitCode
+applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
+  runSequentially
+    [ ensureRke2ServerInstalled repoRoot
+    , ensureRke2IngressController repoRoot
+    , runCommand
+        CommandSpec
+          { commandPath = "sudo"
+          , commandArguments = ["systemctl", "enable", rke2ServiceName]
+          , commandEnvironment = Nothing
+          , commandWorkingDirectory = Just repoRoot
+          }
+    , runCommand
+        CommandSpec
+          { commandPath = "sudo"
+          , commandArguments = ["systemctl", "restart", rke2ServiceName]
+          , commandEnvironment = Nothing
+          , commandWorkingDirectory = Just repoRoot
+          }
+    , syncUserKubeconfig repoRoot
+    , verifyClusterInfo repoRoot
+    , waitForClusterNodesReady repoRoot
+    , deleteNonManualStorageClasses repoRoot
+    , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
+    , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
+    , ensureMinioRuntime repoRoot MinioBootstrapPublic
+    , ensureHarborRegistryStorageBackend repoRoot
+    , ensureHarborRegistryRuntime repoRoot
+    , mirrorClusterImagesOnce repoRoot
+    , ensureGatewayImages repoRoot prodboxId
+    , ensurePublicEdgeWorkloadImage repoRoot prodboxId
+    , ensureRke2RegistriesConfig repoRoot
+    , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
+    , reconcileDnsBootstrapRecord repoRoot settings
+    , ensureMinioRuntime repoRoot MinioSteadyStateHarbor
+    , ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue
+    , reconcileManagedAnnotations repoRoot prodboxId labelValue
+    ]
 
 runNativeDelete :: FilePath -> IO ExitCode
 runNativeDelete repoRoot = do
@@ -2527,12 +2548,12 @@ ensurePublicEdgeWorkloadImage repoRoot prodboxId = do
     workloadImage
 
 ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
-ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
+ensureCustomImageVariants repoRoot imageBuildPlan taggedRefs importRef = do
   loginExit <- ensureHarborDockerLogin repoRoot
   case loginExit of
     ExitFailure _ -> pure loginExit
     ExitSuccess -> do
-      buildExit <- buildAndPushCustomImageVariants repoRoot buildPlan taggedRefs
+      buildExit <- buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs
       case buildExit of
         ExitFailure _ -> pure buildExit
         ExitSuccess ->
@@ -2548,11 +2569,11 @@ ensureCustomImageVariants repoRoot buildPlan taggedRefs importRef = do
             ]
 
 buildAndPushCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
-buildAndPushCustomImageVariants repoRoot buildPlan taggedRefs =
+buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs =
   case supportedHostArchitecture of
     Left err -> failWith err
     Right hostArchitecture -> do
-      buildExit <- buildCustomImageOnce repoRoot hostArchitecture buildPlan taggedRefs
+      buildExit <- buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs
       case buildExit of
         ExitFailure _ -> pure buildExit
         ExitSuccess ->
@@ -2563,11 +2584,11 @@ buildAndPushCustomImageVariants repoRoot buildPlan taggedRefs =
 
 buildCustomImageOnce
   :: FilePath -> HostArchitecture -> CustomImageBuildPlan -> [String] -> IO ExitCode
-buildCustomImageOnce repoRoot hostArchitecture buildPlan taggedRefs = do
+buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs = do
   let arguments =
         [ "build"
         , "-f"
-        , customImageDockerfile buildPlan
+        , customImageDockerfile imageBuildPlan
         ]
           ++ concat [["-t", tagRef] | tagRef <- taggedRefs]
           ++ ["."]
@@ -2582,7 +2603,7 @@ buildCustomImageOnce repoRoot hostArchitecture buildPlan taggedRefs = do
         ExitFailure _ ->
           failWith
             ( "Failed to build "
-                ++ customImageDockerfile buildPlan
+                ++ customImageDockerfile imageBuildPlan
                 ++ " for "
                 ++ renderHostArchitecture hostArchitecture
                 ++ ": "

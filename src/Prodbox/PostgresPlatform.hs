@@ -6,11 +6,15 @@ module Prodbox.PostgresPlatform
   , patroniOperatorDeploymentName
   , patroniOperatorNamespace
   , patroniOperatorReleaseName
+  , patroniPersistentVolumeClaimName
   , patroniPostgresqlCrdName
+  , patroniPrimaryServiceName
   , patroniPrimaryServiceHost
+  , patroniReplicaServiceName
   , patroniReplicaServiceHost
   , patroniRunAsGroup
   , patroniRunAsUser
+  , patroniStorageSpecs
   , patroniStorageSize
   , patroniStandbySecretName
   , patroniSuperuserSecretName
@@ -20,6 +24,9 @@ module Prodbox.PostgresPlatform
 where
 
 import Data.Text qualified as Text
+import Prodbox.Lib.Storage
+  ( ChartStorageSpec (..)
+  )
 import Prodbox.Naming (boundedResourceName)
 
 patroniOperatorNamespace :: String
@@ -60,13 +67,40 @@ patroniClusterName rootChart =
   Text.unpack
     (boundedResourceName (Text.pack patroniTeamId) (Text.pack rootChart) (Text.pack "pg"))
 
+patroniPrimaryServiceName :: String -> String
+patroniPrimaryServiceName rootChart =
+  patroniClusterName rootChart ++ "-ha"
+
+patroniReplicaServiceName :: String -> String
+patroniReplicaServiceName rootChart =
+  patroniClusterName rootChart ++ "-replicas"
+
 patroniPrimaryServiceHost :: String -> String -> String
 patroniPrimaryServiceHost namespace rootChart =
-  patroniClusterName rootChart ++ "-ha." ++ namespace ++ ".svc.cluster.local"
+  patroniPrimaryServiceName rootChart ++ "." ++ namespace ++ ".svc.cluster.local"
 
 patroniReplicaServiceHost :: String -> String -> String
 patroniReplicaServiceHost namespace rootChart =
-  patroniClusterName rootChart ++ "-replicas." ++ namespace ++ ".svc.cluster.local"
+  patroniReplicaServiceName rootChart ++ "." ++ namespace ++ ".svc.cluster.local"
+
+patroniPersistentVolumeClaimName :: String -> Int -> String
+patroniPersistentVolumeClaimName rootChart ordinal =
+  patroniClusterName rootChart ++ "-instance1-" ++ show ordinal ++ "-pgdata"
+
+patroniStorageSpecs :: String -> [ChartStorageSpec]
+patroniStorageSpecs rootChart =
+  map mkSpec [0 .. 2]
+ where
+  clusterName = patroniClusterName rootChart
+
+  mkSpec ordinal =
+    ChartStorageSpec
+      { chartStorageSpecStatefulSetName = clusterName
+      , chartStorageSpecPersistentVolumeClaimName = patroniPersistentVolumeClaimName rootChart ordinal
+      , chartStorageSpecStorageSize = patroniStorageSize
+      , chartStorageSpecOrdinal = ordinal
+      , chartStorageSpecClaimSuffix = "data"
+      }
 
 patroniCredentialsSecretName :: String -> String
 patroniCredentialsSecretName rootChart =

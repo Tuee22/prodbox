@@ -78,8 +78,8 @@ prodbox check-code
   settings values without materializing `prodbox-config.json` on the supported path
 - Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
   `src/Prodbox/Gateway/`
-- Test suites: `hspec`, `temporary`, and the same core runtime packages needed to exercise the
-  built frontend
+- Test suites: `tasty`, `tasty-hunit`, `tasty-quickcheck`, `tasty-golden`, `temporary`, and the
+  same core runtime packages needed to exercise the built frontend
 
 ### External Command Dependencies
 
@@ -89,6 +89,9 @@ prodbox check-code
 - Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
 - Infrastructure tooling: `pulumi`
 - Formal verification tooling: Docker plus the TLA+ runtime documented in `documents/engineering/tla/`
+
+`prodbox lint haskell` and `prodbox check-code` prepend the repo-local style-tool sandbox at
+`.build/prodbox-style-tools/bin/` to `PATH` before invoking `fourmolu` or `hlint`.
 
 ## 5. Adding New Dependencies
 

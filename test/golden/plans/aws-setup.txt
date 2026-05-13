@@ -1,0 +1,4 @@
+AWS_SETUP_PLAN
+CONFIG_PATH=/tmp/prodbox/prodbox-config.dhall
+POLICY_TIER=full
+ACCESS_KEY_ID=admin-access-key

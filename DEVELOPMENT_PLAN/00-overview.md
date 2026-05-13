@@ -116,7 +116,7 @@ adoption gap onto explicit downstream sprints. That planning and documentation w
 `Done`. Phases `1` through `4` remain **reopened** on the scheduled implementation work:
 Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced by the May
 2026 doctrine-vs-plan audit, and Sprint 0.4 extended it again with the residual items
-surfaced by the November 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
+surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
 sprint (1.27) plus deliverable extensions to existing planned Phase `1`, Phase `2`, Phase
 `3`, and Phase `4` sprints, per
 [development_plan_standards.md](development_plan_standards.md) standards rule L. Phases
@@ -141,13 +141,13 @@ silently introduce a non-Haskell consumer without re-opening the registry.
 
 The reopened ranges close on the following sprint sets:
 
-- Phase 1: Sprints 1.6–1.27. Sprint 1.23 adds `dhall freeze` discipline on
-  `prodbox-config-types.dhall`, HLint negative-space symbol rules refusing `forkIO`,
-  `unsafePerformIO`, and module-level `IORef` in daemon paths
-  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1243, §1370, §1450), the parser
-  `--color {auto,always,never}` plus `--no-color` enumeration (§785–792), the parser
-  `--foreground` default plus self-daemonization-forbidden rule (§1591–1599), and the explicit
-  `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision (§381–390, §2321).
+- Phase 1: Sprints 1.6–1.27. Sprint 1.19 owns the style-tools sandbox plus the custom
+  `.hlint.yaml` nesting warnings and daemon-path negative-space symbol rules refusing
+  `forkIO`, `unsafePerformIO`, and module-level `IORef`
+  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1243, §1370, §1450). Sprint 1.23 adds
+  `dhall freeze` discipline on the committed repo-root `prodbox-config.dhall` path, the
+  parser `--foreground` default plus self-daemonization-forbidden rule (§1591–1599), and the
+  explicit cross-language-types generation deferral (§341–343).
   Sprints 1.24–1.26 close the audit-driven residue: durable CLI documentation artifacts
   derived from `CommandSpec` per [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §269–318 and
   §2349–2356, the `execParserPure` parser-test category per §2116–2138, and the
@@ -252,11 +252,12 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
 not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
-Sprints `1.7`, `1.8`, `1.12`, `1.13`, `1.14`, `1.15`, `1.26`, `2.9`, `2.14`, `3.8`, and `4.7`
-in `Active` state because those surfaces have started in code but still retain sprint-owned
+Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.19`, `1.26`, `2.9`, `2.14`, and `4.7` in `Active`
+state because those surfaces have started in code but still retain sprint-owned
 implementation or validation gaps. Sprints `1.6`, `1.9`, `1.10`, `1.11`, `1.20`, `1.21`,
 `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are now
-locally validated and doc-aligned. The supported operator surface is `prodbox`, the
+locally validated and doc-aligned, and Sprints `1.7`, `1.15`, and `3.8` have re-closed on their
+owned surfaces. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -279,9 +280,9 @@ contract.
 Root guidance and the governed public-edge, gateway, chart-platform, registry, and testing docs
 agree on the pre-reopen Haskell-only baseline, but several doctrine-adoption surfaces still lag
 code or document future behavior ahead of implementation. The active reopen set now includes the
-partial `Subprocess` wrapper, prerequisite registry, daemon lifecycle scaffold, and paired-chart-
-resource smart-constructor work already present in the tree. Those mismatches remain scheduled
-through the active reopen sprints and the pending-removal ledger.
+partial `Subprocess` wrapper, daemon lifecycle scaffold, style-tool bootstrap gap, and retained
+Pulumi harness work already present in the tree. Those mismatches remain scheduled through the
+active reopen sprints and the pending-removal ledger.
 
 The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus
 its storage backend bootstrap from public registries, every later Helm deployment pulls through
@@ -428,10 +429,11 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
 `0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
 Phases `1`–`4` remain reopened on the downstream implementation scope scheduled by those
-sprints; that reopened scope is now mixed: Sprints `1.7`, `1.8`, `1.12`, `1.13`, `1.14`,
-`1.15`, `1.26`, `2.9`, `2.14`, `3.8`, and `4.7` are `Active` on partially landed code paths,
+sprints; that reopened scope is now mixed: Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.19`,
+`1.26`, `2.9`, `2.14`, and `4.7` are `Active` on partially landed code paths,
 Sprints `1.6`, `1.9`, `1.10`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`,
-`3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and doc-aligned, and the
+`3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and doc-aligned, Sprints `1.7`,
+`1.15`, and `3.8` have re-closed on their owned surfaces, and the
 remaining reopened sprints stay `Planned`:
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
@@ -449,8 +451,8 @@ remaining reopened sprints stay `Planned`:
   `trackingGeneratedPaths` registry plus renderer determinism property test, the
   standardized library audit of `prodbox.cabal`, the residual doctrine cleanup in
   Sprint 1.23 covering `dhall freeze` discipline on the committed repo-root config path, the
-  `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision, the parser
-  `--foreground` default plus self-daemonization-forbidden rule, and — added by Sprint 0.3 —
+  parser `--foreground` default plus self-daemonization-forbidden rule, and the explicit
+  cross-language-types generation deferral, and — added by Sprint 0.3 —
   the durable CLI documentation artifacts under `documents/cli/`, `share/man/`, and
   `share/completion/` (Sprint 1.24), the `execParserPure` parser-test category in the
   `prodbox-unit` stanza (Sprint 1.25), and the `renderError` error-rendering boundary

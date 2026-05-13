@@ -230,6 +230,10 @@ Minimum rule:
 7. the AWS validation Pulumi programs take non-secret operator-CIDR and SSH-public-key inputs
    through explicit stack config synchronized by the Haskell orchestration layer, while AWS
    provider credentials stay in the Haskell-owned subprocess environment
+8. the local `prodbox-pulumi` Cabal stanza proves the retained ephemeral-stack harness and
+   typed-output contract around those stack flows, but end-to-end AWS provisioning remains owned by
+   the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces rather than by the
+   local unit-style suite
 
 ### 4.4 Test-Only Elevated IAM Harness
 

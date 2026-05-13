@@ -26,7 +26,7 @@ sequence:
 1. repository-owned workflow and hook policy scan
 2. thin-`Main.hs`, committed-Dhall-freeze, and tracked-generated-artifact policy scan
 3. `fourmolu --mode check app src test`
-4. `hlint app src test --hint=.hlint.yaml`
+4. `hlint app src test --hint=.hlint.yaml --with-group=default --with-group=extra`
 5. `cabal build --builddir=.build all --ghc-options=-Werror`
 6. sync the built operator binary to `.build/prodbox`
 
@@ -75,7 +75,9 @@ Current enforced quality surfaces:
   (`getCurrentTime`, `randomIO`, `sort`, `System.Console.Terminal.Size`, `getEnv`, and the
   other doctrine-named classes exercised by `prodbox-haskell-style`)
 - Fourmolu formatting through `fourmolu.yaml`
-- HLint through `.hlint.yaml`
+- repo-local style-tool bootstrap under `.build/prodbox-style-tools/bin/`
+- HLint through `.hlint.yaml`, including the doctrine-owned marker set for nested-case and
+  daemon-path negative-space rules
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory

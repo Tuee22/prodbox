@@ -161,6 +161,9 @@ Repo-owned charts never create `PersistentVolume` objects directly.
   names and binds the deterministic retained PVs to those claims.
 - Deterministic PV names and Patroni cluster or secret names flow through
   `src/Prodbox/Naming.hs` rather than through open-coded string concatenation.
+- Patroni service names, PVC names, and the three-replica storage-spec inventory flow through
+  `src/Prodbox/PostgresPlatform.hs`, and chart-platform storage pairing flows through
+  `storageBinding` in `src/Prodbox/Lib/Storage.hs`.
 
 There is no Pulumi-owned PostgreSQL exception on the supported path.
 

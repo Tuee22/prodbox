@@ -18,6 +18,7 @@ import Data.IORef
   ( modifyIORef'
   , newIORef
   , readIORef
+  , writeIORef
   )
 import Data.List
   ( sort
@@ -34,7 +35,13 @@ import Options.Applicative
   )
 import Parser (parserSuite)
 import Prodbox.Aws
-  ( buildIamPolicyDocument
+  ( AwsSetupInput (..)
+  , AwsTeardownInput (..)
+  , ConfigSetupInput (..)
+  , buildIamPolicyDocument
+  , renderAwsSetupPlan
+  , renderAwsTeardownPlan
+  , renderConfigSetupPlan
   )
 import Prodbox.AwsEnvironment
   ( isolatedAwsEnvironment
@@ -64,6 +71,8 @@ import Prodbox.CLI.Command
   , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
@@ -175,6 +184,12 @@ import Prodbox.Naming
   ( boundedResourceName
   , hashSuffix
   , sanitizeResourceName
+  )
+import Prodbox.PostgresPlatform
+  ( patroniPersistentVolumeClaimName
+  , patroniPrimaryServiceName
+  , patroniReplicaServiceName
+  , patroniStorageSpecs
   )
 import Prodbox.Prerequisite
   ( prerequisiteRegistry
@@ -439,6 +454,21 @@ main = mainWithSuite "prodbox-unit" $ do
       (pure (BL8.pack (renderPulumiPlan "eks-resources" False)))
 
     goldenTest
+      "renders the aws setup plan deterministically"
+      "test/golden/plans/aws-setup.txt"
+      (pure (BL8.pack (renderAwsSetupPlan "/tmp/prodbox" sampleAwsSetupInput)))
+
+    goldenTest
+      "renders the aws teardown plan deterministically"
+      "test/golden/plans/aws-teardown.txt"
+      (pure (BL8.pack (renderAwsTeardownPlan "/tmp/prodbox" sampleAwsTeardownInput)))
+
+    goldenTest
+      "renders the config setup plan deterministically"
+      "test/golden/plans/config-setup.txt"
+      (pure (BL8.pack (renderConfigSetupPlan "/tmp/prodbox" sampleConfigSetupInput)))
+
+    goldenTest
       "renders the gateway start plan deterministically"
       "test/golden/plans/gateway-start.txt"
       $ do
@@ -462,6 +492,30 @@ main = mainWithSuite "prodbox-unit" $ do
               )
           )
       )
+
+    it "skips plan application on --dry-run while persisting the rendered plan" $
+      withSystemTempDirectory "prodbox-plan-options" $ \tmpDir -> do
+        appliedRef <- newIORef False
+        let planPath = tmpDir </> "plan.txt"
+            plan = buildPlan (\payload -> "PLAN=" ++ payload ++ "\n") ("dry-run" :: String)
+        exitCode <-
+          runPlanWithOptions
+            (PlanOptions True (Just planPath))
+            plan
+            (\_ -> writeIORef appliedRef True >> pure ExitSuccess)
+        exitCode `shouldBe` ExitSuccess
+        readIORef appliedRef `shouldReturn` False
+        readFile planPath `shouldReturn` "PLAN=dry-run\n"
+
+    it "passes the typed plan payload to the apply boundary when not in dry-run mode" $ do
+      payloadRef <- newIORef ""
+      exitCode <-
+        runPlanWithOptions
+          (PlanOptions False Nothing)
+          (buildPlan (\payload -> "PLAN=" ++ payload ++ "\n") ("apply" :: String))
+          (\payload -> writeIORef payloadRef payload >> pure ExitSuccess)
+      exitCode `shouldBe` ExitSuccess
+      readIORef payloadRef `shouldReturn` "apply"
 
   describe "frontend scaffold doctrine" $ do
     it "keeps the Phase 1.1 Haskell frontend scaffold in the repository" $ do
@@ -1318,6 +1372,19 @@ main = mainWithSuite "prodbox-unit" $ do
               "this-is-a-very-long-component-name-that-needs-truncation"
               "replica"
       firstName `shouldNotBe` secondName
+
+    it "centralizes Patroni service and claim naming helpers" $ do
+      patroniPrimaryServiceName "keycloak" `shouldBe` "prodbox-keycloak-pg-ha"
+      patroniReplicaServiceName "keycloak" `shouldBe` "prodbox-keycloak-pg-replicas"
+      patroniPersistentVolumeClaimName "keycloak" 2
+        `shouldBe` "prodbox-keycloak-pg-instance1-2-pgdata"
+
+    it "derives Patroni storage specs from the shared helper surface" $ do
+      map chartStorageSpecPersistentVolumeClaimName (patroniStorageSpecs "keycloak")
+        `shouldBe` [ "prodbox-keycloak-pg-instance1-0-pgdata"
+                   , "prodbox-keycloak-pg-instance1-1-pgdata"
+                   , "prodbox-keycloak-pg-instance1-2-pgdata"
+                   ]
 
     it "computes exponential retry delays from a first-class policy" $ do
       let policy =
@@ -2363,6 +2430,58 @@ testValidatedSettings manualRoot =
           , storage = StorageSection {manual_pv_host_root = ".data"}
           }
     , resolvedManualPvHostRoot = manualRoot
+    }
+
+sampleAwsSetupInput :: AwsSetupInput
+sampleAwsSetupInput =
+  AwsSetupInput
+    { awsSetupAdminCredentials =
+        Credentials
+          { access_key_id = "admin-access-key"
+          , secret_access_key = "admin-secret-key"
+          , session_token = Just "admin-session-token"
+          , region = "us-west-2"
+          }
+    , awsSetupPolicyTierInput = PolicyFull
+    }
+
+sampleAwsTeardownInput :: AwsTeardownInput
+sampleAwsTeardownInput =
+  AwsTeardownInput
+    { awsTeardownAdminCredentials = awsSetupAdminCredentials sampleAwsSetupInput
+    }
+
+sampleConfigSetupInput :: ConfigSetupInput
+sampleConfigSetupInput =
+  ConfigSetupInput
+    { configSetupAdminCredentialsInput = awsSetupAdminCredentials sampleAwsSetupInput
+    , configSetupRoute53ZoneIdInput = "Z1234567890ABC"
+    , configSetupDemoFqdnInput = "test.resolvefintech.com"
+    , configSetupDemoTtlInput = 60
+    , configSetupAcmeEmailInput = "ops@resolvefintech.com"
+    , configSetupAcmeServerInput = "https://acme.zerossl.com/v2/DV90"
+    , configSetupAcmeEabKeyIdInput = Just "test-eab-key-id"
+    , configSetupAcmeEabHmacKeyInput = Just "test-eab-hmac-key"
+    , configSetupDevModeInput = True
+    , configSetupBootstrapPublicIpOverrideInput = Just "203.0.113.10"
+    , configSetupPulumiEnableDnsBootstrapInput = True
+    , configSetupPublicEdgeAdvertisementModeInput = Just "bgp"
+    , configSetupPublicEdgeBgpPeersInput =
+        Just
+          [ MetallbBgpPeer
+              { peer_name = "router-a"
+              , peer_address = "192.0.2.10"
+              , peer_asn = 64512
+              , my_asn = 64513
+              , ebgp_multi_hop = Just True
+              }
+          ]
+    , configSetupEnvoyGatewayControllerReplicasInput = Just 1
+    , configSetupEnvoyGatewayDataPlaneReplicasInput = Just 1
+    , configSetupApiReplicasInput = Just 2
+    , configSetupWebsocketReplicasInput = Just 2
+    , configSetupManualPvHostRootInput = "/tmp/prodbox/.data"
+    , configSetupPolicyTierInput = PolicyFull
     }
 
 roundTripConfigFile :: ConfigFile

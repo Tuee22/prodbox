@@ -1,8 +1,14 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Aws
-  ( buildIamPolicyDocument
+  ( AwsSetupInput (..)
+  , AwsTeardownInput (..)
+  , ConfigSetupInput (..)
+  , buildIamPolicyDocument
   , buildIamPolicyJson
+  , renderAwsSetupPlan
+  , renderAwsTeardownPlan
+  , renderConfigSetupPlan
   , runAwsCommand
   , runAwsIamHarnessInspect
   , runAwsIamHarnessSetup
@@ -51,8 +57,11 @@ import Prodbox.AwsEnvironment
   )
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , Plan (..)
   , PlanOptions (..)
   , PolicyTier (..)
+  , buildPlan
+  , runPlanWithOptions
   )
 import Prodbox.Repo
   ( ConfigPaths (..)
@@ -309,20 +318,20 @@ executeAwsCommand repoRoot command =
       pure ExitSuccess
     AwsSetup policyTier planOptions -> do
       input <- interactiveAwsSetupInput repoRoot policyTier
-      runPlannedInteractiveAction
+      runPlanWithOptions
         planOptions
-        (renderAwsSetupPlan repoRoot input)
-        $ do
-          result <- applyAwsSetup repoRoot input
+        (buildAwsSetupExecutionPlan repoRoot input)
+        $ \plannedInput -> do
+          result <- applyAwsSetup repoRoot plannedInput
           putStr (renderAwsSetupResult result)
           pure ExitSuccess
     AwsTeardown planOptions -> do
       input <- interactiveAwsTeardownInput repoRoot
-      runPlannedInteractiveAction
+      runPlanWithOptions
         planOptions
-        (renderAwsTeardownPlan repoRoot input)
-        $ do
-          result <- applyAwsTeardown repoRoot input
+        (buildAwsTeardownExecutionPlan repoRoot input)
+        $ \plannedInput -> do
+          result <- applyAwsTeardown repoRoot plannedInput
           putStr (renderAwsTeardownResult result)
           pure ExitSuccess
     AwsCheckQuotas -> do
@@ -339,22 +348,25 @@ executeAwsCommand repoRoot command =
 executeConfigSetup :: FilePath -> PlanOptions -> IO ExitCode
 executeConfigSetup repoRoot planOptions = do
   input <- interactiveConfigSetupInput repoRoot
-  runPlannedInteractiveAction
+  runPlanWithOptions
     planOptions
-    (renderConfigSetupPlan repoRoot input)
-    $ do
-      result <- applyConfigSetup repoRoot input
+    (buildConfigSetupExecutionPlan repoRoot input)
+    $ \plannedInput -> do
+      result <- applyConfigSetup repoRoot plannedInput
       putStr (renderConfigSetupResult result)
       pure ExitSuccess
 
-runPlannedInteractiveAction :: PlanOptions -> String -> IO ExitCode -> IO ExitCode
-runPlannedInteractiveAction planOptions renderedPlan applyAction = do
-  maybePersistPlan (planFile planOptions) renderedPlan
-  if dryRun planOptions
-    then do
-      putStr renderedPlan
-      pure ExitSuccess
-    else applyAction
+buildAwsSetupExecutionPlan :: FilePath -> AwsSetupInput -> Plan AwsSetupInput
+buildAwsSetupExecutionPlan repoRoot =
+  buildPlan (renderAwsSetupPlan repoRoot)
+
+buildAwsTeardownExecutionPlan :: FilePath -> AwsTeardownInput -> Plan AwsTeardownInput
+buildAwsTeardownExecutionPlan repoRoot =
+  buildPlan (renderAwsTeardownPlan repoRoot)
+
+buildConfigSetupExecutionPlan :: FilePath -> ConfigSetupInput -> Plan ConfigSetupInput
+buildConfigSetupExecutionPlan repoRoot =
+  buildPlan (renderConfigSetupPlan repoRoot)
 
 renderAwsSetupPlan :: FilePath -> AwsSetupInput -> String
 renderAwsSetupPlan repoRoot input =
@@ -382,10 +394,6 @@ renderConfigSetupPlan repoRoot input =
     , "PUBLIC_HOST=" ++ Text.unpack (configSetupDemoFqdnInput input)
     , "POLICY_TIER=" ++ renderPolicyTier (configSetupPolicyTierInput input)
     ]
-
-maybePersistPlan :: Maybe FilePath -> String -> IO ()
-maybePersistPlan Nothing _ = pure ()
-maybePersistPlan (Just path) contents = writeFile path contents
 
 corePolicyStatements :: [Value]
 corePolicyStatements =

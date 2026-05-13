@@ -37,7 +37,7 @@ named below is still in progress: Sprint 0.3 extended the doctrine-adoption scop
 residual items surfaced by the May 2026 doctrine-vs-plan audit, scheduling them through new
 Phase `1` sprints (1.24–1.26) and through deliverable extensions to existing planned Phase
 `1` and Phase `2` sprints. Sprint 0.4 extended the doctrine-adoption scope again with the
-residual items surfaced by the November 2026 round-3 doctrine-vs-plan audit, scheduling them
+residual items surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, scheduling them
 through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
 planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Phases `5`, `6`, and `7`
 remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract, AWS IAM
@@ -58,7 +58,7 @@ Reopened sprints by phase:
   `envMetrics :: MetricsRegistry` typed daemon `Env` field, the STM broadcast channel for
   `LiveConfig` subscribers, the prescribed on-disk Dhall file shape, and the daemon
   log-level refresh from `LiveConfig` on every hot reload. Sprint 0.4 schedules the
-  residual doctrine items surfaced by the November 2026 round-3 audit: cabal-manifest
+  residual doctrine items surfaced by the May 12, 2026 round-3 audit: cabal-manifest
   toolchain pin declarations (`tested-with: ghc ==9.14.1`, `with-compiler: ghc-9.14.1`,
   the `Cabal 3.16.1.0` reference), library-first / thin-`Main.hs` layout, the
   `CommandSpec` / `OptionSpec` record-field bindings plus daemon-as-typed-`Command`
@@ -269,13 +269,13 @@ but final handoff is reclaimed only when the reopened implementation phases clos
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
 the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
-evidence puts Sprints `1.7`, `1.8`, `1.12`, `1.13`, `1.14`, `1.15`, `1.26`, `2.9`, `2.14`,
-`3.8`, and `4.7` in `Active` state because those surfaces have started
+evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.19`, `1.26`, `2.9`, `2.14`, and `4.7`
+in `Active` state because those surfaces have started
 in code but still retain sprint-owned implementation or validation gaps. Sprints `1.10`,
 `1.11`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.15`, `3.10`, `3.11`, `3.12`,
-`4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.6` and `1.9` now
-re-close on the supported worktree. The remaining reopened sprints stay `Planned`. The following
-implemented baseline surfaces remain current on
+`4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.6`, `1.7`, `1.9`,
+`1.15`, and `3.8` now re-close on the supported worktree. The remaining reopened sprints stay
+`Planned`. The following implemented baseline surfaces remain current on
 the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by

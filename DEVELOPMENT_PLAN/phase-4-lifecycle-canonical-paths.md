@@ -21,9 +21,10 @@ contract. The phase is reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`:
 infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza. Current worktree
 evidence closes Sprints `4.5` and `4.6`: `prodbox rke2 reconcile` is now the canonical
 entrypoint, the deprecated `install` alias preserves only the old name, the lifecycle plan is
-golden-covered, and the governed docs and validation call sites now reference `reconcile`.
-Sprint `4.7` is `Active`: the dedicated Pulumi stanza exists and passes locally as a scaffold,
-but the real ephemeral-stack lifecycle proof is still pending.
+golden-covered, and the governed docs and validation call sites now reference `reconcile`. Sprint
+`4.7` remains `Active`: the dedicated `prodbox-pulumi` stanza now proves the local
+ephemeral-stack harness and typed-output contract, but it does not yet provision the retained AWS
+IaC flows end-to-end inside the Cabal suite itself.
 
 ## Phase Summary
 
@@ -402,11 +403,12 @@ Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
 
 ### Remaining Work
 
-- The `prodbox-pulumi` Cabal stanza now exists and passes locally, but it is still a scaffold
-  suite that checks repository ownership of the YAML Pulumi programs and parser surface.
-- The doctrine-owned ephemeral-stack behavior is still absent: isolated stack creation,
-  typed-output handoff into test execution, and forced-failure cleanup proof remain to be
-  implemented.
+- The `prodbox-pulumi` Cabal stanza now passes locally with the doctrine-owned ephemeral-stack
+  harness: each test run creates isolated local stack state, round-trips typed outputs through
+  the `EphemeralPulumiOutputs` contract, and proves forced-failure cleanup.
+- The remaining gap is the deeper infrastructure proof: the stanza still validates the harness
+  and retained Pulumi-program ownership locally rather than provisioning the retained AWS IaC
+  flows (`aws-eks`, `aws-test`, HA-RKE2) end-to-end through the Cabal test suite itself.
 
 ## Documentation Requirements
 

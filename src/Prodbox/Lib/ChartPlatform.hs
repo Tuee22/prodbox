@@ -91,10 +91,12 @@ import Prodbox.PostgresPlatform
   , patroniOperatorNamespace
   , patroniPostgresqlCrdName
   , patroniPrimaryServiceHost
+  , patroniPrimaryServiceName
   , patroniRunAsGroup
   , patroniRunAsUser
   , patroniStandbySecretName
   , patroniStorageSize
+  , patroniStorageSpecs
   , patroniSuperuserSecretName
   , patroniUsername
   )
@@ -1406,7 +1408,7 @@ readOptionalPatroniPrimaryPodName namespace = do
         , commandArguments =
             [ "get"
             , "endpoints"
-            , patroniClusterName namespace ++ "-ha"
+            , patroniPrimaryServiceName namespace
             , "--namespace"
             , namespace
             , "-o"
@@ -1620,37 +1622,10 @@ resolveRootPublicFqdn settings _chartName = do
   Right fqdn
 
 chartStorageSpecsForRelease :: String -> String -> ChartDefinition -> [ChartStorageSpec]
-chartStorageSpecsForRelease rootChart releaseName definition =
+chartStorageSpecsForRelease rootChart _releaseName definition =
   case chartDefinitionName definition of
-    "keycloak-postgres" -> patroniStorageSpecs rootChart releaseName
+    "keycloak-postgres" -> patroniStorageSpecs rootChart
     _ -> chartDefinitionStorage definition
-
-patroniStorageSpecs :: String -> String -> [ChartStorageSpec]
-patroniStorageSpecs rootChart _releaseName =
-  [ ChartStorageSpec
-      { chartStorageSpecStatefulSetName = clusterName
-      , chartStorageSpecPersistentVolumeClaimName = clusterName ++ "-instance1-0-pgdata"
-      , chartStorageSpecStorageSize = patroniStorageSize
-      , chartStorageSpecOrdinal = 0
-      , chartStorageSpecClaimSuffix = "data"
-      }
-  , ChartStorageSpec
-      { chartStorageSpecStatefulSetName = clusterName
-      , chartStorageSpecPersistentVolumeClaimName = clusterName ++ "-instance1-1-pgdata"
-      , chartStorageSpecStorageSize = patroniStorageSize
-      , chartStorageSpecOrdinal = 1
-      , chartStorageSpecClaimSuffix = "data"
-      }
-  , ChartStorageSpec
-      { chartStorageSpecStatefulSetName = clusterName
-      , chartStorageSpecPersistentVolumeClaimName = clusterName ++ "-instance1-2-pgdata"
-      , chartStorageSpecStorageSize = patroniStorageSize
-      , chartStorageSpecOrdinal = 2
-      , chartStorageSpecClaimSuffix = "data"
-      }
-  ]
- where
-  clusterName = patroniClusterName rootChart
 
 renderReleaseValuesJson
   :: ChartDefinition

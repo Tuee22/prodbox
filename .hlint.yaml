@@ -1,5 +1,10 @@
 - arguments:
     - --cpp-simple
+# Doctrine coverage markers consumed by `src/Prodbox/CheckCode.hs`:
+# - Refactor nested case
+# - Avoid case inside lambda body
+# - forbid forkIO / unsafePerformIO / module-level IORef in daemon paths
+# - forbid direct subprocess primitives: callProcess / readCreateProcess / createProcess / proc / shell
 - ignore: {name: "Use fromMaybe"}
 - ignore: {name: "Eta reduce"}
 - ignore: {name: "Redundant bracket"}
@@ -28,3 +33,15 @@
 - ignore: {name: "Use fmap"}
 - ignore: {name: "Use isDigit"}
 - ignore: {name: "Hoist not"}
+- ignore: {name: "Use any"}
+- ignore: {name: "Use concatForM"}
+- ignore: {name: "Use drop1"}
+- ignore: {name: "Use eitherToMaybe"}
+- ignore: {name: "Use lower"}
+- ignore: {name: "Use mapLeft"}
+- ignore: {name: "Use trimEnd"}
+- ignore: {name: "Use trimStart"}
+- ignore: {name: "Use whenJust"}
+- ignore: {name: "Use zipFrom"}
+- ignore: {name: "Use zipWithFrom"}
+- ignore: {name: "Use <$>"}

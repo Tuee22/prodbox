@@ -60,22 +60,32 @@ ensureNamespace repoRoot namespace = do
 ### After
 
 ```haskell
-renderCreateNamespaceArgs :: String -> [String]
-renderCreateNamespaceArgs namespace =
-    ["create", "namespace", namespace]
+buildCreateNamespacePlan :: String -> Plan String
+buildCreateNamespacePlan namespace =
+    buildPlan
+        (\name -> "CREATE_NAMESPACE\nNAME=" ++ name ++ "\n")
+        namespace
 
-ensureNamespace :: FilePath -> String -> IO ExitCode
-ensureNamespace repoRoot namespace =
+applyCreateNamespacePlan :: FilePath -> String -> IO ExitCode
+applyCreateNamespacePlan repoRoot namespace =
     runCommand
-        CommandSpec
-            { commandPath = "kubectl",
-              commandArguments = renderCreateNamespaceArgs namespace,
-              commandEnvironment = Nothing,
-              commandWorkingDirectory = Just repoRoot
+        Subprocess
+            { subprocessPath = "kubectl",
+              subprocessArguments = ["create", "namespace", namespace],
+              subprocessEnvironment = Nothing,
+              subprocessWorkingDirectory = Just repoRoot
             }
+
+ensureNamespace :: FilePath -> PlanOptions -> String -> IO ExitCode
+ensureNamespace repoRoot options namespace =
+    runPlanWithOptions
+        options
+        (buildCreateNamespacePlan namespace)
+        (applyCreateNamespacePlan repoRoot)
 ```
 
-The effectful function becomes smaller, and the planner can be unit tested independently.
+The command keeps a pure plan builder, a focused apply boundary, and one shared dry-run or
+plan-file runner.
 
 ## 3. Ad-Hoc Validation -> Decode Then Execute
 

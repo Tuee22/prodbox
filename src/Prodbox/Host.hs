@@ -25,7 +25,11 @@ import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Numeric (readHex)
 import Prodbox.CLI.Command (HostCommand (..))
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.Dns
   ( fetchPublicIp
   , queryRoute53Record
@@ -132,7 +136,7 @@ runHostCommand repoRoot command =
       case prerequisiteResult of
         Failure err -> failWith err
         Success () -> do
-          putStrLn "All required host tools are available."
+          writeOutputLine "All required host tools are available."
           pure ExitSuccess
     HostCheckPorts -> runHostCheckPorts
     HostInfo -> runHostInfo repoRoot
@@ -340,7 +344,7 @@ runHostPublicEdge repoRoot = do
                                 , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
                                 , edgeCertificateReady = certificateReady certificateDoc
                                 }
-                        putStr (renderPublicEdgeReport runtime)
+                        writeOutput (renderPublicEdgeReport runtime)
                         pure ExitSuccess
                     _ -> failWith "internal error: host public-edge results were incomplete"
 
@@ -474,7 +478,7 @@ runHostCheckPorts = do
     Left err -> failWith err
     Right listeningPorts -> do
       let statuses = map (mkPortStatus listeningPorts) [80, 443]
-      putStr (renderPortAvailabilityReport statuses)
+      writeOutput (renderPortAvailabilityReport statuses)
       pure (if any (not . portAvailable) statuses then ExitFailure 1 else ExitSuccess)
 
 mkPortStatus :: Set Int -> Int -> PortStatus
@@ -546,7 +550,7 @@ runHostInfo repoRoot = do
           ExitSuccess -> trim (processStdout out)
           ExitFailure _ -> "uname failed: " ++ trim (processStderr out)
   ntp <- detectNtpDisposition repoRoot
-  putStr (renderHostInfoReport unameLine ntp)
+  writeOutput (renderHostInfoReport unameLine ntp)
   case ntp of
     NtpSynchronized -> pure ExitSuccess
     NtpUnknown _ -> pure ExitSuccess

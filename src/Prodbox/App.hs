@@ -1,8 +1,18 @@
 module Prodbox.App
-  ( main
+  ( App (..)
+  , Env (..)
+  , askEnv
+  , liftAppIO
+  , main
+  , runApp
   )
 where
 
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Reader
+  ( ReaderT (..)
+  , ask
+  )
 import Data.Text qualified as Text
 import Options.Applicative
   ( customExecParser
@@ -19,7 +29,10 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutput
+  )
 import Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
@@ -32,6 +45,32 @@ import Prodbox.Native (runNativeCommand)
 import Prodbox.Repo (findRepoRoot)
 import System.Environment (getArgs)
 import System.Exit (ExitCode (ExitFailure), exitWith)
+
+data Env = Env
+  { envRepoRoot :: FilePath
+  }
+  deriving (Eq, Show)
+
+newtype App a = App {unApp :: ReaderT Env IO a}
+
+instance Functor App where
+  fmap f (App action) = App (fmap f action)
+
+instance Applicative App where
+  pure = App . pure
+  App function <*> App value = App (function <*> value)
+
+instance Monad App where
+  App action >>= next = App (action >>= unApp . next)
+
+runApp :: Env -> App a -> IO a
+runApp env (App action) = runReaderT action env
+
+askEnv :: App Env
+askEnv = App ask
+
+liftAppIO :: IO a -> App a
+liftAppIO = App . liftIO
 
 main :: IO ()
 main = do
@@ -57,13 +96,13 @@ runCommandRequest request =
             else failWith err
     ShowCommands listingFormat ->
       case listingFormat of
-        CommandsPlain -> putStr (renderCommandsPlain commandRegistry)
-        CommandsTree -> putStr (renderCommandTree commandRegistry)
-        CommandsJson -> putStr (renderCommandJson commandRegistry)
+        CommandsPlain -> writeOutput (renderCommandsPlain commandRegistry)
+        CommandsTree -> writeOutput (renderCommandTree commandRegistry)
+        CommandsJson -> writeOutput (renderCommandJson commandRegistry)
     ShowHelp commandPath ->
       case findCommandSpec commandPath of
         Nothing -> failWith ("Unknown help path: " ++ unwords commandPath)
-        Just spec -> putStr (renderCommandHelp commandPath spec)
+        Just spec -> writeOutput (renderCommandHelp commandPath spec)
  where
   dispatch repoRoot command = do
     exitCode <- runNativeCommand repoRoot command

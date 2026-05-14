@@ -12,6 +12,7 @@ module Prodbox.Subprocess
   , renderSubprocess
   , runStreaming
   , runStreamingCommand
+  , signalBackgroundProcess
   , startBackgroundProcess
   , stopBackgroundProcess
   , terminateBackgroundProcess
@@ -28,6 +29,7 @@ import Control.Exception
   , displayException
   , try
   )
+import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Error
@@ -45,23 +47,12 @@ import System.IO
   ( Handle
   , hClose
   )
-import System.Process
-  ( CreateProcess
-      ( cwd
-      , delegate_ctlc
-      , env
-      , std_err
-      , std_in
-      , std_out
-      )
-  , ProcessHandle
-  , StdStream (CreatePipe, Inherit)
-  , createProcess
-  , proc
-  , readCreateProcessWithExitCode
-  , terminateProcess
-  , waitForProcess
+import System.Posix.Signals
+  ( Signal
+  , sigTERM
+  , signalProcess
   )
+import System.Process.Typed qualified as Typed
 
 data CommandSpec = CommandSpec
   { commandPath :: FilePath
@@ -112,7 +103,7 @@ data ProcessOutput = ProcessOutput
 data BackgroundProcess = BackgroundProcess
   { backgroundStdoutHandle :: Maybe Handle
   , backgroundStderrHandle :: Maybe Handle
-  , backgroundProcessHandle :: ProcessHandle
+  , backgroundProcess :: Typed.Process () Handle Handle
   }
 
 renderSubprocess :: Subprocess -> Text
@@ -126,18 +117,8 @@ commandDisplay = Text.unpack . renderSubprocess
 runStreaming :: Subprocess -> IO (Either AppError ExitCode)
 runStreaming spec = do
   processResult <-
-    try
-      ( createProcess
-          (proc (subprocessPath spec) (subprocessArguments spec))
-            { cwd = subprocessWorkingDirectory spec
-            , env = subprocessEnvironment spec
-            , std_in = Inherit
-            , std_out = Inherit
-            , std_err = Inherit
-            , delegate_ctlc = True
-            }
-      )
-      :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle))
+    try (Typed.runProcess (typedProcessConfig True spec))
+      :: IO (Either IOException ExitCode)
   case processResult of
     Left err ->
       pure
@@ -146,7 +127,7 @@ runStreaming spec = do
                 (Text.pack (displayException err))
             )
         )
-    Right (_, _, _, handle) -> Right <$> waitForProcess handle
+    Right exitCode -> pure (Right exitCode)
 
 runStreamingCommand :: CommandSpec -> IO (Result ExitCode)
 runStreamingCommand spec = eitherToResult <$> runStreaming spec
@@ -154,15 +135,8 @@ runStreamingCommand spec = eitherToResult <$> runStreaming spec
 capture :: Subprocess -> IO (Either AppError ProcessOutput)
 capture spec = do
   outputResult <-
-    try
-      ( readCreateProcessWithExitCode
-          (proc (subprocessPath spec) (subprocessArguments spec))
-            { cwd = subprocessWorkingDirectory spec
-            , env = subprocessEnvironment spec
-            }
-          ""
-      )
-      :: IO (Either IOException (ExitCode, String, String))
+    try (Typed.readProcess (typedProcessConfig False spec))
+      :: IO (Either IOException (ExitCode, BL8.ByteString, BL8.ByteString))
   pure $
     case outputResult of
       Left err ->
@@ -170,12 +144,12 @@ capture spec = do
           ( fatalError
               (Text.pack (displayException err))
           )
-      Right (exitCode, stdoutText, stderrText) ->
+      Right (exitCode, stdoutBytes, stderrBytes) ->
         Right
           ProcessOutput
             { processExitCode = exitCode
-            , processStdout = stdoutText
-            , processStderr = stderrText
+            , processStdout = BL8.unpack stdoutBytes
+            , processStderr = BL8.unpack stderrBytes
             }
 
 captureCommand :: CommandSpec -> IO (Result ProcessOutput)
@@ -185,17 +159,13 @@ startBackgroundProcess :: Subprocess -> IO (Either AppError BackgroundProcess)
 startBackgroundProcess spec = do
   processResult <-
     try
-      ( createProcess
-          (proc (subprocessPath spec) (subprocessArguments spec))
-            { cwd = subprocessWorkingDirectory spec
-            , env = subprocessEnvironment spec
-            , std_in = Inherit
-            , std_out = CreatePipe
-            , std_err = CreatePipe
-            , delegate_ctlc = False
-            }
+      ( Typed.startProcess
+          ( Typed.setStdout
+              Typed.createPipe
+              (Typed.setStderr Typed.createPipe (typedProcessConfig False spec))
+          )
       )
-      :: IO (Either IOException (Maybe Handle, Maybe Handle, Maybe Handle, ProcessHandle))
+      :: IO (Either IOException (Typed.Process () Handle Handle))
   pure $
     case processResult of
       Left err ->
@@ -203,18 +173,17 @@ startBackgroundProcess spec = do
           ( fatalError
               (Text.pack (displayException err))
           )
-      Right (_, stdoutHandle, stderrHandle, processHandle) ->
+      Right process ->
         Right
           BackgroundProcess
-            { backgroundStdoutHandle = stdoutHandle
-            , backgroundStderrHandle = stderrHandle
-            , backgroundProcessHandle = processHandle
+            { backgroundStdoutHandle = Just (Typed.getStdout process)
+            , backgroundStderrHandle = Just (Typed.getStderr process)
+            , backgroundProcess = process
             }
 
 stopBackgroundProcess :: BackgroundProcess -> IO ()
 stopBackgroundProcess process = do
-  terminateBackgroundProcess process
-  _ <- try (waitForProcess (backgroundProcessHandle process)) :: IO (Either IOException ExitCode)
+  _ <- try (Typed.stopProcess (backgroundProcess process)) :: IO (Either IOException ())
   maybe (pure ()) closeHandle (backgroundStdoutHandle process)
   maybe (pure ()) closeHandle (backgroundStderrHandle process)
  where
@@ -223,14 +192,22 @@ stopBackgroundProcess process = do
     pure ()
 
 terminateBackgroundProcess :: BackgroundProcess -> IO ()
-terminateBackgroundProcess process = do
-  _ <- try (terminateProcess (backgroundProcessHandle process)) :: IO (Either IOException ())
-  pure ()
+terminateBackgroundProcess process =
+  signalBackgroundProcess sigTERM process
+
+signalBackgroundProcess :: Signal -> BackgroundProcess -> IO ()
+signalBackgroundProcess signal process = do
+  maybePid <- Typed.getPid (backgroundProcess process)
+  case maybePid of
+    Nothing -> pure ()
+    Just pid -> do
+      _ <- try (signalProcess signal pid) :: IO (Either IOException ())
+      pure ()
 
 waitBackgroundProcess :: BackgroundProcess -> IO (Either AppError ExitCode)
 waitBackgroundProcess process = do
   waitResult <-
-    try (waitForProcess (backgroundProcessHandle process)) :: IO (Either IOException ExitCode)
+    try (Typed.waitExitCode (backgroundProcess process)) :: IO (Either IOException ExitCode)
   pure $
     case waitResult of
       Left err ->
@@ -248,3 +225,20 @@ eitherToResult eitherValue =
 
 renderSubprocessError :: AppError -> Text
 renderSubprocessError = errorMsg
+
+typedProcessConfig :: Bool -> Subprocess -> Typed.ProcessConfig () () ()
+typedProcessConfig delegateCtlc spec =
+  applyWorkingDirectory $
+    applyEnvironment $
+      Typed.setDelegateCtlc delegateCtlc $
+        Typed.proc (subprocessPath spec) (subprocessArguments spec)
+ where
+  applyWorkingDirectory config =
+    case subprocessWorkingDirectory spec of
+      Nothing -> config
+      Just workingDirectory -> Typed.setWorkingDir workingDirectory config
+
+  applyEnvironment config =
+    case subprocessEnvironment spec of
+      Nothing -> config
+      Just environment -> Typed.setEnv environment config

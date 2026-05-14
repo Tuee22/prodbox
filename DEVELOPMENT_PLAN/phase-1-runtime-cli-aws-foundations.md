@@ -23,13 +23,20 @@ doctrine items surfaced by the May 2026 audit: durable CLI documentation artifac
 `execParserPure` parser-test category, and the `renderError` error-boundary discipline. Sprint
 0.3 also extends the deliverable lists of Sprints 1.6 and 1.10 to require per-command
 `CommandSpec` `Example` entries and the `cabal format` temp-file round-trip byte-equality
-compare, respectively. Current worktree evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`,
-`1.26` in `Active` state: the subprocess surface still retains compatibility or
-consolidation residue, the service or retry or error foundations are now implemented but not
-yet fully migrated through their call sites. Sprints `1.6`,
-`1.7`, `1.9`, `1.10`, `1.11`, `1.15`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, and `1.27`
-are now implemented in code and validated locally. The remaining reopened Phase `1` sprints
-stay `Planned`.
+compare, respectively. Sprint 0.4 adds Sprint `1.27` and threads the round-3 doctrine bindings
+through the existing Sprint `1` reopen set: `CommandSpec` / `OptionSpec` field names,
+daemon-as-typed-`Command` dispatch, forbidden subprocess primitive names, the minimum
+`fourmolu.yaml` settings, canonical property-test invariants, service-error newtype inventory,
+`AppError` record shape, naming-helper signatures, and forbidden renderer inputs. Current
+worktree evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.16`, `1.17`,
+`1.18`, and `1.22` in `Active` state: the subprocess surface still retains compatibility or
+consolidation residue; the service, retry, state-machine, output-option, and App foundations
+are now implemented but not yet fully migrated through their call sites, and the standardized
+library audit has started with `typed-process` adoption while the full dependency diff remains
+open. Sprints `1.6`,
+`1.7`, `1.9`, `1.10`, `1.11`, `1.15`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`,
+`1.26`, and `1.27` are now implemented in code and validated locally. The remaining reopened
+Phase `1` sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -56,15 +63,17 @@ contract to the prerequisite registry, align the lint stack on a pinned `fourmol
 migrate the test stanzas from `hspec` to `tasty`, introduce capability classes and first-class
 retry policies, encode the `Recoverable | Fatal` error axis, centralize naming helpers and
 smart-constructor patterns, re-encode multi-state workflows as GADT-indexed state machines,
-reaffirm the GHC `9.14.1` / Cabal `3.16.1.0` toolchain pin, and close the residual doctrine
+reaffirm the GHC `9.14.1` / Cabal `3.16.1.0` toolchain pin, and schedule the residual doctrine
 cleanup in Sprint `1.23` (committed repo-root Dhall import freeze enforcement, parser
 `--foreground` default plus self-daemonization-forbidden rule, and the explicit cross-language-types
-generation deferral). Sprints `1.24` through `1.26` close the residual doctrine gaps surfaced
+generation deferral). Sprints `1.24` through `1.26` schedule the residual doctrine gaps surfaced
 by the May 2026 doctrine-vs-plan audit: Sprint `1.24` schedules the durable CLI documentation
 artifacts (Markdown command reference, manpages, shell completion scripts) derived from the
 `CommandSpec` registry; Sprint `1.25` schedules the `execParserPure` parser-test category;
 Sprint `1.26` schedules the `renderError` error-boundary discipline plus hlint rules refusing
-`print`, `exitFailure`, and direct terminal formatting in non-boundary code.
+`print`, `exitFailure`, and direct terminal formatting in non-boundary code. Sprint `1.26` is
+now closed on the output-boundary enforcement and direct-terminal cleanup, and Sprint `1.27` is
+closed on the cabal-manifest toolchain declarations plus library-first entrypoint gate.
 
 ## Current Baseline In Worktree
 
@@ -586,14 +595,15 @@ Values](../HASKELL_CLI_TOOL.md).
 
 - `src/Prodbox/Subprocess.hs` now exposes the doctrine-shaped `Subprocess` surface through the
   `Subprocess` type alias, `pattern Subprocess`, `renderSubprocess`, `runStreaming`, `capture`,
-  and background-process helpers, while compatibility wrappers (`CommandSpec`,
-  `runStreamingCommand`, `captureCommand`) keep the existing call sites working.
+  and background-process helpers. The interpreter is now backed by `typed-process` internally,
+  the library no longer depends directly on `process`, and `test/haskell-style/Main.hs` asserts
+  that the typed-process dependency stays confined to this boundary.
 - `test/unit/Main.hs` now covers rendered subprocess output, and `src/Prodbox/CheckCode.hs`
   refuses direct `System.Process` construction outside `src/Prodbox/Subprocess.hs`.
 - The supported path still retains the pre-doctrine compatibility names (`CommandSpec`,
-  `Result`) for the migrated call sites, and the negative-space enforcement lives in the
-  governed `prodbox check-code` scan rather than in the custom `.hlint.yaml` rule stack named
-  by the sprint deliverables.
+  `runStreamingCommand`, `captureCommand`, and `Result`) for the migrated call sites, and the
+  negative-space enforcement lives in the governed `prodbox check-code` scan rather than in the
+  custom `.hlint.yaml` rule stack named by the sprint deliverables.
 
 ## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract ✅
 
@@ -906,9 +916,10 @@ Resources](../HASKELL_CLI_TOOL.md), including the prescribed naming helpers.
 
 None.
 
-## Sprint 1.16: GADT-Indexed State Machines for Multi-State Workflows 📋
+## Sprint 1.16: GADT-Indexed State Machines for Multi-State Workflows 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/StateMachine.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
 ### Objective
@@ -930,9 +941,18 @@ workflows with more than two states.
    demonstration.
 2. The gateway daemon and chart reconcile flows pass through the typed transitions only.
 
-## Sprint 1.17: Output Discipline for One-Shot CLI Commands 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/StateMachine.hs` now defines phantom-indexed transition surfaces for gateway
+  ownership, Pulumi stack lifecycle, and chart deploy phases, and `test/unit/Main.hs` typechecks
+  the valid transition paths.
+- Remaining closure work: migrate the runtime gateway ownership, Pulumi, and chart reconcile
+  flows to consume these typed transitions rather than their current runtime status values.
+
+## Sprint 1.17: Output Discipline for One-Shot CLI Commands 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/CLI/Output.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`
 
@@ -967,9 +987,20 @@ prescribed surface.
 2. The output-discipline hlint rule blocks reintroduction of stdout diagnostics under
    `src/Prodbox/`.
 
-## Sprint 1.18: One-Shot Env Record and ReaderT App Adoption 📋
+### Remaining Work
 
-**Status**: Planned
+- `src/Prodbox/CLI/Output.hs` now owns `OutputFormat`, `ColorMode`, `OutputOptions`,
+  stdout/stderr writer helpers, and JSON/plain rendering; `src/Prodbox/CLI/Spec.hs` now parses
+  `--format`, `--color`, and `--no-color`; `src/Prodbox/CheckCode.hs` refuses direct
+  terminal output outside `src/Prodbox/CLI/Output.hs` and the daemon logging layer.
+- Remaining closure work: thread `OutputOptions` through every output-emitting one-shot command,
+  add the per-command golden matrix, and wire the flags into the `CommandSpec` option inventory
+  for all applicable leaves while keeping daemon entrypoints exempt.
+
+## Sprint 1.18: One-Shot Env Record and ReaderT App Adoption 🔄
+
+**Status**: Active
+**Implementation**: `src/Prodbox/App.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/effect_interpreter.md`
 
@@ -998,6 +1029,15 @@ through `ReaderT Env IO` rather than ad-hoc argument lists.
 1. `cabal test prodbox-unit` covers the new `App` type's `MonadReader`-driven configuration
    access.
 2. Spot-check golden tests confirm that command output is unchanged after the migration.
+
+### Remaining Work
+
+- `src/Prodbox/App.hs` now exposes the one-shot `Env`, `App`, `runApp`, `askEnv`, and
+  `liftAppIO` foundation, backed by `ReaderT Env IO`, and `test/unit/Main.hs` covers
+  environment access.
+- Remaining closure work: extend `Env` beyond the current repo-root field and migrate command
+  runners under `src/Prodbox/CLI/`, `src/Prodbox/Aws.hs`, and `src/Prodbox/CLI/Rke2.hs` from
+  positional argument threading to `App`.
 
 ## Sprint 1.19: Style-Tools Sandbox and Custom Nesting Hlint Rules ✅
 
@@ -1156,9 +1196,11 @@ deterministic function.
 
 None.
 
-## Sprint 1.22: Standardized Library Audit 📋
+## Sprint 1.22: Standardized Library Audit 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `prodbox.cabal`, `src/Prodbox/Subprocess.hs`,
+`src/Prodbox/Gateway/Logging.hs`
 **Docs to update**: `documents/engineering/dependency_management.md`,
 `documents/engineering/code_quality.md`
 
@@ -1189,6 +1231,23 @@ non-doctrine library on the supported path.
 2. Diff of `prodbox.cabal`'s `build-depends` against the doctrine library list yields only
    doctrine-listed names plus the explicitly-justified additions captured by later sprints
    (`co-log` in Sprint 2.12, `pulumi` SDK in Sprint 4.7).
+
+### Current Validation State
+
+- `src/Prodbox/Subprocess.hs` now uses `typed-process` as the interpreter implementation, and
+  the library stanza has dropped the direct `process` dependency.
+- Sprint 2.12 introduced `co-log` / `co-log-core` for structured daemon logging, with
+  `test/haskell-style/Main.hs` guarding the dependency boundary.
+
+### Remaining Work
+
+- Finish the full `prodbox.cabal` audit against the standardized stack, including the absent
+  doctrine libraries (`dhall`, `prettyprinter`, `prettyprinter-ansi-terminal`, `ansi-terminal`,
+  `path`, `path-io`, `safe-exceptions`) and every still-retained non-doctrine library.
+- For each justified non-doctrine library that remains on the supported path, either replace it
+  in code or keep the Sprint 1.22 legacy-ledger row explicit enough to name the module-level
+  reason.
+- Re-run `prodbox check-code` and the full test suite after the dependency diff closes.
 
 ## Sprint 1.23: Dhall Freeze, Daemon CLI Negative-Space Rule, and Cross-Language Generation Deferral ✅
 
@@ -1347,9 +1406,9 @@ Sprint 1.6.
 
 None.
 
-## Sprint 1.26: Error Rendering Boundary Discipline 🔄
+## Sprint 1.26: Error Rendering Boundary Discipline ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Output.hs`, `src/Prodbox/Error.hs`, `src/Prodbox/App.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/code_quality.md`
@@ -1391,16 +1450,22 @@ so error rendering happens only at the CLI boundary and core code is free of
 3. `prodbox check-code` continues to enforce the governed doctrine-alignment
    contract after the boundary rules land.
 
-### Remaining Work
+### Completed Work
 
 - `src/Prodbox/CLI/Output.hs` now provides `renderError` / `writeError`, `src/Prodbox/App.hs`
   plus the shared `failWith` helpers now route fatal command failures through the output layer,
   and `test/unit/Main.hs` covers representative `AppError` rendering.
-- `src/Prodbox/CheckCode.hs` now refuses `print` and `exitFailure` under `src/Prodbox/` outside
-  the dedicated output layer.
-- The wider direct-terminal-formatting cleanup is still incomplete: many one-shot and daemon
-  code paths still print diagnostics directly, and the negative-space enforcement currently lives
-  in `prodbox check-code` rather than in the custom `.hlint.yaml` rule set named by the sprint.
+- `src/Prodbox/CLI/Output.hs` now owns stdout and stderr writer helpers, and supported-path
+  one-shot modules route user-visible terminal output through that layer.
+- `src/Prodbox/CheckCode.hs` and `test/haskell-style/Main.hs` now refuse `print`,
+  `exitFailure`, `putStr`, `putStrLn`, and direct stderr writes under `src/Prodbox/` outside
+  `src/Prodbox/CLI/Output.hs` and the dedicated daemon structured-logging module.
+- `cabal test --builddir=.build prodbox-unit --test-options=--hide-successes` and
+  `cabal test --builddir=.build prodbox-haskell-style --test-options=--hide-successes` pass.
+
+### Remaining Work
+
+None.
 
 ## Sprint 1.27: Toolchain Pin Declarations and Library-First Layout ✅
 

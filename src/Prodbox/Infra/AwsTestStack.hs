@@ -34,7 +34,12 @@ import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeDiagnosticLine
+  , writeError
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.MinioBackend
   ( bucketObjectCount
@@ -66,7 +71,6 @@ import System.Directory
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
-import System.IO (hPutStrLn, stderr)
 
 awsTestStackName :: String
 awsTestStackName = "aws-test"
@@ -434,7 +438,7 @@ pulumiLogin projectDir environment = do
   case loginResult of
     Right () -> pure ExitSuccess
     Left err -> do
-      hPutStrLn stderr ("pulumi login failed: " ++ err)
+      writeDiagnosticLine ("pulumi login failed: " ++ err)
       pure (ExitFailure 1)
 
 pulumiLoginQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
@@ -565,7 +569,7 @@ runPulumiCommand projectDir environment arguments = do
         }
   case result of
     Failure err -> do
-      hPutStrLn stderr err
+      writeDiagnosticLine err
       pure (ExitFailure 1)
     Success exitCode -> pure exitCode
 
@@ -845,7 +849,7 @@ ensureAwsTestStackResources repoRoot = do
                                                 case objectCountResult of
                                                   Left err -> pure (Left err)
                                                   Right objectCount -> do
-                                                    putStr (renderAwsTestStackReport snapshot objectCount)
+                                                    writeOutput (renderAwsTestStackReport snapshot objectCount)
                                                     pure (Right ())
                               PulumiStackMissing ->
                                 pure (Left "pulumi stack select reported a missing stack after --create")
@@ -862,7 +866,7 @@ destroyAwsTestStack repoRoot summary = do
   case statusResult of
     Left err -> failWith err
     Right status -> do
-      putStrLn ("AWS test stack: " ++ status)
+      writeOutputLine ("AWS test stack: " ++ status)
       pure ExitSuccess
 
 destroyAwsTestStackStatus :: FilePath -> Bool -> IO (Either String String)

@@ -260,11 +260,11 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
 not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
-Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.11`, `2.12`,
-`2.13`, `2.14`, and `4.7` in `Active` state because those surfaces have started
+Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.16`, `1.17`, `1.18`, `1.22`, `2.9`, `2.11`,
+`2.13`, `2.14`, `3.9`, and `4.7` in `Active` state because those surfaces have started
 in code but still retain sprint-owned implementation or validation gaps. Sprints `1.6`,
 `1.9`, `1.10`, `1.11`, `1.20`, `1.21`,
-`1.19`, `1.23`, `1.24`, `1.25`, `1.27`, `2.10`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`,
+`1.19`, `1.23`, `1.24`, `1.25`, `1.26`, `1.27`, `2.10`, `2.12`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`,
 `4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.7`, `1.15`, and
 `3.8` have re-closed on their owned surfaces. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
@@ -444,10 +444,10 @@ The pre-reopen Phases `0`–`7` remain closed on the implemented repository arch
 `0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
 Phases `1`–`4` remain reopened on the downstream implementation scope scheduled by those
 sprints; that reopened scope is now mixed: Sprints `1.8`, `1.12`, `1.13`, `1.14`,
-`1.26`, `2.9`, `2.11`, `2.12`, `2.13`, `2.14`, and `4.7` are
+`1.16`, `1.17`, `1.18`, `1.22`, `2.9`, `2.11`, `2.13`, `2.14`, `3.9`, and `4.7` are
 `Active` on partially landed code paths,
-Sprints `1.6`, `1.9`, `1.10`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`,
-`2.10`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and
+Sprints `1.6`, `1.9`, `1.10`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.26`, `1.27`,
+`2.10`, `2.12`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and
 doc-aligned, Sprints `1.7`, `1.15`, and `3.8` have re-closed on their owned surfaces, and the
 remaining reopened sprints stay `Planned`:
 

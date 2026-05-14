@@ -59,7 +59,13 @@ import Prodbox.AwsEnvironment
 import Prodbox.BuildSupport
   ( canonicalOperatorBinaryPath
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeDiagnostic
+  , writeDiagnosticLine
+  , writeError
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.Dns
   ( configuredPublicHostFqdns
   , fetchPublicIp
@@ -130,10 +136,7 @@ import System.Exit
   )
 import System.IO
   ( hClose
-  , hPutStr
-  , hPutStrLn
   , openTempFile
-  , stderr
   )
 import System.Timeout (timeout)
 import Wuss qualified
@@ -188,7 +191,7 @@ gatewayStatusRetryDelayMicroseconds = 1000000
 
 runNativeValidation :: FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
 runNativeValidation repoRoot environment validation = do
-  putStrLn ("Validation: " ++ nativeValidationId validation)
+  writeOutputLine ("Validation: " ++ nativeValidationId validation)
   case validation of
     ValidationChartsVscode -> runChartsVscodeValidation repoRoot
     ValidationChartsApi -> runChartsApiValidation repoRoot
@@ -277,8 +280,7 @@ runHaRke2AwsValidation repoRoot environment = do
       case sshExit of
         ExitSuccess -> pure ExitSuccess
         firstFailure@(ExitFailure _) -> do
-          hPutStrLn
-            stderr
+          writeDiagnosticLine
             "AWS test-stack SSH validation failed after reconcile; destroying and recreating the retained stack once before retry."
           destroyExit <-
             runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
@@ -310,7 +312,7 @@ runGatewayPartitionValidation =
   case gatewayPartitionValidationReport of
     Left err -> failWith err
     Right report -> do
-      putStr report
+      writeOutput report
       pure ExitSuccess
 
 gatewayPartitionValidationReport :: Either String String
@@ -866,7 +868,7 @@ openManagedWebsocketConnection host path token = go websocketConnectionAttempts
   retryOrFail attemptsLeft detail
     | attemptsLeft <= 1 || not (shouldRetryTransientWebsocketOpenError detail) = pure (Left detail)
     | otherwise = do
-        hPutStrLn stderr ("Waiting for websocket route readiness before retry: " ++ detail)
+        writeDiagnosticLine ("Waiting for websocket route readiness before retry: " ++ detail)
         threadDelay websocketConnectionRetryDelayMicroseconds
         go (attemptsLeft - 1)
 
@@ -878,7 +880,7 @@ openDistinctManagedWebsocketConnection host path token excludedPod attemptsLeft 
     Left err
       | attemptsLeft <= 1 || not (shouldRetryTransientWebsocketOpenError err) -> pure (Left err)
       | otherwise -> do
-          hPutStrLn stderr ("Waiting for websocket route readiness before retry: " ++ err)
+          writeDiagnosticLine ("Waiting for websocket route readiness before retry: " ++ err)
           threadDelay websocketDistinctConnectionRetryDelayMicroseconds
           openDistinctManagedWebsocketConnection host path token excludedPod (attemptsLeft - 1)
     Right connection
@@ -893,7 +895,7 @@ openDistinctManagedWebsocketConnection host path token excludedPod attemptsLeft 
             )
       | otherwise -> do
           closeManagedWebsocketConnection connection
-          hPutStrLn stderr "Waiting for a distinct websocket backend pod before retry."
+          writeDiagnosticLine "Waiting for a distinct websocket backend pod before retry."
           threadDelay websocketDistinctConnectionRetryDelayMicroseconds
           openDistinctManagedWebsocketConnection host path token excludedPod (attemptsLeft - 1)
 
@@ -929,7 +931,7 @@ waitForWebsocketBroadcast connection expectedMessage attemptsLeft = go attemptsL
         case messageResult of
           Left err
             | attemptsRemaining > 1 && shouldRetryTransientWebsocketReceiveError err -> do
-                hPutStrLn stderr ("Waiting for websocket broadcast delivery before retry: " ++ err)
+                writeDiagnosticLine ("Waiting for websocket broadcast delivery before retry: " ++ err)
                 threadDelay websocketReceiveRetryDelayMicroseconds
                 go (attemptsRemaining - 1)
             | otherwise -> pure (Left err)
@@ -1102,7 +1104,7 @@ waitForAccessToken repoRoot settings secretKey clientId = go tokenFetchAttempts
       Left err
         | attemptsLeft <= 1 -> pure (Left err)
         | otherwise -> do
-            hPutStrLn stderr ("Waiting for Keycloak token endpoint readiness before retry: " ++ err)
+            writeDiagnosticLine ("Waiting for Keycloak token endpoint readiness before retry: " ++ err)
             threadDelay tokenFetchDelayMicroseconds
             go (attemptsLeft - 1)
 
@@ -1283,8 +1285,8 @@ waitForPublicEdgeReady repoRoot = do
       Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
       Success output -> do
         let combinedOutput = processStdout output ++ processStderr output
-        putStr (processStdout output)
-        hPutStr stderr (processStderr output)
+        writeOutput (processStdout output)
+        writeDiagnostic (processStderr output)
         case processExitCode output of
           ExitFailure code ->
             failWith
@@ -1304,7 +1306,7 @@ waitForPublicEdgeReady repoRoot = do
                       ++ "` before timeout."
                   )
             | otherwise -> do
-                hPutStrLn stderr "Waiting for public edge readiness before external curl validation."
+                writeDiagnosticLine "Waiting for public edge readiness before external curl validation."
                 threadDelay publicEdgeReadyDelayMicroseconds
                 waitForClassification spec (attemptsLeft - 1)
 
@@ -1826,13 +1828,12 @@ waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
     Success output ->
       case processExitCode output of
         ExitSuccess -> do
-          putStr (processStdout output)
-          hPutStr stderr (processStderr output)
+          writeOutput (processStdout output)
+          writeDiagnostic (processStderr output)
           pure ExitSuccess
         ExitFailure _
           | attemptsLeft > 1 && shouldRetryAwsTestSsh (outputDetail output) -> do
-              hPutStrLn
-                stderr
+              writeDiagnosticLine
                 ( "Waiting for AWS test-stack SSH readiness on "
                     ++ nodeLabel
                     ++ " before retry: "
@@ -1884,7 +1885,7 @@ assertProducedOutputContainsAll label outputAction expectedTexts = do
   case outputResult of
     Left err -> failWith ("`" ++ label ++ "` failed: " ++ displayException err)
     Right output -> do
-      putStr output
+      writeOutput output
       if all (`isInfixOf` output) expectedTexts
         then pure ExitSuccess
         else
@@ -1917,8 +1918,8 @@ assertCommandOutputContainsAll spec expectedTexts = do
   case outputResult of
     Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
     Success output -> do
-      putStr (processStdout output)
-      hPutStr stderr (processStderr output)
+      writeOutput (processStdout output)
+      writeDiagnostic (processStderr output)
       case processExitCode output of
         ExitFailure code ->
           failWith
@@ -1953,8 +1954,8 @@ waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = 
           then failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
           else retry attemptsLeft
       Success output -> do
-        putStr (processStdout output)
-        hPutStr stderr (processStderr output)
+        writeOutput (processStdout output)
+        writeDiagnostic (processStderr output)
         let combinedOutput = processStdout output ++ processStderr output
             loweredCombinedOutput = map toLowerAscii combinedOutput
         case processExitCode output of
@@ -1980,7 +1981,7 @@ waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = 
 
   retry :: Int -> IO ExitCode
   retry attemptsLeft = do
-    hPutStrLn stderr "Waiting for required command output before retry."
+    writeDiagnosticLine "Waiting for required command output before retry."
     threadDelay delayMicroseconds
     go (attemptsLeft - 1)
 

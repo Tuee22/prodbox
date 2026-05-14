@@ -13,7 +13,10 @@ import Prodbox.CLI.Command
   ( ConfigCommand (..)
   , NativeCommand (..)
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutput
+  )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.CLI.Rke2 (runRke2Command)
 import Prodbox.CheckCode
@@ -65,7 +68,7 @@ runConfigCommand repoRoot configCommand =
       case result of
         Left err -> failWith err
         Right settings -> do
-          putStr (renderSettingsDisplay showSecrets settings)
+          writeOutput (renderSettingsDisplay showSecrets settings)
           pure ExitSuccess
     ConfigValidate -> do
       result <- validateAndLoadSettings repoRoot

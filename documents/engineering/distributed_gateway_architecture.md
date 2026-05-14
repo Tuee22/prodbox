@@ -331,6 +331,30 @@ Current runtime correspondence and any compressed operational status fields are 
 
 When `dns_write_gate` is `None`, the daemon leaves Route 53 writes disabled.
 
+### Daemon Config Shape
+
+The gateway config generator emits a structured daemon config with top-level `schemaVersion`,
+`boot`, and `live` records. Boot-only fields include node identity, TLS material, Orders path,
+event keys, and `dns_write_gate`; live fields include log level, heartbeat/reconnect/sync
+intervals, clock-skew bound, and drain deadline. The parser still accepts the earlier flat JSON
+shape as compatibility input, but structured config schema mismatches fail as
+`config_schema_mismatch` and preserve the running live config during reload.
+
+The committed Dhall `types` / `defaults` file split remains an active Sprint 2.11 closure item;
+operators should treat the current structured JSON template as the implemented gateway-daemon
+runtime shape, not as the final prescribed Dhall layout.
+
+### Structured Logging
+
+The gateway daemon and public workload daemon entrypoints emit structured JSON log lines to
+stderr through `src/Prodbox/Gateway/Logging.hs`, backed by `co-log`. Log sites pass typed fields
+through `field`; daemon-path lint rejects inline log-object construction in log calls.
+
+Gateway log filtering reads `envLiveConfig` at each log site. The configured log level is seeded
+from launch/config precedence at startup and subsequent `SIGHUP` reloads update the live log
+threshold for later log calls without restart. The `prodbox-daemon-lifecycle` stanza verifies the
+stderr JSON envelope and the hot-reload log-level path.
+
 ### Route53DnsWriteClient
 
 The Haskell daemon wires DNS writes through native subprocess helpers:
@@ -423,9 +447,11 @@ The gateway REST listener also exposes daemon-health endpoints on the same in-po
   counter and peer/heartbeat gauges.
 
 Filesystem readiness markers and `sd_notify` are not supported readiness signals. The
-`prodbox-daemon-lifecycle` Cabal stanza starts the real `prodbox gateway start` process, polls
-`/readyz`, observes drain readiness after SIGTERM, and asserts exit `0` after the configured drain
-deadline or a second SIGTERM. The same stanza captures stable `/healthz`, ready/draining
+`prodbox-daemon-lifecycle` Cabal stanza starts the real `prodbox gateway start` process, waits on
+`/readyz` through the shared retry helper, observes drain readiness after SIGTERM, and asserts
+exit `0` after the configured drain deadline or a second SIGTERM. The style suite rejects direct
+`threadDelay` and raw `terminateProcess` use in that lifecycle stanza. The same stanza captures
+stable `/healthz`, ready/draining
 `/readyz`, and normalized `/metrics` response-shape goldens under `test/golden/daemon-health/`.
 
 ---

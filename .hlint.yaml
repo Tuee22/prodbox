@@ -5,6 +5,8 @@
 # - Avoid case inside lambda body
 # - forbid forkIO / unsafePerformIO / module-level IORef in daemon paths
 # - forbid direct subprocess primitives: callProcess / readCreateProcess / createProcess / proc / shell
+# - forbid direct terminal output outside Prodbox.CLI.Output: putStr / Text.IO.putStrLn / hPutStrLn stderr
+# - forbid inline daemon log objects: Aeson.object / Aeson.fromList
 # - forbid daemon readiness markers: sd_notify / READY=1 / readiness_marker / ready_file
 # - forbid reload polling triggers: System.FSNotify / System.INotify / Linux.INotify / getModificationTime
 # - forbid module-local mutable metrics: newIORef / newMVar outside envMetrics

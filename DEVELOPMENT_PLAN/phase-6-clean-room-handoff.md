@@ -15,11 +15,11 @@
 ✅ **Done on owned surfaces** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
 contract and zero-Python handoff surfaces. Per
 [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 6 stays
-`Done` on its owned scope while Phases `0`–`4` are reopened by Sprint 0.2 to adopt
+`Done` on its owned scope while Phases `1`–`4` remain reopened for downstream adoption of
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). Final handoff cannot be reclaimed until the
-reopened phases close: the rerun contract depends on the `CommandSpec` split (Sprint 1.6), the
-hspec → tasty migration (Sprint 1.11), the lifecycle reconcile rename (Sprint 4.5), and the
-`prodbox-pulumi` stanza (Sprint 4.7) before the doctrine alignment is complete.
+remaining active or planned reopens close: Sprints `1.8`, `1.12`–`1.14`, `1.16`–`1.18`,
+`1.22`, `2.9`, `2.11`–`2.14`, `3.9`, and `4.7`, plus the one-cycle
+`prodbox rke2 install` compatibility alias tracked in the cleanup ledger.
 
 ## Phase Summary
 
@@ -27,10 +27,11 @@ This phase defines the clean-room and zero-Python handoff criteria for the Haske
 repository. It owns the destructive rerun contract, the final zero-Python handoff criteria, and
 the dependency between those surfaces and the earlier lifecycle, gateway, chart, and AWS phases.
 The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
-The cleanup ledger is back at zero pending supported-path residue. Sprint `6.1`, Sprint `6.2`,
-and Sprint `6.3` remain closed on their repository-owned rerun orchestration, zero-Python
-baseline, and single-host handoff surfaces. The overall plan is fully closed again, and the
-Phase `6` rerun and Python-removal surfaces retain no open work. The Phase `6` doc-harmony
+Sprint `6.1`, Sprint `6.2`, and Sprint `6.3` remain closed on their repository-owned rerun
+orchestration, zero-Python baseline, and single-host handoff surfaces. The cleanup ledger remains
+clear on Python-removal and single-host handoff residue, while the current non-Python
+doctrine-adoption pending rows are owned by reopened Phases `1`–`4`. The Phase `6` rerun and
+Python-removal surfaces retain no open work. The Phase `6` doc-harmony
 follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
@@ -43,8 +44,9 @@ follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc delet
 - The `prodbox test` orchestration path runs Haskell test suites via `cabal test` and native CLI
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
-- The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history and
-  is back at zero pending supported-path cleanup items.
+- The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history.
+  It is clear for Phase `6` Python-removal and single-host handoff residue, while current
+  non-Python doctrine-adoption pending rows remain owned by reopened Phases `1`–`4`.
 - Root guidance aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -149,8 +151,8 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
-  removal history while keeping Python-removal residue at zero and the supported-path cleanup
-  ledger back at zero pending items.
+  removal history while keeping Python-removal residue at zero. Current non-Python pending rows
+  are the doctrine-adoption residue owned by reopened Phases `1`–`4`, not Phase `6` cleanup.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain explicit repo-review gates alongside the
   Haskell command-surface validations, and Sprint `6.1` continues to own the destructive rerun
@@ -198,9 +200,9 @@ supported path.
 
 ### Current Validation State
 
-- The supported codebase now closes on the shared-host public edge, native-host-architecture
-  custom-image publication, and zero pending cleanup in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- The supported codebase now closes on the shared-host public edge and native-host-architecture
+  custom-image publication. The cleanup ledger remains clear on the Sprint `6.3` single-host
+  handoff residue; current pending rows belong to reopened Phases `1`–`4`.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestPlan.hs` continue to own the destructive rerun,
   aggregate validation, and postflight restore; `prodbox test all` is the authoritative proof
   surface for validation step `5`.
@@ -238,8 +240,9 @@ supported path.
 - Supported-path search closure remains intact after the rerun: `example.com` is absent from the
   supported code and governed doctrine surfaces that define the live operator path.
 - Repository cleanup history is preserved in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), and the supported-path
-  ledger is back at zero pending removal.
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The Phase `6` cleanup
+  surface is closed, and the ledger's current pending rows are the separately owned doctrine-
+  adoption residue in Phases `1`–`4`.
 
 ### Remaining Work
 

@@ -48,7 +48,13 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeDiagnostic
+  , writeDiagnosticLine
+  , writeError
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Dns (fetchPublicIp)
@@ -137,10 +143,7 @@ import System.FilePath
   )
 import System.IO
   ( hClose
-  , hPutStr
-  , hPutStrLn
   , openTempFile
-  , stderr
   )
 import System.Info (os)
 import System.Info qualified as SystemInfo
@@ -464,7 +467,7 @@ runRke2Command repoRoot command =
       requireLinux (runNativeInstall repoRoot planOptions)
     Rke2Install planOptions ->
       requireLinux $ do
-        hPutStrLn stderr "Deprecated: `prodbox rke2 install` is an alias for `prodbox rke2 reconcile`."
+        writeDiagnosticLine "Deprecated: `prodbox rke2 install` is an alias for `prodbox rke2 reconcile`."
         runNativeInstall repoRoot planOptions
     Rke2Delete confirmed ->
       requireLinux $
@@ -605,7 +608,7 @@ applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
 runNativeDelete :: FilePath -> IO ExitCode
 runNativeDelete repoRoot = do
   retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
-  putStrLn "Deleting local RKE2 environment..."
+  writeOutputLine "Deleting local RKE2 environment..."
   runSequentially
     [ runPulumiCommand repoRoot (PulumiEksDestroy True (PlanOptions False Nothing))
     , runPulumiCommand repoRoot (PulumiTestDestroy True (PlanOptions False Nothing))
@@ -2316,8 +2319,7 @@ runAwsRoute53ChangeWithRetries repoRoot awsEnvironment arguments =
             pure ExitSuccess
           failure@(ExitFailure _)
             | attemptsRemaining > 1 && isRetryableRoute53CredentialFailure output -> do
-                hPutStrLn
-                  stderr
+                writeDiagnosticLine
                   ( "Retrying aws "
                       ++ unwords arguments
                       ++ " after AWS credential propagation failure ("
@@ -2426,8 +2428,7 @@ runHelmCommandWithRetries repoRoot arguments = go (retryPolicyMaxAttempts helmTr
             pure ExitSuccess
           failure@(ExitFailure _)
             | attemptsRemaining > 1 && isRetryableHelmFailure output -> do
-                hPutStrLn
-                  stderr
+                writeDiagnosticLine
                   ( "Retrying helm "
                       ++ unwords arguments
                       ++ " after transient upstream failure ("
@@ -2685,8 +2686,7 @@ pushDockerImageWithRetry repoRoot imageRef description = go (retryPolicyMaxAttem
             pure ExitSuccess
           ExitFailure _
             | attemptsRemaining > 1 && isRetryableHarborPublicationFailure (outputDetail output) -> do
-                hPutStrLn
-                  stderr
+                writeDiagnosticLine
                   ( "Retrying Harbor publication for "
                       ++ description
                       ++ " ("
@@ -3040,14 +3040,14 @@ removeManagedKubeconfig = do
 
 renderRetainedStateNotice :: FilePath -> FilePath -> IO ExitCode
 renderRetainedStateNotice repoRoot retainedManualPvRoot = do
-  putStrLn "Preserved host state:"
-  putStrLn ("  - manual PV root: " ++ retainedManualPvRoot)
-  putStrLn ("  - retained chart state root: " ++ repoRoot </> ".prodbox-state")
+  writeOutputLine "Preserved host state:"
+  writeOutputLine ("  - manual PV root: " ++ retainedManualPvRoot)
+  writeOutputLine ("  - retained chart state root: " ++ repoRoot </> ".prodbox-state")
   pure ExitSuccess
 
 reportDeleteStep :: String -> String -> IO ExitCode
 reportDeleteStep label status = do
-  putStrLn (label ++ ": " ++ status)
+  writeOutputLine (label ++ ": " ++ status)
   pure ExitSuccess
 
 summarizeRke2DeleteFailure :: ProcessOutput -> String
@@ -3811,10 +3811,10 @@ emitCapturedProcessOutput output = do
       stderrText = processStderr output
   if stdoutText == ""
     then pure ()
-    else putStr stdoutText
+    else writeOutput stdoutText
   if stderrText == ""
     then pure ()
-    else hPutStr stderr stderrText
+    else writeDiagnostic stderrText
 
 trimTrailingNewlines :: String -> String
 trimTrailingNewlines = reverse . dropWhile (`elem` ['\n', '\r']) . reverse

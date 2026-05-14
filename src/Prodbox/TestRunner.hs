@@ -27,7 +27,13 @@ import Prodbox.CLI.Command
   , TestScope (..)
   , validateCoverage
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeDiagnostic
+  , writeDiagnosticLine
+  , writeError
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.EffectDAG
   ( fromRootIds
@@ -63,11 +69,6 @@ import System.Environment
   )
 import System.Exit
   ( ExitCode (..)
-  )
-import System.IO
-  ( hPutStr
-  , hPutStrLn
-  , stderr
   )
 
 phaseOneGateMessage :: String
@@ -120,7 +121,7 @@ runTests repoRoot command =
       baseEnvironment <- getEnvironment
       environment <- addBuildSupportEnvironment repoRoot baseEnvironment
       let plan = testExecutionPlan (testScope command)
-      putStrLn ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
+      writeOutputLine ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
       case testScope command of
         TestLint -> runLintFirst repoRoot environment
         TestAll -> do
@@ -159,7 +160,7 @@ runLintFirst repoRoot environment = do
 
 runHaskellSuites :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runHaskellSuites repoRoot environment suites = do
-  unless (null suites) (putStrLn "Running Haskell test suites")
+  unless (null suites) (writeOutputLine "Running Haskell test suites")
   foldM runSuite ExitSuccess suites
  where
   runSuite :: ExitCode -> String -> IO ExitCode
@@ -237,7 +238,7 @@ runSequentially = foldM step ExitSuccess
   step ExitSuccess action = action
 
 emitLineAction :: String -> IO ExitCode
-emitLineAction message = putStrLn message >> pure ExitSuccess
+emitLineAction message = writeOutputLine message >> pure ExitSuccess
 
 runbookActions :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 runbookActions repoRoot environment suitePlan =
@@ -355,7 +356,7 @@ runManagedAwsHarnessSetup repoRoot policyTier = do
             ++ displayException err
         )
     Right output -> do
-      putStr output
+      writeOutput output
       pure ExitSuccess
 
 runManagedAwsHarnessTeardown :: FilePath -> IO ExitCode
@@ -368,7 +369,7 @@ runManagedAwsHarnessTeardown repoRoot = do
             ++ displayException err
         )
     Right output -> do
-      putStr output
+      writeOutput output
       pure ExitSuccess
 
 preferEarlierFailure :: ExitCode -> ExitCode -> ExitCode
@@ -397,8 +398,8 @@ runWaitForPublicEdgeReady repoRoot environment attempts delayMicroseconds =
       Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
       Success output -> do
         let combinedOutput = processStdout output ++ processStderr output
-        putStr (processStdout output)
-        hPutStr stderr (processStderr output)
+        writeOutput (processStdout output)
+        writeDiagnostic (processStderr output)
         case processExitCode output of
           ExitFailure code ->
             failWith
@@ -425,8 +426,7 @@ runWaitForPublicEdgeReady repoRoot environment attempts delayMicroseconds =
                 case repairResult of
                   Left err -> failWith err
                   Right repaired -> do
-                    hPutStrLn
-                      stderr
+                    writeDiagnosticLine
                       ( if repaired
                           then "Waiting for public-edge certificate reissue before retry."
                           else "Waiting for required native command output before retry."
@@ -459,7 +459,7 @@ maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
               if null repairTargets
                 then pure (Right False)
                 else do
-                  putStrLn
+                  writeOutputLine
                     ( "Detected failed public-edge certificate issuance ("
                         ++ show (publicEdgeFailedIssuanceAttempts failureInfo)
                         ++ " failed attempt(s)); deleting stale ACME resources for an immediate reissue."

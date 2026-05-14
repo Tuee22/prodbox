@@ -26,7 +26,8 @@ chart reconciler surface now treats already-deployed healthy releases as a succe
 rejects the doctrine-forbidden flags and sister commands, chart dry-run plans are rendered and
 golden-covered, the structural-lint implementation is live on `prodbox lint chart`, and the
 marker-delimited route inventory generated from `src/Prodbox/PublicEdge.hs` is now emitted into
-the consuming chart templates. The remaining reopened Phase `3` sprints stay `Planned`.
+the consuming chart templates. Sprint `3.9` is the only reopened Phase `3` sprint that remains
+`Active`.
 
 ## Phase Summary
 
@@ -526,9 +527,10 @@ Resources](../HASKELL_CLI_TOOL.md) on the chart platform.
 
 None.
 
-## Sprint 3.9: Capability Classes Applied to Redis and Postgres 📋
+## Sprint 3.9: Capability Classes Applied to Redis and Postgres 🔄
 
-**Status**: Planned
+**Status**: Active
+**Implementation**: `src/Prodbox/Service.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`
 
 ### Objective
@@ -547,6 +549,16 @@ Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
 1. `cabal test prodbox-unit` covers the new abstraction with `Env` test hooks.
 2. Direct `redis-cli` / raw Postgres subprocess invocations outside the capability classes are
    absent.
+
+### Remaining Work
+
+- Patroni cluster readiness and retained-claim wait paths in `src/Prodbox/Lib/ChartPlatform.hs`
+  now classify transient PostgreSQL failures as `PgError` and run through
+  `retryServiceAction`.
+- Remaining closure work: migrate the remaining Redis and PostgreSQL call sites in
+  `src/Prodbox/PostgresPlatform.hs` and `src/Prodbox/Lib/ChartPlatform.hs` onto the
+  `HasRedis` / `HasPg` capability methods and add the negative-space proof that no direct
+  Redis or raw PostgreSQL subprocess invocations survive outside the capability boundary.
 
 ## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete ✅
 

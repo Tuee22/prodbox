@@ -64,13 +64,22 @@ The build must not pretend to enforce guidance that it cannot actually prove.
 The current supported worktree has started converging on a small shared foundation layer:
 
 - `src/Prodbox/Subprocess.hs` owns structured subprocess construction and the `runStreaming` /
-  `capture` interpreter boundary.
+  `capture` interpreter boundary, backed by `typed-process` inside that boundary only.
+- `src/Prodbox/Gateway/Logging.hs` owns structured daemon JSON logging through `co-log`; daemon
+  log sites use typed `field` values and threshold-aware emission instead of direct terminal
+  writes.
+- `src/Prodbox/App.hs` owns the one-shot `Env` / `App` foundation backed by
+  `ReaderT Env IO`; command-runner migration onto that foundation remains an active Sprint 1.18
+  surface.
 - `src/Prodbox/Error.hs` owns `AppError` plus the `Recoverable` / `Fatal` split.
-- `src/Prodbox/CLI/Output.hs` owns user-facing error rendering at the CLI boundary.
+- `src/Prodbox/CLI/Output.hs` owns user-facing error rendering, stdout/stderr writer helpers,
+  and typed `OutputOptions` rendering at the CLI boundary.
 - `src/Prodbox/Retry.hs` owns `RetryPolicy` and pure backoff calculation.
 - `src/Prodbox/Service.hs` owns `ServiceError`, capability classes, and service-level retry
   helpers.
 - `src/Prodbox/Naming.hs` owns DNS-1123-safe resource naming helpers.
+- `src/Prodbox/StateMachine.hs` owns phantom-indexed transition surfaces for multi-state
+  gateway, Pulumi, and chart workflows; runtime migration onto those transitions remains active.
 
 These modules are active doctrine-adoption surfaces. New code should prefer them over ad-hoc
 reimplementations even where repository-wide migration is not yet complete.

@@ -37,7 +37,10 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutput
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Types
@@ -47,6 +50,7 @@ import Prodbox.Gateway.Types
   , parseDaemonConfig
   , parseOrders
   , peerRestUrl
+  , supportedDaemonConfigSchemaVersion
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Result (Result (..))
@@ -135,7 +139,7 @@ runGatewayStatus options = do
                           case renderGatewayStatusReport gatewayState of
                             Left err -> failWith err
                             Right report -> do
-                              putStr report
+                              writeOutput report
                               pure ExitSuccess
 
 runGatewayConfigGen :: FilePath -> FilePath -> String -> IO ExitCode
@@ -211,24 +215,33 @@ renderGatewayConfigTemplate settings nodeId =
   config = validatedConfig settings
   template =
     object
-      [ "node_id" .= nodeId
-      , "cert_file" .= ("/path/to/" ++ nodeId ++ ".crt")
-      , "key_file" .= ("/path/to/" ++ nodeId ++ ".key")
-      , "ca_file" .= ("/path/to/ca.crt" :: String)
-      , "orders_file" .= ("/path/to/orders.json" :: String)
-      , "event_keys"
-          .= Object
-            (KeyMap.singleton (Key.fromString nodeId) (String "REPLACE_WITH_SECRET_KEY"))
-      , "heartbeat_interval_seconds" .= (1.0 :: Double)
-      , "reconnect_interval_seconds" .= (1.0 :: Double)
-      , "sync_interval_seconds" .= (5.0 :: Double)
-      , "drain_deadline_seconds" .= (30 :: Int)
-      , "dns_write_gate"
+      [ "schemaVersion" .= supportedDaemonConfigSchemaVersion
+      , "boot"
           .= object
-            [ "zone_id" .= Text.unpack (zone_id (route53 config))
-            , "fqdn" .= preferredGatewayFqdn settings
-            , "ttl" .= (fromIntegral (demo_ttl (domain config)) :: Integer)
-            , "aws_region" .= Text.unpack (region (aws config))
+            [ "node_id" .= nodeId
+            , "cert_file" .= ("/path/to/" ++ nodeId ++ ".crt")
+            , "key_file" .= ("/path/to/" ++ nodeId ++ ".key")
+            , "ca_file" .= ("/path/to/ca.crt" :: String)
+            , "orders_file" .= ("/path/to/orders.json" :: String)
+            , "event_keys"
+                .= Object
+                  (KeyMap.singleton (Key.fromString nodeId) (String "REPLACE_WITH_SECRET_KEY"))
+            , "dns_write_gate"
+                .= object
+                  [ "zone_id" .= Text.unpack (zone_id (route53 config))
+                  , "fqdn" .= preferredGatewayFqdn settings
+                  , "ttl" .= (fromIntegral (demo_ttl (domain config)) :: Integer)
+                  , "aws_region" .= Text.unpack (region (aws config))
+                  ]
+            ]
+      , "live"
+          .= object
+            [ "log_level" .= ("info" :: String)
+            , "heartbeat_interval_seconds" .= (1.0 :: Double)
+            , "reconnect_interval_seconds" .= (1.0 :: Double)
+            , "sync_interval_seconds" .= (5.0 :: Double)
+            , "max_clock_skew_seconds" .= (10.0 :: Double)
+            , "drain_deadline_seconds" .= (30 :: Int)
             ]
       ]
 

@@ -398,10 +398,14 @@ intentional schema or defaults edits.
 
 ### One-shot output flags
 
-Per Sprint 1.17, every one-shot command that emits human- or machine-readable output accepts
-`--format {json,table,plain}` (default `table`) and `--color {auto,always,never}` plus the
-`--no-color` alias. Daemon-launching commands do not expose these flags; daemons emit
-structured JSON logs to stderr per Sprint 2.12.
+Sprint 1.17 is active. The shared output layer now owns `OutputOptions`, typed
+`--format {json,table,plain}`, `--color {auto,always,never}`, the `--no-color` alias, and the
+stdout/stderr writer boundary for one-shot commands. `prodbox check-code` rejects direct terminal
+writes outside that boundary.
+
+Per-command threading of those options through every output-emitting one-shot leaf and the
+golden matrix for rendered `json` / `table` output remain Sprint 1.17 work. Daemon-launching
+commands do not expose these flags; daemons emit structured JSON logs to stderr per Sprint 2.12.
 
 ### Cross-language types generation deferral
 

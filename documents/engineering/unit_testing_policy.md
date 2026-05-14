@@ -56,7 +56,7 @@ In the current repository:
 | Parser tests | `argv -> Command` coverage through `execParserPure`, including happy-path and unhappy-path leaf-command cases | `test/unit/Parser.hs` via `prodbox-unit` |
 | Built-frontend integration tests | CLI routing, fake-tool subprocess behavior, and direct-Dhall config masking or validation behavior | `test/integration/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs` via `cabal test prodbox-integration` |
 | Native real-world validations | AWS, DNS, gateway, chart, lifecycle, and public-edge proofs | `src/Prodbox/TestValidation.hs` via `prodbox test integration ...` |
-| Daemon lifecycle tests | Daemon startup-precedence and lifecycle-focused coverage, including the `PRODBOX_*` flag/env resolution contract, real process startup through the repository subprocess boundary, `/readyz` polling, SIGTERM drain, second-SIGTERM forced-exit assertions, and daemon health endpoint goldens | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
+| Daemon lifecycle tests | Daemon startup-precedence and lifecycle-focused coverage, including the `PRODBOX_*` flag/env resolution contract, real process startup through the repository subprocess boundary, `/readyz` waits through the shared retry helper, SIGTERM drain, second-SIGTERM forced-exit assertions, and daemon health endpoint goldens | `test/daemon-lifecycle/Main.hs` via `cabal test prodbox-daemon-lifecycle` |
 | Pulumi harness tests | Ephemeral stack-state ownership, typed output handoff, and forced-failure cleanup around the retained AWS Pulumi validation surface | `test/pulumi/Main.hs` via `cabal test prodbox-pulumi` |
 | Golden tests | `/healthz`, `/readyz`, and `/metrics` response shapes; CLI `--help`, `commands --tree`, `commands --json` output; rendered Plans; generated docs | `test/golden/` via `prodbox-unit` |
 
@@ -65,9 +65,11 @@ Sprints `2.10`, `2.14`, and `2.16` per
 [../../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../../HASKELL_CLI_TOOL.md) §1618–1620
 and `Test Categories → Daemon Lifecycle Tests` §2252–2254. Filesystem readiness markers,
 `sd_notify(READY=1)`, and `threadDelay`-based readiness probes are explicitly forbidden;
-`/readyz` polling is the only supported readiness signal. The lifecycle stanza covers the real
-process and signal contract and captures `/healthz`, `/readyz`, and `/metrics` response shapes
-under `test/golden/daemon-health/`.
+`/readyz` is the only supported readiness signal, and lifecycle waits use the shared retry helper
+rather than direct sleeps. The lifecycle stanza covers the real process and signal contract,
+captures `/healthz`, `/readyz`, and `/metrics` response shapes under
+`test/golden/daemon-health/`, and the style suite rejects direct `threadDelay` plus raw
+`terminateProcess` in the stanza.
 
 ### Integration Execution Policy (Fail-Fast)
 

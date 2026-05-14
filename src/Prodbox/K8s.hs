@@ -8,7 +8,10 @@ where
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Command (K8sCommand (..))
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutputLine
+  )
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (EffectNode (..), fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffectDAG)
@@ -59,7 +62,7 @@ runK8sLogs repoRoot namespaces tailLines = do
         Right namespacePods -> do
           let podRefs = concat namespacePods
           case podRefs of
-            [] -> putStrLn "No pods found in requested namespaces." >> pure ExitSuccess
+            [] -> writeOutputLine "No pods found in requested namespaces." >> pure ExitSuccess
             _ -> streamPodLogs repoRoot tailLines podRefs
 
 listNamespacePods :: FilePath -> String -> IO (Either String [(String, String)])

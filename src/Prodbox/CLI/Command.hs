@@ -30,6 +30,7 @@ module Prodbox.CLI.Command
   )
 where
 
+import Prodbox.CLI.Output (writeOutput)
 import System.Exit
   ( ExitCode (ExitSuccess)
   )
@@ -181,7 +182,7 @@ runPlanWithOptions options plan applyPlan = do
   persistPlanIfRequested (planFile options) (planRendered plan)
   if dryRun options
     then do
-      putStr (planRendered plan)
+      writeOutput (planRendered plan)
       pure ExitSuccess
     else applyPlan (planPayload plan)
 

@@ -72,7 +72,10 @@ prodbox check-code
 ### Haskell Repository Surface
 
 - Core CLI and runtime: `base`, `text`, `bytestring`, `aeson`, `optparse-applicative`,
-  `process`, `directory`, `filepath`
+  `typed-process`, `directory`, `filepath`, `transformers`
+- Daemon structured logging: `co-log` / `co-log-core` through
+  `src/Prodbox/Gateway/Logging.hs`, with gateway and workload daemon entrypoints writing JSON
+  log lines to stderr.
 - Repository config decoding is operator-authored `Dhall -> Haskell types`, bridged at runtime
   through the Haskell-owned `dhall-to-json` subprocess and parsed via `aeson` into typed Haskell
   settings values without materializing `prodbox-config.json` on the supported path

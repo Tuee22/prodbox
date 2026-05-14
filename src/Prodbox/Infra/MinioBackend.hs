@@ -30,6 +30,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (isSuffixOf)
+import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
@@ -191,7 +192,7 @@ repairDeletedMinioExportMountIfNeeded environment = do
       case parseDeletedMinioExportHostPath mountInfo of
         Nothing -> pure (Right ())
         Just hostPath -> do
-          putStrLn
+          writeOutputLine
             ( "Detected deleted MinIO export mount at "
                 ++ hostPath
                 ++ "; recreating the host path and restarting deployment/minio."

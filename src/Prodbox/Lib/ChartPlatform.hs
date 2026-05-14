@@ -23,7 +23,6 @@ module Prodbox.Lib.ChartPlatform
   )
 where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception
   ( IOException
   , bracket
@@ -115,7 +114,12 @@ import Prodbox.Result
   )
 import Prodbox.Retry
   ( RetryPolicy (..)
-  , retryDelayMicros
+  )
+import Prodbox.Service
+  ( PgError (..)
+  , ServiceError (..)
+  , retryServiceAction
+  , toServiceError
   )
 import Prodbox.Settings
   ( ConfigFile (..)
@@ -731,48 +735,31 @@ ensurePerconaPatroniStorageBindingsWithExpectedClaims namespace rootChart logica
 
 waitForPerconaPatroniClaims :: String -> Int -> IO (Either String [PerconaPatroniClaim])
 waitForPerconaPatroniClaims namespace expectedClaimCount =
-  wait (retryPolicyMaxAttempts perconaPatroniClaimRetryPolicy)
+  mapPgError <$> retryServiceAction perconaPatroniClaimRetryPolicy discoverExpectedClaims
  where
   clusterName = patroniClusterName namespace
 
-  wait :: Int -> IO (Either String [PerconaPatroniClaim])
-  wait attemptsLeft = do
+  discoverExpectedClaims :: IO (Either PgError [PerconaPatroniClaim])
+  discoverExpectedClaims = do
     claimsResult <- discoverPerconaPatroniClaims namespace
-    case claimsResult of
-      Left err ->
-        if attemptsLeft <= 1
-          then pure (Left err)
-          else do
-            threadDelay
-              ( retryDelayMicros
-                  perconaPatroniClaimRetryPolicy
-                  (retryPolicyMaxAttempts perconaPatroniClaimRetryPolicy - attemptsLeft)
-              )
-            wait (attemptsLeft - 1)
-      Right claims
-        | length claims == expectedClaimCount ->
-            pure (Right (sortOn perconaPatroniClaimName claims))
-        | attemptsLeft <= 1 ->
-            pure
-              ( Left
-                  ( "Percona Patroni cluster "
-                      ++ clusterName
-                      ++ " did not create the expected PostgreSQL PVC set. "
-                      ++ "Discovered claims: "
-                      ++ if null claims
-                        then "<none>"
-                        else
-                          intercalate ", " (sort (map perconaPatroniClaimName claims))
-                            ++ "."
-                  )
-              )
-        | otherwise -> do
-            threadDelay
-              ( retryDelayMicros
-                  perconaPatroniClaimRetryPolicy
-                  (retryPolicyMaxAttempts perconaPatroniClaimRetryPolicy - attemptsLeft)
-              )
-            wait (attemptsLeft - 1)
+    pure $
+      case claimsResult of
+        Left err -> Left (retryablePgError err)
+        Right claims
+          | length claims == expectedClaimCount ->
+              Right (sortOn perconaPatroniClaimName claims)
+          | otherwise ->
+              Left
+                ( retryablePgError
+                    ( "Percona Patroni cluster "
+                        ++ clusterName
+                        ++ " did not create the expected PostgreSQL PVC set. "
+                        ++ "Discovered claims: "
+                        ++ if null claims
+                          then "<none>"
+                          else intercalate ", " (sort (map perconaPatroniClaimName claims)) ++ "."
+                    )
+                )
 
 discoverPerconaPatroniClaims :: String -> IO (Either String [PerconaPatroniClaim])
 discoverPerconaPatroniClaims namespace = do
@@ -957,7 +944,7 @@ waitForPatroniClusterReady namespace =
 
 waitForPatroniClusterReadyWithReplicaCount :: String -> Int -> IO (Either String ())
 waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
-  wait (retryPolicyMaxAttempts patroniClusterReadyRetryPolicy)
+  mapPgError <$> retryServiceAction patroniClusterReadyRetryPolicy checkReadiness
  where
   clusterName = patroniClusterName namespace
   timeoutSeconds =
@@ -966,42 +953,40 @@ waitForPatroniClusterReadyWithReplicaCount namespace expectedReadyReplicas =
     )
       `div` 1000000
 
-  wait :: Int -> IO (Either String ())
-  wait attemptsLeft = do
+  checkReadiness :: IO (Either PgError ())
+  checkReadiness = do
     readinessResult <- patroniClusterReadiness namespace expectedReadyReplicas
-    case readinessResult of
-      Left err ->
-        if attemptsLeft <= 1
-          then pure (Left ("Patroni cluster " ++ clusterName ++ " did not converge: " ++ err))
-          else do
-            threadDelay
-              ( retryDelayMicros
-                  patroniClusterReadyRetryPolicy
-                  (retryPolicyMaxAttempts patroniClusterReadyRetryPolicy - attemptsLeft)
-              )
-            wait (attemptsLeft - 1)
-      Right PatroniClusterReady -> pure (Right ())
-      Right (PatroniClusterPending detail) ->
-        if attemptsLeft <= 1
-          then
-            pure
-              ( Left
-                  ( "Patroni cluster "
-                      ++ clusterName
-                      ++ " did not converge within "
-                      ++ show timeoutSeconds
-                      ++ " seconds. Last status: "
-                      ++ detail
-                      ++ "."
-                  )
-              )
-          else do
-            threadDelay
-              ( retryDelayMicros
-                  patroniClusterReadyRetryPolicy
-                  (retryPolicyMaxAttempts patroniClusterReadyRetryPolicy - attemptsLeft)
-              )
-            wait (attemptsLeft - 1)
+    pure $
+      case readinessResult of
+        Left err ->
+          Left (retryablePgError ("Patroni cluster " ++ clusterName ++ " did not converge: " ++ err))
+        Right PatroniClusterReady -> Right ()
+        Right (PatroniClusterPending detail) ->
+          Left
+            ( retryablePgError
+                ( "Patroni cluster "
+                    ++ clusterName
+                    ++ " did not converge within "
+                    ++ show timeoutSeconds
+                    ++ " seconds. Last status: "
+                    ++ detail
+                    ++ "."
+                )
+            )
+
+retryablePgError :: String -> PgError
+retryablePgError message =
+  PgError
+    ServiceError
+      { serviceErrorMessage = Text.pack message
+      , serviceErrorRetryable = True
+      }
+
+mapPgError :: Either PgError value -> Either String value
+mapPgError result =
+  case result of
+    Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
+    Right value -> Right value
 
 patroniClusterReadyRetryPolicy :: RetryPolicy
 patroniClusterReadyRetryPolicy =

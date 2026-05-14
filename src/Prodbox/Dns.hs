@@ -26,7 +26,10 @@ import Prodbox.AwsEnvironment
   ( isolatedAwsEnvironment
   )
 import Prodbox.CLI.Command (DnsCommand (..))
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutput
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.PublicEdge
   ( publicFqdn
@@ -67,7 +70,7 @@ runDnsCommand repoRoot command =
               case recordResult of
                 Left err -> failWith err
                 Right currentRecordIp -> do
-                  putStr (renderDnsStatusReport settings publicIp currentRecordIp)
+                  writeOutput (renderDnsStatusReport settings publicIp currentRecordIp)
                   pure ExitSuccess
 
 renderDnsStatusReport :: ValidatedSettings -> String -> Maybe String -> String

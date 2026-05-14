@@ -52,6 +52,10 @@ instance AsServiceError PgError where
   toServiceError = unPgError
   fromServiceError = PgError
 
+instance AsServiceError ServiceError where
+  toServiceError = id
+  fromServiceError = id
+
 class (Monad m) => HasMinIO m where
   runMinIO :: String -> m (Either MinIOError String)
 

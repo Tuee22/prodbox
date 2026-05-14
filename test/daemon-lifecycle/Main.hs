@@ -2,14 +2,20 @@
 
 module Main (main) where
 
-import Control.Concurrent (threadDelay)
 import Control.Exception
   ( SomeException
   , bracket
   , try
   )
+import Data.Aeson
+  ( Value (..)
+  , eitherDecode
+  )
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Text qualified as Text
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (SockAddrInet)
@@ -40,11 +46,17 @@ import Prodbox.Gateway
   , resolveGatewayPortOverride
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Retry (RetryPolicy (..))
+import Prodbox.Service
+  ( ServiceError (..)
+  , retryServiceAction
+  )
 import Prodbox.Subprocess
-  ( BackgroundProcess
+  ( BackgroundProcess (..)
   , CommandSpec (..)
   , ProcessOutput (..)
   , captureCommand
+  , signalBackgroundProcess
   , startBackgroundProcess
   , stopBackgroundProcess
   , terminateBackgroundProcess
@@ -62,7 +74,9 @@ import System.Environment
   )
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
+import System.IO (hGetContents)
 import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Signals (sigHUP)
 import System.Timeout (timeout)
 import TestSupport
 
@@ -98,6 +112,26 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
         waitForHttpStatus (daemonRestPort daemon) "/readyz" 503
         terminateGatewayDaemon daemon
         waitForProcessExitSuccess daemon 10
+
+    it "emits structured JSON log lines on stderr" $
+      withGatewayDaemon 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        terminateGatewayDaemon daemon
+        waitForProcessExitSuccess daemon 10
+        stderrText <- readDaemonStderr daemon
+        case filter (not . null) (lines stderrText) of
+          firstLine : _ -> assertStructuredLogLine firstLine
+          [] -> expectationFailure "expected at least one daemon log line on stderr"
+
+    it "refreshes log filtering from reloaded live config" $
+      withGatewayDaemon 5 $ \daemon -> do
+        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        rewriteGatewayConfig daemon 1 (Just "error")
+        reloadGatewayDaemon daemon
+        terminateGatewayDaemon daemon
+        waitForProcessExitSuccess daemon 3
+        stderrText <- readDaemonStderr daemon
+        extractLogEvents stderrText `shouldNotContain` ["gateway_draining"]
 
   describe "gateway daemon health endpoint goldens" $ do
     goldenTest
@@ -226,6 +260,7 @@ isJust maybeValue =
 data RunningGatewayDaemon = RunningGatewayDaemon
   { daemonBackgroundProcess :: BackgroundProcess
   , daemonRestPort :: Int
+  , daemonWriteConfig :: Int -> Maybe String -> IO ()
   }
 
 data HttpResponse = HttpResponse
@@ -250,9 +285,11 @@ withGatewayDaemon drainDeadlineSeconds action =
     writeFile keyPath "key"
     writeFile caPath "ca"
     writeFile ordersPath (renderOrders restPort peerPort)
-    writeFile configPath (renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds)
+    let writeConfig deadlineSeconds maybeLogLevel =
+          writeFile configPath (renderConfig certPath keyPath caPath ordersPath deadlineSeconds maybeLogLevel)
+    writeConfig drainDeadlineSeconds Nothing
     bracket
-      (startGatewayProcess binary tmpDir configPath restPort)
+      (startGatewayProcess binary tmpDir configPath restPort writeConfig)
       stopGatewayProcess
       action
 
@@ -291,8 +328,14 @@ runCommandSuccess command = do
                 )
             )
 
-startGatewayProcess :: FilePath -> FilePath -> FilePath -> Int -> IO RunningGatewayDaemon
-startGatewayProcess binary workingDir configPath restPort = do
+startGatewayProcess
+  :: FilePath
+  -> FilePath
+  -> FilePath
+  -> Int
+  -> (Int -> Maybe String -> IO ())
+  -> IO RunningGatewayDaemon
+startGatewayProcess binary workingDir configPath restPort writeConfig = do
   startResult <-
     startBackgroundProcess
       CommandSpec
@@ -308,6 +351,7 @@ startGatewayProcess binary workingDir configPath restPort = do
         RunningGatewayDaemon
           { daemonBackgroundProcess = process
           , daemonRestPort = restPort
+          , daemonWriteConfig = writeConfig
           }
 
 stopGatewayProcess :: RunningGatewayDaemon -> IO ()
@@ -317,6 +361,14 @@ stopGatewayProcess daemon =
 terminateGatewayDaemon :: RunningGatewayDaemon -> IO ()
 terminateGatewayDaemon daemon =
   terminateBackgroundProcess (daemonBackgroundProcess daemon)
+
+reloadGatewayDaemon :: RunningGatewayDaemon -> IO ()
+reloadGatewayDaemon daemon =
+  signalBackgroundProcess sigHUP (daemonBackgroundProcess daemon)
+
+rewriteGatewayConfig :: RunningGatewayDaemon -> Int -> Maybe String -> IO ()
+rewriteGatewayConfig daemon =
+  daemonWriteConfig daemon
 
 waitForProcessExitSuccess :: RunningGatewayDaemon -> Int -> IO ()
 waitForProcessExitSuccess daemon timeoutSeconds = do
@@ -328,6 +380,39 @@ waitForProcessExitSuccess daemon timeoutSeconds = do
     Nothing -> expectationFailure "gateway daemon did not exit before the test timeout"
     Just (Left err) -> expectationFailure (show err)
     Just (Right exitCode) -> exitCode `shouldBe` ExitSuccess
+
+readDaemonStderr :: RunningGatewayDaemon -> IO String
+readDaemonStderr daemon =
+  case backgroundStderrHandle (daemonBackgroundProcess daemon) of
+    Nothing -> pure ""
+    Just handle -> do
+      contents <- hGetContents handle
+      length contents `seq` pure contents
+
+assertStructuredLogLine :: String -> IO ()
+assertStructuredLogLine rawLine =
+  case eitherDecode (BL8.pack rawLine) of
+    Left err -> expectationFailure ("daemon stderr log line was not JSON: " ++ err)
+    Right (Object obj) -> do
+      assertStringField obj "timestamp_utc"
+      assertStringField obj "severity"
+      assertStringField obj "event"
+    Right _ -> expectationFailure "daemon stderr log line was not a JSON object"
+
+assertStringField :: KeyMap.KeyMap Value -> String -> IO ()
+assertStringField obj fieldName =
+  case KeyMap.lookup (Key.fromString fieldName) obj of
+    Just (String value)
+      | not (Text.null value) -> pure ()
+    _ -> expectationFailure ("daemon structured log line is missing string field `" ++ fieldName ++ "`")
+
+extractLogEvents :: String -> [String]
+extractLogEvents stderrText =
+  [ Text.unpack eventName
+  | rawLine <- lines stderrText
+  , Right (Object obj) <- [eitherDecode (BL8.pack rawLine)]
+  , Just (String eventName) <- [KeyMap.lookup (Key.fromString "event") obj]
+  ]
 
 renderEndpointGolden :: String -> IO BL8.ByteString
 renderEndpointGolden path =
@@ -390,26 +475,41 @@ allocateTcpPort =
       )
 
 waitForHttpStatus :: Int -> String -> Int -> IO ()
-waitForHttpStatus port path expectedStatus = go (50 :: Int) Nothing
+waitForHttpStatus port path expectedStatus = do
+  result <- retryServiceAction httpStatusRetryPolicy probe
+  case result of
+    Right () -> pure ()
+    Left err -> expectationFailure (Text.unpack (serviceErrorMessage err))
  where
-  go attemptsLeft lastResult
-    | attemptsLeft <= 0 =
-        expectationFailure
-          ( "timed out waiting for "
-              ++ path
-              ++ " status "
-              ++ show expectedStatus
-              ++ "; last result: "
-              ++ show lastResult
-          )
-    | otherwise = do
-        result <- tryReadHttp port path
-        case result of
-          Right response
-            | responseStatus response == expectedStatus -> pure ()
-          _ -> do
-            threadDelay 100000
-            go (attemptsLeft - 1) (Just result)
+  probe = do
+    result <- tryReadHttp port path
+    pure $
+      case result of
+        Right response
+          | responseStatus response == expectedStatus -> Right ()
+        _ ->
+          Left
+            ServiceError
+              { serviceErrorMessage =
+                  Text.pack
+                    ( "timed out waiting for "
+                        ++ path
+                        ++ " status "
+                        ++ show expectedStatus
+                        ++ "; last result: "
+                        ++ show result
+                    )
+              , serviceErrorRetryable = True
+              }
+
+httpStatusRetryPolicy :: RetryPolicy
+httpStatusRetryPolicy =
+  RetryPolicy
+    { retryPolicyMaxAttempts = 50
+    , retryPolicyBaseDelayMicros = 100000
+    , retryPolicyMultiplier = 1
+    , retryPolicyMaxDelayMicros = 100000
+    }
 
 readHttp :: Int -> String -> IO HttpResponse
 readHttp port path = do
@@ -494,8 +594,8 @@ httpRequest :: String -> String
 httpRequest path =
   "GET " ++ path ++ " HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
 
-renderConfig :: FilePath -> FilePath -> FilePath -> FilePath -> Int -> String
-renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds =
+renderConfig :: FilePath -> FilePath -> FilePath -> FilePath -> Int -> Maybe String -> String
+renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLevel =
   unlines
     [ "{"
     , "  \"node_id\": \"node-a\","
@@ -509,6 +609,7 @@ renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds =
     , "  \"sync_interval_seconds\": 0.2,"
     , "  \"max_clock_skew_seconds\": 10,"
     , "  \"drain_deadline_seconds\": " ++ show drainDeadlineSeconds ++ ","
+    , "  \"log_level\": " ++ maybe "null" show maybeLogLevel ++ ","
     , "  \"dns_write_gate\": null"
     , "}"
     ]

@@ -14,7 +14,10 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutput
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
@@ -121,7 +124,7 @@ withSettings repoRoot action = do
 
 promptForDelete :: String -> IO Bool
 promptForDelete chartName = do
-  putStr ("Delete chart stack " ++ chartName ++ "? [y/N]: ")
+  writeOutput ("Delete chart stack " ++ chartName ++ "? [y/N]: ")
   hFlush stdout
   responseResult <- try getLine :: IO (Either IOException String)
   pure $ case responseResult of
@@ -130,7 +133,7 @@ promptForDelete chartName = do
 
 writeSuccess :: String -> IO ExitCode
 writeSuccess output = do
-  putStr output
+  writeOutput output
   pure ExitSuccess
 
 applyChartPlanOutput

@@ -257,10 +257,10 @@ A sprint can move to `Done` only when all of the following are true:
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.4) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active (Sprints 1.6–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
-| 2 | Haskell Gateway Runtime and DNS Ownership | 🔄 Active (Sprints 2.9, 2.11–2.14) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
-| 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 Active (Sprints 3.8–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 Active (Sprints 4.5–4.7) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active (active: 1.8, 1.12–1.18, 1.22; 1.26 done) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 2 | Haskell Gateway Runtime and DNS Ownership | 🔄 Active (Sprints 2.9, 2.11, 2.13–2.14; 2.12 done) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
+| 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 Active (Sprint 3.9 active; 3.8, 3.10–3.12 done) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 Active (Sprint 4.7 active; 4.5–4.6 done) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done on owned surfaces | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
@@ -280,11 +280,11 @@ phases `1` through `4` close.
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
 the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
-evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.26`, `2.9`, `2.11`,
-`2.12`, `2.13`, `2.14`, and `4.7` in `Active` state because those surfaces have started
+evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.16`, `1.17`, `1.18`, `1.22`, `2.9`, `2.11`,
+`2.13`, `2.14`, `3.9`, and `4.7` in `Active` state because those surfaces have started
 in code but still retain sprint-owned implementation or validation gaps. Sprints `1.10`,
-`1.11`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.27`, `2.10`, `2.15`,
-`2.16`, `3.10`, `3.11`, `3.12`, `4.5`, `4.6`, and `5.5` are now locally validated and
+`1.11`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.26`, `1.27`, `2.10`, `2.12`,
+`2.15`, `2.16`, `3.10`, `3.11`, `3.12`, `4.5`, `4.6`, and `5.5` are now locally validated and
 doc-aligned, and Sprints `1.6`, `1.7`, `1.9`, `1.15`, and `3.8` now re-close on the supported
 worktree. The remaining reopened Phase `1`–`4` sprints stay in their sprint-owned `Active` or
 `Planned` state until their own remaining-work sections are cleared. The following implemented

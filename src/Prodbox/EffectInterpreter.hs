@@ -26,6 +26,11 @@ import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
+import Prodbox.CLI.Output
+  ( writeDiagnostic
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.Effect
   ( Effect (..)
   , Validation (..)
@@ -75,10 +80,6 @@ import System.Exit
   )
 import System.FilePath
   ( (</>)
-  )
-import System.IO
-  ( hPutStr
-  , stderr
   )
 import System.Info
   ( os
@@ -145,7 +146,7 @@ runEffect :: InterpreterContext -> Effect -> IO (Result ())
 runEffect context effect =
   case effect of
     EmitLine text -> do
-      putStrLn text
+      writeOutputLine text
       pure (Success ())
     Noop -> pure (Success ())
     RunCommand spec -> runCommandEffect spec
@@ -684,8 +685,8 @@ isRetryableAwsValidationFailure output =
 
 echoProcessOutput :: ProcessOutput -> IO ()
 echoProcessOutput output = do
-  putStr (processStdout output)
-  hPutStr stderr (processStderr output)
+  writeOutput (processStdout output)
+  writeDiagnostic (processStderr output)
 
 awsCommandEnvironment :: ValidatedSettings -> IO [(String, String)]
 awsCommandEnvironment settings = do

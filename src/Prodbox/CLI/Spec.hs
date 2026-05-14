@@ -8,6 +8,7 @@ module Prodbox.CLI.Spec
   , commandRegistry
   , findCommandSpec
   , leafCommandPaths
+  , outputOptionsParser
   )
 where
 
@@ -15,6 +16,7 @@ import Control.Applicative ((<|>))
 import Data.List (find)
 import Options.Applicative
   ( Parser
+  , ReadM
   , auto
   , command
   , eitherReader
@@ -61,6 +63,11 @@ import Prodbox.CLI.Command
   , TestScope (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
+  )
+import Prodbox.CLI.Output
+  ( ColorMode (..)
+  , OutputFormat (..)
+  , OutputOptions (..)
   )
 import Prodbox.K8s (defaultInfrastructureNamespaces)
 
@@ -403,6 +410,50 @@ planOptionsParser =
               <> help "Write the rendered plan to a file"
           )
       )
+
+outputOptionsParser :: Parser OutputOptions
+outputOptionsParser =
+  OutputOptions
+    <$> option
+      outputFormatReader
+      ( long "format"
+          <> metavar "plain|table|json"
+          <> value OutputPlain
+          <> help "Output format"
+      )
+    <*> ( noColorParser
+            <|> option
+              colorModeReader
+              ( long "color"
+                  <> metavar "auto|always|never"
+                  <> value ColorAuto
+                  <> help "Color mode"
+              )
+        )
+ where
+  noColorParser = flag' ColorNever (long "no-color" <> help "Disable color output")
+
+outputFormatReader :: ReadM OutputFormat
+outputFormatReader = eitherReader parseOutputFormat
+
+colorModeReader :: ReadM ColorMode
+colorModeReader = eitherReader parseColorMode
+
+parseOutputFormat :: String -> Either String OutputFormat
+parseOutputFormat valueText =
+  case valueText of
+    "plain" -> Right OutputPlain
+    "table" -> Right OutputTable
+    "json" -> Right OutputJson
+    _ -> Left "--format must be one of: plain, table, json"
+
+parseColorMode :: String -> Either String ColorMode
+parseColorMode valueText =
+  case valueText of
+    "auto" -> Right ColorAuto
+    "always" -> Right ColorAlways
+    "never" -> Right ColorNever
+    _ -> Left "--color must be one of: auto, always, never"
 
 foregroundParser :: Parser Bool
 foregroundParser =

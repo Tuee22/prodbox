@@ -85,10 +85,10 @@ import Network.Socket
   )
 import Network.Socket.ByteString (recv, sendAll)
 import Prodbox.Gateway.Logging
-  ( field
-  , logError
-  , logInfo
-  , logWarn
+  ( Severity (..)
+  , field
+  , logStructuredAt
+  , severityFromLogLevel
   )
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
@@ -236,7 +236,9 @@ initialState ordersVersion =
 
 runGatewayDaemon :: Maybe FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
 runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsDo $ do
-  logInfo
+  logAtLevel
+    logLevel
+    Info
     "gateway_starting"
     [ field "node_id" (daemonNodeId config)
     , field "log_level" logLevel
@@ -244,23 +246,25 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
   ordersText <- readFile (daemonOrdersFile config)
   case parseOrders ordersText of
     Left err -> do
-      logError "orders_parse_failed" [field "detail" err]
+      logAtLevel logLevel Error "orders_parse_failed" [field "detail" err]
       pure (ExitFailure 1)
     Right orders ->
       case validateDaemonTimingAgainstOrders config orders of
         Left err -> do
-          logError "gateway_timing_invalid" [field "detail" err]
+          logAtLevel logLevel Error "gateway_timing_invalid" [field "detail" err]
           pure (ExitFailure 1)
         Right () ->
           case resolveLocalPeerEndpoint config orders of
             Left err -> do
-              logError "local_gateway_node_invalid" [field "detail" err]
+              logAtLevel logLevel Error "local_gateway_node_invalid" [field "detail" err]
               pure (ExitFailure 1)
             Right localPeer -> do
               startupValidationResult <- validateDaemonStartupInputs config
               case startupValidationResult of
                 Left err -> do
-                  logError
+                  logAtLevel
+                    logLevel
+                    Error
                     "gateway_startup_inputs_invalid"
                     [ field "message" ("Failed to validate gateway startup inputs: " ++ err)
                     , field "detail" err
@@ -305,7 +309,9 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                           }
                   installDaemonSignalHandlers env signalCount
 
-                  logInfo
+                  logForEnv
+                    env
+                    Info
                     "orders_loaded"
                     [ field "node_count" (length (ordersNodes orders))
                     , field "orders_version_utc" (ordersVersionUtc orders)
@@ -314,16 +320,16 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                   result <- try (serveGatewayDaemon restPortOverride localPeer env) :: IO (Either SomeException ())
                   case result of
                     Left exc -> do
-                      logError "gateway_daemon_error" [field "detail" (show exc)]
+                      logForEnv env Error "gateway_daemon_error" [field "detail" (show exc)]
                       pure (ExitFailure 1)
                     Right () -> do
-                      logInfo "gateway_stopped" []
+                      logForEnv env Info "gateway_stopped" []
                       pure ExitSuccess
 
 liveConfigFromDaemonConfig :: String -> DaemonConfig -> LiveConfig
 liveConfigFromDaemonConfig logLevel config =
   LiveConfig
-    { liveLogLevel = logLevel
+    { liveLogLevel = fromMaybe logLevel (daemonConfigLogLevel config)
     , liveHeartbeatInterval = daemonHeartbeatInterval config
     , liveReconnectInterval = daemonReconnectInterval config
     , liveSyncInterval = daemonSyncInterval config
@@ -331,6 +337,15 @@ liveConfigFromDaemonConfig logLevel config =
     , liveDrainDeadlineSeconds =
         fromMaybe defaultDrainDeadlineSeconds (daemonDrainDeadlineSeconds config)
     }
+
+logAtLevel :: String -> Severity -> Text.Text -> [(Text.Text, Value)] -> IO ()
+logAtLevel logLevel =
+  logStructuredAt (severityFromLogLevel logLevel)
+
+logForEnv :: DaemonEnv -> Severity -> Text.Text -> [(Text.Text, Value)] -> IO ()
+logForEnv env severity eventName fields = do
+  liveConfig <- readTVarIO (envLiveConfig env)
+  logAtLevel (liveLogLevel liveConfig) severity eventName fields
 
 installDaemonSignalHandlers
   :: DaemonEnv
@@ -386,11 +401,13 @@ drainCoordinator :: DaemonEnv -> IO ()
 drainCoordinator env = do
   firstSignal <- atomically (readTQueue (envDrainSignals env))
   case firstSignal of
-    ForceDrain -> logWarn "gateway_force_draining" []
+    ForceDrain -> logForEnv env Warn "gateway_force_draining" []
     BeginDrain -> do
       liveConfig <- readTVarIO (envLiveConfig env)
       atomically (writeTVar (envReadiness env) Draining)
-      logInfo
+      logForEnv
+        env
+        Info
         "gateway_draining"
         [field "deadline_seconds" (liveDrainDeadlineSeconds liveConfig)]
       race
@@ -401,7 +418,7 @@ drainCoordinator env = do
   waitForForceDrain = do
     signal <- atomically (readTQueue (envDrainSignals env))
     case signal of
-      ForceDrain -> logWarn "gateway_force_draining" []
+      ForceDrain -> logForEnv env Warn "gateway_force_draining" []
       BeginDrain -> waitForForceDrain
 
 runWorkerWithRetry :: DaemonEnv -> String -> IO () -> IO ()
@@ -415,7 +432,7 @@ runWorkerWithRetry env workerName action = go 0
         if readiness == Draining
           then pure ()
           else do
-            logWarn "daemon_worker_returned" [field "worker" workerName]
+            logForEnv env Warn "daemon_worker_returned" [field "worker" workerName]
             go 0
       Left exc ->
         do
@@ -427,7 +444,9 @@ runWorkerWithRetry env workerName action = go 0
               Nothing ->
                 if attemptIndex + 1 < retryPolicyMaxAttempts daemonWorkerRetryPolicy
                   then do
-                    logWarn
+                    logForEnv
+                      env
+                      Warn
                       "daemon_worker_restarting"
                       [ field "worker" workerName
                       , field "attempt" (attemptIndex + 1)
@@ -436,7 +455,9 @@ runWorkerWithRetry env workerName action = go 0
                     threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
                     go (attemptIndex + 1)
                   else do
-                    logError
+                    logForEnv
+                      env
+                      Error
                       "daemon_worker_failed"
                       [ field "worker" workerName
                       , field "detail" (displayException exc)
@@ -458,12 +479,14 @@ reloadLoop env = forever $ do
   reloadResult <- reloadLiveConfig env
   case reloadResult of
     Left eventName ->
-      logWarn (Text.pack eventName) []
+      logForEnv env Warn (Text.pack eventName) []
     Right liveConfig -> do
       atomically $ do
         writeTVar (envLiveConfig env) liveConfig
         writeTChan (envLiveConfigReloads env) liveConfig
-      logInfo
+      logForEnv
+        env
+        Info
         "config_reloaded"
         [ field "log_level" (liveLogLevel liveConfig)
         , field "heartbeat_interval_seconds" (liveHeartbeatInterval liveConfig)
@@ -482,7 +505,10 @@ reloadLiveConfig env =
         Left _ -> pure (Left "config_reload_failed")
         Right rawConfig ->
           case parseDaemonConfig rawConfig of
-            Left _ -> pure (Left "config_reload_failed")
+            Left err ->
+              if "config_schema_mismatch" `isPrefixOf` err
+                then pure (Left "config_schema_mismatch")
+                else pure (Left "config_reload_failed")
             Right newConfig -> do
               currentLiveConfig <- readTVarIO (envLiveConfig env)
               let bootEvent =
@@ -496,7 +522,10 @@ reloadLiveConfig env =
               case validateDaemonTimingAgainstOrders newConfig (envOrders env) of
                 Left _ -> pure (Left "config_schema_mismatch")
                 Right () -> do
-                  maybe (pure ()) (\eventName -> logWarn (Text.pack eventName) []) bootEvent
+                  maybe
+                    (pure ())
+                    (\eventName -> logForEnv env Warn (Text.pack eventName) [])
+                    bootEvent
                   pure (Right liveConfig)
 
 daemonBootFieldsChanged :: DaemonConfig -> DaemonConfig -> Bool
@@ -565,7 +594,7 @@ heartbeatLoop env = forever $ do
           , "timestamp" .= formatUtcIso now
           ]
   case Map.lookup nodeId eventKeys of
-    Nothing -> logWarn "event_key_missing" [field "node_id" nodeId]
+    Nothing -> logForEnv env Warn "event_key_missing" [field "node_id" nodeId]
     Just key -> do
       let event = createSignedEvent nodeId eventTypeHeartbeat heartbeatPayload key now
       atomically $ modifyTVar' stateVar $ \state ->
@@ -610,6 +639,7 @@ gatewayLoop env = forever $ do
       transitionedFromOwner = previous == Just nodeId && owner /= Just nodeId
   when transitionedToOwner $
     appendOwnershipEvent
+      env
       stateVar
       eventKeys
       nodeId
@@ -622,6 +652,7 @@ gatewayLoop env = forever $ do
       )
   when transitionedFromOwner $
     appendOwnershipEvent
+      env
       stateVar
       eventKeys
       nodeId
@@ -645,21 +676,24 @@ toMaybeString Nothing = Null
 toMaybeString (Just s) = String (Text.pack s)
 
 appendOwnershipEvent
-  :: TVar DaemonState
+  :: DaemonEnv
+  -> TVar DaemonState
   -> Map String String
   -> String
   -> String
   -> UTCTime
   -> Value
   -> IO ()
-appendOwnershipEvent stateVar eventKeys nodeId evType now payload =
+appendOwnershipEvent env stateVar eventKeys nodeId evType now payload =
   case Map.lookup nodeId eventKeys of
-    Nothing -> logWarn "event_key_missing" [field "node_id" nodeId]
+    Nothing -> logForEnv env Warn "event_key_missing" [field "node_id" nodeId]
     Just key -> do
       let ev = createSignedEvent nodeId evType payload key now
       atomically $ modifyTVar' stateVar $ \s ->
         s {stateCommitLog = appendIfNew (stateCommitLog s) ev}
-      logInfo
+      logForEnv
+        env
+        Info
         "gateway_ownership_event_emitted"
         [ field "event_type" evType
         , field "node_id" nodeId
@@ -681,7 +715,7 @@ dnsWriteLoop env = forever $ do
       Just gate -> do
         publicIpResult <- fetchPublicIp
         case publicIpResult of
-          Left err -> logWarn "dns_write_skipped" [field "detail" err]
+          Left err -> logForEnv env Warn "dns_write_skipped" [field "detail" err]
           Right currentIp -> do
             atomically $ modifyTVar' stateVar $ \s -> s {stateLastPublicIp = Just currentIp}
             let shouldWrite = case stateLastDnsWriteIp state of
@@ -690,7 +724,7 @@ dnsWriteLoop env = forever $ do
             when shouldWrite $ do
               writeResult <- writeDnsRecord gate currentIp
               case writeResult of
-                Left err -> logError "dns_write_failed" [field "detail" err]
+                Left err -> logForEnv env Error "dns_write_failed" [field "detail" err]
                 Right () -> do
                   now <- getCurrentTime
                   atomically $ modifyTVar' stateVar $ \s ->
@@ -699,7 +733,9 @@ dnsWriteLoop env = forever $ do
                       , stateLastDnsWriteIp = Just currentIp
                       , stateLastDnsWriteTime = Just now
                       }
-                  logInfo
+                  logForEnv
+                    env
+                    Info
                     "dns_write_succeeded"
                     [ field "fqdn" (dnsWriteGateFqdn gate)
                     , field "ip" currentIp
@@ -712,7 +748,7 @@ restServerLoop restPortOverride localPeer env = do
   let host = peerRestHost localPeer
       port = fromMaybe (peerRestPort localPeer) restPortOverride
   withListeningSocket "REST server" host port $ \sock -> do
-    logInfo "rest_server_listening" [field "host" host, field "port" port]
+    logForEnv env Info "rest_server_listening" [field "host" host, field "port" port]
     acceptWhileServing True sock env (`handleRestClient` env)
 
 handleRestClient :: Socket -> DaemonEnv -> IO ()
@@ -815,7 +851,7 @@ peerListenerLoop localPeer env = do
   let host = peerSocketHost localPeer
       port = peerSocketPort localPeer
   withListeningSocket "Peer events listener" host port $ \sock -> do
-    logInfo "peer_listener_listening" [field "host" host, field "port" port]
+    logForEnv env Info "peer_listener_listening" [field "host" host, field "port" port]
     acceptWhileServing False sock env (`handlePeerClient` env)
 
 acceptWhileServing :: Bool -> Socket -> DaemonEnv -> (Socket -> IO ()) -> IO ()

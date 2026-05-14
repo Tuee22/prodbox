@@ -37,7 +37,10 @@ import Prodbox.CLI.Docs
   , renderTopLevelManpage
   , renderZshCompletion
   )
-import Prodbox.CLI.Output (writeError)
+import Prodbox.CLI.Output
+  ( writeError
+  , writeOutputLine
+  )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
 import Prodbox.Error (fatalError)
 import Prodbox.Lint
@@ -205,7 +208,7 @@ runCheckCode :: FilePath -> IO ExitCode
 runCheckCode repoRoot = do
   baseEnvironment <- getEnvironment
   environment <- addBuildSupportEnvironment repoRoot baseEnvironment
-  putStrLn "Running prodbox check-code (policy + formatter + linter + warning-clean build)"
+  writeOutputLine "Running prodbox check-code (policy + formatter + linter + warning-clean build)"
   lintExit <- runLintAll repoRoot environment
   case lintExit of
     ExitFailure _ -> pure lintExit
@@ -408,6 +411,11 @@ checkHlintDoctrineCoverage repoRoot = do
             , "createProcess"
             , "proc"
             , "shell"
+            , "putStr"
+            , "Text.IO.putStrLn"
+            , "hPutStrLn stderr"
+            , "Aeson.object"
+            , "Aeson.fromList"
             ]
         , null (filter (isInfixOf marker) (lines contents))
         ]
@@ -589,6 +597,11 @@ checkDaemonRuntimeImports repoRoot = do
                 , "mapConcurrently_"
                 ]
             ]
+          inlineLogObjectViolations =
+            [ path
+                ++ " must route structured log fields through `field`; inline `Aeson.object` / `Aeson.fromList` log payloads are forbidden."
+            | any daemonLogLineBuildsInlineObject (lines contents)
+            ]
       pure
         ( importViolations
             ++ forkViolations
@@ -600,7 +613,13 @@ checkDaemonRuntimeImports repoRoot = do
             ++ reloadTriggerViolations
             ++ mutableMetricsViolations
             ++ asyncPrimitiveViolations
+            ++ inlineLogObjectViolations
         )
+
+daemonLogLineBuildsInlineObject :: String -> Bool
+daemonLogLineBuildsInlineObject lineText =
+  any (`isInfixOf` lineText) ["logDebug", "logInfo", "logWarn", "logError", "logStructured"]
+    && any (`isInfixOf` lineText) ["Aeson.object", "Aeson.fromList", "object ["]
 
 checkSubprocessBoundaries :: FilePath -> IO [String]
 checkSubprocessBoundaries repoRoot = do
@@ -645,14 +664,23 @@ checkErrorBoundaryViolations repoRoot = do
       , "src/Prodbox/" `isPrefixOf` path
       , ".hs" `isSuffixOf` path
       , path /= "src/Prodbox/CLI/Output.hs"
+      , path /= "src/Prodbox/Gateway/Logging.hs"
       , path /= "src/Prodbox/CheckCode.hs"
       ]
       ( \relativePath -> do
           contents <- readFile (repoRoot </> relativePath)
           let tokens = tokenizeSource contents
+              directStderrWrites =
+                [ "hPutStr stderr"
+                , "hPutStrLn stderr"
+                , "TextIO.hPutStrLn stderr"
+                , "Text.IO.hPutStrLn stderr"
+                ]
           pure $
-            [ relativePath ++ " must route error rendering through `src/Prodbox/CLI/Output.hs`."
-            | any (`elem` tokens) ["print", "exitFailure"]
+            [ relativePath
+                ++ " must route terminal output and error rendering through `src/Prodbox/CLI/Output.hs`."
+            | any (`elem` tokens) ["print", "exitFailure", "putStr", "putStrLn"]
+                || any (`isInfixOf` contents) directStderrWrites
             ]
       )
 

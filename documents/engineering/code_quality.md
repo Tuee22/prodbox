@@ -69,8 +69,9 @@ Current enforced quality surfaces:
 - thin-`app/prodbox/Main.hs` and tracked generated-path drift
 - direct `System.Process` construction is forbidden under `src/Prodbox/` outside
   `src/Prodbox/Subprocess.hs`
-- `print` and `exitFailure` are forbidden under `src/Prodbox/` outside
-  `src/Prodbox/CLI/Output.hs`
+- `print`, `exitFailure`, `putStr`, `putStrLn`, and direct stderr writes are forbidden under
+  `src/Prodbox/` outside `src/Prodbox/CLI/Output.hs`, the daemon structured-logging module, and
+  the quality-gate implementation itself
 - generated renderer source modules must remain free of forbidden nondeterministic inputs
   (`getCurrentTime`, `randomIO`, `sort`, `System.Console.Terminal.Size`, `getEnv`, and the
   other doctrine-named classes exercised by `prodbox-haskell-style`)
@@ -83,14 +84,17 @@ Current enforced quality surfaces:
 - daemon-path guardrails for forbidden filesystem readiness markers, `sd_notify`, reload polling
   triggers (`fsnotify`, `inotify`, and `getModificationTime`), module-local mutable metrics
   counters, and unrestricted Async primitives outside the closed daemon set
+- daemon structured-logging guardrails: gateway and workload daemon entrypoints use
+  `src/Prodbox/Gateway/Logging.hs` backed by `co-log`, log-level filtering reads the current
+  live config at log sites, lifecycle tests assert the JSON stderr envelope, and daemon-path
+  checks reject inline `Aeson.object` / `Aeson.fromList` log payloads
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory
 
-Phase 2 has introduced `src/Prodbox/Gateway/Logging.hs` as the typed structured-log helper for
-the gateway daemon. The remaining daemon logging guards — `co-log` adoption, log-level filtering
-on hot reload, daemon-path `putStrLn` / `Text.IO.hPutStrLn` rejection, and inline log-object
-rejection — remain scheduled under Sprint 2.12 rather than counted as current guard coverage.
+Phase 2 closes the daemon structured-logging surface on the supported gateway and workload
+entrypoints. Direct terminal writes outside the logging boundary are part of the enforced
+output-boundary guard.
 
 Detailed Haskell hard-gate doctrine and the review-guidance split live in
 [Haskell Code Guide](./haskell_code_guide.md).

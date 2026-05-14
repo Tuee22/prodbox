@@ -1,6 +1,7 @@
 module Main (main) where
 
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.List (isPrefixOf)
 import Prodbox.BuildSupport (addBuildSupportEnvironment)
 import Prodbox.CLI.Docs
   ( renderBashCompletion
@@ -67,6 +68,25 @@ main = mainWithSuite "prodbox-haskell-style" $ do
     it "declares the isolated formatter-tool GHC version in source" $
       formatterToolGhcVersion `shouldBe` "9.12.4"
 
+    it "uses typed-process at the library subprocess boundary" $ do
+      repoRoot <- getCurrentDirectory
+      cabalContents <- readFile (repoRoot </> "prodbox.cabal")
+      subprocessSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Subprocess.hs")
+      let libraryStanza = takeWhile (/= "executable prodbox") (lines cabalContents)
+      unlines libraryStanza `shouldContain` "typed-process"
+      filter (isPrefixOf "        process ") libraryStanza `shouldBe` []
+      subprocessSource `shouldContain` "System.Process.Typed"
+
+    it "uses co-log at the daemon structured logging boundary" $ do
+      repoRoot <- getCurrentDirectory
+      cabalContents <- readFile (repoRoot </> "prodbox.cabal")
+      loggingSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Logging.hs")
+      let libraryStanza = takeWhile (/= "executable prodbox") (lines cabalContents)
+      unlines libraryStanza `shouldContain` "co-log"
+      unlines libraryStanza `shouldContain` "co-log-core"
+      loggingSource `shouldContain` "Colog.Actions"
+      loggingSource `shouldContain` "Colog.Core"
+
     it "records the doctrine-owned hlint markers" $ do
       repoRoot <- getCurrentDirectory
       hintContents <- readFile (repoRoot </> ".hlint.yaml")
@@ -82,6 +102,11 @@ main = mainWithSuite "prodbox-haskell-style" $ do
         , "createProcess"
         , "proc"
         , "shell"
+        , "putStr"
+        , "Text.IO.putStrLn"
+        , "hPutStrLn stderr"
+        , "Aeson.object"
+        , "Aeson.fromList"
         , "sd_notify"
         , "READY=1"
         , "System.FSNotify"
@@ -114,6 +139,12 @@ main = mainWithSuite "prodbox-haskell-style" $ do
         [ "src/Prodbox/Gateway/Daemon.hs"
         , "src/Prodbox/Workload.hs"
         ]
+
+    it "keeps daemon lifecycle tests off timing and raw shutdown primitives" $ do
+      repoRoot <- getCurrentDirectory
+      lifecycleTest <- readFile (repoRoot </> "test" </> "daemon-lifecycle" </> "Main.hs")
+      lifecycleTest `shouldNotContain` "threadDelay"
+      lifecycleTest `shouldNotContain` "terminateProcess"
 
     propertyTest "generated renderers stay byte-stable across repeated evaluation" $
       all generatedSectionStable generatedSectionRules

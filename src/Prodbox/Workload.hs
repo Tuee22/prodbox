@@ -82,6 +82,12 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Output (writeError)
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Logging
+  ( Severity (..)
+  , field
+  , logStructuredAt
+  , severityFromLogLevel
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
   ( CommandSpec (..)
@@ -92,7 +98,6 @@ import System.Environment (lookupEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
-import System.IO (hPutStrLn, stderr)
 import System.Posix.Types (Fd (..))
 import System.Timeout (timeout)
 
@@ -219,15 +224,14 @@ runWorkloadServer options = do
         Left err -> failWith err
         Right maybeRuntime -> do
           logLevel <- resolveWorkloadLogLevel options
-          hPutStrLn
-            stderr
-            ( "Public workload starting: mode="
-                ++ renderMode mode
-                ++ " port="
-                ++ show port
-                ++ " log_level="
-                ++ logLevel
-            )
+          logStructuredAt
+            (severityFromLogLevel logLevel)
+            Info
+            "public_workload_starting"
+            [ field "mode" (renderMode mode)
+            , field "port" port
+            , field "log_level" logLevel
+            ]
           serverSocketResult <- openListeningSocket port
           case serverSocketResult of
             Left err -> failWith err

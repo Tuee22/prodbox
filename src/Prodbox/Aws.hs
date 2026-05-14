@@ -64,6 +64,11 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
+import Prodbox.CLI.Output
+  ( writeDiagnosticLine
+  , writeOutput
+  , writeOutputLine
+  )
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
@@ -107,9 +112,7 @@ import System.IO
   ( hFlush
   , hGetEcho
   , hIsTerminalDevice
-  , hPutStrLn
   , hSetEcho
-  , stderr
   , stdin
   , stdout
   )
@@ -317,7 +320,7 @@ runAwsCommand repoRoot command = do
   result <- try (executeAwsCommand repoRoot command) :: IO (Either SomeException ExitCode)
   case result of
     Left err -> do
-      hPutStrLn stderr (displayException err)
+      writeDiagnosticLine (displayException err)
       pure (ExitFailure 1)
     Right exitCode -> pure exitCode
 
@@ -330,7 +333,7 @@ runInteractiveConfigSetupWithPlan repoRoot planOptions = do
   result <- try (executeConfigSetup repoRoot planOptions) :: IO (Either SomeException ExitCode)
   case result of
     Left err -> do
-      hPutStrLn stderr (displayException err)
+      writeDiagnosticLine (displayException err)
       pure (ExitFailure 1)
     Right exitCode -> pure exitCode
 
@@ -338,7 +341,7 @@ executeAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
 executeAwsCommand repoRoot command =
   case command of
     AwsPolicy policyTier -> do
-      putStr (buildIamPolicyJson policyTier)
+      writeOutput (buildIamPolicyJson policyTier)
       pure ExitSuccess
     AwsSetup policyTier planOptions -> do
       input <- interactiveAwsSetupInput repoRoot policyTier
@@ -347,7 +350,7 @@ executeAwsCommand repoRoot command =
         (buildAwsSetupExecutionPlan repoRoot input)
         $ \plannedInput -> do
           result <- applyAwsSetup repoRoot plannedInput
-          putStr (renderAwsSetupResult result)
+          writeOutput (renderAwsSetupResult result)
           pure ExitSuccess
     AwsTeardown planOptions -> do
       input <- interactiveAwsTeardownInput repoRoot
@@ -356,17 +359,17 @@ executeAwsCommand repoRoot command =
         (buildAwsTeardownExecutionPlan repoRoot input)
         $ \plannedInput -> do
           result <- applyAwsTeardown repoRoot plannedInput
-          putStr (renderAwsTeardownResult result)
+          writeOutput (renderAwsTeardownResult result)
           pure ExitSuccess
     AwsCheckQuotas -> do
       input <- interactiveAwsCheckQuotasInput repoRoot
       statuses <- applyAwsCheckQuotas repoRoot input
-      putStr (renderQuotaTable "Supported AWS Quotas" statuses)
+      writeOutput (renderQuotaTable "Supported AWS Quotas" statuses)
       pure ExitSuccess
     AwsRequestQuotas policyTier -> do
       input <- interactiveAwsRequestQuotasInput repoRoot policyTier
       statuses <- applyAwsRequestQuotas repoRoot input
-      putStr (renderQuotaTable "Requested AWS Quotas" statuses)
+      writeOutput (renderQuotaTable "Requested AWS Quotas" statuses)
       pure ExitSuccess
 
 executeConfigSetup :: FilePath -> PlanOptions -> IO ExitCode
@@ -377,7 +380,7 @@ executeConfigSetup repoRoot planOptions = do
     (buildConfigSetupExecutionPlan repoRoot input)
     $ \plannedInput -> do
       result <- applyConfigSetup repoRoot plannedInput
-      putStr (renderConfigSetupResult result)
+      writeOutput (renderConfigSetupResult result)
       pure ExitSuccess
 
 buildAwsSetupExecutionPlan :: FilePath -> AwsSetupInput -> Plan AwsSetupInput
@@ -531,15 +534,15 @@ ensureAwsCliAvailable = do
 
 interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
 interactiveConfigSetupInput repoRoot = do
-  putStrLn "Config setup writes `prodbox-config.dhall`, creates the operational IAM user,"
-  putStrLn "and validates the result. The elevated credential entered below is not persisted."
-  putStrLn ""
+  writeOutputLine "Config setup writes `prodbox-config.dhall`, creates the operational IAM user,"
+  writeOutputLine "and validates the result. The elevated credential entered below is not persisted."
+  writeOutputLine ""
   accountReady <- promptConfirm "Do you already have an AWS account?" True
   unless accountReady showAwsAccountGuidance
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   zone <- promptHostedZoneChoice repoRoot credentials
   let zoneName = hostedZoneChoiceName zone
-  putStrLn ("The supported public hostname is fixed: " ++ Text.unpack supportedPublicHostname)
+  writeOutputLine ("The supported public hostname is fixed: " ++ Text.unpack supportedPublicHostname)
   demoTtl <- promptInt "Demo DNS TTL seconds" 60
   showAcmeProviderGuidance
   providerIndex <-
@@ -600,91 +603,95 @@ interactiveConfigSetupInput repoRoot = do
 
 interactiveAwsSetupInput :: FilePath -> PolicyTier -> IO AwsSetupInput
 interactiveAwsSetupInput repoRoot policyTier = do
-  putStrLn "AWS setup creates or refreshes the dedicated `prodbox` IAM user, writes"
-  putStrLn "operational `aws.*` credentials, and can request baseline service quotas."
-  putStrLn ""
+  writeOutputLine "AWS setup creates or refreshes the dedicated `prodbox` IAM user, writes"
+  writeOutputLine "operational `aws.*` credentials, and can request baseline service quotas."
+  writeOutputLine ""
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   AwsSetupInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
 interactiveAwsTeardownInput :: FilePath -> IO AwsTeardownInput
 interactiveAwsTeardownInput repoRoot = do
-  putStrLn "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
-  putStrLn "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
-  putStrLn ""
+  writeOutputLine "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
+  writeOutputLine "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
+  writeOutputLine ""
   credentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
   pure (AwsTeardownInput credentials)
 
 interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
 interactiveAwsCheckQuotasInput repoRoot = do
-  putStrLn "AWS quota inspection reads the supported Service Quotas targets without changing"
-  putStrLn "the Dhall config or creating IAM users."
-  putStrLn ""
+  writeOutputLine "AWS quota inspection reads the supported Service Quotas targets without changing"
+  writeOutputLine "the Dhall config or creating IAM users."
+  writeOutputLine ""
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   AwsCheckQuotasInput <$> validateAdminCredentialsInput credentials
 
 interactiveAwsRequestQuotasInput :: FilePath -> PolicyTier -> IO AwsRequestQuotasInput
 interactiveAwsRequestQuotasInput repoRoot policyTier = do
-  putStrLn "AWS quota requests submit increases only for supported targets that are still"
-  putStrLn "below the required threshold."
-  putStrLn ""
+  writeOutputLine "AWS quota requests submit increases only for supported targets that are still"
+  writeOutputLine "below the required threshold."
+  writeOutputLine ""
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   AwsRequestQuotasInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
 showAwsAccountGuidance :: IO ()
 showAwsAccountGuidance = do
-  putStrLn "AWS account guidance:"
-  putStrLn "1. Sign up at https://aws.amazon.com and choose the Free Tier."
-  putStrLn "2. Add a payment method; AWS requires it even for Free Tier usage."
-  putStrLn "3. Complete identity verification and keep the Basic (free) support plan."
-  putStrLn "4. Create one temporary elevated access key from a temporary admin IAM user."
-  putStrLn "5. Use that key only for onboarding, then delete it after `prodbox config setup`."
-  putStrLn "Free Tier notes: 750 hours/month of t2.micro or t3.micro for 12 months,"
-  putStrLn "5 GiB of S3 standard storage, and Route 53 usage billed separately."
-  putStrLn ""
+  writeOutputLine "AWS account guidance:"
+  writeOutputLine "1. Sign up at https://aws.amazon.com and choose the Free Tier."
+  writeOutputLine "2. Add a payment method; AWS requires it even for Free Tier usage."
+  writeOutputLine "3. Complete identity verification and keep the Basic (free) support plan."
+  writeOutputLine "4. Create one temporary elevated access key from a temporary admin IAM user."
+  writeOutputLine "5. Use that key only for onboarding, then delete it after `prodbox config setup`."
+  writeOutputLine "Free Tier notes: 750 hours/month of t2.micro or t3.micro for 12 months,"
+  writeOutputLine "5 GiB of S3 standard storage, and Route 53 usage billed separately."
+  writeOutputLine ""
 
 showAdminCredentialsGuidance :: IO ()
 showAdminCredentialsGuidance = do
-  putStrLn "Temporary elevated AWS credential guidance:"
-  putStrLn "1. Sign in to the AWS console with an identity that can manage IAM users, access keys,"
-  putStrLn "   Route 53 hosted zones, and Service Quotas."
-  putStrLn "2. Create one temporary access key on a temporary admin IAM user:"
-  putStrLn "   IAM -> Users -> <temporary admin user> -> Security credentials -> Create access key."
-  putStrLn "3. Paste the access key ID and secret below. If AWS gave you temporary STS"
-  putStrLn "   credentials, also paste the session token; otherwise leave it blank."
-  putStrLn "4. `prodbox` never persists this elevated key. Delete it in the AWS console after"
-  putStrLn "   the command completes."
-  putStrLn ""
+  writeOutputLine "Temporary elevated AWS credential guidance:"
+  writeOutputLine
+    "1. Sign in to the AWS console with an identity that can manage IAM users, access keys,"
+  writeOutputLine "   Route 53 hosted zones, and Service Quotas."
+  writeOutputLine "2. Create one temporary access key on a temporary admin IAM user:"
+  writeOutputLine
+    "   IAM -> Users -> <temporary admin user> -> Security credentials -> Create access key."
+  writeOutputLine "3. Paste the access key ID and secret below. If AWS gave you temporary STS"
+  writeOutputLine "   credentials, also paste the session token; otherwise leave it blank."
+  writeOutputLine "4. `prodbox` never persists this elevated key. Delete it in the AWS console after"
+  writeOutputLine "   the command completes."
+  writeOutputLine ""
 
 showRegionChoiceGuidance :: IO ()
 showRegionChoiceGuidance = do
-  putStrLn "AWS region guidance:"
-  putStrLn "Choose the region that should own EC2-based validation and quota targets."
-  putStrLn "Route 53 hosted zones are selected separately in the next step."
-  putStrLn ""
+  writeOutputLine "AWS region guidance:"
+  writeOutputLine "Choose the region that should own EC2-based validation and quota targets."
+  writeOutputLine "Route 53 hosted zones are selected separately in the next step."
+  writeOutputLine ""
 
 showHostedZoneChoiceGuidance :: IO ()
 showHostedZoneChoiceGuidance = do
-  putStrLn "Route 53 hosted zone guidance:"
-  putStrLn ("Choose the public hosted zone that owns " ++ Text.unpack supportedPublicHostname ++ ".")
-  putStrLn "If the desired zone is missing, open AWS console -> Route 53 -> Hosted zones,"
-  putStrLn "create or delegate the zone, then rerun this command."
-  putStrLn ""
+  writeOutputLine "Route 53 hosted zone guidance:"
+  writeOutputLine
+    ("Choose the public hosted zone that owns " ++ Text.unpack supportedPublicHostname ++ ".")
+  writeOutputLine "If the desired zone is missing, open AWS console -> Route 53 -> Hosted zones,"
+  writeOutputLine "create or delegate the zone, then rerun this command."
+  writeOutputLine ""
 
 showAcmeProviderGuidance :: IO ()
 showAcmeProviderGuidance = do
-  putStrLn "ACME provider guidance:"
-  putStrLn "1. ZeroSSL (recommended): open https://app.zerossl.com -> Developer -> EAB"
-  putStrLn "   Credentials, then copy the EAB Key ID and HMAC key."
-  putStrLn "2. Let's Encrypt: no account or EAB credentials are required; you only need"
-  putStrLn "   the notification email below."
-  putStrLn ""
+  writeOutputLine "ACME provider guidance:"
+  writeOutputLine "1. ZeroSSL (recommended): open https://app.zerossl.com -> Developer -> EAB"
+  writeOutputLine "   Credentials, then copy the EAB Key ID and HMAC key."
+  writeOutputLine "2. Let's Encrypt: no account or EAB credentials are required; you only need"
+  writeOutputLine "   the notification email below."
+  writeOutputLine ""
 
 showPolicyTierGuidance :: IO ()
 showPolicyTierGuidance = do
-  putStrLn "Operational IAM policy tier guidance:"
-  putStrLn "1. full (recommended): Route 53, EC2 HA validation, and quota-management permissions."
-  putStrLn "2. core: Route 53 runtime permissions only."
-  putStrLn ""
+  writeOutputLine "Operational IAM policy tier guidance:"
+  writeOutputLine
+    "1. full (recommended): Route 53, EC2 HA validation, and quota-management permissions."
+  writeOutputLine "2. core: Route 53 runtime permissions only."
+  writeOutputLine ""
 
 promptBgpPeers :: IO (Maybe [MetallbBgpPeer])
 promptBgpPeers = do
@@ -855,7 +862,7 @@ promptRegionChoice repoRoot credentials = do
   regions <- listAwsRegions repoRoot credentials
   when (null regions) (throwAws "No AWS regions were returned by `aws ec2 describe-regions`")
   showRegionChoiceGuidance
-  putStrLn "Available AWS regions:"
+  writeOutputLine "Available AWS regions:"
   mapM_ printRegionChoice (zip [1 :: Int ..] regions)
   let defaultIndex = maybe 0 id (findIndex ((== region credentials) . regionChoiceName) regions)
   selectedIndex <-
@@ -868,7 +875,7 @@ promptRegionChoice repoRoot credentials = do
     Nothing -> throwAws "Internal error: AWS region selection produced an out-of-range index"
  where
   printRegionChoice (index, choice) =
-    putStrLn
+    writeOutputLine
       ( show index
           ++ ". "
           ++ Text.unpack (regionChoiceName choice)
@@ -881,11 +888,11 @@ promptHostedZoneChoice :: FilePath -> Credentials -> IO HostedZoneChoice
 promptHostedZoneChoice repoRoot credentials = do
   zones <- listHostedZones repoRoot credentials
   when (null zones) $ do
-    putStrLn "No hosted zones were found in Route 53."
-    putStrLn "Create one in the Route 53 console or delegate an existing domain, then rerun."
+    writeOutputLine "No hosted zones were found in Route 53."
+    writeOutputLine "Create one in the Route 53 console or delegate an existing domain, then rerun."
     throwAws "No Route 53 hosted zones are available"
   showHostedZoneChoiceGuidance
-  putStrLn "Available Route 53 hosted zones:"
+  writeOutputLine "Available Route 53 hosted zones:"
   mapM_ printZoneChoice (zip [1 :: Int ..] zones)
   selectedIndex <-
     promptNumberedChoice
@@ -897,7 +904,7 @@ promptHostedZoneChoice repoRoot credentials = do
     Nothing -> throwAws "Internal error: hosted zone selection produced an out-of-range index"
  where
   printZoneChoice (index, choice) =
-    putStrLn
+    writeOutputLine
       ( show index
           ++ ". "
           ++ Text.unpack (hostedZoneChoiceName choice)
@@ -908,7 +915,7 @@ promptHostedZoneChoice repoRoot credentials = do
 
 promptText :: String -> Maybe String -> IO String
 promptText message maybeDefault = do
-  putStr (message ++ defaultSuffix maybeDefault ++ ": ")
+  writeOutput (message ++ defaultSuffix maybeDefault ++ ": ")
   hFlush stdout
   input <- readPromptLine message
   pure $
@@ -921,13 +928,13 @@ promptText message maybeDefault = do
 promptSecret :: String -> IO String
 promptSecret message = do
   terminal <- hIsTerminalDevice stdin
-  putStr (message ++ ": ")
+  writeOutput (message ++ ": ")
   hFlush stdout
   if terminal
     then do
       originalEcho <- hGetEcho stdin
       value <- bracket_ (hSetEcho stdin False) (hSetEcho stdin originalEcho) (readPromptLine message)
-      putStrLn ""
+      writeOutputLine ""
       pure (trim value)
     else trim <$> readPromptLine message
 
@@ -937,13 +944,13 @@ promptInt message defaultValue = do
   case reads rawValue of
     [(parsed, "")] -> pure parsed
     _ -> do
-      putStrLn "Enter a whole number."
+      writeOutputLine "Enter a whole number."
       promptInt message defaultValue
 
 promptConfirm :: String -> Bool -> IO Bool
 promptConfirm message defaultValue = do
   let suffix = if defaultValue then " [Y/n]" else " [y/N]"
-  putStr (message ++ suffix ++ ": ")
+  writeOutput (message ++ suffix ++ ": ")
   hFlush stdout
   response <- fmap (map toLower . trim) (readPromptLine message)
   case response of
@@ -953,7 +960,7 @@ promptConfirm message defaultValue = do
     "n" -> pure False
     "no" -> pure False
     _ -> do
-      putStrLn "Enter yes or no."
+      writeOutputLine "Enter yes or no."
       promptConfirm message defaultValue
 
 readPromptLine :: String -> IO String
@@ -985,10 +992,10 @@ promptNumberedChoice promptMessage options defaultIndex = do
        in if selectedIndex >= 0 && selectedIndex < length options
             then pure selectedIndex
             else do
-              putStrLn "Selected option is out of range."
+              writeOutputLine "Selected option is out of range."
               promptNumberedChoice promptMessage options defaultIndex
     _ -> do
-      putStrLn "Enter the number shown beside the option."
+      writeOutputLine "Enter the number shown beside the option."
       promptNumberedChoice promptMessage options defaultIndex
 
 safeIndex :: Int -> [a] -> Maybe a

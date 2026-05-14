@@ -32,12 +32,13 @@ backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscriber
 prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
 top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
 refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence puts Sprints
-`2.9`, `2.11`, `2.12`, `2.13`, and `2.14` in `Active` state: the gateway daemon now launches
-from one structured async entrypoint with bounded drain and endpoint coverage, while
-prerequisite-registry acquire gating, Dhall-shaped hot reload, `co-log` adoption, injected
-test-hook closure, and the remaining lifecycle polling guardrails are still open. Sprints `2.10`,
-`2.15`, and `2.16` are implemented, locally validated, and doc-aligned. The remaining reopened
-Phase `2` sprints stay `Planned`.
+`2.9`, `2.11`, `2.13`, and `2.14` in `Active` state: the gateway daemon now launches
+from one structured async entrypoint with bounded drain and endpoint coverage, while the config
+parser has started the `schemaVersion` / `boot` / `live` shape in JSON form; prerequisite-registry
+acquire gating, the committed Dhall-shaped hot reload path, injected test-hook closure, and the
+remaining lifecycle hook migration are still open. Sprints `2.10`, `2.12`, `2.15`, and
+`2.16` are implemented, locally validated, and doc-aligned. The remaining reopened Phase `2`
+sprints stay `Planned`.
 
 ## Phase Summary
 
@@ -783,15 +784,22 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
   the TVar and publish on `envLiveConfigReloads :: TChan LiveConfig`.
 - Live consumers reread `envLiveConfig` at their use sites for heartbeat, ownership, DNS-write,
   peer-ingest, peer-dial, and drain timing.
+- `src/Prodbox/Gateway/Types.hs` now accepts a structured JSON gateway config with top-level
+  `schemaVersion`, `boot`, and `live` records while preserving flat JSON compatibility, and
+  mismatched versions surface as `config_schema_mismatch` through the reload path.
+- `src/Prodbox/Gateway.hs` emits the structured gateway config template with boot-only
+  `dns_write_gate` fields and live reloadable timing or log-level fields.
 - Remaining closure work: replace the interim JSON daemon-config reload with the prescribed
   Dhall `types` / `defaults` / `schemaVersion` / `boot` / `live` file shape, validate
-  `schemaVersion` as a top-level Dhall field, and add lifecycle tests for every reload-procedure
-  branch.
+  `schemaVersion` as a top-level Dhall `Natural`, and add lifecycle tests for every
+  reload-procedure branch.
 
-## Sprint 2.12: Structured JSON Logging via co-log 🔄
+## Sprint 2.12: Structured JSON Logging via co-log ✅
 
-**Status**: Active
-**Implementation**: `src/Prodbox/Gateway/Logging.hs`, `src/Prodbox/Gateway/Daemon.hs`
+**Status**: Done
+**Implementation**: `src/Prodbox/Gateway/Logging.hs`, `src/Prodbox/Gateway/Daemon.hs`,
+`src/Prodbox/Workload.hs`, `src/Prodbox/CheckCode.hs`, `test/daemon-lifecycle/Main.hs`,
+`test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/code_quality.md`
 
@@ -833,19 +841,32 @@ observability / Structured logging field helpers](../HASKELL_CLI_TOOL.md).
 1. Lifecycle test asserts structured JSON shape on stderr.
 2. The forbidden-call hlint rule blocks reintroduction of `putStrLn` in
    `src/Prodbox/Gateway/`.
-3. The lifecycle test sends SIGHUP after writing a Dhall config with a changed
-   `live.logLevel` value and asserts subsequent log lines reflect the new level
+3. The lifecycle test sends SIGHUP after writing a config with a changed live
+   `log_level` value and asserts subsequent log filtering reflects the new level
    without restart.
+
+### Current Validation State
+
+- `cabal test --builddir=.build prodbox-daemon-lifecycle --test-options=--hide-successes`
+  passes with the structured stderr JSON and hot-reload log-level assertions.
+- `cabal test --builddir=.build prodbox-haskell-style --test-options=--hide-successes`
+  passes with the `co-log` dependency-boundary and negative-space checks.
+- `./.build/prodbox check-code` passes after formatting the touched Haskell sources.
+- The broader `./.build/prodbox test all` aggregate was intentionally paused by operator
+  request after reaching the integration chart-reconcile path; Sprint 2.12's listed validation
+  had already passed.
 
 ### Remaining Work
 
-- Gateway daemon log sites now use typed helpers from `src/Prodbox/Gateway/Logging.hs` and emit
-  JSON lines to stderr through `field`, `logInfo`, `logWarn`, and `logError`; ad-hoc daemon
-  `hPutStrLn stderr` calls in `src/Prodbox/Gateway/Daemon.hs` have been removed.
-- Remaining closure work: adopt `co-log` itself rather than the interim Aeson-backed helper,
-  make log-level filtering observe the hot-reloaded `LiveConfig`, capture structured-log shape
-  in the lifecycle stanza, and add the daemon-path forbidden-call rules for `putStrLn`,
-  `Text.IO.hPutStrLn`, and inline log-object construction.
+None.
+
+### Closure Notes
+
+Gateway and workload daemon entrypoints emit structured JSON through the co-log-backed logging
+module; gateway log sites read `envLiveConfig` at emission time so SIGHUP reloads update the
+threshold for later calls. `prodbox-daemon-lifecycle` covers the stderr JSON envelope plus the
+hot-reload log-level path, and `prodbox-haskell-style` / `prodbox check-code` guard the
+dependency boundary, direct terminal writes, and inline log-object construction.
 
 ## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization 🔄
 
@@ -946,15 +967,17 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
 ### Remaining Work
 
 - The `prodbox-daemon-lifecycle` stanza now spawns the built `prodbox gateway start` process,
-  polls `/readyz`, asserts `/healthz` and `/metrics`, sends SIGTERM, observes `503 draining`,
-  and verifies `ExitSuccess` after the configured drain deadline.
+  polls `/readyz` through `retryServiceAction`, asserts `/healthz` and `/metrics`, sends
+  SIGTERM, observes `503 draining`, and verifies `ExitSuccess` after the configured drain
+  deadline.
 - The stanza also exercises the second-SIGTERM branch with a distinct test name and keeps the
   daemon CLI/env precedence coverage from Sprint 2.15.
 - The process driver now uses the repository's typed subprocess boundary, and the endpoint
   response shapes are captured under `test/golden/daemon-health/`.
+- `test/haskell-style/Main.hs` now rejects direct `threadDelay` and raw `terminateProcess`
+  usage in the daemon-lifecycle stanza.
 - Remaining closure work: replace the remaining timing-sensitive lifecycle polling with injected
-  hooks where practical and add an explicit style assertion for any forbidden test-only process
-  shutdown pattern that is not already confined to `src/Prodbox/Subprocess.hs`.
+  hooks where practical.
 
 ## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence ✅
 

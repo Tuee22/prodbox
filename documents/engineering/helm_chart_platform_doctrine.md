@@ -146,6 +146,12 @@ runtime reinitializes retained follower roots for ordinals `1` and `2` so those 
 from the preserved cluster anchor instead of trying to continue from stale follower-local WAL
 state.
 
+Patroni retained-claim discovery and cluster-readiness waits classify transient PostgreSQL
+convergence failures as `PgError` and run through `retryServiceAction`. The broader migration of
+all Redis and PostgreSQL call sites onto `HasRedis` / `HasPg` remains active under Sprint 3.9;
+new chart-platform service interactions should use the capability boundary rather than adding
+direct subprocess call sites.
+
 When retained Patroni state already exists, the chart runtime stages restore deliberately:
 
 - preserve the retained ordinal `0` anchor PV and secret state

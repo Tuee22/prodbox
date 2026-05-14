@@ -7,19 +7,26 @@ module Prodbox.Gateway.Logging
   , logError
   , logInfo
   , logStructured
+  , logStructuredAt
   , logWarn
   , renderSeverity
+  , severityFromLogLevel
+  , shouldLogSeverity
   )
 where
 
+import Colog.Actions (logByteStringStderr)
+import Colog.Core (LogAction (..))
+import Control.Monad (when)
 import Data.Aeson (ToJSON, Value, encode, object, toJSON)
 import Data.Aeson.Key qualified as Key
-import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.ByteString qualified as BS
+import Data.ByteString.Lazy qualified as BL
+import Data.Char (toLower)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format)
-import System.IO (stderr)
 
 data Severity
   = Debug
@@ -44,17 +51,39 @@ logError :: Text -> [(Text, Value)] -> IO ()
 logError = logStructured Error
 
 logStructured :: Severity -> Text -> [(Text, Value)] -> IO ()
-logStructured severity eventName fields = do
-  now <- getCurrentTime
-  BL8.hPutStrLn stderr $
-    encode $
-      object
-        ( [ "timestamp_utc" .= formatShow iso8601Format now
-          , "severity" .= renderSeverity severity
-          , "event" .= eventName
-          ]
-            ++ map dynamicField fields
-        )
+logStructured = logStructuredAt Debug
+
+logStructuredAt :: Severity -> Severity -> Text -> [(Text, Value)] -> IO ()
+logStructuredAt minimumSeverity severity eventName fields =
+  when (shouldLogSeverity minimumSeverity severity) $ do
+    now <- getCurrentTime
+    unLogAction daemonLogAction $
+      BL.toStrict $
+        encode $
+          object
+            ( [ "timestamp_utc" .= formatShow iso8601Format now
+              , "severity" .= renderSeverity severity
+              , "event" .= eventName
+              ]
+                ++ map dynamicField fields
+            )
+
+daemonLogAction :: LogAction IO BS.ByteString
+daemonLogAction = logByteStringStderr
+
+severityFromLogLevel :: String -> Severity
+severityFromLogLevel rawLevel =
+  case map toLower rawLevel of
+    "debug" -> Debug
+    "info" -> Info
+    "warn" -> Warn
+    "warning" -> Warn
+    "error" -> Error
+    _ -> Info
+
+shouldLogSeverity :: Severity -> Severity -> Bool
+shouldLogSeverity minimumSeverity severity =
+  severity >= minimumSeverity
 
 renderSeverity :: Severity -> Text
 renderSeverity severity =

@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PatternSynonyms #-}
 
@@ -36,6 +37,11 @@ import Options.Applicative
   , renderFailure
   )
 import Parser (parserSuite)
+import Prodbox.App
+  ( Env (..)
+  , askEnv
+  , runApp
+  )
 import Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
@@ -78,7 +84,14 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
 import Prodbox.CLI.Json (renderCommandJson)
-import Prodbox.CLI.Output (renderError)
+import Prodbox.CLI.Output
+  ( ColorMode (..)
+  , OutputFormat (..)
+  , OutputOptions (..)
+  , defaultOutputOptions
+  , renderError
+  , renderOutput
+  )
 import Prodbox.CLI.Parser
   ( Options (..)
   , parserInfo
@@ -122,6 +135,11 @@ import Prodbox.Gateway
   ( renderGatewayConfigTemplate
   , renderGatewayStartPlan
   , renderGatewayStatusReport
+  )
+import Prodbox.Gateway.Logging
+  ( Severity (..)
+  , severityFromLogLevel
+  , shouldLogSeverity
   )
 import Prodbox.Gateway.Peer
   ( PeerEventBatch (..)
@@ -222,6 +240,18 @@ import Prodbox.Settings
   , renderSettingsDisplay
   , validateAndLoadSettings
   , validatePublicEdgeDeployment
+  )
+import Prodbox.StateMachine
+  ( ChartState (..)
+  , GatewayOwnershipState (..)
+  , PulumiState (..)
+  , chartApply
+  , chartPlan
+  , chartVerify
+  , completeClaim
+  , promotePulumi
+  , startClaim
+  , startPulumiUpdate
   )
 import Prodbox.Subprocess
   ( renderSubprocess
@@ -1340,6 +1370,37 @@ main = mainWithSuite "prodbox-unit" $ do
       parseDaemonConfig (BL8.unpack (encodeJsonValue (daemonConfigJsonValue sampleDaemonConfig)))
         `shouldBe` Right sampleDaemonConfig
 
+    it "accepts the schemaVersion boot/live gateway daemon config shape" $ do
+      let structuredConfig =
+            object
+              [ "schemaVersion" .= (1 :: Int)
+              , "boot"
+                  .= object
+                    [ "node_id" .= daemonNodeId sampleDaemonConfig
+                    , "cert_file" .= daemonCertFile sampleDaemonConfig
+                    , "key_file" .= daemonKeyFile sampleDaemonConfig
+                    , "ca_file" .= daemonCaFile sampleDaemonConfig
+                    , "orders_file" .= daemonOrdersFile sampleDaemonConfig
+                    , "event_keys"
+                        .= object [Key.fromString "node-a" .= ("fake-key" :: String)]
+                    , "dns_write_gate" .= fmap dnsWriteGateJsonValue (daemonDnsWriteGate sampleDaemonConfig)
+                    ]
+              , "live"
+                  .= object
+                    [ "log_level" .= ("debug" :: String)
+                    , "heartbeat_interval_seconds" .= daemonHeartbeatInterval sampleDaemonConfig
+                    , "reconnect_interval_seconds" .= daemonReconnectInterval sampleDaemonConfig
+                    , "sync_interval_seconds" .= daemonSyncInterval sampleDaemonConfig
+                    , "max_clock_skew_seconds" .= daemonMaxClockSkewSeconds sampleDaemonConfig
+                    , "drain_deadline_seconds" .= daemonDrainDeadlineSeconds sampleDaemonConfig
+                    ]
+              ]
+          expectedConfig = sampleDaemonConfig {daemonConfigLogLevel = Just "debug"}
+      parseDaemonConfig (BL8.unpack (encodeJsonValue structuredConfig))
+        `shouldBe` Right expectedConfig
+      parseDaemonConfig "{\"schemaVersion\": 999, \"boot\": {}, \"live\": {}}"
+        `shouldBe` Left "config_schema_mismatch: expected schemaVersion 1, got 999"
+
     it "round-trips persisted gateway orders through JSON" $ do
       parseOrders (BL8.unpack (encodeJsonValue (ordersJsonValue sampleOrders)))
         `shouldBe` Right sampleOrders
@@ -1429,6 +1490,36 @@ main = mainWithSuite "prodbox-unit" $ do
       attempts <- readIORef attemptsRef
       result `shouldBe` Right "ready"
       attempts `shouldBe` 3
+
+    it "filters daemon log severities through the configured log level" $ do
+      severityFromLogLevel "debug" `shouldBe` Debug
+      severityFromLogLevel "INFO" `shouldBe` Info
+      severityFromLogLevel "warning" `shouldBe` Warn
+      severityFromLogLevel "error" `shouldBe` Error
+      shouldLogSeverity Warn Info `shouldBe` False
+      shouldLogSeverity Warn Warn `shouldBe` True
+      shouldLogSeverity Warn Error `shouldBe` True
+
+    it "threads one-shot command context through the App environment" $ do
+      env <- runApp (Env "/tmp/prodbox") askEnv
+      envRepoRoot env `shouldBe` "/tmp/prodbox"
+
+    it "renders typed one-shot output options for plain and JSON output" $ do
+      renderOutput defaultOutputOptions "ok" (object ["status" .= ("ok" :: String)])
+        `shouldBe` "ok"
+      renderOutput
+        (OutputOptions OutputJson ColorNever)
+        "ok"
+        (object ["status" .= ("ok" :: String)])
+        `shouldBe` "{\"status\":\"ok\"}"
+
+    it "typechecks the doctrine state-machine transitions" $ do
+      case completeClaim (startClaim GatewayIdleState) of
+        GatewayOwnerState -> pure ()
+      case chartVerify (chartApply chartPlan) of
+        ChartVerifiedState -> pure ()
+      case promotePulumi (startPulumiUpdate PulumiSelectedState) of
+        PulumiReadyState -> pure ()
 
     it "records, fetches, and marks daemon events by processed_at state" $ do
       store <-
@@ -1851,13 +1942,16 @@ main = mainWithSuite "prodbox-unit" $ do
             case eitherDecode (BL8.pack (renderGatewayConfigTemplate settings "node-a")) of
               Left err -> expectationFailure err
               Right (Object payload) ->
-                case KeyMap.lookup (Key.fromString "dns_write_gate") payload of
-                  Just (Object gate) -> do
-                    KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "test.resolvefintech.com")
-                    KeyMap.lookup (Key.fromString "zone_id") gate `shouldBe` Just (String "Z1234567890ABC")
-                    KeyMap.lookup (Key.fromString "ttl") gate `shouldBe` Just (Number 60)
-                    KeyMap.lookup (Key.fromString "aws_region") gate `shouldBe` Just (String "us-east-1")
-                  _ -> expectationFailure "expected dns_write_gate object"
+                case KeyMap.lookup (Key.fromString "boot") payload of
+                  Just (Object bootPayload) ->
+                    case KeyMap.lookup (Key.fromString "dns_write_gate") bootPayload of
+                      Just (Object gate) -> do
+                        KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "test.resolvefintech.com")
+                        KeyMap.lookup (Key.fromString "zone_id") gate `shouldBe` Just (String "Z1234567890ABC")
+                        KeyMap.lookup (Key.fromString "ttl") gate `shouldBe` Just (Number 60)
+                        KeyMap.lookup (Key.fromString "aws_region") gate `shouldBe` Just (String "us-east-1")
+                      _ -> expectationFailure "expected dns_write_gate object"
+                  _ -> expectationFailure "expected boot object"
               Right _ -> expectationFailure "expected config template object"
 
   describe "gateway commit-log dispositions" $ do
@@ -2616,6 +2710,7 @@ sampleDaemonConfig =
     , daemonSyncInterval = 1.0
     , daemonMaxClockSkewSeconds = defaultMaxClockSkewSeconds
     , daemonDrainDeadlineSeconds = Just 30
+    , daemonConfigLogLevel = Just "info"
     , daemonDnsWriteGate =
         Just
           DnsWriteGate
@@ -2692,6 +2787,7 @@ daemonConfigJsonValue config =
     , "sync_interval_seconds" .= daemonSyncInterval config
     , "max_clock_skew_seconds" .= daemonMaxClockSkewSeconds config
     , "drain_deadline_seconds" .= daemonDrainDeadlineSeconds config
+    , "log_level" .= daemonConfigLogLevel config
     , "dns_write_gate" .= fmap dnsWriteGateJsonValue (daemonDnsWriteGate config)
     ]
 

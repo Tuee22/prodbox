@@ -67,8 +67,9 @@ Current enforced quality surfaces:
 - committed repo-root Dhall imports must carry `sha256:` annotations produced by
   `dhall freeze --all --inplace`
 - thin-`app/prodbox/Main.hs` and tracked generated-path drift
-- direct `System.Process` construction is forbidden under `src/Prodbox/` outside
-  `src/Prodbox/Subprocess.hs`
+- direct `System.Process` / `System.Process.Typed` imports and smart-constructor symbols
+  (`callProcess`, `readCreateProcess`, `readCreateProcessWithExitCode`, `createProcess`,
+  `proc`, `shell`) are forbidden under `src/Prodbox/` outside `src/Prodbox/Subprocess.hs`
 - `print`, `exitFailure`, `putStr`, `putStrLn`, and direct stderr writes are forbidden under
   `src/Prodbox/` outside `src/Prodbox/CLI/Output.hs`, the daemon structured-logging module, and
   the quality-gate implementation itself
@@ -88,6 +89,9 @@ Current enforced quality surfaces:
   `src/Prodbox/Gateway/Logging.hs` backed by `co-log`, log-level filtering reads the current
   live config at log sites, lifecycle tests assert the JSON stderr envelope, and daemon-path
   checks reject inline `Aeson.object` / `Aeson.fromList` log payloads
+- daemon hook and lifecycle-test guardrails: production gateway startup constructs the daemon
+  `Env` with literal `noopDaemonHooks`, hook reads flow through the injected `envHooks env`,
+  and the daemon-lifecycle stanza cannot use raw `threadDelay` or raw `terminateProcess`
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory

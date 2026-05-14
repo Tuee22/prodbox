@@ -4,7 +4,7 @@
 # - Refactor nested case
 # - Avoid case inside lambda body
 # - forbid forkIO / unsafePerformIO / module-level IORef in daemon paths
-# - forbid direct subprocess primitives: callProcess / readCreateProcess / createProcess / proc / shell
+# - forbid direct subprocess primitives: callProcess / readCreateProcess / readCreateProcessWithExitCode / createProcess / proc / shell
 # - forbid direct terminal output outside Prodbox.CLI.Output: putStr / Text.IO.putStrLn / hPutStrLn stderr
 # - forbid inline daemon log objects: Aeson.object / Aeson.fromList
 # - forbid daemon readiness markers: sd_notify / READY=1 / readiness_marker / ready_file

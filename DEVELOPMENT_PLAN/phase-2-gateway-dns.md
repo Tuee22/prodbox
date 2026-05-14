@@ -913,9 +913,11 @@ Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
   update.
 - The at-least-once helper module now carries the handler idempotency precondition and
   `processed_at` tracking for future daemon consumers.
+- `src/Prodbox/CheckCode.hs` now enforces that production startup constructs the daemon `Env`
+  with literal `noopDaemonHooks` and that daemon hook fields are read through the injected
+  `envHooks env` value rather than through out-of-band state.
 - Remaining closure work: replace timing-sensitive lifecycle waits with injected hooks where
-  practical, expose test-only hook injection without leaking it into production startup, and add
-  the style/unit assertions that all hook reads flow through the injected daemon `Env`.
+  practical and expose test-only hook injection without leaking it into production startup.
 
 ## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza 🔄
 
@@ -974,8 +976,8 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
   daemon CLI/env precedence coverage from Sprint 2.15.
 - The process driver now uses the repository's typed subprocess boundary, and the endpoint
   response shapes are captured under `test/golden/daemon-health/`.
-- `test/haskell-style/Main.hs` now rejects direct `threadDelay` and raw `terminateProcess`
-  usage in the daemon-lifecycle stanza.
+- `src/Prodbox/CheckCode.hs` and `test/haskell-style/Main.hs` now reject direct `threadDelay`
+  and raw `terminateProcess` usage in the daemon-lifecycle stanza.
 - Remaining closure work: replace the remaining timing-sensitive lifecycle polling with injected
   hooks where practical.
 

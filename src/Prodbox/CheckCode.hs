@@ -376,6 +376,8 @@ haskellStyleViolations repoRoot = do
   parserModuleViolation <- checkParserModuleImports repoRoot
   nestedCaseViolations <- checkNestedCaseViolations repoRoot
   daemonRuntimeViolations <- checkDaemonRuntimeImports repoRoot
+  daemonHookViolations <- checkDaemonHookContract repoRoot
+  daemonLifecycleTestViolations <- checkDaemonLifecycleTestBoundaries repoRoot
   subprocessViolations <- checkSubprocessBoundaries repoRoot
   errorBoundaryViolations <- checkErrorBoundaryViolations repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
@@ -385,6 +387,8 @@ haskellStyleViolations repoRoot = do
         ++ maybeToList parserModuleViolation
         ++ nestedCaseViolations
         ++ daemonRuntimeViolations
+        ++ daemonHookViolations
+        ++ daemonLifecycleTestViolations
         ++ subprocessViolations
         ++ errorBoundaryViolations
         ++ testSuiteTypeViolations
@@ -408,6 +412,7 @@ checkHlintDoctrineCoverage repoRoot = do
             , "module-level IORef"
             , "callProcess"
             , "readCreateProcess"
+            , "readCreateProcessWithExitCode"
             , "createProcess"
             , "proc"
             , "shell"
@@ -416,6 +421,18 @@ checkHlintDoctrineCoverage repoRoot = do
             , "hPutStrLn stderr"
             , "Aeson.object"
             , "Aeson.fromList"
+            , "sd_notify"
+            , "READY=1"
+            , "System.FSNotify"
+            , "System.INotify"
+            , "Linux.INotify"
+            , "getModificationTime"
+            , "newIORef"
+            , "newMVar"
+            , "withAsync"
+            , "race"
+            , "concurrently"
+            , "replicateConcurrently"
             ]
         , null (filter (isInfixOf marker) (lines contents))
         ]
@@ -621,6 +638,75 @@ daemonLogLineBuildsInlineObject lineText =
   any (`isInfixOf` lineText) ["logDebug", "logInfo", "logWarn", "logError", "logStructured"]
     && any (`isInfixOf` lineText) ["Aeson.object", "Aeson.fromList", "object ["]
 
+checkDaemonHookContract :: FilePath -> IO [String]
+checkDaemonHookContract repoRoot = do
+  let path = repoRoot </> "src" </> "Prodbox" </> "Gateway" </> "Daemon.hs"
+  contents <- readFile path
+  pure
+    ( missingHookSurfaceViolations path contents
+        ++ [ path
+               ++ " must construct the production daemon `Env` with literal `noopDaemonHooks`."
+           | not (any ("envHooks = noopDaemonHooks" `isInfixOf`) (lines contents))
+           ]
+        ++ [ path
+               ++ " must read daemon hook fields only through the injected `envHooks env` value."
+           | any daemonHookReadBypassesEnv (lines contents)
+           ]
+    )
+
+missingHookSurfaceViolations :: FilePath -> String -> [String]
+missingHookSurfaceViolations path contents =
+  [ path ++ " must define daemon hook field `" ++ hookName ++ "`."
+  | hookName <-
+      [ "envAfterPeerEventCommit"
+      , "envBeforeOrdersAdoption"
+      , "envOnPeerConnectionEstablished"
+      ]
+  , hookName `notElem` tokenizeSource contents
+  ]
+
+daemonHookReadBypassesEnv :: String -> Bool
+daemonHookReadBypassesEnv lineText =
+  let trimmedLine = trimLine lineText
+   in any (`isInfixOf` trimmedLine) daemonHookNames
+        && not (any (`isInfixOf` trimmedLine) allowedHookContexts)
+ where
+  daemonHookNames =
+    [ "envAfterPeerEventCommit"
+    , "envBeforeOrdersAdoption"
+    , "envOnPeerConnectionEstablished"
+    ]
+  allowedHookContexts =
+    [ "envAfterPeerEventCommit ::"
+    , "envBeforeOrdersAdoption ::"
+    , "envOnPeerConnectionEstablished ::"
+    , "envAfterPeerEventCommit ="
+    , "envBeforeOrdersAdoption ="
+    , "envOnPeerConnectionEstablished ="
+    , "envAfterPeerEventCommit (envHooks env)"
+    , "envBeforeOrdersAdoption (envHooks env)"
+    , "envOnPeerConnectionEstablished (envHooks env)"
+    ]
+
+checkDaemonLifecycleTestBoundaries :: FilePath -> IO [String]
+checkDaemonLifecycleTestBoundaries repoRoot = do
+  let path = repoRoot </> "test" </> "daemon-lifecycle" </> "Main.hs"
+  fileExists <- doesFileExist path
+  if not fileExists
+    then pure []
+    else do
+      contents <- readFile path
+      pure
+        ( [ path
+              ++ " must not use raw `threadDelay`; readiness waits must route through shared retry or hooks."
+          | "threadDelay" `elem` tokenizeSource contents
+          ]
+            ++ [ path
+                   ++ " must not call raw `terminateProcess`; tests must send the daemon's graceful shutdown signal first."
+               | "terminateProcess" `elem` tokenizeSource contents
+               ]
+        )
+
 checkSubprocessBoundaries :: FilePath -> IO [String]
 checkSubprocessBoundaries repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
@@ -635,7 +721,7 @@ checkSubprocessBoundaries repoRoot = do
       ]
       ( \relativePath -> do
           contents <- readFile (repoRoot </> relativePath)
-          let tokens = tokenizeSource contents
+          let tokens = tokenizeSource (stripStringLiterals contents)
               hasSystemProcessImport = "import System.Process" `isInfixOf` contents
               forbiddenTokens =
                 [ token
@@ -644,6 +730,7 @@ checkSubprocessBoundaries repoRoot = do
                     , "readCreateProcess"
                     , "readCreateProcessWithExitCode"
                     , "createProcess"
+                    , "proc"
                     , "shell"
                     ]
                 , token `elem` tokens
@@ -653,6 +740,18 @@ checkSubprocessBoundaries repoRoot = do
             | hasSystemProcessImport || not (null forbiddenTokens)
             ]
       )
+
+stripStringLiterals :: String -> String
+stripStringLiterals = go False False
+ where
+  go _ _ [] = []
+  go inString escaped (character : remaining)
+    | inString && escaped = ' ' : go True False remaining
+    | inString && character == '\\' = ' ' : go True True remaining
+    | inString && character == '"' = ' ' : go False False remaining
+    | inString = ' ' : go True False remaining
+    | character == '"' = ' ' : go True False remaining
+    | otherwise = character : go False False remaining
 
 checkErrorBoundaryViolations :: FilePath -> IO [String]
 checkErrorBoundaryViolations repoRoot = do

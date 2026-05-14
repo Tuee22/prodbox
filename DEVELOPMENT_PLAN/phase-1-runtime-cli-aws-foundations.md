@@ -599,11 +599,14 @@ Values](../HASKELL_CLI_TOOL.md).
   the library no longer depends directly on `process`, and `test/haskell-style/Main.hs` asserts
   that the typed-process dependency stays confined to this boundary.
 - `test/unit/Main.hs` now covers rendered subprocess output, and `src/Prodbox/CheckCode.hs`
-  refuses direct `System.Process` construction outside `src/Prodbox/Subprocess.hs`.
+  refuses direct `System.Process` / `System.Process.Typed` imports plus `callProcess`,
+  `readCreateProcess`, `readCreateProcessWithExitCode`, `createProcess`, `proc`, and `shell`
+  construction outside `src/Prodbox/Subprocess.hs`; string literals such as Linux `/proc` paths
+  are stripped before the symbol scan so the rule targets Haskell identifiers. `.hlint.yaml`
+  carries the matching doctrine marker set and `prodbox-haskell-style` asserts that marker
+  coverage.
 - The supported path still retains the pre-doctrine compatibility names (`CommandSpec`,
-  `runStreamingCommand`, `captureCommand`, and `Result`) for the migrated call sites, and the
-  negative-space enforcement lives in the governed `prodbox check-code` scan rather than in the
-  custom `.hlint.yaml` rule stack named by the sprint deliverables.
+  `runStreamingCommand`, `captureCommand`, and `Result`) for migrated call sites.
 
 ## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract ✅
 

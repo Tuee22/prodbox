@@ -536,9 +536,10 @@ For `prodbox`, the supported cleanup model is stricter: Route 53-only tests use 
 zone teardown, the AWS EKS test stack is created and destroyed only through
 `prodbox pulumi eks-resources` and `prodbox pulumi eks-destroy --yes`, and the multi-resource AWS
 HA test stack is created and destroyed only through `prodbox pulumi test-resources` and
-`prodbox pulumi test-destroy --yes`. The local `prodbox-pulumi` Cabal stanza currently proves the
+`prodbox pulumi test-destroy --yes`. The local `prodbox-pulumi` Cabal stanza proves the
 ephemeral stack-state harness, typed-output handoff, and forced-failure cleanup around those
-retained stack flows without provisioning AWS resources during the unit-style suite itself.
+retained stack flows, while the live AWS provisioning paths are covered by the named integration
+validations and aggregate suite.
 
 ---
 

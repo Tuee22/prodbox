@@ -11,7 +11,7 @@
 
 ## Phase Status
 
-🔄 **Active** — Sprints `3.1`–`3.7` remain `Done` on the chart runtime, retained storage, browser
+✅ **Done** — Sprints `3.1`–`3.7` remain `Done` on the chart runtime, retained storage, browser
 delivery, JWT-API, WebSocket, admin surfaces, and the Patroni doctrine. The phase is reopened by
 Sprint 0.2 to schedule Sprints `3.8`–`3.12`, which adopt the doctrine's smart-constructor pattern
 for paired chart resources, route Redis and Postgres call sites through capability classes, apply
@@ -19,15 +19,15 @@ the reconciler discipline to `prodbox charts deploy|delete`, surface `--dry-run`
 operations, and add the `prodbox lint chart` Helm-chart structural-invariants linter together
 with marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
 artifacts via the existing `generatedSectionRule` registry. Current worktree evidence puts
-Sprint `3.8` plus Sprints `3.10`, `3.11`, and `3.12` in `Done` state: `storageBinding`, the
+Sprints `3.8`–`3.12` in `Done` state: `storageBinding`, the
 shared Patroni helper inventory in `src/Prodbox/PostgresPlatform.hs`, and the chart-platform
-call-site migration now centralize the retained paired-resource and related-name surface; the
+call-site migration now centralize the retained paired-resource, related-name, and
+Redis/Postgres capability surfaces; the
 chart reconciler surface now treats already-deployed healthy releases as a success no-op and
 rejects the doctrine-forbidden flags and sister commands, chart dry-run plans are rendered and
 golden-covered, the structural-lint implementation is live on `prodbox lint chart`, and the
 marker-delimited route inventory generated from `src/Prodbox/PublicEdge.hs` is now emitted into
-the consuming chart templates. Sprint `3.9` is the only reopened Phase `3` sprint that remains
-`Active`.
+the consuming chart templates.
 
 ## Phase Summary
 
@@ -527,9 +527,9 @@ Resources](../HASKELL_CLI_TOOL.md) on the chart platform.
 
 None.
 
-## Sprint 3.9: Capability Classes Applied to Redis and Postgres 🔄
+## Sprint 3.9: Capability Classes Applied to Redis and Postgres ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Service.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`
 
@@ -552,13 +552,12 @@ Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
 
 ### Remaining Work
 
-- Patroni cluster readiness and retained-claim wait paths in `src/Prodbox/Lib/ChartPlatform.hs`
-  now classify transient PostgreSQL failures as `PgError` and run through
-  `retryServiceAction`.
-- Remaining closure work: migrate the remaining Redis and PostgreSQL call sites in
-  `src/Prodbox/PostgresPlatform.hs` and `src/Prodbox/Lib/ChartPlatform.hs` onto the
-  `HasRedis` / `HasPg` capability methods and add the negative-space proof that no direct
-  Redis or raw PostgreSQL subprocess invocations survive outside the capability boundary.
+None. Patroni cluster discovery, readiness, retained-claim wait, retained-anchor lookup,
+secret recovery, and cleanup paths in `src/Prodbox/Lib/ChartPlatform.hs` now consume the `HasPg`
+capability and classify transient PostgreSQL convergence failures as `PgError` through
+`retryServiceAction`. The supported chart platform has no direct `redis-cli` call site, and
+`test/unit/Main.hs` asserts that the chart PostgreSQL service calls pass through the capability
+boundary.
 
 ## Sprint 3.10: Reconciler Discipline on prodbox charts deploy | delete ✅
 

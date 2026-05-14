@@ -90,9 +90,9 @@ import Prodbox.Gateway.Logging
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Environment (lookupEnv)
 import System.Exit
@@ -1229,10 +1229,10 @@ exchangeAuthorizationCode runtime authorizationCode = do
       callbackUrl = oidcPublicBaseUrl config ++ "/oidc/callback"
       tokenUrl = oidcTokenEndpoint config
   outputResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "curl"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments =
             [ "-sS"
             , "--fail-with-body"
             , "-X"
@@ -1249,8 +1249,8 @@ exchangeAuthorizationCode runtime authorizationCode = do
             , "redirect_uri=" ++ callbackUrl
             , tokenUrl
             ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   pure $
     case outputResult of

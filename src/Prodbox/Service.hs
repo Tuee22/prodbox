@@ -16,9 +16,15 @@ where
 
 import Control.Concurrent (threadDelay)
 import Data.Text (Text)
+import Prodbox.Error (errorMsg)
 import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
+  )
+import Prodbox.Subprocess
+  ( ProcessOutput
+  , Subprocess (..)
+  , capture
   )
 
 data ServiceError = ServiceError
@@ -57,13 +63,25 @@ instance AsServiceError ServiceError where
   fromServiceError = id
 
 class (Monad m) => HasMinIO m where
-  runMinIO :: String -> m (Either MinIOError String)
+  runMinIO :: [String] -> m (Either MinIOError ProcessOutput)
+  runMinIOWithEnv :: Maybe [(String, String)] -> [String] -> m (Either MinIOError ProcessOutput)
+  runMinIOWithEnv _ = runMinIO
 
 class (Monad m) => HasRedis m where
-  runRedis :: [String] -> m (Either RedisError String)
+  runRedis :: [String] -> m (Either RedisError ProcessOutput)
 
 class (Monad m) => HasPg m where
-  runPg :: [String] -> m (Either PgError String)
+  runPg :: [String] -> m (Either PgError ProcessOutput)
+
+instance HasMinIO IO where
+  runMinIO = runServiceSubprocess MinIOError "aws"
+  runMinIOWithEnv environment = runServiceSubprocessWithEnv MinIOError "aws" environment
+
+instance HasRedis IO where
+  runRedis = runServiceSubprocess RedisError "redis-cli"
+
+instance HasPg IO where
+  runPg = runServiceSubprocess PgError "kubectl"
 
 retryServiceAction
   :: (AsServiceError errorType)
@@ -81,3 +99,38 @@ retryServiceAction policy action = go 0
             threadDelay (retryDelayMicros policy attemptIndex)
             go (attemptIndex + 1)
       _ -> pure result
+
+runServiceSubprocess
+  :: (ServiceError -> errorType)
+  -> FilePath
+  -> [String]
+  -> IO (Either errorType ProcessOutput)
+runServiceSubprocess wrap commandPath arguments = do
+  runServiceSubprocessWithEnv wrap commandPath Nothing arguments
+
+runServiceSubprocessWithEnv
+  :: (ServiceError -> errorType)
+  -> FilePath
+  -> Maybe [(String, String)]
+  -> [String]
+  -> IO (Either errorType ProcessOutput)
+runServiceSubprocessWithEnv wrap commandPath environment arguments = do
+  result <-
+    capture
+      Subprocess
+        { subprocessPath = commandPath
+        , subprocessArguments = arguments
+        , subprocessEnvironment = environment
+        , subprocessWorkingDirectory = Nothing
+        }
+  pure $
+    case result of
+      Left err ->
+        Left
+          ( wrap
+              ServiceError
+                { serviceErrorMessage = errorMsg err
+                , serviceErrorRetryable = True
+                }
+          )
+      Right output -> Right output

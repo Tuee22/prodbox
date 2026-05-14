@@ -5,7 +5,7 @@ module Prodbox.Effect
 where
 
 import Prodbox.Subprocess
-  ( CommandSpec
+  ( Subprocess
   )
 
 data Validation
@@ -30,8 +30,8 @@ data Validation
 data Effect
   = EmitLine String
   | Noop
-  | RunCommand CommandSpec
-  | AssertCommandOutputContains CommandSpec String
+  | RunCommand Subprocess
+  | AssertCommandOutputContains Subprocess String
   | Sequence [Effect]
   | Validate Validation
   deriving (Eq, Show)

@@ -214,7 +214,7 @@ runCheckCode repoRoot = do
     ExitFailure _ -> pure lintExit
     ExitSuccess -> do
       buildExit <-
-        runStreaming
+        runSubprocessStreaming
           repoRoot
           environment
           "cabal"
@@ -304,7 +304,7 @@ runHaskellLint repoRoot environment writeEnabled = do
           case styleViolations of
             [] -> do
               formatExit <-
-                runStreaming
+                runSubprocessStreaming
                   repoRoot
                   environment
                   (styleToolsBinDir repoRoot </> "fourmolu")
@@ -313,7 +313,7 @@ runHaskellLint repoRoot environment writeEnabled = do
                 ExitFailure _ -> pure formatExit
                 ExitSuccess -> do
                   lintExit <-
-                    runStreaming
+                    runSubprocessStreaming
                       repoRoot
                       environment
                       (styleToolsBinDir repoRoot </> "hlint")
@@ -938,7 +938,7 @@ renderFormattedCabal repoRoot environment = do
   let tempCabalPath = repoRoot </> ".build" </> "prodbox.cabal.format"
       cabalPath = repoRoot </> "prodbox.cabal"
   copyFile cabalPath tempCabalPath
-  formatExit <- runStreaming repoRoot environment "cabal" ["format", tempCabalPath]
+  formatExit <- runSubprocessStreaming repoRoot environment "cabal" ["format", tempCabalPath]
   case formatExit of
     ExitFailure _ ->
       pure (Left "Failed to format `prodbox.cabal` via `cabal format`.")
@@ -1183,15 +1183,15 @@ renderDoctrineViolation violation =
       relativePath
         ++ " is forbidden because root build-shim automation must not duplicate the `prodbox` CLI surface."
 
-runStreaming :: FilePath -> [(String, String)] -> FilePath -> [String] -> IO ExitCode
-runStreaming repoRoot environment commandPath arguments = do
+runSubprocessStreaming :: FilePath -> [(String, String)] -> FilePath -> [String] -> IO ExitCode
+runSubprocessStreaming repoRoot environment subprocessPath arguments = do
   runResult <-
-    Subprocess.runStreamingCommand
-      Subprocess.CommandSpec
-        { Subprocess.commandPath = commandPath
-        , Subprocess.commandArguments = arguments
-        , Subprocess.commandEnvironment = Just environment
-        , Subprocess.commandWorkingDirectory = Just repoRoot
+    Subprocess.runSubprocessStreaming
+      Subprocess.Subprocess
+        { Subprocess.subprocessPath = subprocessPath
+        , Subprocess.subprocessArguments = arguments
+        , Subprocess.subprocessEnvironment = Just environment
+        , Subprocess.subprocessWorkingDirectory = Just repoRoot
         }
   case runResult of
     Failure err -> do

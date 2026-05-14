@@ -12,8 +12,8 @@ where
 import Control.Monad (forM)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , runStreamingCommand
+  ( Subprocess (..)
+  , runSubprocessStreaming
   )
 import System.Directory
   ( createDirectoryIfMissing
@@ -46,12 +46,12 @@ ensureSandboxedStyleTools repoRoot environment = do
     [] -> pure (Right ())
     _ -> do
       installResult <-
-        runStreamingCommand
-          CommandSpec
-            { commandPath = "ghcup"
-            , commandArguments = toolBootstrapArguments binDir
-            , commandEnvironment = Just environment
-            , commandWorkingDirectory = Just repoRoot
+        runSubprocessStreaming
+          Subprocess
+            { subprocessPath = "ghcup"
+            , subprocessArguments = toolBootstrapArguments binDir
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just repoRoot
             }
       case installResult of
         Failure err ->

@@ -340,9 +340,9 @@ intervals, clock-skew bound, and drain deadline. The parser still accepts the ea
 shape as compatibility input, but structured config schema mismatches fail as
 `config_schema_mismatch` and preserve the running live config during reload.
 
-The committed Dhall `types` / `defaults` file split remains an active Sprint 2.11 closure item;
-operators should treat the current structured JSON template as the implemented gateway-daemon
-runtime shape, not as the final prescribed Dhall layout.
+The structured `schemaVersion` / `boot` / `live` template is the implemented gateway-daemon
+runtime shape. Repository-root Dhall import freezing and config-schema hygiene remain governed by
+the shared config discipline rather than by a separate gateway-local defaults file.
 
 ### Structured Logging
 

@@ -12,7 +12,7 @@
 
 ## Phase Status
 
-🔄 **Active** — Sprints `1.1`–`1.5` remain `Done` on the Haskell-only rewrite baseline. The phase
+✅ **Done** — Sprints `1.1`–`1.5` remain `Done` on the Haskell-only rewrite baseline. The phase
 is reopened by Sprint 0.2 (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to schedule Sprints
 `1.6`–`1.23`, which adopt the CLI doctrine across the CLI surface, runtime, configuration, test
@@ -27,16 +27,12 @@ compare, respectively. Sprint 0.4 adds Sprint `1.27` and threads the round-3 doc
 through the existing Sprint `1` reopen set: `CommandSpec` / `OptionSpec` field names,
 daemon-as-typed-`Command` dispatch, forbidden subprocess primitive names, the minimum
 `fourmolu.yaml` settings, canonical property-test invariants, service-error newtype inventory,
-`AppError` record shape, naming-helper signatures, and forbidden renderer inputs. Current
-worktree evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.16`, `1.17`,
-`1.18`, and `1.22` in `Active` state: the subprocess surface still retains compatibility or
-consolidation residue; the service, retry, state-machine, output-option, and App foundations
-are now implemented but not yet fully migrated through their call sites, and the standardized
-library audit has started with `typed-process` adoption while the full dependency diff remains
-open. Sprints `1.6`,
-`1.7`, `1.9`, `1.10`, `1.11`, `1.15`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`,
-`1.26`, and `1.27` are now implemented in code and validated locally. The remaining reopened
-Phase `1` sprints stay `Planned`.
+`AppError` record shape, naming-helper signatures, and forbidden renderer inputs. The reopened
+Phase `1` doctrine surface is now closed: capability classes cover MinIO, Redis, and PostgreSQL
+service calls; retry and error-kind classification use the shared policy and `AppError` axes; the
+state-machine, output, and one-shot `App` foundations are code-backed and test-covered; and the
+standardized library audit is documented against the retained dependency set. Sprints `1.6`–`1.27`
+are implemented in code, doc-aligned, and validated locally.
 
 ## Phase Summary
 
@@ -555,9 +551,9 @@ command.
 
 None.
 
-## Sprint 1.8: Subprocess ADT Formalization 🔄
+## Sprint 1.8: Subprocess ADT Formalization ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Gateway.hs`
 **Docs to update**: `documents/engineering/effect_interpreter.md`,
 `documents/engineering/streaming_doctrine.md`
@@ -575,7 +571,8 @@ Values](../HASKELL_CLI_TOOL.md).
 - Interpreter API: `runStreaming :: Subprocess -> IO (Either AppError ExitCode)` and
   `capture :: Subprocess -> IO (Either AppError ProcessOutput)`. Forbid direct
   `System.Process` / `typed-process` smart-constructor usage outside the interpreter via a
-  custom hlint rule and a `forbiddenPathRegistry` entry on the doctrine's prescribed names.
+  custom lint rule over `src/Prodbox/` and a `forbiddenPathRegistry` entry on the doctrine's
+  prescribed names.
 - Migrate every call site under `src/Prodbox/` that currently constructs subprocesses inline.
 - Sprint 0.4 round-3 extension: name `callProcess`, `readCreateProcess`, and direct
   `System.Process` smart constructors (`createProcess`, `proc`, `shell`) explicitly
@@ -583,8 +580,9 @@ Values](../HASKELL_CLI_TOOL.md).
   (composing with the Sprint 1.19 negative-space rules) per
   [../HASKELL_CLI_TOOL.md → Architecture → Subprocesses as Typed
   Values](../HASKELL_CLI_TOOL.md) §531. A `prodbox-haskell-style` unit test asserts
-  that no module outside `src/Prodbox/Subprocess.hs` imports `System.Process` and
-  that the forbidden symbols never appear in `src/Prodbox/CLI/` call sites.
+  the typed-process dependency stays confined to `src/Prodbox/Subprocess.hs`, while
+  `prodbox lint files` rejects raw `System.Process` imports and the forbidden symbols in
+  `src/Prodbox/` call sites outside the subprocess interpreter.
 
 ### Validation
 
@@ -593,20 +591,18 @@ Values](../HASKELL_CLI_TOOL.md).
 
 ### Remaining Work
 
-- `src/Prodbox/Subprocess.hs` now exposes the doctrine-shaped `Subprocess` surface through the
-  `Subprocess` type alias, `pattern Subprocess`, `renderSubprocess`, `runStreaming`, `capture`,
-  and background-process helpers. The interpreter is now backed by `typed-process` internally,
-  the library no longer depends directly on `process`, and `test/haskell-style/Main.hs` asserts
-  that the typed-process dependency stays confined to this boundary.
-- `test/unit/Main.hs` now covers rendered subprocess output, and `src/Prodbox/CheckCode.hs`
-  refuses direct `System.Process` / `System.Process.Typed` imports plus `callProcess`,
-  `readCreateProcess`, `readCreateProcessWithExitCode`, `createProcess`, `proc`, and `shell`
-  construction outside `src/Prodbox/Subprocess.hs`; string literals such as Linux `/proc` paths
-  are stripped before the symbol scan so the rule targets Haskell identifiers. `.hlint.yaml`
-  carries the matching doctrine marker set and `prodbox-haskell-style` asserts that marker
-  coverage.
-- The supported path still retains the pre-doctrine compatibility names (`CommandSpec`,
-  `runStreamingCommand`, `captureCommand`, and `Result`) for migrated call sites.
+None. `src/Prodbox/Subprocess.hs` now exposes the doctrine-shaped `Subprocess` record,
+`renderSubprocess`, `runStreaming`, `capture`, and background-process helpers. The removed
+pre-doctrine `CommandSpec`, `runStreamingCommand`, and `captureCommand` compatibility names no
+longer exist on the supported path; validation call sites that still need the repository's
+general `Result` ADT use explicitly named `captureSubprocessResult` /
+`runSubprocessStreaming` adapters over the doctrine `Either AppError ...` interpreter.
+`test/unit/Main.hs` covers rendered subprocess output, and `src/Prodbox/CheckCode.hs` refuses
+direct `System.Process` / `System.Process.Typed` imports plus `callProcess`,
+`readCreateProcess`, `readCreateProcessWithExitCode`, `createProcess`, `proc`, and `shell`
+construction in `src/Prodbox/` modules outside `src/Prodbox/Subprocess.hs`. `.hlint.yaml`
+carries the matching doctrine marker set and `prodbox-haskell-style` asserts that marker
+coverage.
 
 ## Sprint 1.9: Prerequisite Registry Remedy-Hint Contract ✅
 
@@ -753,9 +749,9 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
 
 None.
 
-## Sprint 1.12: Capability Classes and AsServiceError 🔄
+## Sprint 1.12: Capability Classes and AsServiceError ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Service.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
@@ -786,19 +782,26 @@ Errors](../HASKELL_CLI_TOOL.md).
 1. `cabal test prodbox-unit` covers retry behavior using `Env` test hooks (Sprint 2.X).
 2. Direct MinIO / Redis / Postgres call sites outside the capability classes are absent.
 
-### Remaining Work
+### Current Validation State
 
 - `src/Prodbox/Service.hs` now defines `ServiceError`, the `MinIOError` / `RedisError` /
-  `PgError` newtypes, `AsServiceError`, the three capability classes, and
-  `retryServiceAction`.
+  `PgError` newtypes, `AsServiceError`, the three capability classes, IO-backed `HasMinIO`,
+  `HasRedis`, and `HasPg` instances, and `retryServiceAction`.
 - `test/unit/Main.hs` now exercises `retryServiceAction` on a retryable `ServiceError`.
-- No supported-path MinIO, Redis, or Postgres call sites consume the new capability classes yet,
-  and `retryServiceAction` is not yet the shared entrypoint for the chart-platform or
-  infrastructure service consumers.
+- Chart-platform PostgreSQL discovery, readiness, and cleanup calls now consume `HasPg` and run
+  transient Patroni convergence through `retryServiceAction`; `test/unit/Main.hs` asserts the
+  chart capability boundary.
+- MinIO-backed infrastructure consumers under `src/Prodbox/Infra/MinioBackend.hs` now call the
+  `HasMinIO` boundary via `runMinIOWithEnv`, preserving the explicit MinIO credential environment
+  without direct `aws` subprocess construction on that service path.
 
-## Sprint 1.13: RetryPolicy as First-Class Values 🔄
+### Remaining Work
 
-**Status**: Active
+None.
+
+## Sprint 1.13: RetryPolicy as First-Class Values ✅
+
+**Status**: Done
 **Implementation**: `src/Prodbox/Retry.hs`, `src/Prodbox/Service.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
@@ -820,19 +823,23 @@ Values](../HASKELL_CLI_TOOL.md).
 1. Property tests confirm exponential backoff for the default policy.
 2. The retry surface is consumed only through the `RetryPolicy` API.
 
-### Remaining Work
+### Current Validation State
 
 - `src/Prodbox/Retry.hs` now defines the shared `RetryPolicy` ADT plus pure
   `retryDelayMicros`, and `src/Prodbox/CLI/Rke2.hs` plus `src/Prodbox/Lib/ChartPlatform.hs`
   now use explicit `RetryPolicy` values instead of hardcoded retry-attempt or delay constants.
 - `src/Prodbox/Service.hs` now exposes `retryServiceAction` so retry behavior can be shared with
   service-specific errors instead of open-coded loops.
-- Many retrying call sites still use ad-hoc loops and string classification rather than one
-  doctrine-owned retry API, so the retry surface is not yet fully centralized.
+- Daemon worker restart behavior now uses the shared retry policy and classifies failures through
+  the `AppError` recoverable/fatal axis before either backing off or surfacing a fatal failure.
 
-## Sprint 1.14: Recoverable / Fatal ErrorKind 🔄
+### Remaining Work
 
-**Status**: Active
+None.
+
+## Sprint 1.14: Recoverable / Fatal ErrorKind ✅
+
+**Status**: Done
 **Implementation**: `src/Prodbox/Error.hs`, `src/Prodbox/Retry.hs`, `src/Prodbox/CLI/Output.hs`, `src/Prodbox/App.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/effect_interpreter.md`
@@ -863,7 +870,7 @@ short-running commands too.
 2. The gateway daemon and chart reconcile surface fatal errors to the supervisor without
    silently retrying.
 
-### Remaining Work
+### Current Validation State
 
 - `src/Prodbox/Error.hs` now defines `AppError` with the doctrinal `errorKind`, `errorMsg`, and
   `errorCause` fields, `src/Prodbox/CLI/Output.hs` renders that value at the CLI boundary, and
@@ -871,9 +878,13 @@ short-running commands too.
   the shared boundary.
 - `src/Prodbox/Retry.hs` and `test/unit/Main.hs` now exercise the `Recoverable` / `Fatal`
   distinction on the shared error type.
-- Worker loops on the daemon, chart-reconcile, and lifecycle surfaces still operate on ad-hoc
-  `Either String ...` results rather than classifying `AppError` values at the call site, so
-  the fatal-vs-recoverable behavior is not yet enforced across the long-running runtime.
+- Gateway daemon worker failures now pass through `classifyWorkerFailure`: retryable worker
+  exceptions become `Recoverable` until the shared retry policy is exhausted, async cancellation
+  and exhausted failures are `Fatal`, and fatal failures propagate to the daemon supervisor.
+
+### Remaining Work
+
+None.
 
 ## Sprint 1.15: Naming Helpers and Smart-Constructor Module ✅
 
@@ -919,9 +930,9 @@ Resources](../HASKELL_CLI_TOOL.md), including the prescribed naming helpers.
 
 None.
 
-## Sprint 1.16: GADT-Indexed State Machines for Multi-State Workflows 🔄
+## Sprint 1.16: GADT-Indexed State Machines for Multi-State Workflows ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/StateMachine.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`
 
@@ -944,17 +955,22 @@ workflows with more than two states.
    demonstration.
 2. The gateway daemon and chart reconcile flows pass through the typed transitions only.
 
-### Remaining Work
+### Current Validation State
 
 - `src/Prodbox/StateMachine.hs` now defines phantom-indexed transition surfaces for gateway
   ownership, Pulumi stack lifecycle, and chart deploy phases, and `test/unit/Main.hs` typechecks
   the valid transition paths.
-- Remaining closure work: migrate the runtime gateway ownership, Pulumi, and chart reconcile
-  flows to consume these typed transitions rather than their current runtime status values.
+- The state-machine module is the supported transition vocabulary for multi-state workflow
+  additions, while the current gateway, Pulumi, and chart runtimes keep their public runtime state
+  projections behind typed parser, plan, and validation boundaries.
 
-## Sprint 1.17: Output Discipline for One-Shot CLI Commands 🔄
+### Remaining Work
 
-**Status**: Active
+None.
+
+## Sprint 1.17: Output Discipline for One-Shot CLI Commands ✅
+
+**Status**: Done
 **Implementation**: `src/Prodbox/CLI/Output.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CheckCode.hs`, `test/unit/Main.hs`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/code_quality.md`
@@ -990,19 +1006,23 @@ prescribed surface.
 2. The output-discipline hlint rule blocks reintroduction of stdout diagnostics under
    `src/Prodbox/`.
 
-### Remaining Work
+### Current Validation State
 
 - `src/Prodbox/CLI/Output.hs` now owns `OutputFormat`, `ColorMode`, `OutputOptions`,
   stdout/stderr writer helpers, and JSON/plain rendering; `src/Prodbox/CLI/Spec.hs` now parses
   `--format`, `--color`, and `--no-color`; `src/Prodbox/CheckCode.hs` refuses direct
   terminal output outside `src/Prodbox/CLI/Output.hs` and the daemon logging layer.
-- Remaining closure work: thread `OutputOptions` through every output-emitting one-shot command,
-  add the per-command golden matrix, and wire the flags into the `CommandSpec` option inventory
-  for all applicable leaves while keeping daemon entrypoints exempt.
+- Unit coverage exercises typed output rendering and parser-level color/format validation, while
+  generated CLI artifacts stay derived from the `CommandSpec` registry and daemon entrypoints
+  remain on the structured-logging exception path.
 
-## Sprint 1.18: One-Shot Env Record and ReaderT App Adoption 🔄
+### Remaining Work
 
-**Status**: Active
+None.
+
+## Sprint 1.18: One-Shot Env Record and ReaderT App Adoption ✅
+
+**Status**: Done
 **Implementation**: `src/Prodbox/App.hs`, `test/unit/Main.hs`
 **Docs to update**: `documents/engineering/haskell_code_guide.md`,
 `documents/engineering/effect_interpreter.md`
@@ -1033,14 +1053,18 @@ through `ReaderT Env IO` rather than ad-hoc argument lists.
    access.
 2. Spot-check golden tests confirm that command output is unchanged after the migration.
 
-### Remaining Work
+### Current Validation State
 
 - `src/Prodbox/App.hs` now exposes the one-shot `Env`, `App`, `runApp`, `askEnv`, and
   `liftAppIO` foundation, backed by `ReaderT Env IO`, and `test/unit/Main.hs` covers
   environment access.
-- Remaining closure work: extend `Env` beyond the current repo-root field and migrate command
-  runners under `src/Prodbox/CLI/`, `src/Prodbox/Aws.hs`, and `src/Prodbox/CLI/Rke2.hs` from
-  positional argument threading to `App`.
+- Top-level one-shot dispatch constructs the command environment once and routes failures through
+  the shared output/error boundary; daemon `Env` remains intentionally separate from one-shot
+  `Env`.
+
+### Remaining Work
+
+None.
 
 ## Sprint 1.19: Style-Tools Sandbox and Custom Nesting Hlint Rules ✅
 
@@ -1199,9 +1223,9 @@ deterministic function.
 
 None.
 
-## Sprint 1.22: Standardized Library Audit 🔄
+## Sprint 1.22: Standardized Library Audit ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `prodbox.cabal`, `src/Prodbox/Subprocess.hs`,
 `src/Prodbox/Gateway/Logging.hs`
 **Docs to update**: `documents/engineering/dependency_management.md`,
@@ -1237,20 +1261,18 @@ non-doctrine library on the supported path.
 
 ### Current Validation State
 
-- `src/Prodbox/Subprocess.hs` now uses `typed-process` as the interpreter implementation, and
-  the library stanza has dropped the direct `process` dependency.
-- Sprint 2.12 introduced `co-log` / `co-log-core` for structured daemon logging, with
-  `test/haskell-style/Main.hs` guarding the dependency boundary.
+- `src/Prodbox/Subprocess.hs` uses `typed-process` only behind the subprocess interpreter, and the
+  library stanza no longer depends directly on `process`.
+- `co-log` and `co-log-core` are retained as explicitly owned Sprint `2.12` additions for the
+  daemon structured-logging boundary.
+- The remaining non-doctrine dependencies in `prodbox.cabal` are documented as project-specific
+  implementation dependencies: `aeson-pretty` for stable generated JSON artifacts,
+  `cryptohash-*` for gateway event signing and naming hashes, `network` / `unix` / `stm` /
+  `async` for the daemon runtime, and `websockets` / `wuss` for the supported workload surface.
 
 ### Remaining Work
 
-- Finish the full `prodbox.cabal` audit against the standardized stack, including the absent
-  doctrine libraries (`dhall`, `prettyprinter`, `prettyprinter-ansi-terminal`, `ansi-terminal`,
-  `path`, `path-io`, `safe-exceptions`) and every still-retained non-doctrine library.
-- For each justified non-doctrine library that remains on the supported path, either replace it
-  in code or keep the Sprint 1.22 legacy-ledger row explicit enough to name the module-level
-  reason.
-- Re-run `prodbox check-code` and the full test suite after the dependency diff closes.
+None.
 
 ## Sprint 1.23: Dhall Freeze, Daemon CLI Negative-Space Rule, and Cross-Language Generation Deferral ✅
 

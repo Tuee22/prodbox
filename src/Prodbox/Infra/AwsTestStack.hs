@@ -58,10 +58,10 @@ import Prodbox.Settings
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
-  , runStreamingCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
+  , runSubprocessStreaming
   )
 import System.Directory
   ( createDirectoryIfMissing
@@ -127,12 +127,12 @@ ensureAwsTestSshKey repoRoot = do
     then pure (Right privateKeyPath)
     else do
       result <-
-        captureCommand
-          CommandSpec
-            { commandPath = "ssh-keygen"
-            , commandArguments = ["-q", "-t", "ed25519", "-N", "", "-f", privateKeyPath]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Nothing
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "ssh-keygen"
+            , subprocessArguments = ["-q", "-t", "ed25519", "-N", "", "-f", privateKeyPath]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
             }
       case result of
         Failure err -> pure (Left ("ssh-keygen failed: " ++ err))
@@ -289,12 +289,12 @@ settingsAwsEnv repoRoot = do
 fetchPublicIpv4 :: IO (Either String String)
 fetchPublicIpv4 = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "curl"
-        , commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   case result of
     Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
@@ -465,12 +465,12 @@ pulumiStackSelect projectDir environment createIfMissing =
               ExitFailure _ -> PulumiStackSelectFailed "pulumi stack select failed"
         else do
           result <-
-            captureCommand
-              CommandSpec
-                { commandPath = "pulumi"
-                , commandArguments = arguments
-                , commandEnvironment = Just environment
-                , commandWorkingDirectory = Just projectDir
+            captureSubprocessResult
+              Subprocess
+                { subprocessPath = "pulumi"
+                , subprocessArguments = arguments
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just projectDir
                 }
           pure $
             case result of
@@ -539,12 +539,12 @@ exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ s
 pulumiStackOutputs :: FilePath -> [(String, String)] -> IO (Either String Value)
 pulumiStackOutputs projectDir environment = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "pulumi"
-        , commandArguments = ["stack", "output", "--json", "--stack", awsTestStackName]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just projectDir
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "pulumi"
+        , subprocessArguments = ["stack", "output", "--json", "--stack", awsTestStackName]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just projectDir
         }
   case result of
     Failure err -> pure (Left ("failed to run pulumi stack output: " ++ err))
@@ -560,12 +560,12 @@ pulumiStackOutputs projectDir environment = do
 runPulumiCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runPulumiCommand projectDir environment arguments = do
   result <-
-    runStreamingCommand
-      CommandSpec
-        { commandPath = "pulumi"
-        , commandArguments = arguments
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just projectDir
+    runSubprocessStreaming
+      Subprocess
+        { subprocessPath = "pulumi"
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just projectDir
         }
   case result of
     Failure err -> do
@@ -576,13 +576,13 @@ runPulumiCommand projectDir environment arguments = do
 runPulumiCommandQuiet :: FilePath -> [(String, String)] -> [String] -> IO (Either String ())
 runPulumiCommandQuiet projectDir environment arguments = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath =
             if isPulumiLoginCommand arguments
               then "timeout"
               else "pulumi"
-        , commandArguments =
+        , subprocessArguments =
             if isPulumiLoginCommand arguments
               then
                 [ "--kill-after=10s"
@@ -592,8 +592,8 @@ runPulumiCommandQuiet projectDir environment arguments = do
                   ++ arguments
                   ++ ["--non-interactive"]
               else arguments
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just projectDir
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just projectDir
         }
   pure $
     case result of
@@ -642,18 +642,18 @@ resourceStillExists :: FilePath -> [String] -> IO (Either String Bool)
 resourceStillExists repoRoot command =
   case command of
     [] -> pure (Left "resource existence check requires a command")
-    commandPath : commandArguments -> do
+    subprocessPath : subprocessArguments -> do
       envResult <- settingsAwsEnv repoRoot
       case envResult of
         Left err -> pure (Left err)
         Right environment -> do
           result <-
-            captureCommand
-              CommandSpec
-                { commandPath = commandPath
-                , commandArguments = commandArguments
-                , commandEnvironment = Just environment
-                , commandWorkingDirectory = Nothing
+            captureSubprocessResult
+              Subprocess
+                { subprocessPath = subprocessPath
+                , subprocessArguments = subprocessArguments
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Nothing
                 }
           case result of
             Failure err -> pure (Left err)
@@ -673,12 +673,13 @@ instanceStillExists repoRoot instanceId = do
     Left err -> pure (Left err)
     Right environment -> do
       result <-
-        captureCommand
-          CommandSpec
-            { commandPath = "aws"
-            , commandArguments = ["ec2", "describe-instances", "--instance-ids", instanceId, "--output", "json"]
-            , commandEnvironment = Just environment
-            , commandWorkingDirectory = Nothing
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                ["ec2", "describe-instances", "--instance-ids", instanceId, "--output", "json"]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Nothing
             }
       case result of
         Failure err -> pure (Left err)

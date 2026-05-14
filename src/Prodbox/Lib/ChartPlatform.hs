@@ -116,7 +116,8 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   )
 import Prodbox.Service
-  ( PgError (..)
+  ( HasPg (..)
+  , PgError (..)
   , ServiceError (..)
   , retryServiceAction
   , toServiceError
@@ -129,9 +130,9 @@ import Prodbox.Settings
   , ValidatedSettings (..)
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory
   ( Permissions
@@ -768,13 +769,9 @@ discoverPerconaPatroniClaims namespace = do
         "postgres-operator.crunchydata.com/cluster="
           ++ clusterName
           ++ ",postgres-operator.crunchydata.com/data=postgres"
-  outputResult <-
-    runCaptured
-      "kubectl get Percona PostgreSQL PVCs"
-      "kubectl"
-      ["get", "pvc", "--namespace", namespace, "--selector", selector, "-o", "json"]
+  outputResult <- runPg ["get", "pvc", "--namespace", namespace, "--selector", selector, "-o", "json"]
   pure $ do
-    output <- outputResult
+    output <- mapPgError outputResult
     case processExitCode output of
       ExitFailure _ ->
         Left
@@ -898,14 +895,9 @@ perconaPatroniClaimRetryPolicy =
 validatePatroniPlatformReady :: IO (Either String ())
 validatePatroniPlatformReady = do
   crdResult <-
-    runCaptured
-      "kubectl get PostgreSQL CRD"
-      "kubectl"
-      ["get", "crd", patroniPostgresqlCrdName, "-o", "name"]
+    runPg ["get", "crd", patroniPostgresqlCrdName, "-o", "name"]
   outputResult <-
-    runCaptured
-      "kubectl get postgres operator deployment"
-      "kubectl"
+    runPg
       [ "get"
       , "deployment"
       , patroniOperatorDeploymentName
@@ -916,7 +908,7 @@ validatePatroniPlatformReady = do
       ]
   pure $
     case crdResult of
-      Left err -> Left err
+      Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
       Right crdOutput ->
         case processExitCode crdOutput of
           ExitFailure _ ->
@@ -928,7 +920,7 @@ validatePatroniPlatformReady = do
               )
           ExitSuccess ->
             case outputResult of
-              Left err -> Left err
+              Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
               Right output ->
                 case processExitCode output of
                   ExitSuccess -> Right ()
@@ -987,6 +979,15 @@ mapPgError result =
   case result of
     Left err -> Left (Text.unpack (serviceErrorMessage (toServiceError err)))
     Right value -> Right value
+
+runPgExpectSuccess :: String -> [String] -> IO (Either String ())
+runPgExpectSuccess action arguments = do
+  outputResult <- runPg arguments
+  pure $ do
+    output <- mapPgError outputResult
+    case processExitCode output of
+      ExitSuccess -> Right ()
+      ExitFailure _ -> Left (action ++ " failed: " ++ processStderr output ++ processStdout output)
 
 patroniClusterReadyRetryPolicy :: RetryPolicy
 patroniClusterReadyRetryPolicy =
@@ -1162,7 +1163,8 @@ deleteChartPlan plan = do
             ++ patroniClusterName namespace
             ++ ",postgres-operator.crunchydata.com/data=postgres"
     podResult <-
-      deleteKubectlObject
+      runPgExpectSuccess
+        "delete Patroni PostgreSQL pods"
         [ "delete"
         , "pod"
         , "--selector"
@@ -1176,7 +1178,8 @@ deleteChartPlan plan = do
       Left err -> pure (Left err)
       Right () -> do
         pvcResult <-
-          deleteKubectlObject
+          runPgExpectSuccess
+            "delete Patroni PostgreSQL PVCs"
             [ "delete"
             , "pvc"
             , "--selector"
@@ -1284,25 +1287,19 @@ mergeChartSecretValues existingValues recoveredValues =
 readOptionalPatroniClusterStatus :: String -> IO (Maybe String)
 readOptionalPatroniClusterStatus namespace = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
-            [ "get"
-            , patroniPostgresqlCrdName
-            , patroniClusterName namespace
-            , "-n"
-            , namespace
-            , "-o"
-            , "jsonpath={.status.state}"
-            ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
-        }
+    runPg
+      [ "get"
+      , patroniPostgresqlCrdName
+      , patroniClusterName namespace
+      , "-n"
+      , namespace
+      , "-o"
+      , "jsonpath={.status.state}"
+      ]
   pure $
     case result of
-      Failure _ -> Nothing
-      Success output ->
+      Left _ -> Nothing
+      Right output ->
         case processExitCode output of
           ExitFailure _ -> Nothing
           ExitSuccess ->
@@ -1312,25 +1309,19 @@ readOptionalPatroniClusterStatus namespace = do
 readOptionalPatroniReadyPostgresCount :: String -> IO (Maybe Int)
 readOptionalPatroniReadyPostgresCount namespace = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
-            [ "get"
-            , patroniPostgresqlCrdName
-            , patroniClusterName namespace
-            , "-n"
-            , namespace
-            , "-o"
-            , "jsonpath={.status.postgres.ready}"
-            ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
-        }
+    runPg
+      [ "get"
+      , patroniPostgresqlCrdName
+      , patroniClusterName namespace
+      , "-n"
+      , namespace
+      , "-o"
+      , "jsonpath={.status.postgres.ready}"
+      ]
   pure $
     case result of
-      Failure _ -> Nothing
-      Success output ->
+      Left _ -> Nothing
+      Right output ->
         case processExitCode output of
           ExitFailure _ -> Nothing
           ExitSuccess ->
@@ -1393,25 +1384,19 @@ discoverPatroniAnchorPersistentVolumeName namespace = do
 readOptionalPatroniPrimaryPodName :: String -> IO (Maybe String)
 readOptionalPatroniPrimaryPodName namespace = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
-            [ "get"
-            , "endpoints"
-            , patroniPrimaryServiceName namespace
-            , "--namespace"
-            , namespace
-            , "-o"
-            , "jsonpath={.subsets[0].addresses[0].targetRef.name}"
-            ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
-        }
+    runPg
+      [ "get"
+      , "endpoints"
+      , patroniPrimaryServiceName namespace
+      , "--namespace"
+      , namespace
+      , "-o"
+      , "jsonpath={.subsets[0].addresses[0].targetRef.name}"
+      ]
   pure $
     case result of
-      Failure _ -> Nothing
-      Success output ->
+      Left _ -> Nothing
+      Right output ->
         case processExitCode output of
           ExitFailure _ -> Nothing
           ExitSuccess ->
@@ -1433,25 +1418,19 @@ dropPodOrdinal podName =
 readOptionalPersistentVolumeNameForClaim :: String -> String -> IO (Maybe String)
 readOptionalPersistentVolumeNameForClaim namespace claimName = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
-            [ "get"
-            , "pvc"
-            , claimName
-            , "--namespace"
-            , namespace
-            , "-o"
-            , "jsonpath={.spec.volumeName}"
-            ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
-        }
+    runPg
+      [ "get"
+      , "pvc"
+      , claimName
+      , "--namespace"
+      , namespace
+      , "-o"
+      , "jsonpath={.spec.volumeName}"
+      ]
   pure $
     case result of
-      Failure _ -> Nothing
-      Success output ->
+      Left _ -> Nothing
+      Right output ->
         case processExitCode output of
           ExitFailure _ -> Nothing
           ExitSuccess ->
@@ -1503,25 +1482,19 @@ updatePatroniClusterInstanceCount _ _ = Left "keycloak-postgres values payload m
 readOptionalSecretPassword :: String -> String -> IO (Maybe String)
 readOptionalSecretPassword namespace secretName = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
-            [ "get"
-            , "secret"
-            , secretName
-            , "-n"
-            , namespace
-            , "-o"
-            , "go-template={{index .data \"password\" | base64decode}}"
-            ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
-        }
+    runPg
+      [ "get"
+      , "secret"
+      , secretName
+      , "-n"
+      , namespace
+      , "-o"
+      , "go-template={{index .data \"password\" | base64decode}}"
+      ]
   pure $
     case result of
-      Failure _ -> Nothing
-      Success output ->
+      Left _ -> Nothing
+      Right output ->
         case processExitCode output of
           ExitFailure _ -> Nothing
           ExitSuccess ->
@@ -2261,12 +2234,12 @@ resolveCustomImageTag repository = do
 resolveLocalImageBuildToken :: String -> IO (Maybe String)
 resolveLocalImageBuildToken imageRef = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "docker"
-        , commandArguments = ["image", "inspect", "--format", "{{.Id}}", imageRef]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "docker"
+        , subprocessArguments = ["image", "inspect", "--format", "{{.Id}}", imageRef]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   pure $
     case result of
@@ -2756,22 +2729,22 @@ repairStorageHostDir path = do
                 Right () -> runCommandExpectSuccess "sudo chmod" "sudo" ["chmod", "0777", path]
 
 runCaptured :: String -> FilePath -> [String] -> IO (Either String ProcessOutput)
-runCaptured action commandPath args = do
+runCaptured action subprocessPath args = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = commandPath
-        , commandArguments = args
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = subprocessPath
+        , subprocessArguments = args
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   pure $ case result of
     Failure err -> Left (action ++ " failed: " ++ err)
     Success output -> Right output
 
 runCommandExpectSuccess :: String -> FilePath -> [String] -> IO (Either String ())
-runCommandExpectSuccess action commandPath args = do
-  outputResult <- runCaptured action commandPath args
+runCommandExpectSuccess action subprocessPath args = do
+  outputResult <- runCaptured action subprocessPath args
   pure $ do
     output <- outputResult
     case processExitCode output of
@@ -2779,8 +2752,8 @@ runCommandExpectSuccess action commandPath args = do
       ExitFailure _ -> Left (processStderr output ++ processStdout output)
 
 commandStdout :: FilePath -> [String] -> IO (Either String String)
-commandStdout commandPath args = do
-  outputResult <- runCaptured (commandPath ++ " " ++ unwords args) commandPath args
+commandStdout subprocessPath args = do
+  outputResult <- runCaptured (subprocessPath ++ " " ++ unwords args) subprocessPath args
   pure $ do
     output <- outputResult
     case processExitCode output of

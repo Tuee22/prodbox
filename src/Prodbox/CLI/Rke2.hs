@@ -119,10 +119,10 @@ import Prodbox.Settings
   , zone_id
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
-  , runStreamingCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
+  , runSubprocessStreaming
   )
 import System.Directory
   ( doesDirectoryExist
@@ -430,45 +430,41 @@ runRke2Command repoRoot command =
     Rke2Status ->
       requireLinux $
         runCommand
-          CommandSpec
-            { commandPath = "systemctl"
-            , commandArguments = ["is-active", rke2ServiceName]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+          Subprocess
+            { subprocessPath = "systemctl"
+            , subprocessArguments = ["is-active", rke2ServiceName]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
     Rke2Start ->
       requireLinux $
         runCommand
-          CommandSpec
-            { commandPath = "sudo"
-            , commandArguments = ["systemctl", "start", rke2ServiceName]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["systemctl", "start", rke2ServiceName]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
     Rke2Stop ->
       requireLinux $
         runCommand
-          CommandSpec
-            { commandPath = "sudo"
-            , commandArguments = ["systemctl", "stop", rke2ServiceName]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["systemctl", "stop", rke2ServiceName]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
     Rke2Restart ->
       requireLinux $
         runCommand
-          CommandSpec
-            { commandPath = "sudo"
-            , commandArguments = ["systemctl", "restart", rke2ServiceName]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
     Rke2Reconcile planOptions ->
       requireLinux (runNativeInstall repoRoot planOptions)
-    Rke2Install planOptions ->
-      requireLinux $ do
-        writeDiagnosticLine "Deprecated: `prodbox rke2 install` is an alias for `prodbox rke2 reconcile`."
-        runNativeInstall repoRoot planOptions
     Rke2Delete confirmed ->
       requireLinux $
         if confirmed
@@ -480,17 +476,17 @@ runRke2Command repoRoot command =
           Left err -> failWith err
           Right linesToShow ->
             runCommand
-              CommandSpec
-                { commandPath = "journalctl"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "journalctl"
+                , subprocessArguments =
                     [ "-u"
                     , rke2ServiceName
                     , "-n"
                     , show linesToShow
                     , "--no-pager"
                     ]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
                 }
 
 runNativeInstall :: FilePath -> PlanOptions -> IO ExitCode
@@ -572,18 +568,18 @@ applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
     [ ensureRke2ServerInstalled repoRoot
     , ensureRke2IngressController repoRoot
     , runCommand
-        CommandSpec
-          { commandPath = "sudo"
-          , commandArguments = ["systemctl", "enable", rke2ServiceName]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["systemctl", "enable", rke2ServiceName]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
     , runCommand
-        CommandSpec
-          { commandPath = "sudo"
-          , commandArguments = ["systemctl", "restart", rke2ServiceName]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
     , syncUserKubeconfig repoRoot
     , verifyClusterInfo repoRoot
@@ -651,11 +647,11 @@ ensureRke2ServerInstalled repoRoot = do
                       ("failed to download RKE2 installer: " ++ outputDetail downloadOutput)
                   ExitSuccess ->
                     runCommand
-                      CommandSpec
-                        { commandPath = "sudo"
-                        , commandArguments = ["env", "INSTALL_RKE2_TYPE=server", "sh", installerPath]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
+                      Subprocess
+                        { subprocessPath = "sudo"
+                        , subprocessArguments = ["env", "INSTALL_RKE2_TYPE=server", "sh", installerPath]
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Just repoRoot
                         }
 
 ensureRke2IngressController :: FilePath -> IO ExitCode
@@ -679,43 +675,43 @@ syncUserKubeconfig repoRoot = do
       let targetPath = homeDirectory </> ".kube" </> "config"
        in runSequentially
             [ runCommand
-                CommandSpec
-                  { commandPath = "sudo"
-                  , commandArguments = ["mkdir", "-p", takeDirectory targetPath]
-                  , commandEnvironment = Nothing
-                  , commandWorkingDirectory = Just repoRoot
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["mkdir", "-p", takeDirectory targetPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
                   }
             , runCommand
-                CommandSpec
-                  { commandPath = "sudo"
-                  , commandArguments = ["cp", rke2KubeconfigPath, targetPath]
-                  , commandEnvironment = Nothing
-                  , commandWorkingDirectory = Just repoRoot
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["cp", rke2KubeconfigPath, targetPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
                   }
             , runCommand
-                CommandSpec
-                  { commandPath = "sudo"
-                  , commandArguments = ["chown", ownerSpec, targetPath]
-                  , commandEnvironment = Nothing
-                  , commandWorkingDirectory = Just repoRoot
+                Subprocess
+                  { subprocessPath = "sudo"
+                  , subprocessArguments = ["chown", ownerSpec, targetPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
                   }
             , runCommand
-                CommandSpec
-                  { commandPath = "chmod"
-                  , commandArguments = ["600", targetPath]
-                  , commandEnvironment = Nothing
-                  , commandWorkingDirectory = Just repoRoot
+                Subprocess
+                  { subprocessPath = "chmod"
+                  , subprocessArguments = ["600", targetPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
                   }
             ]
 
 verifyClusterInfo :: FilePath -> IO ExitCode
 verifyClusterInfo repoRoot =
   runCommand
-    CommandSpec
-      { commandPath = "kubectl"
-      , commandArguments = ["cluster-info"]
-      , commandEnvironment = Nothing
-      , commandWorkingDirectory = Just repoRoot
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments = ["cluster-info"]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
       }
 
 waitForClusterNodesReady :: FilePath -> IO ExitCode
@@ -745,17 +741,17 @@ waitForClusterNodesReady repoRoot = go rke2NodeDiscoveryAttempts "cluster API no
                       "cluster API reachable but no node objects registered yet"
                   _ ->
                     runCommand
-                      CommandSpec
-                        { commandPath = "kubectl"
-                        , commandArguments =
+                      Subprocess
+                        { subprocessPath = "kubectl"
+                        , subprocessArguments =
                             [ "wait"
                             , "--for=condition=Ready"
                             , "node"
                             , "--all"
                             , "--timeout=300s"
                             ]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Just repoRoot
                         }
               ExitFailure _ -> do
                 threadDelay rke2NodeDiscoveryDelayMicroseconds
@@ -777,11 +773,11 @@ deleteNonManualStorageClasses repoRoot = do
                 ]
            in runSequentially
                 [ runCommand
-                    CommandSpec
-                      { commandPath = "kubectl"
-                      , commandArguments = ["delete", "storageclass", ref, "--ignore-not-found=true"]
-                      , commandEnvironment = Nothing
-                      , commandWorkingDirectory = Just repoRoot
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments = ["delete", "storageclass", ref, "--ignore-not-found=true"]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
                       }
                 | ref <- refs
                 ]
@@ -809,11 +805,12 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
                 if existingPhase `elem` ["Released", "Failed"]
                   then
                     runCommand
-                      CommandSpec
-                        { commandPath = "kubectl"
-                        , commandArguments = ["delete", "pv", minioPersistentVolume, "--ignore-not-found=true", "--wait=true"]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Just repoRoot
+                      Subprocess
+                        { subprocessPath = "kubectl"
+                        , subprocessArguments =
+                            ["delete", "pv", minioPersistentVolume, "--ignore-not-found=true", "--wait=true"]
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Just repoRoot
                         }
                   else pure ExitSuccess
               case resetExit of
@@ -911,9 +908,9 @@ ensureMinioRuntime repoRoot imageSource = do
               , "resources.limits.memory=512Mi"
               ]
           , runCommand
-              CommandSpec
-                { commandPath = "kubectl"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "kubectl"
+                , subprocessArguments =
                     [ "wait"
                     , "--for=condition=Available"
                     , "deployment/minio"
@@ -921,8 +918,8 @@ ensureMinioRuntime repoRoot imageSource = do
                     , minioNamespace
                     , "--timeout=300s"
                     ]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           ]
 
@@ -942,9 +939,9 @@ ensureHarborRegistryStorageBackend repoRoot = do
     Right (accessKey, secretKey) ->
       runSequentially
         [ runCommand
-            CommandSpec
-              { commandPath = "kubectl"
-              , commandArguments =
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
                   [ "delete"
                   , "job"
                   , harborRegistryStorageBootstrapJobName
@@ -953,25 +950,25 @@ ensureHarborRegistryStorageBackend repoRoot = do
                   , "--ignore-not-found=true"
                   , "--wait=true"
                   ]
-              , commandEnvironment = Nothing
-              , commandWorkingDirectory = Just repoRoot
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
               }
         , withTemporaryJsonManifest
             "harbor-storage-backend"
             (harborStorageBackendManifestItems accessKey secretKey)
             ( \manifestPath ->
                 runCommand
-                  CommandSpec
-                    { commandPath = "kubectl"
-                    , commandArguments = ["apply", "-f", manifestPath]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
+                  Subprocess
+                    { subprocessPath = "kubectl"
+                    , subprocessArguments = ["apply", "-f", manifestPath]
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Just repoRoot
                     }
             )
         , runCommand
-            CommandSpec
-              { commandPath = "kubectl"
-              , commandArguments =
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
                   [ "wait"
                   , "--for=condition=complete"
                   , "job/" ++ harborRegistryStorageBootstrapJobName
@@ -979,13 +976,13 @@ ensureHarborRegistryStorageBackend repoRoot = do
                   , minioNamespace
                   , "--timeout=300s"
                   ]
-              , commandEnvironment = Nothing
-              , commandWorkingDirectory = Just repoRoot
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
               }
         , runCommand
-            CommandSpec
-              { commandPath = "kubectl"
-              , commandArguments =
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
                   [ "delete"
                   , "job"
                   , harborRegistryStorageBootstrapJobName
@@ -994,8 +991,8 @@ ensureHarborRegistryStorageBackend repoRoot = do
                   , "--ignore-not-found=true"
                   , "--wait=true"
                   ]
-              , commandEnvironment = Nothing
-              , commandWorkingDirectory = Just repoRoot
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
               }
         ]
 
@@ -1003,9 +1000,9 @@ readMinioRootCredentials :: FilePath -> IO (Either String (String, String))
 readMinioRootCredentials repoRoot = do
   accessKeyResult <-
     runTextCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "get"
             , "secret"
             , minioReleaseName
@@ -1014,14 +1011,14 @@ readMinioRootCredentials repoRoot = do
             , "-o"
             , "go-template={{index .data \"rootUser\" | base64decode}}"
             ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   secretKeyResult <-
     runTextCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "get"
             , "secret"
             , minioReleaseName
@@ -1030,8 +1027,8 @@ readMinioRootCredentials repoRoot = do
             , "-o"
             , "go-template={{index .data \"rootPassword\" | base64decode}}"
             ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $ do
     accessKey <- accessKeyResult
@@ -1223,9 +1220,9 @@ ensureHarborRegistryRuntime repoRoot = do
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
   runCommand
-    CommandSpec
-      { commandPath = "kubectl"
-      , commandArguments =
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
           [ "wait"
           , "--for=condition=Available"
           , "deployment/" ++ deploymentName
@@ -1233,8 +1230,8 @@ waitForDeployment repoRoot namespace deploymentName =
           , namespace
           , "--timeout=300s"
           ]
-      , commandEnvironment = Nothing
-      , commandWorkingDirectory = Just repoRoot
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
       }
 
 waitForHarborReadyEndpoint :: FilePath -> IO ExitCode
@@ -2085,27 +2082,27 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
     ( \manifestPath -> do
         applyExit <-
           runCommand
-            CommandSpec
-              { commandPath = "kubectl"
-              , commandArguments = ["apply", "-f", manifestPath]
-              , commandEnvironment = Nothing
-              , commandWorkingDirectory = Just repoRoot
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments = ["apply", "-f", manifestPath]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
               }
         case applyExit of
           ExitFailure _ -> pure applyExit
           ExitSuccess -> do
             issuerWaitEnv <- awsCommandEnvironment currentEnvironment settings
             runCommand
-              CommandSpec
-                { commandPath = "kubectl"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "kubectl"
+                , subprocessArguments =
                     [ "wait"
                     , "--for=condition=Ready"
                     , "clusterissuer/" ++ chartClusterIssuer
                     , "--timeout=300s"
                     ]
-                , commandEnvironment = Just issuerWaitEnv
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Just issuerWaitEnv
+                , subprocessWorkingDirectory = Just repoRoot
                 }
     )
 
@@ -2303,12 +2300,12 @@ runAwsRoute53ChangeWithRetries repoRoot awsEnvironment arguments =
  where
   go attemptsRemaining = do
     outputResult <-
-      captureCommand
-        CommandSpec
-          { commandPath = "aws"
-          , commandArguments = arguments
-          , commandEnvironment = Just awsEnvironment
-          , commandWorkingDirectory = Just repoRoot
+      captureSubprocessResult
+        Subprocess
+          { subprocessPath = "aws"
+          , subprocessArguments = arguments
+          , subprocessEnvironment = Just awsEnvironment
+          , subprocessWorkingDirectory = Just repoRoot
           }
     case outputResult of
       Failure err -> failWith ("failed to start aws: " ++ err)
@@ -2469,24 +2466,24 @@ isRetryableHelmFailure output =
 waitForCrdEstablished :: FilePath -> String -> IO ExitCode
 waitForCrdEstablished repoRoot crdName =
   runCommand
-    CommandSpec
-      { commandPath = "kubectl"
-      , commandArguments =
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
           [ "wait"
           , "--for=condition=Established"
           , "--timeout=300s"
           , "crd/" ++ crdName
           ]
-      , commandEnvironment = Nothing
-      , commandWorkingDirectory = Just repoRoot
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
       }
 
 rolloutStatus :: FilePath -> String -> String -> IO ExitCode
 rolloutStatus repoRoot namespace resourceRef =
   runCommand
-    CommandSpec
-      { commandPath = "kubectl"
-      , commandArguments =
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
           [ "rollout"
           , "status"
           , resourceRef
@@ -2494,8 +2491,8 @@ rolloutStatus repoRoot namespace resourceRef =
           , namespace
           , "--timeout=300s"
           ]
-      , commandEnvironment = Nothing
-      , commandWorkingDirectory = Just repoRoot
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
       }
 
 kubectlApplyJsonManifest :: FilePath -> String -> [Value] -> IO ExitCode
@@ -2621,11 +2618,11 @@ ensureCustomImageVariants repoRoot imageBuildPlan taggedRefs importRef = do
         ExitSuccess ->
           runSequentially
             [ runCommand
-                CommandSpec
-                  { commandPath = "docker"
-                  , commandArguments = ["pull", importRef]
-                  , commandEnvironment = Nothing
-                  , commandWorkingDirectory = Just repoRoot
+                Subprocess
+                  { subprocessPath = "docker"
+                  , subprocessArguments = ["pull", importRef]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
                   }
             , importImageIntoRke2Containerd repoRoot importRef
             ]
@@ -2876,12 +2873,12 @@ mergeMirrorCandidatePairs = foldl mergePair []
 ensureHarborDockerLogin :: FilePath -> IO ExitCode
 ensureHarborDockerLogin repoRoot =
   runCommand
-    CommandSpec
-      { commandPath = "docker"
-      , commandArguments =
+    Subprocess
+      { subprocessPath = "docker"
+      , subprocessArguments =
           ["login", harborRegistryEndpoint, "--username", harborAdminUser, "--password", harborAdminPassword]
-      , commandEnvironment = Nothing
-      , commandWorkingDirectory = Just repoRoot
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
       }
 
 isHarborHostedImage :: String -> Bool
@@ -2900,18 +2897,19 @@ importImageIntoRke2Containerd repoRoot imageRef = do
       withTemporaryTextFile "prodbox-image" "" $ \archivePath ->
         runSequentially
           [ runCommand
-              CommandSpec
-                { commandPath = "docker"
-                , commandArguments = ["save", "-o", archivePath, imageRef]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
+              Subprocess
+                { subprocessPath = "docker"
+                , subprocessArguments = ["save", "-o", archivePath, imageRef]
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           , runCommand
-              CommandSpec
-                { commandPath = "sudo"
-                , commandArguments = ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "import", archivePath]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
+              Subprocess
+                { subprocessPath = "sudo"
+                , subprocessArguments =
+                    ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "import", archivePath]
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           ]
 
@@ -2931,11 +2929,11 @@ ensureRke2RegistriesConfig repoRoot = do
                 ExitSuccess ->
                   runSequentially
                     [ runCommand
-                        CommandSpec
-                          { commandPath = "sudo"
-                          , commandArguments = ["systemctl", "restart", rke2ServiceName]
-                          , commandEnvironment = Nothing
-                          , commandWorkingDirectory = Just repoRoot
+                        Subprocess
+                          { subprocessPath = "sudo"
+                          , subprocessArguments = ["systemctl", "restart", rke2ServiceName]
+                          , subprocessEnvironment = Nothing
+                          , subprocessWorkingDirectory = Just repoRoot
                           }
                     , verifyClusterInfo repoRoot
                     ]
@@ -2967,9 +2965,9 @@ deleteRke2ClusterSubstrate repoRoot = do
               ["systemctl", "disable", "--now", rke2ServiceName]
           cleanupExit <-
             runCommand
-              CommandSpec
-                { commandPath = "sudo"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "sudo"
+                , subprocessArguments =
                     [ "rm"
                     , "-rf"
                     , "/var/lib/rancher/rke2"
@@ -2979,8 +2977,8 @@ deleteRke2ClusterSubstrate repoRoot = do
                     , "/usr/local/bin/rke2-killall.sh"
                     , "/usr/local/bin/rke2-uninstall.sh"
                     ]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           case cleanupExit of
             ExitFailure _ -> pure cleanupExit
@@ -3008,11 +3006,11 @@ removeCalicoEndpointStatusResidue = do
                 then pure ExitSuccess
                 else
                   runCommand
-                    CommandSpec
-                      { commandPath = "sudo"
-                      , commandArguments = ["rm", "-f"] ++ matchingPaths
-                      , commandEnvironment = Nothing
-                      , commandWorkingDirectory = Nothing
+                    Subprocess
+                      { subprocessPath = "sudo"
+                      , subprocessArguments = ["rm", "-f"] ++ matchingPaths
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Nothing
                       }
 
 removeManagedKubeconfig :: IO ExitCode
@@ -3112,25 +3110,25 @@ ensureHostStoragePath :: FilePath -> FilePath -> IO ExitCode
 ensureHostStoragePath repoRoot hostPath =
   runSequentially
     [ runCommand
-        CommandSpec
-          { commandPath = "sudo"
-          , commandArguments = ["mkdir", "-p", hostPath]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["mkdir", "-p", hostPath]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
     , runCommand
-        CommandSpec
-          { commandPath = "sudo"
-          , commandArguments = ["chown", "-R", "1000:1000", hostPath]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["chown", "-R", "1000:1000", hostPath]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
     , runCommand
-        CommandSpec
-          { commandPath = "sudo"
-          , commandArguments = ["chmod", "0770", hostPath]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = "sudo"
+          , subprocessArguments = ["chmod", "0770", hostPath]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
     ]
 
@@ -3507,12 +3505,12 @@ runEitherAction result action =
 captureKubectl :: FilePath -> [String] -> IO (Either String ProcessOutput)
 captureKubectl repoRoot arguments = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments = arguments
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
     case result of
@@ -3522,24 +3520,24 @@ captureKubectl repoRoot arguments = do
 captureToolOutput :: FilePath -> FilePath -> [String] -> IO (Either String ProcessOutput)
 captureToolOutput repoRoot toolName arguments = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = toolName
-        , commandArguments = arguments
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = toolName
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
     case result of
       Failure err -> Left ("failed to start " ++ toolName ++ ": " ++ err)
       Success output -> Right output
 
-runTextCommand :: CommandSpec -> IO (Either String String)
+runTextCommand :: Subprocess -> IO (Either String String)
 runTextCommand spec = do
-  result <- captureCommand spec
+  result <- captureSubprocessResult spec
   pure $
     case result of
-      Failure err -> Left ("failed to start " ++ commandPath spec ++ ": " ++ err)
+      Failure err -> Left ("failed to start " ++ subprocessPath spec ++ ": " ++ err)
       Success output ->
         case processExitCode output of
           ExitFailure _ -> Left (outputDetail output)
@@ -3563,18 +3561,18 @@ writeRootFile repoRoot path contents =
   withTemporaryTextFile "prodbox-root" contents $ \tempPath ->
     runSequentially
       [ runCommand
-          CommandSpec
-            { commandPath = "sudo"
-            , commandArguments = ["mkdir", "-p", takeDirectory path]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["mkdir", "-p", takeDirectory path]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
       , runCommand
-          CommandSpec
-            { commandPath = "sudo"
-            , commandArguments = ["cp", tempPath, path]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["cp", tempPath, path]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
       ]
 
@@ -3870,9 +3868,9 @@ route53CredentialPropagationRetryPolicy =
     , retryPolicyMaxDelayMicros = 10000000
     }
 
-runCommand :: CommandSpec -> IO ExitCode
+runCommand :: Subprocess -> IO ExitCode
 runCommand spec = do
-  result <- runStreamingCommand spec
+  result <- runSubprocessStreaming spec
   case result of
     Failure err -> failWith err
     Success exitCode -> pure exitCode

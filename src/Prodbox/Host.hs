@@ -49,7 +49,7 @@ import Prodbox.Settings
   , validateAndLoadSettings
   , validatedConfig
   )
-import Prodbox.Subprocess (CommandSpec (..), ProcessOutput (..), captureCommand)
+import Prodbox.Subprocess (ProcessOutput (..), Subprocess (..), captureSubprocessResult)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 
@@ -543,7 +543,7 @@ runSingleEffect repoRoot failureContext effect = do
 -- stamps across nodes.
 runHostInfo :: FilePath -> IO ExitCode
 runHostInfo repoRoot = do
-  unameOutput <- captureCommand (CommandSpec "uname" ["-a"] Nothing (Just repoRoot))
+  unameOutput <- captureSubprocessResult (Subprocess "uname" ["-a"] Nothing (Just repoRoot))
   let unameLine = case unameOutput of
         Failure err -> "uname unavailable: " ++ err
         Success out -> case processExitCode out of
@@ -588,8 +588,8 @@ detectNtpDisposition repoRoot = do
     Nothing -> pure (NtpUnknown "timedatectl is not available on this host")
     Just _ -> do
       outputResult <-
-        captureCommand
-          (CommandSpec "timedatectl" ["status"] Nothing (Just repoRoot))
+        captureSubprocessResult
+          (Subprocess "timedatectl" ["status"] Nothing (Just repoRoot))
       case outputResult of
         Failure err -> pure (NtpUnknown ("timedatectl invocation failed: " ++ err))
         Success out -> case processExitCode out of
@@ -640,24 +640,24 @@ runPrerequisites repoRoot rootIds =
     Right dag -> runEffectDAG (InterpreterContext repoRoot) dag
 
 commandEffect :: FilePath -> [String] -> FilePath -> Effect
-commandEffect commandPath commandArguments repoRoot =
+commandEffect subprocessPath subprocessArguments repoRoot =
   RunCommand
-    CommandSpec
-      { commandPath = commandPath
-      , commandArguments = commandArguments
-      , commandEnvironment = Nothing
-      , commandWorkingDirectory = Just repoRoot
+    Subprocess
+      { subprocessPath = subprocessPath
+      , subprocessArguments = subprocessArguments
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
       }
 
 optionalKubectlJson :: FilePath -> Maybe String -> [String] -> IO (Either String (Maybe Value))
 optionalKubectlJson repoRoot maybeNamespace args = do
   outputResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments = namespaceArgs ++ args
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments = namespaceArgs ++ args
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
     case outputResult of
@@ -939,12 +939,12 @@ detectLanAddressing = do
     Nothing -> pure (Right fallbackLanAddressing)
     Just _ -> do
       routeResult <-
-        captureCommand
-          CommandSpec
-            { commandPath = "ip"
-            , commandArguments = ["-j", "-4", "route", "show", "default"]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Nothing
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "ip"
+            , subprocessArguments = ["-j", "-4", "route", "show", "default"]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
             }
       case routeResult of
         Failure _ -> pure (Right fallbackLanAddressing)
@@ -956,12 +956,12 @@ detectLanAddressing = do
                 Nothing -> pure (Right fallbackLanAddressing)
                 Just interfaceName -> do
                   addrResult <-
-                    captureCommand
-                      CommandSpec
-                        { commandPath = "ip"
-                        , commandArguments = ["-j", "-4", "addr", "show", "dev", interfaceName]
-                        , commandEnvironment = Nothing
-                        , commandWorkingDirectory = Nothing
+                    captureSubprocessResult
+                      Subprocess
+                        { subprocessPath = "ip"
+                        , subprocessArguments = ["-j", "-4", "addr", "show", "dev", interfaceName]
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Nothing
                         }
                   case addrResult of
                     Failure _ -> pure (Right fallbackLanAddressing)

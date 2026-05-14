@@ -392,17 +392,6 @@ Examples:
 - prodbox rke2 reconcile  # Reconcile the supported local cluster.
 - prodbox rke2 reconcile --dry-run  # Render the lifecycle plan.
 
-## prodbox rke2 install
-prodbox rke2 install - Deprecated alias for reconcile
-
-Deprecated alias for `prodbox rke2 reconcile`.
-Options:
-- --dry-run - Render the lifecycle plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
-
-Examples:
-- prodbox rke2 install  # Use the one-cycle reconcile alias.
-
 ## prodbox rke2 delete
 prodbox rke2 delete - Delete RKE2
 

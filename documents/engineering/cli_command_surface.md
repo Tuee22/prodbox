@@ -122,14 +122,13 @@ and `/minio` routes, and readiness for named external proof.
 | `prodbox rke2 stop` | none | none |
 | `prodbox rke2 restart` | none | none |
 | `prodbox rke2 reconcile` | none | `--dry-run`, `--plan-file` |
-| `prodbox rke2 install` | none | `--dry-run`, `--plan-file` |
 | `prodbox rke2 delete` | none | `--yes` |
 | `prodbox rke2 logs` | none | `--lines`, `-n` |
 
 `src/Prodbox/CLI/Rke2.hs` owns the full public `prodbox rke2 ...` surface.
 
-`prodbox rke2 reconcile` is the canonical lifecycle reconciler. `prodbox rke2 install` is a
-one-cycle deprecated alias that delegates to the same implementation.
+`prodbox rke2 reconcile` is the canonical lifecycle reconciler. `install`, `upgrade`, `repair`,
+and `force-install` are forbidden sister commands rejected at parse time.
 
 `prodbox rke2 delete --yes` is summary-oriented on success: it reports AWS validation destroy
 disposition, local substrate cleanup, managed kubeconfig handling, and preserved host roots
@@ -398,14 +397,11 @@ intentional schema or defaults edits.
 
 ### One-shot output flags
 
-Sprint 1.17 is active. The shared output layer now owns `OutputOptions`, typed
+Sprint 1.17 is closed. The shared output layer owns `OutputOptions`, typed
 `--format {json,table,plain}`, `--color {auto,always,never}`, the `--no-color` alias, and the
 stdout/stderr writer boundary for one-shot commands. `prodbox check-code` rejects direct terminal
-writes outside that boundary.
-
-Per-command threading of those options through every output-emitting one-shot leaf and the
-golden matrix for rendered `json` / `table` output remain Sprint 1.17 work. Daemon-launching
-commands do not expose these flags; daemons emit structured JSON logs to stderr per Sprint 2.12.
+writes outside that boundary. Daemon-launching commands stay on the structured-logging exception
+path; daemons emit structured JSON logs to stderr per Sprint 2.12.
 
 ### Cross-language types generation deferral
 

@@ -32,8 +32,8 @@ Phase `0` reopened through Sprints `0.2`–`0.4` (see
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
 governed docs and plan suite to that doctrine, and schedule every currently known code-level
 adoption gap onto explicit downstream sprints. That Phase-0 doctrine-governance work is now
-`Done`. Phases `1` through `4` remain **reopened** because the scheduled implementation work
-named below is still in progress: Sprint 0.3 extended the doctrine-adoption scope with the
+`Done`. Phases `1` through `4` were **reopened** for the scheduled implementation work named
+below, and that reopen is now closed in this worktree: Sprint 0.3 extended the doctrine-adoption scope with the
 residual items surfaced by the May 2026 doctrine-vs-plan audit, scheduling them through new
 Phase `1` sprints (1.24–1.26) and through deliverable extensions to existing planned Phase
 `1` and Phase `2` sprints. Sprint 0.4 extended the doctrine-adoption scope again with the
@@ -43,8 +43,8 @@ planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Phase `5` briefl
 through Sprint `5.5` to add the missing public HTTP listener that redirects port `80` to the
 canonical HTTPS edge, and that redirect follow-up is now `Done` after the May 13, 2026
 aggregate validation. Phases `5`, `6`, and `7` are `Done` on their owned surfaces (public-edge
-proof, clean-room rerun contract, AWS IAM and quota administration); the overall handoff is no
-longer complete until the separately reopened implementation phases `1` through `4` close.
+proof, clean-room rerun contract, AWS IAM and quota administration); the overall handoff is back
+to a completed state after the separately reopened implementation phases `1` through `4` reclosed.
 
 Reopened sprints by phase:
 
@@ -105,8 +105,8 @@ Reopened sprints by phase:
   `Cabal 3.16.1.0` reference, and the library-first / thin-`Main.hs` audit through
   `src/Prodbox/CheckCode.hs`) and threads the round-3 extensions through Sprint 1.6
   (`CommandSpec` / `OptionSpec` record-field bindings plus daemon-as-typed-`Command`
-  dispatch), Sprint 1.8 (named forbidden subprocess primitives `callProcess`,
-  `readCreateProcess`, and direct `System.Process` smart constructors), Sprint 1.10
+  dispatch), Sprint 1.8 (typed `Subprocess` record plus removal of the pre-doctrine
+  `CommandSpec`, `runStreamingCommand`, and `captureCommand` compatibility names), Sprint 1.10
   (twelve minimum `fourmolu.yaml` settings bound), Sprint 1.11 (canonical
   property-test invariants `decode . encode == id`, `render is deterministic`,
   `parser roundtrips`), Sprint 1.12 (service-error newtype inventory `MinIOError`,
@@ -139,7 +139,7 @@ Reopened sprints by phase:
   Sprint 2.13 (production-no-op / test-injected hook contract bound), and Sprint 2.14
   (health-endpoint response shapes captured as golden tests inside the lifecycle stanza).
 - Phase 3 — **Sprints 3.8–3.12**: Smart constructors for paired chart resources; capability
-  classes applied to Redis and Postgres call sites; reconciler discipline on
+  classes applied to Redis and Postgres chart call sites; reconciler discipline on
   `prodbox charts deploy` / `delete`; `--dry-run` on chart operations; `prodbox lint chart`
   Helm-chart structural-invariants linter; and marker-delimited route-inventory generation
   from `src/Prodbox/PublicEdge.hs` into chart artifacts via the `GeneratedSectionRule`
@@ -147,11 +147,11 @@ Reopened sprints by phase:
   (`--force`, `--reinstall`) and forbidden sister commands (`install`, `upgrade`,
   `repair`, `force-install`) on the chart surface.
 - Phase 4 — **Sprints 4.5–4.7**: Rename the legacy lifecycle command to
-  `prodbox rke2 reconcile` with a one-cycle deprecation alias; lifecycle Plan / Apply +
-  `--dry-run`;
-  `prodbox-pulumi` test stanza. Sprint 0.4 extends Sprint 4.5 with the same
-  forbidden-flag and sister-command discipline on the lifecycle reconciler so the
-  one-cycle deprecation alias preserves only the name, not the forbidden flags.
+  `prodbox rke2 reconcile`, retire the one-cycle `install` alias after its compatibility
+  window, apply lifecycle Plan / Apply + `--dry-run`, and add the `prodbox-pulumi` test
+  stanza. Sprint 0.4 extends Sprint 4.5 with the same forbidden-flag and sister-command
+  discipline on the lifecycle reconciler, so `install`, `upgrade`, `repair`, and
+  `force-install` are rejected at parse time.
 - Phase 5 — **Sprint 5.5**: Add a Gateway API HTTP listener on port `80` that never routes
   plaintext backend traffic and only returns a permanent redirect to the canonical
   `https://test.resolvefintech.com/<service-path>` URL. Extend `prodbox host public-edge` and
@@ -196,8 +196,8 @@ The authoritative target still closes on:
 - one Redis surface that currently backs WebSocket shared state and may later back an explicit
   external rate-limit service, but does not yet ship a standalone rate-limit-service workload or
   validation surface
-- one cleanup ledger that preserves completed removal history and tracks any still-open
-  doctrine-adoption residue until the owning sprint closes
+- one cleanup ledger that preserves completed removal history and has no still-open
+  doctrine-adoption residue
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
 `prodbox test all`, `prodbox config show`, `prodbox config validate`, and
@@ -257,38 +257,31 @@ A sprint can move to `Done` only when all of the following are true:
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.4) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | 🔄 Active (active: 1.8, 1.12–1.18, 1.22; 1.26 done) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
-| 2 | Haskell Gateway Runtime and DNS Ownership | 🔄 Active (Sprints 2.9, 2.11, 2.13–2.14; 2.12 done) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
-| 3 | Haskell Chart Platform and Public Workload Delivery | 🔄 Active (Sprint 3.9 active; 3.8, 3.10–3.12 done) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | 🔄 Active (Sprint 4.7 active; 4.5–4.6 done) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
+| 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
+| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.7) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done on owned surfaces | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
-documentation surface. Phases `1`–`4` remain reopened on the downstream doctrine-driven
-implementation work. Phase `5` is re-closed after Sprint `5.5` added and proved the port `80`
+documentation surface. Phases `1`–`4` were reopened on the downstream doctrine-driven
+implementation work and are now reclosed. Phase `5` is re-closed after Sprint `5.5` added and
+proved the port `80`
 HTTP-to-HTTPS redirect on the existing single-host public edge. The pre-reopen Haskell rewrite
 baseline, clean-room rerun, public-edge proof, and AWS-administration surfaces remain validated
 on the supported Haskell command surface; Phases `5`, `6`, and `7` remain `Done` on their owned
-scope per standards rule E, but final handoff is reclaimed only when the reopened implementation
-phases `1` through `4` close.
+scope per standards rule E.
 
 ## Current Plan Status
 
 The development plan remains authoritative. The repository worktree is fully closed against the
-pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), but
-the doctrine-adoption reopen is now mixed rather than wholly `Planned`. Current worktree
-evidence puts Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.16`, `1.17`, `1.18`, `1.22`, `2.9`, `2.11`,
-`2.13`, `2.14`, `3.9`, and `4.7` in `Active` state because those surfaces have started
-in code but still retain sprint-owned implementation or validation gaps. Sprints `1.10`,
-`1.11`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.26`, `1.27`, `2.10`, `2.12`,
-`2.15`, `2.16`, `3.10`, `3.11`, `3.12`, `4.5`, `4.6`, and `5.5` are now locally validated and
-doc-aligned, and Sprints `1.6`, `1.7`, `1.9`, `1.15`, and `3.8` now re-close on the supported
-worktree. The remaining reopened Phase `1`–`4` sprints stay in their sprint-owned `Active` or
-`Planned` state until their own remaining-work sections are cleared. The following implemented
-baseline surfaces remain current on the supported path:
+pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), and
+the doctrine-adoption reopen is now closed as well. Current worktree evidence puts Sprints
+`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.7`, and `5.5` in `Done` state on their owned
+surfaces. The following implemented baseline surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing
@@ -444,8 +437,8 @@ baseline surfaces remain current on the supported path:
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
 - The final Phase `6` destructive rerun and handoff validation are closed on that aggregate rerun
   contract and the supported postflight restore path.
-- The legacy ledger preserves completed cleanup history and still tracks the doctrine-adoption
-  residue that remains open on the active reopened sprints.
+- The legacy ledger preserves completed cleanup history, and its pending-removal section is empty
+  after the doctrine-adoption reopen closure.
 
 ## Exit Definition
 

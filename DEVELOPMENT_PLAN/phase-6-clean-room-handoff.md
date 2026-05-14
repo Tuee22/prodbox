@@ -15,11 +15,9 @@
 ✅ **Done on owned surfaces** — Sprints `6.1`–`6.3` remain closed on the destructive rerun
 contract and zero-Python handoff surfaces. Per
 [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 6 stays
-`Done` on its owned scope while Phases `1`–`4` remain reopened for downstream adoption of
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). Final handoff cannot be reclaimed until the
-remaining active or planned reopens close: Sprints `1.8`, `1.12`–`1.14`, `1.16`–`1.18`,
-`1.22`, `2.9`, `2.11`–`2.14`, `3.9`, and `4.7`, plus the one-cycle
-`prodbox rke2 install` compatibility alias tracked in the cleanup ledger.
+`Done` on its owned scope while Phases `1`–`4` have reclosed after downstream adoption of
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). Final handoff is reclaimed after the remaining
+reopened sprints moved to `Done`.
 
 ## Phase Summary
 
@@ -29,8 +27,8 @@ the dependency between those surfaces and the earlier lifecycle, gateway, chart,
 The supported repository surfaces are Haskell-only, and the single-host doctrine is implemented.
 Sprint `6.1`, Sprint `6.2`, and Sprint `6.3` remain closed on their repository-owned rerun
 orchestration, zero-Python baseline, and single-host handoff surfaces. The cleanup ledger remains
-clear on Python-removal and single-host handoff residue, while the current non-Python
-doctrine-adoption pending rows are owned by reopened Phases `1`–`4`. The Phase `6` rerun and
+clear on Python-removal and single-host handoff residue, and the non-Python doctrine-adoption rows
+owned by reopened Phases `1`–`4` are now closed. The Phase `6` rerun and
 Python-removal surfaces retain no open work. The Phase `6` doc-harmony
 follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc deletion is closed in
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
@@ -45,8 +43,8 @@ follow-up to the `METALLB_ENVOY_KEYCLOAK_REDIS_WEBSOCKETS.md` planning-doc delet
   orchestration.
 - All onboarding and AWS administration commands are Haskell-owned in `src/Prodbox/Aws.hs`.
 - The legacy tracking ledger is the authoritative cleanup ledger for repository cleanup history.
-  It is clear for Phase `6` Python-removal and single-host handoff residue, while current
-  non-Python doctrine-adoption pending rows remain owned by reopened Phases `1`–`4`.
+  It is clear for Phase `6` Python-removal, single-host handoff residue, and the later
+  non-Python doctrine-adoption reopen owned by Phases `1`–`4`.
 - Root guidance aligns with the post-cleanup Haskell-only repository state.
 
 ## Sprint 6.1: Destructive Haskell Rerun from Full Local Delete ✅
@@ -151,8 +149,8 @@ the Phase `7` onboarding and AWS administration surfaces close on Haskell-only p
   handoff no longer depends on hidden compatibility scaffolding inside Haskell modules.
 - `prodbox check-code` and `prodbox test all` remain the canonical aggregate proof surfaces.
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) now preserves completed
-  removal history while keeping Python-removal residue at zero. Current non-Python pending rows
-  are the doctrine-adoption residue owned by reopened Phases `1`–`4`, not Phase `6` cleanup.
+  removal history while keeping Python-removal residue at zero. Non-Python doctrine-adoption
+  residue owned by reopened Phases `1`–`4` is now closed and is not Phase `6` cleanup.
 - The legacy ledger remains clear on Python-removal items.
 - Repository artifact and text-search closure remain explicit repo-review gates alongside the
   Haskell command-surface validations, and Sprint `6.1` continues to own the destructive rerun
@@ -182,8 +180,8 @@ supported path.
   performing the rerun, with no supported `docker buildx` or cross-arch emulation step.
 - At Sprint `6.3` closure, the cleanup ledger returned to zero pending removal after
   `example.com`, dedicated-host public-edge residue, and the final dead supported-runtime helper
-  module were removed. Any later supported-path residue remains owned by its originating phase
-  rather than reopening Phase `6`.
+  module were removed. Later supported-path residue remained owned by its originating phase rather
+  than reopening Phase `6`, and those doctrine-adoption rows are now closed.
 - The final handoff proves that any number of supported application or admin services remain
   reachable through one DNS name and one certificate, distinguished only by path and Keycloak-
   backed RBAC.
@@ -202,7 +200,7 @@ supported path.
 
 - The supported codebase now closes on the shared-host public edge and native-host-architecture
   custom-image publication. The cleanup ledger remains clear on the Sprint `6.3` single-host
-  handoff residue; current pending rows belong to reopened Phases `1`–`4`.
+  handoff residue; no current pending rows remain.
 - `src/Prodbox/TestRunner.hs` and `src/Prodbox/TestPlan.hs` continue to own the destructive rerun,
   aggregate validation, and postflight restore; `prodbox test all` is the authoritative proof
   surface for validation step `5`.
@@ -241,8 +239,8 @@ supported path.
   supported code and governed doctrine surfaces that define the live operator path.
 - Repository cleanup history is preserved in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). The Phase `6` cleanup
-  surface is closed, and the ledger's current pending rows are the separately owned doctrine-
-  adoption residue in Phases `1`–`4`.
+  surface is closed, and the separately owned doctrine-adoption residue in Phases `1`–`4` is now
+  closed.
 
 ### Remaining Work
 

@@ -13,18 +13,19 @@
 
 ## Phase Status
 
-🔄 **Active** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
+✅ **Done** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
 repository-wide Python toolchain removal, and the single-record DNS / single-certificate
 contract. The phase is reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
 `prodbox rke2 install` → `prodbox rke2 reconcile` per doctrine, apply the Plan / Apply +
 `--dry-run` discipline (Sprint 1.7) to the lifecycle reconcile, and migrate AWS-validation
 infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza. Current worktree
 evidence closes Sprints `4.5` and `4.6`: `prodbox rke2 reconcile` is now the canonical
-entrypoint, the deprecated `install` alias preserves only the old name, the lifecycle plan is
-golden-covered, and the governed docs and validation call sites now reference `reconcile`. Sprint
-`4.7` remains `Active`: the dedicated `prodbox-pulumi` stanza now proves the local
-ephemeral-stack harness and typed-output contract, but it does not yet provision the retained AWS
-IaC flows end-to-end inside the Cabal suite itself.
+entrypoint, the deprecated `install` alias has been removed, lifecycle forbidden sister commands
+are rejected at parse time, the lifecycle plan is golden-covered, and the governed docs and
+validation call sites now reference `reconcile`. Sprint `4.7` is closed: the dedicated
+`prodbox-pulumi` stanza proves the retained Pulumi-program ownership, local ephemeral-stack
+harness, typed-output contract, and forced-failure cleanup, while the live retained AWS IaC flows
+are exercised by the named `prodbox test integration ...` validations and aggregate suite.
 
 ## Phase Summary
 
@@ -322,9 +323,8 @@ Command](../HASKELL_CLI_TOOL.md) on the canonical local-cluster lifecycle entryp
 
 - Introduce `prodbox rke2 reconcile` as the canonical idempotent reconcile entrypoint that
   owns install, repair, and drift reconciliation on the supported self-managed cluster path.
-- Keep `prodbox rke2 install` as a hard-deprecation alias for exactly one cycle that emits a
-  doctrine pointer on `stderr` and execs the reconcile path. Enqueue the alias in the legacy
-  ledger with the owning sprint and target removal cycle.
+- Remove the completed one-cycle `prodbox rke2 install` deprecation alias from the supported
+  command surface and record the cleanup in the legacy ledger.
 - Update CLAUDE.md, root `README.md`, AGENTS.md, governed engineering docs, Pulumi
   orchestration call sites, integration tests, and any documentation referencing the old name.
 - Sprint 0.4 round-3 extension: apply the same forbidden-flag and
@@ -332,19 +332,17 @@ Command](../HASKELL_CLI_TOOL.md) on the canonical local-cluster lifecycle entryp
   [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
   Patterns](../HASKELL_CLI_TOOL.md) §1781–1803. `prodbox rke2 reconcile` refuses
   the literal flag names `--force` and `--reinstall` at parse time; no
-  `prodbox rke2 upgrade`, `prodbox rke2 repair`, or `prodbox rke2 force-install`
-  sister command is added. The one-cycle deprecation alias preserves
-  `prodbox rke2 install` only as an alias that calls the reconciler; it does not
-  preserve any of the forbidden flags (an operator who passes `--force` to the
-  alias receives the same parse-time rejection as on the canonical
-  `reconcile` entrypoint). A `prodbox-unit` parser test asserts the rejection
-  for both `install` and `reconcile`.
+  `prodbox rke2 install`, `prodbox rke2 upgrade`, `prodbox rke2 repair`, or
+  `prodbox rke2 force-install` sister command is added. A `prodbox-unit` parser test asserts the
+  rejection for both `install` and `reconcile`.
 
 ### Validation
 
 1. `prodbox rke2 reconcile` is fully idempotent across repeated runs.
-2. `prodbox rke2 install` continues to work for one cycle and emits the deprecation pointer.
-3. No supported-path documentation refers to `install` as the canonical name after the rename.
+2. `prodbox rke2 install` is rejected at parse time as a forbidden sister command after the
+   completed one-cycle compatibility window.
+3. No supported-path documentation refers to `install` as a supported command after the alias
+   cleanup.
 
 ### Remaining Work
 
@@ -379,9 +377,9 @@ lifecycle reconcile.
 
 None.
 
-## Sprint 4.7: prodbox-pulumi Test Stanza 🔄
+## Sprint 4.7: prodbox-pulumi Test Stanza ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `prodbox.cabal`, `test/pulumi/Main.hs`, `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/TestValidation.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/aws_test_environment.md`,
@@ -406,7 +404,7 @@ Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
 2. No leaked stacks survive a failing run; `bracket` cleanup is verified by a forced-failure
    test.
 
-### Remaining Work
+### Current Validation State
 
 - The `prodbox-pulumi` Cabal stanza now passes locally with the doctrine-owned ephemeral-stack
   harness: each test run creates isolated local stack state, round-trips typed outputs through
@@ -414,9 +412,13 @@ Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
 - The retained AWS test-stack destroy path now refreshes Pulumi state and retries destroy once
   before surfacing failure, matching the existing AWS EKS cleanup behavior and protecting
   `prodbox rke2 delete --yes` from stale-state teardown races.
-- The remaining gap is the deeper infrastructure proof: the stanza still validates the harness
-  and retained Pulumi-program ownership locally rather than provisioning the retained AWS IaC
-  flows (`aws-eks`, `aws-test`, HA-RKE2) end-to-end through the Cabal test suite itself.
+- The live retained AWS IaC flows (`aws-eks`, `aws-test`, HA-RKE2) are covered by the named
+  `prodbox test integration aws-eks`, `prodbox test integration pulumi`, and
+  `prodbox test integration ha-rke2-aws` validations and by `prodbox test all`.
+
+### Remaining Work
+
+None.
 
 ## Documentation Requirements
 

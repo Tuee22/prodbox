@@ -84,6 +84,11 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
+import Prodbox.Error
+  ( AppError (..)
+  , ErrorKind (..)
+  , appError
+  )
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , field
@@ -130,9 +135,9 @@ import Prodbox.Retry
   , retryDelayMicros
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
@@ -439,30 +444,40 @@ runWorkerWithRetry env workerName action = go 0
           readiness <- readTVarIO (envReadiness env)
           if readiness == Draining
             then pure ()
-            else case fromException exc :: Maybe AsyncException of
-              Just _ -> throwIO exc
-              Nothing ->
-                if attemptIndex + 1 < retryPolicyMaxAttempts daemonWorkerRetryPolicy
-                  then do
-                    logForEnv
-                      env
-                      Warn
-                      "daemon_worker_restarting"
-                      [ field "worker" workerName
-                      , field "attempt" (attemptIndex + 1)
-                      , field "detail" (displayException exc)
-                      ]
-                    threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
-                    go (attemptIndex + 1)
-                  else do
-                    logForEnv
-                      env
-                      Error
-                      "daemon_worker_failed"
-                      [ field "worker" workerName
-                      , field "detail" (displayException exc)
-                      ]
-                    throwIO exc
+            else case classifyWorkerFailure attemptIndex exc of
+              AppError {errorKind = Recoverable} -> do
+                logForEnv
+                  env
+                  Warn
+                  "daemon_worker_restarting"
+                  [ field "worker" workerName
+                  , field "attempt" (attemptIndex + 1)
+                  , field "detail" (displayException exc)
+                  ]
+                threadDelay (retryDelayMicros daemonWorkerRetryPolicy attemptIndex)
+                go (attemptIndex + 1)
+              AppError {errorKind = Fatal} -> do
+                logForEnv
+                  env
+                  Error
+                  "daemon_worker_failed"
+                  [ field "worker" workerName
+                  , field "detail" (displayException exc)
+                  ]
+                throwIO exc
+
+classifyWorkerFailure :: Int -> SomeException -> AppError
+classifyWorkerFailure attemptIndex exc =
+  case fromException exc :: Maybe AsyncException of
+    Just _ -> appError Fatal (Text.pack (displayException exc)) (Just exc)
+    Nothing ->
+      appError
+        ( if attemptIndex + 1 < retryPolicyMaxAttempts daemonWorkerRetryPolicy
+            then Recoverable
+            else Fatal
+        )
+        (Text.pack (displayException exc))
+        (Just exc)
 
 daemonWorkerRetryPolicy :: RetryPolicy
 daemonWorkerRetryPolicy =
@@ -1326,12 +1341,12 @@ renderPeerTransport now state =
 fetchPublicIp :: IO (Either String String)
 fetchPublicIp = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "curl"
-        , commandArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   case result of
     Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
@@ -1364,10 +1379,10 @@ writeDnsRecord gate ip = do
                      ]
               ]
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
             [ "route53"
             , "change-resource-record-sets"
             , "--hosted-zone-id"
@@ -1377,8 +1392,8 @@ writeDnsRecord gate ip = do
             , "--region"
             , dnsWriteGateAwsRegion gate
             ]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   case result of
     Failure err -> pure (Left ("aws cli failed: " ++ err))

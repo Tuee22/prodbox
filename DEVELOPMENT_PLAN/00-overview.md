@@ -115,7 +115,8 @@ Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
 governed docs and plan suite with that doctrine, and schedule every currently known code-level
 adoption gap onto explicit downstream sprints. That planning and documentation work is now
-`Done`. Phases `1` through `4` remain **reopened** on the scheduled implementation work:
+`Done`. Phases `1` through `4` were **reopened** on the scheduled implementation work and are now
+closed again:
 Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced by the May
 2026 doctrine-vs-plan audit, and Sprint 0.4 extended it again with the residual items
 surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
@@ -129,9 +130,8 @@ and quota administration) per standards rule E. The earlier
 implementation-alignment follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup
 follow-up that removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
 `src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens add
-new planned sprints across Phases `1`–`4`; until those sprints close, the cleanup ledger shows
-doctrine-deviation residue under
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`.
+new sprints across Phases `1`–`4`; those sprints are now closed and the cleanup ledger has no
+remaining `Pending Removal` rows.
 
 The doctrine's cross-language type-bridge full-file generation surface
 ([../HASKELL_CLI_TOOL.md → Generated Artifacts → Two categories of
@@ -258,15 +258,9 @@ The reopened ranges close on the following sprint sets:
 
 ## Current Repository State
 
-The target Haskell-only rewrite baseline is implemented in the worktree, but the repository is
-not fully closed against the current doctrine-reopened plan. Current worktree evidence puts
-Sprints `1.8`, `1.12`, `1.13`, `1.14`, `1.16`, `1.17`, `1.18`, `1.22`, `2.9`, `2.11`,
-`2.13`, `2.14`, `3.9`, and `4.7` in `Active` state because those surfaces have started
-in code but still retain sprint-owned implementation or validation gaps. Sprints `1.6`,
-`1.9`, `1.10`, `1.11`, `1.20`, `1.21`,
-`1.19`, `1.23`, `1.24`, `1.25`, `1.26`, `1.27`, `2.10`, `2.12`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`,
-`4.5`, and `4.6` are now locally validated and doc-aligned, and Sprints `1.7`, `1.15`, and
-`3.8` have re-closed on their owned surfaces. The supported operator surface is `prodbox`, the
+The target Haskell-only rewrite baseline is implemented in the worktree, and the repository is
+closed against the current doctrine-reopened plan. Current worktree evidence puts Sprints
+`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.7`, and `5.5` in `Done` state. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -287,19 +281,17 @@ terminates at Envoy while backend TLS or mTLS remains outside the supported char
 contract.
 
 Root guidance and the governed public-edge, gateway, chart-platform, registry, and testing docs
-agree on the pre-reopen Haskell-only baseline, but several doctrine-adoption surfaces still lag
-code or document future behavior ahead of implementation. The active reopen set now includes the
-partial `Subprocess` wrapper, daemon lifecycle scaffold, style-tool bootstrap gap, and retained
-Pulumi harness work already present in the tree. Those mismatches remain scheduled through the
-active reopen sprints and the pending-removal ledger.
+agree on the reclosed Haskell-only baseline and the doctrine-adoption surfaces now present in the
+tree, including the service, retry, state-machine, output-option, application-environment, daemon
+lifecycle, style-tool, and retained Pulumi harness work.
 
 The authoritative lifecycle target remains Harbor-first and native-architecture only: Harbor plus
 its storage backend bootstrap from public registries, every later Helm deployment pulls through
 Harbor, and `amd64` or `arm64` hosts build and publish only their own architecture. The stack
 closes on in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the
 Percona operator-backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP
-advertisement. The cleanup ledger preserves completed history and still carries the doctrine-
-adoption pending-removal items scheduled through Phases `1`–`4`. The separate Haskell
+advertisement. The cleanup ledger preserves completed history and carries no remaining doctrine-
+adoption pending-removal items. The separate Haskell
 distributed gateway daemon remains distinct from the Envoy Gateway public edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
@@ -442,14 +434,9 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 
 The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
 `0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
-Phases `1`–`4` remain reopened on the downstream implementation scope scheduled by those
-sprints; that reopened scope is now mixed: Sprints `1.8`, `1.12`, `1.13`, `1.14`,
-`1.16`, `1.17`, `1.18`, `1.22`, `2.9`, `2.11`, `2.13`, `2.14`, `3.9`, and `4.7` are
-`Active` on partially landed code paths,
-Sprints `1.6`, `1.9`, `1.10`, `1.19`, `1.20`, `1.21`, `1.23`, `1.24`, `1.25`, `1.26`, `1.27`,
-`2.10`, `2.12`, `2.15`, `2.16`, `3.10`, `3.11`, `3.12`, `4.5`, and `4.6` are locally validated and
-doc-aligned, Sprints `1.7`, `1.15`, and `3.8` have re-closed on their owned surfaces, and the
-remaining reopened sprints stay `Planned`:
+Phases `1`–`4` have also reclosed on the downstream implementation scope scheduled by those
+sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, and `4.5`–`4.7` are locally validated
+and doc-aligned.
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the
@@ -528,9 +515,9 @@ remaining reopened sprints stay `Planned`:
   workloads, the explicit JWT carrier plus Keycloak JWKS-availability boundary, the shared-host
   Keycloak contract, real WebSocket upgrade handling, one-connection-per-pod lifetime,
   readiness-based drain, and path-routed Harbor plus MinIO admin delivery. The Phase `3`
-  doctrine-adoption reopen covers Sprints 3.8–3.12, including smart constructors for paired
-  chart resources, capability classes on Redis and Postgres call sites, reconciler discipline
-  on `prodbox charts deploy` / `delete`, `--dry-run` on chart operations, the
+  doctrine-adoption reopen has closed across Sprints 3.8–3.12, including smart constructors
+  for paired chart resources, capability classes on chart Redis and Postgres call sites,
+  reconciler discipline on `prodbox charts deploy` / `delete`, `--dry-run` on chart operations, the
   `prodbox lint chart` Helm-chart structural-invariants linter in Sprint 3.12, and
   marker-delimited route-inventory generation from `src/Prodbox/PublicEdge.hs` into chart
   artifacts via the `generatedSectionRule` registry. Sprint 0.4 extends Sprint 3.10 with
@@ -543,8 +530,8 @@ remaining reopened sprints stay `Planned`:
   credential secret, reconciles Harbor on S3-backed registry storage, and keeps its later AWS-
   validation and Python-removal surfaces closed on the supported path. Sprint 0.4 extends
   Sprint 4.5 with the same forbidden-flag and sister-command discipline on the lifecycle
-  reconciler so the one-cycle deprecation alias preserves only the name `prodbox rke2
-  install`, not the forbidden flags.
+  reconciler; the one-cycle `install` alias has been retired, and `install`, `upgrade`,
+  `repair`, and `force-install` are rejected at parse time.
 - Phase 5 owns public-edge diagnostics and external proof on Route 53, Envoy Gateway, Gateway
   API, certificate readiness, and external browser validation. It includes API, WebSocket,
   Harbor, and MinIO route classification plus named external proofs for those workloads. Sprint

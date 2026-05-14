@@ -1,25 +1,17 @@
-{-# LANGUAGE PatternSynonyms #-}
-
 module Prodbox.Subprocess
   ( BackgroundProcess (..)
-  , CommandSpec (..)
   , ProcessOutput (..)
-  , Subprocess
-  , pattern Subprocess
+  , Subprocess (..)
   , capture
-  , captureCommand
+  , captureSubprocessResult
   , commandDisplay
   , renderSubprocess
+  , runSubprocessStreaming
   , runStreaming
-  , runStreamingCommand
   , signalBackgroundProcess
   , startBackgroundProcess
   , stopBackgroundProcess
   , terminateBackgroundProcess
-  , subprocessArguments
-  , subprocessEnvironment
-  , subprocessPath
-  , subprocessWorkingDirectory
   , waitBackgroundProcess
   )
 where
@@ -54,44 +46,17 @@ import System.Posix.Signals
   )
 import System.Process.Typed qualified as Typed
 
-data CommandSpec = CommandSpec
-  { commandPath :: FilePath
-  , commandArguments :: [String]
-  , commandEnvironment :: Maybe [(String, String)]
-  , commandWorkingDirectory :: Maybe FilePath
+data Subprocess = Subprocess
+  { subprocessPath
+      :: FilePath
+  , subprocessArguments
+      :: [String]
+  , subprocessEnvironment
+      :: Maybe [(String, String)]
+  , subprocessWorkingDirectory
+      :: Maybe FilePath
   }
   deriving (Eq, Show)
-
-type Subprocess = CommandSpec
-
-pattern Subprocess
-  :: FilePath
-  -> [String]
-  -> Maybe [(String, String)]
-  -> Maybe FilePath
-  -> CommandSpec
-pattern Subprocess
-  { subprocessPath
-  , subprocessArguments
-  , subprocessEnvironment
-  , subprocessWorkingDirectory
-  } <-
-  CommandSpec
-    { commandPath = subprocessPath
-    , commandArguments = subprocessArguments
-    , commandEnvironment = subprocessEnvironment
-    , commandWorkingDirectory = subprocessWorkingDirectory
-    }
-  where
-    Subprocess subprocessPath subprocessArguments subprocessEnvironment subprocessWorkingDirectory =
-      CommandSpec
-        { commandPath = subprocessPath
-        , commandArguments = subprocessArguments
-        , commandEnvironment = subprocessEnvironment
-        , commandWorkingDirectory = subprocessWorkingDirectory
-        }
-
-{-# COMPLETE Subprocess #-}
 
 data ProcessOutput = ProcessOutput
   { processExitCode :: ExitCode
@@ -111,7 +76,7 @@ renderSubprocess spec =
   Text.unwords
     (map Text.pack (subprocessPath spec : subprocessArguments spec))
 
-commandDisplay :: CommandSpec -> String
+commandDisplay :: Subprocess -> String
 commandDisplay = Text.unpack . renderSubprocess
 
 runStreaming :: Subprocess -> IO (Either AppError ExitCode)
@@ -128,9 +93,6 @@ runStreaming spec = do
             )
         )
     Right exitCode -> pure (Right exitCode)
-
-runStreamingCommand :: CommandSpec -> IO (Result ExitCode)
-runStreamingCommand spec = eitherToResult <$> runStreaming spec
 
 capture :: Subprocess -> IO (Either AppError ProcessOutput)
 capture spec = do
@@ -152,8 +114,8 @@ capture spec = do
             , processStderr = BL8.unpack stderrBytes
             }
 
-captureCommand :: CommandSpec -> IO (Result ProcessOutput)
-captureCommand spec = eitherToResult <$> capture spec
+captureSubprocessResult :: Subprocess -> IO (Result ProcessOutput)
+captureSubprocessResult spec = eitherToResult <$> capture spec
 
 startBackgroundProcess :: Subprocess -> IO (Either AppError BackgroundProcess)
 startBackgroundProcess spec = do
@@ -217,14 +179,14 @@ waitBackgroundProcess process = do
           )
       Right exitCode -> Right exitCode
 
+runSubprocessStreaming :: Subprocess -> IO (Result ExitCode)
+runSubprocessStreaming spec = eitherToResult <$> runStreaming spec
+
 eitherToResult :: Either AppError value -> Result value
 eitherToResult eitherValue =
   case eitherValue of
-    Left err -> Failure (Text.unpack (renderSubprocessError err))
+    Left err -> Failure (Text.unpack (errorMsg err))
     Right success -> Success success
-
-renderSubprocessError :: AppError -> Text
-renderSubprocessError = errorMsg
 
 typedProcessConfig :: Bool -> Subprocess -> Typed.ProcessConfig () () ()
 typedProcessConfig delegateCtlc spec =

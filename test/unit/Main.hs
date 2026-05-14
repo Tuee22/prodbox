@@ -1106,13 +1106,29 @@ main = mainWithSuite "prodbox-unit" $ do
       gatewayTemplate <-
         readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "deployments.yaml")
 
-      chartPlatformSource `shouldContain` "commandPath = \"docker\""
+      chartPlatformSource `shouldContain` "subprocessPath = \"docker\""
       chartPlatformSource
-        `shouldContain` "commandArguments = [\"image\", \"inspect\", \"--format\", \"{{.Id}}\", imageRef]"
+        `shouldContain` "subprocessArguments = [\"image\", \"inspect\", \"--format\", \"{{.Id}}\", imageRef]"
       chartPlatformSource `shouldContain` "\"prodbox.io/image-build-id\""
       apiTemplate `shouldContain` ".Values.podAnnotations"
       websocketTemplate `shouldContain` ".Values.podAnnotations"
       gatewayTemplate `shouldContain` "$.Values.podAnnotations"
+
+    it "routes chart PostgreSQL service calls through the capability boundary" $ do
+      repoRoot <- getCurrentDirectory
+      chartPlatformSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Lib" </> "ChartPlatform.hs")
+      minioSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Infra" </> "MinioBackend.hs")
+      serviceSource <- readFile (repoRoot </> "src" </> "Prodbox" </> "Service.hs")
+
+      chartPlatformSource `shouldContain` "runPg [\"get\", \"crd\", patroniPostgresqlCrdName"
+      chartPlatformSource `shouldContain` "runPgExpectSuccess"
+      chartPlatformSource `shouldNotContain` "subprocessPath = \"redis-cli\""
+      chartPlatformSource `shouldNotContain` "subprocessPath = \"psql\""
+      minioSource `shouldContain` "runMinIOWithEnv"
+      minioSource `shouldNotContain` "subprocessPath = \"aws\""
+      serviceSource `shouldContain` "instance HasPg IO"
+      serviceSource `shouldContain` "instance HasRedis IO"
+      serviceSource `shouldContain` "instance HasMinIO IO"
 
     it "keeps Pulumi AWS provider credentials out of stack-local config" $ do
       repoRoot <- getCurrentDirectory
@@ -1209,6 +1225,7 @@ main = mainWithSuite "prodbox-unit" $ do
           , "pulumi_logged_in"
           , "k8s_ready"
           , "infra_ready"
+          , "gateway_daemon_acquire"
           ]
 
     it "keeps registry keys aligned with effect node ids and descriptions" $ do
@@ -1253,6 +1270,8 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` ["k8s_cluster_reachable", "rke2_service_active"]
       effectNodePrerequisites (lookupPrerequisiteNode "infra_ready")
         `shouldBe` ["k8s_ready", "aws_credentials_valid"]
+      effectNodePrerequisites (lookupPrerequisiteNode "gateway_daemon_acquire")
+        `shouldBe` ["platform_linux"]
 
     it "uses the expected validation and no-op effect shapes" $ do
       lookupPrerequisiteEffect "platform_linux" `shouldBe` Validate RequireLinux
@@ -1290,6 +1309,7 @@ main = mainWithSuite "prodbox-unit" $ do
       lookupPrerequisiteEffect "pulumi_logged_in" `shouldBe` Validate RequirePulumiLogin
       lookupPrerequisiteEffect "k8s_ready" `shouldBe` Noop
       lookupPrerequisiteEffect "infra_ready" `shouldBe` Noop
+      lookupPrerequisiteEffect "gateway_daemon_acquire" `shouldBe` Noop
 
     it "expands shared prerequisite chains transitively" $ do
       transitiveClosureIds ["rke2_service_active"] prerequisiteRegistry

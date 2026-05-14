@@ -30,14 +30,21 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (isSuffixOf)
+import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
 import Prodbox.Result (Result (..))
+import Prodbox.Service
+  ( MinIOError
+  , runMinIOWithEnv
+  , serviceErrorMessage
+  , toServiceError
+  )
 import Prodbox.Subprocess
   ( BackgroundProcess
-  , CommandSpec (..)
   , ProcessOutput (..)
-  , captureCommand
+  , Subprocess (..)
+  , captureSubprocessResult
   , startBackgroundProcess
   , stopBackgroundProcess
   )
@@ -147,17 +154,17 @@ withMinioPortForward action = do
           let localPort = minioBackendLocalPort
           bracket
             ( startBackgroundProcess
-                CommandSpec
-                  { commandPath = "kubectl"
-                  , commandArguments =
+                Subprocess
+                  { subprocessPath = "kubectl"
+                  , subprocessArguments =
                       [ "port-forward"
                       , "-n"
                       , minioNamespace
                       , "svc/" ++ minioServiceName
                       , show localPort ++ ":9000"
                       ]
-                  , commandEnvironment = Just environment
-                  , commandWorkingDirectory = Nothing
+                  , subprocessEnvironment = Just environment
+                  , subprocessWorkingDirectory = Nothing
                   }
             )
             cleanupBackgroundProcess
@@ -230,10 +237,10 @@ repairDeletedMinioExportMountIfNeeded environment = do
 readMinioMountInfo :: [(String, String)] -> IO (Either String String)
 readMinioMountInfo environment = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "exec"
             , "-n"
             , minioNamespace
@@ -242,8 +249,8 @@ readMinioMountInfo environment = do
             , "cat"
             , "/proc/self/mountinfo"
             ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Nothing
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Nothing
         }
   pure $
     case result of
@@ -259,11 +266,11 @@ recreateDeletedMinioExportHostPath hostPath = do
   mkdirResult <-
     runCheckedCommand
       "failed to recreate deleted MinIO host path"
-      CommandSpec
-        { commandPath = "sudo"
-        , commandArguments = ["mkdir", "-p", hostPath]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+      Subprocess
+        { subprocessPath = "sudo"
+        , subprocessArguments = ["mkdir", "-p", hostPath]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   case mkdirResult of
     Left err -> pure (Left err)
@@ -271,22 +278,22 @@ recreateDeletedMinioExportHostPath hostPath = do
       chownResult <-
         runCheckedCommand
           "failed to set MinIO host-path ownership"
-          CommandSpec
-            { commandPath = "sudo"
-            , commandArguments = ["chown", "-R", "1000:1000", hostPath]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Nothing
+          Subprocess
+            { subprocessPath = "sudo"
+            , subprocessArguments = ["chown", "-R", "1000:1000", hostPath]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
             }
       case chownResult of
         Left err -> pure (Left err)
         Right () ->
           runCheckedCommand
             "failed to set MinIO host-path permissions"
-            CommandSpec
-              { commandPath = "sudo"
-              , commandArguments = ["chmod", "0770", hostPath]
-              , commandEnvironment = Nothing
-              , commandWorkingDirectory = Nothing
+            Subprocess
+              { subprocessPath = "sudo"
+              , subprocessArguments = ["chmod", "0770", hostPath]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Nothing
               }
 
 restartMinioDeployment :: [(String, String)] -> IO (Either String ())
@@ -294,21 +301,21 @@ restartMinioDeployment environment = do
   rolloutRestartResult <-
     runCheckedCommand
       "failed to restart deployment/minio"
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             ["rollout", "restart", "deployment/" ++ minioDeploymentName, "-n", minioNamespace]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Nothing
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Nothing
         }
   case rolloutRestartResult of
     Left err -> pure (Left err)
     Right () ->
       runCheckedCommand
         "deployment/minio did not become ready after restart"
-        CommandSpec
-          { commandPath = "kubectl"
-          , commandArguments =
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
               [ "rollout"
               , "status"
               , "deployment/" ++ minioDeploymentName
@@ -317,8 +324,8 @@ restartMinioDeployment environment = do
               , "--timeout"
               , show minioRolloutTimeoutSeconds ++ "s"
               ]
-          , commandEnvironment = Just environment
-          , commandWorkingDirectory = Nothing
+          , subprocessEnvironment = Just environment
+          , subprocessWorkingDirectory = Nothing
           }
 
 parseDeletedMinioExportHostPath :: String -> Maybe FilePath
@@ -341,15 +348,15 @@ stripDeletedMountSuffix mountRoot
       Just (take (length mountRoot - length deletedMountSuffix) mountRoot)
   | otherwise = Nothing
 
-runCheckedCommand :: String -> CommandSpec -> IO (Either String ())
+runCheckedCommand :: String -> Subprocess -> IO (Either String ())
 runCheckedCommand failurePrefix spec = do
-  result <- captureCommand spec
+  result <- captureSubprocessResult spec
   pure $
     case result of
       Failure err -> Left (failurePrefix ++ ": " ++ err)
       Success output ->
         case processExitCode output of
-          ExitFailure _ -> Left (failurePrefix ++ ": " ++ renderCommandFailure (commandPath spec) output)
+          ExitFailure _ -> Left (failurePrefix ++ ": " ++ renderCommandFailure (subprocessPath spec) output)
           ExitSuccess -> Right ()
 
 renderCommandFailure :: String -> ProcessOutput -> String
@@ -371,13 +378,13 @@ waitForPort port attemptsLeft
 isPortOpen :: Int -> IO Bool
 isPortOpen port = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "bash"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "bash"
+        , subprocessArguments =
             ["-c", "echo > /dev/tcp/127.0.0.1/" ++ show port]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Nothing
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
         }
   pure $
     case result of
@@ -400,10 +407,10 @@ readMinioCredentials = do
 readSecretField :: [(String, String)] -> String -> IO (Either String String)
 readSecretField environment fieldName = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "get"
             , "secret"
             , minioSecretName
@@ -412,8 +419,8 @@ readSecretField environment fieldName = do
             , "-o"
             , "go-template={{index .data \"" ++ fieldName ++ "\" | base64decode}}"
             ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Nothing
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Nothing
         }
   case result of
     Failure err -> pure (Left ("failed to read MinIO secret field " ++ fieldName ++ ": " ++ err))
@@ -432,38 +439,28 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
   let environment = minioAwsEnv accessKey secretKey
       endpoint = minioEndpointUrl localPort
   headResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments =
-            ["--endpoint-url", endpoint, "s3api", "head-bucket", "--bucket", minioBackendBucket]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Nothing
-        }
+    runMinIOWithEnv
+      (Just environment)
+      ["--endpoint-url", endpoint, "s3api", "head-bucket", "--bucket", minioBackendBucket]
   case headResult of
-    Failure err -> pure (Left ("failed to check MinIO bucket: " ++ err))
-    Success headOutput ->
+    Left err -> pure (Left ("failed to check MinIO bucket: " ++ renderMinIOError err))
+    Right headOutput ->
       case processExitCode headOutput of
         ExitSuccess -> verifyMinioBackendBucketListable endpoint environment
         ExitFailure _ -> do
           createResult <-
-            captureCommand
-              CommandSpec
-                { commandPath = "aws"
-                , commandArguments =
-                    [ "--endpoint-url"
-                    , endpoint
-                    , "s3api"
-                    , "create-bucket"
-                    , "--bucket"
-                    , minioBackendBucket
-                    ]
-                , commandEnvironment = Just environment
-                , commandWorkingDirectory = Nothing
-                }
+            runMinIOWithEnv
+              (Just environment)
+              [ "--endpoint-url"
+              , endpoint
+              , "s3api"
+              , "create-bucket"
+              , "--bucket"
+              , minioBackendBucket
+              ]
           case createResult of
-            Failure err -> pure (Left ("failed to create MinIO bucket: " ++ err))
-            Success createOutput ->
+            Left err -> pure (Left ("failed to create MinIO bucket: " ++ renderMinIOError err))
+            Right createOutput ->
               case processExitCode createOutput of
                 ExitSuccess -> verifyMinioBackendBucketListable endpoint environment
                 ExitFailure _ ->
@@ -472,26 +469,21 @@ ensureMinioBackendBucket localPort accessKey secretKey = do
 verifyMinioBackendBucketListable :: String -> [(String, String)] -> IO (Either String ())
 verifyMinioBackendBucketListable endpoint environment = do
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments =
-            [ "--endpoint-url"
-            , endpoint
-            , "s3api"
-            , "list-objects-v2"
-            , "--bucket"
-            , minioBackendBucket
-            , "--max-keys"
-            , "1"
-            ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Nothing
-        }
+    runMinIOWithEnv
+      (Just environment)
+      [ "--endpoint-url"
+      , endpoint
+      , "s3api"
+      , "list-objects-v2"
+      , "--bucket"
+      , minioBackendBucket
+      , "--max-keys"
+      , "1"
+      ]
   pure $
     case result of
-      Failure err -> Left ("failed to verify MinIO bucket listing: " ++ err)
-      Success output ->
+      Left err -> Left ("failed to verify MinIO bucket listing: " ++ renderMinIOError err)
+      Right output ->
         case processExitCode output of
           ExitFailure _ ->
             Left ("MinIO backend bucket is not listable: " ++ trim (processStderr output))
@@ -502,23 +494,18 @@ bucketObjectCount localPort accessKey secretKey = do
   let environment = minioAwsEnv accessKey secretKey
       endpoint = minioEndpointUrl localPort
   result <-
-    captureCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments =
-            [ "--endpoint-url"
-            , endpoint
-            , "s3api"
-            , "list-objects-v2"
-            , "--bucket"
-            , minioBackendBucket
-            ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Nothing
-        }
+    runMinIOWithEnv
+      (Just environment)
+      [ "--endpoint-url"
+      , endpoint
+      , "s3api"
+      , "list-objects-v2"
+      , "--bucket"
+      , minioBackendBucket
+      ]
   case result of
-    Failure err -> pure (Left ("failed to list MinIO bucket objects: " ++ err))
-    Success output ->
+    Left err -> pure (Left ("failed to list MinIO bucket objects: " ++ renderMinIOError err))
+    Right output ->
       case processExitCode output of
         ExitFailure _ ->
           pure (Left ("aws s3api list-objects-v2 failed: " ++ trim (processStderr output)))
@@ -542,6 +529,9 @@ minioAwsEnv accessKey secretKey =
   , ("HOME", "")
   , ("LANG", "C.UTF-8")
   ]
+
+renderMinIOError :: MinIOError -> String
+renderMinIOError = Text.unpack . serviceErrorMessage . toServiceError
 
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse

@@ -74,7 +74,7 @@ forbiddenArgvMessage argv
         "Forbidden lifecycle flags: use `prodbox rke2 reconcile` as the idempotent reconciler; `--force` and `--reinstall` are not supported."
   | isRke2ForbiddenSister argv =
       Just
-        "Forbidden lifecycle command: use `prodbox rke2 reconcile`; `upgrade`, `repair`, and `force-install` are not supported."
+        "Forbidden lifecycle command: use `prodbox rke2 reconcile`; `install`, `upgrade`, `repair`, and `force-install` are not supported."
   | isChartsForbiddenFlag argv =
       Just
         "Forbidden chart reconciler flags: use `prodbox charts deploy` or `prodbox charts delete`; `--force` and `--reinstall` are not supported."
@@ -87,13 +87,13 @@ isRke2ForbiddenFlag :: [String] -> Bool
 isRke2ForbiddenFlag argv =
   case argv of
     "rke2" : commandName : remaining ->
-      commandName `elem` ["reconcile", "install"] && any (`elem` remaining) ["--force", "--reinstall"]
+      commandName == "reconcile" && any (`elem` remaining) ["--force", "--reinstall"]
     _ -> False
 
 isRke2ForbiddenSister :: [String] -> Bool
 isRke2ForbiddenSister argv =
   case argv of
-    ["rke2", commandName] -> commandName `elem` ["upgrade", "repair", "force-install"]
+    "rke2" : commandName : _ -> commandName `elem` ["install", "upgrade", "repair", "force-install"]
     _ -> False
 
 isChartsForbiddenFlag :: [String] -> Bool

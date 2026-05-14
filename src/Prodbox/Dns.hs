@@ -45,9 +45,9 @@ import Prodbox.Settings
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory (findExecutable)
 import System.Exit
@@ -110,12 +110,12 @@ fetchPublicIp = do
     Nothing -> pure (Left "`dns check` requires `curl` to resolve the current public IP.")
     Just _ -> do
       outputResult <-
-        captureCommand
-          CommandSpec
-            { commandPath = "curl"
-            , commandArguments = ["-fsSL", "https://api.ipify.org"]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Nothing
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "curl"
+            , subprocessArguments = ["-fsSL", "https://api.ipify.org"]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
             }
       pure $
         case outputResult of
@@ -132,10 +132,10 @@ fetchPublicIp = do
 queryRoute53Record :: FilePath -> ValidatedSettings -> String -> IO (Either String (Maybe String))
 queryRoute53Record repoRoot settings fqdn = do
   outputResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
             [ "route53"
             , "list-resource-record-sets"
             , "--hosted-zone-id"
@@ -143,8 +143,8 @@ queryRoute53Record repoRoot settings fqdn = do
             , "--output"
             , "json"
             ]
-        , commandEnvironment = Just (awsCliEnvironment (aws config))
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Just (awsCliEnvironment (aws config))
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
     case outputResult of

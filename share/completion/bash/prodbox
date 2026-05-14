@@ -40,7 +40,7 @@ _prodbox()
         words="eks-resources eks-destroy test-resources test-destroy"
         ;;
       "rke2")
-        words="status start stop restart reconcile install delete logs"
+        words="status start stop restart reconcile delete logs"
         ;;
       "test")
         words="all lint unit integration"

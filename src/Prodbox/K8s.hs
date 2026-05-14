@@ -19,11 +19,11 @@ import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   , commandDisplay
-  , runStreamingCommand
+  , runSubprocessStreaming
   )
 import System.Exit (ExitCode (..))
 
@@ -67,7 +67,8 @@ runK8sLogs repoRoot namespaces tailLines = do
 
 listNamespacePods :: FilePath -> String -> IO (Either String [(String, String)])
 listNamespacePods repoRoot namespace = do
-  outputResult <- captureCommand (kubectlSpec repoRoot (Just namespace) ["get", "pods", "-o", "name"])
+  outputResult <-
+    captureSubprocessResult (kubectlSpec repoRoot (Just namespace) ["get", "pods", "-o", "name"])
   pure $
     case outputResult of
       Failure err -> Left ("failed to start `kubectl get pods` for namespace `" ++ namespace ++ "`: " ++ err)
@@ -91,7 +92,7 @@ streamPodLogs repoRoot tailLines podRefs = go podRefs
   go [] = pure ExitSuccess
   go ((namespace, podRef) : remaining) = do
     commandResult <-
-      runStreamingCommand
+      runSubprocessStreaming
         ( kubectlSpec
             repoRoot
             (Just namespace)
@@ -166,13 +167,13 @@ waitNode repoRoot timeout namespaces =
 k8sPrerequisiteRoots :: [String]
 k8sPrerequisiteRoots = ["k8s_cluster_reachable"]
 
-kubectlSpec :: FilePath -> Maybe String -> [String] -> CommandSpec
+kubectlSpec :: FilePath -> Maybe String -> [String] -> Subprocess
 kubectlSpec repoRoot maybeNamespace args =
-  CommandSpec
-    { commandPath = "kubectl"
-    , commandArguments = namespaceArgs ++ args
-    , commandEnvironment = Nothing
-    , commandWorkingDirectory = Just repoRoot
+  Subprocess
+    { subprocessPath = "kubectl"
+    , subprocessArguments = namespaceArgs ++ args
+    , subprocessEnvironment = Nothing
+    , subprocessWorkingDirectory = Just repoRoot
     }
  where
   namespaceArgs =

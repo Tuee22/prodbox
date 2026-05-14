@@ -23,7 +23,9 @@ The interpreter executes effect DAGs in dependency order:
 4. return a structured success or error result to the caller
 
 The interpreter is allowed to perform subprocesses, environment reads, and user-facing output. Pure
-planning logic is not.
+planning logic is not. Subprocess effects construct `Prodbox.Subprocess.Subprocess` values and
+run them through the shared `runStreaming` / `capture` boundary; direct `System.Process` /
+`typed-process` construction stays inside `src/Prodbox/Subprocess.hs`.
 
 State-changing one-shot command families follow the same split on their own surface:
 

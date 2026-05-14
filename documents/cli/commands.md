@@ -53,7 +53,6 @@
 | `prodbox rke2 stop` | Stop RKE2 |
 | `prodbox rke2 restart` | Restart RKE2 |
 | `prodbox rke2 reconcile` | Reconcile RKE2 |
-| `prodbox rke2 install` | Deprecated alias for reconcile |
 | `prodbox rke2 delete` | Delete RKE2 |
 | `prodbox rke2 logs` | Show RKE2 logs |
 | `prodbox test all` | Run the full test suite |

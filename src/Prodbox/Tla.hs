@@ -5,9 +5,9 @@ where
 
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.Exit
@@ -33,12 +33,12 @@ runTlaCheck repoRoot = do
         >> pure (ExitFailure 1)
     (True, True) -> do
       outputResult <-
-        captureCommand
-          CommandSpec
-            { commandPath = "docker"
-            , commandArguments = drop 1 command
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "docker"
+            , subprocessArguments = drop 1 command
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
       case outputResult of
         Failure err -> do

@@ -16,18 +16,18 @@ now `Done`. Those sprints adopted [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.m
 authoritative CLI doctrine, aligned the governed docs and plan suite with that doctrine,
 and scheduled every currently known code-level adoption gap onto explicit downstream sprints
 under Phases `1`–`4` per
-[development_plan_standards.md](development_plan_standards.md) rule L. Phase `0` is
-therefore re-closed while the downstream implementation phases remain reopened on the
-scheduled doctrine work.
+[development_plan_standards.md](development_plan_standards.md) rule L. Phase `0` is therefore
+re-closed, and the downstream implementation phases have now reclosed on the scheduled doctrine
+work.
 
 ## Phase Summary
 
 This phase establishes the development plan as the canonical execution-ordered record for the
 Haskell-only repository. It owns the phase model, the top-level control documents, the cleanup
 ledger used by later phases, and — beginning with Sprint 0.2 — the governance contract for the
-repository's CLI doctrine. Sprint 0.3 extends that governance contract by closing the residual
-doctrine gaps surfaced by the post-0.2 audit, ensuring every doctrine-prescribed behavior that
-the worktree does not yet honor is owned by an explicit downstream sprint block per
+repository's CLI doctrine. Sprint 0.3 extended that governance contract by scheduling the
+residual doctrine gaps surfaced by the post-0.2 audit, ensuring every doctrine-prescribed
+behavior that the worktree did not yet honor was owned by an explicit downstream sprint block per
 [development_plan_standards.md](development_plan_standards.md) rule L. Sprint 0.4 extends the
 same governance contract to the round-3 audit residue, adding the toolchain-pin declarations,
 library-first layout audit, daemon-as-typed-`Command` dispatch, typed structured-logging
@@ -126,8 +126,9 @@ adoption through declared phase reopens.
   `/healthz` / `/readyz` / `/metrics` endpoints, `BootConfig` / `LiveConfig` split, `co-log`
   structured logger, `prodbox-haskell-style` / `prodbox-daemon-lifecycle` / `prodbox-pulumi`
   test stanzas).
-- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` lists every doctrine-driven removal queued
-  by Phases 1–4 with location, reason, and owning sprint.
+- `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` preserves the doctrine-driven removal
+  queue history from Phases 1–4 with location, reason, owning sprint, and completed closure
+  evidence.
 
 ### Validation
 
@@ -137,8 +138,8 @@ adoption through declared phase reopens.
    standards" subsection shows no missing item.
 3. Each governed engineering doc named above either cites a doctrine section by name or shrinks
    to a doctrine pointer.
-4. Each reopened phase document declares its new sprints with `**Status**: Planned` blocks per
-   standards rule H, citing the doctrine sections they implement.
+4. Each reopened phase document declares its new sprints per standards rule H, citing the
+   doctrine sections they implement.
 5. Root `README.md`, `AGENTS.md`, and `CLAUDE.md` link to `HASKELL_CLI_TOOL.md`.
 
 ### Remaining Work
@@ -158,8 +159,8 @@ None.
 ### Objective
 
 Schedule the residual [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) items surfaced by the
-May 2026 doctrine-vs-plan audit so every doctrine-prescribed behavior that the worktree does
-not yet honor is owned by an explicit sprint block, per
+May 2026 doctrine-vs-plan audit so every doctrine-prescribed behavior that the worktree did
+not yet honor was owned by an explicit sprint block, per
 [development_plan_standards.md](development_plan_standards.md) rule L.
 
 ### Deliverables
@@ -202,9 +203,9 @@ not yet honor is owned by an explicit sprint block, per
   `execParserPure` parser-test category, `renderError` boundary, `envMetrics`
   `MetricsRegistry` typed `Env` field, STM broadcast channel for `LiveConfig`
   subscribers, and the prescribed Dhall file shape, each citing the owning sprint.
-- `legacy-tracking-for-deletion.md` enqueues `Pending Removal` rows for the pre-doctrine
+- `legacy-tracking-for-deletion.md` enqueued `Pending Removal` rows for the pre-doctrine
   residue corresponding to each audit finding, with the owning sprint named in every
-  row.
+  row; those rows have now moved to `Completed`.
 - `README.md` and `00-overview.md` update the Phase `1` sprint-range strings (`Sprints
   1.6–1.23` → `Sprints 1.6–1.26`), add Sprint 0.3 to the Phase Overview entry for
   Phase `0`, and add a narrative paragraph naming the audit.
@@ -243,11 +244,11 @@ None.
 
 Schedule the residual [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) items surfaced by the
 May 12, 2026 round-3 doctrine-vs-plan audit so every doctrine-prescribed behavior that the
-worktree does not yet honor is owned by an explicit sprint block, per
+worktree did not yet honor was owned by an explicit sprint block, per
 [development_plan_standards.md](development_plan_standards.md) rule L. The audit identified
 fifteen doctrine prescriptions returning zero hits across the prior plan suite plus five
-thinly-scheduled items; this sprint binds them through one new Phase `1` sprint (1.27) and
-thirteen deliverable extensions to existing planned sprints.
+thinly-scheduled items; this sprint bound them through one new Phase `1` sprint (1.27) and
+thirteen deliverable extensions to existing sprints.
 
 ### Deliverables
 
@@ -338,9 +339,9 @@ thirteen deliverable extensions to existing planned sprints.
     Patterns](../HASKELL_CLI_TOOL.md) §1781–1803.
 - Phase `4` sprint deliverable extension (no new sprints):
   - Sprint 4.5 applies the same forbidden-flag and sister-command discipline to the
-    lifecycle reconciler: no `--force`, no `--reinstall`, no sister commands. The
-    one-cycle deprecation alias preserves `prodbox rke2 install` only as an alias
-    that calls the reconciler; it does not preserve the forbidden flags. Doctrine
+    lifecycle reconciler: no `--force`, no `--reinstall`, no sister commands. The completed
+    one-cycle `prodbox rke2 install` alias is retired after the compatibility window, and the
+    name is now rejected as a forbidden sister command. Doctrine
     [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
     Patterns](../HASKELL_CLI_TOOL.md) §1781–1803.
 - Cross-reference updates: `DEVELOPMENT_PLAN/README.md`,
@@ -355,12 +356,9 @@ thirteen deliverable extensions to existing planned sprints.
   the registry will be populated when one does. Composes with Sprint 1.23's
   existing deferral.
 - `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` records that Sprint 0.4
-  introduces no new pending-removal scope. The round-3 audit bindings are
-  green-field plan-text additions, not deprecations; existing pending-removal rows
-  for code residue (CommandSpec source-of-truth, daemon parser shape, reconciler
-  rename, subprocess interpreter, capability classes, naming helpers, GADT state
-  machines, etc.) already cover the implementation residue. No row is added or
-  removed.
+  introduced no new pending-removal scope. The round-3 audit bindings were
+  green-field plan-text additions, not deprecations; the implementation residue
+  they scheduled has now closed through the downstream owning sprints.
 
 ### Validation
 

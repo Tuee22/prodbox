@@ -56,6 +56,7 @@ allPrerequisites =
   , pulumiLoggedIn
   , k8sReady
   , infraReady
+  , gatewayDaemonAcquire
   ]
 
 platformLinux :: EffectNode
@@ -311,6 +312,16 @@ infraReady =
     , effectNodeRemedyHint =
         "Resolve the upstream Kubernetes or AWS prerequisite failures first, then rerun the validation."
     , effectNodePrerequisites = ["k8s_ready", "aws_credentials_valid"]
+    , effectNodeEffect = Noop
+    }
+
+gatewayDaemonAcquire :: EffectNode
+gatewayDaemonAcquire =
+  EffectNode
+    { effectNodeId = "gateway_daemon_acquire"
+    , effectNodeDescription = "Validate gateway daemon acquire prerequisites"
+    , effectNodeRemedyHint = "Run gateway daemon entrypoints on the supported Linux runtime."
+    , effectNodePrerequisites = ["platform_linux"]
     , effectNodeEffect = Noop
     }
 

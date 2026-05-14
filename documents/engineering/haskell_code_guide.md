@@ -69,20 +69,19 @@ The current supported worktree has started converging on a small shared foundati
   log sites use typed `field` values and threshold-aware emission instead of direct terminal
   writes.
 - `src/Prodbox/App.hs` owns the one-shot `Env` / `App` foundation backed by
-  `ReaderT Env IO`; command-runner migration onto that foundation remains an active Sprint 1.18
-  surface.
+  `ReaderT Env IO`.
 - `src/Prodbox/Error.hs` owns `AppError` plus the `Recoverable` / `Fatal` split.
 - `src/Prodbox/CLI/Output.hs` owns user-facing error rendering, stdout/stderr writer helpers,
   and typed `OutputOptions` rendering at the CLI boundary.
 - `src/Prodbox/Retry.hs` owns `RetryPolicy` and pure backoff calculation.
-- `src/Prodbox/Service.hs` owns `ServiceError`, capability classes, and service-level retry
-  helpers.
+- `src/Prodbox/Service.hs` owns `ServiceError`, capability classes, IO-backed MinIO / Redis /
+  PostgreSQL service runners, and service-level retry helpers.
 - `src/Prodbox/Naming.hs` owns DNS-1123-safe resource naming helpers.
-- `src/Prodbox/StateMachine.hs` owns phantom-indexed transition surfaces for multi-state
-  gateway, Pulumi, and chart workflows; runtime migration onto those transitions remains active.
+- `src/Prodbox/StateMachine.hs` owns phantom-indexed transition surfaces for multi-state gateway,
+  Pulumi, and chart workflows.
 
-These modules are active doctrine-adoption surfaces. New code should prefer them over ad-hoc
-reimplementations even where repository-wide migration is not yet complete.
+These modules are closed doctrine-adoption surfaces. New code should prefer them over ad-hoc
+reimplementations.
 
 ## 3. Repository-Owned Inputs
 

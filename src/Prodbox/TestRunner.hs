@@ -50,11 +50,11 @@ import Prodbox.Result
   ( Result (..)
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   , commandDisplay
-  , runStreamingCommand
+  , runSubprocessStreaming
   )
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
@@ -150,11 +150,11 @@ runLintFirst repoRoot environment = do
   case lintExit of
     ExitSuccess ->
       runCommandForExitCode
-        CommandSpec
-          { commandPath = "cabal"
-          , commandArguments = ["build", "--builddir=.build", "all"]
-          , commandEnvironment = Just environment
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = "cabal"
+          , subprocessArguments = ["build", "--builddir=.build", "all"]
+          , subprocessEnvironment = Just environment
+          , subprocessWorkingDirectory = Just repoRoot
           }
     failure@(ExitFailure _) -> pure failure
 
@@ -167,16 +167,16 @@ runHaskellSuites repoRoot environment suites = do
   runSuite failure@(ExitFailure _) _ = pure failure
   runSuite ExitSuccess suiteName =
     runCommandForExitCode
-      CommandSpec
-        { commandPath = "cabal"
-        , commandArguments =
+      Subprocess
+        { subprocessPath = "cabal"
+        , subprocessArguments =
             [ "test"
             , "--builddir=.build"
             , suiteName
             , "--test-show-details=direct"
             ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
         }
 
 runNativeSuite :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
@@ -378,9 +378,9 @@ preferEarlierFailure earlierResult cleanupResult =
     failure@(ExitFailure _) -> failure
     ExitSuccess -> cleanupResult
 
-runCommandForExitCode :: CommandSpec -> IO ExitCode
+runCommandForExitCode :: Subprocess -> IO ExitCode
 runCommandForExitCode spec = do
-  commandResult <- runStreamingCommand spec
+  commandResult <- runSubprocessStreaming spec
   case commandResult of
     Failure err -> failWith err
     Success exitCode -> pure exitCode
@@ -393,7 +393,7 @@ runWaitForPublicEdgeReady repoRoot environment attempts delayMicroseconds =
 
   go :: Int -> Int -> IO ExitCode
   go attemptsLeft repairsLeft = do
-    outputResult <- captureCommand spec
+    outputResult <- captureSubprocessResult spec
     case outputResult of
       Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
       Success output -> do
@@ -465,12 +465,12 @@ maybeRepairPublicEdgeCertificateIssuance repoRoot environment combinedOutput
                         ++ " failed attempt(s)); deleting stale ACME resources for an immediate reissue."
                     )
                   deleteResult <-
-                    captureCommand
-                      CommandSpec
-                        { commandPath = "kubectl"
-                        , commandArguments = ["-n", publicEdgeNamespace, "delete", "--ignore-not-found"] ++ repairTargets
-                        , commandEnvironment = Just environment
-                        , commandWorkingDirectory = Just repoRoot
+                    captureSubprocessResult
+                      Subprocess
+                        { subprocessPath = "kubectl"
+                        , subprocessArguments = ["-n", publicEdgeNamespace, "delete", "--ignore-not-found"] ++ repairTargets
+                        , subprocessEnvironment = Just environment
+                        , subprocessWorkingDirectory = Just repoRoot
                         }
                   pure $
                     case deleteResult of
@@ -492,10 +492,10 @@ loadPublicEdgeCertificateFailure
   -> IO (Either String (Maybe PublicEdgeCertificateFailure))
 loadPublicEdgeCertificateFailure repoRoot environment = do
   outputResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "-n"
             , publicEdgeNamespace
             , "get"
@@ -505,8 +505,8 @@ loadPublicEdgeCertificateFailure repoRoot environment = do
             , "-o"
             , "jsonpath={.status.failedIssuanceAttempts}{\"|\"}{.status.nextPrivateKeySecretName}"
             ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
     case outputResult of
@@ -530,10 +530,10 @@ loadPublicEdgeRepairTargets
   -> IO (Either String [String])
 loadPublicEdgeRepairTargets repoRoot environment failureInfo = do
   outputResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "-n"
             , publicEdgeNamespace
             , "get"
@@ -541,8 +541,8 @@ loadPublicEdgeRepairTargets repoRoot environment failureInfo = do
             , "-o"
             , "name"
             ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
         }
   pure $
     case outputResult of
@@ -609,13 +609,13 @@ runNativeCliCommandForExitCode :: FilePath -> [(String, String)] -> [String] -> 
 runNativeCliCommandForExitCode repoRoot environment cliArgs = do
   runCommandForExitCode (nativeCliCommandSpec repoRoot environment cliArgs)
 
-nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> CommandSpec
+nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> Subprocess
 nativeCliCommandSpec repoRoot environment cliArgs =
-  CommandSpec
-    { commandPath = canonicalOperatorBinaryPath repoRoot
-    , commandArguments = cliArgs
-    , commandEnvironment = Just environment
-    , commandWorkingDirectory = Just repoRoot
+  Subprocess
+    { subprocessPath = canonicalOperatorBinaryPath repoRoot
+    , subprocessArguments = cliArgs
+    , subprocessEnvironment = Just environment
+    , subprocessWorkingDirectory = Just repoRoot
     }
 
 ensureCanonicalOperatorBinary :: FilePath -> [(String, String)] -> IO ExitCode

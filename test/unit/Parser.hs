@@ -76,6 +76,7 @@ forbiddenArgvCases :: [([String], String)]
 forbiddenArgvCases =
   [ (["rke2", "reconcile", "--force"], "rke2 reconcile --force")
   , (["rke2", "reconcile", "--reinstall"], "rke2 reconcile --reinstall")
+  , (["rke2", "install"], "rke2 install")
   , (["rke2", "install", "--force"], "rke2 install --force")
   , (["rke2", "install", "--reinstall"], "rke2 install --reinstall")
   , (["rke2", "upgrade"], "rke2 upgrade")
@@ -226,7 +227,6 @@ commandPathOfRequest request =
               Rke2Stop -> ["stop"]
               Rke2Restart -> ["restart"]
               Rke2Reconcile _ -> ["reconcile"]
-              Rke2Install _ -> ["install"]
               Rke2Delete _ -> ["delete"]
               Rke2Logs _ -> ["logs"]
         NativeTest testCommand ->

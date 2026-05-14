@@ -60,11 +60,11 @@ import Prodbox.Settings
   , validateAwsBootstrapConfig
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   , commandDisplay
-  , runStreamingCommand
+  , runSubprocessStreaming
   )
 import System.Directory
   ( doesDirectoryExist
@@ -159,9 +159,9 @@ runEffect context effect =
   step failure@(Failure _) _ = pure failure
   step (Success ()) nextEffect = runEffect context nextEffect
 
-runCommandEffect :: CommandSpec -> IO (Result ())
+runCommandEffect :: Subprocess -> IO (Result ())
 runCommandEffect spec = do
-  commandResult <- runStreamingCommand spec
+  commandResult <- runSubprocessStreaming spec
   pure $
     case commandResult of
       Failure err -> Failure ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
@@ -174,9 +174,9 @@ runCommandEffect spec = do
               ++ show code
           )
 
-assertCommandOutputContains :: CommandSpec -> String -> IO (Result ())
+assertCommandOutputContains :: Subprocess -> String -> IO (Result ())
 assertCommandOutputContains spec expectedText = do
-  outputResult <- captureCommand spec
+  outputResult <- captureSubprocessResult spec
   case outputResult of
     Failure err ->
       pure (Failure ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err))
@@ -248,11 +248,11 @@ runValidation context validation =
    where
     validationLabel = "Tool check failed"
     spec =
-      CommandSpec
-        { commandPath = toolName
-        , commandArguments = versionArgs
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just (interpreterRepoRoot context)
+      Subprocess
+        { subprocessPath = toolName
+        , subprocessArguments = versionArgs
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
         }
 
   executableExists :: FilePath -> IO Bool
@@ -303,12 +303,12 @@ runValidation context validation =
   requireServiceExists :: String -> IO (Result ())
   requireServiceExists serviceName = do
     outputResult <-
-      captureCommand
-        CommandSpec
-          { commandPath = "systemctl"
-          , commandArguments = ["show", "--property=LoadState", "--value", serviceName]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just (interpreterRepoRoot context)
+      captureSubprocessResult
+        Subprocess
+          { subprocessPath = "systemctl"
+          , subprocessArguments = ["show", "--property=LoadState", "--value", serviceName]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
           }
     pure $
       case outputResult of
@@ -341,11 +341,11 @@ runValidation context validation =
     requireCapturedCommandSuccess
       False
       ("Service `" ++ serviceName ++ "` is not active")
-      CommandSpec
-        { commandPath = "systemctl"
-        , commandArguments = ["is-active", serviceName]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just (interpreterRepoRoot context)
+      Subprocess
+        { subprocessPath = "systemctl"
+        , subprocessArguments = ["is-active", serviceName]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
         }
 
   requireAwsCredentials :: IO (Result ())
@@ -357,11 +357,11 @@ runValidation context validation =
         environment <- awsCommandEnvironment settings
         requireAwsValidationCommandSuccess
           "AWS credential check failed"
-          CommandSpec
-            { commandPath = "aws"
-            , commandArguments = ["sts", "get-caller-identity", "--output", "json"]
-            , commandEnvironment = Just environment
-            , commandWorkingDirectory = Just (interpreterRepoRoot context)
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments = ["sts", "get-caller-identity", "--output", "json"]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
             }
 
   requireAwsIamHarnessReady :: IO (Result ())
@@ -390,11 +390,11 @@ runValidation context validation =
         let zoneId = Text.unpack (zone_id (route53 (validatedConfig settings)))
         requireAwsValidationCommandSuccess
           "Route 53 access check failed"
-          CommandSpec
-            { commandPath = "aws"
-            , commandArguments = ["route53", "get-hosted-zone", "--id", zoneId, "--output", "json"]
-            , commandEnvironment = Just environment
-            , commandWorkingDirectory = Just (interpreterRepoRoot context)
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments = ["route53", "get-hosted-zone", "--id", zoneId, "--output", "json"]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
             }
 
   requireRoute53LifecycleCapability :: IO (Result ())
@@ -408,9 +408,9 @@ runValidation context validation =
         baseZoneResult <-
           captureAwsValidationCommandOutput
             "Route 53 lifecycle capability check failed"
-            CommandSpec
-              { commandPath = "aws"
-              , commandArguments =
+            Subprocess
+              { subprocessPath = "aws"
+              , subprocessArguments =
                   [ "route53"
                   , "get-hosted-zone"
                   , "--id"
@@ -420,8 +420,8 @@ runValidation context validation =
                   , "--output"
                   , "text"
                   ]
-              , commandEnvironment = Just environment
-              , commandWorkingDirectory = Just (interpreterRepoRoot context)
+              , subprocessEnvironment = Just environment
+              , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
               }
         case baseZoneResult of
           Failure err -> pure (Failure err)
@@ -437,9 +437,9 @@ runValidation context validation =
                 createZoneResult <-
                   captureAwsValidationCommandOutput
                     "Route 53 lifecycle capability check failed"
-                    CommandSpec
-                      { commandPath = "aws"
-                      , commandArguments =
+                    Subprocess
+                      { subprocessPath = "aws"
+                      , subprocessArguments =
                           [ "route53"
                           , "create-hosted-zone"
                           , "--name"
@@ -451,8 +451,8 @@ runValidation context validation =
                           , "--output"
                           , "text"
                           ]
-                      , commandEnvironment = Just environment
-                      , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                      , subprocessEnvironment = Just environment
+                      , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
                       }
                 case createZoneResult of
                   Failure err -> pure (Failure err)
@@ -467,16 +467,16 @@ runValidation context validation =
                       else
                         requireAwsValidationCommandSuccess
                           "Route 53 lifecycle capability cleanup failed"
-                          CommandSpec
-                            { commandPath = "aws"
-                            , commandArguments =
+                          Subprocess
+                            { subprocessPath = "aws"
+                            , subprocessArguments =
                                 [ "route53"
                                 , "delete-hosted-zone"
                                 , "--id"
                                 , createdZoneId
                                 ]
-                            , commandEnvironment = Just environment
-                            , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                            , subprocessEnvironment = Just environment
+                            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
                             }
 
   requirePulumiLogin :: IO (Result ())
@@ -493,10 +493,10 @@ runValidation context validation =
               Right () -> do
                 environment <- pulumiPrerequisiteEnvironment localPort accessKey secretKey
                 outputResult <-
-                  captureCommand
-                    CommandSpec
-                      { commandPath = "timeout"
-                      , commandArguments =
+                  captureSubprocessResult
+                    Subprocess
+                      { subprocessPath = "timeout"
+                      , subprocessArguments =
                           [ "--kill-after=10s"
                           , show pulumiBackendLoginTimeoutSeconds
                           , "pulumi"
@@ -504,8 +504,8 @@ runValidation context validation =
                           , pulumiBackendUrl localPort
                           , "--non-interactive"
                           ]
-                      , commandEnvironment = Just environment
-                      , commandWorkingDirectory = Just (interpreterRepoRoot context)
+                      , subprocessEnvironment = Just environment
+                      , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
                       }
                 pure $
                   case outputResult of
@@ -545,11 +545,11 @@ runValidation context validation =
     requireCapturedCommandSuccess
       True
       "Kubernetes cluster check failed"
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments = ["cluster-info"]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just (interpreterRepoRoot context)
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments = ["cluster-info"]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
         }
 
   requireUbuntu2404 :: IO (Result ())
@@ -586,9 +586,9 @@ pulumiPrerequisiteEnvironment localPort accessKey secretKey = do
     , ("LANG", "C.UTF-8")
     ]
 
-requireCapturedCommandSuccess :: Bool -> String -> CommandSpec -> IO (Result ())
+requireCapturedCommandSuccess :: Bool -> String -> Subprocess -> IO (Result ())
 requireCapturedCommandSuccess echoOutput failureLabel spec = do
-  outputResult <- captureCommand spec
+  outputResult <- captureSubprocessResult spec
   case outputResult of
     Failure err ->
       pure
@@ -616,7 +616,7 @@ requireCapturedCommandSuccess echoOutput failureLabel spec = do
                   ++ toolOutputSuffix output
               )
 
-requireAwsValidationCommandSuccess :: String -> CommandSpec -> IO (Result ())
+requireAwsValidationCommandSuccess :: String -> Subprocess -> IO (Result ())
 requireAwsValidationCommandSuccess failureLabel spec =
   toUnit <$> captureAwsValidationCommandOutput failureLabel spec
  where
@@ -624,13 +624,13 @@ requireAwsValidationCommandSuccess failureLabel spec =
   toUnit (Failure err) = Failure err
   toUnit (Success _) = Success ()
 
-captureAwsValidationCommandOutput :: String -> CommandSpec -> IO (Result ProcessOutput)
+captureAwsValidationCommandOutput :: String -> Subprocess -> IO (Result ProcessOutput)
 captureAwsValidationCommandOutput failureLabel spec =
   go awsValidationRetryAttempts
  where
   go :: Int -> IO (Result ProcessOutput)
   go attemptsRemaining = do
-    outputResult <- captureCommand spec
+    outputResult <- captureSubprocessResult spec
     case outputResult of
       Failure err ->
         pure

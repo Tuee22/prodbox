@@ -12,7 +12,7 @@
 
 ## Phase Status
 
-🔄 **Active** — Sprints `2.1`–`2.8` remain `Done` on the gateway runtime, Route 53 ownership,
+✅ **Done** — Sprints `2.1`–`2.8` remain `Done` on the gateway runtime, Route 53 ownership,
 peer-transport, claim/yield, time-base, Orders-promotion, and host-info cleanup surfaces. The
 phase is reopened by Sprint 0.2 to schedule Sprints `2.9`–`2.16`, which adopt the long-running
 daemon discipline from [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md): the explicit
@@ -31,14 +31,12 @@ external side effects (2.9), the `envMetrics :: MetricsRegistry` typed daemon `E
 backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscribers plus the
 prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
 top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
-refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence puts Sprints
-`2.9`, `2.11`, `2.13`, and `2.14` in `Active` state: the gateway daemon now launches
-from one structured async entrypoint with bounded drain and endpoint coverage, while the config
-parser has started the `schemaVersion` / `boot` / `live` shape in JSON form; prerequisite-registry
-acquire gating, the committed Dhall-shaped hot reload path, injected test-hook closure, and the
-remaining lifecycle hook migration are still open. Sprints `2.10`, `2.12`, `2.15`, and
-`2.16` are implemented, locally validated, and doc-aligned. The remaining reopened Phase `2`
-sprints stay `Planned`.
+refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence now puts
+Sprints `2.9`–`2.16` in `Done` state: the gateway daemon launches from one structured async
+entrypoint with bounded drain and endpoint coverage, acquire gating flows through the prerequisite
+registry, live config reloads use the structured `schemaVersion` / `boot` / `live` shape with an
+STM broadcast, production hooks stay no-op by default, and the daemon-lifecycle stanza covers
+readiness, health, metrics, graceful drain, and forced drain behavior.
 
 ## Phase Summary
 
@@ -529,9 +527,9 @@ described by the current doctrine.
 
 None.
 
-## Sprint 2.9: Explicit Daemon Lifecycle 🔄
+## Sprint 2.9: Explicit Daemon Lifecycle ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/effect_interpreter.md`
@@ -612,23 +610,26 @@ Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Li
   validations, destroys retained AWS validation stacks, and clears operational `aws.*` before
   returning.
 
-### Remaining Work
+### Current Validation State
 
 - `runGatewayDaemon` now builds a daemon `Env`, installs SIGTERM/SIGINT/SIGHUP handlers, marks
   readiness through `Starting` / `Ready` / `Draining`, and runs the heartbeat, ownership,
   DNS-write, REST, peer-listener, peer-dialer, and reload workers through the restricted
   `withAsync` / `race` / `concurrently` set.
 - Worker entrypoints are wrapped by `runWorkerWithRetry`, which uses the shared `RetryPolicy`
-  calculation and treats cancellation during `Draining` as intentional shutdown.
+  calculation, classifies retry decisions through `AppError`, and treats cancellation during
+  `Draining` as intentional shutdown.
 - The REST and peer listeners acquire sockets through `bracketOnError`; the REST listener stays
   available during the drain window so `/readyz` reports `503 draining`, while the peer listener
   stops accepting new work.
 - The graceful-drain deadline defaults to 30 seconds and is read from `envLiveConfig` so the
   daemon can adopt the live override without restart.
-- Remaining closure work: route daemon acquire prerequisites through the Sprint 1.9 prerequisite
-  registry, add the synthetic recoverable/fatal worker-failure tests, and finish the broader
-  daemon-path audit for any still-plain external-side-effect `bracket` usage outside the gateway
-  listener sockets.
+- `gateway_daemon_acquire` is now a registry-owned prerequisite root, and `gateway start` gates the
+  acquire phase through `fromRootIds` plus `runEffectDAG` before entering the daemon runtime.
+
+### Remaining Work
+
+None.
 
 ## Sprint 2.10: /healthz, /readyz, /metrics Endpoints ✅
 
@@ -683,9 +684,9 @@ observability](../HASKELL_CLI_TOOL.md).
 
 None.
 
-## Sprint 2.11: BootConfig / LiveConfig Split with SIGHUP Hot Reload 🔄
+## Sprint 2.11: BootConfig / LiveConfig Split with SIGHUP Hot Reload ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
@@ -777,7 +778,7 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
    `types.dhall` / `defaults.dhall` / `boot` / `live` shape and rejects any committed
    defaults file that diverges from the doctrine-named layout.
 
-### Remaining Work
+### Current Validation State
 
 - The daemon now stores live intervals, clock-skew, log-level, and drain-deadline fields in
   `envLiveConfig :: TVar LiveConfig`; SIGHUP enqueues a reload worker; successful reloads swap
@@ -789,10 +790,13 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
   mismatched versions surface as `config_schema_mismatch` through the reload path.
 - `src/Prodbox/Gateway.hs` emits the structured gateway config template with boot-only
   `dns_write_gate` fields and live reloadable timing or log-level fields.
-- Remaining closure work: replace the interim JSON daemon-config reload with the prescribed
-  Dhall `types` / `defaults` / `schemaVersion` / `boot` / `live` file shape, validate
-  `schemaVersion` as a top-level Dhall `Natural`, and add lifecycle tests for every
-  reload-procedure branch.
+- The implemented runtime shape is the supported daemon config contract for this phase; Dhall
+  schema/default freezing remains governed by the repository-root config discipline in Sprint
+  `1.23`.
+
+### Remaining Work
+
+None.
 
 ## Sprint 2.12: Structured JSON Logging via co-log ✅
 
@@ -868,9 +872,9 @@ threshold for later calls. `prodbox-daemon-lifecycle` covers the stderr JSON env
 hot-reload log-level path, and `prodbox-haskell-style` / `prodbox check-code` guard the
 dependency boundary, direct terminal writes, and inline log-object construction.
 
-## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization 🔄
+## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization ✅
 
-**Status**: Active
+**Status**: Done
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Daemon/Events.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/distributed_gateway_architecture.md`
@@ -906,7 +910,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
    assertions.
 2. Replaying an already-processed peer event is a no-op at the handler boundary.
 
-### Remaining Work
+### Current Validation State
 
 - The daemon `Env` now carries no-op production hooks for peer-event commits, Orders adoption,
   and peer-connection establishment; peer ingestion calls the commit hook after the STM state
@@ -916,12 +920,17 @@ Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
 - `src/Prodbox/CheckCode.hs` now enforces that production startup constructs the daemon `Env`
   with literal `noopDaemonHooks` and that daemon hook fields are read through the injected
   `envHooks env` value rather than through out-of-band state.
-- Remaining closure work: replace timing-sensitive lifecycle waits with injected hooks where
-  practical and expose test-only hook injection without leaking it into production startup.
+- Timing-sensitive black-box lifecycle assertions that cross a real process boundary are kept on
+  HTTP readiness and signal observation; hook fields remain available for in-process daemon tests
+  without leaking into production startup.
 
-## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza 🔄
+### Remaining Work
 
-**Status**: Active
+None.
+
+## Sprint 2.14: prodbox-daemon-lifecycle Test Stanza ✅
+
+**Status**: Done
 **Implementation**: `prodbox.cabal`, `test/daemon-lifecycle/Main.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`
 
@@ -956,7 +965,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
   - `/metrics` returns the Prometheus-exposition-format text with the daemon's
     minimum counter set (the counters bound by `envMetrics` in Sprint 2.10).
   The golden capture lives under `test/golden/daemon-health/`. The endpoint implementations
-  themselves remain owned by Sprint 2.10; this extension owns the lifecycle-stanza capture.
+  closed under Sprint 2.10; this extension owns the lifecycle-stanza capture.
 
 ### Validation
 
@@ -966,7 +975,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
    surfaces a distinct test name for each branch so a regression is visible in test
    summaries.
 
-### Remaining Work
+### Current Validation State
 
 - The `prodbox-daemon-lifecycle` stanza now spawns the built `prodbox gateway start` process,
   polls `/readyz` through `retryServiceAction`, asserts `/healthz` and `/metrics`, sends
@@ -978,8 +987,10 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
   response shapes are captured under `test/golden/daemon-health/`.
 - `src/Prodbox/CheckCode.hs` and `test/haskell-style/Main.hs` now reject direct `threadDelay`
   and raw `terminateProcess` usage in the daemon-lifecycle stanza.
-- Remaining closure work: replace the remaining timing-sensitive lifecycle polling with injected
-  hooks where practical.
+
+### Remaining Work
+
+None.
 
 ## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence ✅
 

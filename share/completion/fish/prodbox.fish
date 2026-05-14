@@ -56,7 +56,6 @@ complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'start' -d 'Star
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'stop' -d 'Stop RKE2'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'restart' -d 'Restart RKE2'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'reconcile' -d 'Reconcile RKE2'
-complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'install' -d 'Deprecated alias for reconcile'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'delete' -d 'Delete RKE2'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'logs' -d 'Show RKE2 logs'
 complete -c prodbox -f -n '__fish_seen_subcommand_from test' -a 'all' -d 'Run the full test suite'

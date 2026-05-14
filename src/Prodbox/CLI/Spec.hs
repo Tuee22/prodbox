@@ -317,8 +317,6 @@ parserForPath path =
     ["rke2", "restart"] -> Just (pure (RunNative (NativeRke2 Rke2Restart)))
     ["rke2", "reconcile"] ->
       Just (fmap (RunNative . NativeRke2 . Rke2Reconcile) planOptionsParser)
-    ["rke2", "install"] ->
-      Just (fmap (RunNative . NativeRke2 . Rke2Install) planOptionsParser)
     ["rke2", "delete"] ->
       Just
         (fmap (RunNative . NativeRke2 . Rke2Delete) (yesSwitchParser "Confirm full RKE2 cluster deletion"))
@@ -974,14 +972,6 @@ rke2Group =
         [ example ["rke2", "reconcile"] "Reconcile the supported local cluster."
         , example ["rke2", "reconcile", "--dry-run"] "Render the lifecycle plan."
         ]
-    , leaf
-        "install"
-        "Deprecated alias for reconcile"
-        "Deprecated alias for `prodbox rke2 reconcile`."
-        [ flagOption "dry-run" Nothing Nothing "Render the lifecycle plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
-        ]
-        [example ["rke2", "install"] "Use the one-cycle reconcile alias."]
     , leaf
         "delete"
         "Delete RKE2"

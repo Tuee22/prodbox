@@ -36,9 +36,9 @@ import Prodbox.Repo
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory
   ( doesFileExist
@@ -184,12 +184,12 @@ loadConfigFile repoRoot = do
     then pure (Left (missingConfigMessage configPath))
     else do
       outputResult <-
-        captureCommand
-          CommandSpec
-            { commandPath = "dhall-to-json"
-            , commandArguments = ["--file", configPath, "--compact", "--preserve-null"]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just repoRoot
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "dhall-to-json"
+            , subprocessArguments = ["--file", configPath, "--compact", "--preserve-null"]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
             }
       pure $
         case outputResult of

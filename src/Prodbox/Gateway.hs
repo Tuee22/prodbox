@@ -41,6 +41,11 @@ import Prodbox.CLI.Output
   ( writeError
   , writeOutput
   )
+import Prodbox.EffectDAG (fromRootIds)
+import Prodbox.EffectInterpreter
+  ( InterpreterContext (..)
+  , runEffectDAG
+  )
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Types
@@ -53,6 +58,7 @@ import Prodbox.Gateway.Types
   , supportedDaemonConfigSchemaVersion
   , validateDaemonTimingAgainstOrders
   )
+import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( Credentials (..)
@@ -65,9 +71,9 @@ import Prodbox.Settings
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
@@ -83,7 +89,7 @@ runGatewayCommand repoRoot command =
     GatewayConfigGen outputPath nodeId -> runGatewayConfigGen repoRoot outputPath nodeId
 
 runGatewayStart :: FilePath -> DaemonLaunchOptions -> IO ExitCode
-runGatewayStart _repoRoot options = do
+runGatewayStart repoRoot options = do
   configPathResult <- resolveGatewayConfigPath (daemonConfigPath options)
   case configPathResult of
     Left err -> failWith err
@@ -108,7 +114,7 @@ runGatewayStart _repoRoot options = do
               runPlanWithOptions
                 (daemonPlanOptions options)
                 plan
-                (applyGatewayStartPlan configPath portOverride logLevel)
+                (applyGatewayStartPlan repoRoot configPath portOverride logLevel)
 
 runGatewayStatus :: DaemonStatusOptions -> IO ExitCode
 runGatewayStatus options = do
@@ -204,9 +210,18 @@ buildGatewayStartExecutionPlan configPath logLevel portOverride foreground =
   buildPlan
     (renderGatewayStartPlan configPath logLevel portOverride foreground)
 
-applyGatewayStartPlan :: FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
-applyGatewayStartPlan configPath portOverride logLevel =
-  Daemon.runGatewayDaemon (Just configPath) portOverride logLevel
+applyGatewayStartPlan :: FilePath -> FilePath -> Maybe Int -> String -> DaemonConfig -> IO ExitCode
+applyGatewayStartPlan repoRoot configPath portOverride logLevel config = do
+  prerequisiteResult <- runGatewayDaemonAcquirePrerequisites repoRoot
+  case prerequisiteResult of
+    Failure err -> failWith err
+    Success () -> Daemon.runGatewayDaemon (Just configPath) portOverride logLevel config
+
+runGatewayDaemonAcquirePrerequisites :: FilePath -> IO (Result ())
+runGatewayDaemonAcquirePrerequisites repoRoot =
+  case fromRootIds ["gateway_daemon_acquire"] prerequisiteRegistry of
+    Left err -> pure (Failure err)
+    Right dag -> runEffectDAG (InterpreterContext repoRoot) dag
 
 renderGatewayConfigTemplate :: ValidatedSettings -> String -> String
 renderGatewayConfigTemplate settings nodeId =
@@ -274,17 +289,17 @@ queryGatewayState configPath endpoint = do
     Nothing -> pure (Left "`gateway status` requires `curl` to query the daemon REST API.")
     Just _ -> do
       outputResult <-
-        captureCommand
-          CommandSpec
-            { commandPath = "curl"
-            , commandArguments =
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "curl"
+            , subprocessArguments =
                 [ "-fsSL"
                 , "--max-time"
                 , "5"
                 , gatewayStatusUrl endpoint
                 ]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just (takeDirectory configPath)
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just (takeDirectory configPath)
             }
       pure $
         case outputResult of

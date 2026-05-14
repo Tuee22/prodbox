@@ -115,11 +115,11 @@ import Prodbox.Settings
   )
 import Prodbox.Subprocess
   ( BackgroundProcess
-  , CommandSpec (..)
   , ProcessOutput (..)
-  , captureCommand
+  , Subprocess (..)
+  , captureSubprocessResult
   , commandDisplay
-  , runStreamingCommand
+  , runSubprocessStreaming
   , startBackgroundProcess
   , stopBackgroundProcess
   )
@@ -414,9 +414,9 @@ runChartsVscodeValidation repoRoot = do
           runSequentially
             [ assertPublicHttpRedirect repoRoot settings PublicRouteVscode
             , waitForCommandOutputContainsAll
-                CommandSpec
-                  { commandPath = "curl"
-                  , commandArguments =
+                Subprocess
+                  { subprocessPath = "curl"
+                  , subprocessArguments =
                       [ "-sS"
                       , "-D"
                       , "-"
@@ -424,8 +424,8 @@ runChartsVscodeValidation repoRoot = do
                       , "/dev/null"
                       , publicRouteUrl settings PublicRouteVscode
                       ]
-                  , commandEnvironment = Nothing
-                  , commandWorkingDirectory = Just repoRoot
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
                   }
                 (oidcRedirectFragments settings (publicRouteUrl settings PublicRouteVscode ++ "/oauth2/callback"))
                 chartsVscodeCurlAttempts
@@ -685,12 +685,12 @@ runWebsocketUpgradeValidation repoRoot environment settings apiToken websocketTo
                                                 ( do
                                                     deleteExit <-
                                                       runCommandForExitCode
-                                                        CommandSpec
-                                                          { commandPath = "kubectl"
-                                                          , commandArguments =
+                                                        Subprocess
+                                                          { subprocessPath = "kubectl"
+                                                          , subprocessArguments =
                                                               ["delete", "pod", managedWebsocketPod thirdConnection, "--namespace", "websocket"]
-                                                          , commandEnvironment = Nothing
-                                                          , commandWorkingDirectory = Just repoRoot
+                                                          , subprocessEnvironment = Nothing
+                                                          , subprocessWorkingDirectory = Just repoRoot
                                                           }
                                                     case deleteExit of
                                                       ExitFailure _ -> pure deleteExit
@@ -765,9 +765,9 @@ completeDirectOidcLogin repoRoot settings =
             Just demoPassword -> do
               loginPageResult <-
                 runTextCommand
-                  CommandSpec
-                    { commandPath = "curl"
-                    , commandArguments =
+                  Subprocess
+                    { subprocessPath = "curl"
+                    , subprocessArguments =
                         [ "-sS"
                         , "-L"
                         , "-c"
@@ -778,8 +778,8 @@ completeDirectOidcLogin repoRoot settings =
                         , bodyPath
                         , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/start"
                         ]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Just repoRoot
                     }
               case loginPageResult of
                 Left err -> pure (Left err)
@@ -790,9 +790,9 @@ completeDirectOidcLogin repoRoot settings =
                     Right formActionUrl -> do
                       loginResult <-
                         runTextCommand
-                          CommandSpec
-                            { commandPath = "curl"
-                            , commandArguments =
+                          Subprocess
+                            { subprocessPath = "curl"
+                            , subprocessArguments =
                                 [ "-sS"
                                 , "-L"
                                 , "-c"
@@ -805,16 +805,16 @@ completeDirectOidcLogin repoRoot settings =
                                 , "password=" ++ demoPassword
                                 , formActionUrl
                                 ]
-                            , commandEnvironment = Nothing
-                            , commandWorkingDirectory = Just repoRoot
+                            , subprocessEnvironment = Nothing
+                            , subprocessWorkingDirectory = Just repoRoot
                             }
                       case loginResult of
                         Left err -> pure (Left err)
                         Right _ ->
                           runJsonCommand
-                            CommandSpec
-                              { commandPath = "curl"
-                              , commandArguments =
+                            Subprocess
+                              { subprocessPath = "curl"
+                              , subprocessArguments =
                                   [ "-sS"
                                   , "-L"
                                   , "-c"
@@ -823,8 +823,8 @@ completeDirectOidcLogin repoRoot settings =
                                   , cookieJarPath
                                   , publicRouteUrl settings PublicRouteWebsocket ++ "/oidc/session"
                                   ]
-                              , commandEnvironment = Nothing
-                              , commandWorkingDirectory = Just repoRoot
+                              , subprocessEnvironment = Nothing
+                              , subprocessWorkingDirectory = Just repoRoot
                               }
 
 openManagedWebsocketConnection
@@ -1118,9 +1118,9 @@ fetchAccessToken repoRoot settings secretKey clientId = do
         (Just clientSecret, Just demoPassword) -> do
           payloadResult <-
             runJsonCommand
-              CommandSpec
-                { commandPath = "curl"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "curl"
+                , subprocessArguments =
                     [ "-sS"
                     , "--fail-with-body"
                     , "-X"
@@ -1137,8 +1137,8 @@ fetchAccessToken repoRoot settings secretKey clientId = do
                     , "password=" ++ demoPassword
                     , identityIssuerUrl settings ++ "/protocol/openid-connect/token"
                     ]
-                , commandEnvironment = Nothing
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           case payloadResult of
             Left err -> pure (Left err)
@@ -1161,25 +1161,25 @@ accessTokenFromPayload payload =
         _ -> Left "token endpoint response did not contain access_token"
     _ -> Left "token endpoint response was not a JSON object"
 
-statusOnlyCurlSpec :: FilePath -> [String] -> String -> CommandSpec
+statusOnlyCurlSpec :: FilePath -> [String] -> String -> Subprocess
 statusOnlyCurlSpec repoRoot extraArgs url =
-  CommandSpec
-    { commandPath = "curl"
-    , commandArguments = ["-sS", "-o", "/dev/null", "-w", "%{http_code}"] ++ extraArgs ++ [url]
-    , commandEnvironment = Nothing
-    , commandWorkingDirectory = Just repoRoot
+  Subprocess
+    { subprocessPath = "curl"
+    , subprocessArguments = ["-sS", "-o", "/dev/null", "-w", "%{http_code}"] ++ extraArgs ++ [url]
+    , subprocessEnvironment = Nothing
+    , subprocessWorkingDirectory = Just repoRoot
     }
 
-jsonCurlSpec :: FilePath -> [String] -> String -> CommandSpec
+jsonCurlSpec :: FilePath -> [String] -> String -> Subprocess
 jsonCurlSpec repoRoot extraArgs url =
-  CommandSpec
-    { commandPath = "curl"
-    , commandArguments = ["-sS", "--fail-with-body"] ++ extraArgs ++ [url]
-    , commandEnvironment = Nothing
-    , commandWorkingDirectory = Just repoRoot
+  Subprocess
+    { subprocessPath = "curl"
+    , subprocessArguments = ["-sS", "--fail-with-body"] ++ extraArgs ++ [url]
+    , subprocessEnvironment = Nothing
+    , subprocessWorkingDirectory = Just repoRoot
     }
 
-assertHttpStatusIn :: CommandSpec -> [String] -> IO ExitCode
+assertHttpStatusIn :: Subprocess -> [String] -> IO ExitCode
 assertHttpStatusIn spec allowedStatuses = do
   result <- runTextCommand spec
   case result of
@@ -1236,11 +1236,11 @@ assertOidcProtectedRoute
 assertOidcProtectedRoute repoRoot settings requestUrl callbackUrl failurePrefix = do
   redirectResult <-
     runTextCommand
-      CommandSpec
-        { commandPath = "curl"
-        , commandArguments = ["-sS", "-D", "-", "-o", "/dev/null", requestUrl]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments = ["-sS", "-D", "-", "-o", "/dev/null", requestUrl]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   case redirectResult of
     Left err -> failWith err
@@ -1270,17 +1270,17 @@ encodeRedirectUri =
 waitForPublicEdgeReady :: FilePath -> IO ExitCode
 waitForPublicEdgeReady repoRoot = do
   let spec =
-        CommandSpec
-          { commandPath = canonicalOperatorBinaryPath repoRoot
-          , commandArguments = ["host", "public-edge"]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+        Subprocess
+          { subprocessPath = canonicalOperatorBinaryPath repoRoot
+          , subprocessArguments = ["host", "public-edge"]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
   waitForClassification spec publicEdgeReadyAttempts
  where
-  waitForClassification :: CommandSpec -> Int -> IO ExitCode
+  waitForClassification :: Subprocess -> Int -> IO ExitCode
   waitForClassification spec attemptsLeft = do
-    outputResult <- captureCommand spec
+    outputResult <- captureSubprocessResult spec
     case outputResult of
       Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
       Success output -> do
@@ -1318,9 +1318,9 @@ runPublicDnsValidation repoRoot = do
     Right (settings, awsEnvironment) -> do
       zonePayloadResult <-
         runJsonCommand
-          CommandSpec
-            { commandPath = "aws"
-            , commandArguments =
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
                 [ "route53"
                 , "get-hosted-zone"
                 , "--id"
@@ -1328,8 +1328,8 @@ runPublicDnsValidation repoRoot = do
                 , "--output"
                 , "json"
                 ]
-            , commandEnvironment = Just awsEnvironment
-            , commandWorkingDirectory = Just repoRoot
+            , subprocessEnvironment = Just awsEnvironment
+            , subprocessWorkingDirectory = Just repoRoot
             }
       case zonePayloadResult of
         Left err -> failWith err
@@ -1339,11 +1339,11 @@ runPublicDnsValidation repoRoot = do
             Right (zoneName, expectedNameservers) -> do
               digResult <-
                 runTextCommand
-                  CommandSpec
-                    { commandPath = "dig"
-                    , commandArguments = ["+short", "NS", zoneName]
-                    , commandEnvironment = Nothing
-                    , commandWorkingDirectory = Just repoRoot
+                  Subprocess
+                    { subprocessPath = "dig"
+                    , subprocessArguments = ["+short", "NS", zoneName]
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Just repoRoot
                     }
               case digResult of
                 Left err -> failWith err
@@ -1384,9 +1384,9 @@ runDnsAwsValidation repoRoot = do
               callerReference = "prodbox-dns-aws-" ++ nonce
           createZoneResult <-
             runTextCommand
-              CommandSpec
-                { commandPath = "aws"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "aws"
+                , subprocessArguments =
                     [ "route53"
                     , "create-hosted-zone"
                     , "--name"
@@ -1398,8 +1398,8 @@ runDnsAwsValidation repoRoot = do
                     , "--output"
                     , "text"
                     ]
-                , commandEnvironment = Just awsEnvironment
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Just awsEnvironment
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           case createZoneResult of
             Left err -> failWith err
@@ -1412,9 +1412,9 @@ runDnsAwsValidation repoRoot = do
                   ExitSuccess -> do
                     verifyResult <-
                       runTextCommand
-                        CommandSpec
-                          { commandPath = "aws"
-                          , commandArguments =
+                        Subprocess
+                          { subprocessPath = "aws"
+                          , subprocessArguments =
                               [ "route53"
                               , "list-resource-record-sets"
                               , "--hosted-zone-id"
@@ -1426,8 +1426,8 @@ runDnsAwsValidation repoRoot = do
                               , "--output"
                               , "text"
                               ]
-                          , commandEnvironment = Just awsEnvironment
-                          , commandWorkingDirectory = Just repoRoot
+                          , subprocessEnvironment = Just awsEnvironment
+                          , subprocessWorkingDirectory = Just repoRoot
                           }
                     case verifyResult of
                       Left err -> failWith err
@@ -1452,9 +1452,9 @@ configuredHostedZoneName
 configuredHostedZoneName repoRoot awsEnvironment settings = do
   zonePayloadResult <-
     runJsonCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments =
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
             [ "route53"
             , "get-hosted-zone"
             , "--id"
@@ -1462,8 +1462,8 @@ configuredHostedZoneName repoRoot awsEnvironment settings = do
             , "--output"
             , "json"
             ]
-        , commandEnvironment = Just awsEnvironment
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Just awsEnvironment
+        , subprocessWorkingDirectory = Just repoRoot
         }
   case zonePayloadResult of
     Left err -> pure (Left err)
@@ -1486,16 +1486,16 @@ cleanupDnsAwsValidation repoRoot awsEnvironment hostedZoneId recordName recordIp
     ExitFailure _ -> pure deleteRecordExit
     ExitSuccess ->
       runCommandForExitCode
-        CommandSpec
-          { commandPath = "aws"
-          , commandArguments =
+        Subprocess
+          { subprocessPath = "aws"
+          , subprocessArguments =
               [ "route53"
               , "delete-hosted-zone"
               , "--id"
               , hostedZoneId
               ]
-          , commandEnvironment = Just awsEnvironment
-          , commandWorkingDirectory = Just repoRoot
+          , subprocessEnvironment = Just awsEnvironment
+          , subprocessWorkingDirectory = Just repoRoot
           }
 
 changeRoute53Record
@@ -1521,9 +1521,9 @@ changeRoute53Record repoRoot awsEnvironment hostedZoneId action recordName recor
     Right () -> do
       changeResult <-
         runTextCommand
-          CommandSpec
-            { commandPath = "aws"
-            , commandArguments =
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
                 [ "route53"
                 , "change-resource-record-sets"
                 , "--hosted-zone-id"
@@ -1535,25 +1535,25 @@ changeRoute53Record repoRoot awsEnvironment hostedZoneId action recordName recor
                 , "--output"
                 , "text"
                 ]
-            , commandEnvironment = Just awsEnvironment
-            , commandWorkingDirectory = Just repoRoot
+            , subprocessEnvironment = Just awsEnvironment
+            , subprocessWorkingDirectory = Just repoRoot
             }
       _ <- try (removeFile batchPath) :: IO (Either IOException ())
       case changeResult of
         Left err -> failWith err
         Right changeId ->
           runCommandForExitCode
-            CommandSpec
-              { commandPath = "aws"
-              , commandArguments =
+            Subprocess
+              { subprocessPath = "aws"
+              , subprocessArguments =
                   [ "route53"
                   , "wait"
                   , "resource-record-sets-changed"
                   , "--id"
                   , trim changeId
                   ]
-              , commandEnvironment = Just awsEnvironment
-              , commandWorkingDirectory = Just repoRoot
+              , subprocessEnvironment = Just awsEnvironment
+              , subprocessWorkingDirectory = Just repoRoot
               }
 
 route53ChangeBatch :: String -> String -> String -> String
@@ -1590,9 +1590,9 @@ runGatewayDaemonValidation repoRoot environment = do
         ExitSuccess -> do
           ordersTextResult <-
             runTextCommand
-              CommandSpec
-                { commandPath = "kubectl"
-                , commandArguments =
+              Subprocess
+                { subprocessPath = "kubectl"
+                , subprocessArguments =
                     [ "--namespace"
                     , gatewayValidationNamespace
                     , "get"
@@ -1601,8 +1601,8 @@ runGatewayDaemonValidation repoRoot environment = do
                     , "-o"
                     , "jsonpath={.data.orders\\.json}"
                     ]
-                , commandEnvironment = Just environment
-                , commandWorkingDirectory = Just repoRoot
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just repoRoot
                 }
           case ordersTextResult of
             Left err -> failWith err
@@ -1725,17 +1725,17 @@ withGatewayPortForward :: FilePath -> [(String, String)] -> PeerEndpoint -> Int 
 withGatewayPortForward repoRoot environment localPeer localPort action = do
   processResult <-
     startBackgroundProcess
-      CommandSpec
-        { commandPath = "kubectl"
-        , commandArguments =
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
             [ "--namespace"
             , gatewayValidationNamespace
             , "port-forward"
             , "service/gateway-" ++ peerNodeId localPeer
             , show localPort ++ ":" ++ show (peerRestPort localPeer)
             ]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just repoRoot
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
         }
   case processResult of
     Left err -> fail (show err)
@@ -1802,9 +1802,9 @@ verifyAwsTestNodeSsh repoRoot privateKeyPath exitCode node =
 waitForAwsTestNodeSsh :: FilePath -> FilePath -> AwsTest.AwsTestNode -> Int -> IO ExitCode
 waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
   let spec =
-        CommandSpec
-          { commandPath = "ssh"
-          , commandArguments =
+        Subprocess
+          { subprocessPath = "ssh"
+          , subprocessArguments =
               [ "-i"
               , privateKeyPath
               , "-o"
@@ -1818,11 +1818,11 @@ waitForAwsTestNodeSsh repoRoot privateKeyPath node attemptsLeft = do
               , "ubuntu@" ++ AwsTest.testNodePublicIp node
               , "hostname"
               ]
-          , commandEnvironment = Nothing
-          , commandWorkingDirectory = Just repoRoot
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
           }
       nodeLabel = AwsTest.testNodeName node ++ " (" ++ AwsTest.testNodePublicIp node ++ ")"
-  outputResult <- captureCommand spec
+  outputResult <- captureSubprocessResult spec
   case outputResult of
     Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
     Success output ->
@@ -1896,25 +1896,25 @@ assertProducedOutputContainsAll label outputAction expectedTexts = do
                 ++ show expectedTexts
             )
 
-nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> CommandSpec
+nativeCliCommandSpec :: FilePath -> [(String, String)] -> [String] -> Subprocess
 nativeCliCommandSpec repoRoot environment cliArgs =
-  CommandSpec
-    { commandPath = canonicalOperatorBinaryPath repoRoot
-    , commandArguments = cliArgs
-    , commandEnvironment = Just environment
-    , commandWorkingDirectory = Just repoRoot
+  Subprocess
+    { subprocessPath = canonicalOperatorBinaryPath repoRoot
+    , subprocessArguments = cliArgs
+    , subprocessEnvironment = Just environment
+    , subprocessWorkingDirectory = Just repoRoot
     }
 
-runCommandForExitCode :: CommandSpec -> IO ExitCode
+runCommandForExitCode :: Subprocess -> IO ExitCode
 runCommandForExitCode spec = do
-  commandResult <- runStreamingCommand spec
+  commandResult <- runSubprocessStreaming spec
   case commandResult of
     Failure err -> failWith err
     Success exitCode -> pure exitCode
 
-assertCommandOutputContainsAll :: CommandSpec -> [String] -> IO ExitCode
+assertCommandOutputContainsAll :: Subprocess -> [String] -> IO ExitCode
 assertCommandOutputContainsAll spec expectedTexts = do
-  outputResult <- captureCommand spec
+  outputResult <- captureSubprocessResult spec
   case outputResult of
     Failure err -> failWith ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
     Success output -> do
@@ -1940,14 +1940,14 @@ assertCommandOutputContainsAll spec expectedTexts = do
                         ++ show expectedTexts
                     )
 
-waitForCommandOutputContainsAll :: CommandSpec -> [String] -> Int -> Int -> IO ExitCode
+waitForCommandOutputContainsAll :: Subprocess -> [String] -> Int -> Int -> IO ExitCode
 waitForCommandOutputContainsAll spec expectedTexts attempts delayMicroseconds = go attempts
  where
   loweredExpectedTexts = map (map toLowerAscii) expectedTexts
 
   go :: Int -> IO ExitCode
   go attemptsLeft = do
-    outputResult <- captureCommand spec
+    outputResult <- captureSubprocessResult spec
     case outputResult of
       Failure err ->
         if attemptsLeft <= 1
@@ -2016,11 +2016,11 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
             | otherwise -> do
                 digResult <-
                   runTextCommand
-                    CommandSpec
-                      { commandPath = "dig"
-                      , commandArguments = ["+short", "A", fqdn]
-                      , commandEnvironment = Nothing
-                      , commandWorkingDirectory = Just repoRoot
+                    Subprocess
+                      { subprocessPath = "dig"
+                      , subprocessArguments = ["+short", "A", fqdn]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
                       }
                 case digResult of
                   Left err -> failWith err
@@ -2042,11 +2042,11 @@ assertPublicHttpRedirect :: FilePath -> ValidatedSettings -> PublicEdgeRoute -> 
 assertPublicHttpRedirect repoRoot settings route = do
   result <-
     runTextCommand
-      CommandSpec
-        { commandPath = "curl"
-        , commandArguments = ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl settings route]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just repoRoot
+      Subprocess
+        { subprocessPath = "curl"
+        , subprocessArguments = ["-sS", "-D", "-", "-o", "/dev/null", publicHttpRouteUrl settings route]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
         }
   case result of
     Left err -> failWith err
@@ -2075,9 +2075,9 @@ publicHttpRedirectMatches settings route headers =
           ]
    in permanentStatus && target `isInfixOf` lowered
 
-runTextCommand :: CommandSpec -> IO (Either String String)
+runTextCommand :: Subprocess -> IO (Either String String)
 runTextCommand spec = do
-  outputResult <- captureCommand spec
+  outputResult <- captureSubprocessResult spec
   pure $
     case outputResult of
       Failure err -> Left ("failed to start `" ++ commandDisplay spec ++ "`: " ++ err)
@@ -2092,7 +2092,7 @@ runTextCommand spec = do
                   ++ outputDetail output
               )
 
-runJsonCommand :: CommandSpec -> IO (Either String Value)
+runJsonCommand :: Subprocess -> IO (Either String Value)
 runJsonCommand spec = do
   textResult <- runTextCommand spec
   pure $ do

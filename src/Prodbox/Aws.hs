@@ -92,9 +92,9 @@ import Prodbox.Settings
   , validatePublicEdgeDeployment
   )
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory
   ( doesFileExist
@@ -1995,12 +1995,12 @@ writeConfigFile path config = do
     Just _ -> do
       writeFile path (renderConfigDhall config)
       freezeResult <-
-        captureCommand
-          CommandSpec
-            { commandPath = "dhall"
-            , commandArguments = ["freeze", "--all", "--inplace", takeFileName path]
-            , commandEnvironment = Nothing
-            , commandWorkingDirectory = Just (freezeWorkingDirectory path)
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "dhall"
+            , subprocessArguments = ["freeze", "--all", "--inplace", takeFileName path]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just (freezeWorkingDirectory path)
             }
       case freezeResult of
         Failure err ->
@@ -2042,12 +2042,12 @@ runAwsCliCompleted repoRoot adminCredentials arguments = do
 runAwsCliCompletedWithEnvironment :: FilePath -> [(String, String)] -> [String] -> IO ProcessOutput
 runAwsCliCompletedWithEnvironment repoRoot environment arguments = do
   outputResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "aws"
-        , commandArguments = arguments ++ ["--output", "json"]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just repoRoot
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments = arguments ++ ["--output", "json"]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
         }
   case outputResult of
     Failure err -> throwAws err

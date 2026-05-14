@@ -53,9 +53,9 @@ import Prodbox.Service
   )
 import Prodbox.Subprocess
   ( BackgroundProcess (..)
-  , CommandSpec (..)
   , ProcessOutput (..)
-  , captureCommand
+  , Subprocess (..)
+  , captureSubprocessResult
   , signalBackgroundProcess
   , startBackgroundProcess
   , stopBackgroundProcess
@@ -231,9 +231,9 @@ defaultWorkloadOptions =
 
 withTemporaryEnv :: [(String, Maybe String)] -> IO a -> IO a
 withTemporaryEnv bindings action =
-  bracket capture restore (\_ -> applyBindings bindings >> action)
+  bracket captureEnv restore (\_ -> applyBindings bindings >> action)
  where
-  capture = mapM (\(name, _) -> captureBinding name) bindings
+  captureEnv = mapM (\(name, _) -> captureBinding name) bindings
 
   restore originalValues = applyBindings originalValues
 
@@ -298,19 +298,19 @@ resolveProdboxBinary repoRoot = do
   let syncedBinary = repoRoot </> ".build" </> "prodbox"
   _ <-
     runCommandSuccess
-      (CommandSpec "cabal" ["build", "--builddir=.build", "exe:prodbox"] Nothing Nothing)
+      (Subprocess "cabal" ["build", "--builddir=.build", "exe:prodbox"] Nothing Nothing)
   listBin <-
     runCommandSuccess
-      (CommandSpec "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"] Nothing Nothing)
+      (Subprocess "cabal" ["list-bin", "--builddir=.build", "exe:prodbox"] Nothing Nothing)
   let compiledBinary = trim (processStdout listBin)
   pure $
     if null compiledBinary
       then syncedBinary
       else compiledBinary
 
-runCommandSuccess :: CommandSpec -> IO ProcessOutput
+runCommandSuccess :: Subprocess -> IO ProcessOutput
 runCommandSuccess command = do
-  result <- captureCommand command
+  result <- captureSubprocessResult command
   case result of
     Failure err -> ioError (userError err)
     Success output ->
@@ -320,9 +320,9 @@ runCommandSuccess command = do
           ioError
             ( userError
                 ( "command failed: "
-                    ++ commandPath command
+                    ++ subprocessPath command
                     ++ " "
-                    ++ unwords (commandArguments command)
+                    ++ unwords (subprocessArguments command)
                     ++ "\n"
                     ++ processStderr output
                 )
@@ -338,11 +338,11 @@ startGatewayProcess
 startGatewayProcess binary workingDir configPath restPort writeConfig = do
   startResult <-
     startBackgroundProcess
-      CommandSpec
-        { commandPath = binary
-        , commandArguments = ["gateway", "start", "--config", configPath, "--port", show restPort]
-        , commandEnvironment = Nothing
-        , commandWorkingDirectory = Just workingDir
+      Subprocess
+        { subprocessPath = binary
+        , subprocessArguments = ["gateway", "start", "--config", configPath, "--port", show restPort]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just workingDir
         }
   case startResult of
     Left err -> ioError (userError (show err))

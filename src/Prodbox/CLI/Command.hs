@@ -153,7 +153,6 @@ data Rke2Command
   | Rke2Stop
   | Rke2Restart
   | Rke2Reconcile PlanOptions
-  | Rke2Install PlanOptions
   | Rke2Delete Bool
   | Rke2Logs (Maybe Int)
   deriving (Eq, Show)

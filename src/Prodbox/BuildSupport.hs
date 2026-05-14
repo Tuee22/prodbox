@@ -9,9 +9,9 @@ where
 import Prodbox.Lint (styleToolsBinDir)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( CommandSpec (..)
-  , ProcessOutput (..)
-  , captureCommand
+  ( ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   )
 import System.Directory
   ( Permissions (..)
@@ -54,12 +54,12 @@ syncBuiltOperatorBinary :: FilePath -> [(String, String)] -> IO (Either String F
 syncBuiltOperatorBinary repoRoot environment = do
   createDirectoryIfMissing True (repoRoot </> ".build")
   captureResult <-
-    captureCommand
-      CommandSpec
-        { commandPath = "cabal"
-        , commandArguments = ["list-bin", "--builddir=.build", "exe:prodbox"]
-        , commandEnvironment = Just environment
-        , commandWorkingDirectory = Just repoRoot
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "cabal"
+        , subprocessArguments = ["list-bin", "--builddir=.build", "exe:prodbox"]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
         }
   case captureResult of
     Failure err -> pure (Left err)

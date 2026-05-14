@@ -236,9 +236,9 @@ Minimum rule:
    reconcile succeeds but SSH validation still fails, so stale EC2 instances left by an
    interrupted run or operator network move do not survive as terminal validation state
 10. the local `prodbox-pulumi` Cabal stanza proves the retained ephemeral-stack harness and
-   typed-output contract around those stack flows, but end-to-end AWS provisioning remains owned by
-   the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces rather than by the
-   local unit-style suite
+   typed-output contract around those stack flows, while end-to-end AWS provisioning is exercised
+   by the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces plus the aggregate
+   test suite
 
 ### 4.4 Test-Only Elevated IAM Harness
 

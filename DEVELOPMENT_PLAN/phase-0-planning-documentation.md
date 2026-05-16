@@ -11,14 +11,15 @@
 ## Phase Status
 
 ✅ **Done** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
-Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, and `0.4` are also
-now `Done`. Those sprints adopted [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the
-authoritative CLI doctrine, aligned the governed docs and plan suite with that doctrine,
-and scheduled every currently known code-level adoption gap onto explicit downstream sprints
-under Phases `1`–`4` per
-[development_plan_standards.md](development_plan_standards.md) rule L. Phase `0` is therefore
-re-closed, and the downstream implementation phases have now reclosed on the scheduled doctrine
-work.
+Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, and `0.5` are
+also now `Done`. Those sprints adopted
+[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the authoritative CLI doctrine, aligned the
+governed docs and plan suite with that doctrine, scheduled every currently known code-level
+adoption gap onto explicit downstream sprints under Phases `1`–`4` per
+[development_plan_standards.md](development_plan_standards.md) rule L, and most recently
+reopened Phase `4` through Sprint `4.8` to harden the user-visible `prodbox rke2 delete --yes`
+success-summary contract. Phase `0` is therefore re-closed, and the downstream implementation
+work is also reclosed because Sprint `4.8` has landed.
 
 ## Phase Summary
 
@@ -28,14 +29,18 @@ ledger used by later phases, and — beginning with Sprint 0.2 — the governanc
 repository's CLI doctrine. Sprint 0.3 extended that governance contract by scheduling the
 residual doctrine gaps surfaced by the post-0.2 audit, ensuring every doctrine-prescribed
 behavior that the worktree did not yet honor was owned by an explicit downstream sprint block per
-[development_plan_standards.md](development_plan_standards.md) rule L. Sprint 0.4 extends the
+[development_plan_standards.md](development_plan_standards.md) rule L. Sprint 0.4 extended the
 same governance contract to the round-3 audit residue, adding the toolchain-pin declarations,
 library-first layout audit, daemon-as-typed-`Command` dispatch, typed structured-logging
 helpers, AppError record shape, schemaVersion-as-Natural binding, forbidden reload triggers,
 forbidden reconciler flags, forbidden subprocess primitives, structured-concurrency primitive
 set, property-test invariants, health-endpoint golden-test shapes, renderer-determinism
 forbidden inputs, production-no-op / test-injected hook contract, and the
-`fourmolu.yaml` 12-setting list as named deliverables on existing planned sprints.
+`fourmolu.yaml` 12-setting list as named deliverables on existing planned sprints. Sprint 0.5
+extends that governance contract again for the `prodbox rke2 delete --yes` success-summary
+surface, scheduling hermetic suppression of benign upstream uninstall chatter plus the governed
+documentation updates required by
+[../documents/documentation_standards.md](../documents/documentation_standards.md).
 
 ## Sprint 0.1: Canonical Plan Suite for the Haskell Rewrite ✅
 
@@ -417,6 +422,59 @@ thirteen deliverable extensions to existing sprints.
 
 None.
 
+## Sprint 0.5: `rke2 delete` Success-Summary Doctrine Scheduling ✅
+
+**Status**: Done
+**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`
+**Docs to update**: every file listed above.
+
+### Objective
+
+Schedule the remaining `prodbox rke2 delete --yes` success-path output residue so the lifecycle
+surface, cleanup ledger, and governed documentation converge on one doctrine-owned contract:
+successful delete runs emit only `prodbox`'s summary lines, while hard failures retain actionable
+context.
+
+### Deliverables
+
+- Add **Sprint 4.8: Hermetic `rke2 delete` Success Reporting** to
+  `phase-4-lifecycle-canonical-paths.md` as the owning implementation sprint for the lifecycle
+  follow-up. The sprint cites
+  [../HASKELL_CLI_TOOL.md → Output Rules](../HASKELL_CLI_TOOL.md#output-rules) and
+  [../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
+  Command](../HASKELL_CLI_TOOL.md#reconcilers-idempotent-mutation-as-a-single-command).
+- Reopen the top-level plan surfaces so they state the current reality: Phase `0` re-closed after
+  scheduling the follow-up, Phase `4` is reopened by planned Sprint `4.8`, later phases remain
+  closed on their owned surfaces, and the overall handoff is incomplete until the lifecycle-output
+  follow-up lands.
+- Add a `Pending Removal` ledger row for the remaining supported-path residue: benign upstream
+  uninstall-script chatter can still leak on successful `prodbox rke2 delete --yes` runs even
+  though the supported contract is summary-oriented cleanup reporting.
+- Bind the documentation work explicitly under
+  [../documents/documentation_standards.md](../documents/documentation_standards.md): when Sprint
+  `4.8` lands it must update `documents/engineering/cli_command_surface.md`,
+  `documents/engineering/streaming_doctrine.md`, and
+  `documents/engineering/storage_lifecycle_doctrine.md` together, keep their header metadata and
+  `Referenced by` backlinks aligned, and avoid introducing a competing status ledger outside
+  `DEVELOPMENT_PLAN/`.
+
+### Validation
+
+1. `prodbox check-code` passes after the Sprint 0.5 plan edits.
+2. `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+   `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
+   `DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`, and
+   `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` all name Sprint `4.8` consistently.
+3. The new pending-removal row names Sprint `4.8` as the owner of the remaining delete-output
+   residue.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -432,7 +490,8 @@ None.
 - `documents/engineering/prerequisite_doctrine.md` — defer to the doctrine's `Prerequisites as
   Typed Effects` for the registry shape and remedy-hint contract.
 - `documents/engineering/cli_command_surface.md` — defer to the doctrine's `Command Topology`,
-  `CommandSpec`, and `Progressive Introspection` sections.
+  `CommandSpec`, and `Progressive Introspection` sections, and document the `prodbox rke2 delete`
+  success-summary contract once Sprint `4.8` lands.
 - `documents/engineering/haskell_code_guide.md` — defer to the doctrine for GADT state machines,
   smart constructors, subprocess values, retry policy, and capability classes.
 - `documents/engineering/refactoring_patterns.md` — defer to the doctrine's `Plan / Apply` and
@@ -440,6 +499,12 @@ None.
 - `documents/engineering/effect_interpreter.md` — defer to the doctrine's
   `Subprocesses as Typed Values` and `Long-Running Daemons in the Same Binary →
   Structured concurrency` sections.
+- `documents/engineering/streaming_doctrine.md` — define the lifecycle-specific rule that
+  successful `prodbox rke2 delete --yes` runs emit only doctrine-owned summary lines while failure
+  paths preserve actionable upstream context.
+- `documents/engineering/storage_lifecycle_doctrine.md` — record the delete-side cleanup-summary
+  contract and the distinction between benign host-noise suppression on success and actionable
+  failure context.
 
 **Product docs to create/update:**
 

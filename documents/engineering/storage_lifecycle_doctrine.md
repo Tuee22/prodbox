@@ -98,6 +98,12 @@ Deterministic rebinding is guaranteed only when all of these hold:
 5. reports expected-absence cleanup as normal delete disposition rather than failure-looking trace
    noise
 6. prints the preserved-state boundary explicitly
+7. captures the upstream `/usr/local/bin/rke2-uninstall.sh` stdout and stderr through the
+   lifecycle-local quiet path so that successful uninstall runs surface only the doctrine-owned
+   summary lines, while non-zero uninstall exits still surface actionable upstream context through
+   `summarizeRke2DeleteFailure`. Benign upstream chatter — including `Cannot find device`,
+   `semodule: not found`, and `Failed to allocate directory watch: Too many open files` — is
+   classified as ignorable noise and never appears as a red-herring operator-visible error.
 
 ## 6. Test Expectations
 

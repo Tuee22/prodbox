@@ -27,28 +27,34 @@ govern this plan suite.
 
 ## Closure Status
 
-Phase `0` reopened through Sprints `0.2`–`0.4` (see
+Phase `0` reopened through Sprints `0.2`–`0.5` (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
 governed docs and plan suite to that doctrine, and schedule every currently known code-level
 adoption gap onto explicit downstream sprints. That Phase-0 doctrine-governance work is now
 `Done`. Phases `1` through `4` were **reopened** for the scheduled implementation work named
-below, and that reopen is now closed in this worktree: Sprint 0.3 extended the doctrine-adoption scope with the
+below and are now reclosed. Sprint 0.3 extended the doctrine-adoption scope with the
 residual items surfaced by the May 2026 doctrine-vs-plan audit, scheduling them through new
 Phase `1` sprints (1.24–1.26) and through deliverable extensions to existing planned Phase
 `1` and Phase `2` sprints. Sprint 0.4 extended the doctrine-adoption scope again with the
 residual items surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, scheduling them
 through one new Phase `1` sprint (1.27) and through deliverable extensions to existing
-planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Phase `5` briefly reopened
+planned Phase `1`, Phase `2`, Phase `3`, and Phase `4` sprints. Sprint 0.5 reopened Phase `4`
+through Sprint `4.8` to harden the `prodbox rke2 delete --yes` success-summary contract; Sprint
+`4.8` is now `Done`, the lifecycle-local quiet path captures the upstream uninstall output, the
+expanded `isIgnorableRke2DeleteNoiseLine` filter classifies inotify warnings such as
+`Failed to allocate directory watch: Too many open files` as benign noise, and the integration
+suite proves both the hermetic success contract and the summarized failure path.
+Phase `5` briefly reopened
 through Sprint `5.5` to add the missing public HTTP listener that redirects port `80` to the
 canonical HTTPS edge, and that redirect follow-up is now `Done` after the May 13, 2026
 aggregate validation. Phases `5`, `6`, and `7` are `Done` on their owned surfaces (public-edge
-proof, clean-room rerun contract, AWS IAM and quota administration); the overall handoff is back
-to a completed state after the separately reopened implementation phases `1` through `4` reclosed.
+proof, clean-room rerun contract, AWS IAM and quota administration), and the overall doctrine-
+driven handoff is complete now that Sprint `4.8` has landed.
 
 Reopened sprints by phase:
 
-- Phase 0 — **Sprints 0.2, 0.3, 0.4**: Sprint 0.2 adopts HASKELL_CLI_TOOL.md as governed CLI
+- Phase 0 — **Sprints 0.2, 0.3, 0.4, 0.5**: Sprint 0.2 adopts HASKELL_CLI_TOOL.md as governed CLI
   doctrine. Updates `documents/documentation_standards.md` with the six Generated Sections
   requirements, retags governed engineering docs as doctrine pointers, and threads doctrine
   cross-references through the plan suite and root guidance. Sprint 0.3 schedules the
@@ -79,7 +85,10 @@ Reopened sprints by phase:
   `logWarn`, `logError`), the production-no-op / test-injected hook contract,
   the health-endpoint response shapes captured as golden tests, and the forbidden
   reconciler flags and sister commands (`--force`, `--reinstall`, `install`,
-  `upgrade`, `repair`, `force-install`).
+  `upgrade`, `repair`, `force-install`). Sprint 0.5 schedules the remaining
+  `prodbox rke2 delete --yes` success-path output residue: a new Phase `4` sprint
+  hardens hermetic success summaries, tracks the leak in the cleanup ledger, and names the
+  governed documentation updates required by `documents/documentation_standards.md`.
 - Phase 1 — **Sprints 1.6–1.27**: `CommandSpec` source-of-truth split; `Plan` / `apply`
   discipline with `--dry-run`; `Subprocess` ADT formalization; prerequisite registry
   remedy-hint contract; lint, generated-section, and forbidden-path stack alignment;
@@ -146,12 +155,14 @@ Reopened sprints by phase:
   registry. Sprint 0.4 extends Sprint 3.10 with the named forbidden reconciler flags
   (`--force`, `--reinstall`) and forbidden sister commands (`install`, `upgrade`,
   `repair`, `force-install`) on the chart surface.
-- Phase 4 — **Sprints 4.5–4.7**: Rename the legacy lifecycle command to
+- Phase 4 — **Sprints 4.5–4.8**: Rename the legacy lifecycle command to
   `prodbox rke2 reconcile`, retire the one-cycle `install` alias after its compatibility
   window, apply lifecycle Plan / Apply + `--dry-run`, and add the `prodbox-pulumi` test
   stanza. Sprint 0.4 extends Sprint 4.5 with the same forbidden-flag and sister-command
   discipline on the lifecycle reconciler, so `install`, `upgrade`, `repair`, and
-  `force-install` are rejected at parse time.
+  `force-install` are rejected at parse time. Sprint `4.8` makes successful
+  `prodbox rke2 delete --yes` runs hermetic and summary-owned by `prodbox`, while preserving
+  actionable upstream context on failure.
 - Phase 5 — **Sprint 5.5**: Add a Gateway API HTTP listener on port `80` that never routes
   plaintext backend traffic and only returns a permanent redirect to the canonical
   `https://test.resolvefintech.com/<service-path>` URL. Extend `prodbox host public-edge` and
@@ -260,7 +271,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.7) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done on owned surfaces | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
@@ -280,7 +291,7 @@ scope per standards rule E.
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), and
 the doctrine-adoption reopen is now closed as well. Current worktree evidence puts Sprints
-`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.7`, and `5.5` in `Done` state on their owned
+`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, and `5.5` in `Done` state on their owned
 surfaces. The following implemented baseline surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by

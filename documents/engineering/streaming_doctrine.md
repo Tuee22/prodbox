@@ -54,7 +54,28 @@ Terminal records must remain legible and attributable.
   operator-facing command identity through `renderSubprocess` rather than by concatenating
   ad-hoc shell strings at each call site
 
-## 6. Intent Ownership
+## 6. Lifecycle Destructive Success-Versus-Failure Rule
+
+`prodbox rke2 delete --yes` is the canonical case of a destructive lifecycle command that wraps a
+noisy upstream uninstaller. Its operator-facing output rule splits cleanly along the exit code of
+`/usr/local/bin/rke2-uninstall.sh`:
+
+- Success path: `deleteRke2ClusterSubstrate` captures the uninstaller's stdout and stderr through
+  the lifecycle-local quiet path (`captureToolOutput`) and emits only the doctrine-owned summary
+  lines — `Deleting local RKE2 environment...`, AWS destroy dispositions,
+  `Local RKE2 substrate: cleanup complete`, the kubeconfig disposition, and the retained-root
+  notice. Benign upstream chatter such as `Cannot find device "cni0"`,
+  `semodule: not found`, `Failed to allocate directory watch: Too many open files`, and
+  `Cleanup completed successfully` does not reach the operator terminal.
+- Failure path: when the uninstaller exits non-zero, `summarizeRke2DeleteFailure` keeps the last
+  actionable lines from stdout and stderr (filtered through `isIgnorableRke2DeleteNoiseLine` so
+  the benign classes above stay out of the summary) and renders them through the `writeError`
+  boundary so the operator sees the failing command identity.
+
+This rule is scoped to `prodbox rke2 delete --yes`. It does not extend to repo-wide stderr
+suppression, and other lifecycle commands continue to follow the streaming contract above.
+
+## 7. Intent Ownership
 
 This SSoT co-owns streaming doctrine intention.
 

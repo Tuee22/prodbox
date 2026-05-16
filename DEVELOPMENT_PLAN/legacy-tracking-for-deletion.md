@@ -22,24 +22,24 @@
 ## Ledger Status
 
 The cleanup ledger preserves completed removal history. Python-removal work remains closed, and
-the doctrine-deviation residue scheduled by the Phase `1`–`4` reopen is now closed. The
-`Pending Removal` section is intentionally empty after the May 14, 2026 doctrine-adoption
-closure; new supported-path residue must be added there with an owning sprint before it can be
-tracked as incomplete work.
+the doctrine-deviation residue scheduled by the Phase `1`–`4` reopen is now fully closed. The
+`Pending Removal` section is empty after Sprint `4.8` landed the hermetic `prodbox rke2 delete
+--yes` success-summary contract.
 
 ## Pending Removal
 
-None.
+_None. All scheduled doctrine-adoption residue has been closed by its owning sprint._
 
 ## Pending Removal Notes
 
 Pending-removal rows move here only when the owning sprint closes and the doctrine-required
-replacement is verified. The list is empty after the May 14, 2026 doctrine-adoption closure.
+replacement is verified.
 
 ## Completed
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| Benign upstream uninstall-script chatter on successful `prodbox rke2 delete --yes` runs | Sprint `4.8` closure on 2026-05-16 | Closed by extending `isIgnorableRke2DeleteNoiseLine` in `src/Prodbox/CLI/Rke2.hs` to classify `Failed to allocate directory watch` and `Too many open files` as benign noise alongside the existing inotify- and uninstall-script residue, and by adding the hermetic-success and summarized-failure integration cases in `test/integration/CliSuite.hs`. The governed docs in `documents/engineering/cli_command_surface.md`, `documents/engineering/streaming_doctrine.md`, and `documents/engineering/storage_lifecycle_doctrine.md` now name the contract. |
 | Remaining doctrine-adoption cleanup rows from the Phase `1`–`4` reopen | Sprints `1.12`–`1.14`, `1.16`–`1.18`, `1.22`, `2.9`, `2.11`, `2.13`, `2.14`, and `4.7` closure on May 14, 2026 | Closed the remaining service-boundary, retry-policy, error-kind, state-machine, output-boundary, one-shot `App`, dependency-audit, daemon-lifecycle, live-config, test-hook, lifecycle-stanza, and Pulumi-harness rows. The pending-removal ledger is now empty. |
 | `prodbox rke2 install` command alias | Sprint `4.5` cleanup on May 14, 2026 | Removed the `Rke2Install` command constructor, parser branch, command-registry leaf, runner delegation, generated CLI docs, shell completions, manpage entry, root command map, and governed CLI surface reference. `prodbox rke2 install` now fails at parse time as a forbidden lifecycle sister command. |
 | Pre-doctrine subprocess compatibility names | Sprint `1.8` closure on May 14, 2026 | Removed the old subprocess `CommandSpec` alias and the `runStreamingCommand` / `captureCommand` compatibility exports, migrated call sites to the doctrine-shaped `Subprocess` record with `subprocessPath` / `subprocessArguments` fields, and kept validation-only `Result` consumers behind explicitly named `captureSubprocessResult` / `runSubprocessStreaming` adapters. |

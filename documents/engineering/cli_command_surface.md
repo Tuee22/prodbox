@@ -130,9 +130,17 @@ and `/minio` routes, and readiness for named external proof.
 `prodbox rke2 reconcile` is the canonical lifecycle reconciler. `install`, `upgrade`, `repair`,
 and `force-install` are forbidden sister commands rejected at parse time.
 
-`prodbox rke2 delete --yes` is summary-oriented on success: it reports AWS validation destroy
-disposition, local substrate cleanup, managed kubeconfig handling, and preserved host roots
-without streaming raw uninstall-script trace output.
+`prodbox rke2 delete --yes` is hermetic on success: when
+`/usr/local/bin/rke2-uninstall.sh` exits `0`, only the doctrine-owned summary lines reach the
+operator terminal — `Deleting local RKE2 environment...`, the AWS EKS and AWS test stack destroy
+dispositions, `Local RKE2 substrate: cleanup complete`, the kubeconfig disposition, and the
+`Preserved host state:` boundary. Benign upstream uninstall chatter such as
+`Cannot find device "cni0"`, `semodule: not found`, `Failed to allocate directory watch: Too many
+open files`, and `Cleanup completed successfully` is captured through the lifecycle-local quiet
+path in `src/Prodbox/CLI/Rke2.hs` (`captureToolOutput` plus `isIgnorableRke2DeleteNoiseLine`) and
+never surfaces as a red-herring error. When the uninstaller exits non-zero, the actionable upstream
+lines are still surfaced through `summarizeRke2DeleteFailure` so the operator can act on the real
+failure.
 
 ### `prodbox pulumi`
 

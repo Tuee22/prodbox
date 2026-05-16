@@ -3067,6 +3067,8 @@ isIgnorableRke2DeleteNoiseLine line =
         || "cannot find device" `isInfixOf` lowered
         || "failed to reset failed state of unit" `isInfixOf` lowered
         || "semodule: not found" `isInfixOf` lowered
+        || "failed to allocate directory watch" `isInfixOf` lowered
+        || "too many open files" `isInfixOf` lowered
         || "if this cluster was upgraded from an older release of the canal cni" `isPrefixOf` lowered
         || "-e      " `isPrefixOf` trimmed
 

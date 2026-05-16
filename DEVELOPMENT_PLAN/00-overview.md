@@ -111,18 +111,22 @@ Build a clean-room Haskell `prodbox` repository with:
 
 ## Alignment Status
 
-Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
+Phase `0` reopened through Sprints `0.2`–`0.5` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
 governed docs and plan suite with that doctrine, and schedule every currently known code-level
 adoption gap onto explicit downstream sprints. That planning and documentation work is now
-`Done`. Phases `1` through `4` were **reopened** on the scheduled implementation work and are now
-closed again:
-Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced by the May
-2026 doctrine-vs-plan audit, and Sprint 0.4 extended it again with the residual items
+`Done`. Phases `1` through `4` were **reopened** on the scheduled implementation work and have
+now reclosed: Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced
+by the May 2026 doctrine-vs-plan audit, and Sprint 0.4 extended it again with the residual items
 surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
 sprint (1.27) plus deliverable extensions to existing planned Phase `1`, Phase `2`, Phase
 `3`, and Phase `4` sprints, per
-[development_plan_standards.md](development_plan_standards.md) standards rule L. Phase `5`
+[development_plan_standards.md](development_plan_standards.md) standards rule L. Sprint 0.5
+reopened Phase `4` through Sprint `4.8`, which has now landed: the
+`prodbox rke2 delete --yes` success-summary contract is hermetic through the lifecycle-local
+quiet path, the expanded `isIgnorableRke2DeleteNoiseLine` filter classifies inotify warnings as
+benign noise, and the integration suite proves both the success and the actionable-failure
+paths. Phase `5`
 briefly reopened through Sprint `5.5` to add and prove a port `80` HTTP-to-HTTPS redirect for
 the single-host public edge, and that redirect follow-up is now `Done`. Phases `5`, `6`, and
 `7` remain `Done` on their owned surfaces (public-edge proof, clean-room rerun contract, AWS IAM
@@ -130,8 +134,8 @@ and quota administration) per standards rule E. The earlier
 implementation-alignment follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup
 follow-up that removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
 `src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens add
-new sprints across Phases `1`–`4`; those sprints are now closed and the cleanup ledger has no
-remaining `Pending Removal` rows.
+new sprints across Phases `1`–`4`; all of those reopens are now closed, and the cleanup ledger
+records the delete-output residue under `Completed`.
 
 The doctrine's cross-language type-bridge full-file generation surface
 ([../HASKELL_CLI_TOOL.md → Generated Artifacts → Two categories of
@@ -213,10 +217,12 @@ The reopened ranges close on the following sprint sets:
   Sprint 0.4 extends Sprint 3.10 with the named forbidden reconciler flags `--force`
   and `--reinstall` plus the forbidden sister commands `install`, `upgrade`, `repair`,
   and `force-install` on the chart surface (§1781–1803).
-- Phase 4: Sprints 4.5–4.7. Sprint 0.4 extends Sprint 4.5 with the same forbidden-flag
+- Phase 4: Sprints 4.5–4.8. Sprint 0.4 extends Sprint 4.5 with the same forbidden-flag
   and sister-command discipline on the lifecycle reconciler so the one-cycle deprecation
-  alias preserves only the legacy name, not the forbidden flags
-  (§1781–1803).
+  alias preserves only the legacy name, not the forbidden flags (§1781–1803). Sprint
+  4.8 hardens `prodbox rke2 delete --yes` so successful runs emit only doctrine-owned summary
+  lines and no longer surface benign upstream uninstall chatter such as `Failed to allocate
+  directory watch: Too many open files` as red-herring operator-visible errors.
 - Phase 5: Sprint 5.5. The public edge gains a Gateway API HTTP listener on port `80` that
   returns only a permanent redirect to the canonical HTTPS URL, with no plaintext backend route,
   and the public-edge diagnostic plus named external validation prove that behavior. This
@@ -232,7 +238,7 @@ The reopened ranges close on the following sprint sets:
 | Supported host runtime | `Ubuntu 24.04 LTS` with systemd | `prodbox` supported-host gate |
 | Configuration | Operator-authored repository-root `prodbox-config.dhall` decoded directly into Haskell types, with `prodbox-config-types.dhall` as the shared schema and no supported `prodbox-config.json` artifact | Repository root |
 | Host diagnostics | `prodbox host ensure-tools|check-ports|info|firewall|public-edge` | Haskell CLI |
-| Local RKE2 lifecycle | `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` | Haskell CLI with summary-oriented delete reporting |
+| Local RKE2 lifecycle | `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` | Haskell CLI with hermetic delete reporting on success and actionable failure summaries on non-zero uninstall, closed by Sprint `4.8` |
 | Registry and image reconcile | Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, plus idempotent post-bootstrap public-image populate with alternate-source retry and native-host-architecture image publication for the Envoy Gateway target edge and chart workloads | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Haskell CLI |
 | AWS-backed EKS validation | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | Haskell orchestration plus Pulumi |
@@ -260,7 +266,7 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, and the repository is
 closed against the current doctrine-reopened plan. Current worktree evidence puts Sprints
-`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.7`, and `5.5` in `Done` state. The supported operator surface is `prodbox`, the
+`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, and `5.5` in `Done` state. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -433,9 +439,9 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 ## Current Execution State
 
 The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
-`0` has now re-closed after Sprints `0.2`–`0.4` landed the doctrine-adoption planning work.
+`0` has now re-closed after Sprints `0.2`–`0.5` landed the doctrine-adoption planning work.
 Phases `1`–`4` have also reclosed on the downstream implementation scope scheduled by those
-sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, and `4.5`–`4.7` are locally validated
+sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, and `4.5`–`4.8` are locally validated
 and doc-aligned.
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.

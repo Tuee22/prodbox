@@ -683,6 +683,8 @@ integrationCliSuite = do
         deleteStdout `shouldNotContain` "Logged in to fake-rke2"
         deleteStdout `shouldNotContain` "Cannot find device"
         deleteStdout `shouldNotContain` "semodule: not found"
+        deleteStdout `shouldNotContain` "Failed to allocate directory watch"
+        deleteStdout `shouldNotContain` "Too many open files"
         deleteStdout `shouldNotContain` "Cleanup completed successfully"
 
         kubeconfigExists <- doesFileExist (tmpDir </> ".kube" </> "config")
@@ -690,6 +692,34 @@ integrationCliSuite = do
 
         sudoRecord <- readFile (tmpDir </> "fake-rke2-state" </> "sudo.txt")
         sudoRecord `shouldContain` "/usr/local/bin/rke2-uninstall.sh"
+
+    it "summarizes actionable uninstall failures while suppressing benign chatter" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfig
+        baseEnvVars <- fakeRke2Environment tmpDir
+        let envVars =
+              ("PRODBOX_FAKE_RKE2_UNINSTALL_EXISTS", "1")
+                : ("PRODBOX_FAKE_RKE2_UNINSTALL_FAIL", "1")
+                : baseEnvVars
+
+        createDirectoryIfMissing True (tmpDir </> ".kube")
+        writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        deleteExitCode `shouldBe` ExitFailure 1
+        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+        deleteStdout `shouldNotContain` "Local RKE2 substrate: cleanup complete"
+        deleteStderr `shouldContain` "failed to clean the local RKE2 substrate"
+        deleteStderr `shouldContain` "umount: /var/lib/kubelet/pods/abc: target is busy"
+        deleteStderr `shouldNotContain` "Failed to allocate directory watch"
+        deleteStderr `shouldNotContain` "semodule: not found"
+        deleteStderr `shouldNotContain` "Cannot find device"
 
     it "runs native rke2 delete after the IAM harness has cleared operational aws credentials" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1398,7 +1428,12 @@ fakeSudoScript =
     , "  printf '+ systemctl stop rke2-server.service\\n'"
     , "  printf 'Cannot find device \"cni0\"\\n' >&2"
     , "  printf '/usr/local/bin/rke2-uninstall.sh: 162: semodule: not found\\n' >&2"
+    , "  printf 'Failed to allocate directory watch: Too many open files\\n' >&2"
     , "  printf '[2026-04-20 09:17:01] Cleanup completed successfully\\n'"
+    , "  if [[ \"${PRODBOX_FAKE_RKE2_UNINSTALL_FAIL:-0}\" == '1' ]]; then"
+    , "    printf 'umount: /var/lib/kubelet/pods/abc: target is busy\\n' >&2"
+    , "    exit 1"
+    , "  fi"
     , "  exit 0"
     , "fi"
     , "exec \"$@\""

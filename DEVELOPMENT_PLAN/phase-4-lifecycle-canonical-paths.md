@@ -15,17 +15,20 @@
 
 ✅ **Done** — Sprints `4.1`–`4.4` remain `Done` on lifecycle parity, Python Pulumi removal,
 repository-wide Python toolchain removal, and the single-record DNS / single-certificate
-contract. The phase is reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
+contract. The phase was first reopened by Sprint 0.2 to schedule Sprints `4.5`–`4.7`: rename
 `prodbox rke2 install` → `prodbox rke2 reconcile` per doctrine, apply the Plan / Apply +
 `--dry-run` discipline (Sprint 1.7) to the lifecycle reconcile, and migrate AWS-validation
-infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza. Current worktree
-evidence closes Sprints `4.5` and `4.6`: `prodbox rke2 reconcile` is now the canonical
-entrypoint, the deprecated `install` alias has been removed, lifecycle forbidden sister commands
-are rejected at parse time, the lifecycle plan is golden-covered, and the governed docs and
-validation call sites now reference `reconcile`. Sprint `4.7` is closed: the dedicated
-`prodbox-pulumi` stanza proves the retained Pulumi-program ownership, local ephemeral-stack
-harness, typed-output contract, and forced-failure cleanup, while the live retained AWS IaC flows
-are exercised by the named `prodbox test integration ...` validations and aggregate suite.
+infrastructure tests into a dedicated `prodbox-pulumi` cabal test stanza. Sprint `0.5` reopened
+the phase again to schedule Sprint `4.8`, the `prodbox rke2 delete --yes` success-summary
+hardening. Current worktree evidence closes Sprints `4.5`, `4.6`, `4.7`, and `4.8`:
+`prodbox rke2 reconcile` is the canonical entrypoint, the deprecated `install` alias has been
+removed, lifecycle forbidden sister commands are rejected at parse time, the lifecycle plan is
+golden-covered, the dedicated `prodbox-pulumi` stanza proves the retained Pulumi-program
+ownership, local ephemeral-stack harness, typed-output contract, and forced-failure cleanup, the
+governed docs and validation call sites reference `reconcile`, and successful
+`prodbox rke2 delete --yes` runs are hermetic — benign upstream uninstall chatter such as
+`Failed to allocate directory watch: Too many open files` is filtered through the lifecycle-local
+quiet path, while non-zero uninstall exits still surface actionable upstream context.
 
 ## Phase Summary
 
@@ -34,13 +37,21 @@ local lifecycle, the narrowed Harbor bootstrap doctrine, the public AWS-validati
 the non-Python Pulumi stack format, and the repository-wide Python removal that leaves the
 supported path Haskell-only. Sprints `4.2` and `4.3` remain closed on the AWS-validation Pulumi
 surface and repository-wide Python removal. Sprint `4.1` now also closes on the authoritative
-Harbor-plus-storage-backend bootstrap contract. The supported lifecycle and retained AWS-validation stacks
-otherwise close on clean-room-only behavior, native-host-architecture Docker publication, one
-Route 53 record, and one listener certificate for `test.resolvefintech.com`.
+Harbor-plus-storage-backend bootstrap contract. The supported lifecycle and retained
+AWS-validation stacks otherwise close on clean-room-only behavior, native-host-architecture Docker
+publication, one Route 53 record, and one listener certificate for `test.resolvefintech.com`.
+Sprint `4.8` closed the user-visible delete-output hardening: success is summary-owned by
+`prodbox`, while failures keep actionable upstream context.
 
 ## Current Baseline In Worktree
 
 - `src/Prodbox/CLI/Rke2.hs` owns the supported local lifecycle.
+- `src/Prodbox/CLI/Rke2.hs` keeps `prodbox rke2 delete --yes` hermetic on success through the
+  lifecycle-local `captureToolOutput` quiet path plus the expanded
+  `isIgnorableRke2DeleteNoiseLine` filter that classifies inotify warnings (`Failed to allocate
+  directory watch: Too many open files`), `Cannot find device`, `semodule: not found`, and
+  timestamped `Cleanup completed successfully` lines as benign noise. Non-zero uninstall exits
+  still surface actionable upstream lines through `summarizeRke2DeleteFailure`.
 - `src/Prodbox/ContainerImage.hs` owns the canonical Harbor targets, required public-image
   inventory, and ordered upstream-candidate lists used during Harbor publication.
 - `src/Prodbox/CLI/Rke2.hs` publishes frontend and gateway custom images through ordinary
@@ -420,6 +431,75 @@ Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
 
 None.
 
+## Sprint 4.8: Hermetic `rke2 delete` Success Reporting ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Subprocess.hs`,
+`test/integration/CliSuite.hs`
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/streaming_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`
+
+### Objective
+
+Harden the successful `prodbox rke2 delete --yes` operator surface so it matches
+[../HASKELL_CLI_TOOL.md → Output Rules](../HASKELL_CLI_TOOL.md#output-rules) and
+[../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
+Command](../HASKELL_CLI_TOOL.md#reconcilers-idempotent-mutation-as-a-single-command):
+`prodbox` owns the success summary, while hard failures preserve actionable upstream context.
+
+### Deliverables
+
+- `deleteRke2ClusterSubstrate` captures the upstream uninstall-script stdout/stderr through a
+  lifecycle-local quiet path rather than relying on generic subprocess streaming. The change is
+  scoped to `prodbox rke2 delete --yes`; it does not broaden into repo-wide stderr suppression.
+- When `/usr/local/bin/rke2-uninstall.sh` exits `0`, the user-visible delete output is hermetic:
+  only the doctrine-owned summary lines remain (`Deleting local RKE2 environment...`, AWS destroy
+  dispositions, `Local RKE2 substrate: cleanup complete`, kubeconfig disposition, retained-root
+  notice).
+- Benign upstream uninstall chatter on success — including host-specific noise such as `Failed to
+  allocate directory watch: Too many open files` — is classified as ignorable success-path noise
+  and does not surface as an operator-visible red-herring error.
+- When the uninstall exits non-zero, `prodbox` still renders actionable failure context through the
+  existing summarizer path rather than hiding the upstream failure.
+- The fake uninstall harness in `test/integration/CliSuite.hs` gains both sides of the contract:
+  a success case that emits the exact inotify warning and proves it is suppressed, and a failure
+  case that proves non-ignorable lines still reach the user as a summarized error.
+- The governed docs listed above update together, per
+  [../documents/documentation_standards.md](../documents/documentation_standards.md):
+  `cli_command_surface.md` states the hermetic success-summary contract,
+  `streaming_doctrine.md` states the success-versus-failure output rule for noisy lifecycle
+  subprocesses, and `storage_lifecycle_doctrine.md` records the cleanup-summary boundary on the
+  destructive delete path.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test integration cli`
+3. `prodbox test integration lifecycle`
+4. `prodbox rke2 delete --yes`
+5. `prodbox test all`
+
+### Current Validation State
+
+- `src/Prodbox/CLI/Rke2.hs` keeps `deleteRke2ClusterSubstrate` on the lifecycle-local quiet path
+  (`captureToolOutput`) and `isIgnorableRke2DeleteNoiseLine` now classifies
+  `Failed to allocate directory watch` and `Too many open files` as benign upstream chatter
+  alongside the existing `Cannot find device`, `semodule: not found`, and timestamped
+  `Cleanup completed successfully` lines.
+- `test/integration/CliSuite.hs` exercises both sides of the hermetic contract: the existing
+  success path now also proves the inotify warning is suppressed, and a new failure case proves
+  actionable upstream context (`umount: ... target is busy`) reaches the operator while the benign
+  chatter classes are filtered from the summary.
+- `documents/engineering/cli_command_surface.md`,
+  `documents/engineering/streaming_doctrine.md`, and
+  `documents/engineering/storage_lifecycle_doctrine.md` describe the hermetic
+  success-summary contract and the success-versus-failure output rule.
+
+### Remaining Work
+
+None.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -428,15 +508,18 @@ None.
   Pulumi boundary after broad local-cluster decoupling.
 - `documents/engineering/aws_test_environment.md` - retained AWS validation environment doctrine.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell lifecycle and public
-  AWS-validation Pulumi surface.
+  AWS-validation Pulumi surface, including the hermetic `prodbox rke2 delete --yes`
+  success-summary contract.
 - `documents/engineering/code_quality.md` - final non-Python quality gate.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
   inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.
 - `documents/engineering/local_registry_pipeline.md` - Harbor-first lifecycle ordering and the
   authoritative Harbor-plus-storage-backend bootstrap doctrine.
 - `documents/engineering/prerequisite_doctrine.md` - lifecycle and Pulumi prerequisite checks.
+- `documents/engineering/streaming_doctrine.md` - user-visible success-summary versus actionable
+  failure-context rules for noisy lifecycle subprocesses.
 - `documents/engineering/storage_lifecycle_doctrine.md` - retained storage contract after the
-  lifecycle/chart rewrite.
+  lifecycle/chart rewrite, including the delete-side cleanup-summary contract.
 - `documents/engineering/unit_testing_policy.md` - native lifecycle and aggregate validation
   ownership.
 

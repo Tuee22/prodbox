@@ -4,6 +4,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [system-components.md](system-components.md),
+[substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [../documents/documentation_standards.md](../documents/documentation_standards.md),
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
@@ -82,16 +83,18 @@ DEVELOPMENT_PLAN/
 ├── phase-2-gateway-dns.md
 ├── phase-3-chart-platform-vscode.md
 ├── phase-4-lifecycle-canonical-paths.md
-├── phase-5-public-host-validation.md
+├── phase-5-canonical-test-suite.md
 ├── phase-6-clean-room-handoff.md
-├── phase-7-aws-iam-quota-automation.md
+├── phase-7-aws-substrate-foundations.md
+├── phase-8-email-invite-auth.md
 ├── legacy-tracking-for-deletion.md
+├── substrates.md
 └── system-components.md
 ```
 
 No phase may be skipped. No sprint may exist in two phases. Runtime ownership, gateway/DNS
-ownership, chart-delivery ownership, and public-host validation ownership must each live in one
-place only.
+ownership, chart-delivery ownership, canonical test suite ownership, and substrate
+provision/teardown ownership must each live in one place only.
 
 ### F. System Component Inventory
 
@@ -219,9 +222,58 @@ Binary → Lifecycle`, `Lint, Format, and Code-Quality Stack → Forbidden Surfa
   like any other cleanup.
 - If a doctrine section changes, the same change updates every governed doc that references it.
 
+### M. Test Suite Substrates
+
+The plan describes one canonical test suite that runs against substrates rather than separate
+home-cluster and AWS validation surfaces. The substrate (planner, runner, prerequisite DAG, named
+validations) is substrate-agnostic in `src/`; the canonical phase model reflects that.
+
+#### Canonical test suite
+
+The canonical test suite is the named-validation set in `src/Prodbox/TestValidation.hs`, planned
+by `src/Prodbox/TestPlan.hs`, orchestrated by `src/Prodbox/TestRunner.hs`, and gated by the
+prerequisite DAG in `src/Prodbox/Prerequisite.hs`. The suite is substrate-agnostic; every
+validation is a member of this single suite and is described as suite content, not as a
+substrate-specific concern.
+
+#### Substrates
+
+A substrate is an environment that, for the lifetime of a suite run, stands up the same set of
+DNS records, TLS certificates (real Let's Encrypt via cert-manager), ingress (Envoy Gateway plus
+MetalLB or the substrate-equivalent), services, and workload charts; provides the prerequisites
+declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit.
+
+The authoritative substrate inventory is [substrates.md](substrates.md). Today's substrates are:
+
+| Substrate | Inventory | Suite parity |
+|-----------|-----------|--------------|
+| Home local | Local RKE2 on the operator host | ✅ Full suite |
+| AWS | Disposable Pulumi stacks `aws-eks-test` and `aws-test` | 🔄 Provisioning + SSH reachability only; suite parity tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+
+#### Substrate lifecycle
+
+The lifecycle for every substrate is provision → run canonical suite → teardown. Provision and
+teardown belong to the substrate. Suite content does not.
+
+#### Vocabulary
+
+`substrate` is the canonical term. The plan must not introduce `target`, `environment`, or
+`tier` as synonyms for substrate. The existing `fixture` term in
+[../documents/engineering/integration_fixture_doctrine.md](../documents/engineering/integration_fixture_doctrine.md)
+remains scoped to its existing meaning — fake-tool boundary fixtures and ephemeral resource
+ownership rules — and is cross-referenced from the substrate doctrine, not merged into it.
+
+#### Phase ownership rules
+
+A phase may own (a) canonical test suite content, (b) a substrate's provision and teardown, or
+(c) a substrate's foundations (such as AWS IAM and quota for the AWS substrate, or shared SES
+infrastructure for the email-invite auth path). A phase may not own a substrate-specific
+validation, because validations are suite content.
+
 ## Related Documents
 
 - [README.md](README.md)
+- [substrates.md](substrates.md)
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 - [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 

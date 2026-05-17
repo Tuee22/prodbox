@@ -7,15 +7,17 @@
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md),
 [development_plan_standards.md](development_plan_standards.md),
 [00-overview.md](00-overview.md), [system-components.md](system-components.md),
+[substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md),
 [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
 [phase-2-gateway-dns.md](phase-2-gateway-dns.md),
 [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
 [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
-[phase-5-public-host-validation.md](phase-5-public-host-validation.md),
+[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
+[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
+[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)
 
 > **Purpose**: Provide the single execution-ordered development plan for the Haskell rewrite of
 > `prodbox`, including phase status, validation gates, and cleanup ownership.
@@ -217,9 +219,14 @@ zero-Python residue stay out of supported-path sources, but those checks are not
 `prodbox` command. The canonical automated validation contract otherwise remains the `prodbox`
 command surface documented by this plan: `prodbox check-code`,
 `prodbox test unit`, `prodbox test integration cli`, `prodbox test integration env`, and the
-named validation surfaces behind `prodbox test integration ...`. Environment-dependent AWS and
-public-edge proof remain attached to those commands rather than recorded here as a fresh
-execution log.
+canonical test suite behind `prodbox test integration ...` (planned by
+`src/Prodbox/TestPlan.hs`, dispatched by `src/Prodbox/TestValidation.hs`, orchestrated by
+`src/Prodbox/TestRunner.hs`). Per
+[development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
+that canonical suite runs against substrates — today the home local substrate and the AWS
+substrate (see [substrates.md](substrates.md)) — and substrate-specific provision and
+teardown belong to the substrate-owning phase docs, not to suite content. Substrate parity is
+tracked in [substrates.md](substrates.md) and in the Substrate Parity table below.
 
 The rewrite remains on the canonical phase model required by
 [development_plan_standards.md](development_plan_standards.md).
@@ -230,15 +237,17 @@ The rewrite remains on the canonical phase model required by
 |----------|---------|
 | [development_plan_standards.md](development_plan_standards.md) | Conventions for maintaining the development plan |
 | [system-components.md](system-components.md) | Authoritative target component inventory for the Haskell rewrite |
+| [substrates.md](substrates.md) | Authoritative inventory of substrates the canonical test suite runs against |
 | [00-overview.md](00-overview.md) | Target architecture, current baseline, and hard constraints |
 | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) | Phase 0: Planning and documentation topology for the rewrite |
 | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) | Phase 1: Haskell runtime, CLI, config, and Pulumi foundations |
 | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) | Phase 2: Haskell gateway runtime and DNS ownership |
 | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) | Phase 3: Haskell chart platform and public workload delivery |
 | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) | Phase 4: Lifecycle hardening, Pulumi decoupling, and Python removal |
-| [phase-5-public-host-validation.md](phase-5-public-host-validation.md) | Phase 5: Public hostname closure and external proof on the Haskell stack |
+| [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) | Phase 5: Canonical test suite — substrate-agnostic named validations |
 | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) | Phase 6: Final clean-room rerun and zero-Python handoff |
-| [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) | Phase 7: Interactive onboarding, AWS IAM, and quota automation in Haskell |
+| [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) | Phase 7: AWS substrate foundations — onboarding, IAM, quota, and AWS substrate parity with the canonical suite |
+| [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | Phase 8: Operator-invited email authentication via Keycloak + AWS SES |
 | [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) | Comprehensive ledger of cleanup/removal history and ownership |
 
 ## Sprint Status
@@ -267,14 +276,15 @@ A sprint can move to `Done` only when all of the following are true:
 
 | Phase | Name | Status | Document |
 |-------|------|--------|----------|
-| 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.4) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
+| 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ Done (Sprints 0.1–0.6) | [phase-0-planning-documentation.md](phase-0-planning-documentation.md) |
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| 5 | Public Hostname Closure and External Proof on the Haskell Stack | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-public-host-validation.md](phase-5-public-host-validation.md) |
+| 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | ✅ Done on owned surfaces | [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md) |
+| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 📋 Sprint 7.5 (AWS substrate parity with canonical suite) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 📋 Planned (Sprints 8.1–8.6) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
@@ -285,6 +295,17 @@ HTTP-to-HTTPS redirect on the existing single-host public edge. The pre-reopen H
 baseline, clean-room rerun, public-edge proof, and AWS-administration surfaces remain validated
 on the supported Haskell command surface; Phases `5`, `6`, and `7` remain `Done` on their owned
 scope per standards rule E.
+
+## Substrate Parity
+
+Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
+the canonical test suite runs against substrates. The authoritative substrate inventory is
+[substrates.md](substrates.md); this section is the live tracker for substrate parity.
+
+| Substrate | Provision | Teardown | Suite parity | Phase ownership |
+|-----------|-----------|----------|--------------|-----------------|
+| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi test-resources` | `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Provisioning + SSH reachability only; parity sprint pending | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
 
 ## Current Plan Status
 
@@ -358,12 +379,12 @@ surfaces. The following implemented baseline surfaces remain current on the supp
 - The public `prodbox charts ...` runtime now rejects internal `keycloak-postgres` and `redis`
   dependency releases directly and keeps those names reachable only through their owning root-
   chart orchestration.
-- The public `prodbox pulumi ...` surface is limited to the AWS validation stacks under
+- The public `prodbox pulumi ...` surface is limited to the AWS substrate stacks under
   `pulumi/aws-eks/` and `pulumi/aws-test/`. Non-secret validation inputs are synchronized through
   stack config, while AWS provider credentials stay only in `prodbox-config.dhall` and the
   Haskell-owned subprocess environment.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
-  retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
+  retain AWS substrate stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
   `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
@@ -549,7 +570,7 @@ This plan is complete only when all of the following are true:
 29. Every supported Helm-managed PostgreSQL deployment is external, reconciled only through the
     cluster-wide Percona operator, and runs Patroni HA with exactly three PostgreSQL replicas,
     synchronous replication, and no embedded chart-local PostgreSQL subchart.
-30. Pulumi remains part of the supported architecture for true IaC and AWS validation resources.
+30. Pulumi remains part of the supported architecture for true IaC and AWS substrate resources.
     The public `prodbox pulumi ...` surface stays limited to those stacks, while local-cluster
     lifecycle, bootstrap DNS reconcile, and ACME `ClusterIssuer` projection remain owned by
     `src/Prodbox/CLI/Rke2.hs` rather than by a public Pulumi operator flow.

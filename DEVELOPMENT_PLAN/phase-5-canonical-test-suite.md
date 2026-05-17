@@ -1,51 +1,110 @@
-# Phase 5: Public Hostname Closure and External Proof on the Haskell Stack
+# Phase 5: Canonical Test Suite
 
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[substrates.md](substrates.md),
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
-> **Purpose**: Capture the public-host diagnostic and named external proof path after the
-> gateway, chart, and infrastructure ownership have moved to Haskell.
+> **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
+> `src/Prodbox/TestValidation.hs` — as suite content with declared prerequisites. Substrate
+> provision and teardown belong elsewhere (see [substrates.md](substrates.md) and the
+> substrate-owning phase docs); this phase owns what the suite proves and how.
 
 ## Phase Status
 
-✅ **Done on owned surfaces** — Sprints `5.1`–`5.5` are closed on the public-host diagnostic,
-external proof, shared-host route, admin-route, and HTTP-to-HTTPS redirect contracts. Sprint
-`5.5` added the public HTTP listener on port `80` and proved that it only redirects to the
-canonical HTTPS edge. Per [development_plan_standards.md](development_plan_standards.md)
-standards rule E, Phases `6` and `7` remain `Done` on their owned surfaces, while the overall
-handoff still depends on the separately reopened implementation phases `1`–`4`.
+✅ **Done on owned surfaces** — Sprints `5.1`–`5.5` are closed on the canonical-suite content
+that proves public-host behavior — the public-edge diagnostic, named external proofs, shared-host
+route classification, admin-route auth and RBAC proofs, and the HTTP-to-HTTPS redirect proof.
+Sprint `5.5` added the public HTTP listener on port `80` and proved that it only redirects to
+the canonical HTTPS edge.
+
+Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
+these validations are **suite content**, not home-substrate-only validations. The home local
+substrate runs them today on real `test.resolvefintech.com` infrastructure (real Let's Encrypt,
+real OIDC, real WebSocket fan-out). Bringing the AWS substrate to parity so it runs the same
+validations is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md).
+
+Per [development_plan_standards.md](development_plan_standards.md) standards rule E, Phases `6`
+and `7` remain `Done` on their owned surfaces, while the overall handoff still depends on the
+separately reopened implementation phases `1`–`4`.
 
 ## Phase Summary
 
-This phase defines the public DNS, TLS, public-edge, and external auth proof surfaces on the
-Haskell stack. It keeps external proof external-only and keeps `/etc/hosts`-based closure
-unsupported. The supported public-host doctrine uses one canonical hostname,
-`test.resolvefintech.com`, rather than explicit per-subdomain Route 53 records. Sprints `5.1`,
-`5.2`, `5.3`, and `5.4` are closed on the Haskell-owned Gateway API, Envoy-aware readiness proof
-baseline, and the shared-host application plus admin proof surfaces.
+This phase owns the canonical test suite as substrate-agnostic content. Each validation in
+`src/Prodbox/TestValidation.hs` is a member of one suite, planned by `src/Prodbox/TestPlan.hs`
+(as `NativeValidation` variants), gated by prerequisites declared in
+`src/Prodbox/Prerequisite.hs`, and orchestrated by `src/Prodbox/TestRunner.hs`. The same
+validation runs against every substrate that satisfies its declared prerequisites; what differs
+between substrates is provision and teardown, not the validation itself.
+
+The suite content owned by this phase covers public DNS delegation, real TLS issuance via
+cert-manager and Let's Encrypt, Envoy Gateway readiness, shared-host application routing
+(`/auth`, `/vscode`, `/api`, `/ws`), shared-host admin routing (`/harbor`, `/minio`), HTTP-to-HTTPS
+redirect on port `80`, Keycloak issuer alignment behind Envoy, route-level RBAC, real WebSocket
+upgrade behavior, one-connection-per-pod lifetime, revocation-driven reconnect, and
+readiness-based drain.
+
+Sprints `5.1`–`5.4` historically owned the diagnostic plus the shared-host application and admin
+proofs. They are preserved below as historical records of when each validation entered the suite.
+
+## Canonical Suite Inventory
+
+The full inventory of canonical-suite validations owned by this phase lives in
+`src/Prodbox/TestPlan.hs` as `NativeValidation` variants. The current set is:
+
+| Validation | Prerequisites (excerpt) | What it proves |
+|------------|-------------------------|----------------|
+| `public-dns` | `aws_credentials_valid`, `route53_accessible` | NS delegation matches public registrar; configured FQDN resolves to operator public IP |
+| `dns-aws` | `aws_credentials_valid`, `route53_lifecycle_capable` | Ephemeral hosted zone create + record write + read-back + zone delete (Route 53 API correctness) |
+| `aws-iam` | `aws_iam_harness_ready` | IAM-user provisioning + STS-federated operational credentials lifecycle |
+| `gateway-daemon` | `gateway_daemon_acquire` | Daemon spawns, exposes `/healthz`, `/readyz`, `/metrics`, accepts SIGTERM drain |
+| `gateway-pods` | `k8s_ready` | Gateway pods reach Ready in their namespace; logs sane |
+| `gateway-partition` | (in-process) | Single-writer invariant, claim/yield ordering, idempotent commit-log append |
+| `lifecycle` | `rke2_*` | `rke2 delete --yes` → `rke2 reconcile` → `k8s health` round-trip |
+| `pulumi` | `aws_credentials_valid`, `pulumi_logged_in` | `aws-test` substrate stack provisions with `NODE_COUNT=3` |
+| `aws-eks` | `aws_credentials_valid`, `pulumi_logged_in` | `aws-eks-test` substrate stack provisions with CLUSTER_NAME and NODE_GROUP_NAME |
+| `ha-rke2-aws` | `aws_credentials_valid`, `pulumi_logged_in`, `tool_ssh` | SSH reachability to all three EC2 instances; destroy-and-recreate repair on stale instances |
+| `charts-platform` | `k8s_ready`, chart-platform prereqs | `charts list`, `charts status` produce expected output for the supported chart set |
+| `charts-storage` | `k8s_ready`, chart-platform prereqs | Retained-storage reconciler, PV/PVC pairing, secret rendering |
+| `charts-vscode` | `infra_ready`, `public_edge_ready` | Real HTTPS curl to `https://<publicFqdn>/vscode`; redirect to OIDC callback with expected fragments |
+| `charts-api` | `infra_ready`, `public_edge_ready` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
+| `charts-websocket` | `infra_ready`, `public_edge_ready` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
+| `admin-routes` | `infra_ready`, `public_edge_ready` | Harbor and MinIO auth + RBAC on the shared public edge |
+
+The phase-8 `keycloak-invite` validation joins this inventory when
+[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) closes its suite-content sprint.
+
+## Substrate Independence
+
+Suite content does not name a substrate. It names prerequisites that any substrate must satisfy
+to run the validation. When the AWS substrate stands up real DNS, cert-manager, ingress, and
+the chart set (tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)),
+the same `charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`, and
+public-edge readiness validations will run against it without modification.
+
+Today the home local substrate runs the full suite; the AWS substrate runs only `aws-iam`,
+`aws-eks`, `ha-rke2-aws`, `pulumi`, and `dns-aws`. The parity gap is tracked in
+[substrates.md](substrates.md) and in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md).
 
 ## Current Baseline In Worktree
 
-- `src/Prodbox/Host.hs` owns the public `prodbox host public-edge` surface. All Python host
-  wrappers and duplicate report logic have been removed.
-- Public-edge proof lives in the Haskell test suites under `test/`.
-- The public-edge proof depends on the Harbor-first lifecycle and chart/runtime surfaces closed in
-  earlier phases; this phase remains limited to the diagnostic and external proof contract.
-- The current worktree derives public-edge readiness from Route 53, Envoy Gateway controller
-  state, Gateway API readiness, certificate readiness, security-policy attachment, advertisement
-  mode, and explicit external browser or API or WebSocket proof.
-- The diagnostic and proof surface covers the shared-host Keycloak identity route plus the
-  `vscode`, `api`, and `websocket` public routes on `test.resolvefintech.com`.
-- The API proof exercises request-carried JWT validation on `/api`, while the browser proof
-  follows the Envoy-managed redirect and cookie or session path and the direct-OIDC WebSocket path
-  exercises the workload-owned session boundary on `/ws`.
-- The proof surface covers the supported direct-OIDC workload path and the Keycloak proxy-aware
-  shared-host contract on `/auth`.
-- The `charts-websocket` proof exercises the real WebSocket upgrade path, long-lived socket
-  lifetime, revocation-driven reconnect, and readiness-based drain on the shared `/ws` route.
-- Supported admin-route validation covers Harbor and MinIO on the shared public edge.
+- `src/Prodbox/Host.hs` owns the public `prodbox host public-edge` diagnostic that classifies
+  Route 53, Envoy Gateway controller state, Gateway API readiness, certificate readiness,
+  security-policy attachment, advertisement mode, and external-proof readiness on whichever
+  substrate is active.
+- `src/Prodbox/TestValidation.hs` owns the canonical-suite dispatch (`runNativeValidation`,
+  line 192).
+- `src/Prodbox/TestPlan.hs` owns the `NativeValidation` ADT and the `IntegrationSuite`-to-plan
+  mapping for the `prodbox test integration <name>` CLI surface.
+- `src/Prodbox/TestRunner.hs` owns phase-bannered execution: prerequisite gating, optional
+  runbook (`rke2 reconcile`), supported-runtime bootstrap (charts deploy + wait for public-edge
+  ready), suite execution, optional postflight (charts redeploy + substrate destroy).
+- `src/Prodbox/Prerequisite.hs` owns the prerequisite DAG that gates suite execution.
+- Validations historically named "public-edge proofs" exercise real Let's Encrypt certificates
+  via cert-manager + ACME, real OIDC redirects through Keycloak, real WebSocket fan-out via
+  Redis, and real Route 53 records. The validations themselves are substrate-agnostic; the home
+  local substrate is what stands those resources up today.
 - The current proof surface intentionally closes on Envoy listener TLS and route behavior only;
   backend TLS or mTLS is outside the current supported chart-workload contract and is not claimed
   by this phase.
@@ -311,8 +370,8 @@ None.
 
 - `documents/engineering/aws_integration_environment_doctrine.md` - external proof and AWS access
   doctrine after the Haskell rewrite.
-- `documents/engineering/aws_test_environment.md` - shared AWS validation-environment doctrine for
-  the Haskell public-host proof path.
+- `documents/engineering/aws_test_environment.md` - shared AWS-substrate environment doctrine for
+  the canonical-suite content owned here.
 - `documents/engineering/cli_command_surface.md` - supported public-host validation commands.
 - `documents/engineering/envoy_gateway_edge_doctrine.md` - target Gateway API and Envoy public-edge
   doctrine.
@@ -332,3 +391,6 @@ None.
 
 - [README.md](README.md)
 - [00-overview.md](00-overview.md)
+- [substrates.md](substrates.md)
+- [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
+- [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)

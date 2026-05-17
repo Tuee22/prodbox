@@ -56,13 +56,13 @@ Sprint `4.8` closed the user-visible delete-output hardening: success is summary
   inventory, and ordered upstream-candidate lists used during Harbor publication.
 - `src/Prodbox/CLI/Rke2.hs` publishes frontend and gateway custom images through ordinary
   host-native Docker build and push flows with no supported `buildx` dependency.
-- `src/Prodbox/CLI/Pulumi.hs` owns only the AWS validation IaC commands:
+- `src/Prodbox/CLI/Pulumi.hs` owns only the AWS substrate IaC commands:
   `eks-resources|eks-destroy --yes|test-resources|test-destroy --yes`.
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the only supported public Pulumi stack programs; broad
   local-cluster platform or application ownership no longer depends on Pulumi.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
-  retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
+  retain AWS substrate stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
   `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
@@ -180,15 +180,15 @@ None.
 
 ### Objective
 
-Retain Pulumi as the IaC engine for AWS validation resources while removing Python and broad
+Retain Pulumi as the IaC engine for AWS substrate resources while removing Python and broad
 local-cluster supported ownership from the public Pulumi path.
 
 ### Deliverables
 
 - Supported Pulumi stack programs are non-Python.
 - Haskell owns Pulumi stack selection, config rendering, output parsing, and failure reporting.
-- The AWS validation-stack paths continue to close through `prodbox pulumi ...`.
-- AWS validation local state remains repo-local under `.prodbox-state/aws-test/` and
+- The AWS substrate paths continue to close through `prodbox pulumi ...`.
+- AWS substrate local state remains repo-local under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
   `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails.
@@ -214,7 +214,7 @@ local-cluster supported ownership from the public Pulumi path.
   cluster ownership; the public Pulumi surface is AWS-validation-only.
 - `src/Prodbox/CLI/Rke2.hs` retains bootstrap DNS reconcile and ACME `ClusterIssuer` projection
   on the lifecycle path rather than on the public `prodbox pulumi ...` surface.
-- The AWS validation stack inputs are split by sensitivity: non-secret operator-CIDR and
+- The AWS substrate stack inputs are split by sensitivity: non-secret operator-CIDR and
   SSH-public-key values are synchronized through explicit Pulumi stack config written by the
   Haskell infra modules, while AWS provider credentials stay in `prodbox-config.dhall` and are
   projected into Pulumi through the Haskell-owned subprocess environment.
@@ -223,7 +223,7 @@ local-cluster supported ownership from the public Pulumi path.
   HA-RKE2 validation SSH key stays under `.prodbox-state/aws-test/`; stale retained EC2 nodes are
   repaired by one destroy-and-recreate retry when HA-RKE2 SSH validation fails after a successful
   Pulumi reconcile.
-- The retained AWS validation stack helpers now write only the supported operator-CIDR and
+- The retained AWS substrate stack helpers now write only the supported operator-CIDR and
   SSH-public-key inputs and no longer remove older Pulumi provider-key layouts on the supported
   path.
 
@@ -504,9 +504,9 @@ None.
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/aws_integration_environment_doctrine.md` - AWS validation environment and
+- `documents/engineering/aws_integration_environment_doctrine.md` - AWS substrate environment and
   Pulumi boundary after broad local-cluster decoupling.
-- `documents/engineering/aws_test_environment.md` - retained AWS validation environment doctrine.
+- `documents/engineering/aws_test_environment.md` - retained AWS substrate environment doctrine.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell lifecycle and public
   AWS-validation Pulumi surface, including the hermetic `prodbox rke2 delete --yes`
   success-summary contract.

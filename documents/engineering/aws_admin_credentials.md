@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_integration_environment_doctrine.md
 
 > **Purpose**: Define the test-suite-only `aws_admin_for_test_simulation` section in
 > `prodbox-config.dhall` and the supported way to populate and clear it.
@@ -123,4 +123,4 @@ credentials can be short-lived.
 - [aws_account_setup_guide.md](./aws_account_setup_guide.md)
 - [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md)
 - [cli_command_surface.md](./cli_command_surface.md)
-- [../../DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md](../../DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md)
+- [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)

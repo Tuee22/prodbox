@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
@@ -92,16 +93,18 @@ lives only in operator-authored repository-root Dhall on the Haskell stack.
   even after nested Haskell suites refresh the operator binary.
 - Validation steps `2`, `4`, and `5` close on the direct-Dhall config contract: no supported
   command materializes `prodbox-config.json`, and `prodbox config compile` is removed.
-- Validation steps `7`, `9`, and `12` remain mapped to the native validation harness because the
+- Validation steps `7`, `9`, and `12` remain mapped to the canonical-suite dispatch because the
   named integration payloads in `src/Prodbox/TestPlan.hs` map to executable native Haskell
   validation flows.
 - `src/Prodbox/TestPlan.hs` already defines the aggregate end-to-end lifecycle proof surface:
-  `prodbox test all` and `prodbox test integration all` run the native validation set that
-  includes `Validation: lifecycle` plus supported-runtime bootstrap and postflight, so no
-  separate lifecycle suite is missing from the repository.
-- `src/Prodbox/TestRunner.hs` encodes the supported-runtime postflight contract: after aggregate
-  native validation, it re-installs the supported stack, waits for `prodbox host public-edge` to
-  report the required readiness classification, and then destroys both AWS validation stacks.
+  `prodbox test all` and `prodbox test integration all` run the canonical suite against the
+  active substrates (per [substrates.md](substrates.md)) — including `Validation: lifecycle`
+  plus supported-runtime bootstrap and postflight — so no separate lifecycle suite is missing
+  from the repository.
+- `src/Prodbox/TestRunner.hs` encodes the supported-runtime postflight contract: after the
+  canonical suite finishes, it re-installs the supported stack on the home substrate, waits
+  for `prodbox host public-edge` to report the required readiness classification, and then
+  tears down the AWS substrate's Pulumi stacks.
 - Environment-dependent rerun success for this phase remains owned by the named `prodbox`
   commands rather than restated here as a fresh execution log.
 ### Remaining Work

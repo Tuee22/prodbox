@@ -5,14 +5,16 @@
 **Referenced by**: [README.md](README.md),
 [development_plan_standards.md](development_plan_standards.md),
 [system-components.md](system-components.md),
+[substrates.md](substrates.md),
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md),
 [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
 [phase-2-gateway-dns.md](phase-2-gateway-dns.md),
 [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
 [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
-[phase-5-public-host-validation.md](phase-5-public-host-validation.md),
+[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md),
+[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
+[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Provide the target architecture, current baseline, clean-room sequence, and hard
@@ -26,9 +28,12 @@ Build a clean-room Haskell `prodbox` repository with:
 2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd.
 3. One host-owned `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` surface for
    the local RKE2 cluster.
-4. Two AWS-backed cluster deployment and validation patterns under `prodbox`: one EKS-backed path
-   and one SSH-driven HA RKE2 path on exactly three Pulumi-managed `Ubuntu 24.04 LTS` EC2
-   instances in separate availability zones.
+4. One canonical test suite (the named-validation set in `src/Prodbox/TestValidation.hs`) that
+   runs against substrates rather than against separate home-cluster and AWS validation
+   surfaces. Substrates today are the home local RKE2 cluster on the operator host and the AWS
+   substrate composed of the disposable Pulumi stacks `aws-eks-test` (EKS cluster + node group)
+   and `aws-test` (three `Ubuntu 24.04 LTS` EC2 instances across separate AZs for HA-RKE2). The
+   authoritative substrate inventory is [substrates.md](substrates.md).
 5. One operator-authored repository-root `prodbox-config.dhall` as the single configuration
    source, decoded directly into Haskell types with `prodbox-config-types.dhall` as the shared
    schema and no generated JSON artifact on the supported path.
@@ -90,24 +95,47 @@ Build a clean-room Haskell `prodbox` repository with:
 23. One supported WebSocket connection-lifetime doctrine: auth at connection setup, one live
     upgraded connection pinned to one backend pod until disconnect, reconnect-safe state outside
     the pod, and readiness-based drain before pod exit.
-24. One named validation command per major surface.
+24. One canonical test suite, expressed through named validation commands, with each validation
+    described as substrate-agnostic suite content rather than as a home-cluster-specific or
+    AWS-specific concern.
 25. One explicit ledger for compatibility or cleanup history that preserves completed removals and
     closes with zero pending supported-path residue.
-26. Pulumi retained for true IaC surfaces such as AWS validation resources, with no supported
+26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
     Python Pulumi program and no supported local-cluster public operator flow.
+
+## Test Substrates
+
+Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
+there is one canonical test suite that runs against substrates. A substrate is an environment
+that, for the lifetime of a suite run, stands up the same set of DNS records, TLS certificates,
+ingress, services, and workload charts; provides the prerequisites declared in
+`src/Prodbox/Prerequisite.hs`; and is torn down on suite exit. The authoritative substrate
+inventory is [substrates.md](substrates.md).
+
+| Substrate | Provision | Teardown | Suite parity today |
+|-----------|-----------|----------|--------------------|
+| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi test-resources` | `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Provisioning + SSH reachability only; parity sprint tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+
+Phase ownership separates suite content (which lives in
+[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) from substrate
+provision/teardown and substrate foundations. No phase may own a substrate-specific validation:
+validations are suite content and run against every substrate that satisfies their declared
+prerequisites.
 
 ## Clean-Room Sequence
 
 | Phase | Focus | Closure Result |
 |-------|-------|----------------|
 | 0 | Planning and Documentation Topology for Haskell Rewrite | The plan suite is rewritten around the Haskell end state |
-| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | One supported Haskell binary owns CLI, config, lifecycle, test, and AWS validation foundations, and the config contract closes on one canonical public hostname with no `example.com` residue |
+| 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | One supported Haskell binary owns CLI, config, lifecycle, test, and AWS substrate provisioning foundations, and the config contract closes on one canonical public hostname with no `example.com` residue |
 | 2 | Haskell Gateway Runtime and DNS Ownership | Gateway runtime, formal verification entrypoint, Harbor-backed gateway packaging, and the single-record Route 53 ownership contract close on the Haskell stack under the same `ubuntu:24.04` plus `ghcup` toolchain doctrine |
 | 3 | Haskell Chart Platform and Public Workload Delivery | Chart orchestration, retained storage, Harbor-backed browser/API/WebSocket delivery, path-routed admin delivery, Keycloak-backed Envoy auth and RBAC, Redis-backed realtime state, and the Percona-operator-backed Patroni PostgreSQL doctrine close on the Haskell stack |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | Lifecycle parity closes, Harbor bootstrap narrows to Harbor plus its storage backend, bootstrap DNS or certificate issuance collapse to the one-host doctrine, broad local-cluster Pulumi ownership is removed, and Python residue is removed |
-| 5 | Public Hostname Closure and External Proof on the Haskell Stack | Public DNS, TLS, Gateway API, and external proof close on one public hostname with path-routed app and admin surfaces owned by Haskell-only command paths |
-| 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes with no supported Python dependency and no surviving single-host public-edge cleanup in the ledger |
-| 7 | Interactive Onboarding, AWS IAM, and Quota Automation in Haskell | Interactive configuration and prompt-driven AWS administration close on Haskell-only paths, with one canonical public hostname, no placeholder domains, and `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that ephemeral prompt input |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | Home substrate lifecycle parity closes, Harbor bootstrap narrows to Harbor plus its storage backend, bootstrap DNS or certificate issuance collapse to the one-host doctrine, broad local-cluster Pulumi ownership is removed, and Python residue is removed |
+| 5 | Canonical Test Suite | The substrate-agnostic named validation set in `src/Prodbox/TestValidation.hs` closes on one canonical suite with explicit prerequisites; suite content includes public-edge proofs (real TLS, OIDC, WebSocket) that run against whichever substrate is active |
+| 6 | Final Clean-Room Rerun and Zero-Python Handoff | The destructive rerun contract closes against every declared substrate in [substrates.md](substrates.md) with no supported Python dependency and no surviving single-host public-edge cleanup in the ledger |
+| 7 | AWS Substrate Foundations | AWS substrate provisioning/teardown, AWS IAM and quota foundations, interactive onboarding, and the AWS-substrate parity sprint that brings the AWS substrate to canonical-suite parity with the home substrate close on Haskell-only paths, with `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of the ephemeral prompt input |
+| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | Keycloak switches to operator-invited, email-verified auth via AWS SES; shared SES infrastructure (sending identity, receive subdomain, S3 capture bucket) is provisioned cross-substrate; `prodbox users invite|list|revoke` joins the public command surface; `ValidationKeycloakInvite` joins the canonical suite and runs against every substrate |
 
 ## Alignment Status
 
@@ -241,10 +269,10 @@ The reopened ranges close on the following sprint sets:
 | Local RKE2 lifecycle | `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` | Haskell CLI with hermetic delete reporting on success and actionable failure summaries on non-zero uninstall, closed by Sprint `4.8` |
 | Registry and image reconcile | Harbor-first steady-state image sourcing with a Harbor-plus-storage-backend bootstrap exception only, plus idempotent post-bootstrap public-image populate with alternate-source retry and native-host-architecture image publication for the Envoy Gateway target edge and chart workloads | Haskell lifecycle runtime |
 | Kubernetes utilities | `prodbox k8s health|wait|logs` | Haskell CLI |
-| AWS-backed EKS validation | `prodbox pulumi eks-resources|eks-destroy --yes` plus `prodbox test integration aws-eks` | Haskell orchestration plus Pulumi |
-| AWS-backed HA RKE2 validation | `prodbox pulumi test-resources|test-destroy --yes` plus `prodbox test integration ha-rke2-aws` | Haskell orchestration plus Pulumi |
+| AWS substrate provision/teardown (EKS) | `prodbox pulumi eks-resources|eks-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EKS portion of the AWS substrate. The `aws-eks` canonical suite validation runs against it. |
+| AWS substrate provision/teardown (HA RKE2) | `prodbox pulumi test-resources|test-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EC2 portion of the AWS substrate. The `ha-rke2-aws` canonical suite validation runs against it. |
 | Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
-| Retained repo-local validation state | `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Haskell Pulumi orchestration and AWS validation helpers |
+| Retained repo-local validation state | `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Haskell Pulumi orchestration and AWS substrate helpers |
 | Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
 | Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate for the single canonical public record |
@@ -371,7 +399,7 @@ than restated here as a fresh rerun log.
   deleted MinIO export host-path mount by recreating the declared retained directory plus
   restarting `deployment/minio` before backend validation continues.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
-  retain AWS validation stack snapshots under `.prodbox-state/aws-test/` and
+  retain AWS substrate stack snapshots under `.prodbox-state/aws-test/` and
   `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
   `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
   `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale

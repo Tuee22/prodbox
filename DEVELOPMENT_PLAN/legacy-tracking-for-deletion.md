@@ -5,13 +5,15 @@
 **Referenced by**: [README.md](README.md),
 [development_plan_standards.md](development_plan_standards.md),
 [system-components.md](system-components.md),
+[substrates.md](substrates.md),
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md),
 [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md),
 [phase-2-gateway-dns.md](phase-2-gateway-dns.md),
 [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md),
 [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md),
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
-[phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md),
+[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
+[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Record completed removal work and any surviving compatibility helper, duplicate
@@ -39,6 +41,7 @@ replacement is verified.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| Plan-wide framing that split validation surfaces into "home-cluster validation" and "AWS validation" as parallel categories | Sprint `0.6` closure on 2026-05-16 | Replaced by the substrate doctrine introduced in [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates) and the per-substrate parity tracker in [substrates.md](substrates.md). The plan now describes one canonical test suite that runs against substrates, with substrate provision/teardown as a separate concern from suite content. Phase docs phase-5 (renamed to `phase-5-canonical-test-suite.md`) and phase-7 (renamed to `phase-7-aws-substrate-foundations.md`) reflect this. The historical Sprints `5.1`–`5.5` and `7.1`–`7.4` sprint blocks remain intact under the renamed files as accurate records of when each surface was implemented. The `phase-5-public-host-validation.md` and `phase-7-aws-iam-quota-automation.md` paths no longer exist. |
 | Benign upstream uninstall-script chatter on successful `prodbox rke2 delete --yes` runs | Sprint `4.8` closure on 2026-05-16 | Closed by extending `isIgnorableRke2DeleteNoiseLine` in `src/Prodbox/CLI/Rke2.hs` to classify `Failed to allocate directory watch` and `Too many open files` as benign noise alongside the existing inotify- and uninstall-script residue, and by adding the hermetic-success and summarized-failure integration cases in `test/integration/CliSuite.hs`. The governed docs in `documents/engineering/cli_command_surface.md`, `documents/engineering/streaming_doctrine.md`, and `documents/engineering/storage_lifecycle_doctrine.md` now name the contract. |
 | Remaining doctrine-adoption cleanup rows from the Phase `1`–`4` reopen | Sprints `1.12`–`1.14`, `1.16`–`1.18`, `1.22`, `2.9`, `2.11`, `2.13`, `2.14`, and `4.7` closure on May 14, 2026 | Closed the remaining service-boundary, retry-policy, error-kind, state-machine, output-boundary, one-shot `App`, dependency-audit, daemon-lifecycle, live-config, test-hook, lifecycle-stanza, and Pulumi-harness rows. The pending-removal ledger is now empty. |
 | `prodbox rke2 install` command alias | Sprint `4.5` cleanup on May 14, 2026 | Removed the `Rke2Install` command constructor, parser branch, command-registry leaf, runner delegation, generated CLI docs, shell completions, manpage entry, root command map, and governed CLI surface reference. `prodbox rke2 install` now fails at parse time as a forbidden lifecycle sister command. |
@@ -130,4 +133,6 @@ replacement is verified.
 
 - [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md)
 - [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md)
-- [phase-7-aws-iam-quota-automation.md](phase-7-aws-iam-quota-automation.md)
+- [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)
+- [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md)
+- [substrates.md](substrates.md)

@@ -38,8 +38,9 @@ are implemented in code, doc-aligned, and validated locally.
 
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the
 repository-root Dhall config loader, the Haskell command runtime and test harness, and the Pulumi
-foundations for true IaC plus AWS validation. It also owns the canonical frontend image placement
-under `docker/`, the direct-Dhall config contract, the native validation harness, and the aligned
+foundations for true IaC plus AWS-substrate provisioning. It also owns the canonical frontend
+image placement under `docker/`, the direct-Dhall config contract, the canonical-suite harness,
+and the aligned
 root guidance or engineering docs listed by its sprints. Later retirement of local-cluster
 Pulumi ownership is Phase `4` work, not a change to the foundations closed here. Sprints `1.1`,
 `1.2`, `1.3`, `1.4`, and `1.5` remain closed on the Haskell-only rewrite baseline. The phase
@@ -118,7 +119,8 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
   runtime modules now strip ambient AWS auth and profile variables before projecting
   repository-root credentials into supported subprocesses.
 - The current repository ships YAML Pulumi programs under `pulumi/aws-eks/Main.yaml` and
-  `pulumi/aws-test/Main.yaml`. The public AWS validation stacks match the target Pulumi boundary.
+  `pulumi/aws-test/Main.yaml`. These Pulumi stacks compose the AWS substrate (see
+  [substrates.md](substrates.md)) and match the target Pulumi boundary.
 - The self-managed local edge now installs MetalLB, Envoy Gateway, cert-manager, and the Percona
   PostgreSQL operator.
 - The supported config surface uses one canonical public hostname,
@@ -320,13 +322,16 @@ the supported product scope.
   environment or shared-profile discovery, so supported paths consume only repository-root
   credentials.
 - `src/Prodbox/Infra/MinioBackend.hs`, `src/Prodbox/Infra/AwsTestStack.hs`, and
-  `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS validation-stack orchestration.
-- The repo-backed Pulumi prerequisite and AWS validation-stack helpers now use bounded
+  `src/Prodbox/Infra/AwsEksTestStack.hs` own the native AWS-substrate provisioning
+  orchestration (the Pulumi stacks `aws-eks-test` and `aws-test` per
+  [substrates.md](substrates.md)).
+- The repo-backed Pulumi prerequisite and AWS-substrate provisioning helpers now use bounded
   `pulumi login ... --non-interactive` checks against the MinIO backend and recreate a deleted
-  MinIO export host-path mount before restarting `deployment/minio`, so aggregate validation fails
-  fast on real backend errors instead of hanging on stale retained-storage mounts.
-- `src/Prodbox/TestValidation.hs` provides the named lifecycle, Pulumi, EKS, and HA-RKE2 AWS
-  validation flows used by `prodbox test integration ...`.
+  MinIO export host-path mount before restarting `deployment/minio`, so the suite fails fast
+  on real backend errors instead of hanging on stale retained-storage mounts.
+- `src/Prodbox/TestValidation.hs` provides the canonical-suite content (`lifecycle`,
+  `pulumi`, `aws-eks`, `ha-rke2-aws`, and the rest of the named validations) dispatched by
+  `prodbox test integration ...`.
 - The canonical local validation surfaces for this phase remain `prodbox check-code`,
   `prodbox test unit`, `prodbox test integration cli`, and `prodbox test integration env`.
 - Environment-dependent AWS proof for this phase is owned by the named `prodbox pulumi ...` and
@@ -361,8 +366,8 @@ extended that baseline.
   dependency and replaces it with Envoy Gateway ownership.
 - The foundational doctrine distinguishes the Envoy Gateway public edge from the separate Haskell
   distributed gateway daemon surface.
-- AWS validation doctrine remains explicit that MetalLB is a self-managed local-cluster surface,
-  not an AWS validation-stack component.
+- AWS substrate doctrine remains explicit that MetalLB is a home-substrate self-managed
+  cluster surface, not part of the AWS substrate's Pulumi stacks.
 
 ### Validation
 

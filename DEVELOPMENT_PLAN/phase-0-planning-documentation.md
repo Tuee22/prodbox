@@ -3,6 +3,7 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
+[substrates.md](substrates.md),
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Define the plan-ownership baseline for the Haskell rewrite so status, sequencing,
@@ -11,14 +12,19 @@
 ## Phase Status
 
 ✅ **Done** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
-Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, and `0.5` are
-also now `Done`. Those sprints adopted
+Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, `0.5`, and `0.6`
+are also now `Done`. Those sprints adopted
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the authoritative CLI doctrine, aligned the
 governed docs and plan suite with that doctrine, scheduled every currently known code-level
 adoption gap onto explicit downstream sprints under Phases `1`–`4` per
-[development_plan_standards.md](development_plan_standards.md) rule L, and most recently
-reopened Phase `4` through Sprint `4.8` to harden the user-visible `prodbox rke2 delete --yes`
-success-summary contract. Phase `0` is therefore re-closed, and the downstream implementation
+[development_plan_standards.md](development_plan_standards.md) rule L, reopened Phase `4`
+through Sprint `4.8` to harden the user-visible `prodbox rke2 delete --yes` success-summary
+contract, and (Sprint 0.6) introduced the substrate doctrine into the canonical phase model:
+one canonical test suite that runs against substrates (home local + AWS), renamed
+phase-5 to `phase-5-canonical-test-suite.md`, renamed phase-7 to
+`phase-7-aws-substrate-foundations.md`, added [substrates.md](substrates.md) as the
+authoritative substrate inventory, and added phase-8 for operator-invited email authentication
+via Keycloak + AWS SES. Phase `0` is therefore re-closed, and the downstream implementation
 work is also reclosed because Sprint `4.8` has landed.
 
 ## Phase Summary
@@ -516,6 +522,102 @@ None.
   [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the architectural doctrine.
 - The doctrine itself lists every governed-doc and plan-file consumer in its
   `**Referenced by**` line.
+
+## Sprint 0.6: Substrate Doctrine Adoption ✅
+
+**Status**: Done
+**Implementation**: `DEVELOPMENT_PLAN/development_plan_standards.md` (adds Core Principle M),
+`DEVELOPMENT_PLAN/substrates.md` (new), `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
+`DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
+`DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
+`DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`,
+`DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md` (renamed from
+`phase-5-public-host-validation.md`),
+`DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (renamed from
+`phase-7-aws-iam-quota-automation.md`),
+`DEVELOPMENT_PLAN/phase-8-email-invite-auth.md` (new),
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`HASKELL_CLI_TOOL.md`, `documents/engineering/unit_testing_policy.md`
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`,
+`DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Introduce the substrate doctrine into the canonical phase model so the plan reflects the
+truth the codebase already implements: there is one canonical test suite (the
+substrate-agnostic named-validation set in `src/Prodbox/TestValidation.hs`,
+`src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/Prerequisite.hs`)
+that runs against substrates rather than separate home-cluster and AWS validation surfaces.
+
+### Deliverables
+
+- Core Principle M (Test Suite Substrates) lands in
+  `DEVELOPMENT_PLAN/development_plan_standards.md`. Principle E's canonical document
+  structure is amended to include `substrates.md` and `phase-8-email-invite-auth.md`, and
+  to reflect the phase-5 and phase-7 renames.
+- `DEVELOPMENT_PLAN/substrates.md` is the authoritative substrate inventory with provision,
+  teardown, prerequisites satisfied, suite parity status, and cross-substrate shared resources
+  documented per substrate.
+- `DEVELOPMENT_PLAN/00-overview.md` carries a `Test Substrates` section, and the Clean-Room
+  Sequence table reframes phase-5 as the canonical test suite owner and phase-7 as the AWS
+  substrate foundations owner.
+- `DEVELOPMENT_PLAN/system-components.md` classifies clusters and Pulumi stacks by substrate
+  and collapses the Validation Layer's substrate-split listings into one canonical test-suite
+  inventory.
+- `phase-5-public-host-validation.md` is renamed to `phase-5-canonical-test-suite.md` and
+  rewritten so that every named validation is described as substrate-agnostic suite content
+  with declared prerequisites.
+- `phase-7-aws-iam-quota-automation.md` is renamed to `phase-7-aws-substrate-foundations.md`
+  with AWS IAM and quota reframed as AWS-substrate foundations, plus a new sprint that brings
+  the AWS substrate to canonical-suite parity with the home substrate.
+- `phase-8-email-invite-auth.md` is added for the operator-invited email authentication path
+  via Keycloak + AWS SES, including the `ValidationKeycloakInvite` suite content and the
+  shared cross-substrate SES infrastructure.
+- `phase-4-lifecycle-canonical-paths.md` is updated to drop the "AWS validation doctrine"
+  framing and to describe AWS-touching content as AWS-substrate lifecycle (provision +
+  teardown via Pulumi).
+- `HASKELL_CLI_TOOL.md` and `documents/engineering/unit_testing_policy.md` are updated to
+  cite the new substrate doctrine and to use the renamed phase paths.
+
+### Validation
+
+1. `prodbox check-code`.
+2. Doctrine integrity grep across `DEVELOPMENT_PLAN/`: no remaining "AWS validation",
+   "home-cluster validation", or "named validation surface" wording outside
+   `legacy-tracking-for-deletion.md` (or with deliberate justification).
+3. Cross-reference integrity grep: no inbound reference to the old phase paths
+   `phase-5-public-host-validation.md` or `phase-7-aws-iam-quota-automation.md` survives in
+   any file under the repository.
+
+### Remaining Work
+
+None.
+
+### Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/unit_testing_policy.md` — cross-reference the substrate doctrine
+  and reword any column that lists "AWS, DNS, gateway, chart, lifecycle, and public-edge
+  proofs" so it lists the canonical-suite validation names instead of the substrates they
+  touch.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- `HASKELL_CLI_TOOL.md` cross-references the renamed `phase-5-canonical-test-suite.md` and
+  `phase-7-aws-substrate-foundations.md` paths plus the new `phase-8-email-invite-auth.md`
+  and `substrates.md` files.
 
 ## Related Documents
 

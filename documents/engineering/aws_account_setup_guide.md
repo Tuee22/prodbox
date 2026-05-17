@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md
 
 > **Purpose**: Define the supported operator flow for creating or preparing an AWS account before
 > running `prodbox config setup`.
@@ -130,4 +130,4 @@ Normal `prodbox` runtime uses only the operational `aws.*` section.
 - [acme_provider_guide.md](./acme_provider_guide.md)
 - [aws_admin_credentials.md](./aws_admin_credentials.md)
 - [cli_command_surface.md](./cli_command_surface.md)
-- [../../DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md](../../DEVELOPMENT_PLAN/phase-7-aws-iam-quota-automation.md)
+- [../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)

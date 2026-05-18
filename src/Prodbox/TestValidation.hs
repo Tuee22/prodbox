@@ -11,6 +11,7 @@ import Control.Exception
   ( IOException
   , SomeException
   , bracket
+  , bracket_
   , displayException
   , finally
   , try
@@ -101,6 +102,7 @@ import Prodbox.PublicEdge
   , publicFqdn
   , publicRoutePathPrefix
   , publicRouteUrl
+  , substrateKubeconfigPath
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -123,6 +125,7 @@ import Prodbox.Subprocess
   , startBackgroundProcess
   , stopBackgroundProcess
   )
+import Prodbox.Substrate (Substrate (..), substrateId)
 import Prodbox.TestPlan
   ( NativeValidation (..)
   , nativeValidationId
@@ -130,6 +133,9 @@ import Prodbox.TestPlan
 import System.Directory (removeFile)
 import System.Environment
   ( getEnvironment
+  , lookupEnv
+  , setEnv
+  , unsetEnv
   )
 import System.Exit
   ( ExitCode (..)
@@ -189,86 +195,111 @@ gatewayStatusRetryAttempts = 12
 gatewayStatusRetryDelayMicroseconds :: Int
 gatewayStatusRetryDelayMicroseconds = 1000000
 
-runNativeValidation :: FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
-runNativeValidation repoRoot environment validation = do
-  writeOutputLine ("Validation: " ++ nativeValidationId validation)
-  case validation of
-    ValidationChartsVscode -> runChartsVscodeValidation repoRoot
-    ValidationChartsApi -> runChartsApiValidation repoRoot
-    ValidationChartsWebsocket -> runChartsWebsocketValidation repoRoot environment
-    ValidationAdminRoutes -> runAdminRoutesValidation repoRoot
-    ValidationPublicDns -> runPublicDnsValidation repoRoot
-    ValidationDnsAws -> runDnsAwsValidation repoRoot
-    ValidationAwsIam ->
-      assertProducedOutputContainsAll
-        "aws-iam harness inspection"
-        (runAwsIamHarnessInspect repoRoot)
-        ["IAM_USER=prodbox", "CONFIG_PATH="]
-    ValidationAwsEks ->
-      runSequentially
-        [ assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["pulumi", "eks-resources"]
-            ["STACK=" ++ AwsEks.awsEksTestStackName, "CLUSTER_NAME=", "NODE_GROUP_NAME="]
-        , verifyAwsEksSnapshot repoRoot
-        ]
-    ValidationPulumi ->
-      runSequentially
-        [ assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["pulumi", "test-resources"]
-            ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
-        , verifyAwsTestSnapshot repoRoot
-        ]
-    ValidationHaRke2Aws ->
-      runHaRke2AwsValidation repoRoot environment
-    ValidationGatewayDaemon -> runGatewayDaemonValidation repoRoot environment
-    ValidationGatewayPods ->
-      runSequentially
-        [ runNativeCliCommandForExitCode
-            repoRoot
-            environment
-            ["k8s", "wait", "--namespace", gatewayValidationNamespace]
-        , runNativeCliCommandForExitCode
-            repoRoot
-            environment
-            ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
-        ]
-    ValidationGatewayPartition -> runGatewayPartitionValidation
-    ValidationChartsPlatform ->
-      runSequentially
-        [ assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["charts", "list"]
-            ["CHART_LIST", "NAME=vscode", "NAME=gateway"]
-        , assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["charts", "status", "vscode"]
-            ["CHART_STATUS", "NAME=vscode"]
-        ]
-    ValidationChartsStorage ->
-      runSequentially
-        [ assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["charts", "status", "vscode"]
-            ["CHART_STATUS", "STORAGE_BINDING"]
-        , assertNativeCommandOutputContainsAll
-            repoRoot
-            environment
-            ["charts", "delete", "vscode", "--yes"]
-            ["CHART_DELETION", "HOST_STORAGE_PRESERVED=true"]
-        ]
-    ValidationLifecycle ->
-      runSequentially
-        [ runNativeCliCommandForExitCode repoRoot environment ["rke2", "delete", "--yes"]
-        , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
-        , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
-        ]
+runNativeValidation
+  :: Substrate -> FilePath -> [(String, String)] -> NativeValidation -> IO ExitCode
+runNativeValidation substrate repoRoot environment validation = do
+  writeOutputLine
+    ("Validation: " ++ nativeValidationId validation ++ " (substrate=" ++ substrateId substrate ++ ")")
+  withSubstrateKubeconfigEnv repoRoot substrate runSubstrateValidation
+ where
+  runSubstrateValidation =
+    case validation of
+      ValidationChartsVscode -> runChartsVscodeValidation repoRoot
+      ValidationChartsApi -> runChartsApiValidation repoRoot
+      ValidationChartsWebsocket -> runChartsWebsocketValidation repoRoot environment
+      ValidationAdminRoutes -> runAdminRoutesValidation repoRoot
+      ValidationPublicDns -> runPublicDnsValidation repoRoot
+      ValidationDnsAws -> runDnsAwsValidation repoRoot
+      ValidationAwsIam ->
+        assertProducedOutputContainsAll
+          "aws-iam harness inspection"
+          (runAwsIamHarnessInspect repoRoot)
+          ["IAM_USER=prodbox", "CONFIG_PATH="]
+      ValidationAwsEks ->
+        runSequentially
+          [ assertNativeCommandOutputContainsAll
+              repoRoot
+              environment
+              ["pulumi", "eks-resources"]
+              ["STACK=" ++ AwsEks.awsEksTestStackName, "CLUSTER_NAME=", "NODE_GROUP_NAME="]
+          , verifyAwsEksSnapshot repoRoot
+          ]
+      ValidationPulumi ->
+        runSequentially
+          [ assertNativeCommandOutputContainsAll
+              repoRoot
+              environment
+              ["pulumi", "test-resources"]
+              ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
+          , verifyAwsTestSnapshot repoRoot
+          ]
+      ValidationHaRke2Aws ->
+        runHaRke2AwsValidation repoRoot environment
+      ValidationGatewayDaemon -> runGatewayDaemonValidation repoRoot environment
+      ValidationGatewayPods ->
+        runSequentially
+          [ runNativeCliCommandForExitCode
+              repoRoot
+              environment
+              ["k8s", "wait", "--namespace", gatewayValidationNamespace]
+          , runNativeCliCommandForExitCode
+              repoRoot
+              environment
+              ["k8s", "logs", "--namespace", gatewayValidationNamespace, "--tail", "20"]
+          ]
+      ValidationGatewayPartition -> runGatewayPartitionValidation
+      ValidationChartsPlatform ->
+        runSequentially
+          [ assertNativeCommandOutputContainsAll
+              repoRoot
+              environment
+              ["charts", "list"]
+              ["CHART_LIST", "NAME=vscode", "NAME=gateway"]
+          , assertNativeCommandOutputContainsAll
+              repoRoot
+              environment
+              ["charts", "status", "vscode"]
+              ["CHART_STATUS", "NAME=vscode"]
+          ]
+      ValidationChartsStorage ->
+        runSequentially
+          [ assertNativeCommandOutputContainsAll
+              repoRoot
+              environment
+              ["charts", "status", "vscode"]
+              ["CHART_STATUS", "STORAGE_BINDING"]
+          , assertNativeCommandOutputContainsAll
+              repoRoot
+              environment
+              ["charts", "delete", "vscode", "--yes"]
+              ["CHART_DELETION", "HOST_STORAGE_PRESERVED=true"]
+          ]
+      ValidationLifecycle ->
+        runSequentially
+          [ runNativeCliCommandForExitCode repoRoot environment ["rke2", "delete", "--yes"]
+          , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
+          , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
+          ]
+
+-- | Wrap a validation action with substrate-aware `KUBECONFIG`. For
+-- `SubstrateHomeLocal` the operator's default kubeconfig is in scope
+-- already (no-op). For `SubstrateAws` the EKS kubeconfig materialized by
+-- `Prodbox.Infra.AwsEksTestStack.materializeAwsEksKubeconfig` is exported
+-- for the duration of the action, so every kubectl/helm subprocess that
+-- inherits the parent process environment targets the EKS substrate.
+withSubstrateKubeconfigEnv :: FilePath -> Substrate -> IO ExitCode -> IO ExitCode
+withSubstrateKubeconfigEnv repoRoot substrate action =
+  case substrateKubeconfigPath repoRoot substrate of
+    Nothing -> action
+    Just kubeconfigPath -> do
+      previousKubeconfig <- lookupEnv "KUBECONFIG"
+      bracket_
+        (setEnv "KUBECONFIG" kubeconfigPath)
+        (restoreEnv previousKubeconfig)
+        action
+ where
+  restoreEnv Nothing = unsetEnv "KUBECONFIG"
+  restoreEnv (Just value) = setEnv "KUBECONFIG" value
 
 runHaRke2AwsValidation :: FilePath -> [(String, String)] -> IO ExitCode
 runHaRke2AwsValidation repoRoot environment = do

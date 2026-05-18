@@ -29,6 +29,7 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
+import Prodbox.Infra.AwsEksSubzoneStack qualified as SubzoneStack
 import Prodbox.Infra.AwsEksTestStack qualified as EksStack
 import Prodbox.Infra.AwsTestStack qualified as TestStack
 import System.Directory
@@ -77,6 +78,16 @@ runPulumiCommand repoRoot command =
         planOptions
         (buildPulumiExecutionPlan "test-destroy" summary)
         (\_ -> TestStack.destroyAwsTestStack repoRoot summary)
+    PulumiAwsSubzoneResources planOptions ->
+      runPlanWithOptions
+        planOptions
+        (buildPulumiExecutionPlan "aws-subzone-resources" False)
+        (\_ -> SubzoneStack.ensureAwsEksSubzoneStackResources repoRoot)
+    PulumiAwsSubzoneDestroy summary planOptions ->
+      runPlanWithOptions
+        planOptions
+        (buildPulumiExecutionPlan "aws-subzone-destroy" summary)
+        (\_ -> SubzoneStack.destroyAwsEksSubzoneStack repoRoot summary)
 
 buildPulumiExecutionPlan :: String -> Bool -> Plan String
 buildPulumiExecutionPlan commandName confirmed =

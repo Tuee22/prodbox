@@ -1,0 +1,60 @@
+config:
+  # ID of the operator-owned parent Route 53 hosted zone (from
+  # `route53.zone_id` in `prodbox-config.dhall`). NS delegation records for
+  # the substrate subzone are inserted into this parent zone.
+  parentZoneId:
+    type: string
+  # Fully-qualified subzone domain (e.g. `aws.test.resolvefintech.com`) sourced
+  # from `aws_substrate.subzone_name` in `prodbox-config.dhall`. The subzone is
+  # provisioned under this name and the parent zone receives an NS record
+  # delegating queries for it.
+  subzoneName:
+    type: string
+
+variables:
+  stackName: ${pulumi.stack}
+
+resources:
+  awsProvider:
+    type: pulumi:providers:aws
+    defaultProvider: true
+    options:
+      envVarMappings:
+        PRODBOX_PULUMI_AWS_ACCESS_KEY_ID: AWS_ACCESS_KEY_ID
+        PRODBOX_PULUMI_AWS_SECRET_ACCESS_KEY: AWS_SECRET_ACCESS_KEY
+        PRODBOX_PULUMI_AWS_SESSION_TOKEN: AWS_SESSION_TOKEN
+        PRODBOX_PULUMI_AWS_REGION: AWS_REGION
+        PRODBOX_PULUMI_AWS_DEFAULT_REGION: AWS_DEFAULT_REGION
+
+  # Per-substrate hosted zone. cert-manager DNS01 challenges for AWS-substrate
+  # certificates target this zone via the substrate-aware `ClusterIssuer`
+  # rendered by `src/Prodbox/CLI/Rke2.hs::acmeClusterIssuerSpec` when called
+  # with `SubstrateAws`.
+  subzone:
+    type: aws:route53:Zone
+    properties:
+      name: ${subzoneName}
+      comment: prodbox AWS-substrate per-substrate subzone (managed by Pulumi stack ${stackName})
+      tags:
+        Name: ${stackName}
+        prodbox.io/substrate: aws
+
+  # NS delegation record in the operator-owned parent zone. The four NS values
+  # come from the subzone's authoritative name servers, so queries for the
+  # subzone resolve through the parent zone's authority chain.
+  parentNsDelegation:
+    type: aws:route53:Record
+    properties:
+      zoneId: ${parentZoneId}
+      name: ${subzoneName}
+      type: NS
+      ttl: 300
+      records: ${subzone.nameServers}
+
+outputs:
+  backend_bucket: prodbox-test-pulumi-backends
+  subzone_id: ${subzone.zoneId}
+  subzone_name: ${subzone.name}
+  subzone_name_servers: ${subzone.nameServers}
+  parent_zone_id: ${parentZoneId}
+  parent_ns_record_fqdn: ${parentNsDelegation.fqdn}

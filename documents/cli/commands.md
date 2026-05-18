@@ -48,6 +48,8 @@
 | `prodbox pulumi eks-destroy` | Destroy EKS test stack |
 | `prodbox pulumi test-resources` | Provision or inspect HA RKE2 test stack |
 | `prodbox pulumi test-destroy` | Destroy HA RKE2 test stack |
+| `prodbox pulumi aws-subzone-resources` | Provision the per-substrate Route 53 subzone |
+| `prodbox pulumi aws-subzone-destroy` | Destroy the per-substrate Route 53 subzone |
 | `prodbox rke2 status` | Check RKE2 status |
 | `prodbox rke2 start` | Start RKE2 |
 | `prodbox rke2 stop` | Stop RKE2 |

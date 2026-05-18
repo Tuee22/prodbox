@@ -1,7 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.CLI.Rke2
-  ( renderNativeInstallPlan
+  ( acmeRuntimeManifest
+  , acmeClusterIssuerSpec
+  , renderNativeInstallPlan
   , runRke2Command
   )
 where
@@ -81,6 +83,7 @@ import Prodbox.PublicEdge
   , minioPathPrefix
   , publicFqdn
   , publicRouteUrl
+  , substrateHostedZoneId
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
@@ -124,6 +127,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
+import Prodbox.Substrate (Substrate (..))
 import System.Directory
   ( doesDirectoryExist
   , doesFileExist
@@ -2078,7 +2082,7 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
   currentEnvironment <- getEnvironment
   withTemporaryJsonManifest
     "prodbox-acme-runtime"
-    (acmeRuntimeManifest settings prodboxId labelValue)
+    (acmeRuntimeManifest SubstrateHomeLocal settings prodboxId labelValue)
     ( \manifestPath -> do
         applyExit <-
           runCommand
@@ -2106,8 +2110,8 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
                 }
     )
 
-acmeRuntimeManifest :: ValidatedSettings -> String -> String -> [Value]
-acmeRuntimeManifest settings prodboxId labelValue =
+acmeRuntimeManifest :: Substrate -> ValidatedSettings -> String -> String -> [Value]
+acmeRuntimeManifest substrate settings prodboxId labelValue =
   route53Secret : maybe [] pure maybeEabSecret ++ [clusterIssuer]
  where
   config = validatedConfig settings
@@ -2158,11 +2162,11 @@ acmeRuntimeManifest settings prodboxId labelValue =
             , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
             , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
             ]
-      , "spec" .= object ["acme" .= acmeClusterIssuerSpec settings]
+      , "spec" .= object ["acme" .= acmeClusterIssuerSpec substrate settings]
       ]
 
-acmeClusterIssuerSpec :: ValidatedSettings -> Value
-acmeClusterIssuerSpec settings =
+acmeClusterIssuerSpec :: Substrate -> ValidatedSettings -> Value
+acmeClusterIssuerSpec substrate settings =
   object $
     [ "server" .= Text.unpack (server acmeConfig)
     , "email" .= Text.unpack (email acmeConfig)
@@ -2174,7 +2178,7 @@ acmeClusterIssuerSpec settings =
                      [ "route53"
                          .= object
                            [ "region" .= Text.unpack (region awsConfig)
-                           , "hostedZoneID" .= Text.unpack (zone_id (route53 config))
+                           , "hostedZoneID" .= Text.unpack (substrateHostedZoneId settings substrate)
                            , "accessKeyIDSecretRef"
                                .= object
                                  [ "name" .= route53CredentialsSecretName

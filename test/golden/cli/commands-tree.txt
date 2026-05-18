@@ -47,6 +47,8 @@ prodbox
     eks-destroy
     test-resources
     test-destroy
+    aws-subzone-resources
+    aws-subzone-destroy
   rke2
     status
     start

@@ -51,6 +51,8 @@ complete -c prodbox -f -n '__fish_seen_subcommand_from pulumi' -a 'eks-resources
 complete -c prodbox -f -n '__fish_seen_subcommand_from pulumi' -a 'eks-destroy' -d 'Destroy EKS test stack'
 complete -c prodbox -f -n '__fish_seen_subcommand_from pulumi' -a 'test-resources' -d 'Provision or inspect HA RKE2 test stack'
 complete -c prodbox -f -n '__fish_seen_subcommand_from pulumi' -a 'test-destroy' -d 'Destroy HA RKE2 test stack'
+complete -c prodbox -f -n '__fish_seen_subcommand_from pulumi' -a 'aws-subzone-resources' -d 'Provision the per-substrate Route 53 subzone'
+complete -c prodbox -f -n '__fish_seen_subcommand_from pulumi' -a 'aws-subzone-destroy' -d 'Destroy the per-substrate Route 53 subzone'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'status' -d 'Check RKE2 status'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'start' -d 'Start RKE2'
 complete -c prodbox -f -n '__fish_seen_subcommand_from rke2' -a 'stop' -d 'Stop RKE2'

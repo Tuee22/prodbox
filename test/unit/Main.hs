@@ -257,6 +257,7 @@ import Prodbox.Subprocess
   ( renderSubprocess
   , pattern Subprocess
   )
+import Prodbox.Substrate (Substrate (..))
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation (..)
@@ -394,7 +395,9 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Right
           ( Options
               False
-              (RunNative (NativeCharts (ChartsDelete "gateway" True (PlanOptions False Nothing))))
+              ( RunNative
+                  (NativeCharts (ChartsDelete "gateway" SubstrateHomeLocal True (PlanOptions False Nothing)))
+              )
           )
 
     it "routes native k8s commands through the Haskell runtime with defaults" $ do
@@ -422,6 +425,7 @@ main = mainWithSuite "prodbox-unit" $ do
                       ( TestCommand
                           (TestIntegration IntegrationCli)
                           (CoverageFlags True (Just 90))
+                          SubstrateHomeLocal
                       )
                   )
               )
@@ -751,7 +755,7 @@ main = mainWithSuite "prodbox-unit" $ do
 
   describe "test planning" $ do
     it "maps aggregate all to the native ordered validation workflow" $ do
-      case testExecutionPlan TestAll of
+      case testExecutionPlan SubstrateHomeLocal TestAll of
         testPlan -> do
           testPlanLabel testPlan `shouldBe` "all"
           testPlanHaskellSuites testPlan
@@ -804,7 +808,7 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
     it "keeps integration-all in the canonical external-proof-first order" $ do
-      case testExecutionPlan (TestIntegration IntegrationAll) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAll) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -838,7 +842,7 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
-      case testExecutionPlan (TestIntegration IntegrationAwsEks) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAwsEks) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -862,7 +866,7 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native aws-eks plan"
 
     it "gates AWS-backed named suites on validated access before validation bodies run" $ do
-      case testExecutionPlan (TestIntegration IntegrationPublicDns) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationPublicDns) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -871,7 +875,7 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native public-dns plan"
 
-      case testExecutionPlan (TestIntegration IntegrationDnsAws) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationDnsAws) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -880,7 +884,7 @@ main = mainWithSuite "prodbox-unit" $ do
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
             DelegatedSuite _ -> expectationFailure "expected native dns-aws plan"
 
-      case testExecutionPlan (TestIntegration IntegrationAwsIam) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAwsIam) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -891,7 +895,7 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
 
     it "includes curl in the gateway-daemon validation prerequisites" $ do
-      case testExecutionPlan (TestIntegration IntegrationGatewayDaemon) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationGatewayDaemon) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -934,7 +938,7 @@ main = mainWithSuite "prodbox-unit" $ do
       gatewaySource `shouldContain` "resolveDaemonInputPaths"
 
     it "keeps charts-vscode on the supported runtime bootstrap path" $ do
-      case testExecutionPlan (TestIntegration IntegrationChartsVscode) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationChartsVscode) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -960,7 +964,7 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native charts-vscode plan"
 
     it "keeps admin-routes on the supported runtime bootstrap path" $ do
-      case testExecutionPlan (TestIntegration IntegrationAdminRoutes) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationAdminRoutes) of
         testPlan ->
           case testPlanExecutionMode testPlan of
             NativeSuite suitePlan -> do
@@ -1159,7 +1163,7 @@ main = mainWithSuite "prodbox-unit" $ do
       testStackSource `shouldNotContain` "(True, \"awsSessionToken\""
 
     it "keeps integration-cli fully on the Haskell-owned CLI suite" $ do
-      case testExecutionPlan (TestIntegration IntegrationCli) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationCli) of
         testPlan -> do
           testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration"]
           case testPlanExecutionMode testPlan of
@@ -1172,7 +1176,7 @@ main = mainWithSuite "prodbox-unit" $ do
             DelegatedSuite _ -> expectationFailure "expected native integration-cli plan"
 
     it "keeps integration-env fully on the Haskell-owned env suite" $ do
-      case testExecutionPlan (TestIntegration IntegrationEnv) of
+      case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationEnv) of
         testPlan -> do
           testPlanHaskellSuites testPlan `shouldBe` ["test:prodbox-integration"]
           case testPlanExecutionMode testPlan of
@@ -2543,6 +2547,7 @@ validConfig =
     [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = Some \"test-session-token\", region = \"us-east-1\" }"
     , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
@@ -2555,6 +2560,7 @@ invalidZeroSslConfig =
     [ "{ aws = { access_key_id = \"test-access-key\", secret_access_key = \"test-secret-key\", session_token = None Text, region = \"us-east-1\" }"
     , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
+    , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
@@ -2791,6 +2797,14 @@ sampleAwsEksTestStackSnapshot =
     , AwsEks.eksSnapshotVpcId = "vpc-1234567890"
     , AwsEks.eksSnapshotSubnetIds = ["subnet-a", "subnet-b"]
     , AwsEks.eksSnapshotClusterSecurityGroupId = "sg-0987654321"
+    , AwsEks.eksSnapshotClusterOidcIssuer = "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    , AwsEks.eksSnapshotOidcProviderArn =
+        "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+    , AwsEks.eksSnapshotAwsLbControllerPolicyArn =
+        "arn:aws:iam::123456789012:policy/aws-eks-test-aws-lb-controller"
+    , AwsEks.eksSnapshotAwsLbControllerRoleArn =
+        "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller"
+    , AwsEks.eksSnapshotAwsLbControllerRoleName = "aws-eks-test-aws-lb-controller"
     }
 
 daemonConfigJsonValue :: DaemonConfig -> Value

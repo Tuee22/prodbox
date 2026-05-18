@@ -31,6 +31,7 @@ module Prodbox.CLI.Command
 where
 
 import Prodbox.CLI.Output (writeOutput)
+import Prodbox.Substrate (Substrate (..))
 import System.Exit
   ( ExitCode (ExitSuccess)
   )
@@ -68,8 +69,8 @@ data NativeCommand
 data ChartsCommand
   = ChartsList
   | ChartsStatus String
-  | ChartsDeploy String PlanOptions
-  | ChartsDelete String Bool PlanOptions
+  | ChartsDeploy String Substrate PlanOptions
+  | ChartsDelete String Substrate Bool PlanOptions
   deriving (Eq, Show)
 
 data HostCommand
@@ -145,6 +146,8 @@ data PulumiCommand
   | PulumiEksDestroy Bool PlanOptions
   | PulumiTestResources PlanOptions
   | PulumiTestDestroy Bool PlanOptions
+  | PulumiAwsSubzoneResources PlanOptions
+  | PulumiAwsSubzoneDestroy Bool PlanOptions
   deriving (Eq, Show)
 
 data Rke2Command
@@ -205,6 +208,7 @@ data LintCommand
 data TestCommand = TestCommand
   { testScope :: TestScope
   , testCoverage :: CoverageFlags
+  , testSubstrate :: Substrate
   }
   deriving (Eq, Show)
 

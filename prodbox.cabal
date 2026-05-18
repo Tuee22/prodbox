@@ -37,10 +37,12 @@ library
         Prodbox.Gateway.Peer
         Prodbox.Gateway.Types
         Prodbox.Host
+        Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
         Prodbox.Infra.AwsTestStack
         Prodbox.Infra.MinioBackend
         Prodbox.K8s
+        Prodbox.Lib.AwsSubstratePlatform
         Prodbox.Lib.ChartPlatform
         Prodbox.Lib.Storage
         Prodbox.Lint
@@ -55,6 +57,7 @@ library
         Prodbox.Service
         Prodbox.Settings
         Prodbox.StateMachine
+        Prodbox.Substrate
         Prodbox.Subprocess
         Prodbox.TestPlan
         Prodbox.TestRunner

@@ -3,12 +3,19 @@
 module Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
   , awsEksTestStackName
+  , awsEksTestKubeconfigPath
   , ensureAwsEksTestStackResources
   , destroyAwsEksTestStack
   , loadAwsEksTestStackSnapshot
   , saveAwsEksTestStackSnapshot
   , clearAwsEksTestStackSnapshot
+  , materializeAwsEksKubeconfig
   , assertNoAwsEksTestStackResidue
+  , credentialsConfigured
+  , loadOperationalAwsCredentials
+  , pulumiAwsProviderEnv
+  , pulumiBackendBaseEnv
+  , settingsAwsEnv
   , renderAwsEksTestStackReport
   )
 where
@@ -82,6 +89,9 @@ awsEksTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksTestStackN
 awsEksTestSnapshotPath :: FilePath -> FilePath
 awsEksTestSnapshotPath repoRoot = awsEksTestStateDir repoRoot </> "stack-snapshot.json"
 
+awsEksTestKubeconfigPath :: FilePath -> FilePath
+awsEksTestKubeconfigPath repoRoot = awsEksTestStateDir repoRoot </> "kubeconfig"
+
 awsEksCanonicalClusterName :: String
 awsEksCanonicalClusterName = awsEksTestStackName ++ "-cluster"
 
@@ -104,6 +114,11 @@ data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
   , eksSnapshotVpcId :: String
   , eksSnapshotSubnetIds :: [String]
   , eksSnapshotClusterSecurityGroupId :: String
+  , eksSnapshotClusterOidcIssuer :: String
+  , eksSnapshotOidcProviderArn :: String
+  , eksSnapshotAwsLbControllerPolicyArn :: String
+  , eksSnapshotAwsLbControllerRoleArn :: String
+  , eksSnapshotAwsLbControllerRoleName :: String
   }
   deriving (Eq, Show)
 
@@ -160,6 +175,11 @@ snapshotToJson snapshot =
     , "vpc_id" .= eksSnapshotVpcId snapshot
     , "subnet_ids" .= eksSnapshotSubnetIds snapshot
     , "cluster_security_group_id" .= eksSnapshotClusterSecurityGroupId snapshot
+    , "cluster_oidc_issuer" .= eksSnapshotClusterOidcIssuer snapshot
+    , "oidc_provider_arn" .= eksSnapshotOidcProviderArn snapshot
+    , "aws_lb_controller_policy_arn" .= eksSnapshotAwsLbControllerPolicyArn snapshot
+    , "aws_lb_controller_role_arn" .= eksSnapshotAwsLbControllerRoleArn snapshot
+    , "aws_lb_controller_role_name" .= eksSnapshotAwsLbControllerRoleName snapshot
     ]
 
 snapshotFromJson :: Value -> Either String AwsEksTestStackSnapshot
@@ -173,6 +193,14 @@ snapshotFromJson (Object obj) = do
   vpcId <- requireString obj "vpc_id"
   subnetIds <- requireStringList obj "subnet_ids"
   clusterSecurityGroupId <- requireString obj "cluster_security_group_id"
+  -- Fields added in Sprint 7.5.b.ii.d.II. Tolerate older snapshots that lack
+  -- them by defaulting to empty strings; the AWS LB Controller install path
+  -- fails fast at runtime when these values are required but absent.
+  let clusterOidcIssuer = optionalString obj "cluster_oidc_issuer"
+      oidcProviderArn = optionalString obj "oidc_provider_arn"
+      awsLbControllerPolicyArn = optionalString obj "aws_lb_controller_policy_arn"
+      awsLbControllerRoleArn = optionalString obj "aws_lb_controller_role_arn"
+      awsLbControllerRoleName = optionalString obj "aws_lb_controller_role_name"
   Right
     AwsEksTestStackSnapshot
       { eksSnapshotStackName = stackName
@@ -184,6 +212,11 @@ snapshotFromJson (Object obj) = do
       , eksSnapshotVpcId = vpcId
       , eksSnapshotSubnetIds = subnetIds
       , eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
+      , eksSnapshotClusterOidcIssuer = clusterOidcIssuer
+      , eksSnapshotOidcProviderArn = oidcProviderArn
+      , eksSnapshotAwsLbControllerPolicyArn = awsLbControllerPolicyArn
+      , eksSnapshotAwsLbControllerRoleArn = awsLbControllerRoleArn
+      , eksSnapshotAwsLbControllerRoleName = awsLbControllerRoleName
       }
 snapshotFromJson _ = Left "snapshot must be a JSON object"
 
@@ -197,6 +230,11 @@ snapshotFromOutputs (Object obj) = do
   vpcId <- requireString obj "vpc_id"
   subnetIds <- requireStringList obj "subnet_ids"
   clusterSecurityGroupId <- requireString obj "cluster_security_group_id"
+  clusterOidcIssuer <- requireString obj "cluster_oidc_issuer"
+  oidcProviderArn <- requireString obj "oidc_provider_arn"
+  awsLbControllerPolicyArn <- requireString obj "aws_lb_controller_policy_arn"
+  awsLbControllerRoleArn <- requireString obj "aws_lb_controller_role_arn"
+  awsLbControllerRoleName <- requireString obj "aws_lb_controller_role_name"
   Right
     AwsEksTestStackSnapshot
       { eksSnapshotStackName = awsEksTestStackName
@@ -208,8 +246,19 @@ snapshotFromOutputs (Object obj) = do
       , eksSnapshotVpcId = vpcId
       , eksSnapshotSubnetIds = subnetIds
       , eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
+      , eksSnapshotClusterOidcIssuer = clusterOidcIssuer
+      , eksSnapshotOidcProviderArn = oidcProviderArn
+      , eksSnapshotAwsLbControllerPolicyArn = awsLbControllerPolicyArn
+      , eksSnapshotAwsLbControllerRoleArn = awsLbControllerRoleArn
+      , eksSnapshotAwsLbControllerRoleName = awsLbControllerRoleName
       }
 snapshotFromOutputs _ = Left "pulumi output must be a JSON object"
+
+optionalString :: KeyMap.KeyMap Value -> String -> String
+optionalString obj key =
+  case KeyMap.lookup (Key.fromString key) obj of
+    Just (String text) -> Text.unpack text
+    _ -> ""
 
 requireString :: KeyMap.KeyMap Value -> String -> Either String String
 requireString obj key =
@@ -355,6 +404,11 @@ renderAwsEksTestStackReport snapshot objectCount =
     , "VPC_ID=" ++ eksSnapshotVpcId snapshot
     , "SUBNET_IDS=" ++ joinComma (eksSnapshotSubnetIds snapshot)
     , "CLUSTER_SECURITY_GROUP_ID=" ++ eksSnapshotClusterSecurityGroupId snapshot
+    , "CLUSTER_OIDC_ISSUER=" ++ eksSnapshotClusterOidcIssuer snapshot
+    , "OIDC_PROVIDER_ARN=" ++ eksSnapshotOidcProviderArn snapshot
+    , "AWS_LB_CONTROLLER_POLICY_ARN=" ++ eksSnapshotAwsLbControllerPolicyArn snapshot
+    , "AWS_LB_CONTROLLER_ROLE_ARN=" ++ eksSnapshotAwsLbControllerRoleArn snapshot
+    , "AWS_LB_CONTROLLER_ROLE_NAME=" ++ eksSnapshotAwsLbControllerRoleName snapshot
     ]
 
 settingsAwsEnv :: FilePath -> IO (Either String [(String, String)])
@@ -679,6 +733,51 @@ isPulumiLoginCommand arguments =
   case arguments of
     "login" : _ -> True
     _ -> False
+
+materializeAwsEksKubeconfig
+  :: FilePath -> AwsEksTestStackSnapshot -> IO (Either String FilePath)
+materializeAwsEksKubeconfig repoRoot snapshot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> pure (Left err)
+    Right settings -> do
+      let regionText = Text.unpack (Text.strip (region (aws (validatedConfig settings))))
+          clusterName = eksSnapshotClusterName snapshot
+          kubeconfigPath = awsEksTestKubeconfigPath repoRoot
+      if null regionText
+        then
+          pure
+            ( Left
+                "aws.region must be set in prodbox-config.dhall before materializing the AWS EKS kubeconfig"
+            )
+        else do
+          createDirectoryIfMissing True (awsEksTestStateDir repoRoot)
+          outputResult <-
+            runAwsCommandWithSettings
+              repoRoot
+              [ "eks"
+              , "update-kubeconfig"
+              , "--region"
+              , regionText
+              , "--name"
+              , clusterName
+              , "--kubeconfig"
+              , kubeconfigPath
+              ]
+          pure $
+            case outputResult of
+              Left err -> Left ("failed to materialize AWS EKS kubeconfig: " ++ err)
+              Right output ->
+                case processExitCode output of
+                  ExitSuccess -> Right kubeconfigPath
+                  ExitFailure _ ->
+                    let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
+                     in Left
+                          ( "aws eks update-kubeconfig failed for cluster `"
+                              ++ clusterName
+                              ++ "`: "
+                              ++ detail
+                          )
 
 runAwsCommandWithSettings :: FilePath -> [String] -> IO (Either String ProcessOutput)
 runAwsCommandWithSettings repoRoot arguments = do
@@ -1130,12 +1229,16 @@ ensureAwsEksTestStackResources repoRoot = do
                                                 Left err -> pure (Left err)
                                                 Right snapshot -> do
                                                   saveAwsEksTestStackSnapshot repoRoot snapshot
-                                                  objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                  case objectCountResult of
+                                                  kubeconfigResult <- materializeAwsEksKubeconfig repoRoot snapshot
+                                                  case kubeconfigResult of
                                                     Left err -> pure (Left err)
-                                                    Right objectCount -> do
-                                                      writeOutput (renderAwsEksTestStackReport snapshot objectCount)
-                                                      pure (Right ())
+                                                    Right _ -> do
+                                                      objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                                                      case objectCountResult of
+                                                        Left err -> pure (Left err)
+                                                        Right objectCount -> do
+                                                          writeOutput (renderAwsEksTestStackReport snapshot objectCount)
+                                                          pure (Right ())
                                 PulumiStackMissing ->
                                   pure (Left "pulumi stack select reported a missing stack after --create")
                                 PulumiStackSelectFailed detail ->

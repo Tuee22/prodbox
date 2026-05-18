@@ -14,18 +14,27 @@ module Prodbox.PublicEdge
   , publicRouteUrl
   , renderHelmRouteInventory
   , sharedPublicHostFqdns
+  , substrateHostedZoneId
+  , substrateKubeconfigPath
+  , substratePublicFqdn
   , vscodePathPrefix
   , websocketOidcPathPrefix
   , websocketPathPrefix
   )
 where
 
+import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Settings
-  ( ConfigFile (..)
+  ( AwsSubstrateSection (..)
+  , ConfigFile (..)
   , DomainSection (..)
+  , Route53Section (..)
   , ValidatedSettings (..)
+  , isAwsSubstrateConfigured
   )
+import Prodbox.Substrate (Substrate (..))
+import System.FilePath ((</>))
 
 data PublicEdgeRoute
   = PublicRouteAuth
@@ -93,6 +102,33 @@ identityIssuerUrl settings = publicRouteUrl settings PublicRouteAuth ++ "/realms
 
 sharedPublicHostFqdns :: ValidatedSettings -> [String]
 sharedPublicHostFqdns settings = [publicFqdn settings]
+
+substratePublicFqdn :: ValidatedSettings -> Substrate -> String
+substratePublicFqdn settings substrate =
+  case substrate of
+    SubstrateHomeLocal -> publicFqdn settings
+    SubstrateAws ->
+      let awsSection = aws_substrate (validatedConfig settings)
+       in if isAwsSubstrateConfigured awsSection
+            then Text.unpack (Text.strip (subzone_name awsSection))
+            else publicFqdn settings
+
+substrateHostedZoneId :: ValidatedSettings -> Substrate -> Text
+substrateHostedZoneId settings substrate =
+  case substrate of
+    SubstrateHomeLocal -> zone_id (route53 (validatedConfig settings))
+    SubstrateAws ->
+      let awsSection = aws_substrate (validatedConfig settings)
+       in if isAwsSubstrateConfigured awsSection
+            then hosted_zone_id awsSection
+            else zone_id (route53 (validatedConfig settings))
+
+substrateKubeconfigPath :: FilePath -> Substrate -> Maybe FilePath
+substrateKubeconfigPath repoRoot substrate =
+  case substrate of
+    SubstrateHomeLocal -> Nothing
+    SubstrateAws ->
+      Just (repoRoot </> ".prodbox-state" </> "aws-eks-test" </> "kubeconfig")
 
 renderHelmRouteInventory :: String
 renderHelmRouteInventory =

@@ -23,6 +23,10 @@
         , region : Text
         }
     , route53 : { zone_id : Text }
+    , aws_substrate :
+        { hosted_zone_id : Text
+        , subzone_name : Text
+        }
     , domain :
         { demo_fqdn : Text
         , demo_ttl : Natural
@@ -71,6 +75,10 @@
         , region = ""
         }
     , route53 = { zone_id = "" }
+    , aws_substrate =
+        { hosted_zone_id = ""
+        , subzone_name = ""
+        }
     , domain =
         { demo_fqdn = "test.resolvefintech.com"
         , demo_ttl = 60

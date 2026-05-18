@@ -69,6 +69,7 @@ Reconcile a root chart to the supported state.
 Options:
 - --dry-run - Render the deployment plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox charts deploy vscode  # Deploy the vscode stack.
@@ -82,6 +83,7 @@ Options:
 - --yes, -y - Skip confirmation prompt
 - --dry-run - Render the deletion plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox charts delete vscode --yes  # Delete the vscode stack.
@@ -352,6 +354,29 @@ Options:
 Examples:
 - prodbox pulumi test-destroy --yes  # Destroy the HA RKE2 validation stack.
 
+## prodbox pulumi aws-subzone-resources
+prodbox pulumi aws-subzone-resources - Provision the per-substrate Route 53 subzone
+
+Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation.
+Options:
+- --dry-run - Render the subzone plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi aws-subzone-resources  # Reconcile the AWS-substrate Route 53 subzone.
+
+## prodbox pulumi aws-subzone-destroy
+prodbox pulumi aws-subzone-destroy - Destroy the per-substrate Route 53 subzone
+
+Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation.
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi aws-subzone-destroy --yes  # Destroy the AWS-substrate Route 53 subzone.
+
 ## prodbox rke2 status
 prodbox rke2 status - Check RKE2 status
 
@@ -419,6 +444,7 @@ Run lint and then the full test surface.
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test all  # Run lint and the full test surface.
@@ -437,6 +463,7 @@ Run unit tests.
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test unit  # Run unit tests.
@@ -448,6 +475,7 @@ Run all integration suites
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration all  # Run the `all` integration suite.
@@ -459,6 +487,7 @@ Run CLI integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration cli  # Run the `cli` integration suite.
@@ -470,6 +499,7 @@ Run AWS IAM integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration aws-iam  # Run the `aws-iam` integration suite.
@@ -481,6 +511,7 @@ Run Route 53 integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration dns-aws  # Run the `dns-aws` integration suite.
@@ -492,6 +523,7 @@ Run EKS integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration aws-eks  # Run the `aws-eks` integration suite.
@@ -503,6 +535,7 @@ Run environment integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration env  # Run the `env` integration suite.
@@ -514,6 +547,7 @@ Run gateway-daemon integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration gateway-daemon  # Run the `gateway-daemon` integration suite.
@@ -525,6 +559,7 @@ Run gateway pod integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration gateway-pods  # Run the `gateway-pods` integration suite.
@@ -536,6 +571,7 @@ Run gateway partition integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration gateway-partition  # Run the `gateway-partition` integration suite.
@@ -547,6 +583,7 @@ Run HA RKE2 AWS integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration ha-rke2-aws  # Run the `ha-rke2-aws` integration suite.
@@ -558,6 +595,7 @@ Run lifecycle integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration lifecycle  # Run the `lifecycle` integration suite.
@@ -569,6 +607,7 @@ Run Pulumi integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration pulumi  # Run the `pulumi` integration suite.
@@ -580,6 +619,7 @@ Run chart-storage integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration charts-storage  # Run the `charts-storage` integration suite.
@@ -591,6 +631,7 @@ Run chart-platform integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration charts-platform  # Run the `charts-platform` integration suite.
@@ -602,6 +643,7 @@ Run vscode stack integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration charts-vscode  # Run the `charts-vscode` integration suite.
@@ -613,6 +655,7 @@ Run API stack integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration charts-api  # Run the `charts-api` integration suite.
@@ -624,6 +667,7 @@ Run WebSocket stack integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration charts-websocket  # Run the `charts-websocket` integration suite.
@@ -635,6 +679,7 @@ Run shared-host admin-route integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration admin-routes  # Run the `admin-routes` integration suite.
@@ -646,6 +691,7 @@ Run public DNS integration tests
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
 - prodbox test integration public-dns  # Run the `public-dns` integration suite.

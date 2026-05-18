@@ -60,6 +60,8 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-0
+        kubernetes.io/cluster/${clusterName}: shared
+        kubernetes.io/role/elb: "1"
 
   publicSubnet1:
     type: aws:ec2:Subnet
@@ -70,6 +72,8 @@ resources:
       mapPublicIpOnLaunch: true
       tags:
         Name: ${stackName}-public-subnet-1
+        kubernetes.io/cluster/${clusterName}: shared
+        kubernetes.io/role/elb: "1"
 
   rta0:
     type: aws:ec2:RouteTableAssociation
@@ -182,6 +186,65 @@ resources:
         - ${nodeCniPolicyAttachment}
         - ${nodeEcrPolicyAttachment}
 
+  # IAM OIDC provider for the EKS cluster, required for IRSA-bound service accounts
+  # such as the AWS Load Balancer Controller.
+  oidcProvider:
+    type: aws:iam:OpenIdConnectProvider
+    properties:
+      url: ${cluster.identities[0].oidcs[0].issuer}
+      clientIdLists:
+        - sts.amazonaws.com
+      # Root CA thumbprint for AWS EKS OIDC endpoints. The thumbprint covers
+      # the DigiCert/Amazon-issued certificates that front the EKS OIDC service
+      # in every supported region.
+      thumbprintLists:
+        - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280
+      tags:
+        Name: ${stackName}-oidc-provider
+
+  # IAM policy for the AWS Load Balancer Controller. The policy document is the
+  # canonical upstream IAM policy from
+  # https://github.com/kubernetes-sigs/aws-load-balancer-controller/blob/v2.8.2/docs/install/iam_policy.json
+  # vendored at pulumi/aws-eks/aws-lb-controller-iam-policy.json. Keep the
+  # vendored copy in sync with the controller version we install at the
+  # chart-deploy boundary.
+  awsLbControllerPolicy:
+    type: aws:iam:Policy
+    properties:
+      name: ${stackName}-aws-lb-controller
+      description: "AWS Load Balancer Controller permissions for the AWS-substrate EKS cluster"
+      policy:
+        fn::readFile: ./aws-lb-controller-iam-policy.json
+
+  # IAM role assumed by the AWS Load Balancer Controller's Kubernetes service
+  # account via web identity federation through the cluster's OIDC provider.
+  # The service account name (`aws-load-balancer-controller`) and namespace
+  # (`kube-system`) are the standard controller defaults.
+  awsLbControllerRole:
+    type: aws:iam:Role
+    properties:
+      name: ${stackName}-aws-lb-controller
+      assumeRolePolicy:
+        fn::toJSON:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Federated: ${oidcProvider.arn}
+              Action: sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  ${cluster.identities[0].oidcs[0].issuer}:sub: system:serviceaccount:kube-system:aws-load-balancer-controller
+                  ${cluster.identities[0].oidcs[0].issuer}:aud: sts.amazonaws.com
+      tags:
+        Name: ${stackName}-aws-lb-controller
+
+  awsLbControllerPolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${awsLbControllerRole.name}
+      policyArn: ${awsLbControllerPolicy.arn}
+
 outputs:
   backend_bucket: prodbox-test-pulumi-backends
   cluster_name: ${cluster.name}
@@ -193,3 +256,8 @@ outputs:
     - ${publicSubnet0.id}
     - ${publicSubnet1.id}
   cluster_security_group_id: ${cluster.vpcConfig.clusterSecurityGroupId}
+  cluster_oidc_issuer: ${cluster.identities[0].oidcs[0].issuer}
+  oidc_provider_arn: ${oidcProvider.arn}
+  aws_lb_controller_policy_arn: ${awsLbControllerPolicy.arn}
+  aws_lb_controller_role_arn: ${awsLbControllerRole.arn}
+  aws_lb_controller_role_name: ${awsLbControllerRole.name}

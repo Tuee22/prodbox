@@ -26,8 +26,41 @@ elevated-credential validation harness. Per
 `CommandSpec` source-of-truth split (Sprint 1.6), and the capability classes for AWS subsystems
 (Sprint 1.12) without scheduling a new Sprint 7.X for those concerns.
 
-📋 **Planned (Sprint `7.5`)** — bring the AWS substrate to canonical-suite parity with the home
-substrate. See the Sprint `7.5` block below.
+🔄 **Active (Sprint `7.5`)** — bring the AWS substrate to canonical-suite parity with the home
+substrate. The May 2026 scoping review split Sprint `7.5` into three sub-sprints whose
+deliverables are sized for sequential, separately validatable sessions:
+
+- **Sprint `7.5.a`** (✅ Done, May 17, 2026) — `Substrate` ADT
+  (`SubstrateHomeLocal | SubstrateAws`), `--substrate {home-local|aws}` CLI surface threaded
+  through `prodbox test integration ...` and `prodbox test all`, `NativeSuitePlan` gains a
+  `nativeSubstrate` field, `testExecutionPlan` takes a `Substrate` parameter and propagates
+  it through `TestRunner` and `TestValidation`, every `--substrate aws` invocation surfaces
+  an explicit "not yet implemented at Sprint 7.5.a" remedy for chart-deploy /
+  public-edge / WebSocket validations. Code-only landing; the kubeconfig extraction,
+  per-substrate Route 53 zone field, and substrate-aware `publicFqdn` are deferred to
+  Sprint `7.5.b` per the scoping review. Validated with `prodbox check-code`,
+  `prodbox test unit` (296 tests pass).
+- **Sprint `7.5.b`** (🔄 Active, split into `7.5.b.i` and `7.5.b.ii` per the May 17, 2026
+  scoping check-in):
+  - **`7.5.b.i`** (✅ Done, May 17, 2026) — code-side substrate foundations: EKS kubeconfig
+    extraction (`materializeAwsEksKubeconfig` in `src/Prodbox/Infra/AwsEksTestStack.hs`),
+    substrate-aware helpers (`substrateKubeconfigPath`, `substrateHostedZoneId`,
+    `substratePublicFqdn` in `src/Prodbox/PublicEdge.hs`), and the `aws_substrate` Dhall
+    block (`hosted_zone_id`, `subzone_name`) wired through
+    `prodbox-config-types.dhall`, `prodbox-config.dhall`, and
+    `src/Prodbox/Settings.hs::AwsSubstrateSection`. Code-only; validated with
+    `prodbox check-code` and `prodbox test unit` (296/296 pass).
+  - **`7.5.b.ii`** (📋 Planned) — AWS Load Balancer Controller IAM policy + IRSA setup in
+    `pulumi/aws-eks/Main.yaml`, subnet tags for ALB discovery, a new Pulumi program for the
+    per-substrate Route 53 hosted subzone with NS delegation, cert-manager DNS01
+    `ClusterIssuer` rendering substrate-aware in `src/Prodbox/CLI/Rke2.hs`,
+    substrate-aware `ChartPlatform.hs` branching that consumes
+    `substrateKubeconfigPath`, and AWS LB Controller + Envoy Gateway install paths on the
+    EKS substrate. Validated with live AWS apply in Sprint `7.5.c`.
+- **Sprint `7.5.c`** (📋 Planned) — live AWS-substrate canonical-suite validation
+  (`charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`,
+  public-edge readiness) plus zero-residue teardown scan and Substrate parity table flip in
+  [substrates.md](substrates.md) and [README.md](README.md).
 
 ## Phase Summary
 
@@ -44,13 +77,15 @@ This phase owns AWS substrate foundations:
    on Haskell-owned AWS-user and config cleanup. Sprint `7.4` is closed on the single-host
    onboarding and placeholder-domain removal doctrine for `test.resolvefintech.com`.
 
-2. **AWS substrate parity with the canonical suite (Sprint `7.5`, 📋 Planned)** — provision the
-   AWS substrate so it stands up the same chart set, ingress, certificates, and DNS records
-   that the home substrate provides today, and run the substrate-agnostic canonical-suite
-   validations (`charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`,
-   `admin-routes`, public-edge readiness) against the AWS substrate. The suite content lives
-   in [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md); this sprint owns
-   only the substrate's provisioning side so those validations have something to run against.
+2. **AWS substrate parity with the canonical suite (Sprint `7.5`, 🔄 Active, split into
+   `7.5.a`/`7.5.b`/`7.5.c`)** — provision the AWS substrate so it stands up the same chart
+   set, ingress, certificates, and DNS records that the home substrate provides today, and
+   run the substrate-agnostic canonical-suite validations (`charts-vscode`, `charts-api`,
+   `charts-websocket`, `public-dns`, `admin-routes`, public-edge readiness) against the AWS
+   substrate. The suite content lives in
+   [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md); this sprint owns only
+   the substrate's provisioning side so those validations have something to run against. The
+   sub-sprint split is described in the sprint blocks below.
 
 This phase also provides AWS-substrate foundations consumed cross-substrate (see
 [substrates.md → Cross-Substrate Shared Resources](substrates.md#cross-substrate-shared-resources)):
@@ -308,53 +343,473 @@ output, fixtures, and validation assumptions.
 
 None.
 
-## Sprint 7.5: AWS Substrate Parity with the Canonical Suite 📋
+## Sprint 7.5: AWS Substrate Parity with the Canonical Suite 🔄
 
-**Status**: Planned
+**Status**: Active (split into `7.5.a`, `7.5.b`, `7.5.c`)
 **Blocked by**: Existing AWS substrate foundations (Sprints `7.1`–`7.4`); Sprint `5.X` if the
 canonical-suite content gains new prerequisites that need cross-substrate parity
-**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`,
-`src/Prodbox/Prerequisite.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
-`src/Prodbox/TestValidation.hs`, `charts/`, `documents/engineering/aws_integration_environment_doctrine.md`
-**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`,
-`documents/engineering/aws_integration_environment_doctrine.md`,
-`documents/engineering/unit_testing_policy.md`
 
-### Objective
+The May 17, 2026 scoping review split this sprint into three sequentially-validatable
+sub-sprints. The overall objective and deliverables remain the same; the split exists so each
+sub-sprint can be implemented and validated in a focused session without holding a wide
+substrate-threading change open while live AWS infrastructure is being designed and
+provisioned.
+
+### Objective (sprint-level, unchanged across the split)
 
 Bring the AWS substrate to behavioral parity with the home substrate for the canonical test
-suite. After this sprint closes, every validation that runs on the home substrate today also
-runs on the AWS substrate when the AWS substrate is the active substrate for a suite run, and
-the substrate parity row in [substrates.md](substrates.md) for AWS becomes ✅ Full canonical
-suite.
+suite. After this sprint's three sub-sprints close, every validation that runs on the home
+substrate today also runs on the AWS substrate when the AWS substrate is the active substrate
+for a suite run, and the substrate parity row in [substrates.md](substrates.md) for AWS
+becomes ✅ Full canonical suite.
 
-### Deliverables
+### Sprint-level Deliverables (allocated to sub-sprints below)
 
 - AWS substrate provisioning (per substrate, per active suite run) stands up:
   - A per-substrate Route 53 hosted zone or subdomain delegation (e.g. `aws.<configured_zone>`
     or a stack-specific subzone) so the substrate has its own public hostname distinct from
-    the home substrate's `test.resolvefintech.com`.
+    the home substrate's `test.resolvefintech.com`. (`7.5.b`)
   - cert-manager + the real Let's Encrypt ACME provider configured against that hosted zone.
+    (`7.5.b`)
   - An ingress comparable to the home substrate's MetalLB + Envoy Gateway pairing (EKS native
     NLB + Envoy Gateway, or equivalent — implementation choice belongs to this sprint).
+    (`7.5.b`)
   - The supported chart set (`gateway`, `keycloak`, `vscode`, `api`, `websocket`, plus their
     Patroni and Redis dependencies) deployed via `prodbox charts deploy` against the AWS
-    substrate cluster.
+    substrate cluster. (`7.5.b`)
   - The same prerequisite set (`infra_ready`, `public_edge_ready`, `k8s_ready`, chart-platform
-    prereqs) satisfied for the AWS substrate.
+    prereqs) satisfied for the AWS substrate. (`7.5.b`)
 - The canonical-suite content (`charts-vscode`, `charts-api`, `charts-websocket`,
   `public-dns`, `admin-routes`, public-edge readiness, plus phase-8's `keycloak-invite` when
   it lands) runs unchanged against the AWS substrate and produces the same pass/fail
   semantics as on the home substrate. The validations themselves do not change; only the
-  substrate they target changes.
+  substrate they target changes. (`7.5.c`)
 - AWS substrate teardown leaves no AWS residue: no orphaned hosted zone, no orphaned cert,
   no leaked ACME order/challenge, no stale `HTTPRoute` or `Certificate` resources, no leaked
-  EBS volumes from chart PVCs.
+  EBS volumes from chart PVCs. (`7.5.c`)
 - The substrate parity row in [substrates.md](substrates.md) for the AWS substrate is
-  updated from 🔄 to ✅, with the link back to this sprint's closure date.
+  updated from 🔄 to ✅, with the link back to this sprint's closure date. (`7.5.c`)
 - The aggregate runner (`prodbox test integration all`, `prodbox test all`) optionally
   iterates the canonical suite over multiple substrates when configured to do so; the
-  default substrate remains the home local substrate.
+  default substrate remains the home local substrate. (`7.5.a` adds the surface; `7.5.c`
+  proves both substrates green.)
+
+## Sprint 7.5.a: Substrate ADT, CLI Surface, and EKS Kubeconfig Extraction ✅
+
+**Status**: Done (May 17, 2026)
+**Blocked by**: None (initial sub-sprint of the 7.5 split)
+**Implementation**: `src/Prodbox/CLI/Command.hs`, `src/Prodbox/CLI/Spec.hs`,
+`src/Prodbox/CLI/Parser.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
+`src/Prodbox/TestValidation.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
+`src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/PublicEdge.hs`,
+`src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Land the substrate-shaped type surface and the EKS kubeconfig extraction so that the
+chart-deploy and test-runner code paths take a `Substrate` parameter (with `SubstrateHomeLocal`
+as the default), without changing live behavior on the home substrate. This sub-sprint is
+code-only and substrate-agnostic in the home path; it does not yet stand up the AWS-substrate
+ingress or chart set (`7.5.b`) and does not yet run canonical-suite validations against AWS
+(`7.5.c`).
+
+### Deliverables
+
+- `Substrate` ADT (`SubstrateHomeLocal | SubstrateAws`) defined in `src/Prodbox/CLI/Command.hs`
+  and exported throughout the test/chart-deploy surface.
+- `--substrate {home-local|aws}` CLI flag on `prodbox test integration ...` and the aggregate
+  `prodbox test integration all` / `prodbox test all` surfaces, with `home-local` as the
+  default. The flag is accepted on every `test integration` leaf; legacy invocations without
+  the flag continue to target the home substrate.
+- `NativeSuitePlan` gains a `nativeSubstrate :: Substrate` field. `testExecutionPlan` honors the
+  substrate parameter for downstream propagation.
+- `TestRunner` and `TestValidation` accept and propagate the `Substrate` parameter; the
+  validation arms that touch chart-deploy or kubeconfig consult the substrate-aware helpers
+  (added below) rather than hardcoded home-substrate state. Where the AWS-substrate behavior
+  is not yet implemented, the validation arms surface a clear "AWS substrate path not yet
+  implemented — wait for Sprint 7.5.b" remedy rather than silently behaving as if the home
+  substrate were the target.
+- `src/Prodbox/Lib/ChartPlatform.hs` exposes `substrateKubeconfigPath :: Substrate -> FilePath`
+  and `substrateRoute53ZoneId :: ValidatedSettings -> Substrate -> Text`. The home-substrate
+  branches reproduce the existing hardcoded paths exactly; the AWS-substrate branches read
+  from the new dhall fields added below.
+- `src/Prodbox/Infra/AwsEksTestStack.hs` gains a `materializeAwsEksKubeconfig`
+  post-provision step that invokes `aws eks update-kubeconfig` against the provisioned
+  cluster and writes the result to `.prodbox-state/aws-eks-test/kubeconfig`. The kubeconfig
+  path is exposed via `substrateKubeconfigPath`.
+- `prodbox-config-types.dhall` (and the matching `prodbox-config.dhall`) gain an optional
+  `aws_substrate : Optional { hosted_zone_id : Text, subzone_name : Text }` block. The field
+  is optional today; `7.5.b` will make it required when the AWS substrate is the active
+  substrate for a suite run.
+- `src/Prodbox/PublicEdge.hs::publicFqdn` takes a `Substrate` parameter and returns the
+  per-substrate canonical hostname; the home-substrate branch continues to read
+  `demo_fqdn` (preserving today's `test.resolvefintech.com` behavior).
+- Test-runner help, manpages, completions, and `documents/cli/commands.md` regenerate cleanly
+  with the new flag. `trackingGeneratedPaths` keeps the new artifacts under doctrine.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox test integration cli`
+4. `prodbox test integration env`
+5. `prodbox test all` (home substrate, default) — proves no regression.
+6. `prodbox test integration cli` with `--substrate aws` parses correctly and surfaces the
+   "AWS substrate path not yet implemented" remedy on validation arms that 7.5.b will
+   implement (this is the intended state at 7.5.a close).
+
+### Current Validation State
+
+- `src/Prodbox/Substrate.hs` exports the `Substrate` ADT
+  (`SubstrateHomeLocal | SubstrateAws`), the `substrateId` helper, and the
+  `parseSubstrate` reader used by the CLI.
+- `src/Prodbox/CLI/Command.hs::TestCommand` carries a `testSubstrate :: Substrate` field
+  honored by `src/Prodbox/TestRunner.hs::runTests`.
+- `src/Prodbox/CLI/Spec.hs` adds `substrateOptionParser` and surfaces
+  `--substrate SUBSTRATE` on every `test integration ...` leaf plus `test all`,
+  defaulting to `home-local`; the legacy `prodbox test ...` invocations stay green.
+- `src/Prodbox/TestPlan.hs::NativeSuitePlan` exposes `nativeSubstrate :: Substrate`;
+  `testExecutionPlan :: Substrate -> TestScope -> TestExecutionPlan` and every
+  `NativeSuitePlan` construction propagates that substrate.
+- `src/Prodbox/TestValidation.hs::runNativeValidation :: Substrate -> FilePath ->
+  [(String, String)] -> NativeValidation -> IO ExitCode` routes home-substrate flows
+  unchanged and surfaces the explicit
+  "Validation `<id>` on substrate `aws` is not yet implemented at Sprint 7.5.a" remedy
+  for every chart-deploy / public-edge / WebSocket validation.
+- The CLI artifacts (`documents/cli/commands.md`, `test/golden/cli/commands.json`,
+  `test/golden/cli/help-all.txt`) regenerate cleanly under
+  `trackingGeneratedPaths`; golden tests in the unit suite are re-accepted.
+- Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (all 296 tests
+  pass) on May 17, 2026.
+
+### Remaining Work
+
+None. EKS kubeconfig extraction (`materializeAwsEksKubeconfig`), the
+substrate-aware `substrateKubeconfigPath` / `substrateRoute53ZoneId` helpers on
+`Prodbox.Lib.ChartPlatform`, the `aws_substrate` Dhall block in
+`prodbox-config-types.dhall`, and the substrate-aware `publicFqdn` derivation in
+`Prodbox.PublicEdge` are deferred to Sprint `7.5.b` per the May 17, 2026 scoping
+review, where they are paired with the AWS-substrate ingress and cert-manager
+DNS01 work they exist to support.
+
+## Sprint 7.5.b: AWS-Native Ingress, cert-manager DNS01, and AWS-Substrate Chart Deploy 🔄
+
+**Status**: Active (split into `7.5.b.i` ✅ and `7.5.b.ii` 📋 per the May 17, 2026 scoping
+check-in)
+**Blocked by**: Sprint `7.5.a`
+
+The sub-sprint owns the AWS-substrate equivalent of the home substrate's MetalLB + Envoy
+Gateway pairing plus the cert-manager DNS01 ClusterIssuer wired against a per-substrate
+Route 53 zone, then deploys the canonical chart set against that cluster so the next sub-sprint
+can run the canonical-suite validations against it. The May 17, 2026 scoping review split the
+sub-sprint into a code-side foundations sub-sub-sprint (`7.5.b.i`) and the live-AWS-applying
+ingress/chart sub-sub-sprint (`7.5.b.ii`) so each lands in its own session.
+
+## Sprint 7.5.b.i: Code-Side Substrate Foundations ✅
+
+**Status**: Done (May 17, 2026)
+**Blocked by**: Sprint `7.5.a`
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/PublicEdge.hs`,
+`src/Prodbox/Settings.hs`, `prodbox-config-types.dhall`, `prodbox-config.dhall`,
+`test/unit/Main.hs`, `test/integration/EnvSuite.hs`, `test/integration/CliSuite.hs`
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`
+
+### Objective
+
+Land the substrate-aware code foundations that `7.5.b.ii` needs without applying any AWS
+infrastructure yet: EKS kubeconfig extraction, substrate-aware path/zone/FQDN helpers, the
+`aws_substrate` Dhall block, and the matching Haskell record. Code-only; validates with
+`prodbox check-code` and `prodbox test unit`.
+
+### Deliverables
+
+- `src/Prodbox/Infra/AwsEksTestStack.hs` exports `materializeAwsEksKubeconfig :: FilePath ->
+  AwsEksTestStackSnapshot -> IO (Either String FilePath)` and the deterministic
+  `awsEksTestKubeconfigPath` helper. `ensureAwsEksTestStackResources` invokes
+  `materializeAwsEksKubeconfig` after a successful EKS reconcile so the kubeconfig is written
+  to `.prodbox-state/aws-eks-test/kubeconfig` for downstream consumers.
+- `src/Prodbox/PublicEdge.hs` exports `substrateKubeconfigPath :: FilePath -> Substrate ->
+  Maybe FilePath`, `substrateHostedZoneId :: ValidatedSettings -> Substrate -> Text`, and
+  `substratePublicFqdn :: ValidatedSettings -> Substrate -> String`. The home-substrate
+  branches reproduce today's hardcoded paths exactly; the AWS-substrate branches read from
+  the new `aws_substrate` Dhall block (falling back to home values when the block is empty).
+- `prodbox-config-types.dhall` adds the `aws_substrate : { hosted_zone_id : Text, subzone_name
+  : Text }` block with empty defaults. `prodbox-config.dhall` has its `sha256:` import hash
+  re-frozen against the updated schema.
+- `src/Prodbox/Settings.hs` exposes `AwsSubstrateSection`, the matching `aws_substrate`
+  `ConfigFile` field, the `isAwsSubstrateConfigured` helper, and surfaces the new fields in
+  `renderConfigDhall` plus `renderSettingsDisplay`.
+- Test fixtures (`test/unit/Main.hs`, `test/integration/EnvSuite.hs`,
+  `test/integration/CliSuite.hs`) updated for the new schema; all 296 unit tests pass.
+
+### Validation
+
+1. `prodbox check-code` — exit 0.
+2. `prodbox test unit` — 296/296 tests pass.
+3. `prodbox docs check` — exit 0.
+4. `prodbox config validate` — succeeds (with the unchanged pre-existing "aws.access_key_id
+   must not be empty" diagnostic from the supported operational-credentials-from-harness
+   pattern).
+5. `dhall-to-json --file prodbox-config.dhall --compact --preserve-null` emits the new
+   `aws_substrate` JSON block.
+
+### Remaining Work
+
+None. The AWS Load Balancer Controller IAM + IRSA, Route 53 subzone Pulumi program,
+substrate-aware `ClusterIssuer` rendering, substrate-aware `ChartPlatform.hs` branching, and
+AWS LB Controller + Envoy Gateway install paths are owned by Sprint `7.5.b.ii`.
+
+## Sprint 7.5.b.ii: AWS Load Balancer Controller, Route 53 Subzone, and Chart-Deploy Substrate Branching 🔄
+
+**Status**: Active (`7.5.b.ii.a` ✅ done May 17, 2026; `7.5.b.ii.b`/`7.5.b.ii.c`/`7.5.b.ii.d`
+📋 Planned). The May 17, 2026 scoping pass further split this sub-sprint into four
+session-sized sub-sub-sprints because the combined surface (Pulumi + ClusterIssuer +
+ChartPlatform substrate threading + AWS LB Controller + Envoy Gateway install) is too large
+for one session.
+
+- **`7.5.b.ii.a`** (✅ Done, May 17, 2026) — substrate-aware cert-manager `ClusterIssuer`
+  rendering. `src/Prodbox/CLI/Rke2.hs::acmeRuntimeManifest` and `acmeClusterIssuerSpec` now
+  take a `Substrate` parameter; the home-substrate path calls them with `SubstrateHomeLocal`
+  unchanged, and the AWS-substrate path will call them with `SubstrateAws` to bind the
+  per-substrate Route 53 hosted zone (via `substrateHostedZoneId` from
+  `Prodbox.PublicEdge`). Validated with `prodbox check-code` (exit 0) and
+  `prodbox test unit` (296/296 pass).
+- **`7.5.b.ii.b`** (✅ Done, May 17, 2026) — Pulumi extensions in `pulumi/aws-eks/Main.yaml`:
+  vendored AWS Load Balancer Controller IAM policy
+  (`pulumi/aws-eks/aws-lb-controller-iam-policy.json`, 242-line v2.8.2 canonical policy),
+  IRSA OIDC provider for the EKS cluster
+  (`aws:iam:OpenIdConnectProvider` against `cluster.identities[0].oidcs[0].issuer`), IAM
+  role bound to the standard
+  `system:serviceaccount:kube-system:aws-load-balancer-controller` web-identity subject,
+  `RolePolicyAttachment`, and subnet tags
+  (`kubernetes.io/cluster/${clusterName}: shared`, `kubernetes.io/role/elb: "1"`) on the
+  two public subnets. New stack outputs `cluster_oidc_issuer`, `oidc_provider_arn`,
+  `aws_lb_controller_policy_arn`, `aws_lb_controller_role_arn`,
+  `aws_lb_controller_role_name`. The Haskell-side snapshot capture of those outputs is
+  intentionally deferred to `7.5.b.ii.d` where the chart-deploy substrate branching will
+  consume them. Validated via `python3 -m json.tool` on the policy file,
+  `python3 yaml.safe_load` on `Main.yaml`, a no-op `pulumi preview` confirming the program
+  parses past resource synthesis (failing only at the expected AWS credential validation
+  with fake creds), `prodbox check-code` (exit 0), `prodbox lint files` (exit 0), and
+  `prodbox test unit` (296/296 pass).
+- **`7.5.b.ii.c`** (🔄 Active, split into `7.5.b.ii.c.I` ✅ done May 17, 2026, and
+  `7.5.b.ii.c.II` 📋):
+  - **`7.5.b.ii.c.I`** (✅ Done, May 17, 2026) — Pulumi YAML for the per-substrate Route 53
+    hosted subzone. New `pulumi/aws-eks-subzone/Pulumi.yaml` plus
+    `pulumi/aws-eks-subzone/Main.yaml`: AWS provider with the same env-var mappings as the
+    existing AWS-substrate stacks, a `aws:route53:Zone` resource for the subzone
+    (parameterized by `subzoneName` config matching `aws_substrate.subzone_name`), and an
+    NS delegation `aws:route53:Record` in the operator-owned parent zone
+    (parameterized by `parentZoneId` matching `route53.zone_id`). Outputs include
+    `subzone_id`, `subzone_name`, `subzone_name_servers`, and `parent_ns_record_fqdn`.
+    Validated with `python3 yaml.safe_load` and a no-op `pulumi preview` (program
+    synthesizes past resource definition; fails only at the expected AWS credential
+    validation), `prodbox check-code` (exit 0), and `prodbox test unit` (296/296).
+  - **`7.5.b.ii.c.II`** (✅ Done, May 17, 2026) — Haskell-side stack lifecycle in
+    `src/Prodbox/Infra/AwsEksSubzoneStack.hs`
+    (`ensureAwsEksSubzoneStackResources`, `destroyAwsEksSubzoneStack`,
+    `loadAwsEksSubzoneStackSnapshot`/`saveAwsEksSubzoneStackSnapshot`/`clearAwsEksSubzoneStackSnapshot`,
+    `assertNoAwsEksSubzoneStackResidue`, `renderAwsEksSubzoneStackReport`) mirroring
+    the `AwsEksTestStack` pattern. Reuses `loadOperationalAwsCredentials`,
+    `pulumiAwsProviderEnv`, `pulumiBackendBaseEnv`, and `settingsAwsEnv` (newly exported
+    from `AwsEksTestStack`) and the existing `MinioBackend` port-forward helpers; the
+    subzone-specific pulumi flow helpers are parameterized to `awsEksSubzoneStackName`.
+    `resolveAwsEksSubzoneStackConfig` reads `route53.zone_id` and
+    `aws_substrate.subzone_name` from settings and projects them to Pulumi config
+    (`parentZoneId`, `subzoneName`); fails fast when either is empty.
+    `assertNoAwsEksSubzoneStackResidue` queries
+    `aws route53 list-hosted-zones-by-name` for orphan subzones and
+    `aws route53 list-resource-record-sets` for orphan NS records in the parent zone.
+    CLI surface: `prodbox pulumi aws-subzone-resources` and
+    `prodbox pulumi aws-subzone-destroy` (with `--yes`/`--dry-run`/`--plan-file`)
+    registered through `PulumiAwsSubzoneResources` / `PulumiAwsSubzoneDestroy`
+    variants on `PulumiCommand`. Validated with `prodbox check-code` (exit 0),
+    `prodbox docs generate` regeneration, and `prodbox test unit` (300/300 pass; up
+    from 296 because the two new pulumi subcommands each add a happy-case + an
+    unhappy-case parser test).
+- **`7.5.b.ii.d`** (🔄 Active, split into `7.5.b.ii.d.I` ✅ done May 17, 2026 and
+  `7.5.b.ii.d.II` 📋):
+  - **`7.5.b.ii.d.I`** (✅ Done, May 17, 2026) — `prodbox charts deploy` and
+    `prodbox charts delete` now accept `--substrate {home-local|aws}` (default
+    `home-local`). `ChartsDeploy` and `ChartsDelete` carry the `Substrate`. A new
+    `withSubstrateEnvironment` helper in `src/Prodbox/CLI/Charts.hs` brackets the
+    chart-deploy / delete action with `setEnv`/`unsetEnv` of `KUBECONFIG` pointed at
+    the substrate-specific path (`Nothing` for home so the operator's default
+    kubeconfig stays in scope; `.prodbox-state/aws-eks-test/kubeconfig` for AWS).
+    Existing helm/kubectl subprocesses in `Prodbox.Lib.ChartPlatform` inherit the
+    parent environment, so they automatically target the AWS-substrate cluster when
+    the operator selects `--substrate aws`. Validated with `prodbox check-code`
+    (exit 0), `prodbox docs generate` regeneration, and `prodbox test unit`
+    (300/300 pass).
+  - **`7.5.b.ii.d.II`** (🔄 Active; the May 17, 2026 scoping pass split this into
+    four session-sized sub-sub-sub-sprints `α`/`β`/`γ`/`δ` because of the depth
+    that emerged once the Harbor-mirrored image references in the home-substrate
+    chart-platform install became visible — the AWS substrate needs an entirely
+    parallel install path keyed off upstream registries):
+    - **`α`** (✅ Done, May 17, 2026) — EKS snapshot extended to capture the new
+      Pulumi outputs added in `7.5.b.ii.b`
+      (`cluster_oidc_issuer`, `oidc_provider_arn`, `aws_lb_controller_policy_arn`,
+      `aws_lb_controller_role_arn`, `aws_lb_controller_role_name`), with
+      backwards-compatible loading of older snapshots (missing fields default to
+      empty strings; the AWS LB Controller install fails fast at runtime when the
+      role ARN is empty). New `Prodbox.Lib.AwsSubstratePlatform` module exports
+      `ensureAwsLoadBalancerControllerRuntime :: FilePath ->
+      AwsEksTestStackSnapshot -> IO ExitCode`: applies an IRSA-annotated
+      `ServiceAccount` manifest into `kube-system`, adds the `eks` Helm repo
+      (`https://aws.github.io/eks-charts`), helm-installs the upstream
+      `aws-load-balancer-controller` chart pinned to `1.8.4` with
+      `serviceAccount.create=false`, and waits for the controller deployment to
+      become ready. The function is exposed but not yet wired into
+      `prodbox charts deploy --substrate aws`; the wiring lands in `β` once the
+      Envoy Gateway install path is in place. Validated with `prodbox check-code`
+      (exit 0), `prodbox lint haskell` (clean after one
+      `Use isAsciiUpper` hlint fix), and `prodbox test unit` (300/300).
+    - **`β`** (✅ Done, May 17, 2026) — Envoy Gateway install on EKS via the
+      substrate-aware reconcile path.
+      `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateEnvoyGatewayRuntime`
+      helm-installs the upstream OCI chart `oci://docker.io/envoyproxy/gateway-helm`
+      pinned to `v1.4.4` into the `envoy-gateway-system` namespace, then waits
+      for the `envoy-gateway` deployment to become ready. Exposed but not yet
+      wired into chart-deploy (wiring lands in `δ`). Validated with
+      `prodbox check-code` (exit 0) and `prodbox test unit` (300/300).
+    - **`γ`** (✅ Done, May 17, 2026) — cert-manager install on EKS pulling
+      from upstream Quay/DockerHub (not Harbor).
+      `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateCertManagerRuntime`
+      adds the `jetstack` Helm repo (`https://charts.jetstack.io`),
+      helm-installs the upstream `cert-manager` chart pinned to `v1.16.2` (kept
+      aligned with the home substrate's version constant in
+      `Prodbox.CLI.Rke2`) into the `cert-manager` namespace with
+      `crds.enabled=true`, then waits for the cert-manager controller,
+      webhook, and cainjector deployments to become ready. The ACME
+      `ClusterIssuer` rendering is already substrate-aware as of
+      `7.5.b.ii.a` (rendered via `acmeClusterIssuerSpec SubstrateAws`
+      against `aws_substrate.hosted_zone_id`); applying that ClusterIssuer
+      is part of the orchestrator wired in `δ`. Validated with
+      `prodbox check-code` (exit 0) and `prodbox test unit` (300/300).
+    - **`δ`** (✅ Done, May 17, 2026) — top-level orchestrator + chart-deploy
+      wiring + validation remedy removal.
+      `Prodbox.CLI.Rke2` now exports `acmeRuntimeManifest` and
+      `acmeClusterIssuerSpec` so the AWS-substrate path can render the
+      substrate-aware ACME `ClusterIssuer` without duplicating the logic.
+      `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstrateAcmeRuntime` writes
+      the manifest to a temp file, `kubectl apply -f`s it, and
+      `kubectl wait --for=condition=Ready clusterissuer/letsencrypt-http01`s.
+      `Prodbox.Lib.AwsSubstratePlatform::ensureAwsSubstratePlatformRuntime`
+      sequences `α`+`β`+`γ`+ACME after loading the EKS snapshot, failing fast
+      when `prodbox pulumi eks-resources` has not yet been run. The
+      orchestrator is wired into `prodbox charts deploy <chart> --substrate
+      aws` via a new `ensurePlatformForSubstrate` helper in
+      `Prodbox.CLI.Charts` (no-op for home; orchestrator for AWS). The
+      `substrateNotYetImplementedRemedy` wildcard in
+      `Prodbox.TestValidation.runNativeValidation` is removed; validations now
+      always route to the substrate-agnostic body, wrapped with a new
+      `withSubstrateKubeconfigEnv` helper that brackets the action with
+      `setEnv`/`unsetEnv` of `KUBECONFIG` (no-op for home; EKS kubeconfig path
+      for AWS). Validated with `prodbox check-code` (exit 0),
+      `prodbox lint haskell` (clean), and `prodbox test unit` (300/300).
+
+**Blocked by**: Sprint `7.5.b.i`
+**Implementation**: `pulumi/aws-eks/Main.yaml`, `pulumi/aws-eks-subzone/` (new) or extension
+of `aws-eks/`, `src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Lib/ChartPlatform.hs`,
+`src/Prodbox/CLI/Rke2.hs` (ClusterIssuer rendering), `charts/`,
+`documents/engineering/envoy_gateway_edge_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`
+
+### Objective
+
+Stand up the AWS-substrate equivalent of the home substrate's MetalLB + Envoy Gateway pairing
+plus the cert-manager DNS01 ClusterIssuer wired against a per-substrate Route 53 zone, then
+deploy the canonical chart set against that cluster so the next sub-sprint can run the
+canonical-suite validations against it.
+
+### Deliverables
+
+- AWS Load Balancer Controller installed on the EKS substrate via IRSA-bound IAM service
+  account, with the supporting VPC subnet tags and IAM policy provisioned by
+  `pulumi/aws-eks/Main.yaml`.
+- A per-substrate Route 53 hosted subzone (`aws.<configured_zone>`) with NS delegation from
+  the configured parent zone.
+- cert-manager `ClusterIssuer` rendered against the per-substrate hosted zone (DNS01 challenge,
+  Route 53 provider scoped to the subzone) so real Let's Encrypt certificates issue against
+  the AWS-substrate FQDN.
+- Envoy Gateway plus the supported chart set (`gateway`, `keycloak`, `vscode`, `api`,
+  `websocket`, plus their dependencies) deployable through `prodbox charts deploy <chart>
+  --substrate aws` against the AWS-substrate cluster.
+- All AWS-substrate-aware code paths added in 7.5.a/7.5.b.i have their behavior implemented
+  (no more "AWS substrate path not yet implemented" remedies on chart-deploy or ingress
+  paths).
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit`
+3. `prodbox pulumi eks-resources` (existing)
+4. `prodbox test integration aws-eks` (existing) — confirms substrate provisioning still
+   stable.
+5. `prodbox charts deploy gateway --substrate aws` (and the rest of the chart set) succeed
+   against the AWS substrate.
+6. cert-manager issues real Let's Encrypt certificates against the per-substrate hosted zone.
+
+### Current Validation State (7.5.b.ii.a)
+
+- `src/Prodbox/CLI/Rke2.hs` imports `substrateHostedZoneId` from `Prodbox.PublicEdge` and
+  `Substrate (..)` from `Prodbox.Substrate`. `ensureAcmeRuntime` calls
+  `acmeRuntimeManifest SubstrateHomeLocal settings prodboxId labelValue`, preserving
+  current home-substrate behavior exactly.
+- `acmeRuntimeManifest :: Substrate -> ValidatedSettings -> String -> String -> [Value]`
+  and `acmeClusterIssuerSpec :: Substrate -> ValidatedSettings -> Value` now route the
+  `hostedZoneID` field of the DNS01 solver through `substrateHostedZoneId`. For the home
+  substrate this resolves to `route53.zone_id`; for the AWS substrate it resolves to
+  `aws_substrate.hosted_zone_id` (with graceful fallback to `route53.zone_id` when the AWS
+  block is empty).
+- Validated with `prodbox check-code` (exit 0), `prodbox test unit` (296/296), and
+  `prodbox docs check` (exit 0).
+
+### Remaining Work (7.5.b.ii.b/c/d)
+
+`7.5.b.ii.b` (Pulumi AWS LB Controller IAM + IRSA + subnet tags), `7.5.b.ii.c` (per-substrate
+Route 53 subzone Pulumi), and `7.5.b.ii.d` (chart-deploy substrate branching + AWS LB
+Controller + Envoy Gateway install paths) are `Planned`. Each requires its own focused
+session.
+
+## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 📋
+
+**Status**: Planned
+**Blocked by**: Sprint `7.5.b`
+**Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsTestStack.hs`
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`documents/engineering/unit_testing_policy.md`
+
+### Objective
+
+Run the canonical-suite validations against the AWS substrate end to end, confirm zero
+post-teardown residue, and flip the substrate parity rows in
+[substrates.md](substrates.md) and [README.md](README.md).
+
+### Deliverables
+
+- `prodbox test integration charts-vscode --substrate aws`,
+  `prodbox test integration charts-api --substrate aws`,
+  `prodbox test integration charts-websocket --substrate aws`,
+  `prodbox test integration public-dns --substrate aws`, and
+  `prodbox test integration admin-routes --substrate aws` all pass.
+- `prodbox test integration aws-eks` plus `prodbox test integration ha-rke2-aws` continue
+  to pass.
+- Post-teardown AWS account scan returns zero residue (no orphaned hosted zone records,
+  no orphaned certs, no leaked ACME challenges, no stale `HTTPRoute` / `Certificate`
+  resources, no leaked EBS volumes).
+- The aggregate runner (`prodbox test all`) succeeds against both substrates when run with
+  the AWS substrate selection.
+- The substrate parity row in [substrates.md](substrates.md) flips from 🔄 to ✅.
+- `DEVELOPMENT_PLAN/README.md` Phase Overview row for Phase 7 flips to ✅ Done.
 
 ### Validation
 
@@ -363,16 +818,17 @@ suite.
 3. `prodbox pulumi eks-resources`
 4. `prodbox test integration aws-eks`
 5. `prodbox test integration ha-rke2-aws`
-6. The canonical-suite validations from
-   [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) targeting the AWS
-   substrate: `charts-vscode`, `charts-api`, `charts-websocket`, `public-dns` against the
-   per-substrate hosted zone, `admin-routes`, and public-edge readiness.
-7. AWS substrate teardown leaves zero AWS residue (verified by post-teardown account scan).
-8. `prodbox test all` succeeds end-to-end against both substrates in sequence.
+6. `prodbox test integration charts-vscode --substrate aws`
+7. `prodbox test integration charts-api --substrate aws`
+8. `prodbox test integration charts-websocket --substrate aws`
+9. `prodbox test integration public-dns --substrate aws`
+10. `prodbox test integration admin-routes --substrate aws`
+11. AWS post-teardown residue scan returns zero.
+12. `prodbox test all` (home substrate, default) still green.
 
 ### Remaining Work
 
-This sprint is `Planned`. Implementation has not started.
+This sub-sprint is `Planned`. Implementation has not started.
 
 ## Documentation Requirements
 

@@ -120,7 +120,7 @@ runTests repoRoot command =
     Right () -> do
       baseEnvironment <- getEnvironment
       environment <- addBuildSupportEnvironment repoRoot baseEnvironment
-      let plan = testExecutionPlan (testScope command)
+      let plan = testExecutionPlan (testSubstrate command) (testScope command)
       writeOutputLine ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
       case testScope command of
         TestLint -> runLintFirst repoRoot environment
@@ -305,7 +305,8 @@ runNativeValidations repoRoot environment suitePlan =
  where
   runValidation :: ExitCode -> NativeValidation -> IO ExitCode
   runValidation failure@(ExitFailure _) _ = pure failure
-  runValidation ExitSuccess validation = runNativeValidation repoRoot environment validation
+  runValidation ExitSuccess validation =
+    runNativeValidation (nativeSubstrate suitePlan) repoRoot environment validation
 
 runPhaseOneInitialPrerequisites :: FilePath -> NativeSuitePlan -> IO ExitCode
 runPhaseOneInitialPrerequisites repoRoot suitePlan =

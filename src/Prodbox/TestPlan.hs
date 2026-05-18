@@ -16,6 +16,7 @@ import Prodbox.CLI.Command
   , PolicyTier (..)
   , TestScope (..)
   )
+import Prodbox.Substrate (Substrate)
 
 data NativeValidation
   = ValidationChartsVscode
@@ -45,6 +46,7 @@ data NativeSuitePlan = NativeSuitePlan
   , nativeRequiresIntegrationRunbook :: Bool
   , nativeRequiresSupportedRuntimeBootstrap :: Bool
   , nativeRequiresSupportedRuntimePostflight :: Bool
+  , nativeSubstrate :: Substrate
   }
   deriving (Eq, Show)
 
@@ -60,8 +62,8 @@ data TestExecutionPlan = TestExecutionPlan
   }
   deriving (Eq, Show)
 
-testExecutionPlan :: TestScope -> TestExecutionPlan
-testExecutionPlan scope =
+testExecutionPlan :: Substrate -> TestScope -> TestExecutionPlan
+testExecutionPlan substrate scope =
   case scope of
     TestAll ->
       nativeExecutionPlan
@@ -78,6 +80,7 @@ testExecutionPlan scope =
           , nativeRequiresIntegrationRunbook = True
           , nativeRequiresSupportedRuntimeBootstrap = True
           , nativeRequiresSupportedRuntimePostflight = True
+          , nativeSubstrate = substrate
           }
     TestLint ->
       nativeExecutionPlan
@@ -92,6 +95,7 @@ testExecutionPlan scope =
           , nativeRequiresIntegrationRunbook = False
           , nativeRequiresSupportedRuntimeBootstrap = False
           , nativeRequiresSupportedRuntimePostflight = False
+          , nativeSubstrate = substrate
           }
     TestUnit ->
       nativeExecutionPlan
@@ -106,6 +110,7 @@ testExecutionPlan scope =
           , nativeRequiresIntegrationRunbook = False
           , nativeRequiresSupportedRuntimeBootstrap = False
           , nativeRequiresSupportedRuntimePostflight = False
+          , nativeSubstrate = substrate
           }
     TestIntegration integrationSuite ->
       case integrationSuite of
@@ -122,6 +127,7 @@ testExecutionPlan scope =
               , nativeRequiresIntegrationRunbook = True
               , nativeRequiresSupportedRuntimeBootstrap = True
               , nativeRequiresSupportedRuntimePostflight = True
+              , nativeSubstrate = substrate
               }
         IntegrationCli ->
           nativeIntegrationPlan
@@ -255,6 +261,7 @@ testExecutionPlan scope =
               , nativeRequiresIntegrationRunbook = True
               , nativeRequiresSupportedRuntimeBootstrap = True
               , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = substrate
               }
         IntegrationChartsApi ->
           nativeExecutionPlan
@@ -269,6 +276,7 @@ testExecutionPlan scope =
               , nativeRequiresIntegrationRunbook = True
               , nativeRequiresSupportedRuntimeBootstrap = True
               , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = substrate
               }
         IntegrationChartsWebsocket ->
           nativeExecutionPlan
@@ -283,6 +291,7 @@ testExecutionPlan scope =
               , nativeRequiresIntegrationRunbook = True
               , nativeRequiresSupportedRuntimeBootstrap = True
               , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = substrate
               }
         IntegrationAdminRoutes ->
           nativeExecutionPlan
@@ -297,6 +306,7 @@ testExecutionPlan scope =
               , nativeRequiresIntegrationRunbook = True
               , nativeRequiresSupportedRuntimeBootstrap = True
               , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = substrate
               }
         IntegrationPublicDns ->
           nativeNamedSuite
@@ -321,6 +331,7 @@ testExecutionPlan scope =
         , nativeRequiresIntegrationRunbook = requiresRunbook
         , nativeRequiresSupportedRuntimeBootstrap = False
         , nativeRequiresSupportedRuntimePostflight = False
+        , nativeSubstrate = substrate
         }
 
   nativeNamedSuite label suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier =

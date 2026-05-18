@@ -4,6 +4,7 @@
 
 module Prodbox.Settings
   ( AcmeSection (..)
+  , AwsSubstrateSection (..)
   , ConfigFile (..)
   , Credentials (..)
   , DeploymentSection (..)
@@ -13,6 +14,7 @@ module Prodbox.Settings
   , StorageSection (..)
   , ValidatedSettings (..)
   , defaultConfigFile
+  , isAwsSubstrateConfigured
   , loadConfigFile
   , renderConfigDhall
   , renderSettingsDisplay
@@ -60,6 +62,17 @@ data Route53Section = Route53Section
   }
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
+data AwsSubstrateSection = AwsSubstrateSection
+  { hosted_zone_id :: Text
+  , subzone_name :: Text
+  }
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+
+isAwsSubstrateConfigured :: AwsSubstrateSection -> Bool
+isAwsSubstrateConfigured section =
+  not (Text.null (Text.strip (hosted_zone_id section)))
+    && not (Text.null (Text.strip (subzone_name section)))
+
 data DomainSection = DomainSection
   { demo_fqdn :: Text
   , demo_ttl :: Natural
@@ -105,6 +118,7 @@ data ConfigFile = ConfigFile
   { aws :: Credentials
   , aws_admin_for_test_simulation :: Credentials
   , route53 :: Route53Section
+  , aws_substrate :: AwsSubstrateSection
   , domain :: DomainSection
   , acme :: AcmeSection
   , deployment :: DeploymentSection
@@ -150,6 +164,8 @@ renderSettingsDisplay showSecrets settings =
     , "aws_admin_for_test_simulation.region="
         ++ renderMaybeText (normalizeOptionalText (region (aws_admin_for_test_simulation config)))
     , "route53.zone_id=" ++ renderText (zone_id (route53 config))
+    , "aws_substrate.hosted_zone_id=" ++ renderText (hosted_zone_id (aws_substrate config))
+    , "aws_substrate.subzone_name=" ++ renderText (subzone_name (aws_substrate config))
     , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
     , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
     , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
@@ -493,6 +509,11 @@ defaultConfigFile =
           , region = ""
           }
     , route53 = Route53Section {zone_id = ""}
+    , aws_substrate =
+        AwsSubstrateSection
+          { hosted_zone_id = ""
+          , subzone_name = ""
+          }
     , domain =
         DomainSection
           { demo_fqdn = supportedPublicHostname
@@ -541,6 +562,10 @@ renderConfigDhall config =
     , "        , region = " ++ dhallText (region (aws_admin_for_test_simulation config))
     , "        }"
     , "    , route53 = { zone_id = " ++ dhallText (zone_id (route53 config)) ++ " }"
+    , "    , aws_substrate = Config.default.aws_substrate // {"
+    , "        , hosted_zone_id = " ++ dhallText (hosted_zone_id (aws_substrate config))
+    , "        , subzone_name = " ++ dhallText (subzone_name (aws_substrate config))
+    , "        }"
     , "    , domain = Config.default.domain // {"
     , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))
     , "        , demo_ttl = " ++ show (demo_ttl (domain config))

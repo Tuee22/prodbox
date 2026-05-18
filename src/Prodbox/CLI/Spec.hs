@@ -70,6 +70,11 @@ import Prodbox.CLI.Output
   , OutputOptions (..)
   )
 import Prodbox.K8s (defaultInfrastructureNamespaces)
+import Prodbox.Substrate
+  ( Substrate
+  , defaultSubstrate
+  , parseSubstrate
+  )
 
 data Example = Example
   { exampleCommand :: [String]
@@ -204,13 +209,21 @@ parserForPath path =
     ["charts", "deploy"] ->
       Just $
         fmap
-          (\(chartName, options') -> RunNative (NativeCharts (ChartsDeploy chartName options')))
-          ((,) <$> strArgument (metavar "CHART") <*> planOptionsParser)
+          ( \(chartName, substrate, options') ->
+              RunNative (NativeCharts (ChartsDeploy chartName substrate options'))
+          )
+          ( (,,)
+              <$> strArgument (metavar "CHART")
+              <*> substrateOptionParser
+              <*> planOptionsParser
+          )
     ["charts", "delete"] ->
       Just $
-        ( \chartName confirmed options' -> RunNative (NativeCharts (ChartsDelete chartName confirmed options'))
+        ( \chartName substrate confirmed options' ->
+            RunNative (NativeCharts (ChartsDelete chartName substrate confirmed options'))
         )
           <$> strArgument (metavar "CHART")
+          <*> substrateOptionParser
           <*> yesSwitchParser "Skip confirmation prompt"
           <*> planOptionsParser
     ["check-code"] -> Just (pure (RunNative NativeCheckCode))
@@ -311,6 +324,15 @@ parserForPath path =
         fmap
           (\(confirmed, planOptions') -> RunNative (NativePulumi (PulumiTestDestroy confirmed planOptions')))
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+    ["pulumi", "aws-subzone-resources"] ->
+      Just (fmap (RunNative . NativePulumi . PulumiAwsSubzoneResources) planOptionsParser)
+    ["pulumi", "aws-subzone-destroy"] ->
+      Just $
+        fmap
+          ( \(confirmed, planOptions') ->
+              RunNative (NativePulumi (PulumiAwsSubzoneDestroy confirmed planOptions'))
+          )
+          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
     ["rke2", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
     ["rke2", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
     ["rke2", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
@@ -336,7 +358,10 @@ parserForPath path =
           )
     ["test", "all"] -> Just (withCoverage TestAll)
     ["test", "lint"] ->
-      Just (pure (RunNative (NativeTest (TestCommand TestLint (CoverageFlags False Nothing)))))
+      Just
+        ( pure
+            (RunNative (NativeTest (TestCommand TestLint (CoverageFlags False Nothing) defaultSubstrate)))
+        )
     ["test", "unit"] -> Just (withCoverage TestUnit)
     ["test", "integration", "all"] -> Just (withCoverage (TestIntegration IntegrationAll))
     ["test", "integration", "cli"] -> Just (withCoverage (TestIntegration IntegrationCli))
@@ -464,7 +489,19 @@ foregroundParser =
 
 withCoverage :: TestScope -> Parser CommandRequest
 withCoverage scope =
-  fmap (RunNative . NativeTest . TestCommand scope) coverageFlagsParser
+  (\coverage substrate -> RunNative (NativeTest (TestCommand scope coverage substrate)))
+    <$> coverageFlagsParser
+    <*> substrateOptionParser
+
+substrateOptionParser :: Parser Substrate
+substrateOptionParser =
+  option
+    (eitherReader parseSubstrate)
+    ( long "substrate"
+        <> metavar "SUBSTRATE"
+        <> value defaultSubstrate
+        <> help "Target substrate (home-local, aws); default home-local"
+    )
 
 daemonLaunchOptionsParser :: Parser DaemonLaunchOptions
 daemonLaunchOptionsParser =
@@ -874,6 +911,11 @@ chartsGroup =
         "Reconcile a root chart to the supported state."
         [ flagOption "dry-run" Nothing Nothing "Render the deployment plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        , optionalOption
+            "substrate"
+            Nothing
+            "SUBSTRATE"
+            "Target substrate (home-local, aws); default home-local"
         ]
         [ example ["charts", "deploy", "vscode"] "Deploy the vscode stack."
         , example ["charts", "deploy", "--dry-run", "vscode"] "Render the chart deployment plan."
@@ -885,6 +927,11 @@ chartsGroup =
         [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompt"
         , flagOption "dry-run" Nothing Nothing "Render the deletion plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        , optionalOption
+            "substrate"
+            Nothing
+            "SUBSTRATE"
+            "Target substrate (home-local, aws); default home-local"
         ]
         [ example ["charts", "delete", "vscode", "--yes"] "Delete the vscode stack."
         , example ["charts", "delete", "--dry-run", "vscode"] "Render the chart deletion plan."
@@ -933,6 +980,23 @@ pulumiGroup =
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "test-destroy", "--yes"] "Destroy the HA RKE2 validation stack."]
+    , leaf
+        "aws-subzone-resources"
+        "Provision the per-substrate Route 53 subzone"
+        "Reconcile the AWS-substrate Route 53 hosted subzone and NS delegation."
+        [ flagOption "dry-run" Nothing Nothing "Render the subzone plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [example ["pulumi", "aws-subzone-resources"] "Reconcile the AWS-substrate Route 53 subzone."]
+    , leaf
+        "aws-subzone-destroy"
+        "Destroy the per-substrate Route 53 subzone"
+        "Destroy the AWS-substrate Route 53 hosted subzone and remove the parent NS delegation."
+        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
+        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [example ["pulumi", "aws-subzone-destroy", "--yes"] "Destroy the AWS-substrate Route 53 subzone."]
     ]
     []
     [example ["pulumi", "eks-resources"] "Reconcile the EKS validation stack."]
@@ -1045,6 +1109,7 @@ testGroupSpec =
   coverageOptions =
     [ flagOption "coverage" Nothing Nothing "Enable coverage reporting for the selected test scope"
     , optionalOption "cov-fail-under" Nothing "INTEGER" "Require a minimum coverage percentage"
+    , substrateOption
     ]
   integrationLeaf leafName leafSummary =
     leaf
@@ -1053,6 +1118,12 @@ testGroupSpec =
       leafSummary
       coverageOptions
       [example ["test", "integration", leafName] ("Run the `" ++ leafName ++ "` integration suite.")]
+  substrateOption =
+    optionalOption
+      "substrate"
+      Nothing
+      "SUBSTRATE"
+      "Target substrate (home-local, aws); default home-local"
 
 checkCodeLeaf :: CommandSpec
 checkCodeLeaf =

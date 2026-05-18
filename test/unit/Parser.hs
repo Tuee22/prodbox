@@ -166,7 +166,7 @@ commandPathOfRequest request =
             : case chartsCommand of
               ChartsList -> ["list"]
               ChartsStatus _ -> ["status"]
-              ChartsDeploy _ _ -> ["deploy"]
+              ChartsDeploy {} -> ["deploy"]
               ChartsDelete {} -> ["delete"]
         NativeCheckCode -> ["check-code"]
         NativeConfig configCommand ->
@@ -219,6 +219,8 @@ commandPathOfRequest request =
               PulumiEksDestroy _ _ -> ["eks-destroy"]
               PulumiTestResources _ -> ["test-resources"]
               PulumiTestDestroy _ _ -> ["test-destroy"]
+              PulumiAwsSubzoneResources _ -> ["aws-subzone-resources"]
+              PulumiAwsSubzoneDestroy _ _ -> ["aws-subzone-destroy"]
         NativeRke2 rke2Command ->
           "rke2"
             : case rke2Command of

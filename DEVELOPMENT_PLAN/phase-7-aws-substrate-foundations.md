@@ -57,6 +57,11 @@ deliverables are sized for sequential, separately validatable sessions:
     substrate-aware `ChartPlatform.hs` branching that consumes
     `substrateKubeconfigPath`, and AWS LB Controller + Envoy Gateway install paths on the
     EKS substrate. Validated with live AWS apply in Sprint `7.5.c`.
+- **Sprint `7.5.b.iii`** (🔄 Active) — substrate-independence doctrine refactor making the
+  no-fallback contract explicit across [development_plan_standards.md → M.](development_plan_standards.md#m-test-suite-substrates),
+  [substrates.md](substrates.md), and the engineering doc set. Reclassifies the helper
+  fallback shipped in 7.5.b.i / 7.5.b.ii.a as scheduled cleanup residue; the code
+  reconciliation is owned by Sprint `7.5.c`'s validation-arms-refinement budget.
 - **Sprint `7.5.c`** (📋 Planned) — live AWS-substrate canonical-suite validation
   (`charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`,
   public-edge readiness) plus zero-residue teardown scan and Substrate parity table flip in
@@ -535,11 +540,17 @@ infrastructure yet: EKS kubeconfig extraction, substrate-aware path/zone/FQDN he
 - `src/Prodbox/PublicEdge.hs` exports `substrateKubeconfigPath :: FilePath -> Substrate ->
   Maybe FilePath`, `substrateHostedZoneId :: ValidatedSettings -> Substrate -> Text`, and
   `substratePublicFqdn :: ValidatedSettings -> Substrate -> String`. The home-substrate
-  branches reproduce today's hardcoded paths exactly; the AWS-substrate branches read from
-  the new `aws_substrate` Dhall block (falling back to home values when the block is empty).
+  branches reproduce today's hardcoded paths exactly; the AWS-substrate branches read the
+  required values from the `aws_substrate` Dhall block. The shipped 7.5.b.i helpers currently
+  fall back to home-substrate values when the AWS block is empty, which Sprint `7.5.b.iii`
+  (the substrate-independence doctrine refactor) reclassifies as a doctrine-violating residue.
+  Sprint `7.5.c`'s code follow-up replaces that fallback with a fail-fast error per the
+  doctrine recorded in
+  [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 - `prodbox-config-types.dhall` adds the `aws_substrate : { hosted_zone_id : Text, subzone_name
-  : Text }` block with empty defaults. `prodbox-config.dhall` has its `sha256:` import hash
-  re-frozen against the updated schema.
+  : Text }` block. The schema defaults are empty for type-system reasons, but a populated
+  block is required for any `--substrate aws` canonical-suite run; `prodbox-config.dhall` has
+  its `sha256:` import hash re-frozen against the updated schema.
 - `src/Prodbox/Settings.hs` exposes `AwsSubstrateSection`, the matching `aws_substrate`
   `ConfigFile` field, the `isAwsSubstrateConfigured` helper, and surfaces the new fields in
   `renderConfigDhall` plus `renderSettingsDisplay`.
@@ -766,8 +777,11 @@ canonical-suite validations against it.
   and `acmeClusterIssuerSpec :: Substrate -> ValidatedSettings -> Value` now route the
   `hostedZoneID` field of the DNS01 solver through `substrateHostedZoneId`. For the home
   substrate this resolves to `route53.zone_id`; for the AWS substrate it resolves to
-  `aws_substrate.hosted_zone_id` (with graceful fallback to `route53.zone_id` when the AWS
-  block is empty).
+  `aws_substrate.hosted_zone_id`. The shipped 7.5.b.ii.a code path inherits the same
+  home-fallback behavior described under Sprint 7.5.b.i; Sprint `7.5.b.iii` reclassifies that
+  fallback as doctrine-violating residue, and Sprint `7.5.c`'s code follow-up replaces it
+  with a fail-fast error so an AWS-substrate ACME `ClusterIssuer` fails to materialize when
+  `aws_substrate.hosted_zone_id` is empty.
 - Validated with `prodbox check-code` (exit 0), `prodbox test unit` (296/296), and
   `prodbox docs check` (exit 0).
 
@@ -777,6 +791,81 @@ canonical-suite validations against it.
 Route 53 subzone Pulumi), and `7.5.b.ii.d` (chart-deploy substrate branching + AWS LB
 Controller + Envoy Gateway install paths) are `Planned`. Each requires its own focused
 session.
+
+## Sprint 7.5.b.iii: Substrate Independence Doctrine 🔄
+
+**Status**: Active
+**Blocked by**: Sprint `7.5.b.ii`
+**Implementation**: `DEVELOPMENT_PLAN/development_plan_standards.md`,
+`DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`README.md`, `documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/prerequisite_doctrine.md`,
+`documents/engineering/integration_fixture_doctrine.md`
+**Docs to update**: same as Implementation (this sprint is doc-only doctrine refactor)
+
+### Objective
+
+The 7.5.b.i and 7.5.b.ii.a deliverables shipped substrate-aware helpers
+(`substratePublicFqdn`, `substrateHostedZoneId`) and the ACME `ClusterIssuer` substrate
+parameter with documented fallback-to-home behavior when the operator's `aws_substrate`
+Dhall block is empty. That fallback violates the substrate split's reason for existing —
+the home substrate and the AWS substrate must run separate, real, independently configured
+canonical-suite proofs, and silently substituting home values for missing AWS config would
+let an AWS-substrate run collide with the home substrate's Route 53 zone and FQDN.
+
+This sprint refactors the governed docs to make the no-fallback contract explicit and
+reclassifies the existing helper fallbacks as scheduled cleanup residue. Sprint `7.5.c`'s
+existing "validation arms refinement" budget owns the code follow-up that brings the
+helpers and the `resolveAwsEksSubzoneStackConfig` pre-provision gate into agreement with
+this doctrine.
+
+### Deliverables
+
+- New `Substrate coverage and independence (no fallback)` subsection in
+  [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates)
+  recording the authoritative doctrine: the canonical suite is composed of per-substrate
+  runs against both supported substrates, each run is substrate-locked, and missing
+  per-substrate config fails fast with an explicit error.
+- New `Substrate Independence (No Fallback)` section in
+  [substrates.md](substrates.md) mirroring the doctrine; per-substrate `Required Config`
+  rows in the home and AWS inventory tables naming the operator-supplied fields each
+  substrate consumes.
+- This phase doc reworded so the `Current Validation State` sections for Sprints
+  `7.5.b.i` and `7.5.b.ii.a` describe the shipped helper behavior as fallback residue
+  superseded by the doctrine, and Sprint `7.5.c` gains explicit `Operator Workflow` and
+  `Code follow-up` subsections.
+- Cross-references threaded through
+  [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
+  [00-overview.md](00-overview.md), [README.md](README.md), and the root
+  [../README.md](../README.md).
+- New entry in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+  recording the deprecation of the helper fallback semantics; the entry is scheduled for
+  closure under Sprint `7.5.c` per
+  [development_plan_standards.md → L. CLI Doctrine Alignment](development_plan_standards.md#l-cli-doctrine-alignment).
+- Engineering docs (`unit_testing_policy.md`, `aws_integration_environment_doctrine.md`,
+  `cli_command_surface.md`, `prerequisite_doctrine.md`,
+  `integration_fixture_doctrine.md`) updated with substrate-independence notes that link
+  back to the doctrine.
+
+### Validation
+
+1. `prodbox check-code` (exit 0).
+2. `prodbox lint docs` (exit 0).
+3. `prodbox docs check` (exit 0).
+4. `prodbox test unit` (regression check, all green).
+5. Manual grep audits across `README.md`, `DEVELOPMENT_PLAN/`, and `documents/`:
+   - `grep -nrE "graceful fallback|falling back to home|fallback to .route53|when the (aws |AWS )?block is empty"` returns zero hits in supported-path docs.
+   - `grep -nrE "\\b(target|environment|tier)\\b.*(substrate|prodbox)"` returns zero false positives misusing those words as substrate synonyms.
+   - `grep -nrE "fallback"` returns only legitimate Docker-registry mirror fallback references.
+
+### Remaining Work
+
+Doc edits in flight. Closure flips this sprint to ✅ once validation passes and the
+governed docs above are all aligned. Code reconciliation is owned by Sprint `7.5.c`.
 
 ## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 📋
 
@@ -825,6 +914,52 @@ post-teardown residue, and flip the substrate parity rows in
 10. `prodbox test integration admin-routes --substrate aws`
 11. AWS post-teardown residue scan returns zero.
 12. `prodbox test all` (home substrate, default) still green.
+
+### Operator Workflow
+
+Per
+[development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback),
+an AWS-substrate canonical-suite run is locked to AWS-substrate config; nothing falls back
+to the home substrate. The Sprint `7.5.c` operator workflow is therefore:
+
+1. Operator chooses the AWS-substrate public FQDN (the `subzone_name`, e.g.
+   `aws.test.resolvefintech.com`) and sets it in
+   `prodbox-config.dhall::aws_substrate.subzone_name`.
+2. Operator runs `prodbox pulumi eks-resources` to provision the EKS cluster, IRSA, and
+   subnet tags.
+3. Operator runs `prodbox pulumi aws-subzone-resources` to provision the per-substrate
+   Route 53 subzone and NS delegation in the parent zone. The stack snapshot at
+   `.prodbox-state/aws-eks-subzone/` reports the new subzone's hosted zone ID.
+4. Operator copies the reported subzone ID into
+   `prodbox-config.dhall::aws_substrate.hosted_zone_id` so downstream validations (the
+   AWS-substrate ACME `ClusterIssuer`, `public-dns`, `admin-routes`) write into the
+   AWS-substrate's own Route 53 zone.
+5. Operator runs the five AWS-substrate canonical-suite validations
+   (`charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`)
+   with `--substrate aws`.
+6. After validation, operator tears down with `prodbox pulumi aws-subzone-destroy --yes`
+   and `prodbox pulumi eks-destroy --yes` (plus `prodbox pulumi test-destroy --yes` if
+   the HA-RKE2 EC2 stack was provisioned).
+
+### Code Follow-Up
+
+Sprint `7.5.c`'s validation arms refinement budget owns the code reconciliation between
+the substrate-independence doctrine (Sprint `7.5.b.iii`) and the shipped helper /
+lifecycle gate behavior:
+
+- `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `substrateHostedZoneId` replace
+  their home-substrate fallback branches with a fail-fast `error` (or `Either`-returning
+  variant called from validated entrypoints) so AWS-substrate runs cannot silently use
+  home values when `aws_substrate.hosted_zone_id` or `aws_substrate.subzone_name` is
+  empty.
+- `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` loosens its
+  pre-provision gate to require only `subzone_name` (the value Pulumi actually consumes
+  at provision time); `hosted_zone_id` becomes a post-provision requirement enforced at
+  the validation arm that consumes it. This removes the chicken-and-egg around the
+  initial subzone provisioning while preserving the doctrine that downstream validations
+  fail fast when the value is missing.
+- The entry in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) for the
+  helper fallback semantics closes when this code follow-up lands.
 
 ### Remaining Work
 

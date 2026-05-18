@@ -81,7 +81,18 @@ Suite content does not name a substrate. It names prerequisites that any substra
 to run the validation. When the AWS substrate stands up real DNS, cert-manager, ingress, and
 the chart set (tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md)),
 the same `charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`, and
-public-edge readiness validations will run against it without modification.
+public-edge readiness validations run against it without modification.
+
+**"Substrate-agnostic" does not mean substrates share defaults.** Each per-substrate run is
+locked to one substrate, consumes only that substrate's required config and provisioned
+infrastructure, and fails fast when any required field is missing — there is no silent
+fallback to the other substrate's values. A complete canonical-suite proof requires both
+substrate runs to land independently; running on a single substrate covers only that
+substrate's parity row. See
+[development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
+for the authoritative doctrine and
+[substrates.md](substrates.md#substrate-independence-no-fallback) for the substrate-side
+contract.
 
 Today the home local substrate runs the full suite; the AWS substrate runs only `aws-iam`,
 `aws-eks`, `ha-rke2-aws`, `pulumi`, and `dns-aws`. The parity gap is tracked in

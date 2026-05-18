@@ -15,6 +15,12 @@
 - The canonical prerequisite registry lives in `src/Prodbox/Prerequisite.hs`.
 - Runtime-stability waits that follow prerequisite success belong in explicit runbook or lifecycle
   steps, not in hidden prerequisite side effects.
+- Substrate-required prerequisites are total. When a per-substrate canonical-suite run is
+  selected via `--substrate {home-local|aws}`, every prerequisite that the active substrate
+  requires must be satisfied for that substrate's real infrastructure; missing config or
+  unmet readiness fails fast with an explicit error naming the missing field. Prerequisites
+  must not silently substitute the other substrate's values. See
+  [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 
 ## 1. Philosophy
 

@@ -267,6 +267,7 @@ Shared executable-suite options:
 |--------|---------|
 | `--coverage` | Enable coverage mode for the selected scope |
 | `--cov-fail-under INTEGER` | Require a minimum coverage percentage; valid only with `--coverage` |
+| `--substrate {home-local\|aws}` | Select the substrate the run targets; default `home-local`. Each per-substrate run is substrate-locked: it consumes only that substrate's operator-supplied config (the `Required Config` row in [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md)) and fails fast if any required field is missing. There is no fallback between substrates. A complete canonical-suite proof requires both substrate runs to land independently; see [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback). |
 
 Named suite commands:
 

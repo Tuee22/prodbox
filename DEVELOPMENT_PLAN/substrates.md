@@ -35,6 +35,26 @@ MetalLB or the substrate-equivalent), services, and workload charts; provides th
 declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit. Substrate lifecycle is
 provision → run canonical suite → teardown.
 
+## Substrate Independence (No Fallback)
+
+The canonical test suite is composed of per-substrate runs against **both** supported
+substrates listed below. A canonical-suite proof is complete only when both per-substrate runs
+have been exercised. A run that exercises only one substrate covers only that substrate's row
+in the parity table; the other substrate remains suite-incomplete until its own run lands.
+
+Each per-substrate run is independent and substrate-locked: it targets exactly one substrate,
+consumes only that substrate's operator-supplied config (`Required Config` row in each
+substrate's table) and provisioned infrastructure, and fails fast if any required field is
+missing. There is no silent substitution of home-substrate values for missing AWS-substrate
+config, and no silent substitution of AWS values for missing home config. The substrate-aware
+helpers `substratePublicFqdn`, `substrateHostedZoneId`, and `substrateKubeconfigPath` in
+`src/Prodbox/PublicEdge.hs`, together with the prerequisite DAG and the lifecycle gates,
+enforce this contract.
+
+See
+[development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
+for the authoritative doctrine.
+
 ## Substrate Inventory
 
 ### Home Local Substrate
@@ -44,6 +64,7 @@ provision → run canonical suite → teardown.
 | Provision | `prodbox rke2 reconcile` followed by `prodbox charts deploy <chart>` for the canonical chart set |
 | Teardown | `prodbox rke2 delete --yes` (preserves retained host roots per the lifecycle doctrine) |
 | Inventory | Local RKE2 cluster on the operator host, MetalLB L2/BGP, Envoy Gateway, cert-manager (real Let's Encrypt), Keycloak, Patroni-backed Postgres via the Percona operator, the supported `gateway`, `keycloak`, `vscode`, `api`, and `websocket` charts |
+| Required Config | `route53.zone_id`, `domain.demo_fqdn`, `acme.*` (server, account email, ZeroSSL EAB if applicable), `deployment.*`, `aws_admin_for_test_simulation.*` (for the shared IAM harness only). Missing any required field fails fast; the home substrate does not fall back to AWS-substrate values. |
 | Prerequisites satisfied | `platform_linux`, `systemd_available`, `supported_ubuntu_2404`, `machine_identity`, `tool_*`, `settings_*`, `aws_iam_harness_ready`, `kubeconfig_*`, `rke2_*`, `k8s_*`, `pulumi_logged_in`, `infra_ready`, `gateway_daemon_acquire`, `aws_credentials_valid`, `route53_*` |
 | Phase ownership (provision/teardown) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | Suite parity | ✅ Full canonical suite, including the public-edge proofs that exercise real Let's Encrypt certs, real OIDC redirects through Keycloak, real WebSocket fan-out, and the configured public Route 53 record on `test.resolvefintech.com` |
@@ -53,10 +74,11 @@ provision → run canonical suite → teardown.
 
 | Field | Value |
 |-------|-------|
-| Provision | `prodbox pulumi eks-resources` (EKS test cluster) and `prodbox pulumi test-resources` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
-| Teardown | `prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes` |
+| Provision | `prodbox pulumi eks-resources` (EKS test cluster), `prodbox pulumi aws-subzone-resources` (per-substrate Route 53 subzone), and `prodbox pulumi test-resources` (three Ubuntu 24.04 EC2 instances for HA-RKE2) |
+| Teardown | `prodbox pulumi eks-destroy --yes`, `prodbox pulumi aws-subzone-destroy --yes`, and `prodbox pulumi test-destroy --yes` |
 | Inventory today | Two disposable Pulumi stacks: `aws-eks-test` (VPC, subnets, EKS cluster, node group, IAM, security group) and `aws-test` (VPC, subnets, three EC2 instances, security group, key pair). State stored in MinIO-backed Pulumi backend on the local cluster under `prodbox-test-pulumi-backends`. |
-| Target inventory | Same canonical chart deploy set as the home substrate: cert-manager + real Let's Encrypt, Envoy Gateway or substrate-equivalent ingress with MetalLB or NLB, Keycloak, Patroni Postgres, `gateway`, `vscode`, `api`, `websocket`, plus a per-substrate Route 53 hosted zone or subdomain delegation for the public-edge proofs |
+| Target inventory | Same canonical chart deploy set as the home substrate: cert-manager + real Let's Encrypt, Envoy Gateway or substrate-equivalent ingress with MetalLB or NLB, Keycloak, Patroni Postgres, `gateway`, `vscode`, `api`, `websocket`, plus the per-substrate Route 53 subzone provisioned by `pulumi/aws-eks-subzone/` for the AWS-substrate public-edge proofs. |
+| Required Config | `aws_substrate.hosted_zone_id` (the AWS-substrate Route 53 subzone ID, after `prodbox pulumi aws-subzone-resources` provisions it), `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. Missing any required field fails fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Prerequisites satisfied today | `aws_credentials_valid`, `route53_accessible`, `route53_lifecycle_capable`, `pulumi_logged_in`, the AWS-stack snapshot prereqs |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | Suite parity | 🔄 Provisioning + SSH reachability only. As of Sprint `7.5.b.i` (May 17, 2026) the supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, and per-validation routing layer are in place; EKS kubeconfig extraction (`materializeAwsEksKubeconfig`), substrate-aware helpers (`substrateKubeconfigPath`, `substrateHostedZoneId`, `substratePublicFqdn`), and the `aws_substrate` Dhall block (`hosted_zone_id`, `subzone_name`) are wired. `prodbox test integration ... --substrate aws` still surfaces an explicit "not yet implemented" remedy for chart-deploy / public-edge / WebSocket validations because the AWS LB Controller, per-substrate Route 53 subzone, cert-manager DNS01 ClusterIssuer, and chart-deploy substrate branching land in Sprint `7.5.b.ii`. Live canonical-suite proof on the AWS substrate lands in Sprint `7.5.c`. Parity sprint is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md). |

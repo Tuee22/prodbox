@@ -283,7 +283,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; 📋 7.5.c live canonical-suite validation) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; 🔄 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract); 📋 7.5.c live canonical-suite validation) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 📋 Planned (Sprints 8.1–8.6) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
@@ -296,18 +296,27 @@ baseline, clean-room rerun, public-edge proof, and AWS-administration surfaces r
 on the supported Haskell command surface; Phases `5`, `6`, and `7` remain `Done` on their owned
 legacy scope per standards rule E. Phase `7` is **Active** on Sprint `7.5`, which the May 17,
 2026 scoping review split into three sequentially-validatable sub-sprints (`7.5.a`, `7.5.b`,
-`7.5.c`) to bring the AWS substrate to canonical-suite parity with the home substrate.
+`7.5.c`) to bring the AWS substrate to canonical-suite parity with the home substrate. Sprint
+`7.5.b.iii` (substrate-independence doctrine refactor) was added between `7.5.b` and `7.5.c`
+to make the no-fallback contract explicit across the governed doc set; the code reconciliation
+that brings the shipped helpers and lifecycle gate into agreement with the doctrine is owned
+by Sprint `7.5.c`'s validation-arms-refinement budget.
 
 ## Substrate Parity
 
 Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
-the canonical test suite runs against substrates. The authoritative substrate inventory is
-[substrates.md](substrates.md); this section is the live tracker for substrate parity.
+the canonical test suite is composed of per-substrate runs against both supported substrates,
+with no fallback between them (see
+[Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)).
+A complete canonical-suite proof requires both the home local and AWS substrate rows below to
+land independently against their own real infrastructure. The authoritative substrate
+inventory is [substrates.md](substrates.md); this section is the live tracker for substrate
+parity.
 
 | Substrate | Provision | Teardown | Suite parity | Phase ownership |
 |-----------|-----------|----------|--------------|-----------------|
 | Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi test-resources` | `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Provisioning + SSH reachability only; parity sprint pending | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Provisioning + SSH reachability only; parity sprint pending | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
 
 ## Current Plan Status
 

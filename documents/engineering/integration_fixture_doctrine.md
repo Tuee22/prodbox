@@ -63,6 +63,24 @@ This document works with:
   auth and isolation rules
 - [Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) for retained local data behavior
 
+## 6. Fixtures Versus Substrate Config
+
+A fixture is a boundary-injected fake-tool harness or an ephemeral resource owned for the
+lifetime of one validation. A substrate is the operator-provisioned real environment a
+canonical-suite run targets (DNS, certs, ingress, charts) per the inventory in
+[`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md). The two are not
+interchangeable:
+
+- Fixtures may be reused across substrates because they fake a boundary (`aws` CLI, `dig`,
+  `kubectl`) rather than represent the substrate itself.
+- Substrate config (e.g. `aws_substrate.hosted_zone_id`, `route53.zone_id`) is required and
+  substrate-locked per
+  [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
+  A validation that runs on the AWS substrate must consume only AWS-substrate config; a
+  validation that runs on the home substrate must consume only home-substrate config.
+  Fixtures do not silence missing-substrate-config errors, and a fake-tool harness does not
+  satisfy a substrate prerequisite that requires real infrastructure.
+
 ## Cross-References
 
 - [Unit Testing Policy](./unit_testing_policy.md)

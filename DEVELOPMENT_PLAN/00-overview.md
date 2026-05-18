@@ -96,8 +96,10 @@ Build a clean-room Haskell `prodbox` repository with:
     upgraded connection pinned to one backend pod until disconnect, reconnect-safe state outside
     the pod, and readiness-based drain before pod exit.
 24. One canonical test suite, expressed through named validation commands, with each validation
-    described as substrate-agnostic suite content rather than as a home-cluster-specific or
-    AWS-specific concern.
+    described as substrate-agnostic suite content (no substrate-conditional branches in the
+    validation logic) and exercised per substrate independently — there is no silent fallback
+    between substrates, and a complete canonical-suite proof requires both supported substrates
+    to land their own run.
 25. One explicit ledger for compatibility or cleanup history that preserves completed removals and
     closes with zero pending supported-path residue.
 26. Pulumi retained for true IaC surfaces such as AWS substrate resources, with no supported
@@ -106,16 +108,22 @@ Build a clean-room Haskell `prodbox` repository with:
 ## Test Substrates
 
 Per [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates),
-there is one canonical test suite that runs against substrates. A substrate is an environment
-that, for the lifetime of a suite run, stands up the same set of DNS records, TLS certificates,
-ingress, services, and workload charts; provides the prerequisites declared in
-`src/Prodbox/Prerequisite.hs`; and is torn down on suite exit. The authoritative substrate
-inventory is [substrates.md](substrates.md).
+the canonical test suite is composed of per-substrate runs against both supported substrates.
+A substrate is an environment that, for the lifetime of a suite run, stands up the same set of
+DNS records, TLS certificates, ingress, services, and workload charts; provides the
+prerequisites declared in `src/Prodbox/Prerequisite.hs`; and is torn down on suite exit. The
+authoritative substrate inventory is [substrates.md](substrates.md).
+
+Substrate selection is total. Each per-substrate run targets exactly one substrate, consumes
+only that substrate's operator-supplied config, and fails fast if any required substrate config
+is missing. There is no silent fallback to the other substrate's values. A canonical-suite
+proof is complete only when both substrate runs have landed. See
+[development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 
 | Substrate | Provision | Teardown | Suite parity today |
 |-----------|-----------|----------|--------------------|
 | Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` |
-| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi test-resources` | `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Provisioning + SSH reachability only; parity sprint tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Provisioning + SSH reachability only; parity sprint tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 
 Phase ownership separates suite content (which lives in
 [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md)) from substrate

@@ -236,6 +236,30 @@ prerequisite DAG in `src/Prodbox/Prerequisite.hs`. The suite is substrate-agnost
 validation is a member of this single suite and is described as suite content, not as a
 substrate-specific concern.
 
+#### Substrate coverage and independence (no fallback)
+
+The canonical test suite is composed of per-substrate runs against **both** supported
+substrates: the home local substrate and the AWS substrate. A canonical-suite proof is
+complete only when both per-substrate runs have been exercised against their own real
+infrastructure (DNS, TLS via cert-manager, ingress, charts, public-edge proofs). A run that
+exercises only one substrate is not a complete canonical-suite proof; the missing substrate
+stays suite-incomplete until its run lands.
+
+Each per-substrate run is independent. It targets exactly one substrate, consumes only that
+substrate's operator-supplied config and provisioned infrastructure, and fails fast if any of
+its required substrate config (FQDN, hosted zone, kubeconfig, credentials, prerequisites) is
+missing. There is no silent substitution of home-substrate values for missing AWS-substrate
+config, and no silent substitution of AWS values for missing home config. The substrate-aware
+helpers (`substratePublicFqdn`, `substrateHostedZoneId`, `substrateKubeconfigPath` in
+`src/Prodbox/PublicEdge.hs`), the prerequisite DAG, and the lifecycle gates all enforce this
+contract.
+
+"Substrate-agnostic suite content" means validation logic does not branch on substrate
+identity. It does **not** mean substrates share defaults, and it does **not** reduce the
+suite to a single substrate's coverage. The aggregate command surface (`prodbox test all`) is
+the canonical entrypoint for exercising both substrates; running it on a single substrate
+covers only that substrate's row in the parity table in [substrates.md](substrates.md).
+
 #### Substrates
 
 A substrate is an environment that, for the lifetime of a suite run, stands up the same set of

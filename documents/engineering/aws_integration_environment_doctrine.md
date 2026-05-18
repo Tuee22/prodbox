@@ -29,6 +29,12 @@
 - The local `prodbox` RKE2 cluster and its MinIO service must exist before any remote AWS test
   stack is created because Pulumi state for those stacks lives only in
   `prodbox-test-pulumi-backends`.
+- AWS-substrate canonical-suite runs (`--substrate aws`) require the operator-supplied
+  `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` Dhall fields, populated by
+  `prodbox pulumi aws-subzone-resources` provisioning a per-substrate Route 53 subzone with NS
+  delegation in the parent zone. The AWS substrate must not fall back to home-substrate
+  `route53.zone_id` or `domain.demo_fqdn` values; missing AWS-substrate config fails fast per
+  [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 
 ## 0A. Planning Ownership
 

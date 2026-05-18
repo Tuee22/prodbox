@@ -480,6 +480,21 @@ Run the aggregate suites only when you want the full repository proof:
 These suites require the real tools, credentials, cluster state, DNS state, or AWS resources named
 by their prerequisite contracts.
 
+### Substrate Independence (No Fallback)
+
+The canonical test suite is composed of per-substrate runs against both supported substrates —
+the home local substrate and the AWS substrate. A complete canonical-suite proof requires both
+runs to land independently against their own real infrastructure (DNS, TLS via cert-manager,
+ingress, charts, public-edge proofs). Each per-substrate run is substrate-locked: it targets
+exactly one substrate, consumes only that substrate's operator-supplied config, and fails fast
+if any required substrate config is missing. There is no silent fallback from the AWS substrate
+to home values or vice versa. Select the substrate with
+`--substrate {home-local|aws}` on `prodbox test integration ...` and `prodbox test all`; the
+default is `home-local`. The authoritative doctrine lives in
+[DEVELOPMENT_PLAN/development_plan_standards.md → M. Substrate coverage and independence (no fallback)](DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
+and the per-substrate `Required Config` inventory lives in
+[DEVELOPMENT_PLAN/substrates.md](DEVELOPMENT_PLAN/substrates.md).
+
 ## Repository Layout
 
 ```text

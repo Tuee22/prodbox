@@ -25,12 +25,17 @@
 
 The cleanup ledger preserves completed removal history. Python-removal work remains closed, and
 the doctrine-deviation residue scheduled by the Phase `1`–`4` reopen is now fully closed. The
-`Pending Removal` section is empty after Sprint `4.8` landed the hermetic `prodbox rke2 delete
---yes` success-summary contract.
+`Pending Removal` section is non-empty after Sprint `7.5.b.iii` reclassified the
+substrate-aware helper fallback semantics shipped in Sprint `7.5.b.i` / `7.5.b.ii.a` as
+doctrine-violating residue; the row closes when Sprint `7.5.c`'s code follow-up replaces the
+fallback with a fail-fast error per
+[development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 
 ## Pending Removal
 
-_None. All scheduled doctrine-adoption residue has been closed by its owning sprint._
+| Item | Scheduled For Removal In | Notes |
+|------|--------------------------|-------|
+| `substratePublicFqdn` and `substrateHostedZoneId` home-substrate fallback branches in `src/Prodbox/PublicEdge.hs`; conflated `hosted_zone_id`+`subzone_name` pre-provision gate in `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` | Sprint `7.5.c` code follow-up | Sprint `7.5.b.iii` recorded the substrate-independence doctrine across `development_plan_standards.md`, `substrates.md`, `phase-7-aws-substrate-foundations.md`, `phase-5-canonical-test-suite.md`, `00-overview.md`, the development-plan and root READMEs, and the affected engineering docs. The shipped helpers still fall back to `route53.zone_id` / `publicFqdn` when the AWS block is empty, and `resolveAwsEksSubzoneStackConfig` still requires `hosted_zone_id` at pre-provision time even though only `subzone_name` is consumed by the subzone Pulumi. The code follow-up replaces the helper fallback with a fail-fast error and loosens the pre-provision gate to require only `subzone_name`, leaving `hosted_zone_id` as a post-provision requirement enforced at the downstream validation arms that consume it. |
 
 ## Pending Removal Notes
 

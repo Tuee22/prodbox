@@ -283,8 +283,8 @@ A sprint can move to `Done` only when all of the following are true:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; 🔄 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract); 📋 7.5.c live canonical-suite validation) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 📋 Planned (Sprints 8.1–8.6) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
+| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; ✅ 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract), May 18, 2026; 🔄 7.5.c code follow-up landed May 18, 2026, live AWS-substrate canonical-suite validation pending operator session) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (🔄 Sprint 8.1 code + doctrine landed May 18, 2026 — Pulumi program at `pulumi/aws-ses/`, `ses` config block, `SesSection` type, populated `prodbox-config.dhall`, `AwsSesStack.hs` orchestration, `pulumi aws-ses-resources` / `aws-ses-destroy` CLI surface, generated docs/manpages/completions, `substrates.md` + `aws_integration_environment_doctrine.md` updated; live operator workflow validation pending; Sprints 8.2–8.6 📋 Planned) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
@@ -298,9 +298,16 @@ legacy scope per standards rule E. Phase `7` is **Active** on Sprint `7.5`, whic
 2026 scoping review split into three sequentially-validatable sub-sprints (`7.5.a`, `7.5.b`,
 `7.5.c`) to bring the AWS substrate to canonical-suite parity with the home substrate. Sprint
 `7.5.b.iii` (substrate-independence doctrine refactor) was added between `7.5.b` and `7.5.c`
-to make the no-fallback contract explicit across the governed doc set; the code reconciliation
-that brings the shipped helpers and lifecycle gate into agreement with the doctrine is owned
-by Sprint `7.5.c`'s validation-arms-refinement budget.
+to make the no-fallback contract explicit across the governed doc set and is now `Done`.
+Sprint `7.5.c`'s code follow-up landed May 18, 2026 — `substratePublicFqdn` /
+`substrateHostedZoneId` are fail-fast on empty AWS-substrate config,
+`resolveAwsEksSubzoneStackConfig`'s pre-provision gate requires only `subzone_name`,
+`isAwsSubstrateConfigured` is removed, and the matching legacy-ledger row is moved to
+`Completed`. The live AWS-substrate canonical-suite operator workflow
+(`prodbox pulumi eks-resources` → `aws-subzone-resources` → copy hosted zone ID →
+five `--substrate aws` validations → teardown) remains as the residual operator-driven
+closing step for Sprint `7.5.c`; the documented workflow lives in
+[phase-7-aws-substrate-foundations.md → Sprint 7.5.c Operator Workflow](phase-7-aws-substrate-foundations.md).
 
 ## Substrate Parity
 

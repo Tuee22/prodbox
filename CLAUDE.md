@@ -59,6 +59,30 @@ prodbox surface — not to invoking prodbox itself.
 If a `prodbox test all` or other lifecycle run is interrupted mid-flight, prefer letting the
 idempotent reconcile finish (or re-running the same command) over manual cleanup.
 
+## AWS Substrate Provisioning Ownership
+
+**The prodbox test harness is the exclusive owner of AWS substrate provisioning and teardown.**
+All AWS substrate infrastructure (EKS, aws-test HA-RKE2, Route 53 subzone, SES, and any future
+AWS substrate stacks) is created and destroyed only through Pulumi programs invoked by the
+`prodbox` command surface — `prodbox pulumi <stack>-resources` / `prodbox pulumi <stack>-destroy
+--yes` — and is orchestrated end-to-end by `prodbox test all` and the substrate-aware
+`prodbox test integration ... --substrate aws` commands.
+
+- Do not invoke `pulumi up`, `pulumi destroy`, `pulumi stack`, `aws` CLI mutations, `eksctl`, or
+  any other ad-hoc tool to create, modify, or delete AWS resources outside the harness.
+- Do not manually provision AWS resources "to set up for" a test; the harness handles
+  provisioning before validations run and teardown after.
+- Do not manually clean up AWS resources after a failed run; re-run the harness (its destroy
+  paths are idempotent) or use the canonical `prodbox pulumi <stack>-destroy --yes`
+  entrypoint.
+- The only ad-hoc AWS reads that are acceptable are read-only diagnostics (e.g., `aws sts
+  get-caller-identity`, `aws route53 list-hosted-zones`, console inspection) when investigating
+  why the harness reports a failure.
+
+The same rule applies to any operator-account-shared AWS resources (e.g., the Phase 8 SES
+sending identity and receive-rule-set): they are owned by their dedicated Pulumi program under
+`pulumi/` and reconciled only through `prodbox pulumi ...`, never by hand.
+
 ## Git Workflow Policy
 
 **CRITICAL: Claude Code is NOT authorized to commit or push changes.**

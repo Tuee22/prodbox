@@ -1,15 +1,15 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Prodbox.Infra.AwsEksSubzoneStack
-  ( AwsEksSubzoneStackSnapshot (..)
-  , awsEksSubzoneStackName
-  , ensureAwsEksSubzoneStackResources
-  , destroyAwsEksSubzoneStack
-  , loadAwsEksSubzoneStackSnapshot
-  , saveAwsEksSubzoneStackSnapshot
-  , clearAwsEksSubzoneStackSnapshot
-  , assertNoAwsEksSubzoneStackResidue
-  , renderAwsEksSubzoneStackReport
+module Prodbox.Infra.AwsSesStack
+  ( AwsSesStackSnapshot (..)
+  , awsSesStackName
+  , ensureAwsSesStackResources
+  , destroyAwsSesStack
+  , loadAwsSesStackSnapshot
+  , saveAwsSesStackSnapshot
+  , clearAwsSesStackSnapshot
+  , assertNoAwsSesStackResidue
+  , renderAwsSesStackReport
   )
 where
 
@@ -28,7 +28,6 @@ import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
-import Data.Vector qualified as Vector
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
   , writeError
@@ -52,12 +51,12 @@ import Prodbox.Infra.MinioBackend
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
-  ( AwsSubstrateSection (..)
-  , Route53Section (..)
+  ( Route53Section (..)
+  , SesSection (..)
   , ValidatedSettings (..)
   , aws
-  , aws_substrate
   , route53
+  , ses
   , validateAndLoadSettings
   )
 import Prodbox.Subprocess
@@ -75,43 +74,52 @@ import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 
-awsEksSubzoneStackName :: String
-awsEksSubzoneStackName = "aws-eks-subzone"
+awsSesStackName :: String
+awsSesStackName = "aws-ses"
 
-awsEksSubzonePulumiProjectDir :: FilePath -> FilePath
-awsEksSubzonePulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-eks-subzone"
+awsSesPulumiProjectDir :: FilePath -> FilePath
+awsSesPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-ses"
 
-awsEksSubzoneStateDir :: FilePath -> FilePath
-awsEksSubzoneStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksSubzoneStackName
+awsSesStateDir :: FilePath -> FilePath
+awsSesStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsSesStackName
 
-awsEksSubzoneSnapshotPath :: FilePath -> FilePath
-awsEksSubzoneSnapshotPath repoRoot = awsEksSubzoneStateDir repoRoot </> "stack-snapshot.json"
+awsSesSnapshotPath :: FilePath -> FilePath
+awsSesSnapshotPath repoRoot = awsSesStateDir repoRoot </> "stack-snapshot.json"
 
-data AwsEksSubzoneStackSnapshot = AwsEksSubzoneStackSnapshot
-  { subzoneSnapshotStackName :: String
-  , subzoneSnapshotBackendBucket :: String
-  , subzoneSnapshotSubzoneId :: String
-  , subzoneSnapshotSubzoneName :: String
-  , subzoneSnapshotSubzoneNameServers :: [String]
-  , subzoneSnapshotParentZoneId :: String
-  , subzoneSnapshotParentNsRecordFqdn :: String
+data AwsSesStackSnapshot = AwsSesStackSnapshot
+  { sesSnapshotStackName :: String
+  , sesSnapshotBackendBucket :: String
+  , sesSnapshotSendingDomain :: String
+  , sesSnapshotReceiveSubdomain :: String
+  , sesSnapshotReceiveSubdomainMxFqdn :: String
+  , sesSnapshotReceiveRuleSetName :: String
+  , sesSnapshotReceiveRuleName :: String
+  , sesSnapshotCaptureBucketName :: String
+  , sesSnapshotCaptureBucketArn :: String
+  , sesSnapshotCaptureBucketKeyPrefix :: String
+  , sesSnapshotSmtpEndpoint :: String
+  , sesSnapshotSmtpIamUserName :: String
+  , sesSnapshotSmtpIamUserArn :: String
+  , sesSnapshotSmtpIamAccessKeyId :: String
   }
   deriving (Eq, Show)
 
-data AwsEksSubzoneStackConfig = AwsEksSubzoneStackConfig
-  { subzoneStackParentZoneId :: String
-  , subzoneStackSubzoneName :: String
+data AwsSesStackConfig = AwsSesStackConfig
+  { sesStackParentZoneId :: String
+  , sesStackSenderDomain :: String
+  , sesStackReceiveSubdomain :: String
+  , sesStackCaptureBucket :: String
   }
   deriving (Eq, Show)
 
-saveAwsEksSubzoneStackSnapshot :: FilePath -> AwsEksSubzoneStackSnapshot -> IO ()
-saveAwsEksSubzoneStackSnapshot repoRoot snapshot = do
-  createDirectoryIfMissing True (awsEksSubzoneStateDir repoRoot)
-  BL.writeFile (awsEksSubzoneSnapshotPath repoRoot) (encode (snapshotToJson snapshot))
+saveAwsSesStackSnapshot :: FilePath -> AwsSesStackSnapshot -> IO ()
+saveAwsSesStackSnapshot repoRoot snapshot = do
+  createDirectoryIfMissing True (awsSesStateDir repoRoot)
+  BL.writeFile (awsSesSnapshotPath repoRoot) (encode (snapshotToJson snapshot))
 
-loadAwsEksSubzoneStackSnapshot :: FilePath -> IO (Maybe AwsEksSubzoneStackSnapshot)
-loadAwsEksSubzoneStackSnapshot repoRoot = do
-  let snapshotPath = awsEksSubzoneSnapshotPath repoRoot
+loadAwsSesStackSnapshot :: FilePath -> IO (Maybe AwsSesStackSnapshot)
+loadAwsSesStackSnapshot repoRoot = do
+  let snapshotPath = awsSesSnapshotPath repoRoot
   exists <- doesFileExist snapshotPath
   if not exists
     then pure Nothing
@@ -124,64 +132,99 @@ loadAwsEksSubzoneStackSnapshot repoRoot = do
             Left _ -> pure Nothing
             Right snapshot -> pure (Just snapshot)
 
-clearAwsEksSubzoneStackSnapshot :: FilePath -> IO ()
-clearAwsEksSubzoneStackSnapshot repoRoot = do
-  let snapshotPath = awsEksSubzoneSnapshotPath repoRoot
+clearAwsSesStackSnapshot :: FilePath -> IO ()
+clearAwsSesStackSnapshot repoRoot = do
+  let snapshotPath = awsSesSnapshotPath repoRoot
   exists <- doesFileExist snapshotPath
   if exists then removeFile snapshotPath else pure ()
 
-snapshotToJson :: AwsEksSubzoneStackSnapshot -> Value
+snapshotToJson :: AwsSesStackSnapshot -> Value
 snapshotToJson snapshot =
   object
-    [ "stack_name" .= subzoneSnapshotStackName snapshot
-    , "backend_bucket" .= subzoneSnapshotBackendBucket snapshot
-    , "subzone_id" .= subzoneSnapshotSubzoneId snapshot
-    , "subzone_name" .= subzoneSnapshotSubzoneName snapshot
-    , "subzone_name_servers" .= subzoneSnapshotSubzoneNameServers snapshot
-    , "parent_zone_id" .= subzoneSnapshotParentZoneId snapshot
-    , "parent_ns_record_fqdn" .= subzoneSnapshotParentNsRecordFqdn snapshot
+    [ "stack_name" .= sesSnapshotStackName snapshot
+    , "backend_bucket" .= sesSnapshotBackendBucket snapshot
+    , "sending_domain" .= sesSnapshotSendingDomain snapshot
+    , "receive_subdomain" .= sesSnapshotReceiveSubdomain snapshot
+    , "receive_subdomain_mx_fqdn" .= sesSnapshotReceiveSubdomainMxFqdn snapshot
+    , "receive_rule_set_name" .= sesSnapshotReceiveRuleSetName snapshot
+    , "receive_rule_name" .= sesSnapshotReceiveRuleName snapshot
+    , "capture_bucket_name" .= sesSnapshotCaptureBucketName snapshot
+    , "capture_bucket_arn" .= sesSnapshotCaptureBucketArn snapshot
+    , "capture_bucket_key_prefix" .= sesSnapshotCaptureBucketKeyPrefix snapshot
+    , "smtp_endpoint" .= sesSnapshotSmtpEndpoint snapshot
+    , "smtp_iam_user_name" .= sesSnapshotSmtpIamUserName snapshot
+    , "smtp_iam_user_arn" .= sesSnapshotSmtpIamUserArn snapshot
+    , "smtp_iam_access_key_id" .= sesSnapshotSmtpIamAccessKeyId snapshot
     ]
 
-snapshotFromJson :: Value -> Either String AwsEksSubzoneStackSnapshot
+snapshotFromJson :: Value -> Either String AwsSesStackSnapshot
 snapshotFromJson (Object obj) = do
   stackName <- requireString obj "stack_name"
   backendBucket <- requireString obj "backend_bucket"
-  subzoneId <- requireString obj "subzone_id"
-  subzoneName <- requireString obj "subzone_name"
-  subzoneNameServers <- requireStringList obj "subzone_name_servers"
-  parentZoneId <- requireString obj "parent_zone_id"
-  parentNsRecordFqdn <- requireString obj "parent_ns_record_fqdn"
+  sendingDomain <- requireString obj "sending_domain"
+  receiveSubdomain <- requireString obj "receive_subdomain"
+  receiveSubdomainMxFqdn <- requireString obj "receive_subdomain_mx_fqdn"
+  receiveRuleSetName <- requireString obj "receive_rule_set_name"
+  receiveRuleName <- requireString obj "receive_rule_name"
+  captureBucketName <- requireString obj "capture_bucket_name"
+  captureBucketArn <- requireString obj "capture_bucket_arn"
+  captureBucketKeyPrefix <- requireString obj "capture_bucket_key_prefix"
+  smtpEndpoint <- requireString obj "smtp_endpoint"
+  smtpIamUserName <- requireString obj "smtp_iam_user_name"
+  smtpIamUserArn <- requireString obj "smtp_iam_user_arn"
+  smtpIamAccessKeyId <- requireString obj "smtp_iam_access_key_id"
   Right
-    AwsEksSubzoneStackSnapshot
-      { subzoneSnapshotStackName = stackName
-      , subzoneSnapshotBackendBucket = backendBucket
-      , subzoneSnapshotSubzoneId = subzoneId
-      , subzoneSnapshotSubzoneName = subzoneName
-      , subzoneSnapshotSubzoneNameServers = subzoneNameServers
-      , subzoneSnapshotParentZoneId = parentZoneId
-      , subzoneSnapshotParentNsRecordFqdn = parentNsRecordFqdn
+    AwsSesStackSnapshot
+      { sesSnapshotStackName = stackName
+      , sesSnapshotBackendBucket = backendBucket
+      , sesSnapshotSendingDomain = sendingDomain
+      , sesSnapshotReceiveSubdomain = receiveSubdomain
+      , sesSnapshotReceiveSubdomainMxFqdn = receiveSubdomainMxFqdn
+      , sesSnapshotReceiveRuleSetName = receiveRuleSetName
+      , sesSnapshotReceiveRuleName = receiveRuleName
+      , sesSnapshotCaptureBucketName = captureBucketName
+      , sesSnapshotCaptureBucketArn = captureBucketArn
+      , sesSnapshotCaptureBucketKeyPrefix = captureBucketKeyPrefix
+      , sesSnapshotSmtpEndpoint = smtpEndpoint
+      , sesSnapshotSmtpIamUserName = smtpIamUserName
+      , sesSnapshotSmtpIamUserArn = smtpIamUserArn
+      , sesSnapshotSmtpIamAccessKeyId = smtpIamAccessKeyId
       }
-snapshotFromJson _ = Left "subzone snapshot must be a JSON object"
+snapshotFromJson _ = Left "aws-ses snapshot must be a JSON object"
 
-snapshotFromOutputs :: Value -> Either String AwsEksSubzoneStackSnapshot
+snapshotFromOutputs :: Value -> Either String AwsSesStackSnapshot
 snapshotFromOutputs (Object obj) = do
   backendBucket <- requireString obj "backend_bucket"
-  subzoneId <- requireString obj "subzone_id"
-  subzoneName <- requireString obj "subzone_name"
-  subzoneNameServers <- requireStringList obj "subzone_name_servers"
-  parentZoneId <- requireString obj "parent_zone_id"
-  parentNsRecordFqdn <- requireString obj "parent_ns_record_fqdn"
+  sendingDomain <- requireString obj "sending_domain"
+  receiveSubdomain <- requireString obj "receive_subdomain"
+  receiveSubdomainMxFqdn <- requireString obj "receive_subdomain_mx_fqdn"
+  receiveRuleSetName <- requireString obj "receive_rule_set_name"
+  receiveRuleName <- requireString obj "receive_rule_name"
+  captureBucketName <- requireString obj "capture_bucket_name"
+  captureBucketArn <- requireString obj "capture_bucket_arn"
+  captureBucketKeyPrefix <- requireString obj "capture_bucket_key_prefix"
+  smtpEndpoint <- requireString obj "smtp_endpoint"
+  smtpIamUserName <- requireString obj "smtp_iam_user_name"
+  smtpIamUserArn <- requireString obj "smtp_iam_user_arn"
+  smtpIamAccessKeyId <- requireString obj "smtp_iam_access_key_id"
   Right
-    AwsEksSubzoneStackSnapshot
-      { subzoneSnapshotStackName = awsEksSubzoneStackName
-      , subzoneSnapshotBackendBucket = backendBucket
-      , subzoneSnapshotSubzoneId = subzoneId
-      , subzoneSnapshotSubzoneName = subzoneName
-      , subzoneSnapshotSubzoneNameServers = subzoneNameServers
-      , subzoneSnapshotParentZoneId = parentZoneId
-      , subzoneSnapshotParentNsRecordFqdn = parentNsRecordFqdn
+    AwsSesStackSnapshot
+      { sesSnapshotStackName = awsSesStackName
+      , sesSnapshotBackendBucket = backendBucket
+      , sesSnapshotSendingDomain = sendingDomain
+      , sesSnapshotReceiveSubdomain = receiveSubdomain
+      , sesSnapshotReceiveSubdomainMxFqdn = receiveSubdomainMxFqdn
+      , sesSnapshotReceiveRuleSetName = receiveRuleSetName
+      , sesSnapshotReceiveRuleName = receiveRuleName
+      , sesSnapshotCaptureBucketName = captureBucketName
+      , sesSnapshotCaptureBucketArn = captureBucketArn
+      , sesSnapshotCaptureBucketKeyPrefix = captureBucketKeyPrefix
+      , sesSnapshotSmtpEndpoint = smtpEndpoint
+      , sesSnapshotSmtpIamUserName = smtpIamUserName
+      , sesSnapshotSmtpIamUserArn = smtpIamUserArn
+      , sesSnapshotSmtpIamAccessKeyId = smtpIamAccessKeyId
       }
-snapshotFromOutputs _ = Left "subzone pulumi output must be a JSON object"
+snapshotFromOutputs _ = Left "aws-ses pulumi output must be a JSON object"
 
 requireString :: KeyMap.KeyMap Value -> String -> Either String String
 requireString obj key =
@@ -191,64 +234,68 @@ requireString obj key =
        in if null str then Left ("missing string output " ++ key) else Right str
     _ -> Left ("missing string output " ++ key)
 
-requireStringList :: KeyMap.KeyMap Value -> String -> Either String [String]
-requireStringList obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Array arr) -> mapM (requireStringListEntry key) (Vector.toList arr)
-    _ -> Left ("missing list output " ++ key)
-
-requireStringListEntry :: String -> Value -> Either String String
-requireStringListEntry key value =
-  case value of
-    String text ->
-      let str = Text.unpack text
-       in if null str then Left ("output " ++ key ++ " contains empty string") else Right str
-    _ -> Left ("output " ++ key ++ " must contain strings only")
-
-renderAwsEksSubzoneStackReport :: AwsEksSubzoneStackSnapshot -> Int -> String
-renderAwsEksSubzoneStackReport snapshot objectCount =
+renderAwsSesStackReport :: AwsSesStackSnapshot -> Int -> String
+renderAwsSesStackReport snapshot objectCount =
   unlines
-    [ "STACK=" ++ subzoneSnapshotStackName snapshot
-    , "BACKEND_BUCKET=" ++ subzoneSnapshotBackendBucket snapshot
+    [ "STACK=" ++ sesSnapshotStackName snapshot
+    , "BACKEND_BUCKET=" ++ sesSnapshotBackendBucket snapshot
     , "BACKEND_OBJECT_COUNT=" ++ show objectCount
-    , "SUBZONE_ID=" ++ subzoneSnapshotSubzoneId snapshot
-    , "SUBZONE_NAME=" ++ subzoneSnapshotSubzoneName snapshot
-    , "SUBZONE_NAME_SERVERS=" ++ joinComma (subzoneSnapshotSubzoneNameServers snapshot)
-    , "PARENT_ZONE_ID=" ++ subzoneSnapshotParentZoneId snapshot
-    , "PARENT_NS_RECORD_FQDN=" ++ subzoneSnapshotParentNsRecordFqdn snapshot
+    , "SENDING_DOMAIN=" ++ sesSnapshotSendingDomain snapshot
+    , "RECEIVE_SUBDOMAIN=" ++ sesSnapshotReceiveSubdomain snapshot
+    , "RECEIVE_SUBDOMAIN_MX_FQDN=" ++ sesSnapshotReceiveSubdomainMxFqdn snapshot
+    , "RECEIVE_RULE_SET_NAME=" ++ sesSnapshotReceiveRuleSetName snapshot
+    , "RECEIVE_RULE_NAME=" ++ sesSnapshotReceiveRuleName snapshot
+    , "CAPTURE_BUCKET_NAME=" ++ sesSnapshotCaptureBucketName snapshot
+    , "CAPTURE_BUCKET_ARN=" ++ sesSnapshotCaptureBucketArn snapshot
+    , "CAPTURE_BUCKET_KEY_PREFIX=" ++ sesSnapshotCaptureBucketKeyPrefix snapshot
+    , "SMTP_ENDPOINT=" ++ sesSnapshotSmtpEndpoint snapshot
+    , "SMTP_IAM_USER_NAME=" ++ sesSnapshotSmtpIamUserName snapshot
+    , "SMTP_IAM_USER_ARN=" ++ sesSnapshotSmtpIamUserArn snapshot
+    , "SMTP_IAM_ACCESS_KEY_ID=" ++ sesSnapshotSmtpIamAccessKeyId snapshot
     ]
 
-resolveAwsEksSubzoneStackConfig :: FilePath -> IO (Either String AwsEksSubzoneStackConfig)
-resolveAwsEksSubzoneStackConfig repoRoot = do
+resolveAwsSesStackConfig :: FilePath -> IO (Either String AwsSesStackConfig)
+resolveAwsSesStackConfig repoRoot = do
   settingsResult <- validateAndLoadSettings repoRoot
   pure $ case settingsResult of
     Left err -> Left err
     Right settings ->
       let parentZoneId = Text.unpack (Text.strip (zone_id (route53 (validatedConfig settings))))
-          subzoneSection = aws_substrate (validatedConfig settings)
-          subzoneName = Text.unpack (Text.strip (subzone_name subzoneSection))
+          sesSection = ses (validatedConfig settings)
+          senderDomainValue = Text.unpack (Text.strip (sender_domain sesSection))
+          receiveSubdomainValue = Text.unpack (Text.strip (receive_subdomain sesSection))
+          captureBucketValue = Text.unpack (Text.strip (capture_bucket sesSection))
        in if null parentZoneId
-            then Left "route53.zone_id must be set before provisioning the AWS subzone stack"
+            then Left "route53.zone_id must be set before provisioning the AWS SES stack"
             else
-              if null subzoneName
-                then
-                  Left
-                    "aws_substrate.subzone_name must be set before provisioning the AWS subzone stack"
+              if null senderDomainValue
+                then Left "ses.sender_domain must be set before provisioning the AWS SES stack"
                 else
-                  Right
-                    AwsEksSubzoneStackConfig
-                      { subzoneStackParentZoneId = parentZoneId
-                      , subzoneStackSubzoneName = subzoneName
-                      }
+                  if null receiveSubdomainValue
+                    then
+                      Left "ses.receive_subdomain must be set before provisioning the AWS SES stack"
+                    else
+                      if null captureBucketValue
+                        then
+                          Left "ses.capture_bucket must be set before provisioning the AWS SES stack"
+                        else
+                          Right
+                            AwsSesStackConfig
+                              { sesStackParentZoneId = parentZoneId
+                              , sesStackSenderDomain = senderDomainValue
+                              , sesStackReceiveSubdomain = receiveSubdomainValue
+                              , sesStackCaptureBucket = captureBucketValue
+                              }
 
-syncAwsEksSubzoneStackConfig
-  :: FilePath -> [(String, String)] -> AwsEksSubzoneStackConfig -> IO ExitCode
-syncAwsEksSubzoneStackConfig projectDir environment stackConfig =
+syncAwsSesStackConfig :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO ExitCode
+syncAwsSesStackConfig projectDir environment stackConfig =
   foldM runConfigSet ExitSuccess configEntries
  where
   configEntries =
-    [ ("parentZoneId", subzoneStackParentZoneId stackConfig)
-    , ("subzoneName", subzoneStackSubzoneName stackConfig)
+    [ ("parentZoneId", sesStackParentZoneId stackConfig)
+    , ("senderDomain", sesStackSenderDomain stackConfig)
+    , ("receiveSubdomain", sesStackReceiveSubdomain stackConfig)
+    , ("captureBucket", sesStackCaptureBucket stackConfig)
     ]
 
   runConfigSet :: ExitCode -> (String, String) -> IO ExitCode
@@ -257,12 +304,10 @@ syncAwsEksSubzoneStackConfig projectDir environment stackConfig =
     runPulumiCommand
       projectDir
       environment
-      ["config", "set", "--stack", awsEksSubzoneStackName, key, value]
+      ["config", "set", "--stack", awsSesStackName, key, value]
 
--- Pulumi flow helpers parameterized to the subzone stack.
-
-pulumiSubzoneBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
-pulumiSubzoneBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
+pulumiSesBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
+pulumiSesBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> pure (Left err)
@@ -312,7 +357,7 @@ data PulumiStackSelectResult
 
 pulumiStackSelect :: FilePath -> [(String, String)] -> Bool -> IO PulumiStackSelectResult
 pulumiStackSelect projectDir environment createIfMissing =
-  let arguments = ["stack", "select", awsEksSubzoneStackName] ++ ["--create" | createIfMissing]
+  let arguments = ["stack", "select", awsSesStackName] ++ ["--create" | createIfMissing]
    in if createIfMissing
         then do
           exitCode <- runPulumiCommand projectDir environment arguments
@@ -334,25 +379,25 @@ pulumiStackSelect projectDir environment createIfMissing =
               case processExitCode output of
                 ExitSuccess -> PulumiStackSelected
                 ExitFailure _
-                  | isMissingPulumiStackError awsEksSubzoneStackName (renderProcessDetail output) ->
+                  | isMissingPulumiStackError awsSesStackName (renderProcessDetail output) ->
                       PulumiStackMissing
                   | otherwise ->
                       PulumiStackSelectFailed (renderProcessDetail output)
 
 pulumiUp :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiUp projectDir environment =
-  runPulumiCommand projectDir environment ["up", "--yes", "--stack", awsEksSubzoneStackName]
+  runPulumiCommand projectDir environment ["up", "--yes", "--stack", awsSesStackName]
 
 pulumiDestroyQuiet :: FilePath -> [(String, String)] -> IO (Either String ())
 pulumiDestroyQuiet projectDir environment =
-  runPulumiCommandQuiet projectDir environment ["destroy", "--yes", "--stack", awsEksSubzoneStackName]
+  runPulumiCommandQuiet projectDir environment ["destroy", "--yes", "--stack", awsSesStackName]
 
 pulumiStackRemoveQuiet :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
 pulumiStackRemoveQuiet projectDir environment force =
   runPulumiCommandQuiet
     projectDir
     environment
-    (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsEksSubzoneStackName])
+    (["stack", "rm", "--yes", "--remove-backups"] ++ ["--force" | force] ++ [awsSesStackName])
 
 pulumiStackOutputs :: FilePath -> [(String, String)] -> IO (Either String Value)
 pulumiStackOutputs projectDir environment = do
@@ -360,7 +405,7 @@ pulumiStackOutputs projectDir environment = do
     captureSubprocessResult
       Subprocess
         { subprocessPath = "pulumi"
-        , subprocessArguments = ["stack", "output", "--json", "--stack", awsEksSubzoneStackName]
+        , subprocessArguments = ["stack", "output", "--json", "--stack", awsSesStackName]
         , subprocessEnvironment = Just environment
         , subprocessWorkingDirectory = Just projectDir
         }
@@ -450,18 +495,14 @@ renderProcessDetail output =
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
 
-joinComma :: [String] -> String
-joinComma [] = ""
-joinComma items = foldr1 (\a b -> a ++ "," ++ b) items
-
-ensureAwsEksSubzoneStackResources :: FilePath -> IO ExitCode
-ensureAwsEksSubzoneStackResources repoRoot = do
-  let projectDir = awsEksSubzonePulumiProjectDir repoRoot
+ensureAwsSesStackResources :: FilePath -> IO ExitCode
+ensureAwsSesStackResources repoRoot = do
+  let projectDir = awsSesPulumiProjectDir repoRoot
   projectExists <- doesFileExist (projectDir </> "Pulumi.yaml")
   if not projectExists
-    then failWith ("Pulumi AWS subzone project missing: " ++ projectDir)
+    then failWith ("Pulumi AWS SES project missing: " ++ projectDir)
     else do
-      configResult <- resolveAwsEksSubzoneStackConfig repoRoot
+      configResult <- resolveAwsSesStackConfig repoRoot
       case configResult of
         Left err -> failWith err
         Right stackConfig -> do
@@ -475,7 +516,7 @@ ensureAwsEksSubzoneStackResources repoRoot = do
                   Left err -> pure (Left err)
                   Right () -> do
                     baseEnvironmentResult <-
-                      pulumiSubzoneBaseEnv repoRoot localPort accessKey secretKey
+                      pulumiSesBaseEnv repoRoot localPort accessKey secretKey
                     case baseEnvironmentResult of
                       Left err -> pure (Left err)
                       Right baseEnvironment -> do
@@ -491,7 +532,7 @@ ensureAwsEksSubzoneStackResources repoRoot = do
                                 pure (Left ("pulumi stack select failed: " ++ detail))
                               PulumiStackSelected -> do
                                 syncExit <-
-                                  syncAwsEksSubzoneStackConfig projectDir baseEnvironment stackConfig
+                                  syncAwsSesStackConfig projectDir baseEnvironment stackConfig
                                 case syncExit of
                                   ExitFailure _ -> pure (Left "pulumi config set failed")
                                   ExitSuccess -> do
@@ -506,33 +547,33 @@ ensureAwsEksSubzoneStackResources repoRoot = do
                                             case snapshotFromOutputs outputs of
                                               Left err -> pure (Left err)
                                               Right snapshot -> do
-                                                saveAwsEksSubzoneStackSnapshot repoRoot snapshot
+                                                saveAwsSesStackSnapshot repoRoot snapshot
                                                 objectCountResult <-
                                                   bucketObjectCount localPort accessKey secretKey
                                                 case objectCountResult of
                                                   Left err -> pure (Left err)
                                                   Right objectCount -> do
                                                     writeOutput
-                                                      (renderAwsEksSubzoneStackReport snapshot objectCount)
+                                                      (renderAwsSesStackReport snapshot objectCount)
                                                     pure (Right ())
           case portForwardResult of
             Left err -> failWith err
             Right (Left err) -> failWith err
             Right (Right ()) -> pure ExitSuccess
 
-destroyAwsEksSubzoneStack :: FilePath -> Bool -> IO ExitCode
-destroyAwsEksSubzoneStack repoRoot summary = do
-  statusResult <- destroyAwsEksSubzoneStackStatus repoRoot summary
+destroyAwsSesStack :: FilePath -> Bool -> IO ExitCode
+destroyAwsSesStack repoRoot summary = do
+  statusResult <- destroyAwsSesStackStatus repoRoot summary
   case statusResult of
     Left err -> failWith err
     Right status -> do
-      writeOutputLine ("AWS EKS subzone stack: " ++ status)
+      writeOutputLine ("AWS SES stack: " ++ status)
       pure ExitSuccess
 
-destroyAwsEksSubzoneStackStatus :: FilePath -> Bool -> IO (Either String String)
-destroyAwsEksSubzoneStackStatus repoRoot summary = do
-  currentSnapshot <- loadAwsEksSubzoneStackSnapshot repoRoot
-  let projectDir = awsEksSubzonePulumiProjectDir repoRoot
+destroyAwsSesStackStatus :: FilePath -> Bool -> IO (Either String String)
+destroyAwsSesStackStatus repoRoot summary = do
+  currentSnapshot <- loadAwsSesStackSnapshot repoRoot
+  let projectDir = awsSesPulumiProjectDir repoRoot
   portForwardResult <- withMinioPortForward $ \localPort -> do
     credsResult <- readMinioCredentials
     case credsResult of
@@ -555,19 +596,19 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
                       Left err ->
                         pure
                           ( Left
-                              ( "operational AWS credentials are required to destroy the AWS subzone stack: "
+                              ( "operational AWS credentials are required to destroy the AWS SES stack: "
                                   ++ err
                               )
                           )
                       Right operationalCredentials -> do
-                        configResult <- resolveAwsEksSubzoneStackConfig repoRoot
+                        configResult <- resolveAwsSesStackConfig repoRoot
                         case configResult of
                           Left err -> pure (Left err)
                           Right stackConfig -> do
                             let providerEnvironment =
                                   backendEnvironment ++ pulumiAwsProviderEnv operationalCredentials
                             syncExit <-
-                              syncAwsEksSubzoneStackConfig projectDir providerEnvironment stackConfig
+                              syncAwsSesStackConfig projectDir providerEnvironment stackConfig
                             case syncExit of
                               ExitFailure _ -> pure (Left "pulumi config set failed")
                               ExitSuccess -> do
@@ -590,7 +631,7 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
         Just _ ->
           pure
             ( Left
-                ( "local MinIO backend unavailable while an AWS subzone stack snapshot still exists: "
+                ( "local MinIO backend unavailable while an AWS SES stack snapshot still exists: "
                     ++ err
                 )
             )
@@ -605,7 +646,7 @@ completeDestroy repoRoot projectDir environment summary = do
 
 finalizeDestroy :: FilePath -> IO (Either String String)
 finalizeDestroy repoRoot = do
-  clearAwsEksSubzoneStackSnapshot repoRoot
+  clearAwsSesStackSnapshot repoRoot
   pure (Right "destroyed and snapshot cleared")
 
 pulumiLoginEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
@@ -621,7 +662,7 @@ pulumiDestroyEither projectDir environment summary
         <$> runPulumiCommand
           projectDir
           environment
-          ["destroy", "--yes", "--stack", awsEksSubzoneStackName]
+          ["destroy", "--yes", "--stack", awsSesStackName]
 
 pulumiStackRemoveEither
   :: FilePath -> [(String, String)] -> Bool -> Bool -> IO (Either String ())
@@ -634,58 +675,41 @@ pulumiStackRemoveEither projectDir environment force summary
           environment
           ( ["stack", "rm", "--yes", "--remove-backups"]
               ++ ["--force" | force]
-              ++ [awsEksSubzoneStackName]
+              ++ [awsSesStackName]
           )
 
 exitToEither :: String -> ExitCode -> Either String ()
 exitToEither _ ExitSuccess = Right ()
 exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ show code)
 
--- Residue assertion. After teardown there should be no Route 53 hosted zone matching the
--- subzone name on the supported AWS account; the parent zone's delegation record should
--- also be absent.
-assertNoAwsEksSubzoneStackResidue
-  :: FilePath -> Maybe AwsEksSubzoneStackSnapshot -> IO (Either String ())
-assertNoAwsEksSubzoneStackResidue repoRoot maybeSnapshot = do
-  configResult <- resolveAwsEksSubzoneStackConfig repoRoot
+-- Residue assertion. After teardown there should be no SES sending domain identity, no
+-- active receive rule set referencing the receive subdomain, and no capture S3 bucket on
+-- the supported AWS account.
+assertNoAwsSesStackResidue
+  :: FilePath -> Maybe AwsSesStackSnapshot -> IO (Either String ())
+assertNoAwsSesStackResidue repoRoot maybeSnapshot = do
+  configResult <- resolveAwsSesStackConfig repoRoot
   case configResult of
     Left err -> pure (Left err)
     Right stackConfig -> do
-      let subzoneFqdn = subzoneStackSubzoneName stackConfig
-          parentZoneId = subzoneStackParentZoneId stackConfig
-      hostedZoneResidue <- discoverHostedZoneResidue repoRoot subzoneFqdn
-      case hostedZoneResidue of
+      let captureBucket = sesStackCaptureBucket stackConfig
+      bucketResidue <- discoverBucketResidue repoRoot captureBucket
+      case bucketResidue of
         Left err -> pure (Left err)
-        Right (Just zoneId) ->
+        Right True ->
           pure
             ( Left
-                ( "Route 53 hosted zone "
-                    ++ zoneId
-                    ++ " for `"
-                    ++ subzoneFqdn
+                ( "S3 capture bucket `"
+                    ++ captureBucket
                     ++ "` still exists after destroy; manual cleanup required"
                 )
             )
-        Right Nothing -> do
-          parentResidue <- discoverParentNsResidue repoRoot parentZoneId subzoneFqdn
-          case parentResidue of
-            Left err -> pure (Left err)
-            Right True ->
-              pure
-                ( Left
-                    ( "NS delegation record for `"
-                        ++ subzoneFqdn
-                        ++ "` is still present in parent zone "
-                        ++ parentZoneId
-                        ++ "; manual cleanup required"
-                    )
-                )
-            Right False -> pure (Right ())
+        Right False -> pure (Right ())
  where
   _ = maybeSnapshot
 
-discoverHostedZoneResidue :: FilePath -> String -> IO (Either String (Maybe String))
-discoverHostedZoneResidue repoRoot subzoneFqdn = do
+discoverBucketResidue :: FilePath -> String -> IO (Either String Bool)
+discoverBucketResidue repoRoot bucketName = do
   envResult <- settingsAwsEnv repoRoot
   case envResult of
     Left err -> pure (Left err)
@@ -695,124 +719,20 @@ discoverHostedZoneResidue repoRoot subzoneFqdn = do
           Subprocess
             { subprocessPath = "aws"
             , subprocessArguments =
-                [ "route53"
-                , "list-hosted-zones-by-name"
-                , "--dns-name"
-                , subzoneFqdn
-                , "--max-items"
-                , "1"
-                , "--output"
-                , "json"
+                [ "s3api"
+                , "head-bucket"
+                , "--bucket"
+                , bucketName
                 ]
             , subprocessEnvironment = Just environment
             , subprocessWorkingDirectory = Nothing
             }
       pure $ case result of
-        Failure err ->
-          Left ("failed to start aws route53 list-hosted-zones-by-name: " ++ err)
+        Failure err -> Left ("failed to start aws s3api head-bucket: " ++ err)
         Success output ->
           case processExitCode output of
-            ExitFailure _ ->
-              Left
-                ( "aws route53 list-hosted-zones-by-name failed: "
-                    ++ trim (processStderr output)
-                )
-            ExitSuccess ->
-              case eitherDecode (BL8.pack (processStdout output)) of
-                Left err ->
-                  Left ("failed to parse aws route53 list-hosted-zones-by-name JSON: " ++ err)
-                Right value -> parseFirstMatchingZone subzoneFqdn value
-
-parseFirstMatchingZone :: String -> Value -> Either String (Maybe String)
-parseFirstMatchingZone subzoneFqdn (Object obj) =
-  case KeyMap.lookup (Key.fromString "HostedZones") obj of
-    Just (Array zones) ->
-      let matches =
-            [ zoneIdFromArn
-            | Object zone <- Vector.toList zones
-            , Just (String name) <- [KeyMap.lookup (Key.fromString "Name") zone]
-            , normalizeName (Text.unpack name) == normalizeName subzoneFqdn
-            , Just (String idText) <- [KeyMap.lookup (Key.fromString "Id") zone]
-            , let zoneIdFromArn = stripHostedZonePrefix (Text.unpack idText)
-            ]
-       in case matches of
-            [] -> Right Nothing
-            zoneId : _ -> Right (Just zoneId)
-    _ -> Right Nothing
-parseFirstMatchingZone _ _ = Left "aws route53 list-hosted-zones-by-name returned a non-object payload"
-
-stripHostedZonePrefix :: String -> String
-stripHostedZonePrefix raw =
-  let prefix = "/hostedzone/"
-   in if prefix `isInfixOf` raw
-        then drop (length prefix) raw
-        else raw
-
-normalizeName :: String -> String
-normalizeName name =
-  let lowered = map toLower name
-   in if not (null lowered) && last lowered == '.'
-        then init lowered
-        else lowered
-
-discoverParentNsResidue :: FilePath -> String -> String -> IO (Either String Bool)
-discoverParentNsResidue repoRoot parentZoneId subzoneFqdn = do
-  envResult <- settingsAwsEnv repoRoot
-  case envResult of
-    Left err -> pure (Left err)
-    Right environment -> do
-      result <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "route53"
-                , "list-resource-record-sets"
-                , "--hosted-zone-id"
-                , parentZoneId
-                , "--start-record-name"
-                , subzoneFqdn
-                , "--start-record-type"
-                , "NS"
-                , "--max-items"
-                , "1"
-                , "--output"
-                , "json"
-                ]
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Nothing
-            }
-      pure $ case result of
-        Failure err ->
-          Left ("failed to start aws route53 list-resource-record-sets: " ++ err)
-        Success output ->
-          case processExitCode output of
-            ExitFailure _ ->
-              Left
-                ( "aws route53 list-resource-record-sets failed: "
-                    ++ trim (processStderr output)
-                )
-            ExitSuccess ->
-              case eitherDecode (BL8.pack (processStdout output)) of
-                Left err ->
-                  Left ("failed to parse aws route53 list-resource-record-sets JSON: " ++ err)
-                Right value -> parseNsRecordPresence subzoneFqdn value
-
-parseNsRecordPresence :: String -> Value -> Either String Bool
-parseNsRecordPresence subzoneFqdn (Object obj) =
-  case KeyMap.lookup (Key.fromString "ResourceRecordSets") obj of
-    Just (Array records) ->
-      let matches =
-            [ True
-            | Object record <- Vector.toList records
-            , Just (String name) <- [KeyMap.lookup (Key.fromString "Name") record]
-            , normalizeName (Text.unpack name) == normalizeName subzoneFqdn
-            , Just (String recordType) <- [KeyMap.lookup (Key.fromString "Type") record]
-            , Text.unpack recordType == "NS"
-            ]
-       in Right (not (null matches))
-    _ -> Right False
-parseNsRecordPresence _ _ = Left "aws route53 list-resource-record-sets returned a non-object payload"
+            ExitSuccess -> Right True
+            ExitFailure _ -> Right False
 
 failWith :: String -> IO ExitCode
 failWith message = do

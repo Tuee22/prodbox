@@ -31,7 +31,6 @@ import Prodbox.Settings
   , DomainSection (..)
   , Route53Section (..)
   , ValidatedSettings (..)
-  , isAwsSubstrateConfigured
   )
 import Prodbox.Substrate (Substrate (..))
 import System.FilePath ((</>))
@@ -108,20 +107,28 @@ substratePublicFqdn settings substrate =
   case substrate of
     SubstrateHomeLocal -> publicFqdn settings
     SubstrateAws ->
-      let awsSection = aws_substrate (validatedConfig settings)
-       in if isAwsSubstrateConfigured awsSection
-            then Text.unpack (Text.strip (subzone_name awsSection))
-            else publicFqdn settings
+      let stripped = Text.strip (subzone_name (aws_substrate (validatedConfig settings)))
+       in if Text.null stripped
+            then
+              error
+                "substratePublicFqdn: aws_substrate.subzone_name is empty; \
+                \--substrate aws runs require aws_substrate.subzone_name per \
+                \development_plan_standards.md \xc2\xa7 M (no fallback)"
+            else Text.unpack stripped
 
 substrateHostedZoneId :: ValidatedSettings -> Substrate -> Text
 substrateHostedZoneId settings substrate =
   case substrate of
     SubstrateHomeLocal -> zone_id (route53 (validatedConfig settings))
     SubstrateAws ->
-      let awsSection = aws_substrate (validatedConfig settings)
-       in if isAwsSubstrateConfigured awsSection
-            then hosted_zone_id awsSection
-            else zone_id (route53 (validatedConfig settings))
+      let stripped = Text.strip (hosted_zone_id (aws_substrate (validatedConfig settings)))
+       in if Text.null stripped
+            then
+              error
+                "substrateHostedZoneId: aws_substrate.hosted_zone_id is empty; \
+                \--substrate aws runs require aws_substrate.hosted_zone_id per \
+                \development_plan_standards.md \xc2\xa7 M (no fallback)"
+            else stripped
 
 substrateKubeconfigPath :: FilePath -> Substrate -> Maybe FilePath
 substrateKubeconfigPath repoRoot substrate =

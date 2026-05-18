@@ -148,6 +148,8 @@ data PulumiCommand
   | PulumiTestDestroy Bool PlanOptions
   | PulumiAwsSubzoneResources PlanOptions
   | PulumiAwsSubzoneDestroy Bool PlanOptions
+  | PulumiAwsSesResources PlanOptions
+  | PulumiAwsSesDestroy Bool PlanOptions
   deriving (Eq, Show)
 
 data Rke2Command

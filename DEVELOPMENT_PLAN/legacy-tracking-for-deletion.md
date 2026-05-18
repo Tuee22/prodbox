@@ -23,19 +23,14 @@
 
 ## Ledger Status
 
-The cleanup ledger preserves completed removal history. Python-removal work remains closed, and
-the doctrine-deviation residue scheduled by the Phase `1`–`4` reopen is now fully closed. The
-`Pending Removal` section is non-empty after Sprint `7.5.b.iii` reclassified the
-substrate-aware helper fallback semantics shipped in Sprint `7.5.b.i` / `7.5.b.ii.a` as
-doctrine-violating residue; the row closes when Sprint `7.5.c`'s code follow-up replaces the
-fallback with a fail-fast error per
-[development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
+The cleanup ledger preserves completed removal history. Python-removal work remains closed, the
+doctrine-deviation residue scheduled by the Phase `1`–`4` reopen is fully closed, and the
+substrate-aware helper-fallback residue introduced by Sprints `7.5.b.i` / `7.5.b.ii.a` is now
+closed under Sprint `7.5.c`'s code follow-up. The `Pending Removal` section is empty.
 
 ## Pending Removal
 
-| Item | Scheduled For Removal In | Notes |
-|------|--------------------------|-------|
-| `substratePublicFqdn` and `substrateHostedZoneId` home-substrate fallback branches in `src/Prodbox/PublicEdge.hs`; conflated `hosted_zone_id`+`subzone_name` pre-provision gate in `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` | Sprint `7.5.c` code follow-up | Sprint `7.5.b.iii` recorded the substrate-independence doctrine across `development_plan_standards.md`, `substrates.md`, `phase-7-aws-substrate-foundations.md`, `phase-5-canonical-test-suite.md`, `00-overview.md`, the development-plan and root READMEs, and the affected engineering docs. The shipped helpers still fall back to `route53.zone_id` / `publicFqdn` when the AWS block is empty, and `resolveAwsEksSubzoneStackConfig` still requires `hosted_zone_id` at pre-provision time even though only `subzone_name` is consumed by the subzone Pulumi. The code follow-up replaces the helper fallback with a fail-fast error and loosens the pre-provision gate to require only `subzone_name`, leaving `hosted_zone_id` as a post-provision requirement enforced at the downstream validation arms that consume it. |
+_(empty)_
 
 ## Pending Removal Notes
 
@@ -46,6 +41,7 @@ replacement is verified.
 
 | Item | Removed In | Notes |
 |------|------------|-------|
+| `substratePublicFqdn` and `substrateHostedZoneId` home-substrate fallback branches in `src/Prodbox/PublicEdge.hs`; conflated `hosted_zone_id`+`subzone_name` pre-provision gate in `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig`; now-unused `isAwsSubstrateConfigured` helper in `src/Prodbox/Settings.hs` | Sprint `7.5.c` code follow-up on May 18, 2026 | Sprint `7.5.b.iii` recorded the substrate-independence doctrine and reclassified the shipped helper fallback as doctrine-violating residue. Sprint `7.5.c`'s code follow-up replaced `substratePublicFqdn` and `substrateHostedZoneId` AWS-substrate fallback branches with fail-fast `error` calls naming `development_plan_standards.md` § M (no fallback), loosened `resolveAwsEksSubzoneStackConfig` so it requires only `subzone_name` at pre-provision time, and removed the now-unused `isAwsSubstrateConfigured` helper that conflated the two fields. Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (300/300). |
 | Plan-wide framing that split validation surfaces into "home-cluster validation" and "AWS validation" as parallel categories | Sprint `0.6` closure on 2026-05-16 | Replaced by the substrate doctrine introduced in [development_plan_standards.md → M. Test Suite Substrates](development_plan_standards.md#m-test-suite-substrates) and the per-substrate parity tracker in [substrates.md](substrates.md). The plan now describes one canonical test suite that runs against substrates, with substrate provision/teardown as a separate concern from suite content. Phase docs phase-5 (renamed to `phase-5-canonical-test-suite.md`) and phase-7 (renamed to `phase-7-aws-substrate-foundations.md`) reflect this. The historical Sprints `5.1`–`5.5` and `7.1`–`7.4` sprint blocks remain intact under the renamed files as accurate records of when each surface was implemented. The `phase-5-public-host-validation.md` and `phase-7-aws-iam-quota-automation.md` paths no longer exist. |
 | Benign upstream uninstall-script chatter on successful `prodbox rke2 delete --yes` runs | Sprint `4.8` closure on 2026-05-16 | Closed by extending `isIgnorableRke2DeleteNoiseLine` in `src/Prodbox/CLI/Rke2.hs` to classify `Failed to allocate directory watch` and `Too many open files` as benign noise alongside the existing inotify- and uninstall-script residue, and by adding the hermetic-success and summarized-failure integration cases in `test/integration/CliSuite.hs`. The governed docs in `documents/engineering/cli_command_surface.md`, `documents/engineering/streaming_doctrine.md`, and `documents/engineering/storage_lifecycle_doctrine.md` now name the contract. |
 | Remaining doctrine-adoption cleanup rows from the Phase `1`–`4` reopen | Sprints `1.12`–`1.14`, `1.16`–`1.18`, `1.22`, `2.9`, `2.11`, `2.13`, `2.14`, and `4.7` closure on May 14, 2026 | Closed the remaining service-boundary, retry-policy, error-kind, state-machine, output-boundary, one-shot `App`, dependency-audit, daemon-lifecycle, live-config, test-hook, lifecycle-stanza, and Pulumi-harness rows. The pending-removal ledger is now empty. |

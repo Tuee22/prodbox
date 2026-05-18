@@ -91,12 +91,12 @@ substrate's Pulumi stack. They are long-lived, account-scoped, and shared across
 Documenting them here keeps the substrate lifecycle clean (provision/teardown is per-substrate)
 without losing track of resources both substrates depend on.
 
-| Resource | Owner | Phase ownership | Used by |
-|----------|-------|-----------------|---------|
-| Route 53 hosted zone for the configured public FQDN | Operator AWS account | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) | Both substrates (home substrate for the live public record; AWS substrate when its parity sprint adds public-edge proofs) |
-| AWS SES sending identity (domain) | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | Both substrates running `ValidationKeycloakInvite` |
-| AWS SES receive subdomain + MX records + receive rule set + S3 capture bucket | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | Both substrates running `ValidationKeycloakInvite` |
-| IAM policy granting the `prodbox` runner SES send, S3 list/get on the capture bucket, and capture cleanup | Operator AWS account | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) plus [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | Both substrates |
+| Resource | Owner | Phase ownership | Provisioning surface | Used by |
+|----------|-------|-----------------|----------------------|---------|
+| Route 53 hosted zone for the configured public FQDN | Operator AWS account | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Both substrates (home substrate for the live public record; AWS substrate when its parity sprint adds public-edge proofs) |
+| AWS SES sending identity (domain) | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` — `pulumi/aws-ses/` | Both substrates running `ValidationKeycloakInvite` |
+| AWS SES receive subdomain + MX records + receive rule set + S3 capture bucket | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` — `pulumi/aws-ses/` | Both substrates running `ValidationKeycloakInvite` |
+| SMTP IAM user + access key for Keycloak SES SMTP | Operator AWS account | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) | `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` — `pulumi/aws-ses/` (`ses:SendRawEmail` + capture-bucket read/delete) | Keycloak chart `smtpServer` block (Sprint `8.2`); native validation harness for `ValidationKeycloakInvite` (Sprint `8.5`) |
 
 ## Canonical Suite Composition (Substrate-Agnostic)
 

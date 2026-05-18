@@ -57,15 +57,24 @@ deliverables are sized for sequential, separately validatable sessions:
     substrate-aware `ChartPlatform.hs` branching that consumes
     `substrateKubeconfigPath`, and AWS LB Controller + Envoy Gateway install paths on the
     EKS substrate. Validated with live AWS apply in Sprint `7.5.c`.
-- **Sprint `7.5.b.iii`** (🔄 Active) — substrate-independence doctrine refactor making the
-  no-fallback contract explicit across [development_plan_standards.md → M.](development_plan_standards.md#m-test-suite-substrates),
+- **Sprint `7.5.b.iii`** (✅ Done, May 18, 2026) — substrate-independence doctrine refactor
+  making the no-fallback contract explicit across
+  [development_plan_standards.md → M.](development_plan_standards.md#m-test-suite-substrates),
   [substrates.md](substrates.md), and the engineering doc set. Reclassifies the helper
   fallback shipped in 7.5.b.i / 7.5.b.ii.a as scheduled cleanup residue; the code
-  reconciliation is owned by Sprint `7.5.c`'s validation-arms-refinement budget.
-- **Sprint `7.5.c`** (📋 Planned) — live AWS-substrate canonical-suite validation
-  (`charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`,
-  public-edge readiness) plus zero-residue teardown scan and Substrate parity table flip in
-  [substrates.md](substrates.md) and [README.md](README.md).
+  reconciliation is owned by Sprint `7.5.c`'s validation-arms-refinement budget. Validated
+  with `prodbox check-code`, `prodbox lint docs`, `prodbox docs check`, `prodbox test unit`
+  (300/300), and the prescribed grep audits.
+- **Sprint `7.5.c`** (🔄 Active) — code follow-up landed May 18, 2026
+  (`substratePublicFqdn` / `substrateHostedZoneId` fail-fast,
+  `resolveAwsEksSubzoneStackConfig` pre-provision gate loosened, `isAwsSubstrateConfigured`
+  removed, `prodbox-config.dhall` re-frozen with the operator-supplied
+  `aws_substrate.subzone_name`, ledger row moved from Pending to Completed). Live
+  AWS-substrate canonical-suite validation (`charts-vscode`, `charts-api`,
+  `charts-websocket`, `public-dns`, `admin-routes`, public-edge readiness) plus
+  zero-residue teardown scan and Substrate parity table flip in
+  [substrates.md](substrates.md) and [README.md](README.md) remain the operator-driven
+  closing steps.
 
 ## Phase Summary
 
@@ -792,10 +801,10 @@ Route 53 subzone Pulumi), and `7.5.b.ii.d` (chart-deploy substrate branching + A
 Controller + Envoy Gateway install paths) are `Planned`. Each requires its own focused
 session.
 
-## Sprint 7.5.b.iii: Substrate Independence Doctrine 🔄
+## Sprint 7.5.b.iii: Substrate Independence Doctrine ✅
 
-**Status**: Active
-**Blocked by**: Sprint `7.5.b.ii`
+**Status**: Done
+**Blocked by**: N/A (closed)
 **Implementation**: `DEVELOPMENT_PLAN/development_plan_standards.md`,
 `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
 `DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md`, `DEVELOPMENT_PLAN/00-overview.md`,
@@ -862,10 +871,30 @@ this doctrine.
    - `grep -nrE "\\b(target|environment|tier)\\b.*(substrate|prodbox)"` returns zero false positives misusing those words as substrate synonyms.
    - `grep -nrE "fallback"` returns only legitimate Docker-registry mirror fallback references.
 
+### Current Validation State
+
+- `DEVELOPMENT_PLAN/development_plan_standards.md` § M now carries the
+  `Substrate coverage and independence (no fallback)` subsection making the no-fallback
+  contract explicit.
+- `DEVELOPMENT_PLAN/substrates.md` carries the `Substrate Independence (No Fallback)`
+  section plus per-substrate `Required Config` rows for home local and AWS.
+- This phase doc's `Current Validation State` for Sprints `7.5.b.i` and `7.5.b.ii.a`
+  describes the shipped helper fallback as doctrine-violating residue; Sprint `7.5.c`
+  has explicit `Operator Workflow` and `Code Follow-Up` subsections.
+- `DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md`, `00-overview.md`, the development-plan
+  `README.md`, and the root `README.md` cross-reference the substrate-independence doctrine.
+- Engineering docs (`unit_testing_policy.md`, `aws_integration_environment_doctrine.md`,
+  `cli_command_surface.md`, `prerequisite_doctrine.md`, `integration_fixture_doctrine.md`)
+  carry the substrate-independence cross-reference.
+- `legacy-tracking-for-deletion.md` records the helper-fallback residue scheduled for
+  closure under Sprint `7.5.c`'s code follow-up.
+- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
+  `prodbox docs check` (exit 0), `prodbox test unit` (300/300), and the three grep audits
+  defined under `Validation` (residue-narrative and registry-mirror references only).
+
 ### Remaining Work
 
-Doc edits in flight. Closure flips this sprint to ✅ once validation passes and the
-governed docs above are all aligned. Code reconciliation is owned by Sprint `7.5.c`.
+None. Code reconciliation is owned by Sprint `7.5.c`.
 
 ## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 📋
 
@@ -961,9 +990,34 @@ lifecycle gate behavior:
 - The entry in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) for the
   helper fallback semantics closes when this code follow-up lands.
 
+### Current Validation State (Code Follow-Up Landed)
+
+- `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `substrateHostedZoneId` now raise
+  fail-fast `error` calls naming
+  [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
+  when the AWS-substrate `subzone_name` or `hosted_zone_id` field is empty. The
+  home-substrate branches still resolve to the existing `route53.zone_id` and
+  `domain.demo_fqdn` paths unchanged.
+- `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` now requires
+  only `subzone_name` at pre-provision time; downstream consumers enforce
+  `hosted_zone_id` as a post-provision requirement.
+- The now-unused `isAwsSubstrateConfigured` helper is removed from
+  `src/Prodbox/Settings.hs`; the matching ledger row in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is moved from
+  Pending Removal to Completed (Sprint `7.5.c` code follow-up on May 18, 2026).
+- `prodbox-config.dhall` is re-frozen against the current
+  `prodbox-config-types.dhall` hash so `aws_substrate` is materialized in the
+  `dhall-to-json` output, and the operator's `aws_substrate.subzone_name` is set to
+  `aws.test.resolvefintech.com` per the Operator Workflow step 1.
+- Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (300/300) on May
+  18, 2026.
+
 ### Remaining Work
 
-This sub-sprint is `Planned`. Implementation has not started.
+The code follow-up has landed. Live operator workflow validation (steps 2–6 above) is
+the residual operator-driven work that closes this sprint and flips the AWS-substrate
+parity row in [substrates.md](substrates.md) from 🔄 to ✅ and the Phase 7 row in
+[README.md](README.md) from 🔄 to ✅.
 
 ## Documentation Requirements
 

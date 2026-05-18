@@ -39,6 +39,7 @@ library
         Prodbox.Host
         Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
+        Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
         Prodbox.Infra.MinioBackend
         Prodbox.K8s

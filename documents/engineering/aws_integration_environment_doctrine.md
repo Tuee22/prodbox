@@ -328,6 +328,32 @@ Pulumi-backed validations depend on:
 2. `prodbox pulumi eks-destroy --yes`
 3. `prodbox pulumi test-resources`
 4. `prodbox pulumi test-destroy --yes`
+5. `prodbox pulumi aws-subzone-resources`
+6. `prodbox pulumi aws-subzone-destroy --yes`
+7. `prodbox pulumi aws-ses-resources`
+8. `prodbox pulumi aws-ses-destroy --yes`
+
+### 6.4 Cross-Substrate Shared SES Infrastructure
+
+Per [`DEVELOPMENT_PLAN/phase-8-email-invite-auth.md`](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md)
+and [`DEVELOPMENT_PLAN/substrates.md`](../../DEVELOPMENT_PLAN/substrates.md#cross-substrate-shared-resources),
+the AWS SES sending identity, receive subdomain MX records, receive rule set, S3 capture bucket,
+and SMTP IAM user are account-scoped resources shared across every substrate that runs
+`ValidationKeycloakInvite`. The supported provisioning entrypoints are
+`prodbox pulumi aws-ses-resources` and `prodbox pulumi aws-ses-destroy --yes`, sourced from
+`pulumi/aws-ses/` and operated through
+`src/Prodbox/Infra/AwsSesStack.hs`. The operator-supplied inputs are
+`ses.sender_domain`, `ses.receive_subdomain`, and `ses.capture_bucket` in
+`prodbox-config.dhall`; the parent Route 53 zone (`route53.zone_id`) carries the MX records for
+the receive subdomain.
+
+The SMTP IAM user's `aws:iam:AccessKey` is exported by the Pulumi stack as
+`smtp_iam_access_key_id` / `smtp_iam_secret_access_key`; the Keycloak chart (Sprint `8.2`)
+consumes the SES IAM-to-SMTP-credentials derivation as a Kubernetes secret. The `ValidationKeycloakInvite`
+canonical-suite member (Sprint `8.5`) reads inbound capture from the S3 bucket via the same
+IAM user (`s3:ListBucket`, `s3:GetObject`, `s3:DeleteObject` on the bucket and its objects).
+The Pulumi program is the exclusive provisioning surface; ad-hoc `aws ses *` and `aws s3 *`
+mutations are not part of the supported path.
 
 ## Cross-References
 

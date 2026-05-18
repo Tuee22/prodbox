@@ -11,10 +11,10 @@ module Prodbox.Settings
   , DomainSection (..)
   , MetallbBgpPeer (..)
   , Route53Section (..)
+  , SesSection (..)
   , StorageSection (..)
   , ValidatedSettings (..)
   , defaultConfigFile
-  , isAwsSubstrateConfigured
   , loadConfigFile
   , renderConfigDhall
   , renderSettingsDisplay
@@ -68,10 +68,12 @@ data AwsSubstrateSection = AwsSubstrateSection
   }
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
-isAwsSubstrateConfigured :: AwsSubstrateSection -> Bool
-isAwsSubstrateConfigured section =
-  not (Text.null (Text.strip (hosted_zone_id section)))
-    && not (Text.null (Text.strip (subzone_name section)))
+data SesSection = SesSection
+  { sender_domain :: Text
+  , receive_subdomain :: Text
+  , capture_bucket :: Text
+  }
+  deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 data DomainSection = DomainSection
   { demo_fqdn :: Text
@@ -119,6 +121,7 @@ data ConfigFile = ConfigFile
   , aws_admin_for_test_simulation :: Credentials
   , route53 :: Route53Section
   , aws_substrate :: AwsSubstrateSection
+  , ses :: SesSection
   , domain :: DomainSection
   , acme :: AcmeSection
   , deployment :: DeploymentSection
@@ -166,6 +169,9 @@ renderSettingsDisplay showSecrets settings =
     , "route53.zone_id=" ++ renderText (zone_id (route53 config))
     , "aws_substrate.hosted_zone_id=" ++ renderText (hosted_zone_id (aws_substrate config))
     , "aws_substrate.subzone_name=" ++ renderText (subzone_name (aws_substrate config))
+    , "ses.sender_domain=" ++ renderText (sender_domain (ses config))
+    , "ses.receive_subdomain=" ++ renderText (receive_subdomain (ses config))
+    , "ses.capture_bucket=" ++ renderText (capture_bucket (ses config))
     , "domain.demo_fqdn=" ++ renderText (demo_fqdn (domain config))
     , "domain.demo_ttl=" ++ show (demo_ttl (domain config))
     , "acme.email=" ++ renderSensitive showSecrets (email (acme config))
@@ -514,6 +520,12 @@ defaultConfigFile =
           { hosted_zone_id = ""
           , subzone_name = ""
           }
+    , ses =
+        SesSection
+          { sender_domain = ""
+          , receive_subdomain = ""
+          , capture_bucket = ""
+          }
     , domain =
         DomainSection
           { demo_fqdn = supportedPublicHostname
@@ -565,6 +577,11 @@ renderConfigDhall config =
     , "    , aws_substrate = Config.default.aws_substrate // {"
     , "        , hosted_zone_id = " ++ dhallText (hosted_zone_id (aws_substrate config))
     , "        , subzone_name = " ++ dhallText (subzone_name (aws_substrate config))
+    , "        }"
+    , "    , ses = Config.default.ses // {"
+    , "        , sender_domain = " ++ dhallText (sender_domain (ses config))
+    , "        , receive_subdomain = " ++ dhallText (receive_subdomain (ses config))
+    , "        , capture_bucket = " ++ dhallText (capture_bucket (ses config))
     , "        }"
     , "    , domain = Config.default.domain // {"
     , "        , demo_fqdn = " ++ dhallText (demo_fqdn (domain config))

@@ -333,6 +333,15 @@ parserForPath path =
               RunNative (NativePulumi (PulumiAwsSubzoneDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+    ["pulumi", "aws-ses-resources"] ->
+      Just (fmap (RunNative . NativePulumi . PulumiAwsSesResources) planOptionsParser)
+    ["pulumi", "aws-ses-destroy"] ->
+      Just $
+        fmap
+          ( \(confirmed, planOptions') ->
+              RunNative (NativePulumi (PulumiAwsSesDestroy confirmed planOptions'))
+          )
+          ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
     ["rke2", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
     ["rke2", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
     ["rke2", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
@@ -997,6 +1006,23 @@ pulumiGroup =
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "aws-subzone-destroy", "--yes"] "Destroy the AWS-substrate Route 53 subzone."]
+    , leaf
+        "aws-ses-resources"
+        "Provision cross-substrate AWS SES infrastructure"
+        "Reconcile the shared AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user used by Phase 8 operator-invited email auth."
+        [ flagOption "dry-run" Nothing Nothing "Render the SES plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [example ["pulumi", "aws-ses-resources"] "Reconcile the cross-substrate SES infrastructure."]
+    , leaf
+        "aws-ses-destroy"
+        "Destroy cross-substrate AWS SES infrastructure"
+        "Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user)."
+        [ flagOption "yes" (Just 'y') Nothing "Skip confirmation prompts"
+        , flagOption "dry-run" Nothing Nothing "Render the destroy plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [example ["pulumi", "aws-ses-destroy", "--yes"] "Destroy the cross-substrate SES infrastructure."]
     ]
     []
     [example ["pulumi", "eks-resources"] "Reconcile the EKS validation stack."]

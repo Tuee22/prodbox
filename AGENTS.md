@@ -86,6 +86,22 @@ development.
 - Missing prerequisites must fail fast with actionable errors.
 - Use `./.build/prodbox test unit` when integration prerequisites are unavailable.
 
+### AWS Substrate Provisioning Is Harness-Owned
+
+- The prodbox test harness is the exclusive owner of AWS substrate provisioning and teardown.
+  All AWS resources (EKS, aws-test HA-RKE2, Route 53 subzone, SES, and any future substrate
+  stacks) are created and destroyed only by Pulumi programs invoked through the `prodbox`
+  command surface — `prodbox pulumi <stack>-resources` / `prodbox pulumi <stack>-destroy
+  --yes` — and orchestrated by `prodbox test all` and the substrate-aware
+  `prodbox test integration ... --substrate aws` commands.
+- Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other ad-hoc
+  tool to create, modify, or delete AWS resources outside the harness.
+- Do not manually provision before, or clean up after, a harness run. Re-run the harness on
+  failure (its destroy paths are idempotent) or use the canonical
+  `prodbox pulumi <stack>-destroy --yes` entrypoint.
+- Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53 list-hosted-zones`,
+  console inspection) are acceptable when investigating a harness-reported failure.
+
 ### Development Tooling Policy
 
 - Do not use `.github/` workflows or CI automation for this repository during active development.

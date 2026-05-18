@@ -31,6 +31,7 @@ import Prodbox.CLI.Command
   )
 import Prodbox.Infra.AwsEksSubzoneStack qualified as SubzoneStack
 import Prodbox.Infra.AwsEksTestStack qualified as EksStack
+import Prodbox.Infra.AwsSesStack qualified as SesStack
 import Prodbox.Infra.AwsTestStack qualified as TestStack
 import System.Directory
   ( createDirectoryIfMissing
@@ -88,6 +89,16 @@ runPulumiCommand repoRoot command =
         planOptions
         (buildPulumiExecutionPlan "aws-subzone-destroy" summary)
         (\_ -> SubzoneStack.destroyAwsEksSubzoneStack repoRoot summary)
+    PulumiAwsSesResources planOptions ->
+      runPlanWithOptions
+        planOptions
+        (buildPulumiExecutionPlan "aws-ses-resources" False)
+        (\_ -> SesStack.ensureAwsSesStackResources repoRoot)
+    PulumiAwsSesDestroy summary planOptions ->
+      runPlanWithOptions
+        planOptions
+        (buildPulumiExecutionPlan "aws-ses-destroy" summary)
+        (\_ -> SesStack.destroyAwsSesStack repoRoot summary)
 
 buildPulumiExecutionPlan :: String -> Bool -> Plan String
 buildPulumiExecutionPlan commandName confirmed =

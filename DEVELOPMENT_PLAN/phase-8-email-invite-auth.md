@@ -59,9 +59,9 @@ local substrate runs it against the operator's AWS account (which it already nee
 DNS validation). The AWS substrate runs it against the same SES infrastructure when Sprint
 `7.5` brings the AWS substrate to suite parity.
 
-## Sprint 8.1: Shared AWS SES Infrastructure 📋
+## Sprint 8.1: Shared AWS SES Infrastructure 🔄
 
-**Status**: Planned
+**Status**: Active (scaffolding landed May 18, 2026; operational orchestration + live validation pending)
 **Blocked by**: Phase `7` (AWS substrate foundations) — needs the IAM and Route 53 foundations to
 exist.
 **Implementation**: `pulumi/aws-ses/` (new) or extension to existing AWS administration paths;
@@ -105,9 +105,70 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
 6. Send a test message via SES to a recipient at the receive subdomain; assert the message
    lands as an S3 object in the capture bucket within 30 s.
 
+### Current Validation State (Scaffolding Landed)
+
+- `pulumi/aws-ses/Pulumi.yaml` and `pulumi/aws-ses/Main.yaml` exist and provision the
+  Phase-8 SES inventory: SES domain identity (`senderDomain`), DKIM token resource, S3
+  capture bucket with `ses.amazonaws.com` `PutObject` policy, Route 53 MX record on the
+  receive subdomain pointing at `inbound-smtp.<aws:region>.amazonaws.com`, SES receive
+  rule set + capture rule (S3 action with `inbound/` key prefix), active receive rule set
+  resource, SMTP IAM user with `ses:SendRawEmail`/`ses:SendEmail` permissions and capture
+  bucket access, IAM access key. Outputs cover the sending identity verification token,
+  DKIM tokens, MX FQDN, capture bucket name/ARN, SMTP IAM access key ID/secret, and the
+  regional SMTP endpoint.
+- `prodbox-config-types.dhall` adds the `ses : { sender_domain : Text, receive_subdomain
+  : Text, capture_bucket : Text }` block with empty defaults.
+- `src/Prodbox/Settings.hs` exposes `SesSection`, the matching `ses` `ConfigFile` field,
+  defaults, and surfaces the new fields in `renderConfigDhall` plus `renderSettingsDisplay`.
+- `prodbox-config.dhall` is re-frozen against the current `prodbox-config-types.dhall`
+  hash and populated with `ses.sender_domain = "test.resolvefintech.com"`,
+  `ses.receive_subdomain = "inbox.test.resolvefintech.com"`,
+  `ses.capture_bucket = "prodbox-ses-capture"`.
+- Test fixtures (`test/unit/Main.hs::validConfig` and `invalidZeroSslConfig`) updated for
+  the new schema; `prodbox check-code` (exit 0) and `prodbox test unit` (300/300) pass.
+
+### Current Validation State (Code + Doctrine Landed)
+
+- `src/Prodbox/Infra/AwsSesStack.hs` exports `AwsSesStackSnapshot`,
+  `awsSesStackName`, `ensureAwsSesStackResources`, `destroyAwsSesStack`,
+  `loadAwsSesStackSnapshot`, `saveAwsSesStackSnapshot`, `clearAwsSesStackSnapshot`,
+  `assertNoAwsSesStackResidue`, and `renderAwsSesStackReport`. The reconcile path
+  brings up `pulumi/aws-ses/` against the MinIO-backed local Pulumi backend, syncs
+  `parentZoneId` / `senderDomain` / `receiveSubdomain` / `captureBucket` to the stack,
+  runs `pulumi up`, parses the JSON outputs into a snapshot under
+  `.prodbox-state/aws-ses/stack-snapshot.json`, and emits a `STACK=…` report. Destroy
+  mirrors `AwsEksSubzoneStack`'s idempotent destroy path with summary-mode quiet output
+  and post-destroy residue scan (S3 capture bucket existence check via `aws s3api
+  head-bucket`).
+- `src/Prodbox/CLI/Command.hs` adds `PulumiAwsSesResources PlanOptions` and
+  `PulumiAwsSesDestroy Bool PlanOptions`. `src/Prodbox/CLI/Spec.hs` registers the
+  matching parser rules and `CommandSpec` leaves (`aws-ses-resources`,
+  `aws-ses-destroy`). `src/Prodbox/CLI/Pulumi.hs` dispatches both through the
+  `runPlanWithOptions` + `buildPulumiExecutionPlan` shape used by the existing
+  pulumi commands.
+- Generated CLI artifacts regenerated via `prodbox docs generate`:
+  `documents/cli/commands.md`, `share/man/man1/prodbox-pulumi-aws-ses-resources.1`
+  and `prodbox-pulumi-aws-ses-destroy.1`, and the bash/zsh/fish completions all
+  surface the two new commands.
+- [DEVELOPMENT_PLAN/substrates.md](../substrates.md#cross-substrate-shared-resources)
+  Cross-Substrate Shared Resources table names
+  `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` as the provisioning surface
+  for the SES sending identity, receive subdomain + MX, receive rule set + S3 capture
+  bucket, and SMTP IAM user.
+- [documents/engineering/aws_integration_environment_doctrine.md](../../documents/engineering/aws_integration_environment_doctrine.md)
+  § 6.4 records the cross-substrate shared SES infrastructure doctrine and names
+  `src/Prodbox/Infra/AwsSesStack.hs` as the exclusive provisioning surface.
+- Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
+  `prodbox docs check` (exit 0), and `prodbox test unit` (300/300) on May 18, 2026.
+
 ### Remaining Work
 
-Planned. Implementation has not started.
+- Live operator workflow — `prodbox aws setup` populates `aws.*`, then operator runs
+  `prodbox pulumi aws-ses-resources`, verifies SES identity / MX / receive rule set
+  active / S3 capture per the validation gate above. Cross-substrate shared SES
+  inventory then flips ✅ in [substrates.md](substrates.md). This is operator-driven
+  in the same architectural sense as Sprint `7.5.c` (the supported public `aws
+  setup` flow is interactive; the harness clears `aws.*` between runs).
 
 ## Sprint 8.2: Keycloak Realm Config — Operator-Invited, Email-Verified 📋
 

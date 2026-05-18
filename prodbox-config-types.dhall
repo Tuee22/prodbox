@@ -27,6 +27,11 @@
         { hosted_zone_id : Text
         , subzone_name : Text
         }
+    , ses :
+        { sender_domain : Text
+        , receive_subdomain : Text
+        , capture_bucket : Text
+        }
     , domain :
         { demo_fqdn : Text
         , demo_ttl : Natural
@@ -78,6 +83,11 @@
     , aws_substrate =
         { hosted_zone_id = ""
         , subzone_name = ""
+        }
+    , ses =
+        { sender_domain = ""
+        , receive_subdomain = ""
+        , capture_bucket = ""
         }
     , domain =
         { demo_fqdn = "test.resolvefintech.com"

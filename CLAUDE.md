@@ -61,27 +61,76 @@ idempotent reconcile finish (or re-running the same command) over manual cleanup
 
 ## AWS Substrate Provisioning Ownership
 
-**The prodbox test harness is the exclusive owner of AWS substrate provisioning and teardown.**
-All AWS substrate infrastructure (EKS, aws-test HA-RKE2, Route 53 subzone, SES, and any future
-AWS substrate stacks) is created and destroyed only through Pulumi programs invoked by the
-`prodbox` command surface — `prodbox pulumi <stack>-resources` / `prodbox pulumi <stack>-destroy
---yes` — and is orchestrated end-to-end by `prodbox test all` and the substrate-aware
-`prodbox test integration ... --substrate aws` commands.
+**The prodbox test harness is the exclusive owner of every AWS resource the project
+touches.** Every AWS API call (creates, reads, updates, deletes, IAM, ECR, S3, Route 53,
+SES, EKS, EC2, …) flows through the test harness via the `prodbox` command surface.
+There is no second supported owner of AWS resources — no "operator runs `aws` CLI on
+the side", no "Claude provisions a test bucket", no ad-hoc `eksctl` or `terraform` or
+`pulumi up` invocations. Resources the harness needs are created by the harness;
+resources the harness no longer needs are destroyed by the harness.
 
-- Do not invoke `pulumi up`, `pulumi destroy`, `pulumi stack`, `aws` CLI mutations, `eksctl`, or
-  any other ad-hoc tool to create, modify, or delete AWS resources outside the harness.
-- Do not manually provision AWS resources "to set up for" a test; the harness handles
-  provisioning before validations run and teardown after.
-- Do not manually clean up AWS resources after a failed run; re-run the harness (its destroy
-  paths are idempotent) or use the canonical `prodbox pulumi <stack>-destroy --yes`
-  entrypoint.
-- The only ad-hoc AWS reads that are acceptable are read-only diagnostics (e.g., `aws sts
-  get-caller-identity`, `aws route53 list-hosted-zones`, console inspection) when investigating
-  why the harness reports a failure.
+The supported entrypoints are:
 
-The same rule applies to any operator-account-shared AWS resources (e.g., the Phase 8 SES
-sending identity and receive-rule-set): they are owned by their dedicated Pulumi program under
-`pulumi/` and reconciled only through `prodbox pulumi ...`, never by hand.
+- `prodbox pulumi <stack>-resources` / `prodbox pulumi <stack>-destroy --yes` for
+  every Pulumi-managed substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`,
+  `aws-ses`, and any future AWS substrate stacks).
+- `prodbox aws setup` / `prodbox aws teardown` for the IAM user provisioning loop.
+- `prodbox test integration ... --substrate aws` and `prodbox test all` for the
+  end-to-end substrate-aware validation runs.
+
+Rules:
+
+- Do not invoke `pulumi up`, `pulumi destroy`, `pulumi stack`, `aws` CLI mutations,
+  `eksctl`, `terraform`, or any other ad-hoc tool to create, modify, or delete AWS
+  resources outside the harness. If a needed resource isn't being created, that's a
+  bug in the harness's substrate-platform install, not an invitation to fix it
+  manually.
+- Do not manually provision AWS resources "to set up for" a test or "to fill in a
+  gap"; the harness handles provisioning before validations run and teardown after.
+- Do not manually clean up AWS resources after a failed run; re-run the harness (its
+  destroy paths are idempotent) or use the canonical
+  `prodbox pulumi <stack>-destroy --yes` entrypoint.
+- Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53
+  list-hosted-zones`, console inspection) are the only ad-hoc commands acceptable —
+  and only when investigating why the harness reports a failure.
+
+The same rule applies to any operator-account-shared AWS resources (e.g., the Phase 8
+SES sending identity and receive-rule-set): they are owned by their dedicated Pulumi
+program under `pulumi/` and reconciled only through `prodbox pulumi ...`, never by
+hand.
+
+## Substrate Equivalence
+
+**The home local substrate and the AWS substrate stand up the same set of services.**
+Both run the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`,
+`vscode`, `api`, `redis`, `websocket`) plus the same supporting platform pieces:
+MinIO, Harbor, the Percona PostgreSQL operator, Envoy Gateway, cert-manager, real
+Let's Encrypt via cert-manager DNS01. The two substrates differ in their lower-layer
+load-balancer (MetalLB on home, AWS Load Balancer Controller on EKS) and their
+Route 53 hosting (one parent zone on home, the dedicated subzone provisioned by
+`prodbox pulumi aws-subzone-resources` on AWS) — nothing else.
+
+This means:
+
+- Harbor + MinIO + Percona are installed on **both** substrates. The AWS substrate
+  is not a "no-Harbor" cluster; if `prodbox charts deploy ... --substrate aws`
+  fails because chart pods can't reach `127.0.0.1:30080/prodbox/...`, the fix is to
+  bring Harbor (and its MinIO storage backend, and the Percona operator) up on EKS
+  via the substrate-platform install — not to render different image references.
+- The chart templates and `Prodbox.Lib.ChartPlatform` use one set of image refs
+  across both substrates: `127.0.0.1:30080/prodbox/...` (the in-cluster Harbor on
+  whichever substrate is active). The substrate-aware code in
+  `Prodbox.Lib.AwsSubstratePlatform` is responsible for making `127.0.0.1:30080`
+  resolve on EKS too (via an EKS-side Harbor + node-local registry proxy, mirroring
+  the home cluster's NodePort-on-127.0.0.1 pattern).
+- `prodbox host public-edge`, `prodbox charts deploy`, and the canonical
+  `prodbox test integration ... --substrate aws` validations all assume substrate
+  equivalence and route through the same chart-platform code paths.
+
+When something on the AWS substrate looks "missing", the answer is almost always
+"the harness needs to install it" — not "the substrates are different, work around
+it". The harness owns AWS; if AWS lacks a piece the home cluster has, that's a
+Sprint 7.5.b/7.5.c follow-up to extend the harness, never an operator workaround.
 
 ## Git Workflow Policy
 

@@ -18,6 +18,10 @@ config:
   # subdomain. Sourced from `ses.capture_bucket` in `prodbox-config.dhall`.
   captureBucket:
     type: string
+  # AWS region used to compose SES inbound and SMTP endpoint host names.
+  # Sourced from `aws.region` in `prodbox-config.dhall`.
+  awsRegion:
+    type: string
 
 variables:
   stackName: ${pulumi.stack}
@@ -78,6 +82,50 @@ resources:
     properties:
       domain: ${sendingIdentity.domain}
 
+  # TXT record proving operator-account control of the sending domain. SES
+  # transitions the domain identity from Pending to Verified once this record
+  # resolves at `_amazonses.<senderDomain>`.
+  sendingIdentityVerificationRecord:
+    type: aws:route53:Record
+    properties:
+      zoneId: ${parentZoneId}
+      name: _amazonses.${senderDomain}
+      type: TXT
+      ttl: 300
+      records:
+        - ${sendingIdentity.verificationToken}
+
+  # DKIM CNAME records (three) so SES can sign outbound mail with the
+  # configured sending domain. Each maps `<dkim-token>._domainkey.<senderDomain>`
+  # to `<dkim-token>.dkim.amazonses.com`.
+  sendingIdentityDkimRecord0:
+    type: aws:route53:Record
+    properties:
+      zoneId: ${parentZoneId}
+      name: ${sendingIdentityDkim.dkimTokens[0]}._domainkey.${senderDomain}
+      type: CNAME
+      ttl: 300
+      records:
+        - ${sendingIdentityDkim.dkimTokens[0]}.dkim.amazonses.com
+  sendingIdentityDkimRecord1:
+    type: aws:route53:Record
+    properties:
+      zoneId: ${parentZoneId}
+      name: ${sendingIdentityDkim.dkimTokens[1]}._domainkey.${senderDomain}
+      type: CNAME
+      ttl: 300
+      records:
+        - ${sendingIdentityDkim.dkimTokens[1]}.dkim.amazonses.com
+  sendingIdentityDkimRecord2:
+    type: aws:route53:Record
+    properties:
+      zoneId: ${parentZoneId}
+      name: ${sendingIdentityDkim.dkimTokens[2]}._domainkey.${senderDomain}
+      type: CNAME
+      ttl: 300
+      records:
+        - ${sendingIdentityDkim.dkimTokens[2]}.dkim.amazonses.com
+
   # MX record on the receive subdomain pointing at the regional SES inbound
   # endpoint. Without this record SES does not accept mail for the subdomain.
   receiveSubdomainMx:
@@ -88,7 +136,7 @@ resources:
       type: MX
       ttl: 300
       records:
-        - 10 inbound-smtp.${aws:region}.amazonaws.com
+        - 10 inbound-smtp.${awsRegion}.amazonaws.com
 
   # Receive rule set holding the capture rule. Activated via the active
   # rule-set resource below.
@@ -188,4 +236,4 @@ outputs:
   smtp_iam_user_arn: ${smtpUser.arn}
   smtp_iam_access_key_id: ${smtpUserAccessKey.id}
   smtp_iam_secret_access_key: ${smtpUserAccessKey.secret}
-  smtp_endpoint: email-smtp.${aws:region}.amazonaws.com
+  smtp_endpoint: email-smtp.${awsRegion}.amazonaws.com

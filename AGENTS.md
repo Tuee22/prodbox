@@ -88,19 +88,50 @@ development.
 
 ### AWS Substrate Provisioning Is Harness-Owned
 
-- The prodbox test harness is the exclusive owner of AWS substrate provisioning and teardown.
-  All AWS resources (EKS, aws-test HA-RKE2, Route 53 subzone, SES, and any future substrate
-  stacks) are created and destroyed only by Pulumi programs invoked through the `prodbox`
-  command surface — `prodbox pulumi <stack>-resources` / `prodbox pulumi <stack>-destroy
-  --yes` — and orchestrated by `prodbox test all` and the substrate-aware
-  `prodbox test integration ... --substrate aws` commands.
-- Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other ad-hoc
-  tool to create, modify, or delete AWS resources outside the harness.
-- Do not manually provision before, or clean up after, a harness run. Re-run the harness on
-  failure (its destroy paths are idempotent) or use the canonical
+- The prodbox test harness is the **exclusive owner** of every AWS resource the project
+  touches — IAM, ECR, S3, Route 53, SES, EKS, EC2, the lot. Every AWS API call flows
+  through the harness via the `prodbox` command surface. There is no second supported
+  owner of AWS resources; no "operator runs `aws` CLI on the side", no ad-hoc `eksctl`
+  or `terraform` or `pulumi up`. Resources the harness needs are created by the harness;
+  resources the harness no longer needs are destroyed by the harness.
+- Supported entrypoints: `prodbox pulumi <stack>-resources` /
+  `prodbox pulumi <stack>-destroy --yes` for every Pulumi-managed substrate stack
+  (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`); `prodbox aws setup` /
+  `prodbox aws teardown` for the IAM user provisioning loop; `prodbox test integration
+  ... --substrate aws` and `prodbox test all` for end-to-end substrate-aware runs.
+- Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other
+  ad-hoc tool to create, modify, or delete AWS resources outside the harness. If a
+  needed resource isn't being created, that's a bug in the harness's substrate-platform
+  install (extend `Prodbox.Lib.AwsSubstratePlatform`), not an invitation to fix it
+  manually.
+- Do not manually provision before, or clean up after, a harness run. Re-run the harness
+  on failure (its destroy paths are idempotent) or use the canonical
   `prodbox pulumi <stack>-destroy --yes` entrypoint.
 - Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53 list-hosted-zones`,
   console inspection) are acceptable when investigating a harness-reported failure.
+
+### Substrate Equivalence
+
+- The home local substrate and the AWS substrate stand up the **same set of services**:
+  the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`, `api`,
+  `redis`, `websocket`) plus the same supporting platform pieces — MinIO, Harbor, the
+  Percona PostgreSQL operator, Envoy Gateway, cert-manager, real Let's Encrypt via
+  cert-manager DNS01. The two substrates differ in their load-balancer (MetalLB on home,
+  AWS Load Balancer Controller on EKS) and their Route 53 hosting (parent zone on home,
+  dedicated subzone provisioned by `prodbox pulumi aws-subzone-resources` on AWS).
+  Nothing else.
+- Harbor + MinIO + Percona are installed on **both** substrates. The AWS substrate is
+  not a "no-Harbor" cluster. If `prodbox charts deploy ... --substrate aws` fails because
+  chart pods can't reach `127.0.0.1:30080/prodbox/...`, the fix is to bring Harbor
+  (and its MinIO storage backend, and the Percona operator) up on EKS via the
+  substrate-platform install in `Prodbox.Lib.AwsSubstratePlatform` — not to render
+  different image references.
+- Chart templates and `Prodbox.Lib.ChartPlatform` use one set of image refs across both
+  substrates. Substrate-aware code is responsible for making `127.0.0.1:30080` resolve
+  on EKS too (via an EKS-side Harbor plus a node-local registry-mirror pattern
+  matching the home cluster's NodePort-on-127.0.0.1 layout).
+- When something on the AWS substrate looks "missing", the fix is almost always
+  "extend the harness's substrate-platform install" — never "operator workaround".
 
 ### Development Tooling Policy
 

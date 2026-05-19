@@ -32,6 +32,31 @@ keycloak:
   publicHost: test.resolvefintech.com
   httpRelativePath: /auth
   realmName: prodbox
+  # When true, the imported realm enforces operator-invited email verification on every
+  # non-fixture user: emailVerified=false and requiredActions=["VERIFY_EMAIL"] until the
+  # invited recipient follows the invite link and sets a password. The seeded
+  # `oidc.demoUserName` user retains emailVerified=true so the canonical-suite OIDC
+  # validations (charts-vscode, charts-api, charts-websocket) keep working against the
+  # home substrate without an invite round-trip.
+  requireEmailVerification: true
+
+# SES SMTP credentials consumed by Keycloak's smtpServer block. The shared SES
+# infrastructure provisioned by `prodbox pulumi aws-ses-resources` (Sprint 8.1) outputs
+# `smtp_endpoint`, `smtp_iam_access_key_id`, and `smtp_iam_secret_access_key`; the
+# operator (or the chart-platform integration in Sprint 8.5) translates the IAM secret
+# key into the SES SMTP password via the IAM-to-SMTP-credentials algorithm and supplies
+# the result here.
+smtp:
+  enabled: true
+  host: email-smtp.us-west-2.amazonaws.com
+  port: 587
+  starttls: true
+  auth: true
+  from: noreply@test.resolvefintech.com
+  fromDisplayName: prodbox
+  replyTo: noreply@test.resolvefintech.com
+  user: change-me-ses-smtp-user
+  password: change-me-ses-smtp-password
 
 oidc:
   vscodeClientId: vscode

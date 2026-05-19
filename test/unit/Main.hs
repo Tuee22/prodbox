@@ -187,6 +187,7 @@ import Prodbox.Infra.MinioBackend
 import Prodbox.K8s
   ( parseKubectlObjectNames
   )
+import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
@@ -225,6 +226,7 @@ import Prodbox.Service
   , ServiceError (..)
   , retryServiceAction
   )
+import Prodbox.Ses.SmtpPassword qualified
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -780,9 +782,14 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "aws_iam_harness_ready"
                            , "tool_aws"
                            , "tool_ssh"
+                           , "route53_accessible"
                            ]
               nativeDeferredIntegrationGatePrerequisites suitePlan
-                `shouldBe` ["pulumi_logged_in"]
+                `shouldBe` [ "pulumi_logged_in"
+                           , "ses_sending_identity_verified"
+                           , "ses_receive_rule_set_active"
+                           , "ses_receive_bucket_accessible"
+                           ]
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
@@ -804,6 +811,7 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "charts-platform"
                            , "charts-storage"
                            , "lifecycle"
+                           , "keycloak-invite"
                            ]
             DelegatedSuite _ -> expectationFailure "expected native aggregate test plan"
 
@@ -830,15 +838,20 @@ main = mainWithSuite "prodbox-unit" $ do
                            , "aws_iam_harness_ready"
                            , "tool_aws"
                            , "tool_ssh"
+                           , "route53_accessible"
                            ]
               nativeDeferredIntegrationGatePrerequisites suitePlan
-                `shouldBe` ["pulumi_logged_in"]
+                `shouldBe` [ "pulumi_logged_in"
+                           , "ses_sending_identity_verified"
+                           , "ses_receive_rule_set_active"
+                           , "ses_receive_bucket_accessible"
+                           ]
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` True
               take 4 (map nativeValidationId (nativeValidations suitePlan))
                 `shouldBe` ["charts-vscode", "charts-api", "charts-websocket", "admin-routes"]
-              last (nativeValidations suitePlan) `shouldBe` ValidationLifecycle
+              last (nativeValidations suitePlan) `shouldBe` ValidationKeycloakInvite
             DelegatedSuite _ -> expectationFailure "expected native integration-all plan"
 
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
@@ -1230,6 +1243,9 @@ main = mainWithSuite "prodbox-unit" $ do
           , "k8s_ready"
           , "infra_ready"
           , "gateway_daemon_acquire"
+          , "ses_sending_identity_verified"
+          , "ses_receive_rule_set_active"
+          , "ses_receive_bucket_accessible"
           ]
 
     it "keeps registry keys aligned with effect node ids and descriptions" $ do
@@ -2352,6 +2368,36 @@ main = mainWithSuite "prodbox-unit" $ do
         validationResult `shouldBe` ExitSuccess
         readFile (sshStateDir </> "count") `shouldReturn` "3"
 
+  describe "Keycloak invite-email parser" $ do
+    it "extracts the action-token URL from a plain-text invite email" $
+      Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInvitePlainFixture
+        `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=abc123"
+    it "extracts the action-token URL across a quoted-printable soft-wrap" $
+      Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteQuotedPrintableFixture
+        `shouldBe` Right "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=def456"
+    it "fails fast when the email body contains no invite link" $
+      Prodbox.Keycloak.Email.parseKeycloakInviteLink keycloakInviteMissingFixture
+        `shouldBe` Left "no Keycloak invite link found in email body"
+
+  describe "SES SMTP password derivation" $ do
+    it "matches the AWS published algorithm for us-west-2" $
+      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
+        `shouldBe` "BF2PynzbSCAjX08zhZZnP/kW+T9P5zs/1Er0pi5vTEmd"
+    it "matches the AWS published algorithm for us-east-1" $
+      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-east-1" sesSmtpPasswordExampleSecret
+        `shouldBe` "BLBM/9hSUELfq8Gw+rU1YcBjkOxGbhT2XG763xVLGWL9"
+    it "matches the AWS published algorithm for eu-west-1" $
+      Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "eu-west-1" sesSmtpPasswordExampleSecret
+        `shouldBe` "BMW5RDrXmmVs0lV7GpI4oLkHXpZ4stDsk6q91z1g38Pk"
+    it "is region-sensitive (different region → different password)" $ do
+      let p1 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
+          p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-east-1" sesSmtpPasswordExampleSecret
+      p1 `shouldNotBe` p2
+    it "is deterministic (same inputs → same output)" $ do
+      let p1 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
+          p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
+      p1 `shouldBe` p2
+
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -2473,6 +2519,59 @@ makeExecutable :: FilePath -> IO ()
 makeExecutable path = do
   permissions <- getPermissions path
   setPermissions path permissions {executable = True}
+
+keycloakInvitePlainFixture :: BL8.ByteString
+keycloakInvitePlainFixture =
+  BL8.pack
+    ( unlines
+        [ "From: noreply@test.resolvefintech.com"
+        , "To: invitee@inbox.test.resolvefintech.com"
+        , "Subject: Verify your email"
+        , "Content-Type: text/plain; charset=UTF-8"
+        , ""
+        , "Hi,"
+        , ""
+        , "Please follow this link to activate your account:"
+        , "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/action-token?key=abc123"
+        , ""
+        , "Thanks."
+        ]
+    )
+
+keycloakInviteQuotedPrintableFixture :: BL8.ByteString
+keycloakInviteQuotedPrintableFixture =
+  BL8.pack
+    ( unlines
+        [ "From: noreply@test.resolvefintech.com"
+        , "To: invitee@inbox.test.resolvefintech.com"
+        , "Subject: Verify your email"
+        , "Content-Type: text/plain; charset=UTF-8"
+        , "Content-Transfer-Encoding: quoted-printable"
+        , ""
+        , "Please activate:"
+        , "https://test.resolvefintech.com/auth/realms/prodbox/login-act=\r"
+        , "ions/action-token?key=def456"
+        , ""
+        , "Thanks."
+        ]
+    )
+
+keycloakInviteMissingFixture :: BL8.ByteString
+keycloakInviteMissingFixture =
+  BL8.pack
+    ( unlines
+        [ "From: noreply@test.resolvefintech.com"
+        , "To: invitee@inbox.test.resolvefintech.com"
+        , "Subject: Welcome"
+        , "Content-Type: text/plain; charset=UTF-8"
+        , ""
+        , "Hello — your invitation was processed."
+        , "Contact support if you have questions."
+        ]
+    )
+
+sesSmtpPasswordExampleSecret :: Text.Text
+sesSmtpPasswordExampleSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
 fakeAwsTestSshScript :: [String]
 fakeAwsTestSshScript =

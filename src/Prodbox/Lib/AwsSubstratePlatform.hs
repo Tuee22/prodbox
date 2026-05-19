@@ -61,7 +61,12 @@ import Prodbox.Infra.AwsEksTestStack
   , loadAwsEksTestStackSnapshot
   )
 import Prodbox.Result (Result (..))
-import Prodbox.Settings (ValidatedSettings)
+import Prodbox.Settings
+  ( ConfigFile (..)
+  , Credentials (..)
+  , ValidatedSettings (..)
+  , aws
+  )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -111,8 +116,9 @@ awsLoadBalancerControllerServiceAccountName = "aws-load-balancer-controller"
 --   3. Adds the eks-charts Helm repo and installs the controller chart
 --      with `serviceAccount.create=false` (we own the service account).
 --   4. Waits for the controller deployment to become ready.
-ensureAwsLoadBalancerControllerRuntime :: FilePath -> AwsEksTestStackSnapshot -> IO ExitCode
-ensureAwsLoadBalancerControllerRuntime repoRoot snapshot
+ensureAwsLoadBalancerControllerRuntime
+  :: FilePath -> String -> AwsEksTestStackSnapshot -> IO ExitCode
+ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
   | null (eksSnapshotAwsLbControllerRoleArn snapshot) =
       failWith
         "AWS LB Controller role ARN is empty; the AWS EKS Pulumi stack must be re-provisioned at or after Sprint 7.5.b.ii.b before installing the controller."
@@ -134,7 +140,7 @@ ensureAwsLoadBalancerControllerRuntime repoRoot snapshot
           case repoExit of
             ExitFailure _ -> pure repoExit
             ExitSuccess -> do
-              installExit <- helmUpgradeInstall snapshot
+              installExit <- helmUpgradeInstall defaultRegion snapshot
               case installExit of
                 ExitFailure _ -> pure installExit
                 ExitSuccess -> waitForDeployment awsLoadBalancerControllerNamespace awsLoadBalancerControllerReleaseName
@@ -209,8 +215,8 @@ ensureHelmRepoAdded repoName repoUrl = do
         , subprocessWorkingDirectory = Nothing
         }
 
-helmUpgradeInstall :: AwsEksTestStackSnapshot -> IO ExitCode
-helmUpgradeInstall snapshot =
+helmUpgradeInstall :: String -> AwsEksTestStackSnapshot -> IO ExitCode
+helmUpgradeInstall defaultRegion snapshot =
   runStreaming
     Subprocess
       { subprocessPath = "helm"
@@ -228,15 +234,15 @@ helmUpgradeInstall snapshot =
           , "--atomic"
           , "--timeout"
           , "10m0s"
-          , "--set"
+          , "--set-string"
           , "clusterName=" ++ eksSnapshotClusterName snapshot
           , "--set"
           , "serviceAccount.create=false"
-          , "--set"
+          , "--set-string"
           , "serviceAccount.name=" ++ awsLoadBalancerControllerServiceAccountName
-          , "--set"
-          , "region=" ++ extractRegionFromArn (eksSnapshotAwsLbControllerRoleArn snapshot)
-          , "--set"
+          , "--set-string"
+          , "region=" ++ extractRegionFromArn defaultRegion (eksSnapshotAwsLbControllerRoleArn snapshot)
+          , "--set-string"
           , "vpcId=" ++ eksSnapshotVpcId snapshot
           ]
       , subprocessEnvironment = Nothing
@@ -425,10 +431,20 @@ ensureAwsSubstrateAcmeRuntime :: FilePath -> ValidatedSettings -> String -> Stri
 ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
   writeOutputLine "Applying AWS-substrate ACME ClusterIssuer + Route 53 DNS01 credentials"
   let manifest = acmeRuntimeManifest SubstrateAws settings prodboxId labelValue
+      -- Wrap the manifest list in a `v1/List` so `kubectl apply -f` accepts
+      -- the file (kubectl does not accept bare JSON arrays at the top level).
+      -- Matches the home-substrate pattern in
+      -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
+      manifestList =
+        object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("List" :: String)
+          , "items" .= manifest
+          ]
   withTempJsonFile
     repoRoot
     "aws-substrate-acme-runtime"
-    (encode manifest)
+    (encode manifestList)
     ( \manifestPath -> do
         applyExit <-
           runStreaming
@@ -484,8 +500,14 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
         )
     Just snapshot -> runSequentially (steps snapshot)
  where
+  defaultRegion :: String
+  defaultRegion =
+    let configured =
+          Text.unpack
+            (Text.strip (region (aws (validatedConfig settings))))
+     in if null configured then "us-east-1" else configured
   steps snapshot =
-    [ ensureAwsLoadBalancerControllerRuntime repoRoot snapshot
+    [ ensureAwsLoadBalancerControllerRuntime repoRoot defaultRegion snapshot
     , ensureAwsSubstrateEnvoyGatewayRuntime
     , ensureAwsSubstrateCertManagerRuntime
     , ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
@@ -500,32 +522,25 @@ runSequentially (step : rest) = do
     ExitSuccess -> runSequentially rest
 
 -- | Extract the region segment from an IAM role ARN. IAM roles use the
--- form `arn:aws:iam::<account>:role/<name>` and do not embed a region —
--- but we still need to surface a region for the AWS LB Controller's
--- `--set region=...` Helm value. The controller falls back to IMDS if
--- the value is empty, but in EKS that path is slow; passing the cluster
--- region explicitly is preferable.
---
--- We accept the IRSA role ARN (which is IAM, region-less) and fall back
--- to `us-east-1` when the embedded segment is empty. Callers that want
--- a specific region should pass the AWS substrate's
--- `aws.region` (from `prodbox-config.dhall`) instead; that wiring is
--- deferred to the follow-up sub-sprint that integrates this function
--- into `prodbox charts deploy gateway --substrate aws`.
-extractRegionFromArn :: String -> String
-extractRegionFromArn arn =
-  case wordsBy (== ':') arn of
+-- form `arn:aws:iam::<account>:role/<name>` and do not embed a region,
+-- so the empty fourth segment is the expected case for IRSA role ARNs.
+-- We preserve empty segments during parsing (unlike `words`-style helpers
+-- that collapse adjacent delimiters) so the account number isn't
+-- mistakenly returned as the region; when the region segment is empty
+-- the caller's `defaultRegion` is used.
+extractRegionFromArn :: String -> String -> String
+extractRegionFromArn defaultRegion arn =
+  case splitKeepingEmpty ':' arn of
     _ : _ : _ : regionField : _
       | not (null regionField) -> regionField
-    _ -> "us-east-1"
+    _ -> defaultRegion
  where
-  wordsBy :: (Char -> Bool) -> String -> [String]
-  wordsBy p s =
-    case dropWhile p s of
-      "" -> []
-      rest ->
-        let (w, rest') = break p rest
-         in w : wordsBy p rest'
+  splitKeepingEmpty :: Char -> String -> [String]
+  splitKeepingEmpty delim s =
+    let (chunk, rest) = break (== delim) s
+     in case rest of
+          [] -> [chunk]
+          _ : remainder -> chunk : splitKeepingEmpty delim remainder
 
 isAlreadyExistsError :: ProcessOutput -> Bool
 isAlreadyExistsError output =

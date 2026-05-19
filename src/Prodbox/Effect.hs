@@ -25,6 +25,9 @@ data Validation
   | RequirePulumiLogin
   | RequireKubectlClusterReachable
   | RequireUbuntu2404
+  | RequireSesSendingIdentityVerified
+  | RequireSesReceiveRuleSetActive
+  | RequireSesReceiveBucketAccessible
   deriving (Eq, Show)
 
 data Effect

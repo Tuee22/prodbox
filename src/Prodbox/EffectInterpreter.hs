@@ -54,6 +54,7 @@ import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
   , Route53Section (..)
+  , SesSection (..)
   , ValidatedSettings (..)
   , loadConfigFile
   , validateAndLoadSettings
@@ -233,6 +234,9 @@ runValidation context validation =
     RequirePulumiLogin -> requirePulumiLogin
     RequireKubectlClusterReachable -> requireKubectlClusterReachable
     RequireUbuntu2404 -> requireUbuntu2404
+    RequireSesSendingIdentityVerified -> requireSesSendingIdentityVerified
+    RequireSesReceiveRuleSetActive -> requireSesReceiveRuleSetActive
+    RequireSesReceiveBucketAccessible -> requireSesReceiveBucketAccessible
  where
   requireSettings :: IO (Result ())
   requireSettings = do
@@ -566,6 +570,94 @@ runValidation context validation =
               (Just "ubuntu", Just "24.04") -> Success ()
               _ -> Failure "This suite requires Ubuntu 24.04 LTS."
           )
+
+  requireSesSendingIdentityVerified :: IO (Result ())
+  requireSesSendingIdentityVerified = do
+    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
+    case settingsResult of
+      Left err -> pure (Failure err)
+      Right settings -> do
+        let domain =
+              Text.unpack
+                (Text.strip (sender_domain (ses (validatedConfig settings))))
+        if null domain
+          then
+            pure
+              ( Failure
+                  "ses.sender_domain must be set in prodbox-config.dhall before checking the SES sending identity. Run `prodbox pulumi aws-ses-resources` after populating the ses.* block."
+              )
+          else do
+            environment <- awsCommandEnvironment settings
+            requireAwsValidationCommandSuccess
+              "SES sending-identity verification check failed"
+              Subprocess
+                { subprocessPath = "aws"
+                , subprocessArguments =
+                    [ "ses"
+                    , "get-identity-verification-attributes"
+                    , "--identities"
+                    , domain
+                    , "--query"
+                    , "VerificationAttributes." ++ domain ++ ".VerificationStatus"
+                    , "--output"
+                    , "text"
+                    ]
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
+                }
+
+  requireSesReceiveRuleSetActive :: IO (Result ())
+  requireSesReceiveRuleSetActive = do
+    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
+    case settingsResult of
+      Left err -> pure (Failure err)
+      Right settings -> do
+        environment <- awsCommandEnvironment settings
+        requireAwsValidationCommandSuccess
+          "SES active receive rule set check failed"
+          Subprocess
+            { subprocessPath = "aws"
+            , subprocessArguments =
+                [ "ses"
+                , "describe-active-receipt-rule-set"
+                , "--query"
+                , "Metadata.Name"
+                , "--output"
+                , "text"
+                ]
+            , subprocessEnvironment = Just environment
+            , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
+            }
+
+  requireSesReceiveBucketAccessible :: IO (Result ())
+  requireSesReceiveBucketAccessible = do
+    settingsResult <- validateAndLoadSettings (interpreterRepoRoot context)
+    case settingsResult of
+      Left err -> pure (Failure err)
+      Right settings -> do
+        let bucket =
+              Text.unpack (Text.strip (capture_bucket (ses (validatedConfig settings))))
+        if null bucket
+          then
+            pure
+              ( Failure
+                  "ses.capture_bucket must be set in prodbox-config.dhall before checking SES capture-bucket reachability."
+              )
+          else do
+            environment <- awsCommandEnvironment settings
+            requireAwsValidationCommandSuccess
+              "SES capture-bucket reachability check failed"
+              Subprocess
+                { subprocessPath = "aws"
+                , subprocessArguments =
+                    [ "s3api"
+                    , "head-bucket"
+                    , "--bucket"
+                    , bucket
+                    ]
+                , subprocessEnvironment = Just environment
+                , subprocessWorkingDirectory = Just (interpreterRepoRoot context)
+                }
 
 pulumiPrerequisiteEnvironment :: Int -> String -> String -> IO [(String, String)]
 pulumiPrerequisiteEnvironment localPort accessKey secretKey = do

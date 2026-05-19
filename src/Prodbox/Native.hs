@@ -19,6 +19,7 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Pulumi (runPulumiCommand)
 import Prodbox.CLI.Rke2 (runRke2Command)
+import Prodbox.CLI.Users (runUsersCommand)
 import Prodbox.CheckCode
   ( runCheckCode
   , runDocsCommand
@@ -57,6 +58,7 @@ runNativeCommand repoRoot command =
     NativeRke2 rke2Command -> runRke2Command repoRoot rke2Command
     NativeTest testCommand -> runTests repoRoot testCommand
     NativeTlaCheck -> runTlaCheck repoRoot
+    NativeUsers usersCommand -> runUsersCommand repoRoot usersCommand
     NativeWorkload workloadCommand -> runWorkloadCommand workloadCommand
 
 runConfigCommand :: FilePath -> ConfigCommand -> IO ExitCode

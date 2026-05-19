@@ -377,6 +377,29 @@ Options:
 Examples:
 - prodbox pulumi aws-subzone-destroy --yes  # Destroy the AWS-substrate Route 53 subzone.
 
+## prodbox pulumi aws-ses-resources
+prodbox pulumi aws-ses-resources - Provision cross-substrate AWS SES infrastructure
+
+Reconcile the shared AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user used by Phase 8 operator-invited email auth.
+Options:
+- --dry-run - Render the SES plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi aws-ses-resources  # Reconcile the cross-substrate SES infrastructure.
+
+## prodbox pulumi aws-ses-destroy
+prodbox pulumi aws-ses-destroy - Destroy cross-substrate AWS SES infrastructure
+
+Destroy the shared AWS SES stack (sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user).
+Options:
+- --yes, -y - Skip confirmation prompts
+- --dry-run - Render the destroy plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi aws-ses-destroy --yes  # Destroy the cross-substrate SES infrastructure.
+
 ## prodbox rke2 status
 prodbox rke2 status - Check RKE2 status
 
@@ -696,12 +719,63 @@ Options:
 Examples:
 - prodbox test integration public-dns  # Run the `public-dns` integration suite.
 
+## prodbox test integration keycloak-invite
+prodbox test integration keycloak-invite - Run Keycloak operator-invite integration tests
+
+Run Keycloak operator-invite integration tests
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration keycloak-invite  # Run the `keycloak-invite` integration suite.
+
 ## prodbox tla-check
 prodbox tla-check - Run TLA+ checks
 
 Run the TLA+ model checks.
 Examples:
 - prodbox tla-check  # Run the TLA+ model checks.
+
+## prodbox users invite
+prodbox users invite - Invite an operator-owned user by email
+
+Create a Keycloak user with emailVerified=false and trigger the SES-backed invite email.
+Options:
+- --role <ROLE> - Operator-defined role to assign on invite
+- --dry-run - Render the invite plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox users invite operator@example.invalid  # Invite operator@example.invalid to set up an account.
+- prodbox users invite operator@example.invalid --role admin  # Invite an operator with the admin role assignment.
+
+## prodbox users list
+prodbox users list - List operator-managed users
+
+List Keycloak users with their email-verification status and last-login time.
+Options:
+- --status, -s - Filter the listing by status (default all; --status alone selects verified)
+- --status-unverified - Restrict the listing to users whose email is not yet verified
+
+Examples:
+- prodbox users list  # List all operator-managed users.
+- prodbox users list --status  # List only email-verified users.
+- prodbox users list --status-unverified  # List users awaiting invite activation.
+
+## prodbox users revoke
+prodbox users revoke - Disable or delete an operator-managed user
+
+Revoke an operator-managed user. Disables the user by default; pass --delete to fully remove the user.
+Options:
+- --delete - Fully delete the user instead of disabling
+- --dry-run - Render the revoke plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox users revoke operator@example.invalid  # Disable the operator account.
+- prodbox users revoke operator@example.invalid --delete  # Fully delete the operator account.
 
 ## prodbox workload start
 prodbox workload start - Start internal workload runtime

@@ -35,6 +35,7 @@ data NativeValidation
   | ValidationChartsPlatform
   | ValidationChartsStorage
   | ValidationLifecycle
+  | ValidationKeycloakInvite
   deriving (Eq, Show)
 
 data NativeSuitePlan = NativeSuitePlan
@@ -317,6 +318,21 @@ testExecutionPlan substrate scope =
             []
             False
             Nothing
+        IntegrationKeycloakInvite ->
+          nativeExecutionPlan
+            "integration keycloak-invite"
+            []
+            NativeSuitePlan
+              { nativeSuiteId = "integration-keycloak-invite"
+              , nativeValidations = [ValidationKeycloakInvite]
+              , nativeInitialIntegrationGatePrerequisites = keycloakInviteInitialPrerequisites
+              , nativeDeferredIntegrationGatePrerequisites = keycloakInviteDeferredPrerequisites
+              , nativeManagedAwsHarnessPolicyTier = Nothing
+              , nativeRequiresIntegrationRunbook = True
+              , nativeRequiresSupportedRuntimeBootstrap = True
+              , nativeRequiresSupportedRuntimePostflight = False
+              , nativeSubstrate = substrate
+              }
  where
   nativeIntegrationPlan label haskellSuites suiteId validations initialPrerequisites deferredPrerequisites requiresRunbook managedAwsHarnessPolicyTier =
     nativeExecutionPlan
@@ -363,6 +379,7 @@ canonicalNativeValidations =
   , ValidationChartsPlatform
   , ValidationChartsStorage
   , ValidationLifecycle
+  , ValidationKeycloakInvite
   ]
 
 allInitialIntegrationPrerequisites :: [String]
@@ -385,6 +402,7 @@ allInitialIntegrationPrerequisites =
     , chartsStoragePrerequisites
     , lifecyclePrerequisites
     , gatewayPartitionPrerequisites
+    , keycloakInviteInitialPrerequisites
     ]
 
 allDeferredIntegrationPrerequisites :: [String]
@@ -397,6 +415,7 @@ allDeferredIntegrationPrerequisites =
     , awsEksDeferredPrerequisites
     , pulumiDeferredPrerequisites
     , awsHaRke2DeferredPrerequisites
+    , keycloakInviteDeferredPrerequisites
     ]
 
 clusterPrerequisites :: [String]
@@ -480,6 +499,20 @@ chartsStoragePrerequisites = clusterPrerequisites
 lifecyclePrerequisites :: [String]
 lifecyclePrerequisites = clusterPrerequisites
 
+keycloakInviteInitialPrerequisites :: [String]
+keycloakInviteInitialPrerequisites =
+  orderedUnion
+    [ chartsVscodeInitialPrerequisites
+    , ["aws_credentials_valid", "route53_accessible", "tool_curl"]
+    ]
+
+keycloakInviteDeferredPrerequisites :: [String]
+keycloakInviteDeferredPrerequisites =
+  orderedUnion
+    [ pulumiDeferredPrerequisites
+    , ["ses_sending_identity_verified", "ses_receive_rule_set_active", "ses_receive_bucket_accessible"]
+    ]
+
 nativeExecutionPlan :: String -> [String] -> NativeSuitePlan -> TestExecutionPlan
 nativeExecutionPlan label haskellSuites suitePlan =
   TestExecutionPlan
@@ -507,6 +540,7 @@ nativeValidationId validation =
     ValidationChartsPlatform -> "charts-platform"
     ValidationChartsStorage -> "charts-storage"
     ValidationLifecycle -> "lifecycle"
+    ValidationKeycloakInvite -> "keycloak-invite"
 
 orderedUnion :: [[String]] -> [String]
 orderedUnion = nub . concat

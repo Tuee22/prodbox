@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="aws charts check-code commands config dns docs gateway help host k8s lint pulumi rke2 test tla-check workload"
+    words="aws charts check-code commands config dns docs gateway help host k8s lint pulumi rke2 test tla-check users workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
@@ -46,7 +46,10 @@ _prodbox()
         words="all lint unit integration"
         ;;
       "test integration")
-        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi charts-storage charts-platform charts-vscode charts-api charts-websocket admin-routes public-dns"
+        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods gateway-partition ha-rke2-aws lifecycle pulumi charts-storage charts-platform charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite"
+        ;;
+      "users")
+        words="invite list revoke"
         ;;
       "workload")
         words="start"

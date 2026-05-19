@@ -57,6 +57,9 @@ allPrerequisites =
   , k8sReady
   , infraReady
   , gatewayDaemonAcquire
+  , sesSendingIdentityVerified
+  , sesReceiveRuleSetActive
+  , sesReceiveBucketAccessible
   ]
 
 platformLinux :: EffectNode
@@ -323,6 +326,47 @@ gatewayDaemonAcquire =
     , effectNodeRemedyHint = "Run gateway daemon entrypoints on the supported Linux runtime."
     , effectNodePrerequisites = ["platform_linux"]
     , effectNodeEffect = Noop
+    }
+
+-- Sprint 8.4 — Cross-substrate SES prerequisites. These nodes are deferred-prereqs of
+-- `ValidationKeycloakInvite` (Sprint 8.5): substrate provisioning runs first, then the
+-- canonical suite gates the invite validation on the shared SES infrastructure
+-- (`pulumi/aws-ses/`) being live and reachable from the runner.
+
+sesSendingIdentityVerified :: EffectNode
+sesSendingIdentityVerified =
+  EffectNode
+    { effectNodeId = "ses_sending_identity_verified"
+    , effectNodeDescription =
+        "Validate the SES domain identity for ses.sender_domain is in VerificationStatus=Success"
+    , effectNodeRemedyHint =
+        "Provision the shared SES infrastructure via `prodbox pulumi aws-ses-resources` (Sprint 8.1); confirm DKIM CNAME records exist in the parent Route 53 zone and that SES has reported VerificationStatus=Success for ses.sender_domain."
+    , effectNodePrerequisites = ["aws_credentials_valid", "route53_accessible"]
+    , effectNodeEffect = Validate RequireSesSendingIdentityVerified
+    }
+
+sesReceiveRuleSetActive :: EffectNode
+sesReceiveRuleSetActive =
+  EffectNode
+    { effectNodeId = "ses_receive_rule_set_active"
+    , effectNodeDescription =
+        "Validate the SES receive rule set is active and captures mail for ses.receive_subdomain"
+    , effectNodeRemedyHint =
+        "Re-run `prodbox pulumi aws-ses-resources` and confirm `aws ses describe-active-receipt-rule-set` reports the prodbox-receive-rule-set as active with an S3 action targeting ses.capture_bucket."
+    , effectNodePrerequisites = ["aws_credentials_valid", "route53_accessible"]
+    , effectNodeEffect = Validate RequireSesReceiveRuleSetActive
+    }
+
+sesReceiveBucketAccessible :: EffectNode
+sesReceiveBucketAccessible =
+  EffectNode
+    { effectNodeId = "ses_receive_bucket_accessible"
+    , effectNodeDescription =
+        "Validate the SES capture S3 bucket is reachable for list and get operations"
+    , effectNodeRemedyHint =
+        "Confirm the SMTP IAM user from `prodbox pulumi aws-ses-resources` retains `s3:ListBucket` and `s3:GetObject` on ses.capture_bucket; `aws s3api head-bucket --bucket <bucket>` must exit 0 from the runner."
+    , effectNodePrerequisites = ["aws_credentials_valid"]
+    , effectNodeEffect = Validate RequireSesReceiveBucketAccessible
     }
 
 toolNode :: String -> String -> FilePath -> [String] -> [String] -> EffectNode

@@ -1012,12 +1012,98 @@ lifecycle gate behavior:
 - Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (300/300) on May
   18, 2026.
 
+### Live Operator Workflow Progress (May 18, 2026 session)
+
+Live workflow attempts surfaced three concrete bugs in the substrate-aware code that
+landed in Sprints `7.5.b.ii.d.II.α/β/γ/δ`. Two were fixed this session; the third is
+substantial and remains open. Per the substrate-equivalence doctrine recorded in
+[../CLAUDE.md](../CLAUDE.md) and [../AGENTS.md](../AGENTS.md), the AWS substrate
+stands up the same chart set + supporting platform (Harbor, MinIO, Percona operator,
+Envoy Gateway, cert-manager, real Let's Encrypt) as the home substrate; differences
+are limited to the load balancer (MetalLB ↔ AWS LB Controller) and Route 53 hosting
+(parent zone ↔ subzone).
+
+**Fixed this session:**
+
+- `Prodbox.CLI.Charts.withSubstrateEnvironment` and
+  `Prodbox.TestValidation.withSubstrateKubeconfigEnv` now bracket-set
+  `KUBECONFIG` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` +
+  `AWS_DEFAULT_REGION` + `AWS_REGION` (and optional `AWS_SESSION_TOKEN`) from
+  `settings.aws.*`, so EKS's `aws eks get-token` exec provider can fetch a token
+  for kubectl/helm subprocesses on the AWS substrate. Without this, every kubectl
+  call against EKS failed with `401 the server has asked for the client to provide
+  credentials`.
+- `Prodbox.Lib.AwsSubstratePlatform.extractRegionFromArn` now preserves empty ARN
+  segments (`splitKeepingEmpty` replaces the earlier `wordsBy` which dropped empty
+  segments and returned the IAM account number as the "region"). Helm string
+  values switched to `--set-string` so the chart's string-typed `region` field
+  stops being parsed as `int64`. Caller now passes the configured `aws.region`
+  as the fallback.
+- `Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstrateAcmeRuntime` wraps the
+  `[Value]` ACME manifest list as a `v1/List` object before `kubectl apply -f`
+  (matches the home-substrate `Prodbox.CLI.Rke2.withTemporaryJsonManifest`
+  pattern). Without this, `kubectl apply -f` rejected the bare JSON array with
+  `invalid object to validate`.
+
+With these three fixes, `prodbox charts deploy gateway --substrate aws` reaches and
+completes the substrate-platform install on EKS:
+
+- `aws-load-balancer-controller` (`kube-system`) — deployment Ready.
+- `envoy-gateway` (`envoy-gateway-system`) — deployment Ready.
+- `cert-manager` + `cert-manager-webhook` + `cert-manager-cainjector`
+  (`cert-manager`) — deployments Ready.
+- `route53-credentials` + `acme-eab-credentials` secrets created.
+- `letsencrypt-http01` `ClusterIssuer` created and Ready.
+
+**Remaining work (substantial Sprint `7.5.c` follow-up):**
+
+`Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime` currently
+installs only the load-balancer / ingress / cert-manager / ACME pieces. Per the
+substrate-equivalence doctrine, the AWS substrate also needs:
+
+- **Harbor** — the chart-platform image refs (`charts/*/values.yaml` and
+  `Prodbox.Lib.ChartPlatform.valuesForKeycloak` / etc.) use one set across both
+  substrates: `127.0.0.1:30080/prodbox/...`. On home, Harbor runs as a NodePort
+  service exposed at `127.0.0.1:30080`. On AWS, the platform install needs to
+  bring Harbor up (with its MinIO storage backend) so `127.0.0.1:30080` resolves
+  on EKS nodes the same way it does on home cluster nodes.
+- **MinIO** — Harbor's S3 storage backend, plus the gateway daemon's Pulumi
+  backend. Currently home-only.
+- **Percona PostgreSQL operator** — the `keycloak-postgres` chart depends on the
+  cluster-wide Percona operator (`charts/keycloak-postgres` references
+  `pgv2.percona.com` CRDs). Currently home-only.
+- **Image mirror loop** — the home substrate's
+  `Prodbox.CLI.Rke2.mirrorRequiredImagesIntoHarbor` step pushes upstream images
+  into the Harbor mirror so chart pods can pull them via `127.0.0.1:30080`. The
+  AWS substrate needs an equivalent step running against EKS's Harbor.
+
+Implementation owner: extend `Prodbox.Lib.AwsSubstratePlatform` with helpers
+mirroring `Prodbox.CLI.Rke2.ensureClusterPlatformRuntime`'s Harbor/MinIO/Percona
+sub-steps + the image-mirror loop, and wire them into
+`ensureAwsSubstratePlatformRuntime`. Estimate: 4–8 hours of careful chart-platform
+work.
+
+**Current AWS-substrate state at session end:**
+
+- EKS cluster `aws-eks-test-cluster` (us-west-2, 2-node group) — provisioned.
+- Route 53 subzone `aws.test.resolvefintech.com` (`Z09855634DAFL96UPV1E`) —
+  provisioned, NS delegation in parent zone.
+- AWS LB Controller + Envoy Gateway + cert-manager + ACME ClusterIssuer — Ready on
+  EKS.
+- `gateway` helm release deployed to EKS `gateway` namespace; pods in
+  `ImagePullBackOff` waiting on the Harbor+MinIO substrate-platform follow-up
+  above.
+- `aws.*` credentials populated in `prodbox-config.dhall` (sourced from
+  `aws_admin_for_test_simulation.*`). Teardown when ready:
+  `prodbox pulumi aws-subzone-destroy --yes` +
+  `prodbox pulumi eks-destroy --yes`; afterwards clear `aws.*` in the dhall.
+
 ### Remaining Work
 
-The code follow-up has landed. Live operator workflow validation (steps 2–6 above) is
-the residual operator-driven work that closes this sprint and flips the AWS-substrate
-parity row in [substrates.md](substrates.md) from 🔄 to ✅ and the Phase 7 row in
-[README.md](README.md) from 🔄 to ✅.
+The two doc-friendly fixes above land cleanly. Sprint `7.5.c` does not close until
+the Harbor+MinIO+Percona substrate-platform follow-up lands and the five
+`--substrate aws` canonical-suite validations run green against a substrate that
+fully matches the home cluster's chart-set state.
 
 ## Documentation Requirements
 

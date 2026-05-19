@@ -284,7 +284,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; ✅ 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract), May 18, 2026; 🔄 7.5.c code follow-up landed May 18, 2026, live AWS-substrate canonical-suite validation pending operator session) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (🔄 Sprint 8.1 code + doctrine landed May 18, 2026 — Pulumi program at `pulumi/aws-ses/`, `ses` config block, `SesSection` type, populated `prodbox-config.dhall`, `AwsSesStack.hs` orchestration, `pulumi aws-ses-resources` / `aws-ses-destroy` CLI surface, generated docs/manpages/completions, `substrates.md` + `aws_integration_environment_doctrine.md` updated; live operator workflow validation pending; Sprints 8.2–8.6 📋 Planned) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
+| 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secrets persistence landed (credential-setup form POST + fresh OIDC login + claim assertions remain operator-driven sub-sprint, blocked on live Keycloak form-structure capture); 🔄 Sprint 8.6 doc parity landed (live cross-substrate proof pending 7.5.c + 8.5 OIDC follow-up closure). Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the only remaining live OIDC closure work) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
@@ -308,6 +308,32 @@ Sprint `7.5.c`'s code follow-up landed May 18, 2026 — `substratePublicFqdn` /
 five `--substrate aws` validations → teardown) remains as the residual operator-driven
 closing step for Sprint `7.5.c`; the documented workflow lives in
 [phase-7-aws-substrate-foundations.md → Sprint 7.5.c Operator Workflow](phase-7-aws-substrate-foundations.md).
+
+Phase `8` was opened May 18, 2026 with the full code + doctrine layer of Sprints
+`8.1`–`8.6` landed in a single session: `pulumi/aws-ses/` (Pulumi program for the
+SES sending identity, receive subdomain MX, receive rule set, S3 capture bucket, and
+SMTP IAM user); `src/Prodbox/Infra/AwsSesStack.hs` orchestration plus
+`prodbox pulumi aws-ses-resources` / `aws-ses-destroy` CLI surface; the
+`ses : { sender_domain, receive_subdomain, capture_bucket }` block in
+`prodbox-config-types.dhall` and `prodbox-config.dhall`; Keycloak realm chart updates
+(`verifyEmail: true`, `smtpServer`, new `keycloak-smtp` `Opaque` Secret) under
+`charts/keycloak/`; the operator-facing `prodbox users invite|list|revoke` surface in
+`src/Prodbox/CLI/Users.hs` and `src/Prodbox/UsersAdmin.hs`; three new
+prerequisite nodes (`ses_sending_identity_verified`, `ses_receive_rule_set_active`,
+`ses_receive_bucket_accessible`) wired through `src/Prodbox/Effect.hs`,
+`src/Prodbox/Prerequisite.hs`, and `src/Prodbox/EffectInterpreter.hs` with AWS CLI
+validators; the `ValidationKeycloakInvite` / `IntegrationKeycloakInvite` canonical-suite
+variants planned by `src/Prodbox/TestPlan.hs` and dispatched through
+`src/Prodbox/TestValidation.hs`; and the cross-substrate shared-SES doctrine in
+[substrates.md](substrates.md) and
+[documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md).
+Validated with `prodbox check-code`, `prodbox lint docs`, `prodbox docs check`, and
+`prodbox test unit` (312/312). The residual live operator workflows for Phase `8` are
+parallel to Sprint `7.5.c`'s live workflow: `prodbox aws setup` →
+`prodbox pulumi aws-ses-resources` (Sprint `8.1` live), the Sprint `8.5` Keycloak admin
+API HTTP integration in `src/Prodbox/UsersAdmin.hs` plus the SES capture-bucket polling
+helper in `src/Prodbox/TestValidation.hs::runKeycloakInviteValidation`, and the Sprint
+`8.6` cross-substrate `keycloak-invite` parity flip in [substrates.md](substrates.md).
 
 ## Substrate Parity
 

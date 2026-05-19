@@ -35,7 +35,10 @@ import Prodbox.Lib.ChartPlatform
   )
 import Prodbox.PublicEdge (substrateKubeconfigPath)
 import Prodbox.Settings
-  ( ValidatedSettings
+  ( ConfigFile (..)
+  , Credentials (..)
+  , ValidatedSettings (..)
+  , aws
   , validateAndLoadSettings
   )
 import Prodbox.Substrate (Substrate (..))
@@ -79,7 +82,7 @@ runChartsCommand repoRoot command =
                     case buildResult of
                       Left err -> failWith err
                       Right plan ->
-                        withSubstrateEnvironment repoRoot substrate $ do
+                        withSubstrateEnvironment repoRoot settings substrate $ do
                           platformExit <- ensurePlatformForSubstrate repoRoot settings substrate
                           case platformExit of
                             ExitFailure _ -> pure platformExit
@@ -99,7 +102,7 @@ runChartsCommand repoRoot command =
               else case buildChartDeletePlan repoRoot (Just settings) rootChart of
                 Left err -> failWith err
                 Right plan ->
-                  withSubstrateEnvironment repoRoot substrate $
+                  withSubstrateEnvironment repoRoot settings substrate $
                     runPlanWithOptions
                       planOptions
                       (buildPlan renderChartDeletePlan plan)
@@ -209,21 +212,37 @@ ensurePlatformForSubstrate repoRoot settings SubstrateAws =
   awsSubstrateLabelValue = "prodbox-aws-substrate"
 
 -- | Run a chart-deploy/delete action with KUBECONFIG pointed at the substrate's
--- kubeconfig. For the home substrate this is a no-op (kubectl/helm pick up the
--- operator's default kubeconfig). For the AWS substrate the EKS kubeconfig
--- materialized by `materializeAwsEksKubeconfig` is exported so every helm and
--- kubectl invocation in `Prodbox.Lib.ChartPlatform` targets the EKS cluster.
-withSubstrateEnvironment :: FilePath -> Substrate -> IO ExitCode -> IO ExitCode
-withSubstrateEnvironment repoRoot substrate action =
+-- kubeconfig and AWS_* credentials projected for substrate-aware subprocesses.
+--
+-- For the home substrate this is a no-op (kubectl/helm pick up the operator's
+-- default kubeconfig and the home cluster doesn't need AWS auth). For the AWS
+-- substrate, the EKS kubeconfig materialized by `materializeAwsEksKubeconfig` is
+-- exported alongside `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`,
+-- `AWS_DEFAULT_REGION` (and optionally `AWS_SESSION_TOKEN`) from
+-- `settings.aws.*`. Without the AWS env vars, the EKS kubeconfig's `aws eks
+-- get-token` exec provider can't fetch a token and every kubectl/helm call
+-- returns 401 "the server has asked for the client to provide credentials".
+withSubstrateEnvironment
+  :: FilePath -> ValidatedSettings -> Substrate -> IO ExitCode -> IO ExitCode
+withSubstrateEnvironment repoRoot settings substrate action =
   case substrateKubeconfigPath repoRoot substrate of
     Nothing -> action
     Just kubeconfigPath -> do
-      previousKubeconfig <- lookupEnv "KUBECONFIG"
+      let awsCreds = aws (validatedConfig settings)
+          envOverrides =
+            [ ("KUBECONFIG", kubeconfigPath)
+            , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
+            , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
+            , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
+            , ("AWS_REGION", Text.unpack (region awsCreds))
+            ]
+              ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
+      previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
       bracket_
-        (setEnv "KUBECONFIG" kubeconfigPath)
-        (restoreEnv "KUBECONFIG" previousKubeconfig)
+        (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+        (mapM_ restoreOne (zip envOverrides previousValues))
         action
  where
-  restoreEnv :: String -> Maybe String -> IO ()
-  restoreEnv name Nothing = unsetEnv name
-  restoreEnv name (Just value) = setEnv name value
+  restoreOne :: ((String, String), Maybe String) -> IO ()
+  restoreOne ((name, _), Nothing) = unsetEnv name
+  restoreOne ((name, _), Just value) = setEnv name value

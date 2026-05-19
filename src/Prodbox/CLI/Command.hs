@@ -24,6 +24,8 @@ module Prodbox.CLI.Command
   , runPlanWithOptions
   , TestCommand (..)
   , TestScope (..)
+  , UsersCommand (..)
+  , UsersListStatus (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   , validateCoverage
@@ -63,6 +65,7 @@ data NativeCommand
   | NativeRke2 Rke2Command
   | NativeTest TestCommand
   | NativeTlaCheck
+  | NativeUsers UsersCommand
   | NativeWorkload WorkloadCommand
   deriving (Eq, Show)
 
@@ -131,6 +134,18 @@ data ConfigCommand
 data PolicyTier
   = PolicyCore
   | PolicyFull
+  deriving (Eq, Show)
+
+data UsersListStatus
+  = UsersAll
+  | UsersVerified
+  | UsersUnverified
+  deriving (Eq, Show)
+
+data UsersCommand
+  = UsersInvite String (Maybe String) PlanOptions
+  | UsersList UsersListStatus
+  | UsersRevoke String Bool PlanOptions
   deriving (Eq, Show)
 
 data AwsCommand
@@ -241,6 +256,7 @@ data IntegrationSuite
   | IntegrationChartsWebsocket
   | IntegrationAdminRoutes
   | IntegrationPublicDns
+  | IntegrationKeycloakInvite
   deriving (Eq, Show)
 
 data CoverageFlags = CoverageFlags

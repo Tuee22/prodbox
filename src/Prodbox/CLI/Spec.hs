@@ -61,6 +61,8 @@ import Prodbox.CLI.Command
   , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
+  , UsersCommand (..)
+  , UsersListStatus (..)
   , WorkloadCommand (..)
   , WorkloadOptions (..)
   )
@@ -124,6 +126,7 @@ commandRegistry =
         , rke2Group
         , testGroupSpec
         , tlaCheckLeaf
+        , usersGroup
         , workloadGroup
         ]
     , options =
@@ -342,6 +345,41 @@ parserForPath path =
               RunNative (NativePulumi (PulumiAwsSesDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+    ["users", "invite"] ->
+      Just $
+        ( \email maybeRole planOptions' ->
+            RunNative (NativeUsers (UsersInvite email maybeRole planOptions'))
+        )
+          <$> strArgument (metavar "EMAIL")
+          <*> optional
+            ( strOption
+                ( long "role"
+                    <> metavar "ROLE"
+                    <> help "Operator-defined role to assign on invite"
+                )
+            )
+          <*> planOptionsParser
+    ["users", "list"] ->
+      Just $
+        fmap
+          (RunNative . NativeUsers . UsersList)
+          ( flag'
+              UsersVerified
+              ( long "status"
+                  <> short 's'
+                  <> help "Filter by status: verified (omit flag for all users)"
+              )
+              <|> flag' UsersUnverified (long "status-unverified" <> help "Filter by status: unverified")
+              <|> pure UsersAll
+          )
+    ["users", "revoke"] ->
+      Just $
+        ( \ident hardDelete planOptions' ->
+            RunNative (NativeUsers (UsersRevoke ident hardDelete planOptions'))
+        )
+          <$> strArgument (metavar "EMAIL_OR_USER_ID")
+          <*> switch (long "delete" <> help "Fully delete the user instead of disabling")
+          <*> planOptionsParser
     ["rke2", "status"] -> Just (pure (RunNative (NativeRke2 Rke2Status)))
     ["rke2", "start"] -> Just (pure (RunNative (NativeRke2 Rke2Start)))
     ["rke2", "stop"] -> Just (pure (RunNative (NativeRke2 Rke2Stop)))
@@ -391,6 +429,7 @@ parserForPath path =
     ["test", "integration", "charts-websocket"] -> Just (withCoverage (TestIntegration IntegrationChartsWebsocket))
     ["test", "integration", "admin-routes"] -> Just (withCoverage (TestIntegration IntegrationAdminRoutes))
     ["test", "integration", "public-dns"] -> Just (withCoverage (TestIntegration IntegrationPublicDns))
+    ["test", "integration", "keycloak-invite"] -> Just (withCoverage (TestIntegration IntegrationKeycloakInvite))
     ["tla-check"] -> Just (pure (RunNative NativeTlaCheck))
     ["workload", "start"] ->
       Just (fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser)
@@ -877,6 +916,67 @@ gatewayGroup =
     []
     [example ["gateway", "status", "--config", "gateway.dhall"] "Inspect gateway daemon state."]
 
+usersGroup :: CommandSpec
+usersGroup =
+  group
+    "users"
+    "Operator-invited user management"
+    "Operator-facing Keycloak user management surface for the Phase 8 invite flow."
+    [ leaf
+        "invite"
+        "Invite an operator-owned user by email"
+        "Create a Keycloak user with emailVerified=false and trigger the SES-backed invite email."
+        [ optionalOption "role" Nothing "ROLE" "Operator-defined role to assign on invite"
+        , flagOption "dry-run" Nothing Nothing "Render the invite plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [ example
+            ["users", "invite", "operator@example.invalid"]
+            "Invite operator@example.invalid to set up an account."
+        , example
+            ["users", "invite", "operator@example.invalid", "--role", "admin"]
+            "Invite an operator with the admin role assignment."
+        ]
+    , leaf
+        "list"
+        "List operator-managed users"
+        "List Keycloak users with their email-verification status and last-login time."
+        [ flagOption
+            "status"
+            (Just 's')
+            Nothing
+            "Filter the listing by status (default all; --status alone selects verified)"
+        , flagOption
+            "status-unverified"
+            Nothing
+            Nothing
+            "Restrict the listing to users whose email is not yet verified"
+        ]
+        [ example ["users", "list"] "List all operator-managed users."
+        , example ["users", "list", "--status"] "List only email-verified users."
+        , example
+            ["users", "list", "--status-unverified"]
+            "List users awaiting invite activation."
+        ]
+    , leaf
+        "revoke"
+        "Disable or delete an operator-managed user"
+        "Revoke an operator-managed user. Disables the user by default; pass --delete to fully remove the user."
+        [ flagOption "delete" Nothing Nothing "Fully delete the user instead of disabling"
+        , flagOption "dry-run" Nothing Nothing "Render the revoke plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [ example
+            ["users", "revoke", "operator@example.invalid"]
+            "Disable the operator account."
+        , example
+            ["users", "revoke", "operator@example.invalid", "--delete"]
+            "Fully delete the operator account."
+        ]
+    ]
+    []
+    [example ["users", "invite", "operator@example.invalid"] "Invite a new operator-owned user."]
+
 workloadGroup :: CommandSpec
 workloadGroup =
   group
@@ -1125,6 +1225,7 @@ testGroupSpec =
         , integrationLeaf "charts-websocket" "Run WebSocket stack integration tests"
         , integrationLeaf "admin-routes" "Run shared-host admin-route integration tests"
         , integrationLeaf "public-dns" "Run public DNS integration tests"
+        , integrationLeaf "keycloak-invite" "Run Keycloak operator-invite integration tests"
         ]
         []
         [example ["test", "integration", "cli"] "Run the CLI integration suite."]

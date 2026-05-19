@@ -28,6 +28,7 @@ import Prodbox.CLI.Command
   , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
+  , UsersCommand (..)
   , WorkloadCommand (..)
   )
 import Prodbox.CLI.Parser
@@ -221,6 +222,8 @@ commandPathOfRequest request =
               PulumiTestDestroy _ _ -> ["test-destroy"]
               PulumiAwsSubzoneResources _ -> ["aws-subzone-resources"]
               PulumiAwsSubzoneDestroy _ _ -> ["aws-subzone-destroy"]
+              PulumiAwsSesResources _ -> ["aws-ses-resources"]
+              PulumiAwsSesDestroy _ _ -> ["aws-ses-destroy"]
         NativeRke2 rke2Command ->
           "rke2"
             : case rke2Command of
@@ -259,7 +262,14 @@ commandPathOfRequest request =
                     IntegrationChartsWebsocket -> ["charts-websocket"]
                     IntegrationAdminRoutes -> ["admin-routes"]
                     IntegrationPublicDns -> ["public-dns"]
+                    IntegrationKeycloakInvite -> ["keycloak-invite"]
         NativeTlaCheck -> ["tla-check"]
+        NativeUsers usersCommand ->
+          "users"
+            : case usersCommand of
+              UsersInvite _ _ _ -> ["invite"]
+              UsersList _ -> ["list"]
+              UsersRevoke _ _ _ -> ["revoke"]
         NativeWorkload workloadCommand ->
           "workload"
             : case workloadCommand of

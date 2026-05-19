@@ -71,9 +71,7 @@ The full inventory of canonical-suite validations owned by this phase lives in
 | `charts-api` | `infra_ready`, `public_edge_ready` | Real HTTPS curl to `https://<publicFqdn>/api`; bearer-token validation; 401/403 contract |
 | `charts-websocket` | `infra_ready`, `public_edge_ready` | Real WebSocket upgrade against `/ws`; cross-pod broadcast; revocation-driven reconnect; readiness-based drain |
 | `admin-routes` | `infra_ready`, `public_edge_ready` | Harbor and MinIO auth + RBAC on the shared public edge |
-
-The phase-8 `keycloak-invite` validation joins this inventory when
-[phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) closes its suite-content sprint.
+| `keycloak-invite` | `aws_credentials_valid`, `route53_accessible`, `ses_sending_identity_verified`, `ses_receive_rule_set_active`, `ses_receive_bucket_accessible`, `pulumi_logged_in` | Operator-invited Keycloak flow end-to-end: `prodbox users invite` → SES capture-bucket poll → invite link follow → credential setup → OIDC login |
 
 ## Substrate Independence
 

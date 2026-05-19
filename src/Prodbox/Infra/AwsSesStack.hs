@@ -13,6 +13,7 @@ module Prodbox.Infra.AwsSesStack
   )
 where
 
+import Control.Exception (IOException, try)
 import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
@@ -21,12 +22,15 @@ import Data.Aeson
   , object
   , (.=)
   )
+import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
 import Data.List (isInfixOf)
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
@@ -50,8 +54,10 @@ import Prodbox.Infra.MinioBackend
   , withMinioPortForward
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
-  ( Route53Section (..)
+  ( Credentials (..)
+  , Route53Section (..)
   , SesSection (..)
   , ValidatedSettings (..)
   , aws
@@ -109,6 +115,7 @@ data AwsSesStackConfig = AwsSesStackConfig
   , sesStackSenderDomain :: String
   , sesStackReceiveSubdomain :: String
   , sesStackCaptureBucket :: String
+  , sesStackAwsRegion :: String
   }
   deriving (Eq, Show)
 
@@ -265,6 +272,8 @@ resolveAwsSesStackConfig repoRoot = do
           senderDomainValue = Text.unpack (Text.strip (sender_domain sesSection))
           receiveSubdomainValue = Text.unpack (Text.strip (receive_subdomain sesSection))
           captureBucketValue = Text.unpack (Text.strip (capture_bucket sesSection))
+          awsRegionValue =
+            Text.unpack (Text.strip (region (aws (validatedConfig settings))))
        in if null parentZoneId
             then Left "route53.zone_id must be set before provisioning the AWS SES stack"
             else
@@ -279,13 +288,18 @@ resolveAwsSesStackConfig repoRoot = do
                         then
                           Left "ses.capture_bucket must be set before provisioning the AWS SES stack"
                         else
-                          Right
-                            AwsSesStackConfig
-                              { sesStackParentZoneId = parentZoneId
-                              , sesStackSenderDomain = senderDomainValue
-                              , sesStackReceiveSubdomain = receiveSubdomainValue
-                              , sesStackCaptureBucket = captureBucketValue
-                              }
+                          if null awsRegionValue
+                            then
+                              Left "aws.region must be set before provisioning the AWS SES stack"
+                            else
+                              Right
+                                AwsSesStackConfig
+                                  { sesStackParentZoneId = parentZoneId
+                                  , sesStackSenderDomain = senderDomainValue
+                                  , sesStackReceiveSubdomain = receiveSubdomainValue
+                                  , sesStackCaptureBucket = captureBucketValue
+                                  , sesStackAwsRegion = awsRegionValue
+                                  }
 
 syncAwsSesStackConfig :: FilePath -> [(String, String)] -> AwsSesStackConfig -> IO ExitCode
 syncAwsSesStackConfig projectDir environment stackConfig =
@@ -296,6 +310,7 @@ syncAwsSesStackConfig projectDir environment stackConfig =
     , ("senderDomain", sesStackSenderDomain stackConfig)
     , ("receiveSubdomain", sesStackReceiveSubdomain stackConfig)
     , ("captureBucket", sesStackCaptureBucket stackConfig)
+    , ("awsRegion", sesStackAwsRegion stackConfig)
     ]
 
   runConfigSet :: ExitCode -> (String, String) -> IO ExitCode
@@ -419,6 +434,121 @@ pulumiStackOutputs projectDir environment = do
           case eitherDecode (BL8.pack (processStdout output)) of
             Left err -> pure (Left ("failed to parse pulumi output JSON: " ++ err))
             Right value -> pure (Right value)
+
+-- Fetch the single named stack output with --show-secrets so the IAM
+-- secret access key surfaces in plaintext. Used only on the
+-- chart-credential persistence path (`persistKeycloakSmtpChartSecrets`)
+-- because the captured value derives the SES SMTP password and is then
+-- immediately written into the chart secrets file under
+-- `.prodbox-state/charts/keycloak/.secrets.json`. The plaintext value is
+-- never persisted to disk by this function.
+pulumiStackOutputSecret
+  :: FilePath -> [(String, String)] -> String -> IO (Either String String)
+pulumiStackOutputSecret projectDir environment outputName = do
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "pulumi"
+        , subprocessArguments =
+            [ "stack"
+            , "output"
+            , outputName
+            , "--show-secrets"
+            , "--stack"
+            , awsSesStackName
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just projectDir
+        }
+  pure $ case result of
+    Failure err -> Left ("failed to run pulumi stack output --show-secrets: " ++ err)
+    Success output ->
+      case processExitCode output of
+        ExitFailure _ ->
+          Left
+            ( "pulumi stack output --show-secrets failed for "
+                ++ outputName
+                ++ ": "
+                ++ trim (processStderr output)
+            )
+        ExitSuccess -> Right (trim (processStdout output))
+
+-- After a successful aws-ses Pulumi reconcile, fetch the IAM secret access
+-- key for the SMTP user, derive the SES SMTP password via
+-- `Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword`, and persist the four
+-- chart-secret fields the Keycloak chart's `valuesForKeycloak` rendering
+-- looks up: `ses_smtp_endpoint`, `ses_smtp_user`, `ses_smtp_password`, and
+-- `ses_smtp_from`. The chart secrets file is namespace-scoped at
+-- `.prodbox-state/charts/keycloak/.secrets.json`.
+persistKeycloakSmtpChartSecrets
+  :: FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> AwsSesStackConfig
+  -> AwsSesStackSnapshot
+  -> IO (Either String ())
+persistKeycloakSmtpChartSecrets repoRoot projectDir environment stackConfig snapshot = do
+  secretResult <- pulumiStackOutputSecret projectDir environment "smtp_iam_secret_access_key"
+  case secretResult of
+    Left err -> pure (Left err)
+    Right smtpSecret -> do
+      let region = Text.pack (sesStackAwsRegion stackConfig)
+          derivedPassword =
+            Text.unpack (derivedSesSmtpPassword region (Text.pack smtpSecret))
+          fromAddress = "noreply@" ++ sesStackSenderDomain stackConfig
+          newValues =
+            Map.fromList
+              [ ("ses_smtp_endpoint", sesSnapshotSmtpEndpoint snapshot)
+              , ("ses_smtp_user", sesSnapshotSmtpIamAccessKeyId snapshot)
+              , ("ses_smtp_password", derivedPassword)
+              , ("ses_smtp_from", fromAddress)
+              ]
+      mergeChartSecretsFile repoRoot "keycloak" newValues
+
+mergeChartSecretsFile
+  :: FilePath -> String -> Map String String -> IO (Either String ())
+mergeChartSecretsFile repoRoot namespace newValues = do
+  let namespaceDir = repoRoot </> ".prodbox-state" </> "charts" </> namespace
+      targetPath = namespaceDir </> ".secrets.json"
+  createResult <- try (createDirectoryIfMissing True namespaceDir) :: IO (Either IOException ())
+  case createResult of
+    Left err -> pure (Left ("failed to create chart-secrets directory: " ++ show err))
+    Right () -> do
+      existing <- readChartSecretsFile targetPath
+      case existing of
+        Left err -> pure (Left err)
+        Right currentValues -> do
+          let merged = Map.union newValues currentValues
+          writeResult <-
+            try
+              ( BL.writeFile
+                  targetPath
+                  ( Pretty.encodePretty' chartSecretsPrettyConfig merged
+                      <> BL8.pack "\n"
+                  )
+              )
+              :: IO (Either IOException ())
+          pure $ case writeResult of
+            Left err -> Left ("failed to write chart-secrets file: " ++ show err)
+            Right () -> Right ()
+
+readChartSecretsFile :: FilePath -> IO (Either String (Map String String))
+readChartSecretsFile path = do
+  fileExists <- doesFileExist path
+  if not fileExists
+    then pure (Right Map.empty)
+    else do
+      readResult <- try (BL.readFile path) :: IO (Either IOException BL.ByteString)
+      pure $ case readResult of
+        Left err -> Left ("failed to read chart-secrets file: " ++ show err)
+        Right contents ->
+          case eitherDecode contents :: Either String (Map String String) of
+            Left err -> Left ("failed to parse chart-secrets file " ++ path ++ ": " ++ err)
+            Right values -> Right values
+
+chartSecretsPrettyConfig :: Pretty.Config
+chartSecretsPrettyConfig =
+  Pretty.defConfig {Pretty.confIndent = Pretty.Spaces 2}
 
 runPulumiCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
 runPulumiCommand projectDir environment arguments = do
@@ -548,14 +678,24 @@ ensureAwsSesStackResources repoRoot = do
                                               Left err -> pure (Left err)
                                               Right snapshot -> do
                                                 saveAwsSesStackSnapshot repoRoot snapshot
-                                                objectCountResult <-
-                                                  bucketObjectCount localPort accessKey secretKey
-                                                case objectCountResult of
+                                                persistResult <-
+                                                  persistKeycloakSmtpChartSecrets
+                                                    repoRoot
+                                                    projectDir
+                                                    baseEnvironment
+                                                    stackConfig
+                                                    snapshot
+                                                case persistResult of
                                                   Left err -> pure (Left err)
-                                                  Right objectCount -> do
-                                                    writeOutput
-                                                      (renderAwsSesStackReport snapshot objectCount)
-                                                    pure (Right ())
+                                                  Right () -> do
+                                                    objectCountResult <-
+                                                      bucketObjectCount localPort accessKey secretKey
+                                                    case objectCountResult of
+                                                      Left err -> pure (Left err)
+                                                      Right objectCount -> do
+                                                        writeOutput
+                                                          (renderAwsSesStackReport snapshot objectCount)
+                                                        pure (Right ())
           case portForwardResult of
             Left err -> failWith err
             Right (Left err) -> failWith err

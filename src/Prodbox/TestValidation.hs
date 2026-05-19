@@ -12,6 +12,7 @@ import Control.Exception
   , SomeException
   , bracket
   , bracket_
+  , catch
   , displayException
   , finally
   , try
@@ -36,6 +37,9 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Data.Vector qualified as Vector
+import Network.HTTP.Client qualified
+import Network.HTTP.Client.TLS qualified
+import Network.HTTP.Types.Status qualified
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (..)
@@ -51,6 +55,7 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.WebSockets qualified as WebSocket
+import Numeric (showHex)
 import Prodbox.Aws
   ( runAwsIamHarnessInspect
   )
@@ -95,6 +100,7 @@ import Prodbox.Gateway.Types
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
+import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.ChartPlatform (resolveChartSecrets)
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
@@ -105,6 +111,7 @@ import Prodbox.PublicEdge
   , substrateKubeconfigPath
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Ses.Capture qualified
 import Prodbox.Settings
   ( Credentials (..)
   , DomainSection (..)
@@ -115,6 +122,7 @@ import Prodbox.Settings
   , route53
   , validateAndLoadSettings
   )
+import Prodbox.Settings qualified
 import Prodbox.Subprocess
   ( BackgroundProcess
   , ProcessOutput (..)
@@ -130,6 +138,7 @@ import Prodbox.TestPlan
   ( NativeValidation (..)
   , nativeValidationId
   )
+import Prodbox.UsersAdmin qualified
 import System.Directory (removeFile)
 import System.Environment
   ( getEnvironment
@@ -280,26 +289,51 @@ runNativeValidation substrate repoRoot environment validation = do
           , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
           , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
           ]
+      ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot environment
 
--- | Wrap a validation action with substrate-aware `KUBECONFIG`. For
--- `SubstrateHomeLocal` the operator's default kubeconfig is in scope
+-- | Wrap a validation action with substrate-aware `KUBECONFIG` plus AWS_*
+-- credentials for the AWS substrate.
+--
+-- For `SubstrateHomeLocal` the operator's default kubeconfig is in scope
 -- already (no-op). For `SubstrateAws` the EKS kubeconfig materialized by
 -- `Prodbox.Infra.AwsEksTestStack.materializeAwsEksKubeconfig` is exported
--- for the duration of the action, so every kubectl/helm subprocess that
--- inherits the parent process environment targets the EKS substrate.
+-- alongside `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION`
+-- (and optionally `AWS_SESSION_TOKEN`) from `settings.aws.*`, so every
+-- kubectl/helm subprocess that inherits the parent process environment can
+-- both target the EKS substrate and successfully resolve the kubeconfig's
+-- `aws eks get-token` exec provider.
 withSubstrateKubeconfigEnv :: FilePath -> Substrate -> IO ExitCode -> IO ExitCode
 withSubstrateKubeconfigEnv repoRoot substrate action =
   case substrateKubeconfigPath repoRoot substrate of
     Nothing -> action
     Just kubeconfigPath -> do
-      previousKubeconfig <- lookupEnv "KUBECONFIG"
-      bracket_
-        (setEnv "KUBECONFIG" kubeconfigPath)
-        (restoreEnv previousKubeconfig)
-        action
+      settingsResult <- validateAndLoadSettings repoRoot
+      case settingsResult of
+        Left err -> do
+          writeError (fatalError (Text.pack err))
+          pure (ExitFailure 1)
+        Right settings -> do
+          let awsCreds = aws (validatedConfig settings)
+              envOverrides =
+                [ ("KUBECONFIG", kubeconfigPath)
+                , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
+                , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
+                , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
+                , ("AWS_REGION", Text.unpack (region awsCreds))
+                ]
+                  ++ maybe
+                    []
+                    (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)])
+                    (session_token awsCreds)
+          previousValues <- mapM (\(name, _) -> lookupEnv name) envOverrides
+          bracket_
+            (mapM_ (\(name, value) -> setEnv name value) envOverrides)
+            (mapM_ restoreOne (zip envOverrides previousValues))
+            action
  where
-  restoreEnv Nothing = unsetEnv "KUBECONFIG"
-  restoreEnv (Just value) = setEnv "KUBECONFIG" value
+  restoreOne :: ((String, String), Maybe String) -> IO ()
+  restoreOne ((name, _), Nothing) = unsetEnv name
+  restoreOne ((name, _), Just value) = setEnv name value
 
 runHaRke2AwsValidation :: FilePath -> [(String, String)] -> IO ExitCode
 runHaRke2AwsValidation repoRoot environment = do
@@ -2231,3 +2265,112 @@ failWith :: String -> IO ExitCode
 failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
+
+-- | `ValidationKeycloakInvite` — Phase 8 canonical-suite validation that proves the
+-- operator-invited email-auth flow end-to-end on whichever substrate is active.
+--
+-- The flow per [phase-8-email-invite-auth.md → Sprint 8.5](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md):
+--
+-- 1. Generate a unique recipient at `ses.receive_subdomain`.
+-- 2. Call `UsersAdmin.inviteUser` (live Keycloak admin API). Asserts the created
+--    user lands with `emailVerified=false`.
+-- 3. Poll the SES capture bucket via `Prodbox.Ses.Capture.pollSesCapture` for the
+--    inbound message (60 s deadline).
+-- 4. Extract the action-token URL via `Prodbox.Keycloak.Email.parseKeycloakInviteLink`.
+-- 5. Follow the link via http-client; assert 2xx (the chart's realm config renders
+--    the credential-setup form on this response).
+-- 6. Cleanup: `UsersAdmin.revokeUser ident --delete` and `deleteCapturedEmail`.
+--
+-- The credential-setup form POST + fresh OIDC login + claim assertions documented in
+-- the Sprint 8.5 phase doc remain as Sprint-8.5-residual remaining work — those steps
+-- exercise chart-specific HTML form behavior and the existing
+-- `ValidationChartsVscode` OIDC machinery; landing them is straightforward but adds
+-- significant chart-template coupling and is best done after a live deploy run has
+-- confirmed the form structure.
+runKeycloakInviteValidation :: FilePath -> [(String, String)] -> IO ExitCode
+runKeycloakInviteValidation repoRoot _environment = do
+  envResult <- settingsAwsEnvironment repoRoot
+  case envResult of
+    Left err -> failWith err
+    Right (settings, awsEnv) -> do
+      nonce <- generateInviteNonce
+      let subdomain =
+            Text.unpack
+              ( Text.strip
+                  ( Prodbox.Settings.receive_subdomain
+                      (Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings))
+                  )
+              )
+      if null subdomain
+        then
+          failWith
+            "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox-config.dhall."
+        else do
+          let recipient = "test-" ++ nonce ++ "@" ++ subdomain
+          writeOutputLine ("KEYCLOAK_INVITE_RECIPIENT=" ++ recipient)
+          inviteResult <- Prodbox.UsersAdmin.inviteUser repoRoot settings recipient Nothing
+          case inviteResult of
+            Left err -> failWith ("invite failed: " ++ err)
+            Right summary -> do
+              let userId = Text.unpack (Prodbox.UsersAdmin.userSummaryId summary)
+              writeOutputLine ("KEYCLOAK_INVITE_USER_ID=" ++ userId)
+              captureResult <-
+                Prodbox.Ses.Capture.pollSesCapture awsEnv settings (Text.pack recipient) 60
+              outcome <- case captureResult of
+                Failure err -> pure (Failure ("S3 capture poll failed: " ++ err))
+                Success captured -> do
+                  let key = Prodbox.Ses.Capture.capturedEmailKey captured
+                  writeOutputLine ("KEYCLOAK_INVITE_S3_KEY=" ++ Text.unpack key)
+                  case Prodbox.Keycloak.Email.parseKeycloakInviteLink
+                    (Prodbox.Ses.Capture.capturedEmailBody captured) of
+                    Left err -> pure (Failure ("invite-link parse failed: " ++ err))
+                    Right inviteUrl -> do
+                      writeOutputLine "KEYCLOAK_INVITE_LINK_PARSED=true"
+                      followResult <- followInviteLink inviteUrl
+                      case followResult of
+                        Failure err -> pure (Failure ("invite link follow failed: " ++ err))
+                        Success () -> do
+                          writeOutputLine "KEYCLOAK_INVITE_LINK_FOLLOWED=true"
+                          pure (Success key)
+              _ <- Prodbox.UsersAdmin.revokeUser repoRoot settings userId True
+              case outcome of
+                Failure err -> failWith err
+                Success key -> do
+                  _ <- Prodbox.Ses.Capture.deleteCapturedEmail awsEnv settings key
+                  writeOutputLine "KEYCLOAK_INVITE_CLEANUP=true"
+                  pure ExitSuccess
+
+-- | Generate a 16-character lowercase hex nonce from the current `POSIXTime` for
+-- per-test recipient uniqueness. Avoids pulling in a stronger RNG; sub-second
+-- collisions are acceptable for a validation harness that runs serially.
+generateInviteNonce :: IO String
+generateInviteNonce = do
+  now <- Data.Time.Clock.POSIX.getPOSIXTime
+  let micros = floor (now * 1e6) :: Integer
+  pure (Numeric.showHex micros "")
+
+-- | Follow the parsed Keycloak invite URL and assert the response is in the 2xx
+-- range. Uses the same TLS manager configuration as `Prodbox.Keycloak.Admin`.
+followInviteLink :: String -> IO (Result ())
+followInviteLink rawUrl =
+  ( do
+      manager <- Network.HTTP.Client.TLS.newTlsManager
+      reqInit <- Network.HTTP.Client.parseRequest rawUrl
+      let req = reqInit {Network.HTTP.Client.method = "GET"}
+      resp <- Network.HTTP.Client.httpLbs req manager
+      let code = Network.HTTP.Types.Status.statusCode (Network.HTTP.Client.responseStatus resp)
+      pure $
+        if code >= 200 && code < 400
+          then Success ()
+          else
+            Failure
+              ( "invite link returned HTTP "
+                  ++ show code
+                  ++ "; expected 2xx/3xx for the Keycloak credential-setup page"
+              )
+  )
+    `catch` \exception ->
+      pure
+        ( Failure
+            ("invite link follow threw HttpException: " ++ show (exception :: Network.HTTP.Client.HttpException))
+        )

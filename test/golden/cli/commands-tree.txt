@@ -49,6 +49,8 @@ prodbox
     test-destroy
     aws-subzone-resources
     aws-subzone-destroy
+    aws-ses-resources
+    aws-ses-destroy
   rke2
     status
     start
@@ -81,6 +83,11 @@ prodbox
       charts-websocket
       admin-routes
       public-dns
+      keycloak-invite
   tla-check
+  users
+    invite
+    list
+    revoke
   workload
     start

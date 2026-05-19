@@ -1,0 +1,21 @@
+.TH PRODBOX_users 1
+.SH NAME
+prodbox-users \- Operator-invited user management
+.SH SYNOPSIS
+.B prodbox users
+.SH DESCRIPTION
+Operator-facing Keycloak user management surface for the Phase 8 invite flow.
+.SH SUBCOMMANDS
+.TP
+\fBinvite\fR
+Invite an operator-owned user by email
+.TP
+\fBlist\fR
+List operator-managed users
+.TP
+\fBrevoke\fR
+Disable or delete an operator-managed user
+.SH EXAMPLES
+.TP
+\fBprodbox users invite operator@example.invalid\fR
+Invite a new operator-owned user.

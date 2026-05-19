@@ -2178,6 +2178,7 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
     , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
+    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
@@ -2192,6 +2193,7 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
     , ", aws_admin_for_test_simulation = { access_key_id = \"CONFIGADMINKEY\", secret_access_key = \"config-admin-secret\", session_token = None Text, region = \"us-west-2\" }"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
+    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
@@ -2232,6 +2234,7 @@ configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer ea
     , ", aws_admin_for_test_simulation = { access_key_id = \"\", secret_access_key = \"\", session_token = None Text, region = \"\" }"
     , ", route53 = { zone_id = \"Z1234567890ABC\" }"
     , ", aws_substrate = { hosted_zone_id = \"\", subzone_name = \"\" }"
+    , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \""
         ++ acmeServer

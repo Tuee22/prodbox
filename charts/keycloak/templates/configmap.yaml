@@ -12,7 +12,21 @@ data:
       "displayName": "prodbox",
       "sslRequired": "none",
       "registrationAllowed": false,
+      "verifyEmail": {{ .Values.keycloak.requireEmailVerification }},
       "loginWithEmailAllowed": true,
+      {{- if .Values.smtp.enabled }}
+      "smtpServer": {
+        "host": {{ .Values.smtp.host | quote }},
+        "port": {{ .Values.smtp.port | quote }},
+        "from": {{ .Values.smtp.from | quote }},
+        "fromDisplayName": {{ .Values.smtp.fromDisplayName | quote }},
+        "replyTo": {{ .Values.smtp.replyTo | quote }},
+        "starttls": {{ .Values.smtp.starttls | quote }},
+        "auth": {{ .Values.smtp.auth | quote }},
+        "user": {{ .Values.smtp.user | quote }},
+        "password": {{ .Values.smtp.password | quote }}
+      },
+      {{- end }}
       "clients": [
         {
           "clientId": {{ .Values.oidc.vscodeClientId | quote }},

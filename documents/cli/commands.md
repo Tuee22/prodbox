@@ -81,6 +81,10 @@
 | `prodbox test integration charts-websocket` | Run WebSocket stack integration tests |
 | `prodbox test integration admin-routes` | Run shared-host admin-route integration tests |
 | `prodbox test integration public-dns` | Run public DNS integration tests |
+| `prodbox test integration keycloak-invite` | Run Keycloak operator-invite integration tests |
 | `prodbox tla-check` | Run TLA+ checks |
+| `prodbox users invite` | Invite an operator-owned user by email |
+| `prodbox users list` | List operator-managed users |
+| `prodbox users revoke` | Disable or delete an operator-managed user |
 | `prodbox workload start` | Start internal workload runtime |
 <!-- prodbox:command-registry.markdown:end -->

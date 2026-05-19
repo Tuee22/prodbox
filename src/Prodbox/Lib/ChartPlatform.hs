@@ -1747,8 +1747,43 @@ valuesForKeycloak namespace rootChart settings chartSecrets sharedHostFqdn = do
               , "username" .= patroniUsername
               , "passwordSecretName" .= patroniCredentialsSecretName rootChart
               ]
+        , "smtp" .= keycloakSmtpValues chartSecrets
         ]
     )
+
+keycloakSmtpValues :: Map String String -> Value
+keycloakSmtpValues chartSecrets =
+  let endpoint = Map.lookup "ses_smtp_endpoint" chartSecrets
+      user = Map.lookup "ses_smtp_user" chartSecrets
+      password = Map.lookup "ses_smtp_password" chartSecrets
+      fromAddress = Map.lookup "ses_smtp_from" chartSecrets
+   in case (endpoint, user, password, fromAddress) of
+        (Just host, Just smtpUser, Just smtpPassword, Just smtpFrom) ->
+          object
+            [ "enabled" .= True
+            , "host" .= host
+            , "port" .= (587 :: Int)
+            , "starttls" .= True
+            , "auth" .= True
+            , "from" .= smtpFrom
+            , "fromDisplayName" .= ("prodbox" :: String)
+            , "replyTo" .= smtpFrom
+            , "user" .= smtpUser
+            , "password" .= smtpPassword
+            ]
+        _ ->
+          object
+            [ "enabled" .= False
+            , "host" .= ("change-me-ses-smtp-host" :: String)
+            , "port" .= (587 :: Int)
+            , "starttls" .= True
+            , "auth" .= True
+            , "from" .= ("change-me-ses-smtp-from" :: String)
+            , "fromDisplayName" .= ("prodbox" :: String)
+            , "replyTo" .= ("change-me-ses-smtp-from" :: String)
+            , "user" .= ("change-me-ses-smtp-user" :: String)
+            , "password" .= ("change-me-ses-smtp-password" :: String)
+            ]
 
 valuesForKeycloakPostgres
   :: String

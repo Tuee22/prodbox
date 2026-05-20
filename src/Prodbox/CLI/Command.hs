@@ -184,15 +184,24 @@ data AwsTeardownFlags = AwsTeardownFlags
 -- * 'AcceptOrphanResidue' — operator-driven via @--allow-pulumi-residue@.
 --   Operator-acknowledged orphan: proceed even when stacks are alive.
 -- * 'BypassPerRunResidueOnly' — harness-internal only, never CLI-settable.
---   Closes the May 19, 2026 orphan-safety hole where the test-harness
---   teardown path previously bypassed every residue check. The harness
---   now bypasses per-run stack residue only and still refuses on
---   long-lived shared infrastructure ('aws-ses').
+--   End-of-run @runAwsIamHarnessTeardown@ semantics: bypass per-run
+--   stack residue (which the postflight destroys in the same unwind)
+--   but still refuse on long-lived shared infrastructure ('aws-ses')
+--   so the operator keeps operational @aws.*@ available to destroy it.
+-- * 'BypassAllResidueForHarnessRefresh' — harness-internal only, never
+--   CLI-settable. Start-of-run @runAwsIamHarnessSetup@ preflight
+--   semantics: the preflight is a transient @aws.*@ refresh that
+--   immediately re-materializes @aws.*@ from
+--   @aws_admin_for_test_simulation.*@ in the same function call, so
+--   neither per-run nor long-lived residue strands anything. Refusal
+--   on long-lived residue here would block every test-harness run
+--   because @aws-ses@ is the intended steady state.
 data PulumiResiduePolicy
   = RefuseOnAnyResidue
   | DestroyPulumiResidueFirst
   | AcceptOrphanResidue
   | BypassPerRunResidueOnly
+  | BypassAllResidueForHarnessRefresh
   deriving (Eq, Show)
 
 data PulumiCommand

@@ -14,6 +14,10 @@ import Prodbox.CLI.Command
   , buildPlan
   , runPlanWithOptions
   )
+import Prodbox.CLI.Interactive
+  ( chartsDeleteGuard
+  , requireInteractiveTty
+  )
 import Prodbox.CLI.Output
   ( writeError
   , writeOutput
@@ -137,6 +141,7 @@ withSettings repoRoot action = do
 
 promptForDelete :: String -> IO Bool
 promptForDelete chartName = do
+  requireInteractiveTty chartsDeleteGuard
   writeOutput ("Delete chart stack " ++ chartName ++ "? [y/N]: ")
   hFlush stdout
   responseResult <- try getLine :: IO (Either IOException String)

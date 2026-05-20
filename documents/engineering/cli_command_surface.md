@@ -381,6 +381,50 @@ runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data
 
 `src/Prodbox/Tla.hs` owns the public TLA+ validation surface.
 
+## 3A. Interactive vs Non-Interactive Surfaces
+
+`prodbox` has two parallel paths for operator-credential work. The
+**operator-interactive surface** (`prodbox config setup`,
+`prodbox aws setup`, `prodbox aws teardown`, `prodbox aws check-quotas`,
+`prodbox aws request-quotas`, and the `prodbox charts delete`
+confirmation prompt) reads input from stdin. The **non-interactive
+automation surface** (the test harness — `prodbox test all` and
+`prodbox test integration ...`) reads operational `aws.*` from
+`prodbox-config.dhall`'s `aws_admin_for_test_simulation.*` block through
+the suite-level IAM harness and clears it on suite exit.
+
+The interactive surface **refuses to run when stdin is not a TTY**. Each
+interactive entry point calls `Prodbox.CLI.Interactive.requireInteractiveTty`
+before any prompt fires; on a non-TTY stdin it writes a structured
+guidance message to stderr naming the automation equivalent and exits 1.
+The guidance is rendered by `Prodbox.CLI.Interactive.renderNonTtyError`
+from a per-command `InteractiveGuard` value
+(`awsSetupGuard`, `awsTeardownGuard`, `awsCheckQuotasGuard`,
+`awsRequestQuotasGuard`, `configSetupGuard`, `chartsDeleteGuard`), keeping
+the message under unit test.
+
+Automation contexts (CI, agents, scripted workflows) **must** use the
+non-interactive surface. The cross-reference table in
+[`CLAUDE.md`](../../CLAUDE.md) and [`AGENTS.md`](../../AGENTS.md) maps
+each operator task to its automation equivalent.
+
+### Test-only opt-in: `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`
+
+Integration tests that exercise the interactive surface end-to-end
+(`test/integration/CliSuite.hs` fixtures for `prodbox config setup`,
+`prodbox aws setup`, `prodbox aws teardown`, `prodbox aws check-quotas`,
+`prodbox aws request-quotas`) spawn `prodbox` as a subprocess with
+controlled stdin input. Their stdin is a pipe, not a TTY, so the guard
+would otherwise refuse. These tests set the env var
+`PRODBOX_ALLOW_NON_TTY_INTERACTIVE=1` before spawning, which makes
+`requireInteractiveTty` skip the refusal.
+
+The env var is **test-only**. Production agents must never set it. The
+test fixtures set it through the `fakeAwsEnvironment` /
+`fakeAwsHarnessEnvironment` helpers in `test/integration/CliSuite.hs`,
+which is the only sanctioned consumer. Any other set site is a doctrine
+violation and should be flagged.
+
 ## 4. Doctrine-Adoption Command Surface
 
 The CLI doctrine in [../../HASKELL_CLI_TOOL.md](../../HASKELL_CLI_TOOL.md) introduces several

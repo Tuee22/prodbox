@@ -209,8 +209,8 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
 
 ### Deliverables
 
-- `prodbox-config.dhall` is decoded into typed Haskell settings values through the Haskell-owned
-  `dhall-to-json` bridge.
+- `prodbox-config.dhall` is decoded into typed Haskell settings values in-process through the
+  native `dhall` library (`Dhall.inputFile`).
 - The shared Dhall schema in `prodbox-config-types.dhall` remains aligned with the Haskell
   decoder.
 - No supported command or validation path materializes `prodbox-config.json`.

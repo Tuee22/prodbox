@@ -83,6 +83,16 @@
   to an optional prompt with an explanatory hint. The four user-facing prompt strings
   were renamed from "Elevated AWS …" / "elevated operations" to "Temporary admin AWS …"
   / "admin operations" inline with the May 2026 doctrine alignment.
+- Every interactive `prodbox` entry point (`prodbox config setup`,
+  `prodbox aws setup`, `prodbox aws teardown`, `prodbox aws check-quotas`,
+  `prodbox aws request-quotas`, and the `prodbox charts delete` confirmation prompt)
+  **refuses to run when stdin is not a TTY** and exits 1 with a guidance message naming
+  the automation equivalent. Implementation in `src/Prodbox/CLI/Interactive.hs`; full
+  contract in
+  [`cli_command_surface.md` § 3A — Interactive vs Non-Interactive Surfaces](cli_command_surface.md#3a-interactive-vs-non-interactive-surfaces).
+  This closes the long-standing failure mode where automation agents would hit the
+  prompt and report it as a blocker instead of switching to `prodbox test all` /
+  `prodbox test integration ... --substrate aws`.
 
 ## 0A. Planning Ownership
 

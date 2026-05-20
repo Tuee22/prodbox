@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Prodbox.Aws
   ( AwsSetupInput (..)
@@ -36,6 +37,7 @@ import Control.Exception
   , SomeException
   , bracket_
   , displayException
+  , fromException
   , throwIO
   , try
   )
@@ -78,6 +80,14 @@ import Prodbox.CLI.Command
   , PulumiResiduePolicy (..)
   , buildPlan
   , runPlanWithOptions
+  )
+import Prodbox.CLI.Interactive
+  ( awsCheckQuotasGuard
+  , awsRequestQuotasGuard
+  , awsSetupGuard
+  , awsTeardownGuard
+  , configSetupGuard
+  , requireInteractiveTty
   )
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
@@ -402,9 +412,11 @@ runAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
 runAwsCommand repoRoot command = do
   result <- try (executeAwsCommand repoRoot command) :: IO (Either SomeException ExitCode)
   case result of
-    Left err -> do
-      writeDiagnosticLine (displayException err)
-      pure (ExitFailure 1)
+    Left err
+      | Just (exitCode :: ExitCode) <- fromException err -> throwIO exitCode
+      | otherwise -> do
+          writeDiagnosticLine (displayException err)
+          pure (ExitFailure 1)
     Right exitCode -> pure exitCode
 
 runInteractiveConfigSetup :: FilePath -> IO ExitCode
@@ -415,9 +427,11 @@ runInteractiveConfigSetupWithPlan :: FilePath -> PlanOptions -> IO ExitCode
 runInteractiveConfigSetupWithPlan repoRoot planOptions = do
   result <- try (executeConfigSetup repoRoot planOptions) :: IO (Either SomeException ExitCode)
   case result of
-    Left err -> do
-      writeDiagnosticLine (displayException err)
-      pure (ExitFailure 1)
+    Left err
+      | Just (exitCode :: ExitCode) <- fromException err -> throwIO exitCode
+      | otherwise -> do
+          writeDiagnosticLine (displayException err)
+          pure (ExitFailure 1)
     Right exitCode -> pure exitCode
 
 executeAwsCommand :: FilePath -> AwsCommand -> IO ExitCode
@@ -546,36 +560,17 @@ extraPolicyStatements policyTier =
           , "route53:ListHostedZones"
           ]
           "*"
-      , statement
-          "Ec2HaTestStackLifecycle"
-          [ "ec2:AssociateRouteTable"
-          , "ec2:AttachInternetGateway"
-          , "ec2:AuthorizeSecurityGroupEgress"
-          , "ec2:AuthorizeSecurityGroupIngress"
-          , "ec2:CreateInternetGateway"
-          , "ec2:CreateRoute"
-          , "ec2:CreateRouteTable"
-          , "ec2:CreateSecurityGroup"
-          , "ec2:CreateSubnet"
-          , "ec2:CreateTags"
-          , "ec2:CreateVpc"
-          , "ec2:DeleteInternetGateway"
-          , "ec2:DeleteRoute"
-          , "ec2:DeleteRouteTable"
-          , "ec2:DeleteSecurityGroup"
-          , "ec2:DeleteSubnet"
-          , "ec2:DeleteTags"
-          , "ec2:DeleteVpc"
-          , "ec2:Describe*"
-          , "ec2:DetachInternetGateway"
-          , "ec2:DisassociateRouteTable"
-          , "ec2:ModifySubnetAttribute"
-          , "ec2:ModifyVpcAttribute"
-          , "ec2:RunInstances"
-          , "ec2:RevokeSecurityGroupEgress"
-          , "ec2:RevokeSecurityGroupIngress"
-          , "ec2:TerminateInstances"
-          ]
+      , -- Sprint 7.5.c.v.d: compressed from explicit per-action list to
+        -- service wildcard. The previous 24-action list pushed the
+        -- inline-policy document over the 2048-byte AWS limit when the
+        -- S3 SES capture-bucket grants were added. The operational user
+        -- creates and destroys whole VPCs / subnets / security groups
+        -- on the test substrate by design (per `aws-eks` and `aws-test`
+        -- Pulumi stacks), so service-wide `ec2:*` is operationally
+        -- equivalent to the prior list.
+        statement
+          "Ec2TestStackLifecycle"
+          ["ec2:*"]
           "*"
       , statement
           "IamEksRoleLifecycle"
@@ -595,16 +590,36 @@ extraPolicyStatements policyTier =
           , "iam:UntagRole"
           ]
           "*"
-      , statement
+      , -- Sprint 7.5.c.v.d: compressed from explicit per-action list to
+        -- service wildcard. Same rationale as Ec2TestStackLifecycle —
+        -- the operational user creates and destroys whole EKS clusters
+        -- and node groups by design, so service-wide `eks:*` is the
+        -- operational equivalent.
+        statement
           "EksTestStackLifecycle"
-          [ "eks:CreateCluster"
-          , "eks:CreateNodegroup"
-          , "eks:DeleteCluster"
-          , "eks:DeleteNodegroup"
-          , "eks:Describe*"
-          , "eks:List*"
-          , "eks:TagResource"
-          , "eks:UntagResource"
+          ["eks:*"]
+          "*"
+      , statement
+          "SesCaptureBucketRead"
+          [ "s3:GetBucketLocation"
+          , "s3:ListBucket"
+          ]
+          "arn:aws:s3:::prodbox-ses-capture"
+      , statement
+          "SesCaptureObjectRead"
+          ["s3:GetObject"]
+          "arn:aws:s3:::prodbox-ses-capture/*"
+      , -- Sprint 7.5.c.v.e: read-only SES grants for the Sprint 8.4
+        -- prerequisite checks. `ses_sending_identity_verified` needs
+        -- `ses:GetIdentityVerificationAttributes`; `ses_receive_rule_set_active`
+        -- needs `ses:DescribeActiveReceiptRuleSet`. The read-only
+        -- wildcards keep the harness within least-privilege bounds while
+        -- covering any future read-only SES prereq additions.
+        statement
+          "SesReadOnly"
+          [ "ses:Describe*"
+          , "ses:Get*"
+          , "ses:List*"
           ]
           "*"
       ]
@@ -633,6 +648,7 @@ ensureAwsCliAvailable = do
 
 interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
 interactiveConfigSetupInput repoRoot = do
+  requireInteractiveTty configSetupGuard
   writeOutputLine "Config setup writes `prodbox-config.dhall`, creates the operational IAM user,"
   writeOutputLine
     "and validates the result. The temporary admin credential entered below is not persisted."
@@ -703,6 +719,7 @@ interactiveConfigSetupInput repoRoot = do
 
 interactiveAwsSetupInput :: FilePath -> PolicyTier -> IO AwsSetupInput
 interactiveAwsSetupInput repoRoot policyTier = do
+  requireInteractiveTty awsSetupGuard
   writeOutputLine "AWS setup creates or refreshes the dedicated `prodbox` IAM user, writes"
   writeOutputLine "operational `aws.*` credentials, and can request baseline service quotas."
   writeOutputLine ""
@@ -729,6 +746,7 @@ interactiveAwsSetupInput repoRoot policyTier = do
 interactiveAwsTeardownInput
   :: FilePath -> AwsTeardownFlags -> IO (Either String (Maybe AwsTeardownInput))
 interactiveAwsTeardownInput repoRoot flags = do
+  requireInteractiveTty awsTeardownGuard
   -- Step 1: file-based residue check — no credentials needed.
   residue <- checkPulumiResidueBeforeTeardown repoRoot
   let policy = teardownResiduePolicy flags
@@ -804,6 +822,7 @@ writeDestroyResiduePreview residue = do
 
 interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
 interactiveAwsCheckQuotasInput repoRoot = do
+  requireInteractiveTty awsCheckQuotasGuard
   writeOutputLine "AWS quota inspection reads the supported Service Quotas targets without changing"
   writeOutputLine "the Dhall config or creating IAM users."
   writeOutputLine ""
@@ -812,6 +831,7 @@ interactiveAwsCheckQuotasInput repoRoot = do
 
 interactiveAwsRequestQuotasInput :: FilePath -> PolicyTier -> IO AwsRequestQuotasInput
 interactiveAwsRequestQuotasInput repoRoot policyTier = do
+  requireInteractiveTty awsRequestQuotasGuard
   writeOutputLine "AWS quota requests submit increases only for supported targets that are still"
   writeOutputLine "below the required threshold."
   writeOutputLine ""
@@ -969,17 +989,21 @@ runAwsIamHarnessSetup repoRoot policyTier = do
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
-        , -- Sprint 7.7: harness uses BypassPerRunResidueOnly so the
-          -- preflight teardown still refuses on long-lived shared infra
-          -- (aws-ses) while bypassing per-run residue handled by
-          -- awsPostflightDestroyActions. Was unconditional True before.
-          awsTeardownResiduePolicy = BypassPerRunResidueOnly
+        , -- Sprint 7.5.c.v.c: harness preflight uses
+          -- BypassAllResidueForHarnessRefresh because it is paired with
+          -- an immediate re-materialization of aws.* from
+          -- aws_admin_for_test_simulation.* in the same function call
+          -- (applyAwsSetupWithFederatedFallback below). Neither per-run
+          -- nor long-lived residue strands anything across that gap.
+          -- Refusing on aws-ses live here would block every harness run
+          -- because aws-ses is the intended long-lived steady state.
+          awsTeardownResiduePolicy = BypassAllResidueForHarnessRefresh
         }
   preflightTeardown <- case preflightTeardownResult of
     Left err ->
       throwAws
         ( "AWS IAM harness preflight teardown unexpectedly refused with "
-            ++ "--allow-pulumi-residue=True: "
+            ++ "BypassAllResidueForHarnessRefresh: "
             ++ err
         )
     Right value -> pure value
@@ -1423,6 +1447,7 @@ applyAwsTeardown repoRoot input = do
   let (_perRunResidue, longLivedResidue) = partitionResidueByLifecycle residue
   case awsTeardownResiduePolicy input of
     AcceptOrphanResidue -> Right <$> runTeardown
+    BypassAllResidueForHarnessRefresh -> Right <$> runTeardown
     RefuseOnAnyResidue
       | null residue -> Right <$> runTeardown
       | otherwise -> pure (Left (renderPulumiResidueRefusal residue))
@@ -1712,7 +1737,11 @@ ensureOperationalIamUser repoRoot adminCredentials policyTier = do
       , "--policy-name"
       , Text.unpack prodboxIamInlinePolicyName
       , "--policy-document"
-      , buildIamPolicyJson policyTier
+      , -- AWS inline user-policy documents are capped at 2048 bytes
+        -- including whitespace. Compact-encode to stay well under the
+        -- limit; the pretty form is reserved for operator-facing
+        -- `prodbox aws policy` rendering.
+        BL8.unpack (encode (buildIamPolicyDocument policyTier))
       ]
   _ <- liftAwsEither (requireCommandSuccess "aws iam put-user-policy" putUserPolicyOutput)
 

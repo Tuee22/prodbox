@@ -39,7 +39,6 @@ allPrerequisites =
   , toolSsh
   , toolRke2
   , toolSystemctl
-  , toolDhall
   , settingsLoaded
   , settingsObject
   , awsIamHarnessReady
@@ -149,9 +148,6 @@ toolSystemctl =
     "systemctl"
     ["--version"]
     ["systemd_available"]
-
-toolDhall :: EffectNode
-toolDhall = toolNode "tool_dhall" "Validate dhall-to-json is installed" "dhall-to-json" ["--version"] []
 
 settingsLoaded :: EffectNode
 settingsLoaded =

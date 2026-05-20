@@ -113,7 +113,7 @@ subdomain, capture bucket, and the IAM policy granting the runner SES send and S
   `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, and `src/Prodbox/Native.hs`. All Python
   command wrappers and IAM helpers have been removed.
 - The settings path is fully Haskell-owned in `src/Prodbox/Settings.hs` for the direct
-  `Dhall -> Haskell types` contract through the `dhall-to-json` bridge, display, and validation
+  `Dhall -> Haskell types` contract through the native `dhall` library, display, and validation
   with no supported JSON materialization path.
 - Haskell proof exists in `test/unit/Main.hs`, and the intended built-frontend fake-AWS proof
   lives in `test/integration/CliSuite.hs`. The real IAM lifecycle named proof runs through the
@@ -579,8 +579,8 @@ infrastructure yet: EKS kubeconfig extraction, substrate-aware path/zone/FQDN he
 4. `prodbox config validate` — succeeds (with the unchanged pre-existing "aws.access_key_id
    must not be empty" diagnostic from the supported operational-credentials-from-harness
    pattern).
-5. `dhall-to-json --file prodbox-config.dhall --compact --preserve-null` emits the new
-   `aws_substrate` JSON block.
+5. `prodbox config show` materializes the new `aws_substrate` block through the native `dhall`
+   decoder into the `AwsSubstrateSection` value used by the harness.
 
 ### Remaining Work
 
@@ -1089,7 +1089,7 @@ The substrate-aware code surface satisfies the no-fallback doctrine:
   `kubectl apply -f`, matching the home-substrate
   `Prodbox.CLI.Rke2::withTemporaryJsonManifest` pattern.
 - `prodbox-config.dhall` is frozen against the current `prodbox-config-types.dhall`
-  hash so `aws_substrate` is materialized in `dhall-to-json` output.
+  hash so `aws_substrate` is materialized by the native `dhall` decoder.
 
 The AWS-substrate platform install (`Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime`)
 currently lays down the lower-layer ingress + TLS pieces on EKS:
@@ -1117,8 +1117,9 @@ service + node-local registry routing).
 The May 19 implementation survey confirmed the port is multi-day work — RKE2's
 `registries.yaml` mechanism, hostPath-backed MinIO PVC, host-Docker / `ctr`
 image push paths, and `systemctl restart rke2-server.service` all have no EKS
-equivalent. Sprint `7.5.c` is therefore broken into five sub-sprints; each
-closes its own validation gate, and the parent flips to ✅ when 7.5.c.v lands:
+equivalent. Sprint `7.5.c` is therefore broken into the sub-sprints below;
+each closes its own validation gate, and the parent flips to ✅ when
+7.5.c.v lands:
 
 | Sub-sprint | Status | Scope |
 |------------|--------|-------|
@@ -1127,7 +1128,11 @@ closes its own validation gate, and the parent flips to ✅ when 7.5.c.v lands:
 | [`7.5.c.iii`](#sprint-75ciii-eks-side-harbor--minio--percona-installs-) | ✅ Done | EKS-side MinIO + Harbor install wired into `ensureAwsSubstratePlatformRuntime` + Sprint 7.5.c.ii DaemonSet applied. Percona operator deferred to 7.5.c.iv (needs the image-mirror loop). |
 | [`7.5.c.iv`](#sprint-75civ-in-cluster-image-mirror-job--percona-operator-) | ✅ Done | In-cluster image-mirror Job (crane-based) + Percona PostgreSQL operator install + steady-state MinIO reconcile wired into `ensureAwsSubstratePlatformRuntime` |
 | [`7.5.c.v.b`](#sprint-75cvb-in-cluster-custom-image-build-on-eks-) | ✅ Done | In-cluster custom-image push for `prodbox-gateway` + `prodbox-public-edge-workload` via crane pod (docker save + kubectl cp + crane push --insecure). Live validation deferred to Sprint 7.5.c.v re-run. |
-| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | 📋 Planned | Five `--substrate aws` validations green + harness postflight teardown (Sprint `7.6`) |
+| [`7.5.c.v.c`](#sprint-75cvc-harness-preflight-residue-policy-bypassallresidueforharnessrefresh-) | ✅ Done | New `PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh` unblocks `runAwsIamHarnessSetup` preflight when the long-lived `aws-ses` stack is alive (the Sprint 7.7 `BypassPerRunResidueOnly` policy refused on `aws-ses`, blocking every harness-driven test run). |
+| [`7.5.c.v.d`](#sprint-75cvd-operational-iam-policy-compaction--s3-grants-) | ✅ Done | Operational `prodbox` IAM inline policy compacted to fit under AWS's 2048-byte inline-user-policy cap: explicit `ec2:*` / `eks:*` action lists collapsed to service wildcards; new `SesCaptureBucketRead` / `SesCaptureObjectRead` (S3 grants on the SES capture bucket); policy submission switched to compact `Data.Aeson.encode`. |
+| [`7.5.c.v.e`](#sprint-75cve-read-only-ses-grants-for-sprint-84-prerequisites-) | ✅ Done | New `SesReadOnly` statement (`ses:Describe*` / `Get*` / `List*`) so the harness IAM user can run the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereq checks. |
+| [`7.5.c.v.f`](#sprint-75cvf-silent-exit-failure-mode-in-substrate-aware-validation-bodies-) | 🔄 Active | Silent-exit failure mode in the substrate-aware `runChartsVscodeValidation` body (and likely the other `runCharts*Validation` / `runAdminRoutesValidation` / `runPublicDnsValidation` siblings) when invoked under `substrate=aws`. May 20, 2026 live re-run reached Phase 2/2, the first validation header emitted, then the harness postflight fired with no body output. Blocks the parent `7.5.c.v` live re-run. |
+| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | 🔄 Active | Five `--substrate aws` validations green + harness postflight teardown (Sprint `7.6`); blocked on `7.5.c.v.f`. |
 
 When 7.5.c.v lands, the substrate parity row in
 [`substrates.md`](substrates.md) flips to ✅ and Sprint `7.5.c` closes.
@@ -1432,16 +1437,18 @@ None on the sprint-owned surface.
 
 ## Sprint 7.5.c.v: Live AWS-Substrate Canonical-Suite Proof 🔄
 
-**Status**: Active — first live run (May 19, 2026) exercised the
-substrate-platform install on EKS end-to-end through all 11
-`ensureAwsSubstratePlatformRuntime` steps. The run surfaced six
-architectural gaps that the code, the Pulumi `aws-eks` program, and
-the EksImageMirror renderer carried (each tied to an unstated
-home-substrate assumption); five landed as in-flight code fixes in
-this session, one is scheduled as Sprint `7.5.c.v.b`. The five
+**Status**: Active — Sprints `7.5.c.v.b`, `7.5.c.v.c`, `7.5.c.v.d`,
+and `7.5.c.v.e` have all landed in code; the May 20, 2026 live
+re-run reached Phase 2/2 of the suite but every named
+`--substrate aws` validation body returned silently before producing
+output. The diagnosis + fix is owned by Sprint `7.5.c.v.f`. The five
 `--substrate aws` integration validations, the gateway chart deploy
 reaching Ready, and the `prodbox test all` substrate-aware run all
-remain pending Sprint `7.5.c.v.b`.
+remain pending Sprint `7.5.c.v.f`. First live run (May 19, 2026)
+exercised the substrate-platform install on EKS end-to-end through
+all 11 `ensureAwsSubstratePlatformRuntime` steps and surfaced six
+architectural gaps; five landed as in-flight code fixes in that
+session, the sixth landed as Sprint `7.5.c.v.b`.
 **Implementation (this session's in-flight fixes)**:
 `pulumi/aws-eks/Main.yaml` (EBS CSI driver IRSA role + addon, OIDC
 trust-policy condition keys stripped of `https://` via
@@ -1533,46 +1540,48 @@ After these five fixes, all 11 substrate-platform steps complete on
 EKS, **including** Percona operator install + steady-state MinIO
 reconcile from Harbor-mirrored images.
 
-### Remaining Work (Sprint `7.5.c.v.b`)
+### Code-Side Sub-Sprint Closures Landed (May 19–20, 2026)
 
-Sprint `7.5.c.v.b`: the gateway chart deploy still ends with
-gateway pods in `ImagePullBackOff` because the home-substrate flow
-publishes custom-built `prodbox-gateway` and
-`prodbox-public-edge-workload` images via host-Docker + host-`ctr`
-in `ensureGatewayImages` / `ensurePublicEdgeWorkloadImage`, and
-those paths have no analog on EKS (no operator-host access into the
-EKS containerd socket). The fix is the same architectural pattern as
-Sprint `7.5.c.iv`'s in-cluster mirror Job: build the custom images
-inside the cluster via kaniko/buildah/img, push to in-cluster
-Harbor, and have the EKS containerd registry-mirror DaemonSet
-(Sprint `7.5.c.ii`) resolve the chart-rendered
-`127.0.0.1:30080/prodbox-gateway/...` refs on each EKS node. The
-new sub-sprint lands a renderer + helper analogous to
-`Prodbox.Lib.EksImageMirror`, named e.g.
-`Prodbox.Lib.EksCustomImageBuild`, wired into
-`ensureAwsSubstratePlatformRuntime` between
-`applyEksImageMirrorJob` and `ensurePostgresOperatorRuntime`.
+| Sub-sprint | Closure summary |
+|------------|-----------------|
+| `7.5.c.v.b` | In-cluster custom-image push for `prodbox-gateway` + `prodbox-public-edge-workload` via a crane pod (`docker save` + `kubectl cp` + `crane push --insecure`). Closes the home-substrate-only `ensureGatewayImages` / `ensurePublicEdgeWorkloadImage` gap on EKS. |
+| `7.5.c.v.c` | New `PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh` lets the test-harness preflight refresh `aws.*` even when `aws-ses` is alive (the intended steady state). Closes the Sprint 7.7 over-tightening that blocked every harness-driven run on `aws-ses`. |
+| `7.5.c.v.d` | Operational IAM inline policy compacted under AWS's 2048-byte cap: `ec2:*` / `eks:*` service wildcards replace 24+8 explicit actions, new `SesCaptureBucketRead` / `SesCaptureObjectRead` S3 grants on the SES capture bucket, compact `Data.Aeson.encode` for inline-policy submission. |
+| `7.5.c.v.e` | New `SesReadOnly` (`ses:Describe*`/`Get*`/`List*`) statement grants the harness IAM user read-only SES access for the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereqs. |
 
-After Sprint `7.5.c.v.b` lands and a live re-run reaches Ready on
-all gateway pods, Sprint `7.5.c.v` re-attempts the five
-`--substrate aws` validations, `prodbox test all` substrate-aware,
-and the AWS-residue scan; that run will close Sprint `7.5.c.v` and
-the parent Sprint `7.5.c`.
+After these four sub-sprints landed, the May 20 re-run cleared every
+prior gate (cabal unit + integration suites green, harness preflight
+materializes `aws.*` against live `aws-ses`, the operational IAM user
+provisions successfully, the three Sprint 8.4 SES prereqs pass).
 
 ### Validation
 
 1. `prodbox check-code` exit 0 (current state).
-2. `prodbox test unit` exit 0 (348/348, current state).
-3. After Sprint `7.5.c.v.b` lands: the five `--substrate aws`
+2. `prodbox test unit` exit 0 (current state, post Sprint
+   `7.5.c.v.c` / `.d` / `.e` additions).
+3. After Sprint `7.5.c.v.f` lands: the five `--substrate aws`
    integration validations exit 0.
-4. After Sprint `7.5.c.v.b` lands: AWS residue scan returns zero
+4. After Sprint `7.5.c.v.f` lands: AWS residue scan returns zero
    per-run resources (EKS, NAT, EBS, IAM, hosted-zone records,
    ALBs). The long-lived `aws-ses` stack is intentionally retained
    per the long-lived cross-substrate shared-infrastructure class.
 
 ### Remaining Work
 
-Blocked on Sprint `7.5.c.v.b` (custom-image publication on EKS).
+Blocked on Sprint `7.5.c.v.f` (silent-exit failure mode in the
+substrate-aware `runChartsVscodeValidation` body when invoked under
+`substrate=aws`). The May 20, 2026 live re-run (after Sprints
+`7.5.c.v.b` / `7.5.c.v.c` / `7.5.c.v.d` / `7.5.c.v.e` landed) reached
+Phase 2/2 with all prior gates clean (cabal unit + integration suites
+green, harness preflight materializing operational `aws.*`, Phase 1
+prereqs including the three Sprint 8.4 SES checks all passing). The
+first named validation header `Validation: charts-vscode
+(substrate=aws)` emitted, then immediately the harness postflight
+`Auto-destroying per-run AWS Pulumi stacks ...` fired — no body
+output, no `Public edge diagnostic` block, no `failWith` stderr
+message. Diagnosis and fix are tracked in
+[`legacy-tracking-for-deletion.md`](legacy-tracking-for-deletion.md)
+under Pending Removal as Sprint `7.5.c.v.f`.
 
 ## Sprint 7.5.c.v.b: In-Cluster Custom-Image Build on EKS ✅
 
@@ -1679,6 +1688,236 @@ containerd socket — neither path applies on EKS.
 None on the sprint-owned surface. The next live `prodbox charts
 deploy gateway --substrate aws` run is Sprint `7.5.c.v`'s
 re-attempt at the five `--substrate aws` integration validations.
+
+## Sprint 7.5.c.v.c: Harness Preflight Residue Policy `BypassAllResidueForHarnessRefresh` ✅
+
+**Status**: Done (May 20, 2026)
+**Implementation**: `src/Prodbox/CLI/Command.hs` (new
+`PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh`,
+documented as harness-internal only and never CLI-settable);
+`src/Prodbox/Aws.hs` (`applyAwsTeardown` case-of extended with the
+new constructor; `runAwsIamHarnessSetup` preflight switched from
+`BypassPerRunResidueOnly` to `BypassAllResidueForHarnessRefresh`;
+`runAwsIamHarnessTeardown` postflight keeps `BypassPerRunResidueOnly`);
+`test/unit/Main.hs` (Sprint 7.7 residue-policy describe block extended
+with Scenarios M and N covering the `aws-ses`-live and
+all-four-stacks-present cases).
+**Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`.
+
+### Objective
+
+Unblock harness-driven test runs when the long-lived `aws-ses` stack
+is alive. The Sprint 7.7 `BypassPerRunResidueOnly` policy refuses on
+long-lived shared infrastructure (`aws-ses`), which protects
+operator-driven teardowns from stranding `aws.*`. Applied to
+`runAwsIamHarnessSetup`'s preflight, however, that protection is
+misapplied: the preflight is a transient `aws.*` refresh paired with
+an immediate re-materialization from `aws_admin_for_test_simulation.*`
+in the same function call, so neither per-run nor long-lived residue
+strands anything across that gap. Refusing on `aws-ses` blocked every
+test-harness run because `aws-ses` is the intended steady state.
+
+### Deliverables
+
+- New `PulumiResiduePolicy` constructor
+  `BypassAllResidueForHarnessRefresh` in `src/Prodbox/CLI/Command.hs`,
+  documented in the Haddock above the ADT as harness-internal only,
+  never CLI-settable, scoped to start-of-run preflight refresh.
+- `applyAwsTeardown` extended with a straight `runTeardown` branch on
+  the new constructor.
+- `runAwsIamHarnessSetup` preflight teardown switched to
+  `BypassAllResidueForHarnessRefresh`; `runAwsIamHarnessTeardown`
+  (postflight) keeps `BypassPerRunResidueOnly` so the operator may
+  legitimately preserve `aws.*` to destroy `aws-ses` at end-of-run.
+- Two new unit tests in
+  `test/unit/Main.hs::"Sprint 7.7 applyAwsTeardown residue policy"`:
+  Scenario M (`aws-ses` live only, policy proceeds) and Scenario N
+  (all four per-run + long-lived stacks live, policy proceeds).
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0 (380 tests after the two new scenarios).
+3. Live verification: harness preflight materializes operational
+   `aws.*` successfully on every run regardless of `aws-ses` state.
+
+### Remaining Work
+
+None on the sprint-owned surface.
+
+## Sprint 7.5.c.v.d: Operational IAM Policy Compaction + S3 Grants ✅
+
+**Status**: Done (May 20, 2026)
+**Implementation**: `src/Prodbox/Aws.hs` (`extraPolicyStatements`:
+`Ec2HaTestStackLifecycle` 24-action explicit list compressed to
+`Ec2TestStackLifecycle` / `ec2:*`; `EksTestStackLifecycle` 8-action
+list compressed to `eks:*`; new `SesCaptureBucketRead` and
+`SesCaptureObjectRead` statements granting `s3:GetBucketLocation` +
+`s3:ListBucket` + `s3:GetObject` on the SES capture bucket; inline
+policy submission in `ensureOperationalIamUser` switched from pretty
+`AesonPretty` to compact `Data.Aeson.encode`); `test/unit/Main.hs`
+(`buildIamPolicyDocument` Sid assertion updated for the renamed
+`Ec2TestStackLifecycle` + new `SesCaptureBucketRead` /
+`SesCaptureObjectRead` Sids); `test/integration/CliSuite.hs`
+(`prodbox aws policy --tier full` golden assertions updated for the
+same Sid set).
+**Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`.
+
+### Objective
+
+Keep the operational `prodbox` IAM user's inline policy under the AWS
+2048-byte limit while adding the S3 grants the harness needs to read
+the SES capture bucket during `keycloak-invite` validation. The
+explicit Ec2/Eks action lists were the biggest contributors to policy
+size; the operational user creates and destroys whole VPCs / clusters
+by design via the `aws-test` / `aws-eks` Pulumi stacks, so service
+wildcards are operationally equivalent.
+
+### Deliverables
+
+- `Ec2HaTestStackLifecycle` Sid renamed to `Ec2TestStackLifecycle`
+  and its action list collapsed to `["ec2:*"]`.
+- `EksTestStackLifecycle` action list collapsed to `["eks:*"]`.
+- New `SesCaptureBucketRead` statement (`s3:GetBucketLocation`,
+  `s3:ListBucket`) scoped to `arn:aws:s3:::prodbox-ses-capture`.
+- New `SesCaptureObjectRead` statement (`s3:GetObject`) scoped to
+  `arn:aws:s3:::prodbox-ses-capture/*`.
+- `ensureOperationalIamUser` inline-policy submission switched from
+  `AesonPretty.encodePretty'` to compact `Data.Aeson.encode`. The
+  pretty form is reserved for the operator-facing
+  `prodbox aws policy` rendering surface, which is unchanged.
+- Compact-encoded policy size: ~1.5 kB (well under the 2 kB cap).
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0 (extended `buildIamPolicyDocument` Sid
+   assertion at `test/unit/Main.hs:508`).
+3. `prodbox test integration cli` exit 0 (extended
+   `prodbox aws policy --tier full` golden assertion at
+   `test/integration/CliSuite.hs:105`).
+4. Live verification: the harness creates the operational IAM user
+   successfully and the Sprint 8.4 SES prereqs pass.
+
+### Remaining Work
+
+None on the sprint-owned surface.
+
+## Sprint 7.5.c.v.e: Read-Only SES Grants for Sprint 8.4 Prerequisites ✅
+
+**Status**: Done (May 20, 2026)
+**Implementation**: `src/Prodbox/Aws.hs::extraPolicyStatements`
+(new `SesReadOnly` statement with `ses:Describe*` / `ses:Get*` /
+`ses:List*` on `"*"`); `test/unit/Main.hs` and
+`test/integration/CliSuite.hs` (Sid-set assertions extended).
+**Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`.
+
+### Objective
+
+Grant the operational `prodbox` IAM user the read-only SES access it
+needs to run the Sprint 8.4 prerequisite checks:
+`ses_sending_identity_verified` calls
+`aws ses get-identity-verification-attributes`;
+`ses_receive_rule_set_active` calls
+`aws ses describe-active-receipt-rule-set`. Without the grant, both
+prereqs failed with `AccessDenied` on the harness IAM user.
+
+### Deliverables
+
+- New `SesReadOnly` statement in the `PolicyFull` extras list,
+  granting `ses:Describe*` / `ses:Get*` / `ses:List*` on `"*"`. The
+  wildcards keep the harness within least-privilege bounds (no
+  sending, no rule-set mutation) while covering any future read-only
+  SES prereq additions.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0 (Sid assertion extended).
+3. `prodbox test integration cli` exit 0 (golden assertion extended).
+4. Live verification: the three Sprint 8.4 SES prereqs pass under the
+   harness IAM user.
+
+### Remaining Work
+
+None on the sprint-owned surface.
+
+## Sprint 7.5.c.v.f: Silent-Exit Failure Mode in Substrate-Aware Validation Bodies 🔄
+
+**Status**: Active — diagnosed May 20, 2026; fix not yet authored.
+**Blocked by**: none (this sprint owns its own diagnosis + fix).
+**Blocks**: Sprint `7.5.c.v` (live AWS-substrate canonical-suite proof).
+**Implementation (to be authored)**: `src/Prodbox/TestValidation.hs`
+(`runChartsVscodeValidation` and the
+`runCharts{Api,Websocket}Validation` /
+`runAdminRoutesValidation` / `runPublicDnsValidation` siblings —
+audit for a substrate-aware code path that lacks an AWS branch and
+short-circuits without `failWith`); possibly
+`src/Prodbox/PublicEdge.hs::waitForPublicEdgeReady` or the
+`prodbox host public-edge` subprocess wiring underneath it.
+**Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+(move the Pending Removal row to Completed once the fix lands),
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (flip status
+to ✅).
+
+### Objective
+
+Diagnose and fix the silent-exit failure mode where every
+`--substrate aws` integration validation body returns without
+producing any output and without calling `failWith`. Symptom is
+reproducible: the May 20, 2026 live re-run (run5 and run6) reached
+Phase 2/2, the first named validation header
+`Validation: charts-vscode (substrate=aws)` emitted, then immediately
+the harness postflight `Auto-destroying per-run AWS Pulumi stacks
+...` fired. No body output, no `Public edge diagnostic` block, no
+`failWith` stderr message, no AWS-CLI subprocess logs. The expected
+output of `waitForPublicEdgeReady repoRoot` (which shells out to
+`prodbox host public-edge` and streams its stdout/stderr through) is
+absent.
+
+### Suspected Root Cause
+
+A substrate-aware code path under `runChartsVscodeValidation` /
+`waitForPublicEdgeReady` lacks an AWS branch and short-circuits
+without `failWith` — consistent with the Sprint 7.5.b.iii
+substrate-independence doctrine still being partial on the
+test-validation layer. The same defect likely affects
+`runChartsApiValidation`, `runChartsWebsocketValidation`,
+`runAdminRoutesValidation`, and `runPublicDnsValidation`, because all
+five share the same `waitForPublicEdgeReady` plumbing.
+
+### Deliverables
+
+- Diagnostic breadcrumb (stderr-side) at the top of
+  `runChartsVscodeValidation` to confirm whether the body is entered
+  at all under `substrate=aws`. If the body is entered, trace the
+  exit-without-output through `waitForPublicEdgeReady` and its
+  subprocess wiring.
+- A `failWith` (or a substrate-aware code branch) on whatever
+  short-circuit path is currently returning silently.
+- Identical fix applied to the four sibling validations.
+- A unit-level guard against the regression — at minimum, a fixture
+  asserting that a substrate-aware validation function never returns
+  `ExitFailure` without emitting at least one stderr line.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0 (new regression guard).
+3. A single targeted live re-run:
+   `./.build/prodbox test integration charts-vscode --substrate aws`
+   exits with explicit diagnostic output (success or failure), not
+   silently. If the previous defect was a missing AWS branch, the
+   substrate-aware fix is observable on rerun.
+
+### Remaining Work
+
+Diagnose, fix, and validate. Closes Sprint `7.5.c.v` and the parent
+Sprint `7.5.c`; flips the substrate parity row in
+[`substrates.md`](substrates.md) to ✅ once the live re-run lands.
 
 ## Sprint 7.6: AWS Harness Orphan-Safety Guards ✅
 

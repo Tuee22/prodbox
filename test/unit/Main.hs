@@ -96,6 +96,17 @@ import Prodbox.CLI.Command
   , runPlanWithOptions
   )
 import Prodbox.CLI.Docs (renderCommandHelp)
+import Prodbox.CLI.Interactive
+  ( InteractiveGuard (..)
+  , allowNonTtyInteractiveEnvVar
+  , awsCheckQuotasGuard
+  , awsRequestQuotasGuard
+  , awsSetupGuard
+  , awsTeardownGuard
+  , chartsDeleteGuard
+  , configSetupGuard
+  , renderNonTtyError
+  )
 import Prodbox.CLI.Json (renderCommandJson)
 import Prodbox.CLI.Output
   ( ColorMode (..)
@@ -503,7 +514,14 @@ main = mainWithSuite "prodbox-unit" $ do
                     | Object statement <- Vector.toList statements
                     , Just (String sid) <- [KeyMap.lookup (Key.fromString "Sid") statement]
                     ]
-              sids `shouldContain` ["Ec2HaTestStackLifecycle", "IamEksRoleLifecycle", "EksTestStackLifecycle"]
+              sids
+                `shouldContain` [ "Ec2TestStackLifecycle"
+                                , "IamEksRoleLifecycle"
+                                , "EksTestStackLifecycle"
+                                , "SesCaptureBucketRead"
+                                , "SesCaptureObjectRead"
+                                , "SesReadOnly"
+                                ]
             _ -> expectationFailure "expected Statement array"
         _ -> expectationFailure "expected policy document object"
 
@@ -1285,7 +1303,6 @@ main = mainWithSuite "prodbox-unit" $ do
           , "tool_ssh"
           , "tool_rke2"
           , "tool_systemctl"
-          , "tool_dhall"
           , "settings_loaded"
           , "settings_object"
           , "aws_iam_harness_ready"
@@ -1365,8 +1382,6 @@ main = mainWithSuite "prodbox-unit" $ do
       lookupPrerequisiteEffect "tool_ctr" `shouldBe` Validate (RequireTool "ctr" ["--help"])
       lookupPrerequisiteEffect "tool_rke2"
         `shouldBe` Validate (RequireTool "/usr/local/bin/rke2" ["--version"])
-      lookupPrerequisiteEffect "tool_dhall"
-        `shouldBe` Validate (RequireTool "dhall-to-json" ["--version"])
       lookupPrerequisiteEffect "settings_loaded" `shouldBe` Validate RequireSettings
       lookupPrerequisiteEffect "settings_object" `shouldBe` Validate RequireSettings
       lookupPrerequisiteEffect "aws_iam_harness_ready" `shouldBe` Validate RequireAwsIamHarnessReady
@@ -1453,9 +1468,6 @@ main = mainWithSuite "prodbox-unit" $ do
         `shouldBe` Left "Missing effect node in registry: definitely_missing_node"
 
   describe "shared runtime helpers" $ do
-    it "round-trips the persisted Dhall-derived config through JSON" $ do
-      eitherDecode (encode defaultConfigFile) `shouldBe` Right defaultConfigFile
-
     it "round-trips the rendered repo-root Dhall config through loadConfigFile" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
@@ -2805,6 +2817,32 @@ main = mainWithSuite "prodbox-unit" $ do
         length residue `shouldBe` 4
         awsTeardownResiduePolicy (teardownInputWith AcceptOrphanResidue)
           `shouldBe` AcceptOrphanResidue
+    it
+      "Scenario M — BypassAllResidueForHarnessRefresh with aws-ses live proceeds (Sprint 7.5.c.v.c harness preflight)"
+      $ withSystemTempDirectory "prodbox-hs-7.5-c-v-c-m"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        let (_, longLived) = partitionResidueByLifecycle residue
+        -- The harness preflight policy must NOT refuse on long-lived
+        -- residue: the preflight is paired with an immediate aws.*
+        -- re-materialization in the same function call, so neither
+        -- per-run nor long-lived residue strands anything.
+        map fst longLived `shouldBe` ["aws-ses"]
+        awsTeardownResiduePolicy (teardownInputWith BypassAllResidueForHarnessRefresh)
+          `shouldBe` BypassAllResidueForHarnessRefresh
+    it
+      "Scenario N — BypassAllResidueForHarnessRefresh with all four stacks: still proceeds"
+      $ withSystemTempDirectory "prodbox-hs-7.5-c-v-c-n"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
+        writeFakeStackSnapshot tmpDir "aws-test"
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        length residue `shouldBe` 4
+        awsTeardownResiduePolicy (teardownInputWith BypassAllResidueForHarnessRefresh)
+          `shouldBe` BypassAllResidueForHarnessRefresh
 
   describe "Sprint 7.7 DestroyPulumiResidueFirst dispatch plan (Scenarios J/K/L)" $ do
     it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $
@@ -2857,6 +2895,62 @@ main = mainWithSuite "prodbox-unit" $ do
       case result of
         Left msg -> msg `shouldContain` "mutually exclusive"
         Right policy -> expectationFailure ("expected Left, got Right " ++ show policy)
+
+  describe "interactive non-TTY guard" $ do
+    let guards =
+          [
+            ( "aws setup"
+            , awsSetupGuard
+            , "prodbox aws setup"
+            , "prodbox test all --substrate aws"
+            )
+          ,
+            ( "aws teardown"
+            , awsTeardownGuard
+            , "prodbox aws teardown"
+            , "test-harness postflight"
+            )
+          ,
+            ( "aws check-quotas"
+            , awsCheckQuotasGuard
+            , "prodbox aws check-quotas"
+            , "operator-only"
+            )
+          ,
+            ( "aws request-quotas"
+            , awsRequestQuotasGuard
+            , "prodbox aws request-quotas"
+            , "operator-only"
+            )
+          ,
+            ( "config setup"
+            , configSetupGuard
+            , "prodbox config setup"
+            , "Edit prodbox-config.dhall directly"
+            )
+          ,
+            ( "charts delete confirmation"
+            , chartsDeleteGuard
+            , "prodbox charts delete"
+            , "--yes"
+            )
+          ]
+    mapM_
+      ( \(label, guard, expectedCommandFragment, expectedAutomationFragment) ->
+          it (label ++ " guard carries the command name and the automation hint") $ do
+            guardCommand guard `shouldContain` expectedCommandFragment
+            guardAutomationHint guard `shouldContain` expectedAutomationFragment
+            let rendered = renderNonTtyError guard
+            rendered `shouldContain` guardCommand guard
+            rendered `shouldContain` "stdin is not a TTY"
+            rendered `shouldContain` "non-interactive automation"
+            rendered `shouldContain` expectedAutomationFragment
+            rendered `shouldContain` "cli_command_surface.md"
+      )
+      guards
+
+    it "names the test-only bypass env var explicitly" $
+      allowNonTtyInteractiveEnvVar `shouldBe` "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
 
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
@@ -3146,7 +3240,7 @@ validConfig =
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
     ]
@@ -3160,9 +3254,25 @@ invalidZeroSslConfig =
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
+    ]
+
+deploymentDhallFragment :: String
+deploymentDhallFragment =
+  concat
+    [ "{ dev_mode = True"
+    , ", bootstrap_public_ip_override = None Text"
+    , ", pulumi_enable_dns_bootstrap = True"
+    , ", public_edge_advertisement_mode = None Text"
+    , ", public_edge_bgp_peers ="
+    , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
+    , ", envoy_gateway_controller_replicas = None Natural"
+    , ", envoy_gateway_data_plane_replicas = None Natural"
+    , ", api_replicas = None Natural"
+    , ", websocket_replicas = None Natural"
+    , " }"
     ]
 
 validDeploymentSection :: DeploymentSection

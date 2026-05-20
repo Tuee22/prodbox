@@ -179,6 +179,40 @@ for the authoritative inventory:
 - Validate all external input, especially FQDN and IP address values.
 - Keep IAM scopes least-privilege.
 
+## Command Selection: Automation vs Operator-Interactive
+
+`prodbox` has two parallel paths for AWS-substrate work. Automation contexts
+(CI, agents, scripted workflows) **must** use the automation column. The
+operator-interactive commands refuse to run when stdin is not a TTY and exit
+1 with a pointer to the automation equivalent — so if you see one of those
+prompts, you have picked the wrong command, not hit a blocker.
+
+| Task | Automation path (harness, non-interactive) | Operator-interactive path |
+|------|--------------------------------------------|----------------------------|
+| Drive a full AWS-substrate validation run | `prodbox test all --substrate aws` | (no single command — `aws setup` then per-validation, manual) |
+| Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
+| Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
+| Tear down operational `aws.*` + per-run stacks | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
+| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox pulumi <stack>-resources` |
+| Destroy a Pulumi stack | `prodbox pulumi <stack>-destroy --yes` (already non-interactive) | same |
+| Author repo config | edit `prodbox-config.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
+| Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws check-quotas` (after `aws.*` populated) | same |
+
+The automation path materializes operational `aws.*` from
+`aws_admin_for_test_simulation.*` in `prodbox-config.dhall` via the
+suite-level IAM harness, runs validations, then clears `aws.*` and
+auto-destroys per-run stacks on suite exit (success, failure, or Ctrl-C).
+The retained `aws-ses` long-lived stack is intentionally **not**
+auto-destroyed (cross-substrate shared infrastructure). Live AWS spend is
+expected; no separate approval needed beyond the user's original request.
+
+**Common mistake**: running `prodbox aws setup` from a non-TTY context and
+reporting the interactive prompt as a blocker. The correct response is to
+run `prodbox test all --substrate aws` (or the targeted integration
+command) — the harness handles credentials non-interactively. The
+interactive command will refuse with `exit 1` and the message names the
+automation equivalent.
+
 ## Cross-References
 
 - **CLAUDE.md**: Detailed AI assistant guidelines

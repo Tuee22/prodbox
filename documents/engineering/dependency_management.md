@@ -76,9 +76,10 @@ prodbox check-code
 - Daemon structured logging: `co-log` / `co-log-core` through
   `src/Prodbox/Gateway/Logging.hs`, with gateway and workload daemon entrypoints writing JSON
   log lines to stderr.
-- Repository config decoding is operator-authored `Dhall -> Haskell types`, bridged at runtime
-  through the Haskell-owned `dhall-to-json` subprocess and parsed via `aeson` into typed Haskell
-  settings values without materializing `prodbox-config.json` on the supported path
+- Repository config decoding is operator-authored `Dhall -> Haskell types`, performed in-process
+  by the native `dhall` Haskell library (`Dhall.inputFile`) in `src/Prodbox/Settings.hs`. The
+  decoder produces typed Haskell settings values directly; `prodbox-config.json` is never
+  materialized on the supported path.
 - Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
   `src/Prodbox/Gateway/`
 - Test suites: `tasty`, `tasty-hunit`, `tasty-quickcheck`, `tasty-golden`, `temporary`, and the
@@ -87,7 +88,6 @@ prodbox check-code
 ### External Command Dependencies
 
 - Haskell quality tools: `fourmolu`, `hlint`
-- Config decode bridge: `dhall-to-json`
 - Host/runtime tools: `kubectl`, `helm`, `docker`, `ctr`, `sudo`, `systemctl`
 - Network and AWS tooling: `aws`, `curl`, `dig`, `ssh`
 - Infrastructure tooling: `pulumi`

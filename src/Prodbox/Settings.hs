@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Prodbox.Settings
   ( AcmeSection (..)
@@ -25,28 +26,21 @@ module Prodbox.Settings
   )
 where
 
-import Data.Aeson (FromJSON, ToJSON, eitherDecode)
-import Data.ByteString.Lazy.Char8 qualified as BL8
+import Control.Exception (SomeException, displayException, try)
 import Data.Char (isDigit, isHexDigit, toLower)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Dhall (FromDhall, auto, inputFile)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
   )
-import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-  ( ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessResult
-  )
 import System.Directory
   ( doesFileExist
   , makeAbsolute
   )
-import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 
 data Credentials = Credentials
@@ -55,31 +49,31 @@ data Credentials = Credentials
   , session_token :: Maybe Text
   , region :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data Route53Section = Route53Section
   { zone_id :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data AwsSubstrateSection = AwsSubstrateSection
   { hosted_zone_id :: Text
   , subzone_name :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data SesSection = SesSection
   { sender_domain :: Text
   , receive_subdomain :: Text
   , capture_bucket :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data DomainSection = DomainSection
   { demo_fqdn :: Text
   , demo_ttl :: Natural
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data MetallbBgpPeer = MetallbBgpPeer
   { peer_name :: Text
@@ -88,7 +82,7 @@ data MetallbBgpPeer = MetallbBgpPeer
   , my_asn :: Natural
   , ebgp_multi_hop :: Maybe Bool
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data AcmeSection = AcmeSection
   { email :: Text
@@ -96,7 +90,7 @@ data AcmeSection = AcmeSection
   , eab_key_id :: Maybe Text
   , eab_hmac_key :: Maybe Text
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data DeploymentSection = DeploymentSection
   { dev_mode :: Bool
@@ -109,12 +103,12 @@ data DeploymentSection = DeploymentSection
   , api_replicas :: Maybe Natural
   , websocket_replicas :: Maybe Natural
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data StorageSection = StorageSection
   { manual_pv_host_root :: Text
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data ConfigFile = ConfigFile
   { aws :: Credentials
@@ -127,7 +121,7 @@ data ConfigFile = ConfigFile
   , deployment :: DeploymentSection
   , storage :: StorageSection
   }
-  deriving (Eq, Show, Generic, FromJSON, ToJSON)
+  deriving (Eq, Show, Generic, FromDhall)
 
 data ValidatedSettings = ValidatedSettings
   { validatedConfig :: ConfigFile
@@ -199,43 +193,21 @@ renderSettingsDisplay showSecrets settings =
 
 loadConfigFile :: FilePath -> IO (Either String ConfigFile)
 loadConfigFile repoRoot = do
-  let paths = canonicalConfigPaths repoRoot
-      configPath = configDhallPath paths
+  let configPath = configDhallPath (canonicalConfigPaths repoRoot)
   configExists <- doesFileExist configPath
   if not configExists
     then pure (Left (missingConfigMessage configPath))
     else do
-      outputResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "dhall-to-json"
-            , subprocessArguments = ["--file", configPath, "--compact", "--preserve-null"]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      pure $
-        case outputResult of
-          Failure err ->
-            Left
-              ( "Failed to run `dhall-to-json` for `"
-                  ++ configPath
-                  ++ "`: "
-                  ++ err
-              )
-          Success output ->
-            case processExitCode output of
-              ExitFailure _ ->
-                Left (processStderr output ++ processStdout output)
-              ExitSuccess ->
-                case eitherDecode (BL8.pack (processStdout output)) of
-                  Left err ->
-                    Left
-                      ( "Failed to decode JSON from `dhall-to-json` for `"
-                          ++ configPath
-                          ++ "`: "
-                          ++ err
-                      )
-                  Right config -> Right config
+      result <- try (inputFile auto configPath)
+      pure $ case result of
+        Left (e :: SomeException) ->
+          Left
+            ( "Failed to decode Dhall config `"
+                ++ configPath
+                ++ "`: "
+                ++ displayException e
+            )
+        Right config -> Right config
 
 validateConfig :: FilePath -> ConfigFile -> IO (Either String ValidatedSettings)
 validateConfig repoRoot config = do

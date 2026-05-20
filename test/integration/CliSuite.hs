@@ -102,9 +102,12 @@ integrationCliSuite = do
 
       exitCode `shouldBe` ExitSuccess
       stderrText `shouldBe` ""
-      stdoutText `shouldContain` "\"Sid\": \"Ec2HaTestStackLifecycle\""
+      stdoutText `shouldContain` "\"Sid\": \"Ec2TestStackLifecycle\""
       stdoutText `shouldContain` "\"Sid\": \"IamEksRoleLifecycle\""
       stdoutText `shouldContain` "\"Sid\": \"EksTestStackLifecycle\""
+      stdoutText `shouldContain` "\"Sid\": \"SesCaptureBucketRead\""
+      stdoutText `shouldContain` "\"Sid\": \"SesCaptureObjectRead\""
+      stdoutText `shouldContain` "\"Sid\": \"SesReadOnly\""
 
     it "runs native gateway config-gen through the built frontend" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1054,7 +1057,15 @@ fakeAwsEnvironment repoRoot = do
   currentEnvironment <- getEnvironment
   let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
       updatedPath = fakeBin ++ ":" ++ existingPath
-  pure (("PATH", updatedPath) : filter ((/= "PATH") . fst) currentEnvironment)
+      filtered =
+        filter
+          (\(k, _) -> k /= "PATH" && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE")
+          currentEnvironment
+  pure
+    ( ("PATH", updatedPath)
+        : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
+        : filtered
+    )
 
 fakeAwsHarnessEnvironment :: FilePath -> FilePath -> IO [(String, String)]
 fakeAwsHarnessEnvironment repoRoot binaryPath = do
@@ -1063,7 +1074,15 @@ fakeAwsHarnessEnvironment repoRoot binaryPath = do
   currentEnvironment <- getEnvironment
   let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
       updatedPath = fakeBin ++ ":" ++ existingPath
-  pure (("PATH", updatedPath) : filter ((/= "PATH") . fst) currentEnvironment)
+      filtered =
+        filter
+          (\(k, _) -> k /= "PATH" && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE")
+          currentEnvironment
+  pure
+    ( ("PATH", updatedPath)
+        : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
+        : filtered
+    )
 
 writeFakeAwsScript :: FilePath -> IO FilePath
 writeFakeAwsScript repoRoot = do
@@ -2181,7 +2200,7 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
     ]
@@ -2196,7 +2215,7 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
     ]
@@ -2221,6 +2240,22 @@ configWithAws accessKeyId secretAccessKey sessionTokenValue =
     "None Text"
     "None Text"
 
+deploymentDhallFragment :: String
+deploymentDhallFragment =
+  concat
+    [ "{ dev_mode = True"
+    , ", bootstrap_public_ip_override = None Text"
+    , ", pulumi_enable_dns_bootstrap = True"
+    , ", public_edge_advertisement_mode = None Text"
+    , ", public_edge_bgp_peers ="
+    , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
+    , ", envoy_gateway_controller_replicas = None Natural"
+    , ", envoy_gateway_data_plane_replicas = None Natural"
+    , ", api_replicas = None Natural"
+    , ", websocket_replicas = None Natural"
+    , " }"
+    ]
+
 configWithAwsAndAcme :: String -> String -> String -> String -> String -> String -> String
 configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer eabKeyIdValue eabHmacKeyValue =
   unlines
@@ -2243,7 +2278,7 @@ configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer ea
         ++ ", eab_hmac_key = "
         ++ eabHmacKeyValue
         ++ " }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
     ]

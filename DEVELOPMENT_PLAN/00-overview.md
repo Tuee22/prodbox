@@ -153,11 +153,13 @@ prerequisites.
 
 ## Alignment Status
 
-Phase `0` reopened through Sprints `0.2`–`0.6` to adopt
+Phase `0` reopened through Sprints `0.2`–`0.7` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
-governed docs and plan suite with that doctrine, and schedule every currently known code-level
-adoption gap onto explicit downstream sprints. That planning and documentation work is now
-`Done`. Phases `1` through `4` were **reopened** on the scheduled implementation work and have
+governed docs and plan suite with that doctrine, schedule every currently known code-level
+adoption gap onto explicit downstream sprints, and (Sprint `0.7`) add the LLM/automation
+guardrails on the operator-interactive command surface so every prompt-driven entry point
+refuses to run on a non-TTY stdin and points the caller at the automation equivalent. That
+planning and documentation work is now `Done`. Phases `1` through `4` were **reopened** on the scheduled implementation work and have
 now reclosed: Sprint 0.3 extended the doctrine-adoption scope with the residual items surfaced
 by the May 2026 doctrine-vs-plan audit, and Sprint 0.4 extended it again with the residual items
 surfaced by the May 12, 2026 round-3 doctrine-vs-plan audit, including one new Phase `1`
@@ -308,7 +310,9 @@ The reopened ranges close on the following sprint sets:
 
 The target Haskell-only rewrite baseline is implemented in the worktree, and the repository is
 closed against the current doctrine-reopened plan. Current worktree evidence puts Sprints
-`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, and `5.5` in `Done` state. The supported operator surface is `prodbox`, the
+`0.7`, `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, `5.5`,
+`7.5.a`–`7.5.c.iv`, `7.5.c.v.b`–`7.5.c.v.e`, `7.6`, `7.7`, and `8.1`–`8.4` in `Done` state on
+their owned surfaces; Sprint `7.5.c.v.f` is `Active`. The supported operator surface is `prodbox`, the
 supported configuration contract is direct `Dhall -> Haskell types` rooted at
 `prodbox-config.dhall`, and the supported build topology remains `.build/prodbox` on the host
 plus `/opt/build` inside repository-owned Dockerfiles. `prodbox check-code` enforces the current
@@ -481,15 +485,21 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 ## Current Execution State
 
 The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
-`0` has now re-closed after Sprints `0.2`–`0.6` landed the doctrine-adoption planning work
+`0` has now re-closed after Sprints `0.2`–`0.7` landed the doctrine-adoption planning work
 (Sprint 0.6 introduced the substrate doctrine and renamed phase-5 and phase-7 to their
-substrate-aware names). Phases `1`–`4` have also reclosed on the downstream implementation
-scope scheduled by those sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, and
-`4.5`–`4.8` are locally validated and doc-aligned. Phase `5` reclosed after Sprint `5.5`
-added the port-80 HTTPS-redirect listener (May 13, 2026). Phase `7` reopened for substrate
-parity: Sprint `7.5.a`/`7.5.b.*`/`7.5.b.iii`/`7.5.c.i`–`7.5.c.iv`/`7.5.c.v.b` are `Done`
-on their owned code surfaces (May 17–19, 2026); Sprint `7.5.c.v` (live AWS-substrate
-canonical-suite re-run) remains `Active` and operator-driven. Sprint `7.6` (orphan-safety
+substrate-aware names; Sprint 0.7, May 20, 2026, added the non-TTY guardrails on the
+operator-interactive command surface). Phases `1`–`4` have also reclosed on the downstream
+implementation scope scheduled by those sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`,
+`3.8`–`3.12`, and `4.5`–`4.8` are locally validated and doc-aligned, and Sprint 1.2 was
+revised May 20, 2026 to replace the external `dhall-to-json` subprocess decode bridge with
+in-process decoding through the native Haskell `dhall` library (`Dhall.inputFile auto`).
+Phase `5` reclosed after Sprint `5.5` added the port-80 HTTPS-redirect listener (May 13,
+2026). Phase `7` reopened for substrate parity: Sprints `7.5.a`–`7.5.c.iv`, `7.5.c.v.b`,
+`7.5.c.v.c`, `7.5.c.v.d`, and `7.5.c.v.e` are `Done` on their owned code surfaces (May 17–20,
+2026); Sprint `7.5.c.v.f` is `Active` to diagnose and fix the May 20 silent-exit failure mode
+in `runChartsVscodeValidation` and its `runCharts*Validation` / `runAdminRoutesValidation` /
+`runPublicDnsValidation` siblings under `substrate=aws`; Sprint `7.5.c.v` (the live
+AWS-substrate canonical-suite re-run) is blocked on `7.5.c.v.f`. Sprint `7.6` (orphan-safety
 refuse-path + auto-destroy) and Sprint `7.7` (generalized `aws teardown` +
 `PulumiResiduePolicy` ADT + harness teardown bug closure + admin-credential prompt UX) are
 both `Done` (May 19, 2026). Phase `8` opened May 18, 2026; Sprints `8.1`–`8.4` are `Done`

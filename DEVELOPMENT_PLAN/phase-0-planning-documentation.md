@@ -12,8 +12,8 @@
 ## Phase Status
 
 ✅ **Done** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
-Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, `0.5`, and `0.6`
-are also now `Done`. Those sprints adopted
+Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, `0.5`, `0.6`,
+and `0.7` are also now `Done`. Sprints `0.2`–`0.6` adopted
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the authoritative CLI doctrine, aligned the
 governed docs and plan suite with that doctrine, scheduled every currently known code-level
 adoption gap onto explicit downstream sprints under Phases `1`–`4` per
@@ -24,7 +24,10 @@ one canonical test suite that runs against substrates (home local + AWS), rename
 phase-5 to `phase-5-canonical-test-suite.md`, renamed phase-7 to
 `phase-7-aws-substrate-foundations.md`, added [substrates.md](substrates.md) as the
 authoritative substrate inventory, and added phase-8 for operator-invited email authentication
-via Keycloak + AWS SES. Phase `0` is therefore re-closed, and the downstream implementation
+via Keycloak + AWS SES. Sprint `0.7` (May 20, 2026) added the LLM/automation guardrails on
+the interactive command surface: every operator-interactive entry point now refuses to run
+when stdin is not a TTY and emits a structured guidance message naming the non-interactive
+automation equivalent. Phase `0` is therefore re-closed, and the downstream implementation
 work is also reclosed because Sprint `4.8` has landed.
 
 ## Phase Summary
@@ -618,6 +621,88 @@ None.
 - `HASKELL_CLI_TOOL.md` cross-references the renamed `phase-5-canonical-test-suite.md` and
   `phase-7-aws-substrate-foundations.md` paths plus the new `phase-8-email-invite-auth.md`
   and `substrates.md` files.
+
+## Sprint 0.7: LLM / Automation Guardrails on Interactive Commands ✅
+
+**Status**: Done (May 20, 2026)
+**Implementation**: new `src/Prodbox/CLI/Interactive.hs`
+(`InteractiveGuard`, `requireInteractiveTty`, `renderNonTtyError`,
+per-command guard values `awsSetupGuard`, `awsTeardownGuard`,
+`awsCheckQuotasGuard`, `awsRequestQuotasGuard`, `configSetupGuard`,
+`chartsDeleteGuard`, and the test-only env-var name
+`allowNonTtyInteractiveEnvVar = "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"`);
+`src/Prodbox/Aws.hs` (`requireInteractiveTty` wired at the head of every
+`interactive*Input` function and at the start of `runAwsCommand` /
+`runInteractiveConfigSetupWithPlan`'s `try @SomeException` block — the
+new `fromException @ExitCode` re-throw fixes the "exit code displayed
+as crash" bug that surfaced once `requireInteractiveTty` started
+calling `exitWith`); `src/Prodbox/CLI/Charts.hs::promptForDelete`
+(`requireInteractiveTty` ahead of the `[y/N]` prompt);
+`test/integration/CliSuite.hs` (`fakeAwsEnvironment` /
+`fakeAwsHarnessEnvironment` helpers set
+`PRODBOX_ALLOW_NON_TTY_INTERACTIVE=1` so the existing interactive-flow
+integration tests still drive the prompts with piped stdin);
+`test/unit/Main.hs::"interactive non-TTY guard"` describe block (6
+guard rendering tests + 1 env-var-name assertion);
+`documents/engineering/cli_command_surface.md` (new "§ 3A Interactive
+vs Non-Interactive Surfaces" section);
+`documents/engineering/aws_integration_environment_doctrine.md` (one-
+line cross-reference); `CLAUDE.md` and `AGENTS.md` (new
+"Command Selection: Automation vs Operator-Interactive" table).
+**Docs to update**: `documents/engineering/cli_command_surface.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`CLAUDE.md`, `AGENTS.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Close a chronic LLM / CI failure mode where automation agents would
+run `prodbox aws setup` (or the other operator-interactive commands),
+hit the credential prompt, and report the prompt as a blocker
+instead of switching to `prodbox test all --substrate aws` or the
+targeted `prodbox test integration ... --substrate aws` command.
+Every operator-interactive entry point must now refuse to run when
+stdin is not a TTY and emit an explicit guidance message naming the
+automation equivalent.
+
+### Deliverables
+
+- New module `src/Prodbox/CLI/Interactive.hs` with the
+  `InteractiveGuard` record, `requireInteractiveTty` runtime check,
+  `renderNonTtyError` message builder, per-command guard values, and
+  the test-only env-var name. Production agents must never set the
+  env var; only `fakeAwsEnvironment` / `fakeAwsHarnessEnvironment` in
+  the integration test helpers are sanctioned to.
+- `requireInteractiveTty` called at the head of every
+  `interactive*Input` function in `src/Prodbox/Aws.hs` covering
+  `config setup`, `aws setup`, `aws teardown`, `aws check-quotas`,
+  `aws request-quotas`, and at the head of `promptForDelete` in
+  `src/Prodbox/CLI/Charts.hs`.
+- The `try @SomeException` blocks in `runAwsCommand` and
+  `runInteractiveConfigSetupWithPlan` updated to re-throw `ExitCode`
+  exceptions via `fromException @ExitCode`, so the guard's own
+  `exitWith` is not double-reported as `ExitFailure 1` after the
+  guard's stderr message has already been written.
+- `documents/engineering/cli_command_surface.md` "§ 3A — Interactive
+  vs Non-Interactive Surfaces" documents the contract, the per-command
+  automation equivalents, and the `PRODBOX_ALLOW_NON_TTY_INTERACTIVE`
+  test-only escape.
+- A new "Command Selection: Automation vs Operator-Interactive"
+  command-mapping table in `CLAUDE.md` and `AGENTS.md` so future
+  agents pick the right surface without first running the wrong one.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0 (6 new guard rendering tests + 1
+   env-var-name assertion under the `interactive non-TTY guard`
+   describe block).
+3. `prodbox test integration cli` exit 0 (all interactive-flow tests
+   pass because the fake-env helpers now set the bypass env var).
+
+### Remaining Work
+
+None. The legacy-tracking ledger row records the closure.
 
 ## Related Documents
 

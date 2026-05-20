@@ -113,7 +113,7 @@ validConfig =
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
     ]
@@ -128,7 +128,23 @@ invalidConfig =
     , ", ses = { sender_domain = \"\", receive_subdomain = \"\", capture_bucket = \"\" }"
     , ", domain = { demo_fqdn = \"test.resolvefintech.com\", demo_ttl = 60 }"
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
-    , ", deployment = { dev_mode = True, bootstrap_public_ip_override = None Text, pulumi_enable_dns_bootstrap = True }"
+    , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
     , "}"
+    ]
+
+deploymentDhallFragment :: String
+deploymentDhallFragment =
+  concat
+    [ "{ dev_mode = True"
+    , ", bootstrap_public_ip_override = None Text"
+    , ", pulumi_enable_dns_bootstrap = True"
+    , ", public_edge_advertisement_mode = None Text"
+    , ", public_edge_bgp_peers ="
+    , "    None (List { peer_name : Text, peer_address : Text, peer_asn : Natural, my_asn : Natural, ebgp_multi_hop : Optional Bool })"
+    , ", envoy_gateway_controller_replicas = None Natural"
+    , ", envoy_gateway_data_plane_replicas = None Natural"
+    , ", api_replicas = None Natural"
+    , ", websocket_replicas = None Natural"
+    , " }"
     ]

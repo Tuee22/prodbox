@@ -66,6 +66,28 @@ The simplest supported operator workflow is:
 3. Keep the key only long enough to finish the interactive `prodbox` command you are running.
 4. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
 
+### 3.1 Two Credential Shapes — When To Paste A Session Token
+
+AWS returns admin credentials in one of two shapes. The session-token prompt applies to only
+one of them:
+
+| Credential source | Access key ID prefix | Session token? | When to use |
+|---|---|---|---|
+| IAM console → Users → Security credentials → Create access key | `AKIA…` | **No, leave blank** | Long-lived IAM user keys |
+| IAM Identity Center "Access keys" panel, `aws sts get-session-token`, `aws sts assume-role`, EC2 instance metadata | `ASIA…` | **Yes, required** | STS-derived temporary credentials |
+
+If you paste an `ASIA…` key without the matching session token, AWS rejects every subsequent
+API call with `InvalidClientTokenId`. If you paste an `AKIA…` key and also fill the
+session-token field, AWS rejects every call because the session token is invalid for a
+long-lived key.
+
+Sprint `7.7` (May 19, 2026 closure, see
+[`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` § Sprint 7.7](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md))
+made the prompt auto-detect from the access-key prefix: `AKIA…` skips the session-token
+prompt entirely, `ASIA…` makes the session-token prompt required (hidden input), and any
+other prefix falls back to an optional prompt with an explanatory hint. The operator no
+longer has to remember when to leave the field blank.
+
 Do not treat `aws_admin_for_test_simulation.*` as the ordinary operator path for this workflow.
 That section exists only for test-suite simulation of the ephemeral temporary-admin credential
 prompt, with the native IAM lifecycle test harness as the only supported runtime consumer. The

@@ -86,13 +86,39 @@ that prompt input, with the native IAM test harness as the only supported runtim
 |---------|-----------|---------|
 | `prodbox aws policy` | none | `--tier` |
 | `prodbox aws setup` | none | `--tier`, `--dry-run`, `--plan-file` |
-| `prodbox aws teardown` | none | `--dry-run`, `--plan-file` |
+| `prodbox aws teardown` | none | `--dry-run`, `--plan-file`, `--allow-pulumi-residue`, `--destroy-pulumi-residue` (mutually exclusive with `--allow-pulumi-residue`) |
 | `prodbox aws check-quotas` | none | none |
 | `prodbox aws request-quotas` | none | `--tier` |
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
 is prompt-driven for temporary admin AWS credentials; stored
 `aws_admin_for_test_simulation.*` is not part of the intended public operator flow.
+
+`prodbox aws teardown` carries the Sprint `7.6` orphan-safety refuse-path: it refuses to delete
+the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
+`aws-test`, `aws-ses`) still reports live resources, naming the offending stack(s) and the
+canonical destroy command. Three residue-policy outcomes are available, all driven by
+mutually-exclusive flags:
+
+- (default, no flag) → **refuse** with actionable message.
+- `--destroy-pulumi-residue` → **destroy first**: dispatch `prodbox pulumi <stack>-destroy
+  --yes` for each live stack in canonical order (`aws-subzone`, `aws-eks`, `aws-test`,
+  `aws-ses` if live) before continuing with the IAM teardown. A stderr warning fires before
+  the `aws-ses` destroy because reprovisioning it costs 5-30 min of SES DKIM re-verification
+  + ~24h of S3 bucket-name cooldown.
+- `--allow-pulumi-residue` → **accept orphan**: operator-acknowledged bypass.
+
+The two flags are mutually exclusive at parse time: passing both produces "Invalid option"
+exit 1 from optparse-applicative via the `flag' <|> flag' <|> pure RefuseOnAnyResidue` idiom
+in `awsTeardownFlagsParser`. The `prodbox aws teardown --help` usage line displays them as
+`[--destroy-pulumi-residue | --allow-pulumi-residue]` to make the exclusivity visible.
+
+Sprint `7.7` also moved the file-based residue check **before** the temporary-admin-credential
+prompt and added a "Nothing to do." exit (zero) when residue is empty AND operational
+`aws.*` is empty, so the operator never enters credentials that the tool was about to refuse.
+The credential prompt itself auto-detects the access-key prefix and only asks for a session
+token when the operator pastes an `ASIA…` (STS-derived) key — `AKIA…` (long-lived IAM user
+key) skips the session-token prompt entirely.
 
 ### `prodbox host`
 

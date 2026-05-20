@@ -4,20 +4,28 @@ module Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
+  , PulumiResiduePolicy (..)
+  , SessionTokenPromptShape (..)
   , applyAwsTeardown
   , buildIamPolicyDocument
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
+  , longLivedStackNames
+  , partitionResidueByLifecycle
+  , perRunStackNames
+  , pulumiDestroyPlanForResidue
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
   , renderConfigSetupPlan
   , renderPulumiResidueRefusal
+  , renderPulumiResidueLongLivedRefusal
   , runAwsCommand
   , runAwsIamHarnessInspect
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   , runInteractiveConfigSetup
   , runInteractiveConfigSetupWithPlan
+  , sessionTokenPromptShape
   )
 where
 
@@ -50,6 +58,7 @@ import Data.List
   ( findIndex
   , intercalate
   , isPrefixOf
+  , partition
   , transpose
   )
 import Data.Text (Text)
@@ -59,12 +68,14 @@ import Numeric.Natural (Natural)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
+import Prodbox.BuildSupport (canonicalOperatorBinaryPath)
 import Prodbox.CLI.Command
   ( AwsCommand (..)
   , AwsTeardownFlags (..)
   , Plan (..)
   , PlanOptions (..)
   , PolicyTier (..)
+  , PulumiResiduePolicy (..)
   , buildPlan
   , runPlanWithOptions
   )
@@ -105,6 +116,7 @@ import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
+  , runSubprocessStreaming
   )
 import System.Directory
   ( doesFileExist
@@ -219,9 +231,69 @@ data AwsSetupInput = AwsSetupInput
 
 data AwsTeardownInput = AwsTeardownInput
   { awsTeardownAdminCredentials :: Credentials
-  , awsTeardownAllowPulumiResidue :: Bool
+  , awsTeardownResiduePolicy :: PulumiResiduePolicy
   }
   deriving (Eq, Show)
+
+-- | Sprint 7.7 — pure helper for auto-detecting whether the operator's
+-- pasted AWS access-key ID needs a session-token follow-up prompt.
+--
+-- * @AKIA…@ — long-lived IAM user key created via IAM console. No
+--   session token; skip the prompt.
+-- * @ASIA…@ — STS-derived temporary credentials (IAM Identity Center,
+--   @aws sts get-session-token@, @aws sts assume-role@, EC2 instance
+--   metadata). Session token is required; prompt as a hidden field.
+-- * any other prefix (rare: @AGPA@, @AROA@, etc., or empty input) —
+--   fall back to an optional prompt with an explanatory hint so the
+--   operator is never silently forced into the wrong shape.
+data SessionTokenPromptShape
+  = SkipPrompt
+  | PromptRequiredHidden
+  | PromptOptionalWithHint
+  deriving (Eq, Show)
+
+-- | Sprint 7.7 — auto-detect the prompt shape from the access-key prefix.
+-- Extracted as a pure helper so unit tests can cover the AKIA / ASIA /
+-- unknown branches without exercising IO.
+sessionTokenPromptShape :: Text -> SessionTokenPromptShape
+sessionTokenPromptShape accessKeyId
+  | "AKIA" `Text.isPrefixOf` accessKeyId = SkipPrompt
+  | "ASIA" `Text.isPrefixOf` accessKeyId = PromptRequiredHidden
+  | otherwise = PromptOptionalWithHint
+
+-- | Per-run Pulumi stack names per
+-- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@. These
+-- stacks are auto-managed by the test runner's
+-- 'awsPostflightDestroyActions' and may safely be bypassed by the
+-- harness-internal 'BypassPerRunResidueOnly' policy.
+perRunStackNames :: [String]
+perRunStackNames = ["aws-eks", "aws-eks-subzone", "aws-test"]
+
+-- | Long-lived cross-substrate shared Pulumi stack names per
+-- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@. These
+-- are retained by design; the harness must NEVER bypass residue refusal
+-- for them.
+longLivedStackNames :: [String]
+longLivedStackNames = ["aws-ses"]
+
+-- | Sprint 7.7 — partition residue tuples into (per-run, long-lived)
+-- buckets using 'perRunStackNames'. The partition keys must match the
+-- substrates-doctrine Resource Lifecycle Classes verbatim; adding a new
+-- stack requires updating both this module and the substrates doc.
+partitionResidueByLifecycle
+  :: [(String, String)] -> ([(String, String)], [(String, String)])
+partitionResidueByLifecycle = partition (\(name, _) -> name `elem` perRunStackNames)
+
+-- | Sprint 7.7 — canonical destroy order for
+-- 'DestroyPulumiResidueFirst'. Mirrors 'awsPostflightDestroyActions':
+-- subzone first (depends on EKS for nothing but is cheap to remove),
+-- then eks (the heavy stack), then test (HA-RKE2 EC2), then ses last
+-- because its re-creation is the most expensive (5–30 min DKIM
+-- verification + ~24 h S3 bucket name cooldown).
+pulumiDestroyPlanForResidue :: [(String, String)] -> [(String, String)]
+pulumiDestroyPlanForResidue residue =
+  let canonical = ["aws-eks-subzone", "aws-eks", "aws-test", "aws-ses"]
+   in [pair | stackName <- canonical, pair@(name, _) <- residue, name == stackName]
 
 data AwsCheckQuotasInput = AwsCheckQuotasInput
   { awsCheckQuotasAdminCredentials :: Credentials
@@ -364,19 +436,30 @@ executeAwsCommand repoRoot command =
           writeOutput (renderAwsSetupResult result)
           pure ExitSuccess
     AwsTeardown planOptions flags -> do
-      input <- interactiveAwsTeardownInput repoRoot flags
-      runPlanWithOptions
-        planOptions
-        (buildAwsTeardownExecutionPlan repoRoot input)
-        $ \plannedInput -> do
-          teardownResult <- applyAwsTeardown repoRoot plannedInput
-          case teardownResult of
-            Left err -> do
-              writeError (fatalError (Text.pack err))
-              pure (ExitFailure 1)
-            Right result -> do
-              writeOutput (renderAwsTeardownResult result)
-              pure ExitSuccess
+      decision <- interactiveAwsTeardownInput repoRoot flags
+      case decision of
+        Left refusal -> do
+          writeError (fatalError (Text.pack refusal))
+          pure (ExitFailure 1)
+        Right Nothing -> do
+          writeOutputLine
+            ( "AWS teardown: no operational `aws.*` configured and no Pulumi "
+                ++ "residue. Nothing to do."
+            )
+          pure ExitSuccess
+        Right (Just input) ->
+          runPlanWithOptions
+            planOptions
+            (buildAwsTeardownExecutionPlan repoRoot input)
+            $ \plannedInput -> do
+              teardownResult <- applyAwsTeardown repoRoot plannedInput
+              case teardownResult of
+                Left err -> do
+                  writeError (fatalError (Text.pack err))
+                  pure (ExitFailure 1)
+                Right result -> do
+                  writeOutput (renderAwsTeardownResult result)
+                  pure ExitSuccess
     AwsCheckQuotas -> do
       input <- interactiveAwsCheckQuotasInput repoRoot
       statuses <- applyAwsCheckQuotas repoRoot input
@@ -551,7 +634,8 @@ ensureAwsCliAvailable = do
 interactiveConfigSetupInput :: FilePath -> IO ConfigSetupInput
 interactiveConfigSetupInput repoRoot = do
   writeOutputLine "Config setup writes `prodbox-config.dhall`, creates the operational IAM user,"
-  writeOutputLine "and validates the result. The elevated credential entered below is not persisted."
+  writeOutputLine
+    "and validates the result. The temporary admin credential entered below is not persisted."
   writeOutputLine ""
   accountReady <- promptConfirm "Do you already have an AWS account?" True
   unless accountReady showAwsAccountGuidance
@@ -625,17 +709,98 @@ interactiveAwsSetupInput repoRoot policyTier = do
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   AwsSetupInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
-interactiveAwsTeardownInput :: FilePath -> AwsTeardownFlags -> IO AwsTeardownInput
+-- | Sprint 7.7 control-flow refactor: the file-based residue check
+-- runs **before** the credential prompt so operators never paste an
+-- admin key into a teardown that was about to refuse. The "nothing to
+-- do" short-circuit covers the common steady state where the operator
+-- ran @prodbox aws teardown@ "just in case" but the IAM user and
+-- Pulumi stacks are already absent.
+--
+-- Return shape:
+--
+--   * @Left refusalMessage@ — the run is refused before any prompt
+--     fires. Caller prints the message verbatim and exits non-zero.
+--   * @Right Nothing@ — nothing to do (no residue, no operational
+--     @aws.*@). Caller emits a one-line "nothing to do" notice and
+--     exits zero.
+--   * @Right (Just input)@ — proceed: prompt fired, admin credentials
+--     captured, downstream 'applyAwsTeardown' will handle the IAM
+--     delete + @aws.*@ clear under the requested 'PulumiResiduePolicy'.
+interactiveAwsTeardownInput
+  :: FilePath -> AwsTeardownFlags -> IO (Either String (Maybe AwsTeardownInput))
 interactiveAwsTeardownInput repoRoot flags = do
-  writeOutputLine "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
-  writeOutputLine "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
+  -- Step 1: file-based residue check — no credentials needed.
+  residue <- checkPulumiResidueBeforeTeardown repoRoot
+  let policy = teardownResiduePolicy flags
+  -- Step 2: decide based on residue + policy. Skip the credential
+  -- prompt entirely on refusal and on the nothing-to-do path.
+  case (residue, policy) of
+    (live@(_ : _), RefuseOnAnyResidue) ->
+      pure (Left (renderPulumiResidueRefusal live))
+    _ -> do
+      configForCheck <- loadConfigForWrite repoRoot
+      let operationalConfigured = operationalCredentialsConfigured (aws configForCheck)
+      case (null residue, operationalConfigured, policy) of
+        (True, False, _) ->
+          -- Nothing to do regardless of policy: no residue and no
+          -- operational identity to clean up.
+          pure (Right Nothing)
+        (False, False, DestroyPulumiResidueFirst) ->
+          -- The destroy subprocesses inherit operational `aws.*` from
+          -- the dhall config; an empty aws.* would make every
+          -- `prodbox pulumi <stack>-destroy --yes` fail fast. Refuse
+          -- with an actionable message rather than prompting for the
+          -- admin key (the admin key only powers the subsequent IAM
+          -- delete, not the destroy step).
+          pure
+            ( Left
+                ( "AWS teardown --destroy-pulumi-residue requires populated "
+                    ++ "operational `aws.*` (the destroy subprocesses inherit "
+                    ++ "them from prodbox-config.dhall). Run `prodbox aws "
+                    ++ "setup` first to populate, or run each `prodbox pulumi "
+                    ++ "<stack>-destroy --yes` manually with credentials you "
+                    ++ "provide."
+                )
+            )
+        _ -> do
+          -- Proceed to prompt. Print the standard guidance plus, when
+          -- DestroyPulumiResidueFirst is selected and residue exists,
+          -- a preview of the destroy plan including the long-lived
+          -- aws-ses warning.
+          writeOutputLine "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
+          writeOutputLine
+            "`aws.*` credentials from Dhall. The temporary admin credential entered below is not kept."
+          writeOutputLine ""
+          when
+            (policy == DestroyPulumiResidueFirst && not (null residue))
+            (writeDestroyResiduePreview residue)
+          credentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
+          pure
+            ( Right
+                ( Just
+                    AwsTeardownInput
+                      { awsTeardownAdminCredentials = credentials
+                      , awsTeardownResiduePolicy = policy
+                      }
+                )
+            )
+
+-- | Print a preview of the @DestroyPulumiResidueFirst@ plan before the
+-- credential prompt fires so the operator sees what will run.
+writeDestroyResiduePreview :: [(String, String)] -> IO ()
+writeDestroyResiduePreview residue = do
+  writeOutputLine "Pulumi residue destroy plan (--destroy-pulumi-residue):"
+  mapM_
+    (\(stackName, cmd) -> writeOutputLine ("  - " ++ stackName ++ " → " ++ cmd))
+    (pulumiDestroyPlanForResidue residue)
+  when
+    (any (\(n, _) -> n == "aws-ses") residue)
+    ( writeOutputLine
+        ( "  ! aws-ses is long-lived cross-substrate shared infrastructure; "
+            ++ "destroying it triggers SES re-verify + ~24h S3 bucket cooldown."
+        )
+    )
   writeOutputLine ""
-  credentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-  pure
-    AwsTeardownInput
-      { awsTeardownAdminCredentials = credentials
-      , awsTeardownAllowPulumiResidue = teardownAllowPulumiResidue flags
-      }
 
 interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
 interactiveAwsCheckQuotasInput repoRoot = do
@@ -659,7 +824,7 @@ showAwsAccountGuidance = do
   writeOutputLine "1. Sign up at https://aws.amazon.com and choose the Free Tier."
   writeOutputLine "2. Add a payment method; AWS requires it even for Free Tier usage."
   writeOutputLine "3. Complete identity verification and keep the Basic (free) support plan."
-  writeOutputLine "4. Create one temporary elevated access key from a temporary admin IAM user."
+  writeOutputLine "4. Create one temporary admin access key from a temporary admin IAM user."
   writeOutputLine "5. Use that key only for onboarding, then delete it after `prodbox config setup`."
   writeOutputLine "Free Tier notes: 750 hours/month of t2.micro or t3.micro for 12 months,"
   writeOutputLine "5 GiB of S3 standard storage, and Route 53 usage billed separately."
@@ -667,17 +832,24 @@ showAwsAccountGuidance = do
 
 showAdminCredentialsGuidance :: IO ()
 showAdminCredentialsGuidance = do
-  writeOutputLine "Temporary elevated AWS credential guidance:"
+  writeOutputLine "Temporary admin AWS credential guidance:"
   writeOutputLine
-    "1. Sign in to the AWS console with an identity that can manage IAM users, access keys,"
-  writeOutputLine "   Route 53 hosted zones, and Service Quotas."
-  writeOutputLine "2. Create one temporary access key on a temporary admin IAM user:"
+    "1. Sign in with an identity that can manage IAM users, access keys, Route 53"
+  writeOutputLine "   hosted zones, and Service Quotas. Two credential shapes are supported:"
   writeOutputLine
-    "   IAM -> Users -> <temporary admin user> -> Security credentials -> Create access key."
-  writeOutputLine "3. Paste the access key ID and secret below. If AWS gave you temporary STS"
-  writeOutputLine "   credentials, also paste the session token; otherwise leave it blank."
-  writeOutputLine "4. `prodbox` never persists this elevated key. Delete it in the AWS console after"
-  writeOutputLine "   the command completes."
+    "   a. Long-lived IAM user key (AKIA…): IAM console -> Users -> <temporary admin user>"
+  writeOutputLine "      -> Security credentials -> Create access key. No session token."
+  writeOutputLine
+    "   b. STS-derived temporary key (ASIA…): IAM Identity Center \"Access keys\" panel,"
+  writeOutputLine
+    "      or `aws sts get-session-token` / `aws sts assume-role`. Includes a session"
+  writeOutputLine "      token; paste it when prompted."
+  writeOutputLine
+    "2. Paste the access key ID and secret below. `prodbox` auto-detects the shape from"
+  writeOutputLine
+    "   the access-key prefix and only asks for a session token when needed (ASIA…)."
+  writeOutputLine "3. `prodbox` never persists this temporary admin key. Delete it after the"
+  writeOutputLine "   command completes."
   writeOutputLine ""
 
 showRegionChoiceGuidance :: IO ()
@@ -740,21 +912,47 @@ promptAdminCredentials defaultRegion = do
   ensureAwsCliAvailable
   showAdminCredentialsGuidance
   accessKeyId <-
-    Text.pack . trim <$> promptText "Elevated AWS access key ID (from the AWS console)" Nothing
-  secretAccessKey <- Text.pack . trim <$> promptSecret "Elevated AWS secret access key (hidden input)"
-  sessionTokenRaw <-
-    promptText "Elevated AWS session token (optional; STS/session credentials only)" Nothing
+    Text.pack . trim
+      <$> promptText "Temporary admin AWS access key ID (from the AWS console or IAM Identity Center)" Nothing
+  secretAccessKey <-
+    Text.pack . trim
+      <$> promptSecret "Temporary admin AWS secret access key (hidden input)"
+  -- Sprint 7.7 auto-detect: AKIA… skips the session-token prompt
+  -- entirely; ASIA… makes it a required hidden field; any other
+  -- prefix falls back to an optional prompt with an explanatory hint.
+  sessionToken <- promptSessionTokenForKey accessKeyId
   regionRaw <-
     promptText
-      "AWS region for elevated operations (you can change it after regions are listed)"
+      "AWS region for admin operations (you can change it after regions are listed)"
       (Just (Text.unpack defaultRegion))
   validateAdminCredentialsInput
     Credentials
       { access_key_id = accessKeyId
       , secret_access_key = secretAccessKey
-      , session_token = normalizeOptionalText (Text.pack sessionTokenRaw)
+      , session_token = sessionToken
       , region = Text.pack (trim regionRaw)
       }
+
+-- | Sprint 7.7 — IO wrapper around 'sessionTokenPromptShape'. The pure
+-- helper lives next to its tests; this function exists so
+-- 'promptAdminCredentials' has a single clean call.
+promptSessionTokenForKey :: Text -> IO (Maybe Text)
+promptSessionTokenForKey accessKeyId =
+  case sessionTokenPromptShape accessKeyId of
+    SkipPrompt -> pure Nothing
+    PromptRequiredHidden -> do
+      raw <-
+        promptSecret
+          "AWS session token (required for STS-derived keys, hidden input)"
+      pure (Just (Text.pack (trim raw)))
+    PromptOptionalWithHint -> do
+      writeOutputLine
+        ( "  Access key prefix not recognized (AKIA/ASIA); if this came from "
+            ++ "STS / Identity Center, paste the matching session token, "
+            ++ "otherwise press Enter."
+        )
+      raw <- promptText "AWS session token (leave blank for long-lived IAM user keys)" Nothing
+      pure (normalizeOptionalText (Text.pack raw))
 
 promptAdminCredentialsWithRegionChoice :: FilePath -> IO Credentials
 promptAdminCredentialsWithRegionChoice repoRoot = do
@@ -771,7 +969,11 @@ runAwsIamHarnessSetup repoRoot policyTier = do
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
-        , awsTeardownAllowPulumiResidue = True
+        , -- Sprint 7.7: harness uses BypassPerRunResidueOnly so the
+          -- preflight teardown still refuses on long-lived shared infra
+          -- (aws-ses) while bypassing per-run residue handled by
+          -- awsPostflightDestroyActions. Was unconditional True before.
+          awsTeardownResiduePolicy = BypassPerRunResidueOnly
         }
   preflightTeardown <- case preflightTeardownResult of
     Left err ->
@@ -855,13 +1057,23 @@ runAwsIamHarnessTeardown repoRoot = do
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
-        , awsTeardownAllowPulumiResidue = True
+        , -- Sprint 7.7: BypassPerRunResidueOnly (was unconditional True).
+          -- The harness refuses on long-lived aws-ses residue rather
+          -- than silently clearing aws.* and stranding the stack from
+          -- the supported destroy surface. Per-run residue is still
+          -- bypassed because awsPostflightDestroyActions handles those
+          -- stacks in the same suite-exit unwind.
+          awsTeardownResiduePolicy = BypassPerRunResidueOnly
         }
   result <- case teardownResult of
     Left err ->
       throwAws
-        ( "AWS IAM harness teardown unexpectedly refused with "
-            ++ "--allow-pulumi-residue=True: "
+        ( "AWS IAM harness teardown refused while a long-lived shared "
+            ++ "Pulumi stack still has live resources. Operator must "
+            ++ "either destroy the stack (e.g. `prodbox pulumi "
+            ++ "aws-ses-destroy --yes`) or accept the orphan via the "
+            ++ "operator-driven `prodbox aws teardown "
+            ++ "--allow-pulumi-residue`. Underlying refusal message:\n"
             ++ err
         )
     Right value -> pure value
@@ -1011,7 +1223,7 @@ readPromptLine message = do
           throwAws
             ( "Input ended while reading `"
                 ++ message
-                ++ "`. Re-run the command interactively with a temporary elevated AWS credential."
+                ++ "`. Re-run the command interactively with a temporary admin AWS credential."
             )
       | otherwise ->
           throwAws
@@ -1201,13 +1413,30 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
           }
 
 applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO (Either String IamTeardownResult)
-applyAwsTeardown repoRoot input
-  | awsTeardownAllowPulumiResidue input = Right <$> runTeardown
-  | otherwise = do
-      residue <- checkPulumiResidueBeforeTeardown repoRoot
-      case residue of
-        [] -> Right <$> runTeardown
-        live -> pure (Left (renderPulumiResidueRefusal live))
+applyAwsTeardown repoRoot input = do
+  residue <- checkPulumiResidueBeforeTeardown repoRoot
+  -- Partition kept symmetric (_perRunResidue is computed but only
+  -- inspected through the policy logic below; the partition exists so
+  -- any future stack added per `substrates.md → Resource Lifecycle
+  -- Classes` forces a deliberate per-run vs long-lived classification
+  -- via 'perRunStackNames' / 'longLivedStackNames').
+  let (_perRunResidue, longLivedResidue) = partitionResidueByLifecycle residue
+  case awsTeardownResiduePolicy input of
+    AcceptOrphanResidue -> Right <$> runTeardown
+    RefuseOnAnyResidue
+      | null residue -> Right <$> runTeardown
+      | otherwise -> pure (Left (renderPulumiResidueRefusal residue))
+    BypassPerRunResidueOnly
+      | null longLivedResidue -> Right <$> runTeardown
+      | otherwise -> pure (Left (renderPulumiResidueLongLivedRefusal longLivedResidue))
+    DestroyPulumiResidueFirst
+      | null residue -> Right <$> runTeardown
+      | otherwise -> do
+          let destroyPlan = pulumiDestroyPlanForResidue residue
+          destroyExit <- dispatchPulumiDestroysForResidue repoRoot destroyPlan
+          case destroyExit of
+            Left err -> pure (Left err)
+            Right () -> Right <$> runTeardown
  where
   runTeardown :: IO IamTeardownResult
   runTeardown = do
@@ -1238,6 +1467,77 @@ applyAwsTeardown repoRoot input
         , iamTeardownUserDeleted = userDeleted
         , iamTeardownDhallPath = configDhallPath paths
         }
+
+-- | Sprint 7.7 — destroy-first dispatch helper. Invokes
+-- @prodbox pulumi \<stack>-destroy --yes@ for each stack in the plan,
+-- in canonical order. Stops at first failure and returns its
+-- subprocess error. The destroy subprocesses inherit the existing
+-- operational @aws.*@ from the dhall config — they do NOT consume the
+-- admin credential passed into 'applyAwsTeardown'.
+--
+-- For 'aws-ses' specifically, emits a stderr warning before invoking
+-- its destroy so operators see the SES re-verify + S3 bucket cooldown
+-- cost they are accepting.
+dispatchPulumiDestroysForResidue
+  :: FilePath -> [(String, String)] -> IO (Either String ())
+dispatchPulumiDestroysForResidue repoRoot plan = go plan
+ where
+  binaryPath = canonicalOperatorBinaryPath repoRoot
+  go :: [(String, String)] -> IO (Either String ())
+  go [] = pure (Right ())
+  go ((stackName, _destroyCmd) : rest) = do
+    when
+      (stackName == "aws-ses")
+      ( writeDiagnosticLine
+          ( "`aws-ses` is long-lived cross-substrate shared infrastructure. "
+              ++ "Destroying it now will trigger a 5-30 min SES domain identity + DKIM "
+              ++ "re-verification on next reprovision, and the S3 capture bucket "
+              ++ "cannot be re-created for ~24 hours. Proceeding because "
+              ++ "`--destroy-pulumi-residue` was set."
+          )
+      )
+    let cliArgs = pulumiDestroyArgsForStack stackName
+        spec =
+          Subprocess
+            { subprocessPath = binaryPath
+            , subprocessArguments = cliArgs
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+    runResult <- runSubprocessStreaming spec
+    case runResult of
+      Failure err ->
+        pure
+          ( Left
+              ( "failed to start `prodbox "
+                  ++ unwords cliArgs
+                  ++ "` for "
+                  ++ stackName
+                  ++ ": "
+                  ++ err
+              )
+          )
+      Success ExitSuccess -> go rest
+      Success (ExitFailure code) ->
+        pure
+          ( Left
+              ( "`prodbox "
+                  ++ unwords cliArgs
+                  ++ "` exited with code "
+                  ++ show code
+                  ++ " while destroying "
+                  ++ stackName
+              )
+          )
+
+  pulumiDestroyArgsForStack :: String -> [String]
+  pulumiDestroyArgsForStack stackName =
+    case stackName of
+      "aws-eks" -> ["pulumi", "eks-destroy", "--yes"]
+      "aws-eks-subzone" -> ["pulumi", "aws-subzone-destroy", "--yes"]
+      "aws-test" -> ["pulumi", "test-destroy", "--yes"]
+      "aws-ses" -> ["pulumi", "aws-ses-destroy", "--yes"]
+      other -> ["pulumi", other ++ "-destroy", "--yes"]
 
 -- | Sprint 7.6 refuse-path: enumerate live Pulumi-managed AWS stacks
 -- by querying each stack's on-disk snapshot. Returns the list of live
@@ -1271,9 +1571,37 @@ renderPulumiResidueRefusal residue =
       ]
         ++ map (\(name, cmd) -> "  - " ++ name ++ " → " ++ cmd) residue
         ++ [ ""
+           , "Or re-run with `--destroy-pulumi-residue` to destroy these stacks"
+           , "automatically before the IAM teardown proceeds (Sprint 7.7)."
+           , ""
            , "If you must delete the IAM user anyway (recovery scenarios),"
            , "re-run with `--allow-pulumi-residue` to bypass this check."
            ]
+    )
+
+-- | Sprint 7.7 — refusal renderer for the harness-internal
+-- 'BypassPerRunResidueOnly' policy. Lists only the long-lived stacks
+-- that block the teardown (per-run stacks are intentionally not
+-- mentioned because 'awsPostflightDestroyActions' handles them
+-- separately). Frames the recovery as "destroy the long-lived stack
+-- via its canonical command, then re-run" since the harness has no
+-- analog of @--destroy-pulumi-residue@.
+renderPulumiResidueLongLivedRefusal :: [(String, String)] -> String
+renderPulumiResidueLongLivedRefusal longLived =
+  unlines
+    ( [ "AWS teardown refused: long-lived cross-substrate shared Pulumi stacks"
+      , "still have live resources."
+      , ""
+      , "The test harness will not clear operational `aws.*` while these stacks"
+      , "are alive — doing so would strand them from the supported destroy"
+      , "surface (every `prodbox pulumi <stack>-destroy` fails fast when"
+      , "operational `aws.*` is empty)."
+      , ""
+      , "Run the canonical destroy command for each stack below first, then"
+      , "re-run the test that triggered this teardown:"
+      , ""
+      ]
+        ++ map (\(name, cmd) -> "  - " ++ name ++ " → " ++ cmd) longLived
     )
 
 applyAwsCheckQuotas :: FilePath -> AwsCheckQuotasInput -> IO [QuotaStatus]
@@ -1998,7 +2326,7 @@ renderConfigSetupResult result =
     , "CONFIG_PATH=" ++ configSetupDhallPath result
     , "QUOTA_REQUESTS_SUBMITTED="
         ++ show (length (filter quotaRequested (configSetupQuotaStatuses result)))
-    , "POST_SETUP_GUIDANCE=Delete the temporary elevated access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
+    , "POST_SETUP_GUIDANCE=Delete the temporary admin access key you used for setup; prodbox now owns a dedicated IAM user for normal operations."
     ]
 
 validateHostedZoneAlignment :: Text -> Text -> Either String ()

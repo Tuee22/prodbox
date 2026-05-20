@@ -59,6 +59,30 @@
   `--allow-pulumi-residue` flag on `prodbox aws teardown` provides an operator-acknowledged
   escape hatch when recovery from a partial state requires deleting operational creds with
   stacks still up.
+- Sprint `7.7` (May 19, 2026) generalizes the teardown residue contract and closes the
+  test-harness orphan-safety hole that Sprint `7.6` left open. The `Bool`
+  `awsTeardownAllowPulumiResidue` field on `AwsTeardownInput` was replaced by a
+  `PulumiResiduePolicy` enum with four constructors: `RefuseOnAnyResidue` (default,
+  operator-driven), `DestroyPulumiResidueFirst` (operator-driven via the new
+  `--destroy-pulumi-residue` flag, mutually exclusive with `--allow-pulumi-residue`),
+  `AcceptOrphanResidue` (operator-driven via `--allow-pulumi-residue`, the Sprint `7.6`
+  escape hatch), and `BypassPerRunResidueOnly` (harness-internal only, never CLI-settable).
+  The per-run partition (`aws-eks`, `aws-eks-subzone`, `aws-test`) vs long-lived partition
+  (`aws-ses`) is fixed by `Prodbox.Aws.perRunStackNames` / `longLivedStackNames` and must
+  match `DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes` verbatim. The
+  test-harness teardown paths (`runAwsIamHarnessSetup` preflight + `runAwsIamHarnessTeardown`
+  postflight) now use `BypassPerRunResidueOnly`, so the harness refuses on `aws-ses`
+  residue exactly the way the operator-driven path does while still bypassing per-run
+  residue that `awsPostflightDestroyActions` handles in the same suite-exit unwind.
+- Sprint `7.7` also moved the file-based residue check **before** the credential prompt in
+  `interactiveAwsTeardownInput`, so operators on the refuse path never enter credentials
+  the tool was about to discard, and added a "nothing to do" early-exit when residue is
+  empty AND operational `aws.*` is empty. The admin-credential prompt now auto-detects
+  the access-key prefix (`sessionTokenPromptShape`): `AKIA…` skips the session-token
+  prompt entirely; `ASIA…` makes it a required hidden field; any other prefix falls back
+  to an optional prompt with an explanatory hint. The four user-facing prompt strings
+  were renamed from "Elevated AWS …" / "elevated operations" to "Temporary admin AWS …"
+  / "admin operations" inline with the May 2026 doctrine alignment.
 
 ## 0A. Planning Ownership
 

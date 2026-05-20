@@ -25,6 +25,7 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy (ByteString)
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.Char (isAsciiUpper)
 import Data.List (isInfixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -255,7 +256,7 @@ isPrefixOfCI needle haystack =
   map lower (take (length needle) haystack) == map lower needle
  where
   lower c
-    | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
+    | isAsciiUpper c = toEnum (fromEnum c + 32)
     | otherwise = c
 
 trim :: String -> String

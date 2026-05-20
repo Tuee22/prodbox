@@ -91,6 +91,16 @@ This section is the authoritative classification — when adding a new AWS resou
 `prodbox` code path, it must land in one of these two classes (and in the matching inventory
 table below).
 
+The per-run vs long-lived partition is mirrored in code by `Prodbox.Aws.perRunStackNames`
+and `Prodbox.Aws.longLivedStackNames` (Sprint `7.7`), which the
+`Prodbox.Aws.partitionResidueByLifecycle` predicate and the `PulumiResiduePolicy`
+`BypassPerRunResidueOnly` arm consume. The lists in this doc and the lists in
+`src/Prodbox/Aws.hs` must match verbatim — adding a new stack to any `prodbox` code path
+requires updating both this section and the code-side helpers in the same change. The
+`prodbox aws teardown` flag surface (`--destroy-pulumi-residue`, `--allow-pulumi-residue`)
+and the harness-internal `BypassPerRunResidueOnly` mode both depend on the partition being
+authoritative here.
+
 ### Per-run stacks (auto-managed by the harness)
 
 | Stack | Provisioned by | Destroyed by |

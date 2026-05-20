@@ -153,7 +153,7 @@ prerequisites.
 
 ## Alignment Status
 
-Phase `0` reopened through Sprints `0.2`–`0.5` to adopt
+Phase `0` reopened through Sprints `0.2`–`0.6` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
 governed docs and plan suite with that doctrine, and schedule every currently known code-level
 adoption gap onto explicit downstream sprints. That planning and documentation work is now
@@ -298,8 +298,8 @@ The reopened ranges close on the following sprint sets:
 | Public-edge transport boundary | Public listener TLS terminates at Envoy on the supported path; backend HTTP remains the current workload default and backend TLS or mTLS requires later explicit doctrine ownership | Haskell lifecycle plus chart doctrine |
 | Optional realtime-state model | Redis-backed shared state for supported WebSocket workloads today and any later explicit external rate-limit service | Haskell chart platform plus application workload doctrine |
 | Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary admin AWS credentials and AWS CLI subprocesses |
-| AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses |
-| AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup |
+| AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses; `aws teardown` carries the Sprint `7.6`/`7.7` `PulumiResiduePolicy` contract (default refuse, `--destroy-pulumi-residue` to destroy live stacks first, `--allow-pulumi-residue` operator-acknowledged orphan escape; mutually exclusive at parse time). `aws setup` auto-detects `AKIA…` vs `ASIA…` access keys to conditionally prompt for the session token (Sprint `7.7`). |
+| AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup. Sprint `7.6` orphan-safety guards: the harness postflight auto-destroys per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) on success / failure / Ctrl-C before clearing operational `aws.*`. Sprint `7.7` `BypassPerRunResidueOnly` mode: the harness teardown still refuses on long-lived `aws-ses` residue (was unconditionally bypassed before Sprint `7.7`). |
 | Formal verification | `prodbox tla-check` | Haskell CLI invoking the TLA+ toolchain |
 | Code quality gate | `prodbox check-code` | Haskell CLI plus governed doctrine-alignment enforcement |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |
@@ -481,10 +481,19 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 ## Current Execution State
 
 The pre-reopen Phases `0`–`7` remain closed on the implemented repository architecture. Phase
-`0` has now re-closed after Sprints `0.2`–`0.5` landed the doctrine-adoption planning work.
-Phases `1`–`4` have also reclosed on the downstream implementation scope scheduled by those
-sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, and `4.5`–`4.8` are locally validated
-and doc-aligned.
+`0` has now re-closed after Sprints `0.2`–`0.6` landed the doctrine-adoption planning work
+(Sprint 0.6 introduced the substrate doctrine and renamed phase-5 and phase-7 to their
+substrate-aware names). Phases `1`–`4` have also reclosed on the downstream implementation
+scope scheduled by those sprints: Sprints `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, and
+`4.5`–`4.8` are locally validated and doc-aligned. Phase `5` reclosed after Sprint `5.5`
+added the port-80 HTTPS-redirect listener (May 13, 2026). Phase `7` reopened for substrate
+parity: Sprint `7.5.a`/`7.5.b.*`/`7.5.b.iii`/`7.5.c.i`–`7.5.c.iv`/`7.5.c.v.b` are `Done`
+on their owned code surfaces (May 17–19, 2026); Sprint `7.5.c.v` (live AWS-substrate
+canonical-suite re-run) remains `Active` and operator-driven. Sprint `7.6` (orphan-safety
+refuse-path + auto-destroy) and Sprint `7.7` (generalized `aws teardown` +
+`PulumiResiduePolicy` ADT + harness teardown bug closure + admin-credential prompt UX) are
+both `Done` (May 19, 2026). Phase `8` opened May 18, 2026; Sprints `8.1`–`8.4` are `Done`
+and `8.5`–`8.6` carry the remaining operator-driven live OIDC closure work.
 
 - Phase 0 defines the canonical plan suite and cleanup ledger.
 - Phase 1 owns the CLI, direct-Dhall config contract, `.build/prodbox` artifact contract, the

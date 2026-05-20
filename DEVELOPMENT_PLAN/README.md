@@ -29,7 +29,7 @@ govern this plan suite.
 
 ## Closure Status
 
-Phase `0` reopened through Sprints `0.2`–`0.5` (see
+Phase `0` reopened through Sprints `0.2`–`0.6` (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
 governed docs and plan suite to that doctrine, and schedule every currently known code-level
@@ -50,13 +50,22 @@ suite proves both the hermetic success contract and the summarized failure path.
 Phase `5` briefly reopened
 through Sprint `5.5` to add the missing public HTTP listener that redirects port `80` to the
 canonical HTTPS edge, and that redirect follow-up is now `Done` after the May 13, 2026
-aggregate validation. Phases `5`, `6`, and `7` are `Done` on their owned surfaces (public-edge
-proof, clean-room rerun contract, AWS IAM and quota administration), and the overall doctrine-
-driven handoff is complete now that Sprint `4.8` has landed.
+aggregate validation. Phases `5` and `6` are `Done` on their owned surfaces (public-edge
+proof, clean-room rerun contract). Phase `7` is `Done` on its **legacy** owned scope
+(Sprints `7.1`–`7.4`: interactive onboarding, AWS IAM management, quota automation, and the
+temporary-admin-credential validation harness) **and** has reopened for AWS-substrate parity:
+Sprint `7.5` is `Active` (sub-sprints `7.5.a`/`7.5.b.*`/`7.5.b.iii`/`7.5.c.i`–`7.5.c.iv`/
+`7.5.c.v.b` are `Done` on their code-owned surfaces; Sprint `7.5.c.v` remains operator-driven
+on a live AWS run); Sprints `7.6` (orphan-safety refuse-path + auto-destroy postflight) and
+`7.7` (generalized `aws teardown` + `PulumiResiduePolicy` ADT + harness teardown bug closure
++ admin-credential prompt UX) are both `Done` (May 19, 2026). Phase `8` is `Active` on
+Sprints `8.5`–`8.6`. The doctrine-adoption handoff is closed; remaining open work is
+substrate-parity live validation (Sprint `7.5.c.v`) and live Keycloak invite OIDC closure
+(Sprint `8.5`).
 
 Reopened sprints by phase:
 
-- Phase 0 — **Sprints 0.2, 0.3, 0.4, 0.5**: Sprint 0.2 adopts HASKELL_CLI_TOOL.md as governed CLI
+- Phase 0 — **Sprints 0.2, 0.3, 0.4, 0.5, 0.6**: Sprint 0.2 adopts HASKELL_CLI_TOOL.md as governed CLI
   doctrine. Updates `documents/documentation_standards.md` with the six Generated Sections
   requirements, retags governed engineering docs as doctrine pointers, and threads doctrine
   cross-references through the plan suite and root guidance. Sprint 0.3 schedules the
@@ -90,7 +99,12 @@ Reopened sprints by phase:
   `upgrade`, `repair`, `force-install`). Sprint 0.5 schedules the remaining
   `prodbox rke2 delete --yes` success-path output residue: a new Phase `4` sprint
   hardens hermetic success summaries, tracks the leak in the cleanup ledger, and names the
-  governed documentation updates required by `documents/documentation_standards.md`.
+  governed documentation updates required by `documents/documentation_standards.md`. Sprint
+  0.6 introduces the substrate doctrine into the canonical phase model, renames
+  `phase-5-public-host-validation.md` → `phase-5-canonical-test-suite.md` and
+  `phase-7-aws-iam-quota-automation.md` → `phase-7-aws-substrate-foundations.md`, adds
+  [substrates.md](substrates.md), and makes substrate provision/teardown a per-substrate
+  concern separate from suite content.
 - Phase 1 — **Sprints 1.6–1.27**: `CommandSpec` source-of-truth split; `Plan` / `apply`
   discipline with `--dry-run`; `Subprocess` ADT formalization; prerequisite registry
   remedy-hint contract; lint, generated-section, and forbidden-path stack alignment;
@@ -283,10 +297,10 @@ A sprint can move to `Done` only when all of the following are true:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; ✅ 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract), May 18, 2026; 🔄 7.5.c code follow-up landed May 18, 2026; ✅ 7.5.c.i substrate-aware MinIO chart values, May 19, 2026; ✅ 7.5.c.ii EKS containerd registry-mirror DaemonSet renderer, May 19, 2026; ✅ 7.5.c.iii EKS-side MinIO + Harbor installs wired into `ensureAwsSubstratePlatformRuntime` + DaemonSet apply, May 19, 2026; ✅ 7.5.c.iv in-cluster image-mirror Job + Percona operator + steady-state MinIO reconcile, May 19, 2026; 🔄 Active Sprint 7.5.c.v (first live AWS-substrate run May 19, 2026: surfaced six architectural gaps, five fixed in-flight — EBS CSI driver Pulumi addon + IRSA condition-key fn::split/join + crane image tag :debug + /busybox/sh shebang + crane copy --insecure + in-cluster harbor-projects bootstrap pod; full 11-step substrate platform install passes; gateway chart `ImagePullBackOff` blocked on sixth gap = Sprint 7.5.c.v.b custom-image publication); ✅ Sprint 7.5.c.v.b in-cluster custom-image push (crane pod: docker save + kubectl cp + crane push --insecure), May 19, 2026 — live re-run pending in Sprint 7.5.c.v); ✅ Sprint 7.6 (AWS Harness Orphan-Safety Guards: refuse-path on `prodbox aws teardown` + auto-destroy per-run stacks on test-harness exit incl. Ctrl-C, May 19, 2026) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; ✅ 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract), May 18, 2026; ✅ 7.5.c code follow-up landed May 18, 2026; ✅ 7.5.c.i substrate-aware MinIO chart values, May 19, 2026; ✅ 7.5.c.ii EKS containerd registry-mirror DaemonSet renderer, May 19, 2026; ✅ 7.5.c.iii EKS-side MinIO + Harbor installs wired into `ensureAwsSubstratePlatformRuntime` + DaemonSet apply, May 19, 2026; ✅ 7.5.c.iv in-cluster image-mirror Job + Percona operator + steady-state MinIO reconcile, May 19, 2026; 🔄 Active Sprint 7.5.c.v (first live AWS-substrate run May 19, 2026: surfaced six architectural gaps, five fixed in-flight — EBS CSI driver Pulumi addon + IRSA condition-key fn::split/join + crane image tag :debug + /busybox/sh shebang + crane copy --insecure + in-cluster harbor-projects bootstrap pod; full 11-step substrate platform install passes; gateway chart `ImagePullBackOff` blocked on sixth gap = Sprint 7.5.c.v.b custom-image publication); ✅ Sprint 7.5.c.v.b in-cluster custom-image push (crane pod: docker save + kubectl cp + crane push --insecure), May 19, 2026 — live re-run pending in Sprint 7.5.c.v); ✅ Sprint 7.6 (AWS Harness Orphan-Safety Guards: refuse-path on `prodbox aws teardown` + auto-destroy per-run stacks on test-harness exit incl. Ctrl-C, May 19, 2026); ✅ Sprint 7.7 (Generalized `aws teardown` + harness orphan-safety + admin-credential prompt UX, May 19, 2026: introduces `PulumiResiduePolicy` ADT with per-run vs long-lived partition, closes the May 19 reproduction where `runAwsIamHarnessTeardown` cleared `aws.*` while `aws-ses` was alive via new `BypassPerRunResidueOnly` harness mode, adds `--destroy-pulumi-residue` flag mutually exclusive with `--allow-pulumi-residue` and rejected at parse time, moves the residue check before the credential prompt, skips the prompt entirely with "Nothing to do." when residue empty + `aws.*` empty, auto-detects `AKIA…` vs `ASIA…` to conditionally prompt for the session token, retires the misleading "Elevated AWS …" prompt strings — 24 new unit tests, 378/378 total) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secrets persistence landed (credential-setup form POST + fresh OIDC login + claim assertions remain operator-driven sub-sprint, blocked on live Keycloak form-structure capture); 🔄 Sprint 8.6 doc parity landed (live cross-substrate proof pending 7.5.c + 8.5 OIDC follow-up closure). Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the only remaining live OIDC closure work) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
-**Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
+**Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.6` to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and is now `Done` on that planning and
 documentation surface. Phases `1`–`4` were reopened on the downstream doctrine-driven
 implementation work and are now reclosed. Phase `5` is re-closed after Sprint `5.5` added and
@@ -356,10 +370,15 @@ per-run stacks vs long-lived cross-substrate shared infrastructure) live in
 ## Current Plan Status
 
 The development plan remains authoritative. The repository worktree is fully closed against the
-pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.N), and
+pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.4), and
 the doctrine-adoption reopen is now closed as well. Current worktree evidence puts Sprints
-`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, and `5.5` in `Done` state on their owned
-surfaces. The following implemented baseline surfaces remain current on the supported path:
+`1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, `5.5`, `7.5.a`/`7.5.b.*`/`7.5.b.iii`/
+`7.5.c.i`–`7.5.c.iv`/`7.5.c.v.b`, `7.6`, `7.7`, and `8.1`–`8.4` in `Done` state on their
+owned surfaces. The remaining `Active` work is operator-driven: Sprint `7.5.c.v` (live
+AWS-substrate canonical-suite re-run that exercises the now-implemented 13-step
+`ensureAwsSubstratePlatformRuntime` end-to-end) and Sprints `8.5`–`8.6` (live Keycloak
+credential-setup form POST + fresh OIDC login + cross-substrate parity flip). The following
+implemented baseline surfaces remain current on the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` through `dhall-to-json` without materializing

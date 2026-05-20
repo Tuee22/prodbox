@@ -1,6 +1,7 @@
 module Prodbox.CLI.Command
   ( AwsCommand (..)
   , AwsTeardownFlags (..)
+  , PulumiResiduePolicy (..)
   , ChartsCommand (..)
   , buildPlan
   , CommandListingFormat (..)
@@ -157,15 +158,41 @@ data AwsCommand
   | AwsRequestQuotas PolicyTier
   deriving (Eq, Show)
 
--- | Operator-facing flags on @prodbox aws teardown@. The
--- @--allow-pulumi-residue@ flag bypasses the Sprint 7.6 refuse-path
--- check, allowing the operational IAM user to be deleted even while
--- Pulumi-managed stacks (@aws-eks@, @aws-eks-subzone@, @aws-test@,
--- @aws-ses@) still have live resources. Operators use this only as a
--- recovery escape hatch when ordinary destroy paths are unavailable.
+-- | Operator-facing flags on @prodbox aws teardown@. Sprint 7.7
+-- replaced the single @--allow-pulumi-residue@ Bool with a tri-state
+-- 'PulumiResiduePolicy' that also exposes @--destroy-pulumi-residue@.
+-- The two CLI flags are mutually exclusive at parse time.
 data AwsTeardownFlags = AwsTeardownFlags
-  { teardownAllowPulumiResidue :: Bool
+  { teardownResiduePolicy :: PulumiResiduePolicy
   }
+  deriving (Eq, Show)
+
+-- | Sprint 7.7 — operator-facing teardown residue policy. Maps onto two
+-- mutually-exclusive CLI flags plus one harness-internal mode. The
+-- enum lives in 'Prodbox.CLI.Command' (next to 'AwsTeardownFlags') and
+-- is re-exported from 'Prodbox.Aws' for call sites that import the
+-- teardown machinery from there.
+--
+-- * 'RefuseOnAnyResidue' — default. Operator-driven @prodbox aws teardown@
+--   without flags. If any Pulumi stack reports live resources, refuse to
+--   delete the operational IAM user and emit an actionable message.
+-- * 'DestroyPulumiResidueFirst' — operator-driven via
+--   @--destroy-pulumi-residue@. Run @prodbox pulumi \<stack>-destroy --yes@
+--   for each live stack (per-run AND long-lived) in canonical order, then
+--   proceed with the IAM teardown. Long-lived 'aws-ses' destruction
+--   emits a stderr warning about SES re-verify + S3 bucket cooldown.
+-- * 'AcceptOrphanResidue' — operator-driven via @--allow-pulumi-residue@.
+--   Operator-acknowledged orphan: proceed even when stacks are alive.
+-- * 'BypassPerRunResidueOnly' — harness-internal only, never CLI-settable.
+--   Closes the May 19, 2026 orphan-safety hole where the test-harness
+--   teardown path previously bypassed every residue check. The harness
+--   now bypasses per-run stack residue only and still refuses on
+--   long-lived shared infrastructure ('aws-ses').
+data PulumiResiduePolicy
+  = RefuseOnAnyResidue
+  | DestroyPulumiResidueFirst
+  | AcceptOrphanResidue
+  | BypassPerRunResidueOnly
   deriving (Eq, Show)
 
 data PulumiCommand

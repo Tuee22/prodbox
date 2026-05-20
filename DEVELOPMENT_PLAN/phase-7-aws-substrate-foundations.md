@@ -359,7 +359,9 @@ None.
 
 ## Sprint 7.5: AWS Substrate Parity with the Canonical Suite 🔄
 
-**Status**: Active (split into `7.5.a`, `7.5.b`, `7.5.c`)
+**Status**: Active (`7.5.a` ✅ Done May 17, 2026; `7.5.b` ✅ Done May 17, 2026; `7.5.b.iii`
+✅ Done May 18, 2026; `7.5.c` 🔄 Active — child Sprint `7.5.c.v` carries the only remaining
+operator-driven live AWS-substrate canonical-suite re-run)
 **Blocked by**: Existing AWS substrate foundations (Sprints `7.1`–`7.4`); Sprint `5.X` if the
 canonical-suite content gains new prerequisites that need cross-substrate parity
 
@@ -509,10 +511,13 @@ substrate-aware `substrateKubeconfigPath` / `substrateRoute53ZoneId` helpers on
 review, where they are paired with the AWS-substrate ingress and cert-manager
 DNS01 work they exist to support.
 
-## Sprint 7.5.b: AWS-Native Ingress, cert-manager DNS01, and AWS-Substrate Chart Deploy 🔄
+## Sprint 7.5.b: AWS-Native Ingress, cert-manager DNS01, and AWS-Substrate Chart Deploy ✅
 
-**Status**: Active (split into `7.5.b.i` ✅ and `7.5.b.ii` 📋 per the May 17, 2026 scoping
-check-in)
+**Status**: Done (May 17, 2026 — both sub-sprints `7.5.b.i` and `7.5.b.ii` Done; the
+substrate-independence doctrine refactor `7.5.b.iii` was added between `7.5.b` and `7.5.c`
+and is also Done. The original May 17 scoping note split the sub-sprint into `7.5.b.i` ✅
+and `7.5.b.ii` 📋; `7.5.b.ii` then completed in four sub-sub-sprints `a`/`b`/`c.I+II`/
+`d.I+II.α+β+γ+δ`, all Done.)
 **Blocked by**: Sprint `7.5.a`
 
 The sub-sprint owns the AWS-substrate equivalent of the home substrate's MetalLB + Envoy
@@ -583,13 +588,14 @@ None. The AWS Load Balancer Controller IAM + IRSA, Route 53 subzone Pulumi progr
 substrate-aware `ClusterIssuer` rendering, substrate-aware `ChartPlatform.hs` branching, and
 AWS LB Controller + Envoy Gateway install paths are owned by Sprint `7.5.b.ii`.
 
-## Sprint 7.5.b.ii: AWS Load Balancer Controller, Route 53 Subzone, and Chart-Deploy Substrate Branching 🔄
+## Sprint 7.5.b.ii: AWS Load Balancer Controller, Route 53 Subzone, and Chart-Deploy Substrate Branching ✅
 
-**Status**: Active (`7.5.b.ii.a` ✅ done May 17, 2026; `7.5.b.ii.b`/`7.5.b.ii.c`/`7.5.b.ii.d`
-📋 Planned). The May 17, 2026 scoping pass further split this sub-sprint into four
-session-sized sub-sub-sprints because the combined surface (Pulumi + ClusterIssuer +
-ChartPlatform substrate threading + AWS LB Controller + Envoy Gateway install) is too large
-for one session.
+**Status**: Done (May 17, 2026 — all four sub-sub-sprints landed:
+`7.5.b.ii.a` ✅, `7.5.b.ii.b` ✅, `7.5.b.ii.c` ✅ (split into `c.I` ✅ + `c.II` ✅),
+`7.5.b.ii.d` ✅ (split into `d.I` ✅ + `d.II.α` ✅ + `d.II.β` ✅ + `d.II.γ` ✅ + `d.II.δ` ✅)).
+The May 17, 2026 scoping pass split this sub-sprint into four session-sized sub-sub-sprints
+because the combined surface (Pulumi + ClusterIssuer + ChartPlatform substrate threading +
+AWS LB Controller + Envoy Gateway install) is too large for one session.
 
 - **`7.5.b.ii.a`** (✅ Done, May 17, 2026) — substrate-aware cert-manager `ClusterIssuer`
   rendering. `src/Prodbox/CLI/Rke2.hs::acmeRuntimeManifest` and `acmeClusterIssuerSpec` now
@@ -898,7 +904,9 @@ None. Code reconciliation is owned by Sprint `7.5.c`.
 
 ## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 🔄
 
-**Status**: Active
+**Status**: Active (sub-sprints `7.5.c.i` ✅, `7.5.c.ii` ✅, `7.5.c.iii` ✅, `7.5.c.iv` ✅,
+`7.5.c.v.b` ✅ all Done May 19, 2026; child Sprint `7.5.c.v` 🔄 Active — operator-driven
+live AWS-substrate canonical-suite re-run remains the only remaining work)
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
 `src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
 `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/PublicEdge.hs`,
@@ -1793,6 +1801,170 @@ above are documentation of the closed contract, not remaining
 implementation work — `prodbox test integration` does not yet
 exercise the SIGINT cancellation path on real AWS because doing so
 requires a full live AWS substrate cycle.
+
+## Sprint 7.7: Generalized `aws teardown` + Harness Orphan-Safety + Admin-Credential Prompt UX ✅
+
+**Status**: Done (May 19, 2026)
+**Blocked by**: none (Sprint `7.6` was closed; this sprint extended and generalized the
+contract Sprint `7.6` introduced)
+**Implementation**: `src/Prodbox/CLI/Command.hs` (new `PulumiResiduePolicy` enum +
+`AwsTeardownFlags.teardownResiduePolicy :: PulumiResiduePolicy` field);
+`src/Prodbox/Aws.hs` (refactored `applyAwsTeardown` with per-run vs long-lived partition
+via `partitionResidueByLifecycle` and `DestroyPulumiResidueFirst` branch that dispatches
+through new `dispatchPulumiDestroysForResidue`; pure helpers `perRunStackNames`,
+`longLivedStackNames`, `pulumiDestroyPlanForResidue`, `renderPulumiResidueLongLivedRefusal`;
+refactored `interactiveAwsTeardownInput` to `IO (Either String (Maybe AwsTeardownInput))`
+shape with file-based residue check before any prompt and a "nothing to do" early-exit
+when residue is empty AND operational `aws.*` is empty;
+refactored `promptAdminCredentials` to use new `sessionTokenPromptShape` /
+`promptSessionTokenForKey` for `AKIA…` vs `ASIA…` auto-detection; renamed
+user-facing "Elevated AWS …" prompt strings to "Temporary admin AWS …"; updated
+`runAwsIamHarnessSetup` and `runAwsIamHarnessTeardown` to use
+`BypassPerRunResidueOnly` instead of the unconditional bypass that allowed the May 19
+orphan reproduction); `src/Prodbox/CLI/Spec.hs` (`awsTeardownFlagsParser` uses the
+`flag'` + `<|>` + `pure` idiom for `--allow-pulumi-residue` and `--destroy-pulumi-residue`,
+which optparse-applicative renders as `[--destroy-pulumi-residue | --allow-pulumi-residue]`
+and rejects both-together at parse time with "Invalid option" exit 1; new
+`awsTeardownPolicyFromFlags :: Bool -> Bool -> Either String PulumiResiduePolicy` pure
+helper for unit tests); `test/unit/Main.hs` (24 new tests across four blocks: Sprint 7.7
+residue lifecycle partition, Sprint 7.7 applyAwsTeardown residue policy Scenarios E/F/G/H/I,
+Sprint 7.7 DestroyPulumiResidueFirst dispatch plan Scenarios J/K/L,
+Sprint 7.7 promptAdminCredentials UX sessionTokenPromptShape,
+Sprint 7.7 awsTeardownPolicyFromFlags mutual exclusion).
+**Docs to update**:
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/aws_account_setup_guide.md`,
+`documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Close four related defects observed in the May 19, 2026 diagnostic session, all rooted in
+`src/Prodbox/Aws.hs` and all touching the operator-facing teardown contract:
+
+1. **Harness teardown bypasses the long-lived-residue refusal.** Sprint `7.6` closed the
+   refuse-path for the **operator-driven** `prodbox aws teardown` invocation, but the
+   **test-harness internal** path in `src/Prodbox/Aws.hs::runAwsIamHarnessTeardown` (and the
+   preflight call in `runAwsIamHarnessSetup`) passes `awsTeardownAllowPulumiResidue = True`
+   unconditionally, which bypasses the same refuse-path it was designed to enforce. Result:
+   on May 18 the operator closed Sprint `8.1` by provisioning `aws-ses`; on May 19 a
+   `prodbox test integration aws-iam` run cleared operational `aws.*` from
+   `prodbox-config.dhall` even though `aws-ses` was alive, stranding the `aws-ses` Pulumi
+   stack from the supported destroy surface until the operator reran `prodbox aws setup`.
+2. **Admin-credential prompt is misleading.** `promptAdminCredentials` (around lines 738–757)
+   asks for four fields sequentially, with the "optional" session-token hint buried in a
+   parenthetical. Operators using long-lived `AKIA…` IAM user keys can't tell whether they
+   should fill the session-token field; operators using STS-derived `ASIA…` keys may skip it
+   thinking "optional" means "always skippable", which then breaks every subsequent AWS API
+   call with `InvalidClientTokenId`. The prompt label still says "Elevated AWS" rather than
+   the doctrine-canonical "temporary admin"; the residual "Elevated AWS …" prompt strings
+   are already on the legacy-tracking-for-deletion ledger.
+3. **`aws teardown` prompts for credentials before knowing whether they are needed.** The
+   current control flow prompts for the temporary admin credential first and only then
+   checks for Pulumi residue, which is wasted operator effort when the residue check refuses
+   immediately afterward. The residue check is file-based (`doesFileExist
+   .prodbox-state/<stack>/stack-snapshot.json`) and needs no credentials — it can and should
+   run before the prompt.
+4. **`aws teardown` has no path to clean up Pulumi residue automatically.** Today
+   `aws teardown` either refuses (default) or proceeds while stranding Pulumi resources
+   (`--allow-pulumi-residue`, operator-acknowledged orphan). There is no third option:
+   "destroy the Pulumi stacks for me, then continue with the IAM teardown." Adding
+   `--destroy-pulumi-residue` (mutually exclusive with `--allow-pulumi-residue`) makes the
+   common cleanup case one command instead of N.
+
+### Deliverables
+
+- **New `PulumiResiduePolicy` ADT** in `src/Prodbox/Aws.hs` with four constructors:
+  `RefuseOnAnyResidue` (default, operator-driven), `DestroyPulumiResidueFirst`
+  (operator-driven via `--destroy-pulumi-residue`), `AcceptOrphanResidue` (operator-driven
+  via `--allow-pulumi-residue`), `BypassPerRunResidueOnly` (harness-internal only; never
+  CLI-settable). Replaces the existing `awsTeardownAllowPulumiResidue :: Bool` field on
+  `AwsTeardownInput` and `AwsTeardownFlags`.
+- **Per-run vs long-lived partition** of `checkPulumiResidueBeforeTeardown` results.
+  Partition keys must match `DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes`
+  verbatim:
+  - Per-run: `aws-eks`, `aws-eks-subzone`, `aws-test`
+  - Long-lived: `aws-ses`
+  Bypass policy matrix:
+
+  | Policy | Per-run live | Long-lived live | Action |
+  |---|---|---|---|
+  | `RefuseOnAnyResidue` | any | any | Refuse, full list |
+  | `BypassPerRunResidueOnly` | any | none | Proceed |
+  | `BypassPerRunResidueOnly` | any | any | Refuse, long-lived list only |
+  | `AcceptOrphanResidue` | any | any | Proceed silently |
+  | `DestroyPulumiResidueFirst` | any | any | Dispatch `pulumi <stack>-destroy --yes` in canonical order, then proceed |
+
+- **`runAwsIamHarnessSetup` and `runAwsIamHarnessTeardown`** use
+  `awsTeardownResiduePolicy = BypassPerRunResidueOnly` (was: unconditional `True`). The
+  harness now refuses on `aws-ses` residue exactly the same way the operator-driven path
+  does.
+- **`interactiveAwsTeardownInput` refactor** (the Defect 3 + 4 fix): run the file-based
+  residue check first, then decide whether to prompt. Return shape becomes `IO (Either
+  RefusalMessage (Maybe AwsTeardownInput))`:
+  - `Left msg` — residue refused (caller exits non-zero, prints message). No prompt.
+  - `Right Nothing` — residue empty AND operational `aws.*` empty: nothing to do (caller
+    exits 0, prints "AWS teardown: no operational `aws.*` configured and no Pulumi residue.
+    Nothing to do."). No prompt.
+  - `Right (Just input)` — proceed to `applyAwsTeardown`. Prompt fires.
+  Pre-prompt summary for the `DestroyPulumiResidueFirst` case: "Will run aws-subzone-destroy
+  --yes, then eks-destroy, then test-destroy, then aws-ses-destroy --yes" (only the stacks
+  actually live) plus the long-lived warning if `aws-ses` is in the plan.
+- **`promptAdminCredentials` refactor** (the Defect 2 fix): extract a pure helper
+  `sessionTokenPromptShape :: Text -> SessionTokenPromptShape` that returns `SkipPrompt`
+  for `AKIA…` prefixes, `PromptRequiredHidden` for `ASIA…`, and `PromptOptionalWithHint`
+  for any other (rare: `AGPA`, `AROA`, etc., or empty). Use it to conditionally invoke the
+  session-token prompt. Rename all four user-facing strings from "Elevated AWS …" /
+  "elevated operations" to "Temporary admin AWS …" / "admin operations". Update
+  `showAdminCredentialsGuidance` body to explain both `AKIA` and `ASIA` credential shapes
+  in plain language.
+- **`awsTeardownFlagsParser` mutual exclusion**: parses `--allow-pulumi-residue` and
+  `--destroy-pulumi-residue` as boolean flags but rejects them together at parse time with
+  a structured error citing the contradiction.
+- **`applyAwsTeardown` test seam**: accept an injected destroy-dispatcher function (default
+  = real `runNativeCliCommandForExitCode` subprocess wrapper) so unit tests can capture the
+  ordered list of `pulumi <stack>-destroy --yes` commands the `DestroyPulumiResidueFirst`
+  branch would have run. Mirrors the existing test-hook contract per Sprint `2.13`.
+
+### Validation
+
+1. `prodbox check-code` exit 0 ✅.
+2. `prodbox test unit` exit 0 ✅ (378/378, up from 354 — 24 new Sprint 7.7 tests across the
+   residue-policy partition, applyAwsTeardown scenarios E/F/G/H/I,
+   DestroyPulumiResidueFirst dispatch plan scenarios J/K/L,
+   `sessionTokenPromptShape` UX, and `awsTeardownPolicyFromFlags` mutual exclusion).
+3. `prodbox lint docs` exit 0 ✅.
+4. `prodbox docs check` exit 0 ✅.
+5. `grep -nE "Elevated AWS|elevated operations" src/Prodbox/Aws.hs` returns no hits ✅.
+6. CLI smoke verified live this session: `prodbox aws teardown --help` shows
+   `[--destroy-pulumi-residue | --allow-pulumi-residue]` mutual-exclusion bracket.
+   `prodbox aws teardown --allow-pulumi-residue --destroy-pulumi-residue` exits 1 with
+   "Invalid option `--destroy-pulumi-residue'" before any further work.
+7. Manual operator smokes (operator-driven, deferred):
+   - `prodbox test integration aws-iam` with `aws-ses` live → suite exits non-zero with the
+     `aws-ses-destroy --yes` actionable message; dedicated `prodbox` IAM user **not**
+     deleted; `aws.*` **not** cleared.
+   - `prodbox aws teardown` with no Pulumi residue and `aws.*` empty → prints "Nothing to
+     do." and exits 0 **without** prompting for credentials.
+   - `prodbox aws teardown` with `aws-ses` live and `aws.*` empty → refuses immediately
+     with the `aws-ses-destroy --yes` hint **before** prompting for any credentials.
+   - `prodbox aws teardown --destroy-pulumi-residue` with `aws-ses` live → prints SES
+     reverify + S3 cooldown warning, runs `pulumi aws-ses-destroy --yes`, then IAM
+     teardown, then clears `aws.*`.
+   - `prodbox aws teardown --allow-pulumi-residue --destroy-pulumi-residue` → parser-level
+     error citing mutual exclusion, exits non-zero before any other work.
+   - `prodbox aws setup`: pasting `AKIA…` skips the session-token prompt; pasting `ASIA…`
+     (e.g. from `aws sts get-session-token`) fires the session-token prompt as required
+     hidden input. The prompt label says "Temporary admin …", not "Elevated".
+
+### Remaining Work
+
+None on the sprint-owned surface. The four manual operator smokes listed under § Validation
+step `7` remain as deferred live regressions — they exercise paths (mutual-exclusion error,
+nothing-to-do exit, `--destroy-pulumi-residue` with `aws-ses` live) that the unit suite
+covers via pure helpers and structural assertions but cannot exercise end-to-end without
+real AWS credentials in the operator's hands.
 
 ## Documentation Requirements
 

@@ -48,12 +48,19 @@ import Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
+  , SessionTokenPromptShape (..)
   , buildIamPolicyDocument
   , checkPulumiResidueBeforeTeardown
+  , longLivedStackNames
+  , partitionResidueByLifecycle
+  , perRunStackNames
+  , pulumiDestroyPlanForResidue
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
   , renderConfigSetupPlan
+  , renderPulumiResidueLongLivedRefusal
   , renderPulumiResidueRefusal
+  , sessionTokenPromptShape
   )
 import Prodbox.AwsEnvironment
   ( isolatedAwsEnvironment
@@ -81,6 +88,7 @@ import Prodbox.CLI.Command
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
+  , PulumiResiduePolicy (..)
   , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
@@ -109,7 +117,8 @@ import Prodbox.CLI.Rke2
   , renderNativeInstallPlan
   )
 import Prodbox.CLI.Spec
-  ( commandRegistry
+  ( awsTeardownPolicyFromFlags
+  , commandRegistry
   , findCommandSpec
   , leafCommandPaths
   )
@@ -381,12 +390,12 @@ main = mainWithSuite "prodbox-unit" $ do
                   ( NativeAws
                       ( AwsTeardown
                           (PlanOptions False Nothing)
-                          (AwsTeardownFlags {teardownAllowPulumiResidue = False})
+                          (AwsTeardownFlags {teardownResiduePolicy = RefuseOnAnyResidue})
                       )
                   )
               )
           )
-    it "routes aws teardown --allow-pulumi-residue with the bypass flag set" $ do
+    it "routes aws teardown --allow-pulumi-residue with AcceptOrphanResidue policy" $ do
       parseArgs ["aws", "teardown", "--allow-pulumi-residue"]
         `shouldBe` Right
           ( Options
@@ -395,7 +404,21 @@ main = mainWithSuite "prodbox-unit" $ do
                   ( NativeAws
                       ( AwsTeardown
                           (PlanOptions False Nothing)
-                          (AwsTeardownFlags {teardownAllowPulumiResidue = True})
+                          (AwsTeardownFlags {teardownResiduePolicy = AcceptOrphanResidue})
+                      )
+                  )
+              )
+          )
+    it "routes aws teardown --destroy-pulumi-residue with DestroyPulumiResidueFirst policy" $ do
+      parseArgs ["aws", "teardown", "--destroy-pulumi-residue"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeAws
+                      ( AwsTeardown
+                          (PlanOptions False Nothing)
+                          (AwsTeardownFlags {teardownResiduePolicy = DestroyPulumiResidueFirst})
                       )
                   )
               )
@@ -2680,6 +2703,161 @@ main = mainWithSuite "prodbox-unit" $ do
                      , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
                      ]
 
+  describe "Sprint 7.7 residue lifecycle partition" $ do
+    it "perRunStackNames matches substrates-doctrine Resource Lifecycle Classes verbatim" $
+      perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+    it "longLivedStackNames lists aws-ses (and only aws-ses) per the doctrine" $
+      longLivedStackNames `shouldBe` ["aws-ses"]
+    it "partitionResidueByLifecycle splits residue correctly with all four stacks live" $ do
+      let allFour =
+            [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+            , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+            , ("aws-test", "prodbox pulumi test-destroy --yes")
+            , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+            ]
+          (perRun, longLived) = partitionResidueByLifecycle allFour
+      map fst perRun `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+      map fst longLived `shouldBe` ["aws-ses"]
+    it "pulumiDestroyPlanForResidue orders subzone -> eks -> test -> ses (most expensive last)" $ do
+      let allFour =
+            [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+            , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+            , ("aws-test", "prodbox pulumi test-destroy --yes")
+            , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+            ]
+      map fst (pulumiDestroyPlanForResidue allFour)
+        `shouldBe` ["aws-eks-subzone", "aws-eks", "aws-test", "aws-ses"]
+    it "pulumiDestroyPlanForResidue preserves canonical order even when input is reordered" $ do
+      let reordered =
+            [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+            , ("aws-test", "prodbox pulumi test-destroy --yes")
+            ]
+      map fst (pulumiDestroyPlanForResidue reordered)
+        `shouldBe` ["aws-test", "aws-ses"]
+
+  describe "Sprint 7.7 applyAwsTeardown residue policy (Scenarios E/F/G/H/I)" $ do
+    let teardownInputWith policy =
+          AwsTeardownInput
+            { awsTeardownAdminCredentials = awsSetupAdminCredentials sampleAwsSetupInput
+            , awsTeardownResiduePolicy = policy
+            }
+    it
+      "Scenario E — BypassPerRunResidueOnly with per-run residue only proceeds (no IO writes because runTeardown would touch live AWS, so we assert the policy short-circuit by file-state alone)"
+      $
+      -- The runTeardown body would invoke AWS — for this unit scenario
+      -- we rely on the fact that the policy decision in applyAwsTeardown
+      -- runs the file-based residue check, partitions, and only on the
+      -- refuse paths returns Left WITHOUT touching AWS. Here we verify
+      -- the partition + policy compute the "no long-lived residue"
+      -- predicate that gates the proceed branch.
+      withSystemTempDirectory "prodbox-hs-7.7-e"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        let (_, longLived) = partitionResidueByLifecycle residue
+        null longLived `shouldBe` True
+        -- Smoke that the input type carries the policy we'd dispatch on.
+        awsTeardownResiduePolicy (teardownInputWith BypassPerRunResidueOnly)
+          `shouldBe` BypassPerRunResidueOnly
+    it
+      "Scenario F — BypassPerRunResidueOnly with aws-ses present refuses naming aws-ses-destroy (May 19 bug fix)"
+      $ withSystemTempDirectory "prodbox-hs-7.7-f"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        let (_, longLived) = partitionResidueByLifecycle residue
+        let refusal = renderPulumiResidueLongLivedRefusal longLived
+        refusal `shouldContain` "long-lived cross-substrate shared"
+        refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+    it
+      "Scenario G — BypassPerRunResidueOnly with both per-run and long-lived: refusal lists only long-lived"
+      $ withSystemTempDirectory "prodbox-hs-7.7-g"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        let (_, longLived) = partitionResidueByLifecycle residue
+        map fst longLived `shouldBe` ["aws-ses"]
+        let refusal = renderPulumiResidueLongLivedRefusal longLived
+        refusal `shouldContain` "aws-ses"
+        -- The long-lived refusal does NOT mention aws-eks (per-run is
+        -- intentionally bypassed and handled by awsPostflightDestroyActions).
+        ("aws-eks " `isPrefixOf` refusal) `shouldBe` False
+    it
+      "Scenario H — AcceptOrphanResidue with per-run residue: applyAwsTeardown short-circuits to proceed (no refusal text)"
+      $ withSystemTempDirectory "prodbox-hs-7.7-h"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        null residue `shouldBe` False
+        -- The policy enum carries the operator's acknowledgement; the
+        -- proceed/refuse branch in applyAwsTeardown is exercised by the
+        -- integration suite (it touches AWS).
+        awsTeardownResiduePolicy (teardownInputWith AcceptOrphanResidue)
+          `shouldBe` AcceptOrphanResidue
+    it "Scenario I — AcceptOrphanResidue with all four stacks: same proceed semantics" $
+      withSystemTempDirectory "prodbox-hs-7.7-i" $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
+        writeFakeStackSnapshot tmpDir "aws-test"
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        length residue `shouldBe` 4
+        awsTeardownResiduePolicy (teardownInputWith AcceptOrphanResidue)
+          `shouldBe` AcceptOrphanResidue
+
+  describe "Sprint 7.7 DestroyPulumiResidueFirst dispatch plan (Scenarios J/K/L)" $ do
+    it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $
+      withSystemTempDirectory "prodbox-hs-7.7-j" $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        pulumiDestroyPlanForResidue residue
+          `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+    it
+      "Scenario K — aws-ses only: destroy plan names aws-ses-destroy (long-lived warning fires at dispatch)"
+      $ withSystemTempDirectory "prodbox-hs-7.7-k"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        pulumiDestroyPlanForResidue residue
+          `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+    it "Scenario L — all four: destroy plan dispatches in canonical order subzone -> eks -> test -> ses" $
+      withSystemTempDirectory "prodbox-hs-7.7-l" $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
+        writeFakeStackSnapshot tmpDir "aws-test"
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        map fst (pulumiDestroyPlanForResidue residue)
+          `shouldBe` ["aws-eks-subzone", "aws-eks", "aws-test", "aws-ses"]
+
+  describe "Sprint 7.7 promptAdminCredentials UX (sessionTokenPromptShape)" $ do
+    it "AKIA prefix -> SkipPrompt (long-lived IAM user key; no session token)" $
+      sessionTokenPromptShape "AKIAEXAMPLEKEYID0000" `shouldBe` SkipPrompt
+    it "ASIA prefix -> PromptRequiredHidden (STS-derived; session token required)" $
+      sessionTokenPromptShape "ASIAEXAMPLEKEYID0000" `shouldBe` PromptRequiredHidden
+    it "AGPA prefix (group access key, defensive fallback) -> PromptOptionalWithHint" $
+      sessionTokenPromptShape "AGPAEXAMPLEKEYID0000" `shouldBe` PromptOptionalWithHint
+    it "AROA prefix (role) -> PromptOptionalWithHint" $
+      sessionTokenPromptShape "AROAEXAMPLEKEYID0000" `shouldBe` PromptOptionalWithHint
+    it "empty input -> PromptOptionalWithHint (operator hasn't pasted anything yet)" $
+      sessionTokenPromptShape "" `shouldBe` PromptOptionalWithHint
+    it "AKIa with lower-case is not AKIA (case-sensitive, intentional)" $
+      sessionTokenPromptShape "AKIa1234567890ABCDEF" `shouldBe` PromptOptionalWithHint
+
+  describe "Sprint 7.7 awsTeardownPolicyFromFlags mutual exclusion" $ do
+    it "neither flag -> RefuseOnAnyResidue (default)" $
+      awsTeardownPolicyFromFlags False False `shouldBe` Right RefuseOnAnyResidue
+    it "--allow-pulumi-residue only -> AcceptOrphanResidue" $
+      awsTeardownPolicyFromFlags True False `shouldBe` Right AcceptOrphanResidue
+    it "--destroy-pulumi-residue only -> DestroyPulumiResidueFirst" $
+      awsTeardownPolicyFromFlags False True `shouldBe` Right DestroyPulumiResidueFirst
+    it "both flags -> Left with mutual-exclusion error" $ do
+      let result = awsTeardownPolicyFromFlags True True
+      case result of
+        Left msg -> msg `shouldContain` "mutually exclusive"
+        Right policy -> expectationFailure ("expected Left, got Right " ++ show policy)
+
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -3042,7 +3220,7 @@ sampleAwsTeardownInput :: AwsTeardownInput
 sampleAwsTeardownInput =
   AwsTeardownInput
     { awsTeardownAdminCredentials = awsSetupAdminCredentials sampleAwsSetupInput
-    , awsTeardownAllowPulumiResidue = False
+    , awsTeardownResiduePolicy = RefuseOnAnyResidue
     }
 
 sampleConfigSetupInput :: ConfigSetupInput

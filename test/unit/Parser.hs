@@ -267,9 +267,9 @@ commandPathOfRequest request =
         NativeUsers usersCommand ->
           "users"
             : case usersCommand of
-              UsersInvite _ _ _ -> ["invite"]
+              UsersInvite {} -> ["invite"]
               UsersList _ -> ["list"]
-              UsersRevoke _ _ _ -> ["revoke"]
+              UsersRevoke {} -> ["revoke"]
         NativeWorkload workloadCommand ->
           "workload"
             : case workloadCommand of

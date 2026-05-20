@@ -4,6 +4,7 @@ module Prodbox.CLI.Spec
   ( CommandSpec (..)
   , Example (..)
   , OptionSpec (..)
+  , awsTeardownPolicyFromFlags
   , commandRequestParser
   , commandRegistry
   , findCommandSpec
@@ -59,6 +60,7 @@ import Prodbox.CLI.Command
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
+  , PulumiResiduePolicy (..)
   , Rke2Command (..)
   , TestCommand (..)
   , TestScope (..)
@@ -633,22 +635,69 @@ yesSwitchParser helpText =
         <> help helpText
     )
 
--- | Parser for the Sprint 7.6 @--allow-pulumi-residue@ escape hatch on
--- @prodbox aws teardown@. Defaults to 'False'; when 'True' the refuse-
--- path check is bypassed and the operational IAM user is deleted even
--- while Pulumi stacks still have live resources.
+-- | Sprint 7.7 — parser for the two mutually-exclusive Pulumi-residue
+-- flags on @prodbox aws teardown@.
+--
+-- * @--destroy-pulumi-residue@ → 'DestroyPulumiResidueFirst': run each
+--   live stack's canonical destroy command before the IAM teardown.
+-- * @--allow-pulumi-residue@ → 'AcceptOrphanResidue' (Sprint 7.6 escape
+--   hatch): bypass the residue refuse-path entirely.
+-- * neither → 'RefuseOnAnyResidue' (default): refuse if any stack is live.
+--
+-- Mutual exclusion is enforced by the @flag' \<|> flag' \<|> pure@
+-- idiom: each @flag'@ requires its flag's presence to match. When both
+-- flags appear, the first @flag'@ matches and consumes its flag, but
+-- the second flag is unconsumed by any matching parser and
+-- optparse-applicative reports it as an unknown option, exiting
+-- non-zero at parse time with an actionable message. The pure helper
+-- 'awsTeardownPolicyFromFlags' covers the same matrix for unit tests.
 awsTeardownFlagsParser :: Parser AwsTeardownFlags
 awsTeardownFlagsParser =
   AwsTeardownFlags
-    <$> switch
-      ( long "allow-pulumi-residue"
-          <> help
-            ( "Bypass the Sprint 7.6 refuse-path check that prevents "
-                ++ "deleting the operational IAM user while "
-                ++ "Pulumi-managed AWS stacks still have live "
-                ++ "resources. Operator-acknowledged recovery only."
+    <$> ( flag'
+            DestroyPulumiResidueFirst
+            ( long "destroy-pulumi-residue"
+                <> help
+                  ( "Sprint 7.7: run `prodbox pulumi <stack>-destroy --yes` "
+                      ++ "for each live Pulumi-managed AWS stack (in canonical "
+                      ++ "order: aws-eks-subzone, aws-eks, aws-test, aws-ses) "
+                      ++ "before deleting the operational IAM user. Mutually "
+                      ++ "exclusive with --allow-pulumi-residue. Destroying "
+                      ++ "the long-lived aws-ses stack triggers a 5-30 min "
+                      ++ "SES re-verification + ~24h S3 bucket name cooldown."
+                  )
             )
-      )
+            <|> flag'
+              AcceptOrphanResidue
+              ( long "allow-pulumi-residue"
+                  <> help
+                    ( "Bypass the Sprint 7.6 refuse-path check that prevents "
+                        ++ "deleting the operational IAM user while "
+                        ++ "Pulumi-managed AWS stacks still have live "
+                        ++ "resources. Operator-acknowledged recovery only; "
+                        ++ "stacks become orphaned. Mutually exclusive with "
+                        ++ "--destroy-pulumi-residue."
+                    )
+              )
+            <|> pure RefuseOnAnyResidue
+        )
+
+-- | Sprint 7.7 — pure smart constructor exposed for unit tests. The
+-- parser itself cannot easily call this because optparse-applicative
+-- 'switch' loses the "exactly one flag" signal once both Bools become
+-- True; the 'flag' + \<|>' idiom in 'awsTeardownFlagsParser' enforces
+-- mutual exclusion at parse time. This helper covers the same matrix
+-- so the unit tests can assert on the four legal combinations without
+-- exercising the full optparse-applicative dispatch.
+awsTeardownPolicyFromFlags :: Bool -> Bool -> Either String PulumiResiduePolicy
+awsTeardownPolicyFromFlags True True =
+  Left
+    ( "Flags --allow-pulumi-residue and --destroy-pulumi-residue are "
+        ++ "mutually exclusive; pass at most one."
+    )
+awsTeardownPolicyFromFlags True False = Right AcceptOrphanResidue
+awsTeardownPolicyFromFlags False True = Right DestroyPulumiResidueFirst
+awsTeardownPolicyFromFlags False False = Right RefuseOnAnyResidue
 
 defaultNamespaces :: [String] -> [String]
 defaultNamespaces namespaces =

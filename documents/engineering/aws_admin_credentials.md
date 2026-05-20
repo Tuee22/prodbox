@@ -118,6 +118,28 @@ After you finish the native IAM validation task:
 The repository accepts an empty `aws_admin_for_test_simulation` section specifically so temporary
 admin credentials can be short-lived.
 
+### 4.1 Harness Teardown Long-Lived Residue Refusal (Sprint 7.7)
+
+Step 6 above now refuses to clear operational `aws.*` when long-lived cross-substrate shared
+infrastructure (today: the `aws-ses` Pulumi stack) is still alive. The harness-internal
+teardown path uses `BypassPerRunResidueOnly` (not the operator-driven `AcceptOrphanResidue`
+that `--allow-pulumi-residue` selects), which means per-run stacks (`aws-eks`,
+`aws-eks-subzone`, `aws-test`) are silently bypassed because `awsPostflightDestroyActions`
+handles them in the same suite-exit unwind, but `aws-ses` causes an actionable refusal.
+
+If a pre-Sprint-7.7 run stranded your operational creds (the May 19, 2026 reproduction
+scenario), `aws-ses` resources in AWS are unaffected — only `prodbox-config.dhall::aws.*`
+was emptied. Recovery:
+
+1. `prodbox aws setup` (interactive) — paste the temporary admin key. `prodbox` recreates
+   the dedicated `prodbox` IAM user and writes operational `aws.*`. `aws-ses` continues to
+   be retained as designed.
+2. Optional, only if you want `aws-ses` destroyed (note the 5–30 min SES DKIM
+   re-verification cost on next reprovision and the ~24-hour S3 bucket name reuse
+   cooldown): either `prodbox pulumi aws-ses-destroy --yes` followed by `prodbox aws
+   teardown`, or — Sprint 7.7 — `prodbox aws teardown --destroy-pulumi-residue` in one
+   step (warns about the SES costs before dispatching).
+
 ---
 
 ## 5. Standalone Substrate-Provisioning Credentials

@@ -17,12 +17,13 @@ The supported onboarding path is:
 prodbox config setup
 ```
 
-That flow expects one AWS account, one accessible Route 53 hosted zone, and one temporary elevated
-credential set that exists only long enough for `prodbox` to create the dedicated operational IAM
-user and write the steady-state `aws.*` section in `prodbox-config.dhall`.
+That flow expects one AWS account, one accessible Route 53 hosted zone, and one temporary admin
+credential set (historically called "elevated credential") that exists only long enough for
+`prodbox` to create the dedicated operational IAM user and write the steady-state `aws.*`
+section in `prodbox-config.dhall`.
 
 The supported goal is full from-scratch bootstrap: `prodbox` can create the operational AWS
-credentials it needs once the operator supplies one temporary elevated credential interactively.
+credentials it needs once the operator supplies one temporary admin credential interactively.
 
 ---
 
@@ -45,9 +46,9 @@ Free Tier context relevant to `prodbox`:
 
 ---
 
-## 3. Create One Temporary Elevated Access Key
+## 3. Create One Temporary Admin Access Key
 
-`prodbox config setup` and the public `prodbox aws ...` command family need one temporary elevated
+`prodbox config setup` and the public `prodbox aws ...` command family need one temporary admin
 AWS credential set presented interactively so they can:
 
 1. list AWS regions
@@ -66,9 +67,9 @@ The simplest supported operator workflow is:
 4. Delete the key after `prodbox` has written its own operational `aws.*` credentials.
 
 Do not treat `aws_admin_for_test_simulation.*` as the ordinary operator path for this workflow.
-That section exists only for test-suite simulation of the ephemeral elevated credential prompt,
-with the native IAM lifecycle test harness as the only supported runtime consumer. The canonical
-rules live in
+That section exists only for test-suite simulation of the ephemeral temporary-admin credential
+prompt, with the native IAM lifecycle test harness as the only supported runtime consumer. The
+canonical rules live in
 [aws_admin_credentials.md](./aws_admin_credentials.md).
 
 ---
@@ -93,7 +94,7 @@ create the hosted zone for you.
 
 ## 5. Run The Supported Setup Flow
 
-Once the account, hosted zone, and temporary elevated key are ready:
+Once the account, hosted zone, and temporary admin key are ready:
 
 ```bash
 prodbox config setup
@@ -108,7 +109,7 @@ The wizard walks through:
 5. dedicated IAM user creation
 6. `prodbox-config.dhall` write and direct-Dhall validation
 
-The supported public setup path prompts for the temporary elevated credential when needed. It does
+The supported public setup path prompts for the temporary admin credential when needed. It does
 not require pre-populating `aws_admin_for_test_simulation.*`.
 
 ---
@@ -117,11 +118,11 @@ not require pre-populating `aws_admin_for_test_simulation.*`.
 
 After the wizard succeeds:
 
-1. delete the temporary elevated access key you used for setup
+1. delete the temporary admin access key you used for setup
 2. keep the generated `aws.*` operational credentials in `prodbox-config.dhall`
 3. leave `aws_admin_for_test_simulation.*` empty unless you are intentionally preparing the native
-   IAM lifecycle test harness or another repository test that simulates the interactive elevated
-   credential prompt
+   IAM lifecycle test harness or another repository test that simulates the interactive
+   temporary-admin-credential prompt
 
 Normal `prodbox` runtime uses only the operational `aws.*` section.
 

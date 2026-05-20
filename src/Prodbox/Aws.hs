@@ -4,11 +4,14 @@ module Prodbox.Aws
   ( AwsSetupInput (..)
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
+  , applyAwsTeardown
   , buildIamPolicyDocument
   , buildIamPolicyJson
+  , checkPulumiResidueBeforeTeardown
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
   , renderConfigSetupPlan
+  , renderPulumiResidueRefusal
   , runAwsCommand
   , runAwsIamHarnessInspect
   , runAwsIamHarnessSetup
@@ -58,6 +61,7 @@ import Prodbox.AwsEnvironment
   )
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , AwsTeardownFlags (..)
   , Plan (..)
   , PlanOptions (..)
   , PolicyTier (..)
@@ -66,9 +70,15 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
+  , writeError
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.Error (fatalError)
+import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackHasLiveResources)
+import Prodbox.Infra.AwsEksTestStack (awsEksTestStackHasLiveResources)
+import Prodbox.Infra.AwsSesStack (awsSesStackHasLiveResources)
+import Prodbox.Infra.AwsTestStack (awsTestStackHasLiveResources)
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
@@ -209,6 +219,7 @@ data AwsSetupInput = AwsSetupInput
 
 data AwsTeardownInput = AwsTeardownInput
   { awsTeardownAdminCredentials :: Credentials
+  , awsTeardownAllowPulumiResidue :: Bool
   }
   deriving (Eq, Show)
 
@@ -352,15 +363,20 @@ executeAwsCommand repoRoot command =
           result <- applyAwsSetup repoRoot plannedInput
           writeOutput (renderAwsSetupResult result)
           pure ExitSuccess
-    AwsTeardown planOptions -> do
-      input <- interactiveAwsTeardownInput repoRoot
+    AwsTeardown planOptions flags -> do
+      input <- interactiveAwsTeardownInput repoRoot flags
       runPlanWithOptions
         planOptions
         (buildAwsTeardownExecutionPlan repoRoot input)
         $ \plannedInput -> do
-          result <- applyAwsTeardown repoRoot plannedInput
-          writeOutput (renderAwsTeardownResult result)
-          pure ExitSuccess
+          teardownResult <- applyAwsTeardown repoRoot plannedInput
+          case teardownResult of
+            Left err -> do
+              writeError (fatalError (Text.pack err))
+              pure (ExitFailure 1)
+            Right result -> do
+              writeOutput (renderAwsTeardownResult result)
+              pure ExitSuccess
     AwsCheckQuotas -> do
       input <- interactiveAwsCheckQuotasInput repoRoot
       statuses <- applyAwsCheckQuotas repoRoot input
@@ -609,13 +625,17 @@ interactiveAwsSetupInput repoRoot policyTier = do
   credentials <- promptAdminCredentialsWithRegionChoice repoRoot
   AwsSetupInput <$> validateAdminCredentialsInput credentials <*> pure policyTier
 
-interactiveAwsTeardownInput :: FilePath -> IO AwsTeardownInput
-interactiveAwsTeardownInput repoRoot = do
+interactiveAwsTeardownInput :: FilePath -> AwsTeardownFlags -> IO AwsTeardownInput
+interactiveAwsTeardownInput repoRoot flags = do
   writeOutputLine "AWS teardown deletes the dedicated `prodbox` IAM user and clears operational"
   writeOutputLine "`aws.*` credentials from Dhall. The elevated credential entered below is not kept."
   writeOutputLine ""
   credentials <- promptAdminCredentials =<< currentRegionDefault repoRoot
-  pure (AwsTeardownInput credentials)
+  pure
+    AwsTeardownInput
+      { awsTeardownAdminCredentials = credentials
+      , awsTeardownAllowPulumiResidue = teardownAllowPulumiResidue flags
+      }
 
 interactiveAwsCheckQuotasInput :: FilePath -> IO AwsCheckQuotasInput
 interactiveAwsCheckQuotasInput repoRoot = do
@@ -746,12 +766,21 @@ runAwsIamHarnessSetup :: FilePath -> PolicyTier -> IO String
 runAwsIamHarnessSetup repoRoot policyTier = do
   credentials <- loadHarnessAdminCredentials repoRoot
   existingIdentity <- probeConfiguredOperationalIdentity repoRoot
-  preflightTeardown <-
+  preflightTeardownResult <-
     applyAwsTeardown
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
+        , awsTeardownAllowPulumiResidue = True
         }
+  preflightTeardown <- case preflightTeardownResult of
+    Left err ->
+      throwAws
+        ( "AWS IAM harness preflight teardown unexpectedly refused with "
+            ++ "--allow-pulumi-residue=True: "
+            ++ err
+        )
+    Right value -> pure value
   preflightAssociatedCleanup <-
     case existingIdentity of
       OperationalIdentityIamUser userName
@@ -821,12 +850,21 @@ runAwsIamHarnessInspect repoRoot = do
 runAwsIamHarnessTeardown :: FilePath -> IO String
 runAwsIamHarnessTeardown repoRoot = do
   credentials <- loadHarnessAdminCredentials repoRoot
-  result <-
+  teardownResult <-
     applyAwsTeardown
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
+        , awsTeardownAllowPulumiResidue = True
         }
+  result <- case teardownResult of
+    Left err ->
+      throwAws
+        ( "AWS IAM harness teardown unexpectedly refused with "
+            ++ "--allow-pulumi-residue=True: "
+            ++ err
+        )
+    Right value -> pure value
   configCleared <- operationalCredentialsCleared repoRoot
   unless
     configCleared
@@ -1162,35 +1200,81 @@ applyAwsSetupWithFallbackMode allowFederatedFallback repoRoot input = do
           , iamSetupDhallPath = configDhallPath paths
           }
 
-applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO IamTeardownResult
-applyAwsTeardown repoRoot input = do
-  deletedAccessKeys <- deleteExistingOperationalKeys repoRoot (awsTeardownAdminCredentials input)
-  deleteUserPolicyIfPresent repoRoot (awsTeardownAdminCredentials input)
-  userDeleted <- deleteOperationalUserIfPresent repoRoot (awsTeardownAdminCredentials input)
-  currentConfig <- loadConfigForWrite repoRoot
-  let currentRegion =
-        if Text.null (Text.strip (region (aws currentConfig)))
-          then region (awsTeardownAdminCredentials input)
-          else region (aws currentConfig)
-      updatedConfig =
-        currentConfig
-          { aws =
-              Credentials
-                { access_key_id = ""
-                , secret_access_key = ""
-                , session_token = Nothing
-                , region = currentRegion
-                }
-          }
-      paths = canonicalConfigPaths repoRoot
-  writeConfigFile (configDhallPath paths) updatedConfig
-  pure
-    IamTeardownResult
-      { iamTeardownUserName = prodboxIamUserName
-      , iamTeardownDeletedAccessKeys = deletedAccessKeys
-      , iamTeardownUserDeleted = userDeleted
-      , iamTeardownDhallPath = configDhallPath paths
-      }
+applyAwsTeardown :: FilePath -> AwsTeardownInput -> IO (Either String IamTeardownResult)
+applyAwsTeardown repoRoot input
+  | awsTeardownAllowPulumiResidue input = Right <$> runTeardown
+  | otherwise = do
+      residue <- checkPulumiResidueBeforeTeardown repoRoot
+      case residue of
+        [] -> Right <$> runTeardown
+        live -> pure (Left (renderPulumiResidueRefusal live))
+ where
+  runTeardown :: IO IamTeardownResult
+  runTeardown = do
+    deletedAccessKeys <- deleteExistingOperationalKeys repoRoot (awsTeardownAdminCredentials input)
+    deleteUserPolicyIfPresent repoRoot (awsTeardownAdminCredentials input)
+    userDeleted <- deleteOperationalUserIfPresent repoRoot (awsTeardownAdminCredentials input)
+    currentConfig <- loadConfigForWrite repoRoot
+    let currentRegion =
+          if Text.null (Text.strip (region (aws currentConfig)))
+            then region (awsTeardownAdminCredentials input)
+            else region (aws currentConfig)
+        updatedConfig =
+          currentConfig
+            { aws =
+                Credentials
+                  { access_key_id = ""
+                  , secret_access_key = ""
+                  , session_token = Nothing
+                  , region = currentRegion
+                  }
+            }
+        paths = canonicalConfigPaths repoRoot
+    writeConfigFile (configDhallPath paths) updatedConfig
+    pure
+      IamTeardownResult
+        { iamTeardownUserName = prodboxIamUserName
+        , iamTeardownDeletedAccessKeys = deletedAccessKeys
+        , iamTeardownUserDeleted = userDeleted
+        , iamTeardownDhallPath = configDhallPath paths
+        }
+
+-- | Sprint 7.6 refuse-path: enumerate live Pulumi-managed AWS stacks
+-- by querying each stack's on-disk snapshot. Returns the list of live
+-- stacks paired with the canonical destroy command operators should run
+-- to clean them up. An empty list means it is safe to delete the
+-- operational IAM user.
+checkPulumiResidueBeforeTeardown :: FilePath -> IO [(String, String)]
+checkPulumiResidueBeforeTeardown repoRoot = do
+  eksLive <- awsEksTestStackHasLiveResources repoRoot
+  subzoneLive <- awsEksSubzoneStackHasLiveResources repoRoot
+  testLive <- awsTestStackHasLiveResources repoRoot
+  sesLive <- awsSesStackHasLiveResources repoRoot
+  pure $
+    [("aws-eks", "prodbox pulumi eks-destroy --yes") | eksLive]
+      ++ [("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes") | subzoneLive]
+      ++ [("aws-test", "prodbox pulumi test-destroy --yes") | testLive]
+      ++ [("aws-ses", "prodbox pulumi aws-ses-destroy --yes") | sesLive]
+
+renderPulumiResidueRefusal :: [(String, String)] -> String
+renderPulumiResidueRefusal residue =
+  unlines
+    ( [ "AWS teardown refused: Pulumi-managed AWS stacks still have live resources."
+      , ""
+      , "Deleting the operational IAM user now would strand these stacks from"
+      , "the supported destroy surface (every `prodbox pulumi <stack>-destroy`"
+      , "fails fast when operational `aws.*` is empty)."
+      , ""
+      , "Run the canonical destroy command for each stack below first, then"
+      , "re-run `prodbox aws teardown`:"
+      , ""
+      ]
+        ++ map (\(name, cmd) -> "  - " ++ name ++ " → " ++ cmd) residue
+        ++ [ ""
+           , "If you must delete the IAM user anyway (recovery scenarios),"
+           , "re-run with `--allow-pulumi-residue` to bypass this check."
+           ]
+    )
 
 applyAwsCheckQuotas :: FilePath -> AwsCheckQuotasInput -> IO [QuotaStatus]
 applyAwsCheckQuotas repoRoot input =

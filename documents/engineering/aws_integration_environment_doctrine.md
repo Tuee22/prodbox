@@ -13,9 +13,9 @@
   `prodbox-config.dhall` and decoded directly into Haskell settings.
 - `prodbox` must not search upward from the current working directory or prefer alternate config
   files.
-- Public `prodbox config setup` and public `prodbox aws ...` flows obtain temporary elevated AWS
-  credentials from interactive prompts; they must not rely on config-backed
-  `aws_admin_for_test_simulation.*`.
+- Public `prodbox config setup` and public `prodbox aws ...` flows obtain temporary admin AWS
+  credentials (historically called "elevated credentials") from interactive prompts; they must
+  not rely on config-backed `aws_admin_for_test_simulation.*`.
 - `aws_admin_for_test_simulation.*` is the single stored-admin-credential exception and exists
   only for test-suite simulation of that ephemeral prompt input; the native `aws-iam` validation
   harness is the only supported runtime consumer.
@@ -35,6 +35,30 @@
   delegation in the parent zone. The AWS substrate must not fall back to home-substrate
   `route53.zone_id` or `domain.demo_fqdn` values; missing AWS-substrate config fails fast per
   [`DEVELOPMENT_PLAN/development_plan_standards.md` § M — Substrate coverage and independence (no fallback)](../../DEVELOPMENT_PLAN/development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
+- The `prodbox` test harness is the **exclusive owner** of every AWS resource any `prodbox`
+  flow creates or destroys. Every AWS API call flows through the harness via the `prodbox`
+  command surface; ad-hoc `pulumi`, `aws` CLI, `eksctl`, or `terraform` invocations outside
+  the harness are forbidden. The authoritative AWS resource inventory and per-resource
+  lifecycle classification — auto-managed **per-run stacks** vs **long-lived cross-substrate
+  shared infrastructure that is retained by design** — live in
+  [`DEVELOPMENT_PLAN/substrates.md` → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
+  See [`CLAUDE.md`](../../CLAUDE.md) and [`AGENTS.md`](../../AGENTS.md) for the rule that
+  invoking a documented `prodbox` AWS entrypoint (`prodbox pulumi <stack>-resources/-destroy`,
+  `prodbox aws setup/teardown`, `prodbox test integration ... --substrate aws`,
+  `prodbox test all`) does not require separate user approval beyond the original request —
+  live AWS spend and shared-infrastructure mutation are *expected* outcomes of asking the
+  harness to provision the AWS substrate, not separate gates.
+- Two orphan-safety guards close the `prodbox aws teardown` / `prodbox test all` postflight
+  contract (Sprint `7.6`, May 19, 2026): (a) `prodbox aws teardown` **refuses** to delete
+  the operational IAM user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`,
+  `aws-test`, `aws-ses`) still reports live resources, with an actionable failure message
+  naming the offending stack(s) and the canonical destroy command; (b) the test-runner
+  postflight **auto-destroys** every per-run Pulumi stack on test-run exit (success /
+  failure / Ctrl-C) before clearing operational `aws.*`. The `aws-ses` stack is explicitly
+  excluded from auto-destroy per the long-lived shared-infrastructure class. The
+  `--allow-pulumi-residue` flag on `prodbox aws teardown` provides an operator-acknowledged
+  escape hatch when recovery from a partial state requires deleting operational creds with
+  stacks still up.
 
 ## 0A. Planning Ownership
 
@@ -78,7 +102,7 @@ Optional operational config field:
 
 1. `aws.session_token`
 
-Optional elevated validation fields:
+Optional admin validation fields:
 
 1. `aws_admin_for_test_simulation.access_key_id`
 2. `aws_admin_for_test_simulation.secret_access_key`
@@ -88,14 +112,14 @@ Optional elevated validation fields:
 Stored admin credentials are otherwise forbidden. `aws_admin_for_test_simulation.*` is the one
 supported exception, and it is reserved for `prodbox test integration aws-iam`,
 aggregate-harness execution of that suite, and repository tests that simulate the interactive
-elevated-credential prompt.
+temporary-admin-credential prompt.
 
 Public `prodbox config setup` and public `prodbox aws ...` commands must not consume
 `aws_admin_for_test_simulation.*` from config on the supported path; they prompt for temporary
-elevated credentials when needed.
+admin credentials when needed.
 
 Supported non-interactive validation consumes `aws_admin_for_test_simulation.*` directly; missing
-elevated credentials must fail fast with an actionable config error rather than falling back to
+admin credentials must fail fast with an actionable config error rather than falling back to
 ambient AWS auth.
 
 Forbidden storage patterns:
@@ -246,25 +270,47 @@ Minimum rule:
    by the named `prodbox pulumi ...` and `prodbox test integration ...` surfaces plus the aggregate
    test suite
 
-### 4.4 Test-Only Elevated IAM Harness
+### 4.4 Test-Only Admin IAM Harness
 
 The IAM lifecycle validation uses the same repository-root Dhall configuration file but a separate
 credential section:
 
 1. `aws.*` remains the normal operational identity
-2. `aws_admin_for_test_simulation.*` is the stored simulation of the ephemeral elevated identity
-   used only by `prodbox test integration aws-iam`, `prodbox test integration all`, and
-   `prodbox test all`
+2. `aws_admin_for_test_simulation.*` is the stored simulation of the ephemeral temporary-admin
+   identity used only by `prodbox test integration aws-iam`,
+   `prodbox test integration all`, and `prodbox test all`
 3. the validation must fail fast when `aws_admin_for_test_simulation.*` is missing or partial
 4. public `prodbox config setup` and public `prodbox aws ...` commands remain outside this
-   config-backed test harness and use interactive temporary elevated credentials instead
-5. the managed test harness proves that the elevated test identity can mint an STS-federated
-   validation session, but it persists the dedicated IAM-user access key for downstream runtime
-   setup because the cert-manager Route 53 DNS01 solver has no session-token field
+   config-backed test harness and use interactive temporary admin credentials instead
+5. the managed test harness proves that the temporary-admin test identity can mint an
+   STS-federated validation session, but it persists the dedicated IAM-user access key for
+   downstream runtime setup because the cert-manager Route 53 DNS01 solver has no
+   session-token field
 6. freshly-created operational IAM-user credentials are not released to downstream runtime setup
    until both STS identity probing and repeated Route 53 hosted-zone probing succeed with that
    access key; runtime Route 53 bootstrap changes also keep a bounded retry window for later IAM
    propagation
+
+### 4.5 Pulumi State Backend Prerequisite
+
+Every `prodbox pulumi <stack>-resources` and `prodbox pulumi <stack>-destroy` invocation
+(`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) projects the home substrate's in-cluster
+MinIO as its Pulumi state backend. The projection happens through `withMinioPortForward` in
+`src/Prodbox/Infra/AwsEksTestStack.hs` (and the analogous wrappers in the sibling
+`Infra/Aws*.hs` modules). Concretely, this means:
+
+1. The home substrate must be running before any AWS-substrate or AWS-shared `prodbox pulumi`
+   call. Operator runs `prodbox rke2 reconcile` once; the command is idempotent and a no-op
+   when the home substrate is already up.
+2. The MinIO `prodbox-test-pulumi-backends` bucket must exist before the first stack is
+   created. The reconcile contract ensures this — see § 0 above for the canonical statement.
+3. AWS-substrate work does not bootstrap its own Pulumi backend; there is no AWS-side
+   alternative to the home MinIO state store on the supported path.
+
+The standalone Sprint `7.5.c.v` workflow makes this prerequisite explicit as
+[Sprint Workflow Step `0.5`](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
+suite-driven runs (`prodbox test all`) cover it through the Sprint `7.6`
+auto-managed lifecycle.
 
 ## 5. Ownership And Cleanup
 

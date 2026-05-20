@@ -8,6 +8,7 @@ module Prodbox.Infra.AwsEksSubzoneStack
   , loadAwsEksSubzoneStackSnapshot
   , saveAwsEksSubzoneStackSnapshot
   , clearAwsEksSubzoneStackSnapshot
+  , awsEksSubzoneStackHasLiveResources
   , assertNoAwsEksSubzoneStackResidue
   , renderAwsEksSubzoneStackReport
   )
@@ -86,6 +87,12 @@ awsEksSubzoneStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksSubzone
 
 awsEksSubzoneSnapshotPath :: FilePath -> FilePath
 awsEksSubzoneSnapshotPath repoRoot = awsEksSubzoneStateDir repoRoot </> "stack-snapshot.json"
+
+-- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
+-- AWS EKS subzone stack. Sprint 7.6 orphan-safety predicate.
+awsEksSubzoneStackHasLiveResources :: FilePath -> IO Bool
+awsEksSubzoneStackHasLiveResources repoRoot =
+  doesFileExist (awsEksSubzoneSnapshotPath repoRoot)
 
 data AwsEksSubzoneStackSnapshot = AwsEksSubzoneStackSnapshot
   { subzoneSnapshotStackName :: String

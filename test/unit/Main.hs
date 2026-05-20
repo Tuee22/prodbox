@@ -22,7 +22,9 @@ import Data.IORef
   , writeIORef
   )
 import Data.List
-  ( sort
+  ( elemIndex
+  , isPrefixOf
+  , sort
   )
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -47,9 +49,11 @@ import Prodbox.Aws
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
   , buildIamPolicyDocument
+  , checkPulumiResidueBeforeTeardown
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
   , renderConfigSetupPlan
+  , renderPulumiResidueRefusal
   )
 import Prodbox.AwsEnvironment
   ( isolatedAwsEnvironment
@@ -61,6 +65,7 @@ import Prodbox.CLI.Charts
   )
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , AwsTeardownFlags (..)
   , ChartsCommand (..)
   , CommandRequest (..)
   , ConfigCommand (..)
@@ -98,7 +103,11 @@ import Prodbox.CLI.Parser
   , validateCommandArgv
   )
 import Prodbox.CLI.Pulumi (renderPulumiPlan)
-import Prodbox.CLI.Rke2 (renderNativeInstallPlan)
+import Prodbox.CLI.Rke2
+  ( MinioImageSource (..)
+  , renderMinioChartArgs
+  , renderNativeInstallPlan
+  )
 import Prodbox.CLI.Spec
   ( commandRegistry
   , findCommandSpec
@@ -188,6 +197,7 @@ import Prodbox.K8s
   ( parseKubectlObjectNames
   )
 import Prodbox.Keycloak.Email qualified
+import Prodbox.Lib.AwsSubstratePlatform qualified
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
@@ -197,6 +207,9 @@ import Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , supportedChartNames
   )
+import Prodbox.Lib.EksContainerdMirror qualified
+import Prodbox.Lib.EksCustomImagePush qualified
+import Prodbox.Lib.EksImageMirror qualified
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , ChartStorageSpec (..)
@@ -362,7 +375,31 @@ main = mainWithSuite "prodbox-unit" $ do
     it "routes aws teardown to the native Haskell runtime" $ do
       parseArgs ["aws", "teardown"]
         `shouldBe` Right
-          (Options False (RunNative (NativeAws (AwsTeardown (PlanOptions False Nothing)))))
+          ( Options
+              False
+              ( RunNative
+                  ( NativeAws
+                      ( AwsTeardown
+                          (PlanOptions False Nothing)
+                          (AwsTeardownFlags {teardownAllowPulumiResidue = False})
+                      )
+                  )
+              )
+          )
+    it "routes aws teardown --allow-pulumi-residue with the bypass flag set" $ do
+      parseArgs ["aws", "teardown", "--allow-pulumi-residue"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeAws
+                      ( AwsTeardown
+                          (PlanOptions False Nothing)
+                          (AwsTeardownFlags {teardownAllowPulumiResidue = True})
+                      )
+                  )
+              )
+          )
 
     it "routes aws check-quotas to the native Haskell runtime" $ do
       parseArgs ["aws", "check-quotas"]
@@ -2398,6 +2435,251 @@ main = mainWithSuite "prodbox-unit" $ do
           p2 = Prodbox.Ses.SmtpPassword.derivedSesSmtpPassword "us-west-2" sesSmtpPasswordExampleSecret
       p1 `shouldBe` p2
 
+  describe "Sprint 7.5.c.v.b EKS custom-image push pod" $ do
+    let cfg = Prodbox.Lib.EksCustomImagePush.defaultEksCustomImagePushConfig
+        manifest = Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest cfg
+        manifestJson = BL8.unpack (encode manifest)
+    it "default config matches bootstrap Harbor admin + in-cluster DNS endpoint" $ do
+      Prodbox.Lib.EksCustomImagePush.customPushPodNamespace cfg `shouldBe` "harbor"
+      Prodbox.Lib.EksCustomImagePush.customPushPodName cfg `shouldBe` "prodbox-custom-image-push"
+      Prodbox.Lib.EksCustomImagePush.customPushHarborInternalEndpoint cfg
+        `shouldBe` "harbor.harbor.svc.cluster.local"
+      Prodbox.Lib.EksCustomImagePush.customPushChartRegistryEndpoint cfg `shouldBe` "127.0.0.1:30080"
+      Prodbox.Lib.EksCustomImagePush.customPushHarborAdminUser cfg `shouldBe` "admin"
+    it "pod manifest declares v1 Pod in harbor namespace with sprint label + restartPolicy Never" $ do
+      manifestJson `shouldContain` "\"apiVersion\":\"v1\""
+      manifestJson `shouldContain` "\"kind\":\"Pod\""
+      manifestJson `shouldContain` "\"namespace\":\"harbor\""
+      manifestJson `shouldContain` "\"name\":\"prodbox-custom-image-push\""
+      manifestJson `shouldContain` "\"prodbox.io/sprint\":\"7.5.c.v.b\""
+      manifestJson `shouldContain` "\"restartPolicy\":\"Never\""
+    it "uses crane:debug image with sleep entrypoint + /data emptyDir mount" $ do
+      manifestJson `shouldContain` "go-containerregistry/crane:debug"
+      manifestJson `shouldContain` "\"command\":[\"/busybox/sh\",\"-c\",\"sleep infinity\"]"
+      manifestJson `shouldContain` "\"mountPath\":\"/data\""
+      manifestJson `shouldContain` "\"emptyDir\":{\"sizeLimit\":\"4Gi\"}"
+    it "rewriteChartRefForInClusterPush swaps the host:port for the in-cluster DNS endpoint" $ do
+      Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush
+        cfg
+        "127.0.0.1:30080/prodbox-gateway/foo:tag"
+        `shouldBe` "harbor.harbor.svc.cluster.local/prodbox-gateway/foo:tag"
+    it "rewriteChartRefForInClusterPush leaves unrecognized refs unchanged (defensive)" $ do
+      Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush cfg "docker.io/library/foo:tag"
+        `shouldBe` "docker.io/library/foo:tag"
+
+  describe "Sprint 7.5.c.iv EKS image-mirror Job" $ do
+    let cfg = Prodbox.Lib.EksImageMirror.defaultEksImageMirrorConfig
+        pairs =
+          [
+            ( "docker.io/percona/percona-postgresql-operator:2.9.0"
+            , "127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:2.9.0"
+            )
+          , ("quay.io/keycloak/keycloak:26.0.0", "127.0.0.1:30080/prodbox/keycloak-mirror:26.0.0")
+          ]
+        manifest = Prodbox.Lib.EksImageMirror.eksImageMirrorJobManifest cfg pairs
+        manifestJson = BL8.unpack (encode manifest)
+        copyScript = Prodbox.Lib.EksImageMirror.eksImageMirrorCopyScript cfg pairs
+    it "default config matches the bootstrap Harbor admin contract + in-cluster DNS endpoint" $ do
+      Prodbox.Lib.EksImageMirror.mirrorJobNamespace cfg `shouldBe` "harbor"
+      Prodbox.Lib.EksImageMirror.mirrorJobName cfg `shouldBe` "prodbox-image-mirror"
+      Prodbox.Lib.EksImageMirror.mirrorHarborInternalEndpoint cfg
+        `shouldBe` "harbor.harbor.svc.cluster.local"
+      Prodbox.Lib.EksImageMirror.mirrorChartRegistryEndpoint cfg `shouldBe` "127.0.0.1:30080"
+      Prodbox.Lib.EksImageMirror.mirrorHarborAdminUser cfg `shouldBe` "admin"
+      Prodbox.Lib.EksImageMirror.mirrorHarborAdminPassword cfg `shouldBe` "Harbor12345"
+    it "Job manifest declares batch/v1 Job in harbor namespace with sprint label and crane container" $ do
+      manifestJson `shouldContain` "\"apiVersion\":\"batch/v1\""
+      manifestJson `shouldContain` "\"kind\":\"Job\""
+      manifestJson `shouldContain` "\"namespace\":\"harbor\""
+      manifestJson `shouldContain` "\"name\":\"prodbox-image-mirror\""
+      manifestJson `shouldContain` "\"prodbox.io/sprint\":\"7.5.c.iv\""
+      manifestJson `shouldContain` "go-containerregistry/crane:debug"
+    it
+      "Job manifest projects HARBOR_INTERNAL + HARBOR_USER + HARBOR_PASSWORD env into the crane container"
+      $ do
+        manifestJson
+          `shouldContain` "\"name\":\"HARBOR_INTERNAL\",\"value\":\"harbor.harbor.svc.cluster.local\""
+        manifestJson `shouldContain` "\"name\":\"HARBOR_USER\",\"value\":\"admin\""
+        manifestJson `shouldContain` "\"name\":\"HARBOR_PASSWORD\",\"value\":\"Harbor12345\""
+    it "copy script rewrites 127.0.0.1:30080 chart targets to the in-cluster harbor DNS for crane push" $ do
+      copyScript
+        `shouldContain` "crane copy \"docker.io/percona/percona-postgresql-operator:2.9.0\" \"harbor.harbor.svc.cluster.local/prodbox/percona-postgresql-operator-mirror:2.9.0\""
+      copyScript
+        `shouldContain` "crane copy \"quay.io/keycloak/keycloak:26.0.0\" \"harbor.harbor.svc.cluster.local/prodbox/keycloak-mirror:26.0.0\""
+    it "copy script authenticates to Harbor before any copy + emits a per-pair progress line" $ do
+      copyScript `shouldContain` "crane auth login \"${HARBOR_INTERNAL}\""
+      copyScript `shouldContain` "prodbox-image-mirror: copying 2 required public images"
+      copyScript
+        `shouldContain` "prodbox-image-mirror: docker.io/percona/percona-postgresql-operator:2.9.0 -> harbor.harbor.svc.cluster.local/prodbox/percona-postgresql-operator-mirror:2.9.0"
+
+  describe
+    "Sprint 7.5.c.iii AWS-substrate platform orchestration (extended through 7.5.c.iv + 7.5.c.v.b)"
+    $ do
+      let steps = Prodbox.Lib.AwsSubstratePlatform.awsSubstratePlatformRuntimeStepDescriptions
+      it "sequences the canonical 13 steps in order through the Sprint 7.5.c.v.b custom-image extension" $
+        steps
+          `shouldBe` [ "ensureAwsLoadBalancerControllerRuntime"
+                     , "ensureAwsSubstrateEnvoyGatewayRuntime"
+                     , "ensureAwsSubstrateCertManagerRuntime"
+                     , "ensureAwsSubstrateAcmeRuntime"
+                     , "applyEksContainerdMirrorDaemonSet"
+                     , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
+                     , "ensureHarborRegistryStorageBackend"
+                     , "ensureHarborRegistryRuntime SubstrateAws"
+                     , "applyEksImageMirrorJob"
+                     , "ensureGatewayImagesForSubstrate SubstrateAws"
+                     , "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws"
+                     , "ensurePostgresOperatorRuntime"
+                     , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
+                     ]
+      it
+        "places the containerd mirror DaemonSet apply before any MinIO or Harbor install (so 127.0.0.1:30080 routes are live)"
+        $ do
+          let mirrorIndex = elemIndex "applyEksContainerdMirrorDaemonSet" steps
+              minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
+              harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
+          mirrorIndex `shouldSatisfy` (`indexPrecedes` minioIndex)
+          mirrorIndex `shouldSatisfy` (`indexPrecedes` harborIndex)
+      it "places MinIO bootstrap before Harbor storage backend (Harbor's S3 lives in MinIO)" $ do
+        let minioIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioBootstrapPublic" steps
+            backendIndex = elemIndex "ensureHarborRegistryStorageBackend" steps
+        minioIndex `shouldSatisfy` (`indexPrecedes` backendIndex)
+      it "places the image-mirror Job after Harbor install and before Percona (which pulls from Harbor)" $ do
+        let harborIndex = elemIndex "ensureHarborRegistryRuntime SubstrateAws" steps
+            mirrorJobIndex = elemIndex "applyEksImageMirrorJob" steps
+            perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
+        harborIndex `shouldSatisfy` (`indexPrecedes` mirrorJobIndex)
+        mirrorJobIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
+      it
+        "places Percona before steady-state MinIO reconcile (so Percona is up before MinIO reschedules from Harbor refs)"
+        $ do
+          let perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
+              steadyIndex = elemIndex "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor" steps
+          perconaIndex `shouldSatisfy` (`indexPrecedes` steadyIndex)
+      it
+        "places custom-image build steps after image-mirror (Harbor populated) and before Percona (Percona pulls from Harbor)"
+        $ do
+          let mirrorIndex = elemIndex "applyEksImageMirrorJob" steps
+              gatewayIndex = elemIndex "ensureGatewayImagesForSubstrate SubstrateAws" steps
+              workloadIndex = elemIndex "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws" steps
+              perconaIndex = elemIndex "ensurePostgresOperatorRuntime" steps
+          mirrorIndex `shouldSatisfy` (`indexPrecedes` gatewayIndex)
+          gatewayIndex `shouldSatisfy` (`indexPrecedes` workloadIndex)
+          workloadIndex `shouldSatisfy` (`indexPrecedes` perconaIndex)
+
+  describe "Sprint 7.5.c.ii EKS containerd registry-mirror DaemonSet" $ do
+    let cfg = Prodbox.Lib.EksContainerdMirror.defaultProdboxMirrorConfig
+        manifest = Prodbox.Lib.EksContainerdMirror.eksContainerdMirrorDaemonSetManifest cfg
+        manifestJson = BL8.unpack (encode manifest)
+        bootstrapScript = Prodbox.Lib.EksContainerdMirror.eksContainerdMirrorBootstrapScript cfg
+    it "default config matches the home-substrate Harbor contract (127.0.0.1:30080 + prodbox/ rewrite)" $ do
+      Prodbox.Lib.EksContainerdMirror.mirrorRegistryHostPort cfg `shouldBe` "127.0.0.1:30080"
+      Prodbox.Lib.EksContainerdMirror.mirrorTargetEndpoint cfg `shouldBe` "http://127.0.0.1:30080"
+      Prodbox.Lib.EksContainerdMirror.mirrorRewritePrefix cfg `shouldBe` "prodbox/"
+      Prodbox.Lib.EksContainerdMirror.mirrorNamespace cfg `shouldBe` "kube-system"
+      Prodbox.Lib.EksContainerdMirror.mirrorDaemonSetName cfg `shouldBe` "prodbox-containerd-mirror"
+    it "DaemonSet manifest declares apps/v1 DaemonSet in kube-system with sprint label" $ do
+      manifestJson `shouldContain` "\"apiVersion\":\"apps/v1\""
+      manifestJson `shouldContain` "\"kind\":\"DaemonSet\""
+      manifestJson `shouldContain` "\"namespace\":\"kube-system\""
+      manifestJson `shouldContain` "\"name\":\"prodbox-containerd-mirror\""
+      manifestJson `shouldContain` "\"prodbox.io/sprint\":\"7.5.c.ii\""
+    it "pod spec runs with hostNetwork + hostPID + a privileged init container" $ do
+      manifestJson `shouldContain` "\"hostNetwork\":true"
+      manifestJson `shouldContain` "\"hostPID\":true"
+      manifestJson `shouldContain` "\"privileged\":true"
+    it
+      "mounts the host /etc directory as a hostPath volume so the init container can write containerd config"
+      $ do
+        manifestJson `shouldContain` "\"hostPath\":{\"path\":\"/etc\",\"type\":\"Directory\"}"
+        manifestJson `shouldContain` "\"mountPath\":\"/host/etc\""
+    it "bootstrap script writes the hosts.toml drop-in at the canonical containerd config path" $ do
+      bootstrapScript `shouldContain` "/host/etc/containerd/certs.d/${HOST}"
+      bootstrapScript `shouldContain` "hosts.toml"
+      bootstrapScript `shouldContain` "127.0.0.1:30080"
+    it "bootstrap script enables config_path in the main containerd config when missing" $ do
+      bootstrapScript `shouldContain` "config_path = \"/etc/containerd/certs.d\""
+      bootstrapScript `shouldContain` "plugins.\"io.containerd.grpc.v1.cri\".registry"
+    it "bootstrap script restarts containerd via nsenter only when something changed (idempotence)" $ do
+      bootstrapScript `shouldContain` "RESTART_NEEDED=0"
+      bootstrapScript `shouldContain` "RESTART_NEEDED=1"
+      bootstrapScript `shouldContain` "nsenter --target 1"
+      bootstrapScript `shouldContain` "systemctl restart containerd"
+      bootstrapScript `shouldContain` "no restart"
+    it "hosts.toml drop-in declares pull+resolve capabilities + HTTP skip_verify for in-cluster Harbor" $ do
+      let hostsToml = Prodbox.Lib.EksContainerdMirror.eksContainerdMirrorBootstrapScript cfg
+      hostsToml `shouldContain` "capabilities = [\"pull\", \"resolve\"]"
+      hostsToml `shouldContain` "skip_verify = true"
+
+  describe "Sprint 7.5.c.i substrate-aware MinIO chart values" $ do
+    it "Home substrate + bootstrap image source: binds the pre-created hostPath PVC, no storageClass" $ do
+      let args = renderMinioChartArgs SubstrateHomeLocal MinioBootstrapPublic
+      consecutivePair args "persistence.existingClaim=minio" `shouldBe` True
+      consecutivePair args "persistence.size=200Gi" `shouldBe` True
+      any ("persistence.storageClass=" `isPrefixOf`) args `shouldBe` False
+      consecutivePair args "mode=standalone" `shouldBe` True
+    it "Home substrate + steady-state image source: same persistence shape, Harbor-mirrored images" $ do
+      let args = renderMinioChartArgs SubstrateHomeLocal MinioSteadyStateHarbor
+      consecutivePair args "persistence.existingClaim=minio" `shouldBe` True
+      any ("image.repository=127.0.0.1:30080" `isPrefixOf`) args `shouldBe` True
+      any ("persistence.storageClass=" `isPrefixOf`) args `shouldBe` False
+    it "AWS substrate + bootstrap image source: dynamic gp2 EBS PVC, no existingClaim, 20Gi" $ do
+      let args = renderMinioChartArgs SubstrateAws MinioBootstrapPublic
+      consecutivePair args "persistence.storageClass=gp2" `shouldBe` True
+      consecutivePair args "persistence.size=20Gi" `shouldBe` True
+      any ("persistence.existingClaim=" `isPrefixOf`) args `shouldBe` False
+      consecutivePair args "mode=standalone" `shouldBe` True
+    it "AWS substrate + steady-state image source: gp2 EBS + Harbor-mirrored images" $ do
+      let args = renderMinioChartArgs SubstrateAws MinioSteadyStateHarbor
+      consecutivePair args "persistence.storageClass=gp2" `shouldBe` True
+      any ("image.repository=127.0.0.1:30080" `isPrefixOf`) args `shouldBe` True
+      any ("persistence.existingClaim=" `isPrefixOf`) args `shouldBe` False
+
+  describe "Sprint 7.6 AWS harness orphan-safety" $ do
+    it
+      "Scenario A — direct teardown footgun: aws-eks snapshot present → residue refuses with eks-destroy hint"
+      $ withSystemTempDirectory "prodbox-hs-7.6-a"
+      $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        residue `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+        let refusal = renderPulumiResidueRefusal residue
+        refusal `shouldContain` "aws-eks → prodbox pulumi eks-destroy --yes"
+        refusal `shouldContain` "--allow-pulumi-residue"
+    it "Scenario B — interrupted suite: no snapshots → residue empty so cleanup proceeds" $
+      withSystemTempDirectory "prodbox-hs-7.6-b" $ \tmpDir -> do
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        residue `shouldBe` []
+    it "Scenario C — partial residue: aws-eks-subzone + aws-test snapshots present → refusal lists both" $
+      withSystemTempDirectory "prodbox-hs-7.6-c" $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
+        writeFakeStackSnapshot tmpDir "aws-test"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        residue
+          `shouldBe` [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+                     , ("aws-test", "prodbox pulumi test-destroy --yes")
+                     ]
+    it "Scenario D — SES present: aws-ses snapshot present → refusal names aws-ses-destroy as recovery" $
+      withSystemTempDirectory "prodbox-hs-7.6-d" $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        residue `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+        let refusal = renderPulumiResidueRefusal residue
+        refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+    it "Scenario all-four — every stack present → all four canonical destroy commands surface in order" $
+      withSystemTempDirectory "prodbox-hs-7.6-all" $ \tmpDir -> do
+        writeFakeStackSnapshot tmpDir "aws-eks-test"
+        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
+        writeFakeStackSnapshot tmpDir "aws-test"
+        writeFakeStackSnapshot tmpDir "aws-ses"
+        residue <- checkPulumiResidueBeforeTeardown tmpDir
+        residue
+          `shouldBe` [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+                     , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+                     , ("aws-test", "prodbox pulumi test-destroy --yes")
+                     , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+                     ]
+
   describe "settings" $ do
     it "validates Dhall config and renders masked output without materializing JSON" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
@@ -2573,6 +2855,42 @@ keycloakInviteMissingFixture =
 sesSmtpPasswordExampleSecret :: Text.Text
 sesSmtpPasswordExampleSecret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
 
+-- | Sprint 7.5.c.i test helper: detect that a `helm upgrade --install`
+-- argument list contains the consecutive pair `["--set", target]`
+-- somewhere in its flat alternating-arg layout. This is preferable to
+-- a naive `elem target args` because `target` itself could
+-- accidentally land in a different argument position (e.g. as a
+-- chart-ref name fragment); requiring `--set` immediately before it
+-- pins the intent to "this is a Helm value override".
+consecutivePair :: [String] -> String -> Bool
+consecutivePair args target = go args
+ where
+  go ("--set" : value : rest)
+    | value == target = True
+    | otherwise = go rest
+  go (_ : rest) = go rest
+  go [] = False
+
+-- | Sprint 7.5.c.iii orchestration ordering helper: both indices must be
+-- present and the first must strictly precede the second. Extracted from
+-- inline lambdas so HLint's @Avoid case inside lambda body@ stays clean.
+indexPrecedes :: Maybe Int -> Maybe Int -> Bool
+indexPrecedes (Just earlier) (Just later) = earlier < later
+indexPrecedes _ _ = False
+
+-- | Sprint 7.6 fixture: write a minimal `stack-snapshot.json` under
+-- `<repoRoot>/.prodbox-state/<stack>/` so that the corresponding
+-- `<stack>HasLiveResources` predicate reports `True`. The body of the
+-- file does not need to be valid JSON — the predicate only checks
+-- file existence (matching the real harness contract:
+-- `clearAwsSesStackSnapshot` and friends remove the file on
+-- `pulumi destroy`).
+writeFakeStackSnapshot :: FilePath -> String -> IO ()
+writeFakeStackSnapshot repoRoot stackName = do
+  let stateDir = repoRoot </> ".prodbox-state" </> stackName
+  createDirectoryIfMissing True stateDir
+  writeFile (stateDir </> "stack-snapshot.json") "{\"_fixture\":\"sprint-7.6\"}"
+
 fakeAwsTestSshScript :: [String]
 fakeAwsTestSshScript =
   [ "#!/usr/bin/env bash"
@@ -2724,6 +3042,7 @@ sampleAwsTeardownInput :: AwsTeardownInput
 sampleAwsTeardownInput =
   AwsTeardownInput
     { awsTeardownAdminCredentials = awsSetupAdminCredentials sampleAwsSetupInput
+    , awsTeardownAllowPulumiResidue = False
     }
 
 sampleConfigSetupInput :: ConfigSetupInput

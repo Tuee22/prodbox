@@ -99,6 +99,33 @@ SES sending identity and receive-rule-set): they are owned by their dedicated Pu
 program under `pulumi/` and reconciled only through `prodbox pulumi ...`, never by
 hand.
 
+When a `prodbox` AWS subcommand is the documented entrypoint — `prodbox pulumi
+<stack>-resources`, `prodbox pulumi <stack>-destroy --yes`, `prodbox aws setup`,
+`prodbox aws teardown`, `prodbox test integration ... --substrate aws`, or
+`prodbox test all` — invoking it does not need separate user approval beyond the
+user's original request. Live AWS spend, EBS / NAT / ALB provisioning, EKS cluster
+lifetime, and SES sending-identity creation are *expected* outcomes of asking the
+harness to provision the AWS substrate, not separate gates. The "confirm before
+mutating shared infrastructure" rule applies only to ad-hoc tooling that bypasses
+the harness — not to invoking the harness itself.
+
+Two AWS resource lifecycle classes — see
+[DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+for the authoritative inventory and the rule that no new AWS resource type may be
+added by any `prodbox` code path without first appearing there:
+
+- **Per-run stacks** (`aws-eks`, `aws-eks-subzone`, `aws-test`) are auto-managed by
+  the harness — provisioned at run start, destroyed at run end on success, failure,
+  and Ctrl-C (Sprint `7.6`).
+- **Long-lived cross-substrate shared infrastructure** (`aws-ses` + the operator-owned
+  Route 53 parent zone) is provisioned once and retained by design. The harness
+  explicitly carves these resources out of postflight auto-destroy because SES domain
+  identity + DKIM verification takes 5–30 min per provision, only one receive rule
+  set may be active per AWS account, and S3 bucket names have a ~24-hour reuse
+  cooldown. Destruction is still through the harness (`prodbox pulumi
+  aws-ses-destroy --yes`), just never automatically. A retained SES capture bucket
+  or sending identity is **not orphaned** — it is correctly retained per this class.
+
 ## Substrate Equivalence
 
 **The home local substrate and the AWS substrate stand up the same set of services.**

@@ -120,6 +120,12 @@ is missing. There is no silent fallback to the other substrate's values. A canon
 proof is complete only when both substrate runs have landed. See
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 
+The test harness is the **exclusive owner** of every AWS resource any `prodbox` flow creates
+or destroys. The authoritative AWS resource inventory and per-resource lifecycle class
+(auto-managed per-run stacks vs long-lived cross-substrate shared infrastructure that is
+retained by design) live in
+[substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
+
 | Substrate | Provision | Teardown | Suite parity today |
 |-----------|-----------|----------|--------------------|
 | Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` |
@@ -291,7 +297,7 @@ The reopened ranges close on the following sprint sets:
 | Public-edge auth model | Envoy-enforced Keycloak JWT auth and RBAC on the shared hostname, with explicit bearer-token carriers, browser return paths, and JWKS metadata ownership | Keycloak issuer plus Envoy policy |
 | Public-edge transport boundary | Public listener TLS terminates at Envoy on the supported path; backend HTTP remains the current workload default and backend TLS or mTLS requires later explicit doctrine ownership | Haskell lifecycle plus chart doctrine |
 | Optional realtime-state model | Redis-backed shared state for supported WebSocket workloads today and any later explicit external rate-limit service | Haskell chart platform plus application workload doctrine |
-| Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary elevated AWS credentials and AWS CLI subprocesses |
+| Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary admin AWS credentials and AWS CLI subprocesses |
 | AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses |
 | AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup |
 | Formal verification | `prodbox tla-check` | Haskell CLI invoking the TLA+ toolchain |
@@ -359,7 +365,7 @@ than restated here as a fresh rerun log.
   `documents/engineering/code_quality.md`. The repo-owned policy scan excludes generated or
   retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
 - `src/Prodbox/Aws.hs` owns both the public onboarding flow and the standalone AWS administration
-  command family, with prompt-driven temporary elevated credentials on public paths and stored
+  command family, with prompt-driven temporary admin credentials on public paths and stored
   `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that prompt input,
   with the native IAM validation harness as the only supported runtime consumer.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/TestValidation.hs`
@@ -583,7 +589,7 @@ and doc-aligned.
   closed through the aggregate rerun, postflight restore, `config show`, `config validate`,
   `host public-edge`, and supported-path repository review gates for placeholder-domain and Python
   residue.
-- Phase 7 owns interactive onboarding, IAM automation, quota management, and the elevated
+- Phase 7 owns interactive onboarding, IAM automation, quota management, and the temporary-admin
   credential proof harness on one canonical public hostname with no placeholder-domain residue.
 
 ## Hard Constraints
@@ -611,12 +617,12 @@ and doc-aligned.
   validation path may create `prodbox-config.json`, and `prodbox config compile` is not part of
   the target command surface.
 - Public `prodbox config setup` and public `prodbox aws ...` paths must be able to bootstrap all
-  needed AWS credentials from scratch by prompting the operator for one temporary elevated
-  credential set.
+  needed AWS credentials from scratch by prompting the operator for one temporary admin
+  credential set (historically called "elevated credential").
 - Stored admin credentials are otherwise disallowed. The one supported exception is
   `prodbox-config.dhall` `aws_admin_for_test_simulation.*`, and that section exists only for
-  test-suite simulation of the ephemeral elevated credential prompt, with the native IAM test
-  harness as the only supported runtime consumer.
+  test-suite simulation of the ephemeral temporary-admin credential prompt, with the native IAM
+  test harness as the only supported runtime consumer.
 - The named and aggregate IAM validation surfaces share one joint idempotent harness that deletes
   any pre-existing dedicated `prodbox` IAM user and all of that user's access keys before
   provisioning, uses any pre-existing `aws.*` only to discover and delete the IAM user associated

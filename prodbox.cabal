@@ -51,6 +51,9 @@ library
         Prodbox.K8s
         Prodbox.Lib.AwsSubstratePlatform
         Prodbox.Lib.ChartPlatform
+        Prodbox.Lib.EksContainerdMirror
+        Prodbox.Lib.EksCustomImagePush
+        Prodbox.Lib.EksImageMirror
         Prodbox.Lib.Storage
         Prodbox.Lint
         Prodbox.Naming

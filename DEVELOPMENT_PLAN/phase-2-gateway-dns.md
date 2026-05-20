@@ -603,7 +603,8 @@ Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Li
   destroy path now matches the EKS destroy path by refreshing Pulumi state and retrying destroy
   once before reporting failure.
 - A later May 13, 2026 `./.build/prodbox test all` rerun completed successfully. The shared AWS
-  setup path proves STS-federated operational credentials from the elevated test identity, waits
+  setup path proves STS-federated operational credentials from the temporary-admin test identity,
+  waits
   for repeated Route 53 stability on the dedicated IAM-user key, persists the IAM-user key for
   runtime because cert-manager Route 53 DNS01 credentials do not support an STS session-token
   field, proves `CLASSIFICATION=ready-for-external-proof`, completes the AWS EKS and HA RKE2

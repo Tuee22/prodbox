@@ -12,6 +12,20 @@ variables:
       arguments:
         state: available
       return: names
+  # IRSA condition keys require the OIDC issuer URL without the
+  # `https://` scheme (per AWS IAM docs); the EKS cluster output's
+  # `identities[0].oidcs[0].issuer` includes the scheme, so split on
+  # "/" and rejoin from element 2 onward to strip it.
+  oidcIssuerParts:
+    fn::split:
+      - "/"
+      - ${cluster.identities[0].oidcs[0].issuer}
+  oidcIssuerHostPath:
+    fn::join:
+      - "/"
+      - - ${oidcIssuerParts[2]}
+        - ${oidcIssuerParts[3]}
+        - ${oidcIssuerParts[4]}
 
 resources:
   awsProvider:
@@ -234,8 +248,8 @@ resources:
               Action: sts:AssumeRoleWithWebIdentity
               Condition:
                 StringEquals:
-                  ${cluster.identities[0].oidcs[0].issuer}:sub: system:serviceaccount:kube-system:aws-load-balancer-controller
-                  ${cluster.identities[0].oidcs[0].issuer}:aud: sts.amazonaws.com
+                  ${oidcIssuerHostPath}:sub: system:serviceaccount:kube-system:aws-load-balancer-controller
+                  ${oidcIssuerHostPath}:aud: sts.amazonaws.com
       tags:
         Name: ${stackName}-aws-lb-controller
 
@@ -244,6 +258,54 @@ resources:
     properties:
       role: ${awsLbControllerRole.name}
       policyArn: ${awsLbControllerPolicy.arn}
+
+  # EBS CSI driver IRSA role + managed-addon installation. The default EKS
+  # cluster ships only the legacy in-tree `gp2` StorageClass without a
+  # backing provisioner; PVCs against it sit Pending forever. The
+  # aws-ebs-csi-driver EKS managed addon installs the modern
+  # `ebs.csi.aws.com` provisioner that backs `gp2` (and `gp3`) dynamic
+  # EBS volumes. The Sprint 7.5.c.i MinIO chart values use
+  # `persistence.storageClass=gp2` on the AWS substrate, so the driver
+  # must be available for MinIO's PVC binding to succeed.
+  ebsCsiDriverRole:
+    type: aws:iam:Role
+    properties:
+      name: ${stackName}-ebs-csi-driver
+      assumeRolePolicy:
+        fn::toJSON:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Federated: ${oidcProvider.arn}
+              Action: sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  ${oidcIssuerHostPath}:sub: system:serviceaccount:kube-system:ebs-csi-controller-sa
+                  ${oidcIssuerHostPath}:aud: sts.amazonaws.com
+      tags:
+        Name: ${stackName}-ebs-csi-driver
+
+  ebsCsiDriverPolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${ebsCsiDriverRole.name}
+      policyArn: "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
+
+  ebsCsiDriverAddon:
+    type: aws:eks:Addon
+    properties:
+      clusterName: ${cluster.name}
+      addonName: aws-ebs-csi-driver
+      serviceAccountRoleArn: ${ebsCsiDriverRole.arn}
+      resolveConflictsOnCreate: OVERWRITE
+      resolveConflictsOnUpdate: OVERWRITE
+      tags:
+        Name: ${stackName}-ebs-csi-driver
+    options:
+      dependsOn:
+        - ${nodeGroup}
+        - ${ebsCsiDriverPolicyAttachment}
 
 outputs:
   backend_bucket: prodbox-test-pulumi-backends
@@ -261,3 +323,5 @@ outputs:
   aws_lb_controller_policy_arn: ${awsLbControllerPolicy.arn}
   aws_lb_controller_role_arn: ${awsLbControllerRole.arn}
   aws_lb_controller_role_name: ${awsLbControllerRole.name}
+  ebs_csi_driver_role_arn: ${ebsCsiDriverRole.arn}
+  ebs_csi_driver_addon_arn: ${ebsCsiDriverAddon.arn}

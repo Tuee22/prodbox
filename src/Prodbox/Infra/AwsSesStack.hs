@@ -8,6 +8,7 @@ module Prodbox.Infra.AwsSesStack
   , loadAwsSesStackSnapshot
   , saveAwsSesStackSnapshot
   , clearAwsSesStackSnapshot
+  , awsSesStackHasLiveResources
   , assertNoAwsSesStackResidue
   , renderAwsSesStackReport
   )
@@ -91,6 +92,18 @@ awsSesStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsSesStackName
 
 awsSesSnapshotPath :: FilePath -> FilePath
 awsSesSnapshotPath repoRoot = awsSesStateDir repoRoot </> "stack-snapshot.json"
+
+-- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
+-- AWS SES stack. Sprint 7.6 orphan-safety predicate. SES is long-lived
+-- cross-substrate shared infrastructure (see
+-- @DEVELOPMENT_PLAN/substrates.md@ § Resource Lifecycle Classes); the
+-- auto-destroy postflight does not call @aws-ses-destroy@, but the
+-- @applyAwsTeardown@ refuse-path still consults this predicate so the
+-- operational IAM user is not deleted while SES (which depends on
+-- operational credentials for its eventual destroy) is still live.
+awsSesStackHasLiveResources :: FilePath -> IO Bool
+awsSesStackHasLiveResources repoRoot =
+  doesFileExist (awsSesSnapshotPath repoRoot)
 
 data AwsSesStackSnapshot = AwsSesStackSnapshot
   { sesSnapshotStackName :: String

@@ -1,5 +1,6 @@
 module Prodbox.CLI.Command
   ( AwsCommand (..)
+  , AwsTeardownFlags (..)
   , ChartsCommand (..)
   , buildPlan
   , CommandListingFormat (..)
@@ -151,9 +152,20 @@ data UsersCommand
 data AwsCommand
   = AwsPolicy PolicyTier
   | AwsSetup PolicyTier PlanOptions
-  | AwsTeardown PlanOptions
+  | AwsTeardown PlanOptions AwsTeardownFlags
   | AwsCheckQuotas
   | AwsRequestQuotas PolicyTier
+  deriving (Eq, Show)
+
+-- | Operator-facing flags on @prodbox aws teardown@. The
+-- @--allow-pulumi-residue@ flag bypasses the Sprint 7.6 refuse-path
+-- check, allowing the operational IAM user to be deleted even while
+-- Pulumi-managed stacks (@aws-eks@, @aws-eks-subzone@, @aws-test@,
+-- @aws-ses@) still have live resources. Operators use this only as a
+-- recovery escape hatch when ordinary destroy paths are unavailable.
+data AwsTeardownFlags = AwsTeardownFlags
+  { teardownAllowPulumiResidue :: Bool
+  }
   deriving (Eq, Show)
 
 data PulumiCommand

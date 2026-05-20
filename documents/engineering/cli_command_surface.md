@@ -76,7 +76,7 @@ Top-level commands:
 
 `src/Prodbox/Aws.hs` owns `config setup`. `src/Prodbox/Settings.hs` owns `config show` and
 `config validate`. `prodbox config compile` is not part of the supported command surface. The
-supported public `config setup` path prompts for one temporary elevated AWS credential set when
+supported public `config setup` path prompts for one temporary admin AWS credential set when
 needed; stored `aws_admin_for_test_simulation.*` remains reserved for test-suite simulation of
 that prompt input, with the native IAM test harness as the only supported runtime consumer.
 
@@ -91,7 +91,7 @@ that prompt input, with the native IAM test harness as the only supported runtim
 | `prodbox aws request-quotas` | none | `--tier` |
 
 `src/Prodbox/Aws.hs` owns the full public `prodbox aws ...` surface. The supported public contract
-is prompt-driven for temporary elevated AWS credentials; stored
+is prompt-driven for temporary admin AWS credentials; stored
 `aws_admin_for_test_simulation.*` is not part of the intended public operator flow.
 
 ### `prodbox host`
@@ -148,15 +148,29 @@ failure.
 |---------|-----------|---------|
 | `prodbox pulumi eks-resources` | none | `--dry-run`, `--plan-file` |
 | `prodbox pulumi eks-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-subzone-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-subzone-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
 | `prodbox pulumi test-resources` | none | `--dry-run`, `--plan-file` |
 | `prodbox pulumi test-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-ses-resources` | none | `--dry-run`, `--plan-file` |
+| `prodbox pulumi aws-ses-destroy` | none | `--yes`, `-y`, `--dry-run`, `--plan-file` |
 
 `src/Prodbox/CLI/Pulumi.hs` owns the full public `prodbox pulumi ...` surface.
 
-`prodbox pulumi eks-destroy --yes` and `prodbox pulumi test-destroy --yes` report one-line stack
-destroy disposition instead of replaying Pulumi login chatter on successful cleanup. On destroy
-failure, each path refreshes Pulumi state and retries destroy once before surfacing the cleanup
-error.
+This matrix is the supported entrypoint set for AWS substrate provisioning and teardown.
+Invoking any entry does not require additional user approval beyond the original request —
+the test harness is the exclusive owner of every AWS resource any `prodbox` flow creates or
+destroys (see [`CLAUDE.md`](../../CLAUDE.md) § AWS Substrate Provisioning Ownership and
+[`AGENTS.md`](../../AGENTS.md) § AWS Substrate Provisioning Is Harness-Owned). Per-resource
+lifecycle classification (auto-managed per-run stacks vs long-lived cross-substrate shared
+infrastructure retained by design) lives in
+[`DEVELOPMENT_PLAN/substrates.md` → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
+
+`prodbox pulumi eks-destroy --yes`, `prodbox pulumi aws-subzone-destroy --yes`,
+`prodbox pulumi test-destroy --yes`, and `prodbox pulumi aws-ses-destroy --yes` report one-line
+stack destroy disposition instead of replaying Pulumi login chatter on successful cleanup. On
+destroy failure, each path refreshes Pulumi state and retries destroy once before surfacing the
+cleanup error.
 
 No supported local-cluster platform or application deployment depends on a root Pulumi project.
 

@@ -17,17 +17,19 @@
 
 ## Phase Status
 
-📋 **Planned** — No sprints have started. This phase is sequenced after the substrate doctrine
-(Sprint `0.6`) lands so that its sprints can use the substrate vocabulary, the canonical-suite
-framing, and the cross-substrate shared-resource pattern. The phase is blocked on:
+🔄 **Active** — Sprints `8.1`–`8.4` are ✅ Done on their owned surfaces; Sprints `8.5` and
+`8.6` are 🔄 Active. The shared SES infrastructure is provisioned, the Keycloak realm chart
+is deployed with the operator-invited flow + SES SMTP password derivation, the
+`prodbox users invite|list|revoke` CLI is live, and the `ValidationKeycloakInvite`
+canonical-suite member drives invite → S3 capture → link follow → cleanup end-to-end.
+Remaining work on the owned surface: the Sprint `8.5` credential-setup form POST plus
+fresh OIDC token round-trip and `email_verified=true` claim assertions, and the Sprint
+`8.6` live cross-substrate `keycloak-invite` run that depends on Sprint `7.5.c`'s
+substrate-platform extension landing on the AWS substrate.
 
-- Phase `3` (chart platform) — closed; the Keycloak chart exists at `charts/keycloak/` with
-  `"emailVerified": true` hardcoded in `charts/keycloak/templates/configmap.yaml:117` and no
-  SMTP/SES wiring.
-- Phase `5` (canonical test suite) — closed on the substrate-agnostic framing.
-- Phase `7` (AWS substrate foundations) — Sprint `7.5` (AWS substrate parity) is not blocked
-  by Phase `8`; Phase `8` adds shared cross-substrate SES infrastructure that the AWS
-  substrate's chart-set deploy can rely on.
+Per-sprint status, deliverables, and remaining work are tracked in the sprint blocks
+below. The authoritative status row is in
+[`README.md`](README.md#phase-overview).
 
 ## Phase Summary
 

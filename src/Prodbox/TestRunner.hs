@@ -7,6 +7,7 @@ import Control.Concurrent (threadDelay)
 import Control.Exception
   ( SomeException
   , displayException
+  , throwIO
   , try
   )
 import Control.Monad (foldM, unless)
@@ -191,10 +192,72 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
           setupExit <- runManagedAwsHarnessSetup repoRoot policyTier
           case setupExit of
             failure@(ExitFailure _) -> pure failure
-            ExitSuccess -> do
-              suiteExit <- runNativeSuiteBody repoRoot environment haskellSuites suitePlan
-              cleanupExit <- runManagedAwsHarnessTeardown repoRoot
-              pure (preferEarlierFailure suiteExit cleanupExit)
+            ExitSuccess ->
+              runWithAwsHarnessCleanup
+                repoRoot
+                environment
+                suitePlan
+                (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
+
+-- | Sprint 7.6 orphan-safety: run the suite body, then unconditionally
+-- destroy every per-run Pulumi stack the suite may have provisioned
+-- before clearing operational @aws.*@ via the harness teardown. The
+-- destroys run on success, failure, and async exception (Ctrl-C)
+-- alike, so no `prodbox test all` exit path can strand
+-- @aws-eks@ / @aws-eks-subzone@ / @aws-test@ resources in AWS. The
+-- @aws-ses@ stack is explicitly excluded per the long-lived
+-- cross-substrate shared-infrastructure class in
+-- @DEVELOPMENT_PLAN/substrates.md@ § Resource Lifecycle Classes.
+runWithAwsHarnessCleanup
+  :: FilePath
+  -> [(String, String)]
+  -> NativeSuitePlan
+  -> IO ExitCode
+  -> IO ExitCode
+runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
+  result <- try body :: IO (Either SomeException ExitCode)
+  destroyExit <- runSequentially (awsPostflightDestroyActions repoRoot environment suitePlan)
+  cleanupExit <- runManagedAwsHarnessTeardown repoRoot
+  case result of
+    Left exc -> do
+      writeDiagnosticLine
+        ("AWS harness cleanup ran after async exception: " ++ show exc)
+      _ <- writeReason destroyExit cleanupExit
+      throwIO exc
+    Right suiteExit ->
+      pure
+        ( preferEarlierFailure
+            suiteExit
+            (preferEarlierFailure destroyExit cleanupExit)
+        )
+ where
+  writeReason :: ExitCode -> ExitCode -> IO ()
+  writeReason destroyExit cleanupExit =
+    case (destroyExit, cleanupExit) of
+      (ExitSuccess, ExitSuccess) -> pure ()
+      _ ->
+        writeDiagnosticLine
+          ( "AWS harness cleanup non-zero: destroy="
+              ++ show destroyExit
+              ++ ", harnessTeardown="
+              ++ show cleanupExit
+          )
+
+awsPostflightDestroyActions
+  :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
+awsPostflightDestroyActions repoRoot environment suitePlan =
+  if nativeRequiresSupportedRuntimePostflight suitePlan
+    then
+      [ emitLineAction
+          ( "Auto-destroying per-run AWS Pulumi stacks (aws-eks, "
+              ++ "aws-eks-subzone, aws-test). aws-ses is retained per the "
+              ++ "long-lived cross-substrate shared-infrastructure class."
+          )
+      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "aws-subzone-destroy", "--yes"]
+      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"]
+      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
+      ]
+    else []
 
 runNativeSuiteBody :: FilePath -> [(String, String)] -> [String] -> NativeSuitePlan -> IO ExitCode
 runNativeSuiteBody repoRoot environment haskellSuites suitePlan = do
@@ -272,6 +335,12 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
       ]
     else []
 
+-- | Post-success suite restore actions: reconcile the local cluster
+-- and re-deploy the canonical chart set so the operator's substrate
+-- is back to a known-good steady state after destructive tests. AWS
+-- per-run-stack destroys are handled separately by
+-- 'awsPostflightDestroyActions', which runs on every exit path (Sprint
+-- 7.6 orphan-safety guard).
 supportedRuntimePostflightActions
   :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
 supportedRuntimePostflightActions repoRoot environment suitePlan =
@@ -292,8 +361,6 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
           environment
           publicEdgeReadyAttempts
           publicEdgeReadyDelayMicroseconds
-      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "eks-destroy", "--yes"]
-      , runNativeCliCommandForExitCode repoRoot environment ["pulumi", "test-destroy", "--yes"]
       ]
     else []
 

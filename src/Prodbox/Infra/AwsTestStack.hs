@@ -9,6 +9,7 @@ module Prodbox.Infra.AwsTestStack
   , loadAwsTestStackSnapshot
   , saveAwsTestStackSnapshot
   , clearAwsTestStackSnapshot
+  , awsTestStackHasLiveResources
   , assertNoAwsTestStackResidue
   , renderAwsTestStackReport
   , ensureAwsTestSshKey
@@ -83,6 +84,12 @@ awsTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsTestStackName
 
 awsTestSnapshotPath :: FilePath -> FilePath
 awsTestSnapshotPath repoRoot = awsTestStateDir repoRoot </> "stack-snapshot.json"
+
+-- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
+-- AWS HA-RKE2 test stack. Sprint 7.6 orphan-safety predicate.
+awsTestStackHasLiveResources :: FilePath -> IO Bool
+awsTestStackHasLiveResources repoRoot =
+  doesFileExist (awsTestSnapshotPath repoRoot)
 
 awsTestPrivateKeyPath :: FilePath -> FilePath
 awsTestPrivateKeyPath repoRoot = awsTestStateDir repoRoot </> "id_ed25519"

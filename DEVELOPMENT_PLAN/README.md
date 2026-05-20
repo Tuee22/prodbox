@@ -283,7 +283,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; ✅ 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract), May 18, 2026; 🔄 7.5.c code follow-up landed May 18, 2026, live AWS-substrate canonical-suite validation pending operator session) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a substrate ADT + CLI surface, May 17, 2026; ✅ 7.5.b.i code-side substrate foundations, May 17, 2026; ✅ 7.5.b.ii.a substrate-aware ClusterIssuer rendering, May 17, 2026; ✅ 7.5.b.ii.b Pulumi AWS LB Controller IAM + IRSA + subnet tags, May 17, 2026; ✅ 7.5.b.ii.c.I subzone Pulumi YAML, May 17, 2026; ✅ 7.5.b.ii.c.II subzone Haskell-side stack lifecycle + CLI, May 17, 2026; ✅ 7.5.b.ii.d.I `charts deploy/delete --substrate` flag + KUBECONFIG env bracket, May 17, 2026; ✅ 7.5.b.ii.d.II.α EKS snapshot extension + AWS LB Controller install function, May 17, 2026; ✅ 7.5.b.ii.d.II.β Envoy Gateway install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.γ cert-manager install on EKS, May 17, 2026; ✅ 7.5.b.ii.d.II.δ AWS-substrate platform orchestrator + chart-deploy wiring + validation remedy removal, May 17, 2026; ✅ 7.5.b.iii substrate-independence doctrine refactor (no-fallback contract), May 18, 2026; 🔄 7.5.c code follow-up landed May 18, 2026; ✅ 7.5.c.i substrate-aware MinIO chart values, May 19, 2026; ✅ 7.5.c.ii EKS containerd registry-mirror DaemonSet renderer, May 19, 2026; ✅ 7.5.c.iii EKS-side MinIO + Harbor installs wired into `ensureAwsSubstratePlatformRuntime` + DaemonSet apply, May 19, 2026; ✅ 7.5.c.iv in-cluster image-mirror Job + Percona operator + steady-state MinIO reconcile, May 19, 2026; 🔄 Active Sprint 7.5.c.v (first live AWS-substrate run May 19, 2026: surfaced six architectural gaps, five fixed in-flight — EBS CSI driver Pulumi addon + IRSA condition-key fn::split/join + crane image tag :debug + /busybox/sh shebang + crane copy --insecure + in-cluster harbor-projects bootstrap pod; full 11-step substrate platform install passes; gateway chart `ImagePullBackOff` blocked on sixth gap = Sprint 7.5.c.v.b custom-image publication); ✅ Sprint 7.5.c.v.b in-cluster custom-image push (crane pod: docker save + kubectl cp + crane push --insecure), May 19, 2026 — live re-run pending in Sprint 7.5.c.v); ✅ Sprint 7.6 (AWS Harness Orphan-Safety Guards: refuse-path on `prodbox aws teardown` + auto-destroy per-run stacks on test-harness exit incl. Ctrl-C, May 19, 2026) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secrets persistence landed (credential-setup form POST + fresh OIDC login + claim assertions remain operator-driven sub-sprint, blocked on live Keycloak form-structure capture); 🔄 Sprint 8.6 doc parity landed (live cross-substrate proof pending 7.5.c + 8.5 OIDC follow-up closure). Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the only remaining live OIDC closure work) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.4` to adopt
@@ -344,7 +344,9 @@ with no fallback between them (see
 A complete canonical-suite proof requires both the home local and AWS substrate rows below to
 land independently against their own real infrastructure. The authoritative substrate
 inventory is [substrates.md](substrates.md); this section is the live tracker for substrate
-parity.
+parity. The authoritative AWS resource inventory and per-resource lifecycle class (auto-managed
+per-run stacks vs long-lived cross-substrate shared infrastructure) live in
+[substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
 
 | Substrate | Provision | Teardown | Suite parity | Phase ownership |
 |-----------|-----------|----------|--------------|-----------------|
@@ -374,10 +376,10 @@ surfaces. The following implemented baseline surfaces remain current on the supp
   Python Pulumi programs, Python type stubs, and Python bridge modules are removed.
 - The supported config contract is direct `Dhall -> Haskell types`; `prodbox-config.json` and
   `prodbox config compile` are not part of the supported path.
-- The public `config setup` and public `aws ...` surfaces use prompt-driven temporary elevated AWS
-  credentials, while stored `aws_admin_for_test_simulation.*` remains reserved for test-suite
-  simulation of that prompt input, with the native IAM validation harness as the only supported
-  runtime consumer.
+- The public `config setup` and public `aws ...` surfaces use prompt-driven temporary admin AWS
+  credentials (historically called "elevated credentials"), while stored
+  `aws_admin_for_test_simulation.*` remains reserved for test-suite simulation of that prompt
+  input, with the native IAM validation harness as the only supported runtime consumer.
 - `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, and `src/Prodbox/TestValidation.hs`
   now route `prodbox test integration aws-iam`, `prodbox test integration all`, and
   `prodbox test all` through one shared suite-level IAM harness that provisions temporary
@@ -529,12 +531,12 @@ This plan is complete only when all of the following are true:
    decoder and no generated `prodbox-config.json` artifact or supported `prodbox config compile`
    path.
 4. Public `prodbox config setup` and public `prodbox aws ...` paths can bootstrap all required AWS
-   credentials from scratch using temporary elevated credentials entered interactively by the
+   credentials from scratch using temporary admin credentials entered interactively by the
    operator.
 5. `aws_admin_for_test_simulation.*` may be stored in `prodbox-config.dhall` only as the
-   test-suite simulation of the ephemeral elevated credential prompt. The native IAM validation
-   harness is the only supported runtime consumer of that section, and no supported non-test
-   command or runtime helper may read or use it.
+   test-suite simulation of the ephemeral temporary-admin credential prompt. The native IAM
+   validation harness is the only supported runtime consumer of that section, and no supported
+   non-test command or runtime helper may read or use it.
 6. `prodbox test integration aws-iam`, `prodbox test integration all`, and `prodbox test all`
    share one joint idempotent IAM validation harness that deletes any pre-existing dedicated
    `prodbox` IAM user and all of that user's access keys before provisioning, uses any

@@ -3,7 +3,15 @@
 module Prodbox.CLI.Rke2
   ( acmeRuntimeManifest
   , acmeClusterIssuerSpec
+  , ensureGatewayImagesForSubstrate
+  , ensureHarborRegistryRuntime
+  , ensureHarborRegistryStorageBackend
+  , ensureMinioRuntime
+  , ensurePostgresOperatorRuntime
+  , ensurePublicEdgeWorkloadImageForSubstrate
+  , MinioImageSource (..)
   , renderNativeInstallPlan
+  , renderMinioChartArgs
   , runRke2Command
   )
 where
@@ -69,6 +77,12 @@ import Prodbox.Host
 import Prodbox.Lib.ChartPlatform
   ( keycloakVscodeClientId
   , resolveChartSecrets
+  )
+import Prodbox.Lib.EksCustomImagePush
+  ( EksCustomImagePushConfig (..)
+  , defaultEksCustomImagePushConfig
+  , eksCustomImagePushPodManifest
+  , rewriteChartRefForInClusterPush
   )
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
@@ -369,6 +383,7 @@ acmeEabSecretKey = "secret"
 data MinioImageSource
   = MinioBootstrapPublic
   | MinioSteadyStateHarbor
+  deriving (Eq, Show)
 
 data HostArchitecture
   = HostArchitectureAmd64
@@ -591,16 +606,16 @@ applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
     , deleteNonManualStorageClasses repoRoot
     , ensureProdboxIdentityConfigMap repoRoot machineId prodboxId labelValue
     , ensureRetainedLocalStorage repoRoot settings prodboxId labelValue
-    , ensureMinioRuntime repoRoot MinioBootstrapPublic
+    , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioBootstrapPublic
     , ensureHarborRegistryStorageBackend repoRoot
-    , ensureHarborRegistryRuntime repoRoot
+    , ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
     , mirrorClusterImagesOnce repoRoot
     , ensureGatewayImages repoRoot prodboxId
     , ensurePublicEdgeWorkloadImage repoRoot prodboxId
     , ensureRke2RegistriesConfig repoRoot
     , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
     , reconcileDnsBootstrapRecord repoRoot settings
-    , ensureMinioRuntime repoRoot MinioSteadyStateHarbor
+    , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
     , ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue
     , reconcileManagedAnnotations repoRoot prodboxId labelValue
     ]
@@ -854,8 +869,8 @@ ensureRetainedLocalStorage repoRoot settings prodboxId labelValue = do
                                   )
                               ExitSuccess -> pure ExitSuccess
 
-ensureMinioRuntime :: FilePath -> MinioImageSource -> IO ExitCode
-ensureMinioRuntime repoRoot imageSource = do
+ensureMinioRuntime :: FilePath -> Substrate -> MinioImageSource -> IO ExitCode
+ensureMinioRuntime repoRoot substrate imageSource = do
   repoAddResult <-
     captureToolOutput repoRoot "helm" ["repo", "add", minioRepositoryName, minioRepositoryUrl]
   case repoAddResult of
@@ -868,64 +883,103 @@ ensureMinioRuntime repoRoot imageSource = do
         ExitSuccess -> continue
  where
   continue =
-    let (minioImage, minioMcImage) = minioChartImages imageSource
-     in runSequentially
-          [ runHelmCommandWithRetries repoRoot ["repo", "update"]
-          , runHelmCommandWithRetries
-              repoRoot
-              [ "upgrade"
-              , "--install"
-              , minioReleaseName
-              , minioChartRef
-              , "--version"
-              , minioChartVersion
-              , "--namespace"
-              , minioNamespace
-              , "--create-namespace"
-              , "--set"
-              , "mode=standalone"
-              , "--set"
-              , "replicas=1"
-              , "--set"
-              , "persistence.enabled=true"
-              , "--set"
-              , "persistence.existingClaim=minio"
-              , "--set"
-              , "image.repository=" ++ renderImageRefWithoutTag minioImage
-              , "--set"
-              , "image.tag=" ++ ContainerImage.imageTag minioImage
-              , "--set"
-              , "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage
-              , "--set"
-              , "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage
-              , "--set"
-              , "persistence.size=200Gi"
-              , "--set"
-              , "service.type=ClusterIP"
-              , "--set"
-              , "consoleService.type=ClusterIP"
-              , "--set"
-              , "resources.requests.memory=256Mi"
-              , "--set"
-              , "resources.requests.cpu=100m"
-              , "--set"
-              , "resources.limits.memory=512Mi"
-              ]
-          , runCommand
-              Subprocess
-                { subprocessPath = "kubectl"
-                , subprocessArguments =
-                    [ "wait"
-                    , "--for=condition=Available"
-                    , "deployment/minio"
-                    , "-n"
-                    , minioNamespace
-                    , "--timeout=300s"
-                    ]
-                , subprocessEnvironment = Nothing
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-          ]
+    runSequentially
+      [ runHelmCommandWithRetries repoRoot ["repo", "update"]
+      , runHelmCommandWithRetries
+          repoRoot
+          ( [ "upgrade"
+            , "--install"
+            , minioReleaseName
+            , minioChartRef
+            , "--version"
+            , minioChartVersion
+            , "--namespace"
+            , minioNamespace
+            , "--create-namespace"
+            ]
+              ++ renderMinioChartArgs substrate imageSource
+          )
+      , runCommand
+          Subprocess
+            { subprocessPath = "kubectl"
+            , subprocessArguments =
+                [ "wait"
+                , "--for=condition=Available"
+                , "deployment/minio"
+                , "-n"
+                , minioNamespace
+                , "--timeout=300s"
+                ]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      ]
+
+-- | Pure render of @--set@ flag pairs for the MinIO chart install,
+-- substrate-aware per Sprint @7.5.c.i@:
+--
+--   * 'SubstrateHomeLocal' binds to the operator-host @hostPath@ PVC
+--     pre-created by 'ensureRetainedLocalStorage'
+--     (@persistence.existingClaim=minio@).
+--   * 'SubstrateAws' lets the chart dynamically provision an EBS
+--     volume against the EKS default @gp2@ storage class
+--     (@persistence.storageClass=gp2@), with no @existingClaim@. The
+--     volume size is bounded at 20 GiB to keep test-substrate EBS
+--     cost predictable; the home substrate's 200 GiB size argument
+--     was hostPath-backed and effectively ignored by the chart.
+--
+-- Substrate-agnostic core (chart mode, replicas, service type,
+-- image refs, resource requests) is shared. The function is total:
+-- the @[String]@ output is a flat alternating @["--set", "k=v", …]@
+-- list ready to splice into a @helm upgrade --install@ invocation.
+renderMinioChartArgs :: Substrate -> MinioImageSource -> [String]
+renderMinioChartArgs substrate imageSource =
+  let (minioImage, minioMcImage) = minioChartImages imageSource
+      coreArgs =
+        [ "--set"
+        , "mode=standalone"
+        , "--set"
+        , "replicas=1"
+        , "--set"
+        , "persistence.enabled=true"
+        , "--set"
+        , "image.repository=" ++ renderImageRefWithoutTag minioImage
+        , "--set"
+        , "image.tag=" ++ ContainerImage.imageTag minioImage
+        , "--set"
+        , "mcImage.repository=" ++ renderImageRefWithoutTag minioMcImage
+        , "--set"
+        , "mcImage.tag=" ++ ContainerImage.imageTag minioMcImage
+        , "--set"
+        , "service.type=ClusterIP"
+        , "--set"
+        , "consoleService.type=ClusterIP"
+        , "--set"
+        , "resources.requests.memory=256Mi"
+        , "--set"
+        , "resources.requests.cpu=100m"
+        , "--set"
+        , "resources.limits.memory=512Mi"
+        ]
+   in coreArgs ++ minioSubstratePersistenceArgs substrate
+
+-- | Substrate-specific MinIO persistence args. See
+-- 'renderMinioChartArgs' for the rationale.
+minioSubstratePersistenceArgs :: Substrate -> [String]
+minioSubstratePersistenceArgs substrate =
+  case substrate of
+    SubstrateHomeLocal ->
+      [ "--set"
+      , "persistence.existingClaim=minio"
+      , "--set"
+      , "persistence.size=200Gi"
+      ]
+    SubstrateAws ->
+      [ "--set"
+      , "persistence.storageClass=gp2"
+      , "--set"
+      , "persistence.size=20Gi"
+      ]
 
 minioChartImages :: MinioImageSource -> (ContainerImage.ImageRef, ContainerImage.ImageRef)
 minioChartImages imageSource =
@@ -1132,8 +1186,8 @@ harborStorageBackendManifestItems accessKey secretKey =
       ]
   ]
 
-ensureHarborRegistryRuntime :: FilePath -> IO ExitCode
-ensureHarborRegistryRuntime repoRoot = do
+ensureHarborRegistryRuntime :: FilePath -> Substrate -> IO ExitCode
+ensureHarborRegistryRuntime repoRoot substrate = do
   repoAddResult <-
     captureToolOutput repoRoot "helm" ["repo", "add", harborRepositoryName, harborRepositoryUrl]
   case repoAddResult of
@@ -1211,15 +1265,143 @@ ensureHarborRegistryRuntime repoRoot = do
                     ]
                 case harborEndpointExit of
                   ExitFailure _ -> pure harborEndpointExit
-                  ExitSuccess -> do
-                    loginExit <- ensureHarborDockerLogin repoRoot
-                    case loginExit of
-                      ExitFailure _ -> pure loginExit
-                      ExitSuccess ->
-                        runSequentially
-                          [ ensureHarborProject repoRoot projectName
-                          | projectName <- nub [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
-                          ]
+                  ExitSuccess -> ensureHarborProjectsForSubstrate substrate repoRoot
+
+-- | Harbor project bootstrap tail. On the home substrate the operator
+-- host's Docker daemon authenticates to the in-cluster Harbor NodePort
+-- (so subsequent host-side @docker push@ steps in the image-mirror loop
+-- can publish images) and the bootstrap projects are created via the
+-- Harbor REST API. On the AWS substrate the operator host has no
+-- network path into the EKS-side Harbor NodePort, so the docker-login
+-- step is skipped; the in-cluster image-mirror Job from Sprint
+-- @7.5.c.iv@ replaces the host-Docker path. Bootstrap-project
+-- creation also runs in-cluster on AWS: a one-shot pod in the
+-- @harbor@ namespace POSTs to @http:\/\/harbor.harbor.svc.cluster.local
+-- \/api\/v2.0\/projects@ since the operator-host @127.0.0.1:30080@
+-- endpoint @ensureHarborProject@ uses on the home substrate only
+-- resolves to Harbor on RKE2.
+ensureHarborProjectsForSubstrate :: Substrate -> FilePath -> IO ExitCode
+ensureHarborProjectsForSubstrate substrate repoRoot =
+  case substrate of
+    SubstrateHomeLocal -> do
+      loginExit <- ensureHarborDockerLogin repoRoot
+      case loginExit of
+        ExitFailure _ -> pure loginExit
+        ExitSuccess -> createHarborProjectsHomeLocal repoRoot
+    SubstrateAws -> createHarborProjectsAws repoRoot
+
+createHarborProjectsHomeLocal :: FilePath -> IO ExitCode
+createHarborProjectsHomeLocal repoRoot =
+  runSequentially
+    [ ensureHarborProject repoRoot projectName
+    | projectName <- nub harborBootstrapProjects
+    ]
+
+-- | On the AWS substrate the operator host cannot reach Harbor at
+-- @127.0.0.1:30080@. Apply a one-shot pod that runs @curl@ from
+-- inside the cluster against Harbor's in-cluster DNS endpoint, then
+-- wait for it to complete and clean up.
+createHarborProjectsAws :: FilePath -> IO ExitCode
+createHarborProjectsAws repoRoot = do
+  let projects = nub harborBootstrapProjects
+      podName = "harbor-projects-bootstrap"
+      podNamespace = harborNamespace
+      script =
+        "set -eu\n"
+          ++ concatMap
+            ( \p ->
+                "echo \"prodbox-harbor-projects: creating "
+                  ++ p
+                  ++ "\"\n"
+                  ++ "code=$(curl -sS -u admin:Harbor12345 -H 'Content-Type: application/json' -X POST "
+                  ++ "-d '{\"project_name\":\""
+                  ++ p
+                  ++ "\",\"public\":true}' "
+                  ++ "-o /dev/null -w '%{http_code}' "
+                  ++ "http://harbor.harbor.svc.cluster.local/api/v2.0/projects)\n"
+                  ++ "case \"$code\" in 201|409) echo \"  HTTP $code (ok)\" ;; *) echo \"  HTTP $code (FAIL)\"; exit 1 ;; esac\n"
+            )
+            projects
+      manifest =
+        object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("Pod" :: String)
+          , "metadata"
+              .= object
+                [ "name" .= podName
+                , "namespace" .= podNamespace
+                ]
+          , "spec"
+              .= object
+                [ "restartPolicy" .= ("Never" :: String)
+                , "containers"
+                    .= [ object
+                           [ "name" .= ("curl" :: String)
+                           , "image" .= ("curlimages/curl:8.11.0" :: String)
+                           , "command" .= (["sh", "-c"] :: [String])
+                           , "args" .= [script]
+                           ]
+                       ]
+                ]
+          ]
+  -- Delete any leftover pod from a prior run so apply doesn't fail on
+  -- an Already-Completed restartPolicy=Never pod.
+  _ <-
+    runCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "delete"
+            , "pod"
+            , "-n"
+            , podNamespace
+            , podName
+            , "--ignore-not-found"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  withTemporaryJsonManifest "harbor-projects-pod" [manifest] $ \manifestPath -> do
+    applyExit <-
+      runCommand
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments = ["apply", "-f", manifestPath]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+    case applyExit of
+      ExitFailure _ -> pure applyExit
+      ExitSuccess -> do
+        waitExit <-
+          runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  [ "wait"
+                  , "--for=jsonpath={.status.phase}=Succeeded"
+                  , "pod/" ++ podName
+                  , "-n"
+                  , podNamespace
+                  , "--timeout=120s"
+                  ]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        _ <-
+          runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments =
+                  ["delete", "pod", "-n", podNamespace, podName, "--ignore-not-found"]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        pure waitExit
+
+harborBootstrapProjects :: [String]
+harborBootstrapProjects =
+  [harborMirrorProject, harborProjectFromRepository harborGatewayRepository]
 
 waitForDeployment :: FilePath -> String -> String -> IO ExitCode
 waitForDeployment repoRoot namespace deploymentName =
@@ -2585,11 +2767,19 @@ ensureMirroredClusterImage repoRoot sourceCandidates target = do
         Right () -> pure ExitSuccess
 
 ensureGatewayImages :: FilePath -> String -> IO ExitCode
-ensureGatewayImages repoRoot prodboxId = do
+ensureGatewayImages = ensureGatewayImagesForSubstrate SubstrateHomeLocal
+
+ensurePublicEdgeWorkloadImage :: FilePath -> String -> IO ExitCode
+ensurePublicEdgeWorkloadImage = ensurePublicEdgeWorkloadImageForSubstrate SubstrateHomeLocal
+
+-- | Sprint 7.5.c.v.b — substrate-aware gateway image publication.
+ensureGatewayImagesForSubstrate :: Substrate -> FilePath -> String -> IO ExitCode
+ensureGatewayImagesForSubstrate substrate repoRoot prodboxId = do
   let gatewayTag = prodboxIdToLabelValue prodboxId
       gatewayImage = ContainerImage.harborGatewayImageRepository ++ ":" ++ gatewayTag
       latestImage = ContainerImage.harborGatewayImageRepository ++ ":latest"
-  ensureCustomImageVariants
+  ensureCustomImageVariantsForSubstrate
+    substrate
     repoRoot
     CustomImageBuildPlan
       { customImageDockerfile = "docker/gateway.Dockerfile"
@@ -2597,12 +2787,15 @@ ensureGatewayImages repoRoot prodboxId = do
     [gatewayImage, latestImage]
     gatewayImage
 
-ensurePublicEdgeWorkloadImage :: FilePath -> String -> IO ExitCode
-ensurePublicEdgeWorkloadImage repoRoot prodboxId = do
+-- | Sprint 7.5.c.v.b — substrate-aware public-edge workload image
+-- publication.
+ensurePublicEdgeWorkloadImageForSubstrate :: Substrate -> FilePath -> String -> IO ExitCode
+ensurePublicEdgeWorkloadImageForSubstrate substrate repoRoot prodboxId = do
   let workloadTag = prodboxIdToLabelValue prodboxId
       workloadImage = ContainerImage.harborPublicEdgeWorkloadImageRepository ++ ":" ++ workloadTag
       latestImage = ContainerImage.harborPublicEdgeWorkloadImageRepository ++ ":latest"
-  ensureCustomImageVariants
+  ensureCustomImageVariantsForSubstrate
+    substrate
     repoRoot
     CustomImageBuildPlan
       { customImageDockerfile = "docker/prodbox.Dockerfile"
@@ -2611,7 +2804,33 @@ ensurePublicEdgeWorkloadImage repoRoot prodboxId = do
     workloadImage
 
 ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
-ensureCustomImageVariants repoRoot imageBuildPlan taggedRefs importRef = do
+ensureCustomImageVariants = ensureCustomImageVariantsForSubstrate SubstrateHomeLocal
+
+-- | Sprint 7.5.c.v.b — substrate-aware custom-image publication.
+--
+--   * 'SubstrateHomeLocal': @docker login@ to @127.0.0.1:30080@,
+--     @docker build@ + @docker push@, then @docker pull@ +
+--     @sudo ctr image import@ to land the image in RKE2 containerd.
+--   * 'SubstrateAws': @docker build@ on the operator host (Docker
+--     is available), then publish via an in-cluster crane pod that
+--     receives the docker-saved tarball via @kubectl cp@ and runs
+--     @crane push --insecure@ against
+--     @harbor.harbor.svc.cluster.local@. The operator-host
+--     @docker push@ + @ctr@ paths do not apply on EKS (no network
+--     path from the operator host into EKS Harbor; no @ctr@ socket
+--     access into EKS node containerd sockets). EKS chart pods pick
+--     up the pushed image via the Sprint @7.5.c.ii@ containerd
+--     registry-mirror DaemonSet on each node.
+ensureCustomImageVariantsForSubstrate
+  :: Substrate -> FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
+ensureCustomImageVariantsForSubstrate substrate repoRoot imageBuildPlan taggedRefs importRef =
+  case substrate of
+    SubstrateHomeLocal -> ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef
+    SubstrateAws -> ensureCustomImageVariantsAws repoRoot imageBuildPlan taggedRefs
+
+ensureCustomImageVariantsHomeLocal
+  :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
+ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef = do
   loginExit <- ensureHarborDockerLogin repoRoot
   case loginExit of
     ExitFailure _ -> pure loginExit
@@ -2630,6 +2849,185 @@ ensureCustomImageVariants repoRoot imageBuildPlan taggedRefs importRef = do
                   }
             , importImageIntoRke2Containerd repoRoot importRef
             ]
+
+-- | AWS-substrate custom-image publication path. Builds the image on
+-- the operator host via @docker build@ (which is available locally),
+-- @docker save@'s the image to a tarball, then publishes via an
+-- in-cluster crane pod. The @ctr@ import step is intentionally
+-- omitted — EKS nodes pull from in-cluster Harbor via the
+-- containerd registry-mirror DaemonSet.
+ensureCustomImageVariantsAws
+  :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
+ensureCustomImageVariantsAws repoRoot imageBuildPlan taggedRefs =
+  case taggedRefs of
+    [] -> pure ExitSuccess
+    (primaryRef : _) -> do
+      buildExit <- buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs
+      case buildExit of
+        ExitFailure _ -> pure buildExit
+        ExitSuccess -> pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs
+
+buildCustomImageHostArchitecture
+  :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
+buildCustomImageHostArchitecture repoRoot imageBuildPlan taggedRefs =
+  case supportedHostArchitecture of
+    Left err -> failWith err
+    Right hostArchitecture -> buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs
+
+-- | Render + apply the in-cluster crane pod from
+-- 'Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest',
+-- @docker save@ the locally-built image to a tarball under the
+-- chart-platform tmp dir, @kubectl cp@ the tarball into the pod,
+-- @kubectl exec@ @crane push --insecure@ once per requested tag,
+-- then delete the pod.
+pushCustomImageVariantsViaInClusterCrane
+  :: FilePath -> String -> [String] -> IO ExitCode
+pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
+  let cfg = defaultEksCustomImagePushConfig
+      podNs = customPushPodNamespace cfg
+      podNm = customPushPodName cfg
+      tarDir = repoRoot </> ".prodbox-state" </> "tmp"
+      tarPath = tarDir </> "prodbox-custom-image.tar"
+      podPath = "/data/image.tar"
+  writeOutputLine
+    ( "Publishing custom image via in-cluster crane pod ("
+        ++ podNs
+        ++ "/"
+        ++ podNm
+        ++ "): "
+        ++ primaryRef
+    )
+  _ <-
+    runCommand
+      Subprocess
+        { subprocessPath = "mkdir"
+        , subprocessArguments = ["-p", tarDir]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  saveExit <-
+    runCommand
+      Subprocess
+        { subprocessPath = "docker"
+        , subprocessArguments = ["save", "-o", tarPath, primaryRef]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case saveExit of
+    ExitFailure _ -> pure saveExit
+    ExitSuccess -> do
+      -- Apply the push-pod manifest fresh every call so previous
+      -- runs don't leave a Completed pod blocking apply.
+      _ <-
+        runCommand
+          Subprocess
+            { subprocessPath = "kubectl"
+            , subprocessArguments = ["delete", "pod", "-n", podNs, podNm, "--ignore-not-found"]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      withTemporaryJsonManifest "eks-custom-image-push-pod" [eksCustomImagePushPodManifest cfg] $ \manifestPath -> do
+        applyExit <-
+          runCommand
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments = ["apply", "-f", manifestPath]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+        case applyExit of
+          ExitFailure _ -> pure applyExit
+          ExitSuccess -> do
+            readyExit <-
+              runCommand
+                Subprocess
+                  { subprocessPath = "kubectl"
+                  , subprocessArguments =
+                      [ "wait"
+                      , "--for=condition=Ready"
+                      , "pod/" ++ podNm
+                      , "-n"
+                      , podNs
+                      , "--timeout=120s"
+                      ]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            case readyExit of
+              ExitFailure _ -> pure readyExit
+              ExitSuccess -> do
+                cpExit <-
+                  runCommand
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments =
+                          [ "cp"
+                          , tarPath
+                          , podNs ++ "/" ++ podNm ++ ":" ++ podPath
+                          ]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                case cpExit of
+                  ExitFailure _ -> pure cpExit
+                  ExitSuccess -> do
+                    pushExits <-
+                      mapM
+                        (pushOneRefViaCranePod cfg podNs podNm podPath repoRoot)
+                        taggedRefs
+                    _ <-
+                      runCommand
+                        Subprocess
+                          { subprocessPath = "kubectl"
+                          , subprocessArguments =
+                              ["delete", "pod", "-n", podNs, podNm, "--ignore-not-found"]
+                          , subprocessEnvironment = Nothing
+                          , subprocessWorkingDirectory = Just repoRoot
+                          }
+                    pure $ firstNonSuccess pushExits
+
+pushOneRefViaCranePod
+  :: EksCustomImagePushConfig
+  -> String
+  -> String
+  -> String
+  -> FilePath
+  -> String
+  -> IO ExitCode
+pushOneRefViaCranePod cfg podNs podNm podPath repoRoot chartRef = do
+  let inClusterRef = rewriteChartRefForInClusterPush cfg chartRef
+  writeOutputLine
+    ( "  crane push "
+        ++ podPath
+        ++ " "
+        ++ inClusterRef
+        ++ " --insecure"
+    )
+  runCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          [ "exec"
+          , "-n"
+          , podNs
+          , podNm
+          , "--"
+          , "/ko-app/crane"
+          , "push"
+          , podPath
+          , inClusterRef
+          , "--insecure"
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+firstNonSuccess :: [ExitCode] -> ExitCode
+firstNonSuccess = go
+ where
+  go [] = ExitSuccess
+  go (ExitSuccess : rest) = go rest
+  go (failure : _) = failure
 
 buildAndPushCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> IO ExitCode
 buildAndPushCustomImageVariants repoRoot imageBuildPlan taggedRefs =

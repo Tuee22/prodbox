@@ -9,6 +9,7 @@ module Prodbox.Infra.AwsEksTestStack
   , loadAwsEksTestStackSnapshot
   , saveAwsEksTestStackSnapshot
   , clearAwsEksTestStackSnapshot
+  , awsEksTestStackHasLiveResources
   , materializeAwsEksKubeconfig
   , assertNoAwsEksTestStackResidue
   , credentialsConfigured
@@ -88,6 +89,17 @@ awsEksTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksTestStackN
 
 awsEksTestSnapshotPath :: FilePath -> FilePath
 awsEksTestSnapshotPath repoRoot = awsEksTestStateDir repoRoot </> "stack-snapshot.json"
+
+-- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
+-- AWS EKS test stack. The snapshot is written only after a successful
+-- 'ensureAwsEksTestStackResources' run and removed on
+-- 'clearAwsEksTestStackSnapshot' (called by 'destroyAwsEksTestStack' on
+-- success). The Sprint 7.6 orphan-safety refuse-path uses this
+-- predicate to block 'prodbox aws teardown' when live resources still
+-- exist.
+awsEksTestStackHasLiveResources :: FilePath -> IO Bool
+awsEksTestStackHasLiveResources repoRoot =
+  doesFileExist (awsEksTestSnapshotPath repoRoot)
 
 awsEksTestKubeconfigPath :: FilePath -> FilePath
 awsEksTestKubeconfigPath repoRoot = awsEksTestStateDir repoRoot </> "kubeconfig"

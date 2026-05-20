@@ -37,6 +37,9 @@ module Prodbox.Lib.AwsSubstratePlatform
   , awsSubstrateCertManagerNamespace
   , ensureAwsSubstrateAcmeRuntime
   , ensureAwsSubstratePlatformRuntime
+  , applyEksContainerdMirrorDaemonSet
+  , applyEksImageMirrorJob
+  , awsSubstratePlatformRuntimeStepDescriptions
   )
 where
 
@@ -54,11 +57,31 @@ import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
   )
-import Prodbox.CLI.Rke2 (acmeRuntimeManifest)
+import Prodbox.CLI.Rke2
+  ( MinioImageSource (..)
+  , acmeRuntimeManifest
+  , ensureGatewayImagesForSubstrate
+  , ensureHarborRegistryRuntime
+  , ensureHarborRegistryStorageBackend
+  , ensureMinioRuntime
+  , ensurePostgresOperatorRuntime
+  , ensurePublicEdgeWorkloadImageForSubstrate
+  )
+import Prodbox.ContainerImage (requiredPublicImagePairs)
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
   , loadAwsEksTestStackSnapshot
+  )
+import Prodbox.Lib.EksContainerdMirror
+  ( defaultProdboxMirrorConfig
+  , eksContainerdMirrorDaemonSetManifest
+  )
+import Prodbox.Lib.EksImageMirror
+  ( defaultEksImageMirrorConfig
+  , eksImageMirrorJobManifest
+  , mirrorJobName
+  , mirrorJobNamespace
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -490,7 +513,9 @@ ensureAwsSubstratePlatformRuntime
   :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
   writeOutputLine
-    "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway + cert-manager + ACME)"
+    ( "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway "
+        ++ "+ cert-manager + ACME + containerd registry mirror + MinIO + Harbor)"
+    )
   snapshotMaybe <- loadAwsEksTestStackSnapshot repoRoot
   case snapshotMaybe of
     Nothing ->
@@ -511,7 +536,127 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     , ensureAwsSubstrateEnvoyGatewayRuntime
     , ensureAwsSubstrateCertManagerRuntime
     , ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
+    , applyEksContainerdMirrorDaemonSet repoRoot
+    , ensureMinioRuntime repoRoot SubstrateAws MinioBootstrapPublic
+    , ensureHarborRegistryStorageBackend repoRoot
+    , ensureHarborRegistryRuntime repoRoot SubstrateAws
+    , applyEksImageMirrorJob repoRoot
+    , ensureGatewayImagesForSubstrate SubstrateAws repoRoot prodboxId
+    , ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws repoRoot prodboxId
+    , ensurePostgresOperatorRuntime repoRoot prodboxId labelValue
+    , ensureMinioRuntime repoRoot SubstrateAws MinioSteadyStateHarbor
     ]
+
+-- | Pure listing of the orchestration steps
+-- 'ensureAwsSubstratePlatformRuntime' sequences, in execution order.
+-- Used by unit tests to verify the ordering contract without driving
+-- live subprocesses; also useful for operator-facing documentation.
+-- Keep in lockstep with the @steps@ binding above.
+awsSubstratePlatformRuntimeStepDescriptions :: [String]
+awsSubstratePlatformRuntimeStepDescriptions =
+  [ "ensureAwsLoadBalancerControllerRuntime"
+  , "ensureAwsSubstrateEnvoyGatewayRuntime"
+  , "ensureAwsSubstrateCertManagerRuntime"
+  , "ensureAwsSubstrateAcmeRuntime"
+  , "applyEksContainerdMirrorDaemonSet"
+  , "ensureMinioRuntime SubstrateAws MinioBootstrapPublic"
+  , "ensureHarborRegistryStorageBackend"
+  , "ensureHarborRegistryRuntime SubstrateAws"
+  , "applyEksImageMirrorJob"
+  , "ensureGatewayImagesForSubstrate SubstrateAws"
+  , "ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws"
+  , "ensurePostgresOperatorRuntime"
+  , "ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"
+  ]
+
+-- | Sprint 7.5.c.iv: apply the in-cluster image-mirror Job rendered
+-- by 'Prodbox.Lib.EksImageMirror' so every public image required by
+-- the canonical chart set lands in the EKS-side Harbor before the
+-- Percona operator + steady-state MinIO reconcile steps (which both
+-- pull from Harbor) execute. After applying the Job manifest, blocks
+-- until @kubectl wait --for=condition=complete@ on the Job returns
+-- success; the @backoffLimit=2@ on the Job means transient pull
+-- failures (e.g. upstream registry rate-limit) retry within the
+-- single Job rather than failing the orchestrator immediately.
+applyEksImageMirrorJob :: FilePath -> IO ExitCode
+applyEksImageMirrorJob repoRoot = do
+  let cfg = defaultEksImageMirrorConfig
+      jobNs = mirrorJobNamespace cfg
+      jobNm = mirrorJobName cfg
+  writeOutputLine
+    ( "Applying in-cluster image-mirror Job ("
+        ++ jobNs
+        ++ "/"
+        ++ jobNm
+        ++ ")"
+    )
+  let manifestList =
+        object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("List" :: String)
+          , "items" .= [eksImageMirrorJobManifest cfg requiredPublicImagePairs]
+          ]
+  applyExit <-
+    withTempJsonFile
+      repoRoot
+      "eks-image-mirror-job"
+      (encode manifestList)
+      ( \manifestPath ->
+          runStreaming
+            Subprocess
+              { subprocessPath = "kubectl"
+              , subprocessArguments = ["apply", "-f", manifestPath]
+              , subprocessEnvironment = Nothing
+              , subprocessWorkingDirectory = Just repoRoot
+              }
+      )
+  case applyExit of
+    ExitFailure _ -> pure applyExit
+    ExitSuccess ->
+      runStreaming
+        Subprocess
+          { subprocessPath = "kubectl"
+          , subprocessArguments =
+              [ "wait"
+              , "--for=condition=complete"
+              , "job/" ++ jobNm
+              , "-n"
+              , jobNs
+              , "--timeout=20m"
+              ]
+          , subprocessEnvironment = Nothing
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+
+-- | Sprint 7.5.c.iii: apply the EKS containerd registry-mirror
+-- DaemonSet rendered by 'Prodbox.Lib.EksContainerdMirror' so EKS nodes
+-- route @127.0.0.1:30080@ chart-image pulls into the in-cluster Harbor
+-- NodePort installed two steps later in this orchestrator. Idempotent:
+-- the bootstrap script only restarts containerd when its on-disk
+-- config actually changed.
+applyEksContainerdMirrorDaemonSet :: FilePath -> IO ExitCode
+applyEksContainerdMirrorDaemonSet repoRoot = do
+  writeOutputLine
+    "Applying EKS containerd registry-mirror DaemonSet (kube-system/prodbox-containerd-mirror)"
+  let manifestList =
+        object
+          [ "apiVersion" .= ("v1" :: String)
+          , "kind" .= ("List" :: String)
+          , "items" .= [eksContainerdMirrorDaemonSetManifest defaultProdboxMirrorConfig]
+          ]
+  withTempJsonFile
+    repoRoot
+    "eks-containerd-mirror"
+    (encode manifestList)
+    ( \manifestPath ->
+        runStreaming
+          Subprocess
+            { subprocessPath = "kubectl"
+            , subprocessArguments = ["apply", "-f", manifestPath]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+    )
 
 runSequentially :: [IO ExitCode] -> IO ExitCode
 runSequentially [] = pure ExitSuccess

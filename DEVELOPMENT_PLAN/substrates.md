@@ -84,12 +84,52 @@ for the authoritative doctrine.
 | Suite parity | 🔄 Provisioning + SSH reachability only. As of Sprint `7.5.b.i` (May 17, 2026) the supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, and per-validation routing layer are in place; EKS kubeconfig extraction (`materializeAwsEksKubeconfig`), substrate-aware helpers (`substrateKubeconfigPath`, `substrateHostedZoneId`, `substratePublicFqdn`), and the `aws_substrate` Dhall block (`hosted_zone_id`, `subzone_name`) are wired. `prodbox test integration ... --substrate aws` still surfaces an explicit "not yet implemented" remedy for chart-deploy / public-edge / WebSocket validations because the AWS LB Controller, per-substrate Route 53 subzone, cert-manager DNS01 ClusterIssuer, and chart-deploy substrate branching land in Sprint `7.5.b.ii`. Live canonical-suite proof on the AWS substrate lands in Sprint `7.5.c`. Parity sprint is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md). |
 | Notes | The AWS substrate is exclusively a test substrate. There is no production EKS cluster that `prodbox` manages. The literal stack names (`aws-eks-test`, `aws-test`) reflect that. |
 
+## Resource Lifecycle Classes
+
+Every AWS resource any `prodbox` flow creates falls into exactly one of two lifecycle classes.
+This section is the authoritative classification — when adding a new AWS resource to any
+`prodbox` code path, it must land in one of these two classes (and in the matching inventory
+table below).
+
+### Per-run stacks (auto-managed by the harness)
+
+| Stack | Provisioned by | Destroyed by |
+|-------|----------------|--------------|
+| `aws-eks` | `prodbox pulumi eks-resources` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | `prodbox pulumi eks-destroy --yes`; auto-destroyed by the test-harness postflight on success, failure, **and** Ctrl-C (Sprint `7.6`) |
+| `aws-eks-subzone` | `prodbox pulumi aws-subzone-resources` | `prodbox pulumi aws-subzone-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`) |
+| `aws-test` (HA-RKE2 EC2) | `prodbox pulumi test-resources` | `prodbox pulumi test-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`) |
+
+Per-run stacks exist only for the lifetime of a suite run that needs them. The harness owns
+the full create/destroy lifecycle; operators do not normally invoke the destroy commands by
+hand because the harness already does so on every exit path.
+
+### Long-lived cross-substrate shared infrastructure (retained by design)
+
+| Resource | Provisioned by | Destroyed by |
+|----------|----------------|--------------|
+| `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight |
+| Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Operator action against Route 53 — outside the harness surface |
+
+Retained by design — not orphaned. SES domain identity + DKIM verification requires 5–30 min
+of DNS propagation per provision; only one receive rule set may be active per AWS account; S3
+bucket names have a ~24-hour reuse cooldown. Per-run re-provision is impractical at suite
+cadence. The harness explicitly carves these resources out of postflight auto-destroy so
+operators can run the suite at a sane cadence without rebuilding shared infrastructure each
+time.
+
+When an operator wants the long-lived resources gone (e.g., decommissioning the project or
+account), the supported path is the explicit destroy command in the table above. There is no
+"managed-by-someone-else" category — the harness still owns the create/destroy lifecycle; it
+simply does not invoke destroy on its own for this class.
+
 ## Cross-Substrate Shared Resources
 
-Some prerequisites required by the canonical suite live in AWS but are not provisioned by any
-substrate's Pulumi stack. They are long-lived, account-scoped, and shared across substrates.
-Documenting them here keeps the substrate lifecycle clean (provision/teardown is per-substrate)
-without losing track of resources both substrates depend on.
+This table is the **authoritative inventory** of every AWS resource any `prodbox` flow may
+create or destroy under the long-lived shared-infrastructure class above. No `prodbox` code
+path may add a new AWS resource type without first appearing in this table (or in the
+per-run-stacks table above for the auto-managed class). Both substrates depend on the
+resources listed here; provisioning and teardown stay per-substrate for the per-run stacks
+and one-time/on-demand for the resources below.
 
 | Resource | Owner | Phase ownership | Provisioning surface | Used by |
 |----------|-------|-----------------|----------------------|---------|

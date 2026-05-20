@@ -37,8 +37,13 @@ validation environments.
 - The supported configuration contract is repository-root `prodbox-config.dhall` decoded directly
   into Haskell types. `prodbox-config.json` and `prodbox config compile` are not part of the
   supported interface.
-- The supported Pulumi scope is limited to the AWS validation stacks under `pulumi/aws-eks/` and
-  `pulumi/aws-test/`; local-cluster platform ownership does not use a root Pulumi project.
+- The supported Pulumi scope is limited to the AWS validation stacks under `pulumi/aws-eks/`,
+  `pulumi/aws-eks-subzone/`, `pulumi/aws-test/`, and `pulumi/aws-ses/`; local-cluster platform
+  ownership does not use a root Pulumi project. The test harness is the exclusive owner of every
+  AWS resource any `prodbox` flow may create or destroy; the authoritative inventory and
+  per-resource lifecycle class (auto-managed per-run stacks vs long-lived cross-substrate shared
+  infrastructure) live in
+  [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 - This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
   stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
 - The current shipped edge workloads share the single public hostname
@@ -243,9 +248,9 @@ schema in `prodbox-config-types.dhall`.
 
 The wizard guides AWS account setup, Route 53 zone selection, ACME provider choice, operational IAM
 bootstrap, and repository-root Dhall authoring. On the supported public path it prompts for one
-temporary elevated AWS credential set when needed; `aws_admin_for_test_simulation.*` is reserved
-only for test-suite simulation of that ephemeral prompt input, with the native IAM lifecycle test
-harness as the only supported runtime consumer.
+temporary admin AWS credential set when needed (historically called "elevated credential");
+`aws_admin_for_test_simulation.*` is reserved only for test-suite simulation of that ephemeral
+prompt input, with the native IAM lifecycle test harness as the only supported runtime consumer.
 
 ### Validation-Required Fields
 
@@ -276,7 +281,7 @@ These fields are not all parser-required, but they matter for normal operation:
 | Config Path | Description |
 |-------------|-------------|
 | `aws.session_token` | Optional AWS session token |
-| `aws_admin_for_test_simulation.*` | Test-suite-only stored simulation of the ephemeral elevated admin credential prompt; only `prodbox test integration aws-iam` consumes it at runtime |
+| `aws_admin_for_test_simulation.*` | Test-suite-only stored simulation of the ephemeral temporary-admin credential prompt; only `prodbox test integration aws-iam` consumes it at runtime |
 | `domain.demo_ttl` | DNS TTL in seconds |
 | `acme.server` | ACME server URL |
 | `deployment.bootstrap_public_ip_override` | Bootstrap-only DNS A-record IP override |
@@ -301,7 +306,7 @@ Validate the repository config:
 | Gateway operations | `gateway config-gen`, `gateway start --config <path>`, `gateway status --config <path>` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
 | DNS | `dns check` | You need Route 53 inspection for the configured public host |
 | AWS IAM and quotas | `aws policy`, `aws setup`, `aws teardown`, `aws check-quotas`, `aws request-quotas` | You need IAM bootstrap, cleanup, or supported quota inspection/request flows |
-| AWS validation stacks | `pulumi eks-resources`, `pulumi eks-destroy --yes`, `pulumi test-resources`, `pulumi test-destroy --yes` | You need to create, inspect, or destroy the AWS EKS or HA-RKE2 validation stacks |
+| AWS validation stacks | `pulumi eks-resources`, `pulumi eks-destroy --yes`, `pulumi aws-subzone-resources`, `pulumi aws-subzone-destroy --yes`, `pulumi test-resources`, `pulumi test-destroy --yes`, `pulumi aws-ses-resources`, `pulumi aws-ses-destroy --yes` | You need to create, inspect, or destroy the AWS EKS, Route 53 subzone, HA-RKE2, or SES validation stacks (see [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes) for which stacks the test harness auto-destroys vs retains) |
 | Validation | `check-code`, `lint ...`, `docs ...`, `test lint`, `test ...`, `tla-check` | You need quality gates, generated-doc maintenance, Haskell tests, native integration validation, or TLA+ checks |
 
 ## Common Workflows
@@ -401,7 +406,7 @@ inspect/request supported AWS quotas:
 ./.build/prodbox aws request-quotas --tier full
 ```
 
-The supported public `aws ...` flow prompts for temporary elevated credentials when needed.
+The supported public `aws ...` flow prompts for temporary admin credentials when needed.
 `aws_admin_for_test_simulation.*` is not part of the public operator path.
 
 ### AWS Validation Stacks

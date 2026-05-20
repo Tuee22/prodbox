@@ -10,15 +10,15 @@
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
 
 > **Purpose**: Own the AWS substrate's foundations — the interactive onboarding wizard, the
-> standalone AWS IAM and quota command surface, the elevated-credential validation harness for
-> real IAM lifecycle proof, and (Sprint `7.5`) the AWS-substrate-parity sprint that brings the
-> AWS substrate to canonical-suite parity with the home substrate.
+> standalone AWS IAM and quota command surface, the temporary-admin-credential validation harness
+> for real IAM lifecycle proof, and (Sprint `7.5`) the AWS-substrate-parity sprint that brings
+> the AWS substrate to canonical-suite parity with the home substrate.
 
 ## Phase Status
 
 ✅ **Done on owned surfaces** for the historical foundations work — Sprints `7.1`–`7.4` remain
 closed on interactive onboarding, AWS IAM management, quota automation, and the
-elevated-credential validation harness. Per
+temporary-admin-credential validation harness. Per
 [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 7 stays
 `Done` on its owned legacy scope while Phases `0`–`4` are reopened by Sprint 0.2 to adopt
 [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). The interactive onboarding flow and standalone
@@ -81,9 +81,9 @@ deliverables are sized for sequential, separately validatable sessions:
 This phase owns AWS substrate foundations:
 
 1. **AWS substrate foundations (historical, ✅ Done)** — interactive config authoring, policy
-   generation, IAM user management, service-quota automation, and the test-only elevated
-   credential harness. The implemented credential boundary is Haskell-owned: public
-   onboarding and public AWS administration prompt for temporary elevated credentials, and
+   generation, IAM user management, service-quota automation, and the test-only
+   temporary-admin-credential harness. The implemented credential boundary is Haskell-owned:
+   public onboarding and public AWS administration prompt for temporary admin credentials, and
    stored `aws_admin_for_test_simulation.*` exists only for test-suite simulation of that
    ephemeral prompt input, with the native IAM validation harness as the only supported
    runtime consumer. The shared suite-level IAM harness keeps the aggregate Pulumi-backend
@@ -154,7 +154,7 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `prodbox aws policy [--tier core|full]` is implemented in Haskell.
 - The guided flow preserves AWS account, Route 53 zone, ACME provider, and manual PV-root prompts.
 - The wizard writes and validates `prodbox-config.dhall` without Python helpers.
-- The supported public bootstrap path prompts the operator for one temporary elevated credential set
+- The supported public bootstrap path prompts the operator for one temporary admin credential set
   and does not depend on stored `aws_admin_for_test_simulation.*`.
 
 ### Validation
@@ -173,7 +173,7 @@ Make the Haskell stack own guided configuration authoring and policy generation.
 - `test/integration/CliSuite.hs` is the intended built-frontend fake-AWS proof surface for
   `config setup` and `aws policy --tier full`.
 - `src/Prodbox/Aws.hs` now keeps the public `config setup` flow on prompt-driven temporary
-  elevated credentials only; stored `aws_admin_for_test_simulation.*` is not read on the
+  admin credentials only; stored `aws_admin_for_test_simulation.*` is not read on the
   supported public path.
 ### Remaining Work
 
@@ -196,7 +196,7 @@ supported contract.
 - AWS CLI subprocess ownership and explicit credential injection remain canonical.
 - IAM user lifecycle remains idempotent.
 - Quota inspection and request automation preserve the supported quota set.
-- Public `prodbox aws ...` commands obtain temporary elevated credentials interactively rather than
+- Public `prodbox aws ...` commands obtain temporary admin credentials interactively rather than
   from stored `aws_admin_for_test_simulation.*`.
 
 ### Validation
@@ -218,7 +218,7 @@ supported contract.
 - `test/integration/CliSuite.hs` is the intended built-frontend fake-AWS proof surface for
   setup/teardown and quota flows.
 - `test/integration/CliSuite.hs` now proves the public `prodbox aws ...` commands ignore populated
-  `aws_admin_for_test_simulation.*` config and use the interactively supplied temporary elevated
+  `aws_admin_for_test_simulation.*` config and use the interactively supplied temporary admin
   credential instead.
 ### Remaining Work
 
@@ -251,14 +251,14 @@ or operational `aws.*` credentials behind.
   `prodbox` IAM user or operational `aws.*` credentials behind.
 - Stored `aws_admin_for_test_simulation.*` remains the single exception to the
   no-stored-admin-credentials rule and exists only for test-suite simulation of the ephemeral
-  elevated credential prompt.
+  temporary-admin credential prompt.
 - The native IAM validation harness remains the only supported runtime consumer of
   `aws_admin_for_test_simulation.*`.
 - The shared harness simulates the interactive public CLI workflow by materializing operational
   `aws.*` only from `aws_admin_for_test_simulation.*` for the duration of the validation run.
 - The shared harness clears operational `aws.*` from `prodbox-config.dhall` before returning.
-- The operator docs for account setup, ACME provider choice, and elevated credential handling are
-  aligned with the Haskell implementation.
+- The operator docs for account setup, ACME provider choice, and temporary-admin credential
+  handling are aligned with the Haskell implementation.
 
 ### Validation
 
@@ -896,15 +896,18 @@ this doctrine.
 
 None. Code reconciliation is owned by Sprint `7.5.c`.
 
-## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 📋
+## Sprint 7.5.c: Live AWS-Substrate Canonical-Suite Validation 🔄
 
-**Status**: Planned
-**Blocked by**: Sprint `7.5.b`
+**Status**: Active
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
-`src/Prodbox/Infra/AwsTestStack.hs`
+`src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Lib/AwsSubstratePlatform.hs`,
+`src/Prodbox/CLI/Charts.hs`, `src/Prodbox/PublicEdge.hs`,
+`src/Prodbox/Infra/AwsEksSubzoneStack.hs`
 **Docs to update**: `DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/README.md`,
 `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
-`documents/engineering/unit_testing_policy.md`
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
 
 ### Objective
 
@@ -944,31 +947,91 @@ post-teardown residue, and flip the substrate parity rows in
 11. AWS post-teardown residue scan returns zero.
 12. `prodbox test all` (home substrate, default) still green.
 
-### Operator Workflow
+### Sprint Workflow
 
 Per
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback),
 an AWS-substrate canonical-suite run is locked to AWS-substrate config; nothing falls back
-to the home substrate. The Sprint `7.5.c` operator workflow is therefore:
+to the home substrate. The harness owns every AWS resource the workflow touches (see
+[substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes));
+the operator's role is to satisfy the two prerequisite contracts below, set the two config
+fields that select the AWS-substrate FQDN, and invoke the entrypoints listed afterward.
 
-1. Operator chooses the AWS-substrate public FQDN (the `subzone_name`, e.g.
-   `aws.test.resolvefintech.com`) and sets it in
-   `prodbox-config.dhall::aws_substrate.subzone_name`.
-2. Operator runs `prodbox pulumi eks-resources` to provision the EKS cluster, IRSA, and
-   subnet tags.
-3. Operator runs `prodbox pulumi aws-subzone-resources` to provision the per-substrate
-   Route 53 subzone and NS delegation in the parent zone. The stack snapshot at
-   `.prodbox-state/aws-eks-subzone/` reports the new subzone's hosted zone ID.
+The two prerequisite contracts (Steps `0` and `0.5`) are not optional. `prodbox rke2
+reconcile`, `prodbox pulumi <stack>-resources`, and `prodbox pulumi <stack>-destroy` all
+fail fast when `prodbox.aws.*` operational credentials are empty, and `prodbox pulumi
+<stack>-resources` additionally requires the home substrate's in-cluster MinIO running
+because that is the Pulumi state backend. The standalone Sprint `7.5.c.v` workflow is
+not driven by `prodbox test all`, so the Sprint `7.6` auto-managed setup + teardown
+contract does not apply; the operator owns Steps `0`, `0.5`, and the symmetric closing
+teardown step explicitly.
+
+0. **AWS admin credentials populated.** Operational `prodbox.aws.*` credentials must be
+   present in `prodbox-config.dhall` before any other step. Two supported population
+   paths exist:
+   - **Public path** (recommended for this standalone workflow):
+     `prodbox aws setup`. Interactive — prompts for one temporary admin credential
+     pasted from the AWS console, derives the dedicated `prodbox` IAM user via
+     STS-federated session, writes operational `aws.*` to `prodbox-config.dhall`. The
+     temporary admin credential is not persisted.
+   - **Test-harness simulation path** (reserved for runs driven by
+     `prodbox test integration aws-iam` or `prodbox test all`):
+     `aws_admin_for_test_simulation.*` populated in `prodbox-config.dhall`; consumed
+     non-interactively by `runAwsIamHarnessSetup` to simulate the prompt input. The
+     same provision-derive-write contract runs.
+
+   Per Sprint `7.3`, both paths clear `aws.*` on teardown. Because the standalone
+   Sprint `7.5.c.v` workflow is not wrapped by the `prodbox test all` setup/teardown
+   pair, the operator runs `prodbox aws setup` exactly once at Step `0` and runs the
+   symmetric `prodbox aws teardown` exactly once at the closing teardown step
+   (described after Step `6`). The operational `aws.*` must survive across Steps
+   `0.5` through `6`.
+
+   See
+   [`documents/engineering/aws_account_setup_guide.md`](../documents/engineering/aws_account_setup_guide.md),
+   [`documents/engineering/aws_admin_credentials.md`](../documents/engineering/aws_admin_credentials.md),
+   and
+   [`documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md)
+   for the canonical AWS credentials doctrine.
+
+0.5. **Home substrate reconciled.** `prodbox pulumi <stack>-resources` invocations
+     project the home substrate's in-cluster MinIO as their Pulumi state backend via
+     `withMinioPortForward` in `src/Prodbox/Infra/AwsEksTestStack.hs`. Operator runs
+     `prodbox rke2 reconcile` once before the first `prodbox pulumi` call in this
+     workflow. The command is idempotent — a second invocation is a no-op when the
+     home substrate is already up. See
+     [`../CLAUDE.md`](../CLAUDE.md) § Local Cluster Lifecycle Ownership,
+     [`phase-4-lifecycle-canonical-paths.md`](phase-4-lifecycle-canonical-paths.md), and
+     [`documents/engineering/aws_integration_environment_doctrine.md` § 4.5 Pulumi State Backend Prerequisite](../documents/engineering/aws_integration_environment_doctrine.md).
+1. Operator sets `prodbox-config.dhall::aws_substrate.subzone_name` to the chosen
+   AWS-substrate public FQDN (e.g. `aws.test.resolvefintech.com`). This is a manual
+   config edit, not a harness invocation.
+2. `prodbox pulumi eks-resources` provisions the EKS cluster, IRSA, and subnet tags
+   (auto-managed per-run stack).
+3. `prodbox pulumi aws-subzone-resources` provisions the per-substrate Route 53
+   subzone and NS delegation in the parent zone (auto-managed per-run stack). The
+   stack snapshot at `.prodbox-state/aws-eks-subzone/` reports the new subzone's
+   hosted zone ID.
 4. Operator copies the reported subzone ID into
    `prodbox-config.dhall::aws_substrate.hosted_zone_id` so downstream validations (the
    AWS-substrate ACME `ClusterIssuer`, `public-dns`, `admin-routes`) write into the
-   AWS-substrate's own Route 53 zone.
-5. Operator runs the five AWS-substrate canonical-suite validations
-   (`charts-vscode`, `charts-api`, `charts-websocket`, `public-dns`, `admin-routes`)
-   with `--substrate aws`.
-6. After validation, operator tears down with `prodbox pulumi aws-subzone-destroy --yes`
-   and `prodbox pulumi eks-destroy --yes` (plus `prodbox pulumi test-destroy --yes` if
-   the HA-RKE2 EC2 stack was provisioned).
+   AWS-substrate's own Route 53 zone. This is a manual config edit.
+5. `prodbox test integration {charts-vscode,charts-api,charts-websocket,public-dns,admin-routes}
+   --substrate aws` runs the five AWS-substrate canonical-suite validations.
+6. `prodbox pulumi aws-subzone-destroy --yes` and `prodbox pulumi eks-destroy --yes`
+   tear down the per-run stacks (plus `prodbox pulumi test-destroy --yes` if the
+   HA-RKE2 EC2 stack was provisioned). Per Sprint `7.6`, the harness postflight does
+   this automatically on `prodbox test all` exit; manual invocation is for partial
+   workflows. Cross-substrate shared SES infrastructure is **not** destroyed here —
+   see [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
+
+**Closing teardown — symmetric with Step `0`**: after Step `6` returns, operator runs
+`prodbox aws teardown` to delete the dedicated `prodbox` IAM user and clear `aws.*`
+from `prodbox-config.dhall`. This closes the operational-credential lifecycle the
+operator opened at Step `0`. Sprint `7.6`'s `awsPostflightDestroyActions` +
+`runManagedAwsHarnessTeardown` pair covers this automatically for runs driven by
+`prodbox test all`, but the standalone Sprint `7.5.c.v` workflow does not invoke that
+pair, so the operator owns the closing teardown explicitly.
 
 ### Code Follow-Up
 
@@ -990,126 +1053,752 @@ lifecycle gate behavior:
 - The entry in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) for the
   helper fallback semantics closes when this code follow-up lands.
 
-### Current Validation State (Code Follow-Up Landed)
+### Current Validation State
 
-- `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `substrateHostedZoneId` now raise
-  fail-fast `error` calls naming
+The substrate-aware code surface satisfies the no-fallback doctrine:
+
+- `src/Prodbox/PublicEdge.hs::substratePublicFqdn` and `substrateHostedZoneId` raise
+  fail-fast `error` calls citing
   [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
-  when the AWS-substrate `subzone_name` or `hosted_zone_id` field is empty. The
-  home-substrate branches still resolve to the existing `route53.zone_id` and
-  `domain.demo_fqdn` paths unchanged.
-- `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` now requires
+  when the AWS-substrate `subzone_name` or `hosted_zone_id` field is empty; the
+  home-substrate branches resolve to `route53.zone_id` and `domain.demo_fqdn`.
+- `src/Prodbox/Infra/AwsEksSubzoneStack.hs::resolveAwsEksSubzoneStackConfig` requires
   only `subzone_name` at pre-provision time; downstream consumers enforce
   `hosted_zone_id` as a post-provision requirement.
-- The now-unused `isAwsSubstrateConfigured` helper is removed from
-  `src/Prodbox/Settings.hs`; the matching ledger row in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is moved from
-  Pending Removal to Completed (Sprint `7.5.c` code follow-up on May 18, 2026).
-- `prodbox-config.dhall` is re-frozen against the current
-  `prodbox-config-types.dhall` hash so `aws_substrate` is materialized in the
-  `dhall-to-json` output, and the operator's `aws_substrate.subzone_name` is set to
-  `aws.test.resolvefintech.com` per the Operator Workflow step 1.
-- Validated with `prodbox check-code` (exit 0) and `prodbox test unit` (300/300) on May
-  18, 2026.
-
-### Live Operator Workflow Progress (May 18, 2026 session)
-
-Live workflow attempts surfaced three concrete bugs in the substrate-aware code that
-landed in Sprints `7.5.b.ii.d.II.α/β/γ/δ`. Two were fixed this session; the third is
-substantial and remains open. Per the substrate-equivalence doctrine recorded in
-[../CLAUDE.md](../CLAUDE.md) and [../AGENTS.md](../AGENTS.md), the AWS substrate
-stands up the same chart set + supporting platform (Harbor, MinIO, Percona operator,
-Envoy Gateway, cert-manager, real Let's Encrypt) as the home substrate; differences
-are limited to the load balancer (MetalLB ↔ AWS LB Controller) and Route 53 hosting
-(parent zone ↔ subzone).
-
-**Fixed this session:**
-
-- `Prodbox.CLI.Charts.withSubstrateEnvironment` and
-  `Prodbox.TestValidation.withSubstrateKubeconfigEnv` now bracket-set
+- `src/Prodbox/CLI/Charts.hs::withSubstrateEnvironment` and
+  `src/Prodbox/TestValidation.hs::withSubstrateKubeconfigEnv` bracket-set
   `KUBECONFIG` + `AWS_ACCESS_KEY_ID` + `AWS_SECRET_ACCESS_KEY` +
-  `AWS_DEFAULT_REGION` + `AWS_REGION` (and optional `AWS_SESSION_TOKEN`) from
-  `settings.aws.*`, so EKS's `aws eks get-token` exec provider can fetch a token
-  for kubectl/helm subprocesses on the AWS substrate. Without this, every kubectl
-  call against EKS failed with `401 the server has asked for the client to provide
-  credentials`.
-- `Prodbox.Lib.AwsSubstratePlatform.extractRegionFromArn` now preserves empty ARN
-  segments (`splitKeepingEmpty` replaces the earlier `wordsBy` which dropped empty
-  segments and returned the IAM account number as the "region"). Helm string
-  values switched to `--set-string` so the chart's string-typed `region` field
-  stops being parsed as `int64`. Caller now passes the configured `aws.region`
-  as the fallback.
-- `Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstrateAcmeRuntime` wraps the
-  `[Value]` ACME manifest list as a `v1/List` object before `kubectl apply -f`
-  (matches the home-substrate `Prodbox.CLI.Rke2.withTemporaryJsonManifest`
-  pattern). Without this, `kubectl apply -f` rejected the bare JSON array with
-  `invalid object to validate`.
+  `AWS_DEFAULT_REGION` + `AWS_REGION` (+ optional `AWS_SESSION_TOKEN`) from
+  `settings.aws.*` so EKS's `aws eks get-token` kubeconfig exec provider
+  authenticates kubectl/helm subprocesses on the AWS substrate.
+- `src/Prodbox/Lib/AwsSubstratePlatform.hs::extractRegionFromArn` preserves empty
+  ARN segments (`splitKeepingEmpty`) so IRSA-role ARNs do not return the IAM
+  account number as the region; the caller passes `aws.region` as the fallback.
+  Helm string fields are passed via `--set-string` so the chart's string-typed
+  `region` value is not parsed as `int64`.
+- `src/Prodbox/Lib/AwsSubstratePlatform.hs::ensureAwsSubstrateAcmeRuntime` wraps
+  its rendered `[Value]` manifest list as a `v1/List` object before
+  `kubectl apply -f`, matching the home-substrate
+  `Prodbox.CLI.Rke2::withTemporaryJsonManifest` pattern.
+- `prodbox-config.dhall` is frozen against the current `prodbox-config-types.dhall`
+  hash so `aws_substrate` is materialized in `dhall-to-json` output.
 
-With these three fixes, `prodbox charts deploy gateway --substrate aws` reaches and
-completes the substrate-platform install on EKS:
+The AWS-substrate platform install (`Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime`)
+currently lays down the lower-layer ingress + TLS pieces on EKS:
 
-- `aws-load-balancer-controller` (`kube-system`) — deployment Ready.
-- `envoy-gateway` (`envoy-gateway-system`) — deployment Ready.
-- `cert-manager` + `cert-manager-webhook` + `cert-manager-cainjector`
-  (`cert-manager`) — deployments Ready.
-- `route53-credentials` + `acme-eab-credentials` secrets created.
-- `letsencrypt-http01` `ClusterIssuer` created and Ready.
-
-**Remaining work (substantial Sprint `7.5.c` follow-up):**
-
-`Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime` currently
-installs only the load-balancer / ingress / cert-manager / ACME pieces. Per the
-substrate-equivalence doctrine, the AWS substrate also needs:
-
-- **Harbor** — the chart-platform image refs (`charts/*/values.yaml` and
-  `Prodbox.Lib.ChartPlatform.valuesForKeycloak` / etc.) use one set across both
-  substrates: `127.0.0.1:30080/prodbox/...`. On home, Harbor runs as a NodePort
-  service exposed at `127.0.0.1:30080`. On AWS, the platform install needs to
-  bring Harbor up (with its MinIO storage backend) so `127.0.0.1:30080` resolves
-  on EKS nodes the same way it does on home cluster nodes.
-- **MinIO** — Harbor's S3 storage backend, plus the gateway daemon's Pulumi
-  backend. Currently home-only.
-- **Percona PostgreSQL operator** — the `keycloak-postgres` chart depends on the
-  cluster-wide Percona operator (`charts/keycloak-postgres` references
-  `pgv2.percona.com` CRDs). Currently home-only.
-- **Image mirror loop** — the home substrate's
-  `Prodbox.CLI.Rke2.mirrorRequiredImagesIntoHarbor` step pushes upstream images
-  into the Harbor mirror so chart pods can pull them via `127.0.0.1:30080`. The
-  AWS substrate needs an equivalent step running against EKS's Harbor.
-
-Implementation owner: extend `Prodbox.Lib.AwsSubstratePlatform` with helpers
-mirroring `Prodbox.CLI.Rke2.ensureClusterPlatformRuntime`'s Harbor/MinIO/Percona
-sub-steps + the image-mirror loop, and wire them into
-`ensureAwsSubstratePlatformRuntime`. Estimate: 4–8 hours of careful chart-platform
-work.
-
-**Current AWS-substrate state at session end:**
-
-- EKS cluster `aws-eks-test-cluster` (us-west-2, 2-node group) — provisioned.
-- Route 53 subzone `aws.test.resolvefintech.com` (`Z09855634DAFL96UPV1E`) —
-  provisioned, NS delegation in parent zone.
-- AWS LB Controller + Envoy Gateway + cert-manager + ACME ClusterIssuer — Ready on
-  EKS.
-- `gateway` helm release deployed to EKS `gateway` namespace; pods in
-  `ImagePullBackOff` waiting on the Harbor+MinIO substrate-platform follow-up
-  above.
-- `aws.*` credentials populated in `prodbox-config.dhall` (sourced from
-  `aws_admin_for_test_simulation.*`). Teardown when ready:
-  `prodbox pulumi aws-subzone-destroy --yes` +
-  `prodbox pulumi eks-destroy --yes`; afterwards clear `aws.*` in the dhall.
+- `aws-load-balancer-controller` Helm release in `kube-system` (mirrors the home
+  substrate's MetalLB layer).
+- `envoy-gateway` Helm release in `envoy-gateway-system` via the upstream OCI
+  chart (matches the home substrate's Envoy Gateway layer).
+- `cert-manager` + `cert-manager-webhook` + `cert-manager-cainjector` in the
+  `cert-manager` namespace via the upstream Jetstack chart.
+- `route53-credentials` + `acme-eab-credentials` secrets and the
+  `letsencrypt-http01` `ClusterIssuer` rendered with `SubstrateAws` so DNS01
+  challenges write into the per-substrate Route 53 subzone.
 
 ### Remaining Work
 
-The two doc-friendly fixes above land cleanly. Sprint `7.5.c` does not close until
-the Harbor+MinIO+Percona substrate-platform follow-up lands and the five
-`--substrate aws` canonical-suite validations run green against a substrate that
-fully matches the home cluster's chart-set state.
+The substrate-platform install on EKS does not yet stand up the Harbor + MinIO +
+Percona operator layer that the home substrate uses. Per the substrate-equivalence
+doctrine in [`../CLAUDE.md`](../CLAUDE.md), [`../AGENTS.md`](../AGENTS.md), and
+[`substrates.md`](substrates.md), the AWS substrate runs the same canonical chart
+set as the home substrate, so chart pods on EKS must resolve
+`127.0.0.1:30080/prodbox/...` the same way they do on home nodes (NodePort Harbor
+service + node-local registry routing).
+
+The May 19 implementation survey confirmed the port is multi-day work — RKE2's
+`registries.yaml` mechanism, hostPath-backed MinIO PVC, host-Docker / `ctr`
+image push paths, and `systemctl restart rke2-server.service` all have no EKS
+equivalent. Sprint `7.5.c` is therefore broken into five sub-sprints; each
+closes its own validation gate, and the parent flips to ✅ when 7.5.c.v lands:
+
+| Sub-sprint | Status | Scope |
+|------------|--------|-------|
+| [`7.5.c.i`](#sprint-75ci-substrate-aware-minio-chart-values-) | ✅ Done | Substrate-aware MinIO chart values (`gp2` EBS on AWS, hostPath PVC on home) |
+| [`7.5.c.ii`](#sprint-75cii-eks-containerd-registry-mirror-config-injection-) | ✅ Done | EKS containerd registry-mirror config injection via privileged DaemonSet (no RKE2 `registries.yaml` equivalent on EKS) |
+| [`7.5.c.iii`](#sprint-75ciii-eks-side-harbor--minio--percona-installs-) | ✅ Done | EKS-side MinIO + Harbor install wired into `ensureAwsSubstratePlatformRuntime` + Sprint 7.5.c.ii DaemonSet applied. Percona operator deferred to 7.5.c.iv (needs the image-mirror loop). |
+| [`7.5.c.iv`](#sprint-75civ-in-cluster-image-mirror-job--percona-operator-) | ✅ Done | In-cluster image-mirror Job (crane-based) + Percona PostgreSQL operator install + steady-state MinIO reconcile wired into `ensureAwsSubstratePlatformRuntime` |
+| [`7.5.c.v.b`](#sprint-75cvb-in-cluster-custom-image-build-on-eks-) | ✅ Done | In-cluster custom-image push for `prodbox-gateway` + `prodbox-public-edge-workload` via crane pod (docker save + kubectl cp + crane push --insecure). Live validation deferred to Sprint 7.5.c.v re-run. |
+| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | 📋 Planned | Five `--substrate aws` validations green + harness postflight teardown (Sprint `7.6`) |
+
+When 7.5.c.v lands, the substrate parity row in
+[`substrates.md`](substrates.md) flips to ✅ and Sprint `7.5.c` closes.
+
+## Sprint 7.5.c.i: Substrate-Aware MinIO Chart Values ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` (`renderMinioChartArgs`,
+`minioSubstratePersistenceArgs`, `ensureMinioRuntime` signature extended
+with `Substrate` parameter; `MinioImageSource` exported with `Eq`/`Show`).
+**Docs to update**: `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Thread a `Substrate` parameter through the MinIO chart install so the AWS
+substrate gets dynamic `gp2`-backed EBS persistence instead of the home
+substrate's hostPath-bound PVC. Foundational for 7.5.c.iii.
+
+### Deliverables
+
+- `Prodbox.CLI.Rke2.renderMinioChartArgs :: Substrate -> MinioImageSource ->
+  [String]` returns the flat `["--set", "k=v", …]` arg list, substrate-aware
+  on the persistence block only:
+  - `SubstrateHomeLocal` → `persistence.existingClaim=minio` +
+    `persistence.size=200Gi` (existing hostPath-backed contract).
+  - `SubstrateAws` → `persistence.storageClass=gp2` + `persistence.size=20Gi`
+    + no `existingClaim` so the chart dynamically provisions EBS against
+    EKS's default storage class.
+- `Prodbox.CLI.Rke2.minioSubstratePersistenceArgs` is the pure dispatcher;
+  the substrate-agnostic core (`mode=standalone`, `replicas=1`, images,
+  service type, resource requests) is shared.
+- `ensureMinioRuntime` signature is now
+  `FilePath -> Substrate -> MinioImageSource -> IO ExitCode`. Both
+  home-substrate call sites in `ensureNativeInstallation` pass
+  `SubstrateHomeLocal`.
+- `MinioImageSource` derives `Eq`/`Show` and is exported so unit tests can
+  build fixture tables.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0; new
+   `describe "Sprint 7.5.c.i substrate-aware MinIO chart values"` block
+   covers four fixture-comparison cases (home × bootstrap, home × steady,
+   AWS × bootstrap, AWS × steady).
+3. The home-substrate behavior is byte-for-byte unchanged; the
+   `renderMinioChartArgs SubstrateHomeLocal _` arg list is identical to
+   what `ensureMinioRuntime` rendered before this sprint.
+
+### Remaining Work
+
+None on the sprint-owned surface.
+
+## Sprint 7.5.c.ii: EKS Containerd Registry-Mirror Config Injection ✅
+
+**Status**: Done
+**Implementation**: new `src/Prodbox/Lib/EksContainerdMirror.hs`
+exposing `ContainerdMirrorConfig`, `defaultProdboxMirrorConfig`,
+`eksContainerdMirrorBootstrapScript`, and
+`eksContainerdMirrorDaemonSetManifest`. Library `exposed-modules`
+in `prodbox.cabal`.
+**Docs to update**: `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make `127.0.0.1:30080/prodbox/...` image refs pullable from inside EKS
+pods. The home substrate routes this via RKE2's
+`/etc/rancher/rke2/registries.yaml` mechanism; EKS has no equivalent. The
+sprint adds a privileged DaemonSet that, on every EKS node, writes the
+containerd registry-mirror drop-in at
+`/etc/containerd/certs.d/127.0.0.1:30080/hosts.toml` and signals
+containerd to reload.
+
+### Deliverables
+
+- `Prodbox.Lib.EksContainerdMirror.eksContainerdMirrorDaemonSetManifest
+  :: ContainerdMirrorConfig -> Value` renders the apps/v1 DaemonSet
+  manifest in `kube-system` with `hostNetwork=true`, `hostPID=true`,
+  a privileged init container, and a `hostPath` mount of `/etc` so
+  the bootstrap script can read/write the host's containerd config.
+  The long-running pause container keeps the pod alive across
+  containerd restarts.
+- `eksContainerdMirrorBootstrapScript` renders the init-container
+  shell script that:
+  1. Ensures `config_path = "/etc/containerd/certs.d"` is set in
+     `/etc/containerd/config.toml` under
+     `[plugins."io.containerd.grpc.v1.cri".registry]`. Amazon Linux
+     2023 EKS AMIs from late 2024 onward already enable this; older
+     AMIs need the patch.
+  2. Writes the mirror drop-in at
+     `/host/etc/containerd/certs.d/${HOST}/hosts.toml` with
+     `capabilities = ["pull", "resolve"]` and `skip_verify = true`.
+  3. Restarts containerd via `nsenter --target 1 --mount --uts --ipc
+     --net --pid -- systemctl restart containerd` **only when** the
+     drop-in or main config actually changed on disk
+     (`RESTART_NEEDED` flag). Idempotent across rollouts.
+- `defaultProdboxMirrorConfig` matches the home substrate's
+  `127.0.0.1:30080` + `prodbox/` rewrite contract so chart-image refs
+  work unchanged across both substrates per the substrate-equivalence
+  doctrine.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0; new
+   `describe "Sprint 7.5.c.ii EKS containerd registry-mirror
+   DaemonSet"` block covers eight structural assertions on the
+   rendered manifest + bootstrap script: apiVersion / kind /
+   namespace, sprint label, hostNetwork + hostPID + privileged init
+   container, `/etc` hostPath mount, drop-in path, `config_path`
+   enablement, idempotence (`RESTART_NEEDED` + nsenter), TOML
+   capabilities + skip_verify.
+3. Live verification deferred to 7.5.c.v.
+
+### Remaining Work
+
+None on the sprint-owned surface. Effectful wiring of
+`eksContainerdMirrorDaemonSetManifest` into
+`ensureAwsSubstratePlatformRuntime` (apply via `kubectl apply -f`
+inside a `v1/List` wrapper, then wait for DaemonSet rollout) lands
+as part of Sprint `7.5.c.iii` since that sprint also installs the
+Harbor NodePort service that the mirror routes to.
+
+## Sprint 7.5.c.iii: EKS-Side Harbor + MinIO Install ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`
+(`ensureHarborRegistryRuntime` now takes a `Substrate` parameter and
+delegates the docker-login + project-creation tail to the new
+`ensureHarborProjectsForSubstrate` helper; `ensureMinioRuntime`,
+`ensureHarborRegistryStorageBackend`, `ensureHarborRegistryRuntime`,
+and `MinioImageSource` are now exposed from the module's
+export list); `src/Prodbox/Lib/AwsSubstratePlatform.hs`
+(new `applyEksContainerdMirrorDaemonSet` wrapper + new
+`awsSubstratePlatformRuntimeStepDescriptions` pure listing;
+`ensureAwsSubstratePlatformRuntime` sequence extended with four new
+steps after the existing ACME step).
+**Docs to update**: `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Wire the EKS-side MinIO + Harbor install + the Sprint 7.5.c.ii
+containerd registry-mirror DaemonSet into
+`ensureAwsSubstratePlatformRuntime` so that after the install
+completes, EKS pods can resolve `127.0.0.1:30080/prodbox/...`
+chart-image refs the same way home-substrate pods do.
+
+### Deliverables
+
+- `Prodbox.CLI.Rke2.ensureHarborRegistryRuntime` now takes a
+  `Substrate` argument. On `SubstrateHomeLocal` it calls
+  `ensureHarborDockerLogin` (operator-host docker authentication for
+  the home-side image-mirror loop) before
+  `createHarborProjects`; on `SubstrateAws` it skips the docker login
+  because the operator host has no network path into the EKS-side
+  Harbor NodePort. Bootstrap-project creation via the Harbor REST
+  API works on both substrates.
+- `Prodbox.Lib.AwsSubstratePlatform.applyEksContainerdMirrorDaemonSet`
+  wraps `eksContainerdMirrorDaemonSetManifest defaultProdboxMirrorConfig`
+  in a `v1/List` and applies it via `kubectl apply -f` against the
+  EKS cluster. The bootstrap script lands on every EKS node, writes
+  the containerd registry-mirror drop-in, and (when needed) restarts
+  containerd. Idempotent across reapply.
+- `ensureAwsSubstratePlatformRuntime` orchestration order, extended
+  in this sprint, runs:
+  1. `ensureAwsLoadBalancerControllerRuntime` — AWS LB Controller
+     (Sprint 7.5.b.ii.b/d.II.α).
+  2. `ensureAwsSubstrateEnvoyGatewayRuntime` — Envoy Gateway on EKS.
+  3. `ensureAwsSubstrateCertManagerRuntime` — cert-manager on EKS.
+  4. `ensureAwsSubstrateAcmeRuntime` — substrate-aware ACME
+     `ClusterIssuer` + Route 53 credentials.
+  5. **`applyEksContainerdMirrorDaemonSet`** — Sprint 7.5.c.ii
+     DaemonSet so `127.0.0.1:30080` resolves to in-cluster Harbor
+     once Harbor is up.
+  6. **`ensureMinioRuntime SubstrateAws MinioBootstrapPublic`** —
+     bootstrap MinIO from public registries onto `gp2`-backed EBS
+     (Sprint 7.5.c.i chart-values support).
+  7. **`ensureHarborRegistryStorageBackend`** — Kubernetes Job that
+     creates the `prodbox-harbor-registry` bucket in MinIO and
+     materializes the S3 credentials secret Harbor consumes.
+  8. **`ensureHarborRegistryRuntime SubstrateAws`** — helm-install
+     Harbor with NodePort `30080` + S3 backend pointing at MinIO,
+     then wait for core/registry/nginx deployments + endpoint
+     stability + bootstrap-project creation (no docker login on
+     AWS).
+- The pure step-list helper
+  `awsSubstratePlatformRuntimeStepDescriptions :: [String]` is
+  exported alongside the orchestrator so unit tests verify ordering
+  without driving live subprocesses.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0; new
+   `describe "Sprint 7.5.c.iii AWS-substrate platform orchestration"`
+   block covers the eight-step canonical ordering, the
+   mirror-before-Harbor invariant, and the
+   MinIO-before-Harbor-storage-backend invariant.
+3. The home-substrate behavior is preserved byte-for-byte: the
+   `ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal` call in
+   `ensureNativeInstallation` still runs the docker-login +
+   project-creation tail unchanged.
+4. Live verification deferred to 7.5.c.v.
+
+### Remaining Work
+
+None on the sprint-owned surface. The Percona PostgreSQL operator
+install was scoped into Sprint 7.5.c.iv because the operator pulls
+its container image from `127.0.0.1:30080/prodbox/postgres-operator`,
+which requires the Sprint 7.5.c.iv in-cluster image-mirror Job to
+have populated Harbor first.
+
+## Sprint 7.5.c.iv: In-Cluster Image-Mirror Job + Percona Operator ✅
+
+**Status**: Done
+**Implementation**: new `src/Prodbox/Lib/EksImageMirror.hs` exposing
+`EksImageMirrorConfig`, `defaultEksImageMirrorConfig`,
+`eksImageMirrorJobManifest`, and `eksImageMirrorCopyScript`; library
+`exposed-modules` in `prodbox.cabal`. `src/Prodbox/Lib/AwsSubstratePlatform.hs`
+adds `applyEksImageMirrorJob` (Job apply + `kubectl wait
+--for=condition=complete`) and extends
+`ensureAwsSubstratePlatformRuntime` with three new steps: image-mirror
+Job, `ensurePostgresOperatorRuntime`, and the steady-state MinIO
+reconcile. `src/Prodbox/CLI/Rke2.hs` exports
+`ensurePostgresOperatorRuntime`.
+**Docs to update**: `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Replace the home-substrate `mirrorRequiredImagesIntoHarbor`
+(host-Docker + host-`ctr` based) with an in-cluster Kubernetes Job
+on the AWS substrate. The operator host has no `ctr` access to EKS
+nodes; the mirror loop must run from inside the cluster. After the
+Job lands every required public image into EKS-side Harbor, the
+Percona PostgreSQL operator can install (it pulls
+`127.0.0.1:30080/prodbox/percona-postgresql-operator-mirror:...`)
+and the steady-state MinIO reconcile can swap MinIO's bootstrap
+public images for Harbor-mirrored copies.
+
+### Deliverables
+
+- `Prodbox.Lib.EksImageMirror.eksImageMirrorJobManifest ::
+  EksImageMirrorConfig -> [(String, String)] -> Value` renders a
+  `batch/v1` Job in `harbor` namespace running
+  `gcr.io/go-containerregistry/crane:v0.20.2`. The container
+  script authenticates to Harbor's in-cluster DNS endpoint
+  (`harbor.harbor.svc.cluster.local`) and `crane copy`'s each
+  `(upstream-source, chart-target)` pair — chart-targets like
+  `127.0.0.1:30080/prodbox/...` get rewritten to the in-cluster
+  endpoint for the push (in-pod-network `127.0.0.1` is the pod
+  itself, not the EKS node). `crane copy` is idempotent on already-
+  pushed digests so repeated rollouts are safe.
+- `Prodbox.ContainerImage.requiredPublicImagePairs` (the existing
+  upstream→Harbor mapping consumed by the home substrate's
+  `mirrorClusterImagesOnce`) is the authoritative input — no new
+  image inventory is introduced.
+- `applyEksImageMirrorJob :: FilePath -> IO ExitCode` in
+  `Prodbox.Lib.AwsSubstratePlatform` wraps the manifest in a
+  `v1/List`, applies via `kubectl apply -f`, then blocks on
+  `kubectl wait --for=condition=complete job/prodbox-image-mirror
+  -n harbor --timeout=20m`. The Job's `backoffLimit=2` retries
+  transient upstream registry failures within the single Job.
+- `ensureAwsSubstratePlatformRuntime` orchestration extended with
+  three new steps after `ensureHarborRegistryRuntime`:
+  9. `applyEksImageMirrorJob` — populate Harbor with every required
+     image before any chart pulls.
+  10. `ensurePostgresOperatorRuntime` — Helm install the Percona
+      operator (pulls operator image from Harbor via the Sprint
+      7.5.c.ii containerd registry mirror).
+  11. `ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor` —
+      reconcile MinIO with Harbor-mirrored images for the
+      steady-state pod set.
+- `awsSubstratePlatformRuntimeStepDescriptions` extended with the
+  three new step names so unit tests verify the full eleven-step
+  ordering contract.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0; new
+   `describe "Sprint 7.5.c.iv EKS image-mirror Job"` block covers
+   five structural assertions on the manifest + copy script:
+   default-config Harbor admin contract, manifest declares
+   `batch/v1 Job` with crane image + sprint label,
+   `HARBOR_INTERNAL`/`USER`/`PASSWORD` env, chart-target rewrite to
+   in-cluster Harbor DNS, and per-pair progress + auth-before-copy
+   ordering. Extended
+   `describe "Sprint 7.5.c.iii AWS-substrate platform orchestration
+   (extended through 7.5.c.iv)"` block adds three ordering
+   invariants: Harbor-before-mirror-before-Percona,
+   Percona-before-steady-state-MinIO, plus the full 11-step
+   sequence golden.
+3. Live verification deferred to 7.5.c.v.
+
+### Remaining Work
+
+None on the sprint-owned surface.
+
+## Sprint 7.5.c.v: Live AWS-Substrate Canonical-Suite Proof 🔄
+
+**Status**: Active — first live run (May 19, 2026) exercised the
+substrate-platform install on EKS end-to-end through all 11
+`ensureAwsSubstratePlatformRuntime` steps. The run surfaced six
+architectural gaps that the code, the Pulumi `aws-eks` program, and
+the EksImageMirror renderer carried (each tied to an unstated
+home-substrate assumption); five landed as in-flight code fixes in
+this session, one is scheduled as Sprint `7.5.c.v.b`. The five
+`--substrate aws` integration validations, the gateway chart deploy
+reaching Ready, and the `prodbox test all` substrate-aware run all
+remain pending Sprint `7.5.c.v.b`.
+**Implementation (this session's in-flight fixes)**:
+`pulumi/aws-eks/Main.yaml` (EBS CSI driver IRSA role + addon, OIDC
+trust-policy condition keys stripped of `https://` via
+`fn::split`/`fn::join`); `src/Prodbox/Lib/EksImageMirror.hs` (crane
+image tag `:debug`, `/busybox/sh` shebang + command,
+`crane copy --insecure`, `crane auth login --insecure`);
+`src/Prodbox/CLI/Rke2.hs` (new `createHarborProjectsAws` runs the
+project-creation REST calls from an in-cluster pod against
+`harbor.harbor.svc.cluster.local` since the operator host's
+`127.0.0.1:30080` only resolves on RKE2).
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Live AWS-substrate canonical-suite proof: provision EKS + subzone,
+run chart deploys + the five `--substrate aws` validations, then
+auto-tear-down via the Sprint `7.6` harness postflight. Closes
+Sprint `7.5.c` and flips the substrate parity row in
+[`substrates.md`](substrates.md) to ✅.
+
+### In-Flight Code Fixes Landed (May 19, 2026)
+
+The first live run of `prodbox charts deploy gateway --substrate
+aws` exercised the new 11-step `ensureAwsSubstratePlatformRuntime`
+pipeline on a real EKS cluster (`aws-eks-test-cluster`, us-west-2,
+2-node group, OIDC issuer
+`E20FBA05EEE845723AAD42E683C41778`, Route 53 subzone
+`Z01860472YFEU56UMS4W2`). The orchestration surfaced six gaps; five
+are fixed and verified live:
+
+1. **EBS CSI driver missing on EKS** (steps 6+ blocked: MinIO PVC
+   `Pending` waiting on `ebs.csi.aws.com` provisioner that EKS no
+   longer ships by default since the in-tree
+   `kubernetes.io/aws-ebs` provisioner deprecation). Fixed in
+   `pulumi/aws-eks/Main.yaml`: new IRSA role
+   (`ebs-csi-driver`), `AmazonEBSCSIDriverPolicy` attachment, and
+   `aws-ebs-csi-driver` managed addon. Verified live: PVCs against
+   `gp2` bind to dynamic EBS volumes; MinIO + Harbor PVCs both
+   landed.
+2. **IAM trust-policy condition keys included `https://` prefix**
+   (STS rejected every `AssumeRoleWithWebIdentity` with
+   `AccessDenied`; per AWS IRSA docs the condition key must use the
+   OIDC issuer URL **without** the scheme). Fixed in
+   `pulumi/aws-eks/Main.yaml` by introducing
+   `oidcIssuerHostPath` via `fn::split` + `fn::join`. Applied to
+   both `awsLbControllerRole` and `ebsCsiDriverRole`. Verified live:
+   manual `aws sts assume-role-with-web-identity` returned valid
+   credentials; CSI controller pods transitioned from
+   `CrashLoopBackOff` to `Running`.
+3. **`gcr.io/go-containerregistry/crane:v0.20.2` tag does not exist
+   on gcr.io** (image-mirror Job pod `ImagePullBackOff`). Fixed in
+   `Prodbox.Lib.EksImageMirror.defaultEksImageMirrorConfig`:
+   `mirrorJobImage = "gcr.io/go-containerregistry/crane:debug"`.
+   Verified live: image pulled, container created.
+4. **`gcr.io/go-containerregistry/crane:debug` ships only
+   `/busybox/sh`, not `/bin/sh`** (distroless static-debian12:debug
+   base). Fixed in
+   `Prodbox.Lib.EksImageMirror.eksImageMirrorBootstrapScript`:
+   shebang `#!/busybox/sh`; Job container command
+   `["/busybox/sh", "-c", ...]`. Verified live: container started
+   and ran the copy script.
+5. **`crane copy` defaulted to HTTPS:443 against in-cluster
+   Harbor** (Harbor exposes HTTP only per
+   `expose.tls.enabled=false`; `i/o timeout` on `dial tcp
+   <harbor-ClusterIP>:443`). Fixed in
+   `Prodbox.Lib.EksImageMirror.renderCopyCommand`: appended
+   `--insecure` to every `crane copy`. Verified live: Job completed
+   in 5m02s pushing 21 images into the EKS-side Harbor.
+6. **`ensureHarborProject` made REST calls to
+   `127.0.0.1:30080`** (only resolves to Harbor on the RKE2 home
+   substrate; on EKS the operator host has no path into the Harbor
+   NodePort, so the harbor projects never got created and the
+   image-mirror Job rejected pushes with `project prodbox not
+   found`). Fixed in `src/Prodbox/CLI/Rke2.hs`: split
+   `ensureHarborProjectsForSubstrate` into
+   `createHarborProjectsHomeLocal` (the existing host-curl path)
+   and `createHarborProjectsAws` (a one-shot
+   `restartPolicy=Never` pod in the `harbor` namespace running
+   `curl -X POST` against
+   `http://harbor.harbor.svc.cluster.local/api/v2.0/projects`).
+   Verified live: `harbor-projects-bootstrap` pod ran, returned
+   HTTP 201 for both `prodbox` and `prodbox-gateway`, was cleaned
+   up; image-mirror Job's pushes succeeded.
+
+After these five fixes, all 11 substrate-platform steps complete on
+EKS, **including** Percona operator install + steady-state MinIO
+reconcile from Harbor-mirrored images.
+
+### Remaining Work (Sprint `7.5.c.v.b`)
+
+Sprint `7.5.c.v.b`: the gateway chart deploy still ends with
+gateway pods in `ImagePullBackOff` because the home-substrate flow
+publishes custom-built `prodbox-gateway` and
+`prodbox-public-edge-workload` images via host-Docker + host-`ctr`
+in `ensureGatewayImages` / `ensurePublicEdgeWorkloadImage`, and
+those paths have no analog on EKS (no operator-host access into the
+EKS containerd socket). The fix is the same architectural pattern as
+Sprint `7.5.c.iv`'s in-cluster mirror Job: build the custom images
+inside the cluster via kaniko/buildah/img, push to in-cluster
+Harbor, and have the EKS containerd registry-mirror DaemonSet
+(Sprint `7.5.c.ii`) resolve the chart-rendered
+`127.0.0.1:30080/prodbox-gateway/...` refs on each EKS node. The
+new sub-sprint lands a renderer + helper analogous to
+`Prodbox.Lib.EksImageMirror`, named e.g.
+`Prodbox.Lib.EksCustomImageBuild`, wired into
+`ensureAwsSubstratePlatformRuntime` between
+`applyEksImageMirrorJob` and `ensurePostgresOperatorRuntime`.
+
+After Sprint `7.5.c.v.b` lands and a live re-run reaches Ready on
+all gateway pods, Sprint `7.5.c.v` re-attempts the five
+`--substrate aws` validations, `prodbox test all` substrate-aware,
+and the AWS-residue scan; that run will close Sprint `7.5.c.v` and
+the parent Sprint `7.5.c`.
+
+### Validation
+
+1. `prodbox check-code` exit 0 (current state).
+2. `prodbox test unit` exit 0 (348/348, current state).
+3. After Sprint `7.5.c.v.b` lands: the five `--substrate aws`
+   integration validations exit 0.
+4. After Sprint `7.5.c.v.b` lands: AWS residue scan returns zero
+   per-run resources (EKS, NAT, EBS, IAM, hosted-zone records,
+   ALBs). The long-lived `aws-ses` stack is intentionally retained
+   per the long-lived cross-substrate shared-infrastructure class.
+
+### Remaining Work
+
+Blocked on Sprint `7.5.c.v.b` (custom-image publication on EKS).
+
+## Sprint 7.5.c.v.b: In-Cluster Custom-Image Build on EKS ✅
+
+**Status**: Done
+**Implementation**: new `src/Prodbox/Lib/EksCustomImagePush.hs`
+exposing `EksCustomImagePushConfig`,
+`defaultEksCustomImagePushConfig`, `eksCustomImagePushPodManifest`,
+and `rewriteChartRefForInClusterPush`; library `exposed-modules` in
+`prodbox.cabal`. `src/Prodbox/CLI/Rke2.hs` extends
+`ensureCustomImageVariants` to dispatch on `Substrate`:
+`SubstrateHomeLocal` keeps the existing host-Docker login + push +
+`ctr` import path (`ensureCustomImageVariantsHomeLocal`);
+`SubstrateAws` uses a new `ensureCustomImageVariantsAws` path that
+builds on the operator host, `docker save`'s the result to
+`.prodbox-state/tmp/prodbox-custom-image.tar`, applies the crane
+push pod manifest, `kubectl cp`'s the tarball in, and
+`kubectl exec`'s `crane push --insecure` once per requested tag.
+New `ensureGatewayImagesForSubstrate` and
+`ensurePublicEdgeWorkloadImageForSubstrate` exports wire the
+substrate parameter through. `Prodbox.Lib.AwsSubstratePlatform`
+orchestrator extended with two new steps between the image-mirror
+Job and Percona operator install.
+**Docs to update**: `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Build and publish the two custom prodbox images
+(`prodbox-gateway`, `prodbox-public-edge-workload`) so they land in
+EKS-side Harbor and the gateway / public-edge chart pods can pull
+them via the Sprint `7.5.c.ii` containerd registry-mirror
+DaemonSet. The home substrate's `ensureGatewayImages` /
+`ensurePublicEdgeWorkloadImage` use host-Docker `docker push` to
+`127.0.0.1:30080` and `sudo ctr image import` against the RKE2 node
+containerd socket — neither path applies on EKS.
+
+### Deliverables
+
+- `Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest ::
+  EksCustomImagePushConfig -> Value` renders a long-running `v1`
+  Pod in the `harbor` namespace running
+  `gcr.io/go-containerregistry/crane:debug` with `sleep infinity`
+  as its entrypoint. A 4 GiB `emptyDir` at `/data` is the
+  `kubectl cp` target. The `:debug` variant ships `/busybox/sh` and
+  the `crane` binary at `/ko-app/crane`.
+- `Prodbox.Lib.EksCustomImagePush.rewriteChartRefForInClusterPush ::
+  EksCustomImagePushConfig -> String -> String` rewrites
+  `127.0.0.1:30080/<repo>:<tag>` chart-image refs to
+  `harbor.harbor.svc.cluster.local/<repo>:<tag>` so `crane push`
+  targets in-cluster Harbor over its in-cluster DNS endpoint while
+  the manifest path matches what downstream chart pods consume via
+  the registry-mirror DaemonSet.
+- `Prodbox.CLI.Rke2.ensureCustomImageVariantsForSubstrate`
+  dispatches on `Substrate`; the legacy
+  `ensureCustomImageVariants` is preserved as a
+  `SubstrateHomeLocal` alias so existing call sites need no change.
+  New `ensureGatewayImagesForSubstrate` and
+  `ensurePublicEdgeWorkloadImageForSubstrate` exports thread the
+  substrate through to the variant function.
+- `Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime`
+  orchestration is now **13 steps**: the eleven from Sprint
+  `7.5.c.iv` plus
+  `ensureGatewayImagesForSubstrate SubstrateAws` and
+  `ensurePublicEdgeWorkloadImageForSubstrate SubstrateAws` inserted
+  between `applyEksImageMirrorJob` and
+  `ensurePostgresOperatorRuntime` (so Harbor is populated with
+  mirrored upstreams + custom images before any later Helm release
+  pulls).
+- The new AWS-substrate IO path: build via operator-host Docker
+  (the operator already has a working Docker daemon for the home
+  substrate), `docker save` to
+  `.prodbox-state/tmp/prodbox-custom-image.tar`, apply the crane
+  push pod, `kubectl wait` for Ready (120 s timeout), `kubectl cp`
+  the tarball to `/data/image.tar`, run `kubectl exec … /ko-app/crane
+  push /data/image.tar <rewritten-target> --insecure` for each
+  requested tag (`<repo>:<prodboxId-derived-tag>` and `<repo>:latest`),
+  delete the pod. The `ctr` import step from the home path is
+  intentionally omitted — EKS nodes pull from in-cluster Harbor via
+  the registry-mirror DaemonSet.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` exit 0; new
+   `describe "Sprint 7.5.c.v.b EKS custom-image push pod"` block
+   covers five structural assertions on the pod manifest + the
+   chart-ref rewrite. Extended
+   `describe "Sprint 7.5.c.iii AWS-substrate platform orchestration
+   (extended through 7.5.c.iv + 7.5.c.v.b)"` block adds a
+   thirteen-step golden + the mirror→gateway→workload→Percona
+   ordering invariant.
+3. The home-substrate behavior is preserved byte-for-byte: the
+   default `ensureCustomImageVariants` alias delegates to the
+   `SubstrateHomeLocal` path; existing `ensureGatewayImages` and
+   `ensurePublicEdgeWorkloadImage` call sites keep working
+   unchanged.
+4. Live verification of the crane push pod end-to-end is deferred
+   to the Sprint `7.5.c.v` re-run (which provisions EKS + subzone,
+   drives the full 13-step orchestration, and expects gateway pods
+   to reach Ready).
+
+### Remaining Work
+
+None on the sprint-owned surface. The next live `prodbox charts
+deploy gateway --substrate aws` run is Sprint `7.5.c.v`'s
+re-attempt at the five `--substrate aws` integration validations.
+
+## Sprint 7.6: AWS Harness Orphan-Safety Guards ✅
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Aws.hs` (`applyAwsTeardown`,
+`checkPulumiResidueBeforeTeardown`, `renderPulumiResidueRefusal`,
+`AwsTeardownInput` flag); `src/Prodbox/TestRunner.hs`
+(`runWithAwsHarnessCleanup`, `awsPostflightDestroyActions`);
+`src/Prodbox/CLI/Command.hs` (`AwsTeardownFlags` type, extended
+`AwsTeardown` constructor); `src/Prodbox/CLI/Spec.hs`
+(`awsTeardownFlagsParser` for `--allow-pulumi-residue`);
+`src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsEksSubzoneStack.hs`,
+`src/Prodbox/Infra/AwsTestStack.hs`,
+`src/Prodbox/Infra/AwsSesStack.hs`
+(`<stack>HasLiveResources` predicates).
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`
+
+### Objective
+
+Make it impossible to orphan AWS resources by accident. Two guards close the gap
+identified in the May 19, 2026 audit:
+
+- **Refuse path** — `prodbox aws teardown` refuses to delete the operational IAM
+  user while any Pulumi-managed stack (`aws-eks`, `aws-eks-subzone`, `aws-test`,
+  `aws-ses`) still reports live resources. The failure message names the
+  offending stack(s) and the canonical destroy command. Even though `aws-ses`
+  is long-lived shared infrastructure that the auto-destroy path does not
+  touch, the refuse path still covers it — deleting operational creds while
+  SES is up strands the SES stack from the supported destroy surface.
+- **Auto-destroy path** — on any test-run exit (success, failure, **and**
+  Ctrl-C), the harness destroys every **per-run** Pulumi stack the suite touched
+  (`aws-eks`, `aws-eks-subzone`, `aws-test`) before clearing operational
+  `aws.*`. The `aws-ses` stack is **explicitly excluded** from auto-destroy per
+  the long-lived cross-substrate shared-infrastructure class in
+  [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
+
+### Deliverables
+
+- `src/Prodbox/Aws.hs::applyAwsTeardown` returns `IO (Either String
+  IamTeardownResult)`. Before any access-key / policy / user deletion
+  it calls `checkPulumiResidueBeforeTeardown`, which queries each of
+  the four Pulumi stack predicates and returns the list of live
+  stacks paired with the canonical destroy command for each. A
+  non-empty residue list short-circuits with a `Left` carrying the
+  human-readable refusal message rendered by
+  `renderPulumiResidueRefusal`. The `--allow-pulumi-residue` flag
+  (parsed into `AwsTeardownFlags.teardownAllowPulumiResidue` and
+  threaded onto `AwsTeardownInput.awsTeardownAllowPulumiResidue`)
+  bypasses the residue check.
+- `src/Prodbox/TestRunner.hs::runWithAwsHarnessCleanup` wraps the
+  suite body with `Control.Exception.try` so synchronous suite
+  failures **and** async exceptions (Ctrl-C / SIGTERM) both flow
+  through the same cleanup sequence: `awsPostflightDestroyActions`
+  unconditionally runs `prodbox pulumi aws-subzone-destroy --yes`,
+  `pulumi eks-destroy --yes`, and `pulumi test-destroy --yes` (in
+  that order, idempotent on empty stacks) before
+  `runManagedAwsHarnessTeardown` clears operational `aws.*`. On
+  async exception the cleanup runs first, then `throwIO` re-raises
+  so the operator-visible signal is preserved.
+- `supportedRuntimePostflightActions` no longer carries the Pulumi
+  destroy commands (those moved to `awsPostflightDestroyActions`).
+  It retains its other purpose: runtime restore via `rke2 reconcile`
+  + chart redeploy + public-edge readiness wait, on the success
+  path.
+- The `aws-ses` stack is **explicitly excluded** from
+  `awsPostflightDestroyActions` per the long-lived cross-substrate
+  shared-infrastructure class in
+  [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
+  It remains covered by `checkPulumiResidueBeforeTeardown` — deleting
+  operational creds while SES is up would strand SES from the
+  supported destroy surface.
+- `prodbox aws teardown --allow-pulumi-residue` parses through
+  `AwsTeardownFlags` in `src/Prodbox/CLI/Command.hs` and
+  `awsTeardownFlagsParser` in `src/Prodbox/CLI/Spec.hs`. Documented
+  in
+  `documents/engineering/aws_integration_environment_doctrine.md`
+  next to the refuse-path doctrine.
+- Each of `src/Prodbox/Infra/AwsEksTestStack.hs`,
+  `src/Prodbox/Infra/AwsEksSubzoneStack.hs`,
+  `src/Prodbox/Infra/AwsTestStack.hs`, and
+  `src/Prodbox/Infra/AwsSesStack.hs` exposes
+  `<stack>HasLiveResources :: FilePath -> IO Bool`. Implementation
+  is a `doesFileExist` against
+  `.prodbox-state/<stack>/stack-snapshot.json` — present implies
+  live, matching the existing harness contract whereby
+  `save<Stack>StackSnapshot` writes the file on `pulumi up` success
+  and `clear<Stack>StackSnapshot` removes it on `pulumi destroy`.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` covers the regression matrix in
+   `test/unit/Main.hs::describe "Sprint 7.6 AWS harness
+   orphan-safety"`: Scenario A (`aws-eks` snapshot present →
+   refusal names eks-destroy); Scenario B (no snapshots → residue
+   empty so cleanup proceeds); Scenario C (subzone + aws-test
+   snapshots present → refusal names both); Scenario D (`aws-ses`
+   snapshot present → refusal names `aws-ses-destroy --yes`); and
+   all-four-present (refusal lists every stack in the canonical
+   eks → subzone → test → ses order).
+3. Live regression (operator-driven, deferred):
+   `prodbox pulumi eks-resources` → `prodbox aws teardown` returns
+   non-zero with the actionable message; the EKS cluster still has
+   all its resources; subsequent
+   `prodbox pulumi eks-destroy --yes` succeeds. Then
+   `prodbox aws teardown` (with no remaining stacks) succeeds.
+4. Live regression (operator-driven, deferred): `prodbox test all`
+   interrupted via SIGINT mid-suite leaves zero per-run Pulumi
+   resources alive after the harness unwinds (`pulumi stack
+   --show-urns` returns empty for `aws-eks`, `aws-eks-subzone`,
+   `aws-test`; the persistent `aws-ses` stack remains).
+
+### Remaining Work
+
+None on the sprint-owned surface. The two live operator regressions
+above are documentation of the closed contract, not remaining
+implementation work — `prodbox test integration` does not yet
+exercise the SIGINT cancellation path on real AWS because doing so
+requires a full live AWS substrate cycle.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/aws_account_setup_guide.md` - Haskell onboarding and temporary elevated
+- `documents/engineering/aws_account_setup_guide.md` - Haskell onboarding and temporary admin
   credential workflow.
 - `documents/engineering/aws_admin_credentials.md` - Haskell `aws_admin_for_test_simulation`
   harness and cleanup rules.
@@ -1122,6 +1811,8 @@ fully matches the home cluster's chart-set state.
   validation harness cleanup ownership.
 - `documents/engineering/unit_testing_policy.md` - IAM lifecycle proof ownership on the Haskell
   stack.
+- `documents/engineering/aws_integration_environment_doctrine.md` - Sprint `7.6` refuse-path +
+  auto-destroy doctrine plus the `--allow-pulumi-residue` escape hatch.
 
 **Product docs to create/update:**
 

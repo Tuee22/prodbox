@@ -40,6 +40,7 @@ import Options.Applicative
   )
 import Prodbox.CLI.Command
   ( AwsCommand (..)
+  , AwsTeardownFlags (..)
   , ChartsCommand (..)
   , CommandListingFormat (..)
   , CommandRequest (..)
@@ -199,7 +200,12 @@ parserForPath path =
           (\(policyTier, planOptions') -> RunNative (NativeAws (AwsSetup policyTier planOptions')))
           ((,) <$> tierOptionParser PolicyFull "Operational IAM policy tier to provision" <*> planOptionsParser)
     ["aws", "teardown"] ->
-      Just (fmap (RunNative . NativeAws . AwsTeardown) planOptionsParser)
+      Just $
+        fmap
+          ( \(planOptions', flags) ->
+              RunNative (NativeAws (AwsTeardown planOptions' flags))
+          )
+          ((,) <$> planOptionsParser <*> awsTeardownFlagsParser)
     ["aws", "check-quotas"] -> Just (pure (RunNative (NativeAws AwsCheckQuotas)))
     ["aws", "request-quotas"] ->
       Just $
@@ -626,6 +632,23 @@ yesSwitchParser helpText =
         <> short 'y'
         <> help helpText
     )
+
+-- | Parser for the Sprint 7.6 @--allow-pulumi-residue@ escape hatch on
+-- @prodbox aws teardown@. Defaults to 'False'; when 'True' the refuse-
+-- path check is bypassed and the operational IAM user is deleted even
+-- while Pulumi stacks still have live resources.
+awsTeardownFlagsParser :: Parser AwsTeardownFlags
+awsTeardownFlagsParser =
+  AwsTeardownFlags
+    <$> switch
+      ( long "allow-pulumi-residue"
+          <> help
+            ( "Bypass the Sprint 7.6 refuse-path check that prevents "
+                ++ "deleting the operational IAM user while "
+                ++ "Pulumi-managed AWS stacks still have live "
+                ++ "resources. Operator-acknowledged recovery only."
+            )
+      )
 
 defaultNamespaces :: [String] -> [String]
 defaultNamespaces namespaces =

@@ -159,7 +159,7 @@ commandPathOfRequest request =
             : case awsCommand of
               AwsPolicy _ -> ["policy"]
               AwsSetup _ _ -> ["setup"]
-              AwsTeardown _ -> ["teardown"]
+              AwsTeardown _ _ -> ["teardown"]
               AwsCheckQuotas -> ["check-quotas"]
               AwsRequestQuotas _ -> ["request-quotas"]
         NativeCharts chartsCommand ->

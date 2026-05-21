@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Own the substrate-agnostic canonical test suite — the named-validation set in
 > `src/Prodbox/TestValidation.hs` — as suite content with declared prerequisites. Substrate

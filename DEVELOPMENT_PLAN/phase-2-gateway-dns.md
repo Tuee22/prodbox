@@ -3,19 +3,19 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Capture the Haskell gateway runtime, its formal verification path, the canonical
 > Route 53 ownership or update flow, and the CLI-doctrine adoption sprints that align the gateway
-> daemon with [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same
-> Binary](../HASKELL_CLI_TOOL.md).
+> daemon with [Long-Running Daemons in the Same
+> Binary](../documents/engineering/README.md).
 
 ## Phase Status
 
 ✅ **Done** — Sprints `2.1`–`2.8` remain `Done` on the gateway runtime, Route 53 ownership,
 peer-transport, claim/yield, time-base, Orders-promotion, and host-info cleanup surfaces. The
 phase is reopened by Sprint 0.2 to schedule Sprints `2.9`–`2.16`, which adopt the long-running
-daemon discipline from [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md): the explicit
+daemon discipline from [the engineering doctrine docs](../documents/engineering/README.md): the explicit
 `load→prereq→acquire→ready→serve→drain→exit` lifecycle with worker loops wrapped in
 `try`/`catch` plus bounded retry-with-backoff, `/healthz` / `/readyz` / `/metrics` endpoints
 with golden-captured response shapes, the `BootConfig` / `LiveConfig` split with `SIGHUP` hot
@@ -536,7 +536,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Lifecycle](../HASKELL_CLI_TOOL.md).
+Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
 
 ### Deliverables
 
@@ -551,24 +551,20 @@ Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Li
 - Worker loops (peer listener, peer dialer, gateway ownership loop, DNS write loop) are
   wrapped in `try`/`catch` plus bounded retry-with-backoff using the `RetryPolicy` values
   from Sprint 1.13; no naked `forever` survives on the supported path per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Structured Concurrency](../HASKELL_CLI_TOOL.md)
-  §1244–1245.
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
 - The graceful-drain deadline defaults to **30 seconds** per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Lifecycle → Drain
-  Semantics](../HASKELL_CLI_TOOL.md) §1235–1236 and is sourced from `LiveConfig`
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle)and is sourced from `LiveConfig`
   (Sprint 2.11) so operators tune it without a restart.
 - Resources with external side effects (DB connections, file locks, message-broker
   consumer registrations) use `bracketOnError` per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Structured
-  Concurrency](../HASKELL_CLI_TOOL.md) §1218–1220 so cleanup runs on every exit path,
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle)so cleanup runs on every exit path,
   including exceptions raised mid-acquire. Plain `bracket` continues to govern resources
   without external side effects.
 - Sprint 0.4 round-3 extension: enumerate the structured-concurrency primitive set
   as the closed set worker loops may use:
   `Control.Concurrent.Async.withAsync`, `race`, `concurrently`, and
   `replicateConcurrently`, per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Lifecycle →
-  Structured Concurrency](../HASKELL_CLI_TOOL.md) §1313–1324. The
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The
   `.hlint.yaml` negative-space rules from Sprint 1.19 (which already refuse
   `forkIO`) extend with a positive-space rule requiring every `Async` primitive
   used in daemon paths to come from this set; introducing `async`/`wait` without
@@ -640,8 +636,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Logging and
-observability](../HASKELL_CLI_TOOL.md).
+Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
 
 ### Deliverables
 
@@ -649,16 +644,15 @@ observability](../HASKELL_CLI_TOOL.md).
   existing `/v1/state` surface in `src/Prodbox/Gateway/Daemon.hs`.
 - `/readyz` returns 200 only after `serve` is entered and 503 during drain.
 - Golden tests over response shapes in `prodbox-daemon-lifecycle` (per
-  [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) §1618–1619 and
+  [Daemon Lifecycle Tests](../documents/engineering/README.md)and
   `Test Categories → Daemon Lifecycle Tests` §2252–2253). The captured fixtures cover
   `/healthz`, `/readyz` in ready and draining states, and `/metrics` exposition form.
 - Filesystem readiness markers and `sd_notify(READY=1)` are explicitly forbidden; the
   HTTP `/readyz` endpoint is the only supported readiness signal per
-  [../HASKELL_CLI_TOOL.md → Lifecycle](../HASKELL_CLI_TOOL.md) §1222–1225. A
+  [Lifecycle](../documents/engineering/README.md). A
   `prodbox-haskell-style` rule refuses any reintroduction of those forbidden surfaces.
 - Add `envMetrics :: MetricsRegistry` as a typed field on the daemon `Env` record per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → The Env Record
-  Grows](../HASKELL_CLI_TOOL.md) §1357–1366. The `/metrics` endpoint reads counter
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The `/metrics` endpoint reads counter
   values from `envMetrics`; module-local mutable counter state (top-level `IORef`,
   `MVar`, or hidden registry) is forbidden via a custom `.hlint.yaml` rule extending
   the negative-space rules introduced by Sprint 1.19.
@@ -694,8 +688,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration:
-Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
+Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
 
 ### Deliverables
 
@@ -710,20 +703,17 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
   `config_schema_mismatch`.
 - Live-config consumers re-read `readTVarIO envLiveConfig` at each use site and never cache
   the dereferenced value across `await`/`yield`, per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Configuration → Atomic Swap
-  Discipline](../HASKELL_CLI_TOOL.md) §1533–1538. Reviewed surfaces (`heartbeatLoop`,
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). Reviewed surfaces (`heartbeatLoop`,
   `gatewayLoop`, `dnsWriteLoop`, `peerListenerLoop`, `peerDialerLoop`) are enumerated as
   Sprint deliverables so the discipline is auditable.
 - Reload step 8 publishes on an STM broadcast channel (`TChan` or `TBQueue`) so
   subscribers that derive internal state from `LiveConfig` — rate limiters, routing
   caches, anywhere a worker precomputes from live values — can refresh, per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Configuration → Reload
-  Procedure](../HASKELL_CLI_TOOL.md) §1528–1531. The broadcast channel is exposed
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The broadcast channel is exposed
   through `Env`; subscribers `atomically` block on it inside their own loops without
   polling.
 - The on-disk Dhall configuration file follows the prescribed shape per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Configuration → Prescribed Dhall
-  File Shape](../HASKELL_CLI_TOOL.md) §1551–1574: a frozen `./types.dhall` plus
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle): a frozen `./types.dhall` plus
   `./defaults.dhall` import, a top-level `schemaVersion : Natural`, and `boot` / `live`
   sub-records mirroring the `BootConfig` / `LiveConfig` Haskell split. This composes
   with Sprint 1.23's `dhall freeze` discipline so the imports carry SHA-256 hashes.
@@ -732,8 +722,7 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
 - Sprint 0.4 round-3 extension: add `fsnotify`, `inotify`, and `mtime` polling to
   the forbidden reload-trigger set; SIGHUP via the dedicated `TBQueue ()` worker
   is the only sanctioned trigger per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration
-  → Reload Trigger](../HASKELL_CLI_TOOL.md) §1491–1500. The `.hlint.yaml`
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The `.hlint.yaml`
   negative-space set (Sprint 1.19) and the `forbiddenPathRegistry` (Sprint 1.10)
   each grow rules refusing imports of `System.FSNotify`,
   `System.INotify`/`Linux.INotify`, and any reachable `getModificationTime` /
@@ -741,13 +730,11 @@ Dhall file with mandatory hot reload](../HASKELL_CLI_TOOL.md).
 - Sprint 0.4 round-3 extension: bind the typed Dhall field
   `schemaVersion : Natural` as the top-level required field; a `schemaVersion`
   mismatch during reload is treated as a parse failure per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration
-  → Schema Versioning](../HASKELL_CLI_TOOL.md) §1530–1538. The reload worker emits
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The reload worker emits
   `config_schema_mismatch` and keeps the running config rather than partially
   applying the mismatched values.
 - Sprint 0.4 round-3 extension: bind the eight-step reload procedure step-by-step
-  per [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary →
-  Configuration → Reload Procedure](../HASKELL_CLI_TOOL.md) §1502–1530:
+  per [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle):
   1. Read the config path from `BootConfig`.
   2. `Dhall.inputFile` parse + typecheck + decode against the
      `Prodbox.Daemon.Config` schema type.
@@ -810,8 +797,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Logging and
-observability / Structured logging field helpers](../HASKELL_CLI_TOOL.md).
+Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
 
 ### Deliverables
 
@@ -822,15 +808,13 @@ observability / Structured logging field helpers](../HASKELL_CLI_TOOL.md).
   legacy-ledger entry.
 - The daemon log level is set by `BootConfig` at startup (with the CLI flag > env var >
   Dhall default > built-in default precedence rule from Sprint 2.15) and **refreshed
-  from `LiveConfig` on every hot reload** per [../HASKELL_CLI_TOOL.md → Long-Running
-  Daemons → Logging and Observability](../HASKELL_CLI_TOOL.md) §1275–1276. The reload
+  from `LiveConfig` on every hot reload** per [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The reload
   worker scheduled by Sprint 2.11 sets the new level on the `co-log` logger inside its
   atomic-swap step, so every subsequent log call observes the refreshed level without
   cached state.
 - Sprint 0.4 round-3 extension: bind the typed field helper API on the daemon
   logging module per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary →
-  Logging](../HASKELL_CLI_TOOL.md) §1370–1410. `src/Prodbox/Gateway/Logging.hs`
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). `src/Prodbox/Gateway/Logging.hs`
   (or the dedicated daemon logging module) exposes
   `field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)` for typed
   structured-log field construction plus the convenience wrappers
@@ -882,7 +866,7 @@ dependency boundary, direct terminal writes, and inline log-object construction.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
+Adopt [distributed_gateway_architecture.md#test-hooks-in-env](../documents/engineering/distributed_gateway_architecture.md#test-hooks-in-env) and
 `At-Least-Once Event Processing`.
 
 ### Deliverables
@@ -895,8 +879,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Test hooks in Env](../HASKELL_CLI_TOOL.md) and
   processed marker, handlers are documented idempotent, and replay orders by `created_at ASC`.
 - Sprint 0.4 round-3 extension: bind the production-no-op / test-injected hook
   contract pattern explicitly per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Test
-  Hooks](../HASKELL_CLI_TOOL.md) §1284–1300. Every hook field on the daemon `Env`
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). Every hook field on the daemon `Env`
   has a no-op default that production startup installs unchanged; tests override
   the default at `Env` construction only. A `prodbox-haskell-style` rule and a
   `prodbox-unit` assertion together enforce that no module under
@@ -937,7 +920,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) and
+Adopt [Daemon Lifecycle Tests](../documents/engineering/README.md) and
 `Test Organization`.
 
 ### Deliverables
@@ -946,7 +929,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
   daemon via `typed-process`, poll `/readyz`, exercise the protocol surface, send SIGTERM,
   assert graceful drain within the configured deadline, assert exit `0`.
 - Assert the two-SIGTERM shutdown contract from
-  [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md) §1620 and
+  [Daemon Lifecycle Tests](../documents/engineering/README.md)and
   §2254: single SIGTERM begins drain and the daemon exits `0` within the deadline; a
   second SIGTERM (or the drain deadline) forces exit. The test exercises both branches:
   graceful drain on the first signal, forced exit on the second.
@@ -955,8 +938,7 @@ Adopt [../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../HASKELL_CLI_TOOL.md
   probes, and filesystem readiness markers.
 - Sprint 0.4 round-3 extension: capture the `/healthz`, `/readyz`, and `/metrics`
   response shapes as golden tests inside the `prodbox-daemon-lifecycle` stanza per
-  [../HASKELL_CLI_TOOL.md → Test Categories → Golden
-  Tests](../HASKELL_CLI_TOOL.md) §2243 and `Long-Running Daemons in the Same
+  [unit_testing_policy.md#test-categories](../documents/engineering/unit_testing_policy.md#test-categories)and `Long-Running Daemons in the Same
   Binary → Health Endpoints`. The captured fixtures assert:
   - `/healthz` returns `200 OK` with the doctrine's alive body once the daemon
     enters `serve`,
@@ -1003,8 +985,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → CLI-to-Daemon
-Plumbing](../HASKELL_CLI_TOOL.md) so every daemon-launching `prodbox` command exposes the
+Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle) so every daemon-launching `prodbox` command exposes the
 doctrine's standard flag set with the prescribed startup-precedence rule.
 
 ### Deliverables
@@ -1014,8 +995,7 @@ doctrine's standard flag set with the prescribed startup-precedence rule.
   (Sprint 1.6). Daemons refuse to start on missing or unparseable config.
 - Add `--log-level <level>`, `--port <int>`, and `--foreground` flags on every daemon-
   launching command (`prodbox gateway start`, `prodbox workload start`). `--foreground` is
-  the default per [../HASKELL_CLI_TOOL.md → CLI-to-Daemon Plumbing](../HASKELL_CLI_TOOL.md)
-  §1591–1599, and self-daemonization (double-fork, `setsid`, `forkProcess`) is forbidden;
+  the default per [CLI-to-Daemon Plumbing](../documents/engineering/README.md)and self-daemonization (double-fork, `setsid`, `forkProcess`) is forbidden;
   the daemon rejects `--detach` per the doctrine's supervisor-owned process model. A
   `prodbox-haskell-style` unit test asserts no daemon-path module imports
   `System.Posix.Process` `forkProcess` or invokes `setsid` directly (paired with the
@@ -1053,8 +1033,7 @@ None.
 ### Objective
 
 Formalize the at-least-once event-processing pattern from
-[../HASKELL_CLI_TOOL.md → At-Least-Once Event
-Processing](../HASKELL_CLI_TOOL.md) §1624–1739 so the gateway commit log and any future
+[streaming_doctrine.md#at-least-once-event-processing](../documents/engineering/streaming_doctrine.md#at-least-once-event-processing)so the gateway commit log and any future
 daemon event-consuming surface (workload runtime, future workers) share one canonical
 module rather than ad-hoc per-call-site patterns. Sprint 2.13 already names at-least-once
 formalization on the commit log; this sprint owns the module that backs it.

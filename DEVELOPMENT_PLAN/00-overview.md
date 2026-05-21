@@ -15,7 +15,7 @@
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Provide the target architecture, current baseline, clean-room sequence, and hard
 > constraints for the Haskell rewrite of `prodbox`.
@@ -154,7 +154,7 @@ prerequisites.
 ## Alignment Status
 
 Phase `0` reopened through Sprints `0.2`–`0.7` to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
+[the engineering doctrine docs](../documents/engineering/README.md) as the canonical CLI doctrine, align the
 governed docs and plan suite with that doctrine, schedule every currently known code-level
 adoption gap onto explicit downstream sprints, and (Sprint `0.7`) add the LLM/automation
 guardrails on the operator-interactive command surface so every prompt-driven entry point
@@ -182,8 +182,7 @@ new sprints across Phases `1`–`4`; all of those reopens are now closed, and th
 records the delete-output residue under `Completed`.
 
 The doctrine's cross-language type-bridge full-file generation surface
-([../HASKELL_CLI_TOOL.md → Generated Artifacts → Two categories of
-generation → Full generation](../HASKELL_CLI_TOOL.md) §395–400) lists cross-language type
+([code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)) lists cross-language type
 bridges (e.g. PureScript or TypeScript contracts) as the canonical example of full-file
 generation. The supported worktree intentionally keeps that registry empty today because no
 non-Haskell consumer exists on the supported path; the registry will be populated when one
@@ -196,12 +195,12 @@ The reopened ranges close on the following sprint sets:
 - Phase 1: Sprints 1.6–1.27. Sprint 1.19 owns the pinned style-tools sandbox plus the custom
   nesting warnings and daemon-path negative-space symbol rules refusing
   `forkIO`, `unsafePerformIO`, and module-level `IORef`
-  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1243, §1370, §1450). Sprint 1.23 adds
+  ([the engineering doctrine docs](../documents/engineering/README.md)§1370, §1450). Sprint 1.23 adds
   `dhall freeze` discipline on the committed repo-root `prodbox-config.dhall` path, the
   parser `--foreground` default plus self-daemonization-forbidden rule (§1591–1599), and the
   explicit cross-language-types generation deferral (§341–343).
   Sprints 1.24–1.26 close the audit-driven residue: durable CLI documentation artifacts
-  derived from `CommandSpec` per [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §269–318 and
+  derived from `CommandSpec` per [the engineering doctrine docs](../documents/engineering/README.md)and
   §2349–2356, the `execParserPure` parser-test category per §2116–2138, and the
   `renderError` error-rendering boundary discipline plus hlint rules refusing `print`,
   `exitFailure`, and direct terminal formatting outside the dedicated output layer per
@@ -211,7 +210,7 @@ The reopened ranges close on the following sprint sets:
   cabal-manifest toolchain pin declarations `tested-with: ghc ==9.14.1` and
   `with-compiler: ghc-9.14.1`, the literal `Cabal 3.16.1.0` reference, and the
   library-first / thin-`Main.hs` layout check in `src/Prodbox/CheckCode.hs` per
-  [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §70–84 and §86–115. Sprint 0.4 also
+  [the engineering doctrine docs](../documents/engineering/README.md)and §86–115. Sprint 0.4 also
   extends Sprint 1.6 with the `CommandSpec` / `OptionSpec` record-field bindings
   (§283–304) plus the daemon-as-typed-`Command` dispatch pattern (§1156–1196), Sprint 1.8
   with the named forbidden subprocess primitives `callProcess`, `readCreateProcess`, and
@@ -228,7 +227,7 @@ The reopened ranges close on the following sprint sets:
   paths (§459–470).
 - Phase 2: Sprints 2.9–2.16. Sprint 2.16 introduces `src/Prodbox/Daemon/Events.hs` for the
   doctrine at-least-once event-processing pattern
-  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1624–1739), wraps gateway peer worker loops
+  ([the engineering doctrine docs](../documents/engineering/README.md)), wraps gateway peer worker loops
   in `try`/`catch` + bounded retry-with-backoff (§1244–1245), pins the atomic-swap discipline
   for `envLiveConfig` (§1533–1538), and extends the `prodbox-daemon-lifecycle` stanza with
   golden capture of `/healthz`/`/readyz`/`/metrics` responses (§1618–1619, §2252–2253) and
@@ -252,7 +251,7 @@ The reopened ranges close on the following sprint sets:
   the lifecycle stanza (§2243) in Sprint 2.14.
 - Phase 3: Sprints 3.8–3.12. Sprint 3.12 adds the `prodbox lint chart` subcommand for Helm
   chart structural invariants through `src/Prodbox/CheckCode.hs`
-  ([HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) §1820–1823, §1870) and emits the
+  ([the engineering doctrine docs](../documents/engineering/README.md)§1870) and emits the
   `src/Prodbox/PublicEdge.hs` route catalog into chart manifests via marker-delimited
   generation under the existing `generatedSectionRule` registry (§341–343, §394–443). The
   "cross-language types" generation target (§341–343, §395–400) is explicitly deferred

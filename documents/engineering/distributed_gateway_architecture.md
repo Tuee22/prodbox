@@ -513,6 +513,337 @@ Gateway verification lives in four canonical places:
 
 ---
 
+## Daemon Lifecycle
+
+The prodbox gateway daemon — and any other long-running daemon hosted by the
+same binary — follows a shared lifecycle, observability, and configuration
+discipline. This section is the SSoT for that discipline.
+
+### What carries over unchanged
+
+Daemons share the same architectural spine as one-shot commands:
+
+- Library-first project layout, thin `Main.hs`.
+- Typed `Command` ADT — the daemon is launched by a `Command` constructor
+  like any other (e.g. `ServiceCommand`, `DaemonStartCommand`).
+- `CommandSpec` registry — daemon-launching commands appear in
+  `tool --help` and generated docs like any other.
+- Generated-artifacts discipline — daemon config schemas, route inventories,
+  and generated CLI sections still go through the marker/registry pattern.
+- Lint/format stack — applies to daemon code identically.
+- `tool test all` runs daemon lifecycle tests alongside everything else.
+
+### Same-binary policy
+
+The CLI and its daemons live in one binary. Rationale:
+
+- Single distribution artifact, single dependency closure.
+- Shared types, config loader, logger, error type — no duplication.
+- The CLI introspects the daemon's command surface, generates its docs, and
+  runs its tests through the same machinery.
+- Operators learn one binary, not two.
+
+### The daemon-as-Command pattern
+
+A daemon is launched by a typed `Command` constructor that dispatches to a
+daemon entry function:
+
+```haskell
+data Command
+  = ...
+  | ServiceCommand ServiceOptions
+  | ...
+
+runCommand :: Env -> Command -> IO ()
+runCommand env = \case
+  ...
+  ServiceCommand opts -> Daemon.run env opts
+  ...
+```
+
+Daemons do not have their own argv parser. CLI parsing is performed once,
+in the same `optparse-applicative`-driven entry point used for every other
+command.
+
+### Lifecycle: load → prereq → acquire → ready → serve → drain → exit
+
+Every daemon follows a seven-step lifecycle, expressed as nested `bracket`
+and `withAsync`:
+
+```text
+1. Load and validate configuration   (fail fast on bad config)
+2. Check prerequisites                (typed DAG; see Prerequisite Doctrine)
+3. Acquire resources                  (bracket: open pools, connections, files)
+4. Signal readiness                   (HTTP /readyz)
+5. Serve / process                    (workers run inside withAsync)
+6. Drain on shutdown signal           (SIGTERM/SIGINT triggers a TMVar)
+7. Release resources and exit cleanly (bracket release runs in reverse order)
+```
+
+- **Configuration load** happens once at startup. Fail-fast on parse or
+  validation error with a clear stderr message and non-zero exit. Daemons
+  do not silently default away missing config.
+- **Prerequisite check** runs the typed DAG defined in
+  [prerequisite_doctrine.md → Prerequisites as Typed Effects](./prerequisite_doctrine.md#prerequisites-as-typed-effects)
+  between `load` and `acquire`. A single unmet node aborts before any
+  resource is acquired.
+- **Resource acquisition** uses `bracket` (or `bracketOnError`) so cleanup
+  runs on every exit path, including exceptions. Resources with external
+  side effects — DB connections, file locks, message-broker consumer
+  registrations — are released even on crash.
+- **Readiness signaling** is HTTP `/readyz`. Every daemon exposes it; it
+  returns 200 once startup completes and 503 during startup or drain.
+  Filesystem readiness markers and `sd_notify(READY=1)` are forbidden.
+  `threadDelay` "wait long enough" probes are forbidden. Polling logs for
+  a ready string is forbidden.
+- **Serving** uses `Control.Concurrent.Async` (`withAsync`, `race`,
+  `concurrently`, `replicateConcurrently`). `forkIO` is forbidden in
+  daemon code: it cannot be cancelled, cannot propagate exceptions, and
+  leaks on shutdown.
+- **Shutdown** is signal-driven. The daemon installs handlers for SIGTERM
+  and SIGINT that fill a shared `TMVar ()`. The main loop and workers
+  observe the signal via `race` or an STM `check`. SIGTERM begins a
+  graceful drain; a second SIGTERM (or SIGKILL) terminates immediately.
+- **Drain semantics**: stop accepting new work, finish in-flight requests
+  up to a bounded deadline (default 30s), then close. Drain is bounded; an
+  indefinite drain is a hang.
+
+### Structured concurrency
+
+- Use `Control.Concurrent.Async` (`withAsync`, `concurrently`, `race`,
+  `replicateConcurrently`) for any work that outlives a single function
+  call.
+- Use `bracket` / `bracketOnError` for resource acquisition.
+- `forkIO` is forbidden in daemon code.
+- Worker loops that restart on transient error use a `try`/`catch` plus
+  bounded retry-with-backoff wrapper, not naked `forever`.
+
+### Error handling: recoverable vs fatal
+
+The CLI doctrine's `AppError` ADT treats errors as terminal. Daemons add a
+second axis:
+
+```haskell
+data AppError = AppError
+  { errorKind  :: ErrorKind
+  , errorMsg   :: Text
+  , errorCause :: Maybe SomeException
+  }
+
+data ErrorKind
+  = Recoverable   -- retry with backoff inside the worker loop
+  | Fatal         -- propagate to top level, drain, exit non-zero
+```
+
+Worker loops handle `Recoverable` errors by logging at warn level and
+retrying with exponential backoff (capped). `Fatal` errors propagate to
+the top-level supervisor, which begins drain and exits.
+
+### Logging and observability
+
+- Structured logging is mandatory for daemons. Logs go to stderr as JSON
+  lines with timestamp, level, message, and a context bag. The doctrine
+  prescribes `co-log` as the logger library. `putStrLn` is forbidden in
+  daemon code paths.
+- Log levels are first-class: `debug`, `info`, `warn`, `error`. Daemons
+  start at `info` by default; the level is set by `BootConfig` at startup
+  and refreshed from `LiveConfig` on every hot reload.
+- The logger lives in `Env`. All daemon code paths take `MonadReader Env`
+  (or receive `Env` explicitly) so log calls attach contextual fields
+  without rethreading.
+- Health endpoints. Every daemon exposes both:
+  - `/healthz` (liveness) — 200 when the process is alive.
+  - `/readyz` (readiness) — 200 only after startup completes; 503 during drain.
+- Metrics. Every daemon exposes `/metrics` in Prometheus exposition format.
+
+### Structured logging field helpers
+
+```haskell
+field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)
+field key value = (key, Aeson.toJSON value)
+
+logStructured :: Text -> Text -> [(Text, Aeson.Value)] -> IO ()
+logStructured level event details = do
+    now <- getCurrentTime
+    LBS8.hPutStrLn stderr . Aeson.encode . Aeson.Object $
+        KeyMap.fromList
+            [ (Key.fromText "timestamp", Aeson.toJSON now)
+            , (Key.fromText "level", Aeson.toJSON level)
+            , (Key.fromText "event", Aeson.toJSON event)
+            , (Key.fromText "details", Aeson.Object $
+                KeyMap.fromList $
+                    fmap (\(k, v) -> (Key.fromText k, v)) details)
+            ]
+
+logDebug, logInfo, logWarn, logError :: Text -> [(Text, Aeson.Value)] -> IO ()
+logDebug = logStructured "debug"
+logInfo = logStructured "info"
+logWarn = logStructured "warn"
+logError = logStructured "error"
+```
+
+**Forbidden patterns:**
+
+- `putStrLn` or `print` for logging in daemon code.
+- Format strings (`printf`-style) instead of structured fields.
+- Untyped field construction (`[("key", toJSON value)]` without the `field`
+  helper).
+- Logs to stdout (reserved for daemon protocol surfaces or unused).
+
+### The Env record grows
+
+For daemons the prescribed baseline `Env`:
+
+```haskell
+data Env = Env
+  { envBootConfig :: BootConfig       -- immutable after startup
+  , envLiveConfig :: TVar LiveConfig  -- hot-reloadable
+  , envLogger     :: Logger           -- structured, level-aware
+  , envMetrics    :: MetricsRegistry  -- typed
+  , envShutdown   :: TMVar ()         -- signals graceful drain
+  , envResources  :: Resources        -- pools, clients, broker handles
+  }
+```
+
+`Env` is built once during the lifecycle's "acquire" phase, threaded via
+`ReaderT Env IO`, and torn down in reverse order. Global `IORef`s for any
+of these are forbidden — they belong in `Env`. The split between
+`envBootConfig` (plain value) and `envLiveConfig` (`TVar`) is load-bearing:
+"which settings can change at runtime" is a property of the Haskell type,
+not prose.
+
+### Test hooks in Env
+
+Test hooks are fields in the `Env` record that allow tests to observe or
+control async behavior without mocking via typeclasses. Production
+environments use no-op hooks; tests inject hooks to observe timing, trigger
+events, or control concurrency.
+
+```haskell
+data Env = Env
+    { envBootConfig :: BootConfig
+    , envLiveConfig :: TVar LiveConfig
+    , envLogger :: Logger
+    , envMetrics :: MetricsRegistry
+    , envShutdown :: TMVar ()
+    , envResources :: Resources
+    -- Test hooks (no-op in production)
+    , envAfterConsumerClaim :: UUID -> IO ()
+    , envBeforeMessageAck :: MessageId -> IO ()
+    , envOnConnectionEstablished :: ConnectionId -> IO ()
+    }
+```
+
+Production `mkProductionEnv` initializes hooks to `const (pure ())`; tests
+inject observable variants.
+
+**Forbidden patterns:**
+
+- Mocking subsystem behavior via typeclasses when simple hooks suffice.
+- Global `IORef`s for test coordination instead of `Env` fields.
+- Hooks that change production behavior (all hooks must be no-ops in
+  production).
+- Tests that rely on `threadDelay` instead of hooks for timing.
+
+### Configuration: Dhall file with mandatory hot reload
+
+Configuration is a single `.dhall` file on the filesystem. YAML, JSON, and
+TOML for daemon config are forbidden.
+
+**Boot vs Live configuration.** Split the config record at compile time:
+
+```haskell
+data Config = Config
+  { configBoot :: BootConfig
+  , configLive :: LiveConfig
+  }
+
+data BootConfig = BootConfig
+  { bootListenHost    :: Text
+  , bootListenPort    :: Word16
+  , bootConnPoolSize  :: Int
+  , bootSchemaVersion :: Natural
+  }
+
+data LiveConfig = LiveConfig
+  { liveLogLevel     :: LogLevel
+  , liveRateLimits   :: Map Text RateLimit
+  , liveFeatureFlags :: Map Text Bool
+  , liveRouting      :: RoutingTable
+  }
+```
+
+Only `LiveConfig` is hot-reloadable. Changes to `BootConfig` (listening
+port, pool sizes, schema version, etc.) require a restart; the reload pass
+rejects them: log at warn level, keep the old `BootConfig`, do not
+partially apply.
+
+**Reload trigger.** SIGHUP is the single trigger. `kill -HUP <pid>` or
+`systemctl reload <unit>` initiates a reload. The signal handler enqueues a
+reload request onto a `TBQueue ()` consumed by a dedicated reload worker
+spawned with `withAsync`. `fsnotify`, `inotify`, and any other
+file-watcher mechanism are forbidden. Polling the file's `mtime` is
+forbidden.
+
+**Reload procedure** (the dedicated reload worker):
+
+```text
+1. Read the config file path from BootConfig (set once at startup).
+2. Call Dhall.inputFile to parse + type-check + decode in one step.
+3. If parse/typecheck/decode fails: log warn with the Dhall error, keep
+   current LiveConfig, emit a `config_reload_failed` log event.
+4. If decode succeeds but BootConfig fields differ from the running
+   BootConfig: log warn that those changes are ignored until restart, emit
+   a `config_boot_changes_ignored` event, still apply the LiveConfig
+   portion.
+5. Validate the schema version field. On mismatch: same handling as step 3.
+6. atomically (writeTVar envLiveConfig newLiveConfig).
+7. Emit a `config_reloaded` log event with a structured diff summary.
+8. Publish on an STM broadcast channel (`TChan` or `TBQueue`) so
+   subscribers that derive internal state from LiveConfig refresh.
+```
+
+**Atomic swap discipline.** `envLiveConfig` is `TVar LiveConfig`. `IORef`
+for live config is forbidden. Workers read from the `TVar` at the start of
+each request or batch — caching the dereferenced value across an
+await/yield boundary is forbidden.
+
+### CLI-to-daemon plumbing
+
+Daemon-launching commands follow the same `CommandSpec` discipline as
+everything else. Standard flags every daemon command accepts:
+
+- `--config <path>` — path to the `.dhall` config file. The daemon refuses
+  to start if the path does not exist or does not parse.
+- `--log-level <level>` — startup default only; the Dhall file overrides
+  this once read and continues to override across hot reloads.
+- `--port <int>` — startup-only override of the listening port; treated as
+  a `BootConfig` default that the Dhall file replaces.
+- `--foreground` is the default. Self-daemonization (`--detach`) is
+  forbidden; the supervisor (systemd, Kubernetes, Docker) owns the process
+  model.
+
+Environment-variable overrides are limited to `BootConfig` startup
+defaults, namespaced `<PROJECT>_<SETTING>` (e.g. `MYTOOL_LOG_LEVEL`,
+`MYTOOL_CONFIG_PATH`). Precedence at startup: CLI flag > env var > Dhall
+file default > built-in default. Once the daemon is running, the Dhall
+file is the sole source of truth for `LiveConfig`.
+
+### Daemon lifecycle tests
+
+A dedicated test category: spawn the daemon as a subprocess via
+`typed-process`, poll `/readyz` until ready, exercise the protocol surface,
+send SIGTERM, assert graceful shutdown within the configured drain
+deadline, assert exit code 0. Forbidden test patterns:
+
+- `terminateProcess` without first attempting graceful shutdown.
+- `threadDelay`-based readiness probes.
+- Polling for filesystem readiness markers when `/readyz` exists.
+
+Health-endpoint response shapes (`/healthz`, `/readyz`, `/metrics`) belong
+in the golden-test category. Shutdown signal tests assert that a single
+SIGTERM begins drain and a second SIGTERM (or timeout) forces exit.
+
 ## Cross-References
 
 - [Effectful DAG Architecture](./effectful_dag_architecture.md)

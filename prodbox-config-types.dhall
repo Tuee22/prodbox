@@ -65,6 +65,11 @@
     , storage :
         { manual_pv_host_root : Text
         }
+    , pulumi_state_backend :
+        { bucket_name : Text
+        , region : Text
+        , key_prefix : Text
+        }
     }
 , default =
     { aws =
@@ -121,6 +126,11 @@
         }
     , storage =
         { manual_pv_host_root = ".data"
+        }
+    , pulumi_state_backend =
+        { bucket_name = ""
+        , region = ""
+        , key_prefix = "pulumi/"
         }
     }
 }

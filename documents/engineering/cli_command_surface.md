@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/acme_provider_guide.md, documents/engineering/aws_account_setup_guide.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/dependency_management.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/unit_testing_policy.md, documents/engineering/helm_chart_platform_doctrine.md
 
 > **Purpose**: Define the explicit, no-passthrough command surface for `prodbox`.
 
@@ -148,7 +148,7 @@ and `/minio` routes, and readiness for named external proof.
 | `prodbox rke2 stop` | none | none |
 | `prodbox rke2 restart` | none | none |
 | `prodbox rke2 reconcile` | none | `--dry-run`, `--plan-file` |
-| `prodbox rke2 delete` | none | `--yes` |
+| `prodbox rke2 delete` | none | `--yes`, `--cascade`, `--allow-pulumi-residue`, `--dry-run`, `--plan-file` |
 | `prodbox rke2 logs` | none | `--lines`, `-n` |
 
 `src/Prodbox/CLI/Rke2.hs` owns the full public `prodbox rke2 ...` surface.
@@ -167,6 +167,58 @@ path in `src/Prodbox/CLI/Rke2.hs` (`captureToolOutput` plus `isIgnorableRke2Dele
 never surfaces as a red-herring error. When the uninstaller exits non-zero, the actionable upstream
 lines are still surfaced through `summarizeRke2DeleteFailure` so the operator can act on the real
 failure.
+
+`prodbox rke2 delete` carries the Sprint `4.11` refuse-path (planned; symmetric to the Sprint
+`7.6` `aws teardown` refuse-path). It refuses to proceed when any per-run Pulumi stack
+(`aws-eks`, `aws-eks-subzone`, `aws-test`) reports live resources, naming each offending stack
+and the canonical destroy command. Three mutating modes are available; they are mutually
+exclusive at parse time:
+
+- (default, no flag) → **refuse** with the actionable per-stack remedy list. The cluster is
+  not touched; the operator runs the named `prodbox pulumi <stack>-destroy --yes` commands
+  while the MinIO backend for those stacks is still up.
+- `--cascade` → **orchestrate the full clean teardown**. In canonical order: (1) K8s drain
+  phase (Sprint `4.12`) — delete LoadBalancer Services, Ingresses, and Delete-reclaim PVCs
+  cluster-wide and wait for the LBC and EBS CSI driver to unwind their AWS resources; (2)
+  `prodbox pulumi <stack>-destroy --yes` for live per-run stacks in canonical order; (3) the
+  existing cluster uninstall; (4) postflight tag sweep that fails the command if any
+  cluster-tagged AWS resource survives. This is the recommended path for wipe-and-rebuild
+  cycles.
+- `--allow-pulumi-residue` → **operator-acknowledged orphan**. Bypass the refuse-path; per-run
+  stacks become orphaned (their MinIO backend dies with the cluster). Recovery-only.
+
+`aws-ses` is **explicitly excluded** from `prodbox rke2 delete`'s residue scope regardless of
+flag. Its Pulumi state lives in the dedicated long-lived S3 bucket (Sprint `4.10`), so cluster
+wipes do not orphan it. Sanctioned destroy paths for `aws-ses` are
+`prodbox pulumi aws-ses-destroy --yes` (explicit) and `prodbox nuke` (total teardown). See
+[lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md) for the
+predicate library and the full leak-class inventory.
+
+### `prodbox nuke`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox nuke` | none | `--dry-run`, `--plan-file` |
+
+`src/Prodbox/CLI/Nuke.hs` (Sprint `4.13`, planned) owns the operator-only total-teardown
+surface. `prodbox nuke` is the **only** sanctioned command that destroys long-lived shared
+infrastructure transitively (`aws-ses` stack, the long-lived `pulumi_state_backend` bucket).
+For per-stack teardown of `aws-ses` alone, use `prodbox pulumi aws-ses-destroy --yes`.
+
+Discipline (mirrors `aws teardown`):
+
+- **TTY-only.** Refuses non-interactive contexts with a message naming the canonical command
+  sequence to compose manually. There is no automation path.
+- **Typed confirmation.** Operator must type the literal string `NUKE EVERYTHING` (not `yes`)
+  at the confirmation prompt. The unusual shape is the safety feature.
+- **No `--yes` shorthand.** Deliberate omission.
+- **`--dry-run` / `--plan-file`** render the exact sequence without mutating.
+
+Order of operations: K8s drain (Sprint `4.12`) → destroy all Pulumi stacks (`aws-eks-subzone`,
+`aws-eks`, `aws-test`, `aws-ses`) → `prodbox aws teardown`-equivalent IAM cleanup → local
+rke2 uninstall → postflight tag sweep → long-lived `pulumi_state_backend` bucket destruction.
+See [lifecycle_reconciliation_doctrine.md → §7](lifecycle_reconciliation_doctrine.md) for the
+full doctrine.
 
 ### `prodbox pulumi`
 
@@ -427,7 +479,7 @@ violation and should be flagged.
 
 ## 4. Doctrine-Adoption Command Surface
 
-The CLI doctrine in [../../HASKELL_CLI_TOOL.md](../../HASKELL_CLI_TOOL.md) introduces several
+The CLI doctrine in [the engineering doctrine docs](../../documents/engineering/README.md) introduces several
 commands that land through the Phase `1`–`3` reopens. They are listed here as the canonical
 surface; per-sprint deliverables live in
 [../../DEVELOPMENT_PLAN/](../../DEVELOPMENT_PLAN/).
@@ -459,7 +511,7 @@ generated public-edge catalog.
 `prodbox lint docs [--write]` is implemented as a thin alias over the same Haskell function
 that backs `prodbox docs check` / `prodbox docs generate`; both surfaces consume the same
 in-code generation registry per
-[../../HASKELL_CLI_TOOL.md → Generated Artifacts](../../HASKELL_CLI_TOOL.md) §381–390 and
+[Generated Artifacts](../../documents/engineering/README.md)and
 §2321. The generator owns both marker-delimited artifacts and fully generated files:
 
 - `documents/cli/commands.md`
@@ -480,7 +532,7 @@ Per Sprint 2.15, `prodbox gateway start` and `prodbox gateway status` accept `--
 while the daemon-launching commands `prodbox gateway start` and `prodbox workload start`
 accept `--log-level <level>`, `--port <int>`, and `--foreground` (default). Self-daemonization (`--detach`, double-fork, `setsid`,
 `forkProcess`) is forbidden per
-[../../HASKELL_CLI_TOOL.md → CLI-to-Daemon Plumbing](../../HASKELL_CLI_TOOL.md) §1591–1599.
+[CLI-to-Daemon Plumbing](../../documents/engineering/README.md).
 Startup precedence is command-specific: CLI flag > env var > config-file default > built-in
 default. `PRODBOX_CONFIG_PATH` applies to gateway commands, `PRODBOX_LOG_LEVEL` applies to
 gateway and workload startup, and `PRODBOX_PORT` applies to both gateway and workload port
@@ -498,11 +550,175 @@ path; daemons emit structured JSON logs to stderr per Sprint 2.12.
 
 ### Cross-language types generation deferral
 
-[../../HASKELL_CLI_TOOL.md → Generated Artifacts](../../HASKELL_CLI_TOOL.md) §341–343
+[Generated Artifacts](../../documents/engineering/README.md)
 enumerates "cross-language types" as a generation surface (e.g. TypeScript or Go type
 mirrors of Haskell ADTs). No non-Haskell consumer is currently in scope; the supported
 plan does not schedule cross-language-type generation. The generated-artifact registry remains
 ready when such a consumer enters scope.
+
+## Command Topology
+
+Represent commands as ordinary Haskell data types:
+
+```haskell
+data Command
+  = Users UsersCommand
+  | Projects ProjectsCommand
+  | Config ConfigCommand
+  deriving stock (Show, Eq)
+
+data UsersCommand
+  = UsersList UsersListOptions
+  | UsersCreate UsersCreateOptions
+  | UsersDelete UsersDeleteOptions
+  deriving stock (Show, Eq)
+```
+
+This gives a typed model of the CLI surface. Define a separate `CommandSpec`
+and generate the parser from it. The parser is never the source of truth.
+
+`optparse-applicative` can automatically generate `--help` output, usage text,
+subcommand help, and shell completion support. For durable external
+documentation (Markdown, manpages, HTML, JSON command schemas), define a
+first-class command specification:
+
+```haskell
+data CommandSpec = CommandSpec
+  { name        :: Text
+  , summary     :: Text
+  , description :: Text
+  , children    :: [CommandSpec]
+  , options     :: [OptionSpec]
+  , examples    :: [Example]
+  }
+
+data OptionSpec = OptionSpec
+  { longName    :: Text
+  , shortName   :: Maybe Char
+  , metavar     :: Maybe Text
+  , description :: Text
+  , required    :: Bool
+  }
+```
+
+Use the specification as the source of truth:
+
+```text
+CommandSpec
+  -> optparse-applicative Parser
+  -> Markdown documentation
+  -> manpage
+  -> JSON schema
+  -> shell completion metadata
+  -> command tree output
+```
+
+This avoids duplicating command descriptions across code, README files, and
+generated help text. See
+[code_quality.md → Generated Artifacts](./code_quality.md#generated-artifacts)
+for the full discipline (markers, paired check/write commands, drift
+enforcement).
+
+## Progressive Introspection
+
+A good CLI should be introspectable at every level:
+
+```bash
+tool --help
+tool users --help
+tool users create --help
+tool projects archive --help
+```
+
+Expose explicit introspection commands:
+
+```bash
+tool commands
+tool commands --tree
+tool commands --json
+tool help users
+tool help users create
+```
+
+Example tree output:
+
+```text
+tool
+├── users
+│   ├── list
+│   ├── create
+│   └── delete
+├── projects
+│   ├── list
+│   └── archive
+└── config
+    ├── get
+    └── set
+```
+
+## Reconcilers: Idempotent Mutation as a Single Command
+
+Tools that manage state in the world expose a single canonical reconcile
+command. Re-running it is a no-op when current state already matches desired
+state. There is no separate `install` / `upgrade` / `repair` / `force-install`
+split — those are different verbs for the same underlying operation.
+
+Standard shape:
+
+```haskell
+data Command
+  = ...
+  | Reconcile ReconcileOptions
+  | ...
+```
+
+Internally the reconcile is composed of independently idempotent steps. Each
+step is safe to skip when its postcondition is already satisfied, and safe to
+run when it is not.
+
+Composition with prior sections:
+
+- [Plan / Apply](./pure_fp_standards.md#plan--apply). A reconcile is built as
+  a Plan/Apply pair. `build` reads current state, computes the diff against
+  desired state, and emits a plan listing only the steps that still need to
+  run. An empty plan is the steady state and `apply` is a no-op.
+- [Prerequisites as Typed Effects](./prerequisite_doctrine.md#prerequisites-as-typed-effects).
+  The prerequisite DAG runs before any mutating step. A reconcile on a host
+  missing required tools or credentials fails fast at the gate.
+- `--dry-run` prints the plan and exits. This is the operator's contract for
+  "what will change if I run this against this host."
+
+A worked example: a hypothetical reconcile that provisions a local
+systemd-managed service.
+
+```text
+Step 1: install package    -- skip if package already at target version
+Step 2: write config       -- skip if on-disk config matches desired content
+Step 3: enable unit        -- skip if `systemctl is-enabled` returns enabled
+Step 4: start unit         -- skip if `systemctl is-active` returns active
+Step 5: assert healthy     -- always run; fail the reconcile if unhealthy
+```
+
+Each step is checked-before-mutated. Re-running the command performs zero
+work when the system is already in the desired state.
+
+**Forbidden patterns:**
+
+- Sister commands like `install` / `upgrade` / `repair` / `force-install`.
+  If the reconcile is correct, repeating it is the repair.
+- `--force`, `--reinstall`, or any flag whose purpose is "ignore that the
+  step is already done." The check-then-mutate discipline replaces this.
+- Steps that mutate before checking their own postcondition. Mutation without
+  a precondition check leaks work into the steady state.
+- Steps that exit non-zero with an "already installed" error. Already-installed
+  is the success case, not a failure.
+- Reconcilers that mutate state not described in the plan. The plan is the
+  audit trail of what will change.
+
+Operators run the reconcile freely. When a tool publishes a reconcile
+command, that command is the canonical mutation entrypoint, and running it on
+a host — whether to bring up fresh state, reconcile drift, or recover from
+partial state — is the supported operation, not an unauthorized change.
 
 ## Cross-References
 
@@ -511,4 +727,6 @@ ready when such a consumer enters scope.
 - [Code Quality Doctrine](./code_quality.md)
 - [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md)
 - [Haskell Code Guide](./haskell_code_guide.md)
-- [Haskell CLI Doctrine](../../HASKELL_CLI_TOOL.md)
+- [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
+- [Prerequisite Doctrine](./prerequisite_doctrine.md)
+- [Pure FP Standards](./pure_fp_standards.md)

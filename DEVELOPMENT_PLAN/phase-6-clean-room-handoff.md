@@ -5,7 +5,7 @@
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Capture the zero-Python handoff criteria: a full clean-room rerun through the
 > Haskell stack and a cleanup ledger where any surviving supported-path residue is explicitly
@@ -17,7 +17,7 @@
 contract and zero-Python handoff surfaces. Per
 [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 6 stays
 `Done` on its owned scope while Phases `1`–`4` have reclosed after downstream adoption of
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). Final handoff is reclaimed after the remaining
+[the engineering doctrine docs](../documents/engineering/README.md). Final handoff is reclaimed after the remaining
 reopened sprints moved to `Done`.
 
 ## Phase Summary

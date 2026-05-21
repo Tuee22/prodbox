@@ -4,12 +4,11 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Capture the lifecycle hardening work, Pulumi scope reduction, Python-removal
 > work, and the CLI-doctrine adoption sprints that bring the local-cluster lifecycle and AWS
-> validation surfaces in line with [../HASKELL_CLI_TOOL.md →
-> Reconcilers](../HASKELL_CLI_TOOL.md) and `Test Organization`.
+> validation surfaces in line with [> Reconcilers](../documents/engineering/README.md) and `Test Organization`.
 
 ## Phase Status
 
@@ -327,8 +326,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
-Command](../HASKELL_CLI_TOOL.md) on the canonical local-cluster lifecycle entrypoint.
+Adopt [cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command) on the canonical local-cluster lifecycle entrypoint.
 
 ### Deliverables
 
@@ -340,8 +338,7 @@ Command](../HASKELL_CLI_TOOL.md) on the canonical local-cluster lifecycle entryp
   orchestration call sites, integration tests, and any documentation referencing the old name.
 - Sprint 0.4 round-3 extension: apply the same forbidden-flag and
   sister-command discipline to the lifecycle reconciler per
-  [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
-  Patterns](../HASKELL_CLI_TOOL.md) §1781–1803. `prodbox rke2 reconcile` refuses
+  [cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command). `prodbox rke2 reconcile` refuses
   the literal flag names `--force` and `--reinstall` at parse time; no
   `prodbox rke2 install`, `prodbox rke2 upgrade`, `prodbox rke2 repair`, or
   `prodbox rke2 force-install` sister command is added. A `prodbox-unit` parser test asserts the
@@ -369,7 +366,7 @@ None.
 
 ### Objective
 
-Apply [../HASKELL_CLI_TOOL.md → Plan / Apply](../HASKELL_CLI_TOOL.md) (Sprint 1.7) to the
+Apply [pure_fp_standards.md#plan--apply](../documents/engineering/pure_fp_standards.md#plan--apply) (Sprint 1.7) to the
 lifecycle reconcile.
 
 ### Deliverables
@@ -398,8 +395,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Pulumi-Orchestrated Infrastructure
-Tests](../HASKELL_CLI_TOOL.md) and `Test Organization`.
+Adopt [unit_testing_policy.md#pulumi-orchestrated-infrastructure-tests](../documents/engineering/unit_testing_policy.md#pulumi-orchestrated-infrastructure-tests) and `Test Organization`.
 
 ### Deliverables
 
@@ -443,9 +439,9 @@ None.
 ### Objective
 
 Harden the successful `prodbox rke2 delete --yes` operator surface so it matches
-[../HASKELL_CLI_TOOL.md → Output Rules](../HASKELL_CLI_TOOL.md#output-rules) and
-[../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
-Command](../HASKELL_CLI_TOOL.md#reconcilers-idempotent-mutation-as-a-single-command):
+[Output Rules](../documents/engineering/streaming_doctrine.md#output-rules) and
+[Reconcilers: Idempotent Mutation as a Single
+Command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command):
 `prodbox` owns the success summary, while hard failures preserve actionable upstream context.
 
 ### Deliverables
@@ -500,6 +496,268 @@ Command](../HASKELL_CLI_TOOL.md#reconcilers-idempotent-mutation-as-a-single-comm
 
 None.
 
+## Sprint 4.10: Decouple Long-Lived Pulumi State Onto a Dedicated S3 Bucket 📋
+
+**Status**: Planned
+**Implementation**: `prodbox-config-types.dhall`, `prodbox-config.dhall`,
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs` (new),
+`src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Pulumi.hs`,
+`pulumi/aws-ses/Pulumi.yaml`
+**Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+[`substrates.md`](substrates.md),
+[`../documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md),
+[`../CLAUDE.md`](../CLAUDE.md)
+
+### Objective
+
+Move long-lived Pulumi state (today: `aws-ses`; tomorrow: any future
+cross-substrate long-lived stack) out of the in-cluster MinIO backend and
+into a dedicated AWS S3 bucket owned by the operator account, so the
+long-lived class survives arbitrary `rke2 delete + rke2 reconcile` cycles
+and operator-machine churn. Per-run stacks continue using the in-cluster
+MinIO backend. The state-lifetime rule from
+[lifecycle_reconciliation_doctrine.md → §2](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+becomes the implemented behaviour: state lifetime matches resource lifetime
+per class.
+
+### Deliverables
+
+- `prodbox-config-types.dhall` exposes a new `PulumiStateBackend` record
+  (`bucket_name : Text`, `region : Text`, `key_prefix : Text`) and a
+  matching empty default. `prodbox-config.dhall` overrides
+  `bucket_name = "prodbox-pulumi-state-long-lived"`,
+  `region = "us-west-2"`, `key_prefix = "pulumi/"`. The repository import
+  sha256 is refrozen.
+- `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (new) exports
+  `longLivedPulumiBackendUrl`, `ensureLongLivedPulumiStateBucket`
+  (idempotent: head-bucket; on miss create with versioning, AES256 SSE,
+  block-public-access, the prodbox tags, and a 90-day non-current-version
+  expiration lifecycle rule), and
+  `withLongLivedPulumiBackend` (bracket: ensures bucket, sets
+  `PULUMI_BACKEND_URL`, runs action, restores env).
+- `src/Prodbox/Aws.hs` routes long-lived stack names through the new
+  module; per-run stacks continue using `MinioBackend`. The per-run vs
+  long-lived partition stays sourced from `perRunStackNames` /
+  `longLivedStackNames`.
+- Long-lived stack operations (`prodbox pulumi aws-ses-resources`,
+  `prodbox pulumi aws-ses-destroy`) authenticate with the admin
+  credential block (`aws_admin_for_test_simulation.*`) rather than the
+  operational `aws.*` block. The operational `prodbox` IAM user is no
+  longer granted `s3:GetObject`/`PutObject` on the state bucket.
+- `prodbox pulumi aws-ses-migrate-backend` (new operator command, TTY
+  refusal) implements the §2 migration recipe idempotently:
+  `pulumi stack export` against MinIO,
+  `ensureLongLivedPulumiStateBucket`, `pulumi login s3://...`,
+  `pulumi stack import` into the new backend. No-op if state is already
+  in S3.
+- `pulumi/aws-ses/Pulumi.yaml` records the new backend URL.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers the backend-URL renderer and the
+   bucket-spec generator (pure logic).
+3. `prodbox test integration aws-ses-migrate-backend` (new) — exercises
+   the migration end-to-end against live AWS.
+4. `prodbox pulumi aws-ses-migrate-backend && prodbox rke2 delete
+   --cascade && prodbox rke2 reconcile && prodbox pulumi
+   aws-ses-resources` produces a no-op Pulumi diff.
+
+### Current Validation State
+
+Planned. No code lands until this sprint is `Active`.
+
+### Remaining Work
+
+All deliverables remain. Blocks Sprints `4.11`, `4.12`, `4.13`.
+
+## Sprint 4.11: `rke2 delete` Refuse-Path and Predicate Library 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Lifecycle/Preconditions.hs` (new),
+`src/Prodbox/Lifecycle/TagSweep.hs` (new)
+**Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+[`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
+[`../documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md),
+[`../CLAUDE.md`](../CLAUDE.md), [`../documents/engineering/README.md`](../documents/engineering/README.md),
+[`../README.md`](../README.md)
+
+### Objective
+
+Make orphaning per-run Pulumi-managed AWS resources structurally
+impossible from `prodbox rke2 delete`. Introduce the positive-framed
+`--cascade` "clean teardown" path that orchestrates per-run Pulumi
+destroys, cluster uninstall, and a postflight tag sweep as one atomic
+operator action. Generalize the Sprint `7.6` residue-check pattern into
+a typed predicate library that excludes `aws-ses` from `rke2 delete`'s
+scope (its state lives outside the cluster after Sprint `4.10`).
+
+### Deliverables
+
+- `src/Prodbox/Lifecycle/Preconditions.hs` (new) exports the named
+  `Precondition` values from
+  [lifecycle_reconciliation_doctrine.md → §4](../documents/engineering/lifecycle_reconciliation_doctrine.md):
+  `noLivePerRunPulumiStacks`, `noLiveLongLivedPulumiStacks`,
+  `noLiveClusterTaggedAws`, `noUndrainedK8sAwsResources`,
+  `noLiveOperationalIamUser`, `noLeftoverDnsBootstrapRecords`. Each
+  wraps one `discover` and returns `IO (Either StructuredError ())`.
+  `checkAll :: [Precondition] -> IO (Either [StructuredError] ())`
+  composes them.
+- `src/Prodbox/Lifecycle/TagSweep.hs` (new) exports
+  `discoverClusterTaggedAwsResources` against the AWS Resource Tagging
+  API (Pulumi-tracked residue only in this sprint; full cluster-tag
+  scan lands in Sprint `4.12`).
+- `src/Prodbox/CLI/Rke2.hs` opens `prodbox rke2 delete` with
+  `checkAll [noLivePerRunPulumiStacks]`. Adds the new flags
+  `--cascade`, `--allow-pulumi-residue`, `--dry-run`, `--plan-file`.
+  Mutual exclusion at parse time: `--cascade` and
+  `--allow-pulumi-residue` cannot be combined. `--cascade`
+  orchestrates per-run Pulumi destroys in canonical order
+  (`aws-eks-subzone`, `aws-eks`, `aws-test`) + cluster uninstall +
+  postflight tag sweep. The K8s drain phase is **not** part of this
+  sprint; `--cascade` emits a "K8s drain not yet implemented" warning
+  until Sprint `4.12` adds it.
+- `prodbox aws teardown`'s existing predicates are reimplemented as
+  composition of the new library (`noLivePerRunPulumiStacks <>
+  noLiveLongLivedPulumiStacks`) so the Sprint `7.6`/`7.7` contract is
+  preserved verbatim while the library is consolidated.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers predicate composition, flag mutual
+   exclusion, and refuse-path message rendering (pure logic).
+3. `prodbox test integration cli` covers `--dry-run` / `--cascade
+   --dry-run` snapshots.
+4. `prodbox test integration aws-iam` (or new `lifecycle-cascade`)
+   covers end-to-end refuse, then `--cascade`, then `rke2 reconcile`,
+   then `pulumi aws-ses-resources` no-op-diff path against live AWS,
+   including a scenario where `aws-ses` is live (must be ignored
+   throughout) and per-run stacks are live (must be flagged in default
+   mode and destroyed in `--cascade` mode).
+
+### Current Validation State
+
+Planned.
+
+### Remaining Work
+
+All deliverables remain. Blocked by Sprint `4.10`. Blocks Sprints
+`4.12` and `4.13`.
+
+## Sprint 4.12: K8s Drain Phase and Postflight Tag Sweep 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs` (new),
+`src/Prodbox/Lifecycle/TagSweep.hs`,
+`src/Prodbox/CLI/Rke2.hs`
+**Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+[`substrates.md`](substrates.md),
+[`../documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md),
+[`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
+[`../documents/engineering/unit_testing_policy.md`](../documents/engineering/unit_testing_policy.md)
+
+### Objective
+
+Close leak classes 2–5 from
+[lifecycle_reconciliation_doctrine.md → §1](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+(CSI volumes, LBC load balancers, cert-manager DNS01 records,
+direct-`aws`-CLI shell-out Route 53 records) by adding a K8s-API drain
+phase to `prodbox rke2 delete --cascade` (and, when introduced,
+`prodbox nuke`). The drain runs **before** any Pulumi destroy so the
+LBC and EBS CSI driver are still alive and can unwind their AWS
+resources.
+
+### Deliverables
+
+- `src/Prodbox/Lifecycle/K8sDrain.hs` (new) exports
+  `drainAwsAffectingK8sResources :: KubectlEnv -> IO (Either
+  StructuredError ())`. Deletes LoadBalancer Services, ALB Ingresses,
+  and Delete-reclaim PVCs cluster-wide, then polls for AWS-side
+  unwind with a bounded timeout (default 5 min). Structured error on
+  timeout names the remaining AWS resources by ARN.
+- Wires the drain into the `--cascade` arm of `rke2 delete` between
+  the existing predicate check and the Pulumi destroys. Removes the
+  "K8s drain not yet implemented" warning emitted by Sprint `4.11`.
+- `src/Prodbox/Lifecycle/TagSweep.hs` extends the postflight scan from
+  Pulumi-tracked residue only to the full cluster-tag query
+  (`kubernetes.io/cluster/<cluster-name>` + `prodbox.io/*`).
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers drain-policy classifiers (which K8s
+   objects trigger which AWS-side unwind) as pure logic.
+3. `prodbox test integration lifecycle-cascade` deploys a chart
+   producing an ALB and a PVC, runs `rke2 delete --cascade`, asserts
+   (a) the ALB and EBS volume are gone from AWS within the drain
+   timeout, (b) the postflight tag sweep returns empty, (c) `aws-ses`
+   resources are untouched.
+
+### Current Validation State
+
+Planned.
+
+### Remaining Work
+
+All deliverables remain. Blocked by Sprint `4.11`. Blocks Sprint
+`4.13`.
+
+## Sprint 4.13: `prodbox nuke` Total Teardown 📋
+
+**Status**: Planned
+**Implementation**: `src/Prodbox/CLI/Nuke.hs` (new),
+`src/Prodbox/CLI/Command.hs`, `app/prodbox/Main.hs`
+**Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+[`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
+[`../CLAUDE.md`](../CLAUDE.md), [`../documents/engineering/README.md`](../documents/engineering/README.md),
+[`../README.md`](../README.md)
+
+### Objective
+
+Introduce the operator-only total teardown command — the only
+sanctioned path to destroy `aws-ses` and the long-lived
+`pulumi_state_backend` bucket transitively, alongside the explicit
+per-stack `prodbox pulumi aws-ses-destroy --yes`. The command exists so
+operators have one clearly-labelled "blow away everything prodbox owns"
+entrypoint, with the discipline necessary to make accidental invocation
+impossible.
+
+### Deliverables
+
+- `src/Prodbox/CLI/Nuke.hs` (new) implements the `prodbox nuke`
+  command. Orchestrates, in dependency order: K8s drain (Sprint
+  `4.12`), destroy all Pulumi stacks (`aws-eks-subzone`, `aws-eks`,
+  `aws-test`, `aws-ses`), `prodbox aws teardown`-equivalent IAM
+  cleanup, local rke2 uninstall, postflight tag sweep, and finally
+  the long-lived `pulumi_state_backend` bucket destruction.
+- TTY-only: refuses non-interactive contexts with a message naming the
+  canonical command sequence to compose manually.
+- Typed-confirmation: operator must type the literal string
+  `NUKE EVERYTHING` (not `yes`) at the confirmation prompt.
+- `--dry-run` / `--plan-file` render the exact sequence without
+  mutating. No `--yes` shorthand — deliberate omission.
+
+### Validation
+
+1. `prodbox check-code`
+2. `prodbox test unit` covers parser shape (TTY refusal, typed-token
+   acceptance, flag mutual exclusion).
+3. `prodbox nuke --dry-run` against a populated AWS account produces
+   the expected ordered plan.
+4. End-to-end live `nuke` is an opt-in CI suite (it destroys long-lived
+   shared infrastructure) — gated behind explicit operator request,
+   not part of the default canonical test suite.
+
+### Current Validation State
+
+Planned.
+
+### Remaining Work
+
+All deliverables remain. Blocked by Sprints `4.10`, `4.11`, `4.12`.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -510,6 +768,9 @@ None.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell lifecycle and public
   AWS-validation Pulumi surface, including the hermetic `prodbox rke2 delete --yes`
   success-summary contract.
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` - SSoT for the
+  reconciler-with-predicates pattern, the state-lifetime rule, and the leak-class
+  inventory that Sprints `4.10`–`4.13` operationalize.
 - `documents/engineering/code_quality.md` - final non-Python quality gate.
 - `documents/engineering/dependency_management.md` - final Haskell dependency and container-image
   inventory, including the `ghcup` pin and no-symlink doctrine for Haskell-build containers.

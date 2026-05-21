@@ -84,6 +84,143 @@ This SSoT co-owns streaming doctrine intention.
 - Linked dependents: `src/Prodbox/TestRunner.hs`, `src/Prodbox/Subprocess.hs`,
   `src/Prodbox/EffectInterpreter.hs`, `test/unit/Main.hs`.
 
+## Output Rules
+
+Short-running CLI invocations use `stdout` for primary output:
+
+```bash
+tool users list --json > users.json
+```
+
+Use `stderr` for diagnostics:
+
+```text
+warning: config file not found, using defaults
+error: user does not exist: alice
+```
+
+Support machine-readable output early:
+
+```bash
+tool users list --format json
+tool users list --format table
+tool users list --format plain
+```
+
+Avoid color unless writing to a terminal.
+
+Provide:
+
+```bash
+--color auto
+--color always
+--color never
+--no-color
+```
+
+These rules apply to short-running invocations. Long-running daemons follow
+the structured-logging discipline in
+[distributed_gateway_architecture.md → Daemon Lifecycle → Logging and observability](./distributed_gateway_architecture.md#daemon-lifecycle):
+stderr receives JSON-formatted log lines; stdout is reserved for the
+daemon's protocol surface or unused; `--format` and `--color` flags do not
+apply.
+
+## At-Least-Once Event Processing
+
+Event-driven systems require idempotent handlers and explicit delivery
+tracking. Events are immutable records stored with timestamps; a
+`processed_at` column tracks which events have been handled.
+
+### Event storage
+
+```haskell
+data EventType
+    = OrderCreated
+    | OrderSubmitted
+    | OrderApproved
+    | OrderFulfilled
+    | OrderCancelled
+    deriving stock (Show, Eq, Generic)
+    deriving anyclass (ToJSON, FromJSON)
+
+data StoredEvent = StoredEvent
+    { eventId :: UUID
+    , eventAggregateId :: UUID
+    , eventType :: EventType
+    , eventPayload :: Value
+    , eventCreatedAt :: UTCTime
+    , eventProcessedAt :: Maybe UTCTime
+    }
+    deriving stock (Show, Eq, Generic)
+```
+
+### Recording and marking events
+
+```haskell
+recordEvent :: Connection -> UUID -> EventType -> Value -> IO ()
+recordEvent conn aggregateId eventType payload = do
+    _ <- execute conn
+        "INSERT INTO domain_events \
+        \(aggregate_id, event_type, payload, created_at) \
+        \VALUES (?, ?, ?, clock_timestamp())"
+        (aggregateId, show eventType, encode payload)
+    pure ()
+
+markEventProcessed :: Connection -> UUID -> IO ()
+markEventProcessed conn eventId = do
+    _ <- execute conn
+        "UPDATE domain_events \
+        \SET processed_at = clock_timestamp() \
+        \WHERE id = ? AND processed_at IS NULL"
+        [eventId]
+    pure ()
+
+fetchUnprocessedEvents :: Connection -> IO [StoredEvent]
+fetchUnprocessedEvents conn =
+    query conn
+        "SELECT id, aggregate_id, event_type, payload, created_at, processed_at \
+        \FROM domain_events \
+        \WHERE processed_at IS NULL \
+        \ORDER BY created_at ASC"
+        ()
+```
+
+### Idempotent event handlers
+
+```haskell
+{- | Handler for processing a single event.
+
+INVARIANT: Handlers MUST be idempotent.
+
+The same event may be delivered multiple times due to:
+- Process crash after handling but before marking processed
+- Network partition during acknowledgment
+- Explicit replay for recovery
+
+Idempotency strategies:
+- Use database constraints (unique keys on natural identifiers)
+- Check-then-act with the event ID as a deduplication key
+- Design handlers as pure projections of event data
+-}
+type EventHandler = StoredEvent -> IO ()
+
+processEvents :: Connection -> EventHandler -> IO ()
+processEvents conn handler = do
+    events <- fetchUnprocessedEvents conn
+    for_ events $ \event -> do
+        handler event  -- MUST be idempotent
+        markEventProcessed conn (eventId event)
+```
+
+**Forbidden patterns:**
+
+- Event handlers with non-idempotent side effects (sending emails, charging
+  cards) without deduplication.
+- Events stored without creation timestamps.
+- Missing `processed_at` column (no way to track delivery state).
+- Event ordering other than `created_at ASC` (breaks replay semantics).
+- Deleting events after processing (audit trail loss).
+
 ## Cross-References
 
 - [Unit Testing Policy](./unit_testing_policy.md)

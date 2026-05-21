@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
 [substrates.md](substrates.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Define the plan-ownership baseline for the Haskell rewrite so status, sequencing,
 > Python-removal work, and CLI doctrine adoption have one canonical home.
@@ -14,7 +14,7 @@
 ✅ **Done** — Sprint 0.1 (canonical plan suite for the Haskell rewrite) is `Done`, and the
 Phase-0 doctrine-governance reopens scheduled by Sprints `0.2`, `0.3`, `0.4`, `0.5`, `0.6`,
 and `0.7` are also now `Done`. Sprints `0.2`–`0.6` adopted
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the authoritative CLI doctrine, aligned the
+[the engineering doctrine docs](../documents/engineering/README.md) as the authoritative CLI doctrine, aligned the
 governed docs and plan suite with that doctrine, scheduled every currently known code-level
 adoption gap onto explicit downstream sprints under Phases `1`–`4` per
 [development_plan_standards.md](development_plan_standards.md) rule L, reopened Phase `4`
@@ -79,10 +79,10 @@ removal of Python from the supported architecture.
 
 None.
 
-## Sprint 0.2: Adopt HASKELL_CLI_TOOL.md as Governed CLI Doctrine ✅
+## Sprint 0.2: Adopt the CLI doctrine as Governed CLI Doctrine ✅
 
 **Status**: Done
-**Implementation**: `HASKELL_CLI_TOOL.md`, `DEVELOPMENT_PLAN/development_plan_standards.md`,
+**Implementation**: the engineering doctrine docs, `DEVELOPMENT_PLAN/development_plan_standards.md`,
 `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
 `DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
 `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
@@ -104,14 +104,14 @@ None.
 
 ### Objective
 
-Promote [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) into the governance contract so it is the
+Promote [the engineering doctrine docs](../documents/engineering/README.md) into the governance contract so it is the
 authoritative CLI doctrine for the repository, align the development plan suite and governed
 engineering docs with the doctrine, eliminate contradictions, and schedule the downstream code
 adoption through declared phase reopens.
 
 ### Deliverables
 
-- `HASKELL_CLI_TOOL.md` carries the standard `**Status**` / `**Supersedes**` / `**Referenced by**`
+- the engineering doctrine docs carry the standard `**Status**` / `**Supersedes**` / `**Referenced by**`
   metadata block and is reachable from every plan document and root pointer.
 - `development_plan_standards.md` defines the CLI Doctrine Alignment rule (standards rule L) and
   requires phase docs to cite doctrine sections by name when scheduling adoption work.
@@ -126,12 +126,12 @@ adoption through declared phase reopens.
   `haskell_code_guide.md`, `refactoring_patterns.md`, `effect_interpreter.md` — cite the
   doctrine sections they implement, defer to the doctrine on shared topics, and retain only
   project-specific elaborations.
-- Root pointers in `README.md`, `AGENTS.md`, and `CLAUDE.md` link to `HASKELL_CLI_TOOL.md`
+- Root pointers in `README.md`, `AGENTS.md`, and `CLAUDE.md` link to the engineering doctrine docs
   alongside the existing `DEVELOPMENT_PLAN/README.md` link.
 - `DEVELOPMENT_PLAN/README.md` and `DEVELOPMENT_PLAN/00-overview.md` declare Phases 0–4
   reopened for doctrine adoption, enumerate the new sprints in each (Phase 1 Sprints
   1.6–1.22 and Phase 2 Sprints 2.9–2.15, where 1.17–1.22 and 2.15 close the doctrine gaps
-  identified by the HASKELL_CLI_TOOL.md adoption audit), and call out the surfaces in
+  identified by the CLI-doctrine adoption audit), and call out the surfaces in
   Phases 5–7 that originally remained closed on their owned scope per standards rule E. Phase
   `5` later reopened separately through Sprint `5.5` for the public HTTP-to-HTTPS redirect and
   re-closed after the May 13, 2026 aggregate validation.
@@ -154,7 +154,7 @@ adoption through declared phase reopens.
    to a doctrine pointer.
 4. Each reopened phase document declares its new sprints per standards rule H, citing the
    doctrine sections they implement.
-5. Root `README.md`, `AGENTS.md`, and `CLAUDE.md` link to `HASKELL_CLI_TOOL.md`.
+5. Root `README.md`, `AGENTS.md`, and `CLAUDE.md` link to the engineering doctrine docs.
 
 ### Remaining Work
 
@@ -172,7 +172,7 @@ None.
 
 ### Objective
 
-Schedule the residual [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) items surfaced by the
+Schedule the residual [the engineering doctrine docs](../documents/engineering/README.md) items surfaced by the
 May 2026 doctrine-vs-plan audit so every doctrine-prescribed behavior that the worktree did
 not yet honor was owned by an explicit sprint block, per
 [development_plan_standards.md](development_plan_standards.md) rule L.
@@ -182,18 +182,15 @@ not yet honor was owned by an explicit sprint block, per
 - Phase `1` sprint range extends to **Sprint 1.26**:
   - **Sprint 1.24: Durable CLI Documentation Artifacts** schedules the Markdown command
     reference, manpages, and shell completion scripts derived from the `CommandSpec`
-    registry per [../HASKELL_CLI_TOOL.md → Automatically Generated
-    Documentation](../HASKELL_CLI_TOOL.md) §269–318 and `The Architecture` summary
+    registry per [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)and `The Architecture` summary
     §2349–2356. HTML output is recorded as a doctrine-aware deferral until a consumer enters
     scope.
   - **Sprint 1.25: Parser-Test Category via `execParserPure`** schedules the
-    `argv → Command` parser-test category per [../HASKELL_CLI_TOOL.md → Parser
-    Tests](../HASKELL_CLI_TOOL.md) §2116–2138 in addition to the rendered-output golden
+    `argv → Command` parser-test category per [unit_testing_policy.md#parser-tests](../documents/engineering/unit_testing_policy.md#parser-tests)in addition to the rendered-output golden
     tests already owned by Sprint 1.6.
   - **Sprint 1.26: Error Rendering Boundary Discipline** schedules `renderError :: AppError
     -> Text` at the CLI boundary plus hlint rules refusing `print`, `exitFailure`, and
-    direct terminal formatting in non-boundary code, per [../HASKELL_CLI_TOOL.md → Error
-    Handling](../HASKELL_CLI_TOOL.md) §815–831.
+    direct terminal formatting in non-boundary code, per [haskell_code_guide.md#error-handling](../documents/engineering/haskell_code_guide.md#error-handling).
   - Sprint 1.6 is extended to require at least one `Example` entry per leaf
     `CommandSpec` node (doctrine §299–303), enforced by a `prodbox-unit` property
     test.
@@ -229,7 +226,7 @@ not yet honor was owned by an explicit sprint block, per
 1. `prodbox check-code` passes after all Sprint 0.3 documentation edits.
 2. Each new sprint block (0.3, 1.24, 1.25, 1.26) follows the rule H sprint format
    (Status / Implementation / Docs to update / Objective / Deliverables / Validation).
-3. Each new sprint cites the [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) section it
+3. Each new sprint cites the [the engineering doctrine docs](../documents/engineering/README.md) section it
    implements by section heading, per standards rule L.
 4. A manual walk of the 11 audit findings against the updated plan suite shows every
    finding resolved to either a named sprint deliverable or an explicit doctrine-aware
@@ -256,7 +253,7 @@ None.
 
 ### Objective
 
-Schedule the residual [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) items surfaced by the
+Schedule the residual [the engineering doctrine docs](../documents/engineering/README.md) items surfaced by the
 May 12, 2026 round-3 doctrine-vs-plan audit so every doctrine-prescribed behavior that the
 worktree did not yet honor was owned by an explicit sprint block, per
 [development_plan_standards.md](development_plan_standards.md) rule L. The audit identified
@@ -270,62 +267,51 @@ thirteen deliverable extensions to existing sprints.
   `phase-1-runtime-cli-aws-foundations.md` owns the cabal-manifest declarations
   `tested-with: ghc ==9.14.1` and `with-compiler: ghc-9.14.1`, the literal
   `Cabal 3.16.1.0` version pin, and the library-first / thin-`Main.hs` layout audit per
-  [../HASKELL_CLI_TOOL.md → Toolchain pinning](../HASKELL_CLI_TOOL.md) §70–84 and
+  [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning)and
   `Project Structure` §86–115.
 - Phase `1` sprint deliverable extensions (no new sprints beyond 1.27):
   - Sprint 1.6 binds the `CommandSpec` and `OptionSpec` record fields
     (`name` / `summary` / `description` / `children` / `options` / `examples` and
     `longName` / `shortName` / `metavar` / `description` / `required`) per
-    [../HASKELL_CLI_TOOL.md → Automatically Generated
-    Documentation](../HASKELL_CLI_TOOL.md) §283–304, and binds the
+    [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)and binds the
     daemon-as-typed-`Command` dispatch pattern per
-    [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Daemon as
-    Command](../HASKELL_CLI_TOOL.md) §1156–1196.
+    [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
   - Sprint 1.8 names `callProcess`, `readCreateProcess`, and direct
     `System.Process` smart constructors as forbidden subprocess primitives in the
     `prodbox lint files` rules and the `.hlint.yaml` negative-space symbol set per
-    [../HASKELL_CLI_TOOL.md → Architecture → Subprocesses as Typed
-    Values](../HASKELL_CLI_TOOL.md) §531.
+    [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineering/haskell_code_guide.md#subprocesses-as-typed-values).
   - Sprint 1.10 binds the twelve minimum `fourmolu.yaml` settings (`indentation`,
     `column-limit`, `function-arrows`, `comma-style`, `import-export-style`,
     `indent-wheres`, `record-brace-space`, `newlines-between-decls`, `haddock-style`,
     `let-style`, `in-style`, `unicode`, `respectful`) per
-    [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → Pinned
-    fourmolu.yaml](../HASKELL_CLI_TOOL.md) §1834–1860.
+    [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack).
   - Sprint 1.11 enumerates the canonical property-test invariants
     `decode . encode == id`, `render is deterministic`, and `parser roundtrips` as
     required `prodbox-unit` categories per
-    [../HASKELL_CLI_TOOL.md → Test Categories → Property
-    Tests](../HASKELL_CLI_TOOL.md) §2179–2188.
+    [unit_testing_policy.md#test-categories](../documents/engineering/unit_testing_policy.md#test-categories).
   - Sprint 1.12 binds the service-error newtype inventory (`MinIOError`,
     `RedisError`, `PgError` each wrapping `ServiceError` and each carrying an
     `AsServiceError` instance) per
-    [../HASKELL_CLI_TOOL.md → Capability Classes and Service
-    Errors](../HASKELL_CLI_TOOL.md) §867–890.
+    [haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors).
   - Sprint 1.14 binds the daemon `AppError` record shape
     `data AppError = AppError { errorKind :: ErrorKind, errorMsg :: Text, errorCause :: Maybe SomeException }`
-    per [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Error
-    Handling](../HASKELL_CLI_TOOL.md) §1300–1340.
+    per [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
   - Sprint 1.15 binds the `boundedResourceName`, `sanitizeResourceName`, and
     `hashSuffix` signatures including the DNS-1123-label and 63-character
     constraints per
-    [../HASKELL_CLI_TOOL.md → Smart Constructors for Paired
-    Resources](../HASKELL_CLI_TOOL.md) §565–630.
+    [haskell_code_guide.md#smart-constructors-for-paired-resources](../documents/engineering/haskell_code_guide.md#smart-constructors-for-paired-resources).
   - Sprint 1.21 enumerates the forbidden renderer inputs (timestamps, random IDs,
     locale-dependent ordering, terminal-width-dependent wrapping,
     environment-dependent paths) the determinism contract refuses, per
-    [../HASKELL_CLI_TOOL.md → Generated Artifacts → Renderer
-    Determinism](../HASKELL_CLI_TOOL.md) §459–470.
+    [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts).
 - Phase `2` sprint deliverable extensions (no new sprints):
   - Sprint 2.9 enumerates the structured-concurrency primitive set as the closed
     set worker loops may use: `withAsync`, `race`, `concurrently`,
     `replicateConcurrently`, per
-    [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Lifecycle
-    → Structured Concurrency](../HASKELL_CLI_TOOL.md) §1313–1324.
+    [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
   - Sprint 2.11 adds `fsnotify`, `inotify`, and `mtime` polling to the forbidden
     reload-trigger set per
-    [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Configuration
-    → Reload Trigger](../HASKELL_CLI_TOOL.md) §1491–1500, binds the typed Dhall
+    [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle)binds the typed Dhall
     field `schemaVersion : Natural` plus the mismatch-as-parse-failure semantic per
     `Configuration → Schema Versioning` §1530–1538, and binds the eight-step reload
     procedure step-by-step per `Configuration → Reload Procedure` §1502–1530.
@@ -333,39 +319,33 @@ thirteen deliverable extensions to existing sprints.
     `field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)` and the
     convenience wrappers `logStructured`, `logDebug`, `logInfo`, `logWarn`,
     `logError` per
-    [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary →
-    Logging](../HASKELL_CLI_TOOL.md) §1370–1410.
+    [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
   - Sprint 2.13 binds the production-no-op / test-injected hook contract pattern
-    per [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Test
-    Hooks](../HASKELL_CLI_TOOL.md) §1284–1300.
+    per [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle).
   - Sprint 2.14 captures the `/healthz`, `/readyz`, and `/metrics` response shapes
     as golden tests in the `prodbox-daemon-lifecycle` stanza (200 alive for
     `/healthz`; 200 ready / 503 draining for `/readyz`; Prometheus-exposition
     format for `/metrics`) per
-    [../HASKELL_CLI_TOOL.md → Test Categories → Golden
-    Tests](../HASKELL_CLI_TOOL.md) §2243 and `Long-Running Daemons in the Same
+    [unit_testing_policy.md#test-categories](../documents/engineering/unit_testing_policy.md#test-categories)and `Long-Running Daemons in the Same
     Binary → Health Endpoints`.
 - Phase `3` sprint deliverable extension (no new sprints):
   - Sprint 3.10 names `--force` and `--reinstall` flags as forbidden on the chart
     reconciler surface and names sister commands `install`, `upgrade`, `repair`,
     `force-install` as forbidden per
-    [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
-    Patterns](../HASKELL_CLI_TOOL.md) §1781–1803.
+    [cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
 - Phase `4` sprint deliverable extension (no new sprints):
   - Sprint 4.5 applies the same forbidden-flag and sister-command discipline to the
     lifecycle reconciler: no `--force`, no `--reinstall`, no sister commands. The completed
     one-cycle `prodbox rke2 install` alias is retired after the compatibility window, and the
     name is now rejected as a forbidden sister command. Doctrine
-    [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
-    Patterns](../HASKELL_CLI_TOOL.md) §1781–1803.
+    [cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
 - Cross-reference updates: `DEVELOPMENT_PLAN/README.md`,
   `DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`
   record the reopen, the new Sprint 1.27, and the doctrine identifiers bound by
   the round-3 extensions.
 - `DEVELOPMENT_PLAN/00-overview.md` adds an explicit note that the doctrine's
   cross-language type-bridge full-file generation surface
-  ([../HASKELL_CLI_TOOL.md → Generated Artifacts → Two categories of
-  generation → Full generation](../HASKELL_CLI_TOOL.md) §395–400) is intentionally
+  ([code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)) is intentionally
   empty in the supported worktree today because no non-Haskell consumer exists;
   the registry will be populated when one does. Composes with Sprint 1.23's
   existing deferral.
@@ -388,7 +368,7 @@ thirteen deliverable extensions to existing sprints.
 3. Each new sprint block (0.4, 1.27) follows the rule H sprint format
    (Status / Implementation / Docs to update / Objective / Deliverables /
    Validation).
-4. Each new deliverable cites the [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+4. Each new deliverable cites the [the engineering doctrine docs](../documents/engineering/README.md)
    section it implements by section heading, per standards rule L.
 5. Mermaid render pass (standards rule K) is a no-op — Sprint 0.4 introduces no
    diagrams.
@@ -452,9 +432,9 @@ context.
 - Add **Sprint 4.8: Hermetic `rke2 delete` Success Reporting** to
   `phase-4-lifecycle-canonical-paths.md` as the owning implementation sprint for the lifecycle
   follow-up. The sprint cites
-  [../HASKELL_CLI_TOOL.md → Output Rules](../HASKELL_CLI_TOOL.md#output-rules) and
-  [../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
-  Command](../HASKELL_CLI_TOOL.md#reconcilers-idempotent-mutation-as-a-single-command).
+  [Output Rules](../documents/engineering/streaming_doctrine.md#output-rules) and
+  [Reconcilers: Idempotent Mutation as a Single
+  Command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
 - Reopen the top-level plan surfaces so they state the current reality: Phase `0` re-closed after
   scheduling the follow-up, Phase `4` is reopened by planned Sprint `4.8`, later phases remain
   closed on their owned surfaces, and the overall handoff is incomplete until the lifecycle-output
@@ -522,7 +502,7 @@ None.
 **Cross-references to add:**
 
 - Root guidance docs (`README.md`, `AGENTS.md`, `CLAUDE.md`) link to
-  [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the architectural doctrine.
+  [the engineering doctrine docs](../documents/engineering/README.md) as the architectural doctrine.
 - The doctrine itself lists every governed-doc and plan-file consumer in its
   `**Referenced by**` line.
 
@@ -543,8 +523,7 @@ None.
 `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (renamed from
 `phase-7-aws-iam-quota-automation.md`),
 `DEVELOPMENT_PLAN/phase-8-email-invite-auth.md` (new),
-`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
-`HASKELL_CLI_TOOL.md`, `documents/engineering/unit_testing_policy.md`
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`, `documents/engineering/unit_testing_policy.md`
 **Docs to update**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
 `DEVELOPMENT_PLAN/development_plan_standards.md`,
 `DEVELOPMENT_PLAN/system-components.md`,
@@ -586,7 +565,7 @@ that runs against substrates rather than separate home-cluster and AWS validatio
 - `phase-4-lifecycle-canonical-paths.md` is updated to drop the "AWS validation doctrine"
   framing and to describe AWS-touching content as AWS-substrate lifecycle (provision +
   teardown via Pulumi).
-- `HASKELL_CLI_TOOL.md` and `documents/engineering/unit_testing_policy.md` are updated to
+- the engineering doctrine docs and `documents/engineering/unit_testing_policy.md` are updated to
   cite the new substrate doctrine and to use the renamed phase paths.
 
 ### Validation
@@ -618,7 +597,7 @@ None.
 
 **Cross-references to add:**
 
-- `HASKELL_CLI_TOOL.md` cross-references the renamed `phase-5-canonical-test-suite.md` and
+- the engineering doctrine docs cross-references the renamed `phase-5-canonical-test-suite.md` and
   `phase-7-aws-substrate-foundations.md` paths plus the new `phase-8-email-invite-auth.md`
   and `substrates.md` files.
 
@@ -709,4 +688,4 @@ None. The legacy-tracking ledger row records the closure.
 - [README.md](README.md)
 - [00-overview.md](00-overview.md)
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
-- [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+- [the engineering doctrine docs](../documents/engineering/README.md)

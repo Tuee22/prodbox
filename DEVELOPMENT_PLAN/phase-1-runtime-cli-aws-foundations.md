@@ -3,12 +3,12 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Capture the Haskell runtime, CLI, configuration, build, and Pulumi foundations that
 > make later gateway, chart, and public-host phases meaningful and testable, and own the
 > CLI-doctrine adoption sprints that align those foundations with
-> [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md).
+> [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
 
@@ -52,7 +52,7 @@ implemented frontend container doctrine uses
 explicit repo package-bound updates.
 
 Sprints `1.6` through `1.23` adopt the CLI doctrine from
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). They split the CLI parser into a
+[the engineering doctrine docs](../documents/engineering/README.md). They split the CLI parser into a
 `CommandSpec`-driven source of truth, introduce the `Plan` / `apply` discipline with
 `--dry-run`, formalize the `Subprocess` ADT and its interpreter boundary, add a remedy-hint
 contract to the prerequisite registry, align the lint stack on a pinned `fourmolu.yaml` plus
@@ -471,7 +471,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → CommandSpec](../HASKELL_CLI_TOOL.md) and `Architecture →
+Adopt [cli_command_surface.md#command-topology](../documents/engineering/cli_command_surface.md#command-topology) and `Architecture →
 Module layout` so the CLI surface is generated from a single typed specification.
 
 ### Deliverables
@@ -487,25 +487,22 @@ Module layout` so the CLI surface is generated from a single typed specification
 - Audit every node of the command tree (every level, not only top-level) for `--help`,
   `prodbox commands`, `prodbox commands --tree`, `prodbox commands --json`, and
   `prodbox help <path>` coverage per
-  [../HASKELL_CLI_TOOL.md → Progressive Introspection](../HASKELL_CLI_TOOL.md). The audit is
+  [cli_command_surface.md#progressive-introspection](../documents/engineering/cli_command_surface.md#progressive-introspection). The audit is
   the source for the golden tests rather than an ad-hoc top-level subset.
 - Every leaf `CommandSpec` node carries at least one `Example` entry per
-  [../HASKELL_CLI_TOOL.md → Automatically Generated Documentation](../HASKELL_CLI_TOOL.md)
-  §299–303 (`Example` records with `exampleCommand` and `exampleDescription`). A
+  [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)(`Example` records with `exampleCommand` and `exampleDescription`). A
   `prodbox-unit` property test (Sprint 1.11) asserts that the registry contains no leaf
   command with an empty `examples` list.
 - Sprint 0.4 round-3 extension: bind the `CommandSpec` record fields explicitly:
   `name`, `summary`, `description`, `children`, `options`, `examples`, and bind the
   sibling `OptionSpec` record fields: `longName`, `shortName`, `metavar`,
   `description`, `required`, per
-  [../HASKELL_CLI_TOOL.md → Automatically Generated
-  Documentation](../HASKELL_CLI_TOOL.md) §283–304.
+  [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts).
 - Sprint 0.4 round-3 extension: bind the daemon-as-typed-`Command` dispatch
   pattern. Gateway daemon entry is a `GatewayDaemonCommand DaemonOptions`
   constructor on the top-level `Command` ADT (and any future daemon entry follows
   the same constructor shape rather than a separate argv parser) per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Daemon as
-  Command](../HASKELL_CLI_TOOL.md) §1156–1196. The `prodbox gateway start`
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The `prodbox gateway start`
   subcommand defined in `src/Prodbox/CLI/Spec.hs` produces the
   `GatewayDaemonCommand` value; `Prodbox.App.run` dispatches to the daemon entry
   function through ordinary pattern matching with no separate parser.
@@ -535,7 +532,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Plan / Apply](../HASKELL_CLI_TOOL.md) on every state-changing
+Adopt [pure_fp_standards.md#plan--apply](../documents/engineering/pure_fp_standards.md#plan--apply) on every state-changing
 command.
 
 ### Deliverables
@@ -565,8 +562,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Architecture → Subprocesses as Typed
-Values](../HASKELL_CLI_TOOL.md).
+Adopt [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineering/haskell_code_guide.md#subprocesses-as-typed-values).
 
 ### Deliverables
 
@@ -583,8 +579,7 @@ Values](../HASKELL_CLI_TOOL.md).
   `System.Process` smart constructors (`createProcess`, `proc`, `shell`) explicitly
   in the `prodbox lint files` rules and the `.hlint.yaml` negative-space symbol set
   (composing with the Sprint 1.19 negative-space rules) per
-  [../HASKELL_CLI_TOOL.md → Architecture → Subprocesses as Typed
-  Values](../HASKELL_CLI_TOOL.md) §531. A `prodbox-haskell-style` unit test asserts
+  [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineering/haskell_code_guide.md#subprocesses-as-typed-values). A `prodbox-haskell-style` unit test asserts
   the typed-process dependency stays confined to `src/Prodbox/Subprocess.hs`, while
   `prodbox lint files` rejects raw `System.Process` imports and the forbidden symbols in
   `src/Prodbox/` call sites outside the subprocess interpreter.
@@ -618,8 +613,7 @@ coverage.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Prerequisites as Typed
-Effects](../HASKELL_CLI_TOOL.md), including the required error-message contract.
+Adopt [prerequisite_doctrine.md#prerequisites-as-typed-effects](../documents/engineering/prerequisite_doctrine.md#prerequisites-as-typed-effects), including the required error-message contract.
 
 ### Deliverables
 
@@ -647,8 +641,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality
-Stack](../HASKELL_CLI_TOOL.md) and `Generated Artifacts → The generated-section registry`.
+Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack) and `Generated Artifacts → The generated-section registry`.
 
 ### Deliverables
 
@@ -665,13 +658,12 @@ Stack](../HASKELL_CLI_TOOL.md) and `Generated Artifacts → The generated-sectio
 - Implement `prodbox lint docs [--write]` as a thin alias over the same Haskell function
   backing `prodbox docs check` / `prodbox docs generate`; both surfaces consume the single
   `GeneratedSectionRule` registry per
-  [../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) §381–390 and
+  [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)and
   `The Architecture` §2321. `documents/engineering/cli_command_surface.md` records this
   consolidation so future contributors do not split the two surfaces.
 - `prodbox lint haskell` round-trips `prodbox.cabal` through `cabal format` via a temp file
   and asserts byte-equality with the on-disk file per
-  [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → Tool
-  Bootstrap](../HASKELL_CLI_TOOL.md) §1834–1837. The check pass never rewrites in place;
+  [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack). The check pass never rewrites in place;
   rewrite-in-place is reserved for `prodbox lint haskell --write`.
 - Sprint 0.4 round-3 extension: bind the twelve minimum `fourmolu.yaml` settings
   explicitly. The repo-root `fourmolu.yaml` carries `indentation: 2`,
@@ -680,8 +672,7 @@ Stack](../HASKELL_CLI_TOOL.md) and `Generated Artifacts → The generated-sectio
   `record-brace-space: true`, `newlines-between-decls: 1`,
   `haddock-style: single-line`, `let-style: auto`, `in-style: right-align`,
   `unicode: never`, and `respectful: true`, per
-  [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → Pinned
-  fourmolu.yaml](../HASKELL_CLI_TOOL.md) §1834–1860. A `prodbox-haskell-style` unit
+  [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack). A `prodbox-haskell-style` unit
   test parses `fourmolu.yaml` and asserts each of the twelve keys is present with
   the doctrine-named value; substituting a value is allowed only when the same
   test is updated to match.
@@ -711,7 +702,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Testing Doctrine](../HASKELL_CLI_TOOL.md), `Standard
+Adopt [unit_testing_policy.md#testing-doctrine](../documents/engineering/unit_testing_policy.md#testing-doctrine), `Standard
 Testing Stack`, `Test Categories`, and `Test Organization`.
 
 ### Deliverables
@@ -725,14 +716,13 @@ Testing Stack`, `Test Categories`, and `Test Organization`.
 - Enforce `type: exitcode-stdio-1.0` on every cabal `test-suite` stanza (`prodbox-unit`,
   `prodbox-integration`, `prodbox-haskell-style`, and any later stanza added by Sprints 2.14
   and 4.7) per
-  [../HASKELL_CLI_TOOL.md → Test Organization](../HASKELL_CLI_TOOL.md). Add a
+  [unit_testing_policy.md#test-organization](../documents/engineering/unit_testing_policy.md#test-organization). Add a
   `prodbox lint files` (Sprint 1.10) rule that fails on any new test-suite stanza missing the
   interface.
 - Enqueue the `hspec` and `hspec-discover` dependencies in the legacy ledger.
 - Sprint 0.4 round-3 extension: enumerate the canonical property-test invariants
   the `prodbox-unit` stanza must cover, per
-  [../HASKELL_CLI_TOOL.md → Test Categories → Property
-  Tests](../HASKELL_CLI_TOOL.md) §2179–2188:
+  [unit_testing_policy.md#test-categories](../documents/engineering/unit_testing_policy.md#test-categories):
   - `decode . encode == id` for `Settings`, `BootConfig`, `LiveConfig`, and every
     other persisted Haskell value with a JSON or Dhall round-trip,
   - `render is deterministic` (identical input produces identical output across
@@ -762,8 +752,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Capability Classes and Service
-Errors](../HASKELL_CLI_TOOL.md).
+Adopt [haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors).
 
 ### Deliverables
 
@@ -777,8 +766,7 @@ Errors](../HASKELL_CLI_TOOL.md).
   `ServiceError` (e.g. `newtype MinIOError = MinIOError { unMinIOError :: ServiceError }`),
   and each carries an `AsServiceError` instance with the conversion pair
   `toServiceError`/`fromServiceError`, per
-  [../HASKELL_CLI_TOOL.md → Capability Classes and Service
-  Errors](../HASKELL_CLI_TOOL.md) §867–890. The inventory is the closed set on the
+  [haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors). The inventory is the closed set on the
   supported path; any later subsystem (e.g. a future `HasNats`) adds an entry to
   the inventory rather than constructing an ad-hoc error type.
 
@@ -812,8 +800,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Retry Policy as First-Class
-Values](../HASKELL_CLI_TOOL.md).
+Adopt [haskell_code_guide.md#retry-policy-as-first-class-values](../documents/engineering/haskell_code_guide.md#retry-policy-as-first-class-values).
 
 ### Deliverables
 
@@ -851,8 +838,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Error handling:
-recoverable vs fatal](../HASKELL_CLI_TOOL.md) and propagate the discipline across
+Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle) and propagate the discipline across
 short-running commands too.
 
 ### Deliverables
@@ -863,8 +849,7 @@ short-running commands too.
   call site and respond accordingly.
 - Sprint 0.4 round-3 extension: bind the daemon `AppError` record shape explicitly:
   `data AppError = AppError { errorKind :: ErrorKind, errorMsg :: Text, errorCause :: Maybe SomeException }`
-  per [../HASKELL_CLI_TOOL.md → Long-Running Daemons in the Same Binary → Error
-  Handling](../HASKELL_CLI_TOOL.md) §1300–1340. The `errorMsg` carries the
+  per [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle). The `errorMsg` carries the
   operator-facing summary that `renderError` (Sprint 1.26) consumes at the CLI
   boundary; `errorCause` preserves the originating exception for structured-log
   context without leaking it through the user-facing text.
@@ -899,8 +884,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Smart Constructors for Paired
-Resources](../HASKELL_CLI_TOOL.md), including the prescribed naming helpers.
+Adopt [haskell_code_guide.md#smart-constructors-for-paired-resources](../documents/engineering/haskell_code_guide.md#smart-constructors-for-paired-resources), including the prescribed naming helpers.
 
 ### Deliverables
 
@@ -921,8 +905,7 @@ Resources](../HASKELL_CLI_TOOL.md), including the prescribed naming helpers.
     and folds case so any input becomes a valid DNS-1123 label,
   - `hashSuffix :: Text -> Text` derives a deterministic short hash suffix so
     truncation never produces colliding names,
-  per [../HASKELL_CLI_TOOL.md → Smart Constructors for Paired
-  Resources](../HASKELL_CLI_TOOL.md) §565–630. Unit tests cover the
+  per [haskell_code_guide.md#smart-constructors-for-paired-resources](../documents/engineering/haskell_code_guide.md#smart-constructors-for-paired-resources). Unit tests cover the
   63-character bound, the DNS-1123 character set, and the
   hash-suffix-prevents-collision contract.
 
@@ -943,7 +926,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → GADT-Indexed State Machines](../HASKELL_CLI_TOOL.md) for
+Adopt [pure_fp_standards.md#gadt-indexed-state-machines](../documents/engineering/pure_fp_standards.md#gadt-indexed-state-machines) for
 workflows with more than two states.
 
 ### Deliverables
@@ -982,7 +965,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Output Rules](../HASKELL_CLI_TOOL.md) for one-shot `prodbox`
+Adopt [streaming_doctrine.md#output-rules](../documents/engineering/streaming_doctrine.md#output-rules) for one-shot `prodbox`
 commands so stdout, stderr, machine-readable output, and color follow the doctrine's
 prescribed surface.
 
@@ -1034,7 +1017,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Application Environment](../HASKELL_CLI_TOOL.md) for the
+Adopt [haskell_code_guide.md#application-environment](../documents/engineering/haskell_code_guide.md#application-environment) for the
 one-shot CLI surface so command runners thread configuration, logging, and dependencies
 through `ReaderT Env IO` rather than ad-hoc argument lists.
 
@@ -1080,8 +1063,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → Tool
-Bootstrap](../HASKELL_CLI_TOOL.md) and the `Readability and Nesting` subsection's
+Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack) and the `Readability and Nesting` subsection's
 project-specific `.hlint.yaml` rule pattern.
 
 ### Deliverables
@@ -1100,8 +1082,7 @@ project-specific `.hlint.yaml` rule pattern.
   surviving `\x -> case ...` call sites.
 - The governed Haskell lint scan refuses `forkIO`, `unsafePerformIO`, and module-level `IORef`
   inside `src/Prodbox/Gateway/`, `src/Prodbox/Workload.hs`, and any new daemon path, per
-  [../HASKELL_CLI_TOOL.md → Long-Running Daemons → Structured Concurrency / Test Hooks in
-  Env / The Env Record Grows](../HASKELL_CLI_TOOL.md) §1243, §1370, §1450. Production code
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle)§1450. Production code
   uses `Control.Concurrent.Async` (`withAsync`, `concurrently`, `race`,
   `replicateConcurrently`) and threads resources through `Env`, not module-level `IORef`.
 - The lint stack runs hlint with `--with-group=default` plus `--with-group=extra` per
@@ -1141,8 +1122,7 @@ project-specific `.hlint.yaml` rule pattern.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → Aggregate
-Dispatch](../HASKELL_CLI_TOOL.md) and the doctrine's `Testing Doctrine` requirement that
+Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack) and the doctrine's `Testing Doctrine` requirement that
 `tool test all` includes the full lint surface as its first step.
 
 ### Deliverables
@@ -1176,8 +1156,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Generated Artifacts → Two Categories of
-Generation](../HASKELL_CLI_TOOL.md) and the `Determinism Requirements` subsection so
+Adopt [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts) and the `Determinism Requirements` subsection so
 fully-generated files have an enforceable owner and every doc renderer is a pure
 deterministic function.
 
@@ -1194,8 +1173,7 @@ deterministic function.
   ordering, terminal-width-dependent wrapping, or environment-dependent path.
 - Sprint 0.4 round-3 extension: enumerate the forbidden renderer inputs the
   determinism contract refuses, as the closed set, per
-  [../HASKELL_CLI_TOOL.md → Generated Artifacts → Renderer
-  Determinism](../HASKELL_CLI_TOOL.md) §459–470:
+  [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts):
   - timestamps (no `getCurrentTime`, `getZonedTime`, `getPOSIXTime` reachable
     from any renderer in `GeneratedSectionRule` or `trackingGeneratedPaths`),
   - random IDs (no `randomIO`, `randomRIO`, UUID generation reachable from a
@@ -1238,7 +1216,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Standardized Stack](../HASKELL_CLI_TOOL.md) by auditing
+Adopt [unit_testing_policy.md#standard-testing-stack](../documents/engineering/unit_testing_policy.md#standard-testing-stack) by auditing
 `prodbox.cabal` against the doctrine's library list and removing or replacing any
 non-doctrine library on the supported path.
 
@@ -1289,7 +1267,7 @@ None.
 ### Objective
 
 Close the residual doctrine items from
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) that are not owned by an earlier sprint in
+[the engineering doctrine docs](../documents/engineering/README.md) that are not owned by an earlier sprint in
 this phase: the `dhall freeze` reproducibility discipline on the committed Dhall schema
 (§1571–1574), the parser `--foreground` default plus the explicit
 self-daemonization-forbidden rule (§1591–1599), and the explicit deferral of cross-language
@@ -1310,8 +1288,7 @@ type generation (§341–343) until a non-Haskell consumer enters scope.
   `System.Posix.Process` `forkProcess` or invokes `setsid` directly.
 - `documents/engineering/cli_command_surface.md` records the
   cross-language-types-generation deferral: the marker-delimited generation pattern
-  documented by [../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md)
-  §341–343 is ready when a non-Haskell consumer (e.g. a TypeScript or Go type mirror)
+  documented by [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)is ready when a non-Haskell consumer (e.g. a TypeScript or Go type mirror)
   enters scope, but no such consumer exists today and no sprint schedules one. The
   `generatedSectionRule` registry stays empty for cross-language types until a future plan
   revision opens that surface.
@@ -1341,8 +1318,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Automatically Generated
-Documentation](../HASKELL_CLI_TOOL.md) §269–318 and `The Architecture` summary
+Adopt [code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)and `The Architecture` summary
 §2349–2356 so the `CommandSpec` registry (Sprint 1.6) drives every durable external CLI
 documentation artifact, not only the in-process introspection commands.
 
@@ -1397,7 +1373,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Parser Tests](../HASKELL_CLI_TOOL.md) §2116–2138 so
+Adopt [unit_testing_policy.md#parser-tests](../documents/engineering/unit_testing_policy.md#parser-tests)so
 the `argv → Command ADT` boundary carries a distinct parser-test category using
 `execParserPure`, in addition to the rendered-output golden tests scheduled in
 Sprint 1.6.
@@ -1445,7 +1421,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Error Handling](../HASKELL_CLI_TOOL.md) §815–831
+Adopt [haskell_code_guide.md#error-handling](../documents/engineering/haskell_code_guide.md#error-handling)
 so error rendering happens only at the CLI boundary and core code is free of
 `putStrLn`, `print`, `exitFailure`, and direct terminal formatting.
 
@@ -1511,24 +1487,24 @@ authoritative Cabal version, and codify the library-first / thin-`Main.hs` layou
 as a `prodbox check-code` gate so future contributors cannot reintroduce logic in
 `app/prodbox/Main.hs`. Closes the round-3 audit gaps A1 (cabal manifest pins) and
 A13 (library-first layout) per
-[../HASKELL_CLI_TOOL.md → Toolchain pinning](../HASKELL_CLI_TOOL.md) §70–84 and
+[dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning)and
 `Project Structure` §86–115.
 
 ### Deliverables
 
 - `prodbox.cabal` declares `tested-with: ghc ==9.14.1` at the package-stanza level
-  per [../HASKELL_CLI_TOOL.md → Toolchain pinning](../HASKELL_CLI_TOOL.md) §75.
+  per [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning).
 - `cabal.project` declares `with-compiler: ghc-9.14.1` per
-  [../HASKELL_CLI_TOOL.md → Toolchain pinning](../HASKELL_CLI_TOOL.md) §76.
+  [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning).
 - The plan and [00-overview.md](00-overview.md) name the authoritative Cabal
   version `Cabal 3.16.1.0` per
-  [../HASKELL_CLI_TOOL.md → Toolchain pinning](../HASKELL_CLI_TOOL.md) §74; the
+  [dependency_management.md#toolchain-pinning](../documents/engineering/dependency_management.md#toolchain-pinning); the
   doctrine pins both the GHC and Cabal versions, and this sprint binds the Cabal
   pin in cabal-manifest terms alongside the existing GHC `9.14.1` references.
 - `src/Prodbox/CheckCode.hs` gains a check that refuses any module-local
   definition in `app/prodbox/Main.hs` beyond a thin
   `main = Prodbox.App.main` (or equivalent library re-export) per
-  [../HASKELL_CLI_TOOL.md → Project Structure](../HASKELL_CLI_TOOL.md) §103–114
+  [haskell_code_guide.md#project-structure](../documents/engineering/haskell_code_guide.md#project-structure)
   ("Most logic should live in `src/`, not `app/`, so it can be imported by tests
   and reused by other programs"). The check parses `app/prodbox/Main.hs`,
   rejects any top-level binding other than `main`, and refuses any local
@@ -1561,7 +1537,7 @@ None.
 **Engineering docs to create/update:**
 
 - `documents/engineering/README.md` - Haskell-only doctrine index plus
-  [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) pointer.
+  [the engineering doctrine docs](../documents/engineering/README.md) pointer.
 - `documents/engineering/cli_command_surface.md` - canonical Haskell command matrix, deferring
   to the doctrine for `CommandSpec`, `Command Topology`, and `Progressive Introspection`.
 - `documents/engineering/code_quality.md` - Haskell `check-code` contract, deferring to the

@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, documents/engineering/README.md, documents/engineering/code_quality.md, documents/engineering/dependency_management.md, documents/engineering/effect_interpreter.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/refactoring_patterns.md, documents/engineering/unit_testing_policy.md
 
 > **Purpose**: Define the Haskell coding standards for `prodbox` so pure planning logic,
 > structured domain modeling, and explicit impurity boundaries stay consistent across the
@@ -73,6 +73,11 @@ data LifecycleAction
 - Do not route major control flow through free-form `String` flags.
 - Parse external text once, then operate on typed values.
 - Use records when named fields improve clarity.
+
+For the lifecycle-command predicate / reconciler / phase-ADT layering that
+extends this pattern across `prodbox rke2 delete`, `prodbox aws teardown`,
+`prodbox pulumi <stack>-destroy`, and `prodbox nuke`, see
+[lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md).
 
 ### 2.2 Pattern Match Exhaustively
 
@@ -198,8 +203,8 @@ calls belong in the narrowest boundary that can own them.
 
 Daemons that consume events (peer commit log, future workload event surfaces, any future
 worker) consume the canonical at-least-once pattern from
-[../../HASKELL_CLI_TOOL.md → At-Least-Once Event
-Processing](../../HASKELL_CLI_TOOL.md) §1624–1739, exposed by
+[At-Least-Once Event
+Processing](../../documents/engineering/README.md)exposed by
 `src/Prodbox/Daemon/Events.hs` (introduced by Sprint 2.16 in
 [../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md)).
 
@@ -249,6 +254,159 @@ This SSoT co-owns repository coding-style doctrine.
 - Linked dependents: `src/Prodbox/Settings.hs`, `src/Prodbox/ContainerImage.hs`,
   `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestRunner.hs`,
   `test/unit/Main.hs`.
+
+## GADT-Indexed State Machines
+
+State machines with more than two states must use GADTs with phantom type parameters to
+encode valid transitions at the type level. Invalid transitions become compile errors, not
+runtime errors.
+
+The prescribed shape:
+
+```haskell
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
+
+-- | Status indexed at the type level
+data OrderStatus
+    = Draft
+    | Submitted
+    | Approved
+    | Fulfilled
+    | Cancelled
+
+-- | Singleton witnesses for runtime status discovery
+data SOrderStatus (s :: OrderStatus) where
+    SDraft :: SOrderStatus 'Draft
+    SSubmitted :: SOrderStatus 'Submitted
+    SApproved :: SOrderStatus 'Approved
+    SFulfilled :: SOrderStatus 'Fulfilled
+    SCancelled :: SOrderStatus 'Cancelled
+
+-- | Commands indexed by input and output status
+type OrderCmd :: OrderStatus -> OrderStatus -> Type -> Type
+data OrderCmd (s :: OrderStatus) (s' :: OrderStatus) a where
+    AddItem :: ItemId -> Quantity -> OrderCmd 'Draft 'Draft ()
+    RemoveItem :: ItemId -> OrderCmd 'Draft 'Draft ()
+    Submit :: OrderCmd 'Draft 'Submitted SubmissionReceipt
+    Approve :: ApprovalNotes -> OrderCmd 'Submitted 'Approved ()
+    Reject :: RejectionReason -> OrderCmd 'Submitted 'Cancelled ()
+    Fulfill :: ShipmentInfo -> OrderCmd 'Approved 'Fulfilled TrackingNumber
+    Cancel :: CancellationReason -> OrderCmd 'Draft 'Cancelled ()
+```
+
+The GADT indices track both the required input state (first parameter) and the resulting
+output state (second parameter). The type system enforces that `Submit` can only be called
+on a `Draft` order, `Approve` only on a `Submitted` order, and so on.
+
+### Existential wrapping for runtime discovery
+
+When loading state from a database, the status is unknown at compile time. Use existential
+wrapping with singleton witnesses to recover type information:
+
+```haskell
+data SomeOrder where
+    SomeOrder ::
+        SOrderStatus s ->
+        OrderHandle s ->
+        SomeOrder
+
+loadOrder :: Connection -> UUID -> IO (Either OrderError SomeOrder)
+loadOrder conn orderId = do
+    row <- queryOrderRow conn orderId
+    pure $ case orderRowStatus row of
+        "draft" -> Right (SomeOrder SDraft (mkHandle row))
+        "submitted" -> Right (SomeOrder SSubmitted (mkHandle row))
+        "approved" -> Right (SomeOrder SApproved (mkHandle row))
+        "fulfilled" -> Right (SomeOrder SFulfilled (mkHandle row))
+        "cancelled" -> Right (SomeOrder SCancelled (mkHandle row))
+        unknown -> Left (UnknownStatus unknown)
+```
+
+Pattern matching on the singleton witness recovers the phantom type, enabling typed
+operations on dynamically loaded values without unsafe casts.
+
+**Forbidden patterns:**
+
+- Runtime status enums with manual validation in command handlers.
+- Status fields as `Text` or `String` with string comparisons.
+- State machines with more than two states that do not use GADT indexing.
+- Existential wrappers without singleton witnesses (losing type information).
+
+## Plan / Apply
+
+Every command that does meaningful work in the world splits into two phases:
+a pure `build` function that produces a typed `Plan` ADT, and an effectful
+`apply` function that executes the plan. The plan is a value — print it, diff
+it, golden-test it, dry-run it. None of those operations require IO.
+
+The standard shape:
+
+```haskell
+build :: Inputs -> Either AppError Plan      -- pure
+apply :: Env    -> Plan -> IO ExitCode       -- effectful
+```
+
+`build` lives in `src/MyTool/...` and is total. `apply` lives in a command
+runner and is the only place that touches the world.
+
+A worked example for a small deploy command:
+
+```haskell
+data DeployPlan = DeployPlan
+  { deployPlanPreChecks :: [Validation]   -- see Prerequisites as Typed Effects
+  , deployPlanSteps     :: [Subprocess]   -- see Subprocesses as Typed Values
+  }
+  deriving stock (Eq, Show)
+
+renderDeployPlan :: DeployPlan -> Text
+buildDeployPlan  :: DeployInputs -> Either AppError DeployPlan
+applyDeployPlan  :: Env -> DeployPlan -> IO ExitCode
+```
+
+Required flags on every Plan/Apply command:
+
+- `--dry-run` prints the rendered plan and exits 0. The implementation is
+  `build` followed by `renderPlan`; `apply` is never reached.
+- `--plan-file <path>` writes the rendered plan to disk, enabling out-of-band
+  review before apply.
+
+Pair with golden tests: plans are deterministic Haskell values and are the
+cleanest possible targets for `tasty-golden`. The **Golden Tests** category
+in the testing doctrine should include `render <Plan>` for every Plan/Apply
+command the tool publishes.
+
+**Forbidden patterns:**
+
+- Interleaving IO into `build`. Probing the filesystem, network, or env to
+  decide what's in the plan defeats determinism. Probing belongs in a
+  read-only reconnaissance phase whose typed outputs feed `build`.
+- A Plan/Apply command without `--dry-run`. If the plan cannot be safely
+  rendered without running it, the split has not actually been made.
+- An `apply` that mutates state not described in the `Plan`. The plan is the
+  full audit trail of what the command will do; out-of-band mutation is a
+  correctness bug.
+- Caching or memoizing `build` across invocations. It is cheap; if it is not,
+  the inputs are wrong.
+
+This section composes with two others:
+
+- [Prerequisites as Typed Effects](./prerequisite_doctrine.md#prerequisites-as-typed-effects)
+  runs before `apply`. A prerequisite failure aborts before any plan step
+  executes.
+- [Reconcilers](./cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command)
+  are a specialization: a reconciler is a Plan/Apply command whose `apply` is
+  a no-op when current state already matches the plan's desired state.
+
+The lifecycle doctrine for destructive commands extends Plan/Apply with three
+additional layers: a preflight `Precondition` check that refuses on residue
+with structured remedies, a postflight tag sweep that fails the command if
+any cluster-tagged resource survives, and a phase ADT that narrates the
+sequential steps for `--dry-run` output and error reporting. The full
+discipline lives in
+[lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md).
 
 ## Cross-References
 

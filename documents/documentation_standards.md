@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, AGENTS.md, CLAUDE.md, HASKELL_CLI_TOOL.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/development_plan_standards.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/development_plan_standards.md, documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md, documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md, documents/engineering/distributed_gateway_architecture.md, documents/engineering/helm_chart_platform_doctrine.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/storage_lifecycle_doctrine.md, documents/engineering/tla_modelling_assumptions.md
 **Generated sections**: none
 
 > **Purpose**: Single Source of Truth (SSoT) for writing and maintaining documentation across prodbox.
@@ -97,7 +97,7 @@ metadata and the markers physically present in the file agree: declaring `none` 
 markers are present is a lint failure, and declaring a key whose markers are missing is a
 lint failure. The reference list of generated sections per file is the
 `GeneratedSectionRule` registry described in
-[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md).
+[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts).
 
 ---
 
@@ -242,9 +242,9 @@ This SSoT co-owns documentation-topology doctrine intention.
 ## 11. Generated Sections
 
 This section documents the generated-sections discipline mandated by
-[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) and
-[../HASKELL_CLI_TOOL.md → Project-level documentation
-standards](../HASKELL_CLI_TOOL.md). The doctrine is the authoritative source for the
+[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts) and
+[Project-level documentation
+standards](../documents/engineering/README.md). The doctrine is the authoritative source for the
 underlying registry shape, marker conventions, paired check/write commands, and drift
 enforcement; this section restates the contract for documentation contributors who do not
 need to read the full doctrine.
@@ -280,7 +280,7 @@ declare its keys in its `**Generated sections**:` metadata field (Section 3); th
 pass enforces agreement.
 
 Generation targets enumerated by
-[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) §341–343 include CLI
+[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)include CLI
 help, command reference docs, route inventories, Helm chart sections, JSON schemas, and
 cross-language types. The currently scheduled registry entries are:
 
@@ -341,6 +341,6 @@ environment-derived paths.
 
 - [Engineering docs index](./engineering/README.md)
 - [Development Plan](../DEVELOPMENT_PLAN/README.md)
-- [HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) - canonical CLI doctrine
+- [the engineering doctrine docs](../documents/engineering/README.md) - canonical CLI doctrine
 - [CLAUDE.md](../CLAUDE.md) - AI assistant guidelines
 - [AGENTS.md](../AGENTS.md) - Agent guidelines

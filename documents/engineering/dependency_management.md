@@ -117,6 +117,22 @@ Checklist:
   or public-edge behavior.
 - Update doctrine when an upgrade changes the supported external tool version expectations.
 
+## Toolchain Pinning
+
+The exact GHC and Cabal versions every project under this doctrine builds with:
+
+```text
+GHC 9.14.1
+Cabal 3.16.1.0
+```
+
+These are not floors or recommendations. The `.cabal` file declares
+`tested-with: ghc ==9.14.1`. A `cabal.project` (or equivalent) pins
+`with-compiler: ghc-9.14.1`. CI uses the same versions. The pinned
+formatter-tools GHC under `.build/<project>-style-tools/` is a separate
+isolated install and is managed by the lint stack; the project's main
+compiler is the version named here.
+
 ## Cross-References
 
 - [CLI Command Surface](./cli_command_surface.md)

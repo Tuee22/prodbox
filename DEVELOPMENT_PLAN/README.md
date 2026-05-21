@@ -4,7 +4,7 @@
 **Supersedes**: N/A
 **Referenced by**: [../README.md](../README.md), [../AGENTS.md](../AGENTS.md),
 [../documents/engineering/README.md](../documents/engineering/README.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md),
+[the engineering doctrine docs](../documents/engineering/README.md),
 [development_plan_standards.md](development_plan_standards.md),
 [00-overview.md](00-overview.md), [system-components.md](system-components.md),
 [substrates.md](substrates.md),
@@ -31,7 +31,7 @@ govern this plan suite.
 
 Phase `0` reopened through Sprints `0.2`–`0.7` (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) as the canonical CLI doctrine, align the
+[the engineering doctrine docs](../documents/engineering/README.md) as the canonical CLI doctrine, align the
 governed docs and plan suite to that doctrine, schedule every currently known code-level
 adoption gap onto explicit downstream sprints, and (Sprint `0.7`, May 20, 2026) add the
 LLM/automation guardrails so every operator-interactive entry point refuses to run on a
@@ -75,7 +75,7 @@ OIDC closure (Sprint `8.5`).
 
 Reopened sprints by phase:
 
-- Phase 0 — **Sprints 0.2, 0.3, 0.4, 0.5, 0.6**: Sprint 0.2 adopts HASKELL_CLI_TOOL.md as governed CLI
+- Phase 0 — **Sprints 0.2, 0.3, 0.4, 0.5, 0.6**: Sprint 0.2 adopts the engineering doctrine docs as governed CLI
   doctrine. Updates `documents/documentation_standards.md` with the six Generated Sections
   requirements, retags governed engineering docs as doctrine pointers, and threads doctrine
   cross-references through the plan suite and root guidance. Sprint 0.3 schedules the
@@ -304,14 +304,14 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8); 📋 Planned (Sprints 4.10–4.13: long-lived Pulumi-backend decouple, `rke2 delete` refuse-path + `--cascade`, K8s drain + tag sweep, `prodbox nuke`) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a–7.5.c.iv on their code-owned surfaces, May 17–19, 2026; ✅ 7.5.c.v.b in-cluster custom-image push, May 19, 2026; ✅ 7.5.c.v.c harness preflight residue policy `BypassAllResidueForHarnessRefresh`, May 20, 2026; ✅ 7.5.c.v.d operational IAM policy compaction + S3 grants on SES capture bucket, May 20, 2026; ✅ 7.5.c.v.e read-only SES grants for Sprint 8.4 prereqs, May 20, 2026; 🔄 Active Sprint 7.5.c.v.f to diagnose and fix the May 20 silent-exit failure mode in `runChartsVscodeValidation` and its `runCharts*Validation` / `runAdminRoutesValidation` / `runPublicDnsValidation` siblings under `substrate=aws`; 🔄 Sprint 7.5.c.v blocked on `7.5.c.v.f`); ✅ Sprint 7.6 (orphan-safety refuse-path + auto-destroy postflight, May 19, 2026); ✅ Sprint 7.7 (generalized `aws teardown` + `PulumiResiduePolicy` ADT + admin-credential prompt UX, May 19, 2026) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secrets persistence landed (credential-setup form POST + fresh OIDC login + claim assertions remain operator-driven sub-sprint, blocked on live Keycloak form-structure capture); 🔄 Sprint 8.6 doc parity landed (live cross-substrate proof pending 7.5.c + 8.5 OIDC follow-up closure). Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the only remaining live OIDC closure work) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.7` to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) and to add the LLM/automation guardrails on
+[the engineering doctrine docs](../documents/engineering/README.md) and to add the LLM/automation guardrails on
 the interactive command surface; Phase `0` is now `Done` on that planning, documentation, and
 non-TTY-guardrail surface. Phases `1`–`4` were reopened on the downstream doctrine-driven
 implementation work and are now reclosed. Phase `5` is re-closed after Sprint `5.5` added and

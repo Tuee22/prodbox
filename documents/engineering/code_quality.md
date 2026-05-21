@@ -118,6 +118,306 @@ This SSoT co-owns purity and guardrail doctrine intention.
   mandatory and blocking.
 - Linked dependents: `src/Prodbox/CheckCode.hs`, `prodbox.cabal`, `test/unit/Main.hs`.
 
+## Generated Artifacts
+
+Any text artifact derived from typed Haskell data follows the same shape:
+
+```text
+typed Haskell value
+  -> render function (pure, deterministic, String/Text)
+  -> embedded between sentinel markers in a checked-in file
+     OR written wholesale to a tracked-generated path
+```
+
+This applies to CLI help, command reference docs, route inventories, Helm
+chart sections, cross-language type bridges, JSON command schemas, and
+anything else where the in-repo artifact must reflect the code.
+
+### The generated-section registry
+
+A single Haskell value of type `[GeneratedSectionRule]` is the source of
+truth. Both the validator and the writer consume it:
+
+```haskell
+data GeneratedSectionRule = GeneratedSectionRule
+  { artifactPath :: FilePath
+  , startMarker  :: Text
+  , endMarker    :: Text
+  , expected     :: Text   -- the renderer's current output
+  }
+```
+
+Each rule pairs a renderer's output with the file path and marker pair it
+must appear between. Adding a new generated region means adding a new entry
+to this list — nothing else, because every consumer of the discipline reads
+from this single registry.
+
+### Marker conventions
+
+Markers are sentinel comments in the host syntax of the target file:
+
+| File type | Start marker | End marker |
+|---|---|---|
+| Markdown | `<!-- <project>:<key>:start -->` | `<!-- <project>:<key>:end -->` |
+| Helm / Go templates | `{{/* <project>:<key>:start */}}` | `{{/* <project>:<key>:end */}}` |
+| YAML | `# <project>:<key>:start` | `# <project>:<key>:end` |
+| Haskell / PureScript / TypeScript | `-- <project>:<key>:start` (or `//`) | mirror |
+
+`<key>` is dotted, hierarchical, and unique across the registry — e.g.
+`command-registry`, `route-registry.web-portal`, `route-registry.harbor`.
+
+### Paired check and write commands
+
+Every generated section has **both** commands:
+
+- `tool docs check` (or `tool lint docs`) — read each rule, extract the slice
+  between markers in the on-disk file, exact-string-compare to `expected`.
+  Fail with the path, the offending marker key, and a remedy hint on
+  mismatch.
+- `tool docs generate` (or `tool docs check --write`, modeled on `gofmt -w`
+  and `prettier --write`) — read each rule, splice `expected` between the
+  markers in place, write the file back. Idempotent.
+
+Both commands consume the same `GeneratedSectionRule` list. Implementing
+only the validator is forbidden: a contributor who sees `"X has drifted"`
+with no way to fix it will eventually disable the lint rather than fight
+the loop.
+
+### Two categories of generation
+
+1. **Partial generation.** A slice inside a hand-maintained file, delimited
+   by markers. The surrounding prose is editable; the slice is not. Most
+   documentation artifacts fit this category.
+2. **Full generation.** The entire file is owned by code. No markers are
+   needed; the file is listed in a separate "tracked-generated paths"
+   registry that the `lint files` pass refuses to allow hand edits to.
+   Examples: cross-language type bridges (PureScript / TypeScript
+   contracts), proto-derived Haskell modules.
+
+A third, complementary registry — the `forbiddenPathRegistry` — names paths
+that must *not* exist. It uses the same data shape and the same
+error-message contract as this section. See [Forbidden Surfaces
+(Negative-Space Lint)](#forbidden-surfaces-negative-space-lint) below.
+
+### Required error-message contract
+
+When the validator fails, the message must include:
+
+1. The file path that drifted.
+2. The marker key (so the contributor knows which renderer is responsible).
+3. A literal remedy hint, e.g. ``Run `tool docs generate` to update.``
+
+Drift errors without a remedy hint are forbidden. The cost of writing the
+hint is trivial; the cost of contributors not knowing what to do is
+permanent friction.
+
+### Determinism requirements
+
+Renderers must be pure functions of typed input. They must not embed:
+
+- timestamps
+- random IDs
+- locale-dependent ordering (sort with an explicit comparator)
+- terminal-width-dependent wrapping
+- environment-dependent paths
+
+Non-deterministic renderers turn `lint docs` into a flaky check, which
+destroys the discipline. Golden tests already require this; the doctrine
+extends the requirement to all generators.
+
+### Extension protocol
+
+Adding a new generated section is a five-step change in a single PR:
+
+1. Define or extend the renderer in the relevant library module.
+2. Add markers to the target file.
+3. Register a new `GeneratedSectionRule`.
+4. Run `tool docs generate` to populate the section.
+5. Confirm `tool docs check` and `cabal test` pass.
+
+### Project-level documentation standards
+
+The doctrine cannot dictate every project's full standards document, but a
+project that adopts this discipline must include the following in its
+`documents/documentation_standards.md` (or equivalent canonical home):
+
+1. **A "Generated Sections" subsection** stating the marker convention
+   literally, with a worked example.
+2. **An authoritative list (or pointer) of files containing generated
+   regions.** Either inline-enumerate them, or point at the
+   `GeneratedSectionRule` table and require a lint check that the doc's
+   list and the table agree.
+3. **A "How to regenerate" instruction.** Name the writer command literally
+   (`tool docs generate`).
+4. **A `**Generated sections**:` per-file metadata field.** The metadata
+   block that already declares `**Status**` and `**Referenced by**` extends
+   with a `**Generated sections**: <key1>, <key2>` line (or `none`). Lint
+   enforces that any file with markers declares them in this field, and vice
+   versa.
+5. **A "How to add a new generated section" protocol** restating the
+   five-step extension protocol for documentation contributors.
+6. **A "Fully generated, do-not-hand-edit" rule** cross-referencing the
+   tracked-generated-paths registry and listing the paths under that regime.
+   Hand edits to these paths are a lint failure with no override.
+
+## Lint, Format, and Code-Quality Stack
+
+This section defines how formatting, linting, and per-artifact code-quality
+enforcement are structured.
+
+### Standard tools
+
+| Tool | Role |
+|---|---|
+| `fourmolu` | Haskell source formatter — canonical format with configurable column limit |
+| `hlint` | Haskell linter — code-smell detection, including project-defined nesting hints |
+| `cabal format` | Cabal manifest formatter — single canonical layout for `.cabal` |
+| `<project>.Lint.Files` | Trailing whitespace, final newline, blocked tracked-generated paths |
+| `<project>.Lint.Docs` | Governed-document metadata, relative links, generated-section drift |
+| `<project>.Lint.Proto` (if applicable) | Wire-format schema invariants |
+| `<project>.Lint.Chart` (if applicable) | Helm chart structural invariants |
+
+`fourmolu` is the formatter. The readability subsection below leans on its
+`column-limit` setting; substituting another formatter is not offered.
+
+### Tool bootstrap
+
+`fourmolu` and `hlint` are installed by the lint pass itself to a pinned-GHC
+build directory under `.build/<project>-style-tools/bin/`, via `ghcup run` +
+`cabal install`. The pinned GHC version is declared in source (single
+constant) and isolated from the project's main compiler so formatting is
+reproducible across contributors and CI. The `.cabal` file is round-tripped
+through `cabal format` via a temp file and compared for byte-equality (no
+in-place rewrite during check).
+
+### Pinned `fourmolu.yaml`
+
+A repo-root `fourmolu.yaml` is required and is part of the doctrine's
+reproducibility contract. Minimum settings:
+
+```yaml
+indentation: 2
+column-limit: 100
+function-arrows: leading
+comma-style: leading
+import-export-style: leading
+indent-wheres: false
+record-brace-space: true
+newlines-between-decls: 1
+haddock-style: single-line
+let-style: auto
+in-style: right-align
+unicode: never
+respectful: true
+```
+
+The exact values are negotiable per-project; what the doctrine fixes is that
+the file exists, is committed, and `column-limit` is set to a finite value.
+An unset or infinite column limit defeats the readability proxy described
+below.
+
+### CLI surface
+
+The lint stack is exposed as per-artifact subcommands plus an aggregate:
+
+```text
+tool lint files       — whitespace / newline / tracked-generated / forbidden paths
+tool lint docs        — governed docs, generated sections
+tool lint proto       — wire-format schemas       (when proto present)
+tool lint chart       — Helm chart invariants     (when chart present)
+tool lint haskell     — fourmolu --mode check + hlint + cabal format roundtrip
+tool lint all         — runs every lint above, plus `cabal build all`
+```
+
+### Forbidden Surfaces (Negative-Space Lint)
+
+The lint stack enforces both that required artifacts are correct *and* that
+parallel-workflow surfaces are absent. Drift *away* from the canonical
+entrypoints is itself a lint failure.
+
+A `forbiddenPathRegistry :: [PathPattern]` is the single source of truth for
+disallowed paths. Same shape and discipline as the tracked-generated-paths
+registry above: a Haskell list, committed to source, consumed by
+`tool lint files`.
+
+`tool lint files` extends its existing duties (trailing whitespace, final
+newline, tracked-generated paths) with one more: refuse to allow any file
+matching a forbidden pattern.
+
+Default forbidden patterns every project rejects unless explicitly opted out:
+
+- `.github/workflows/` — CI lives in `tool lint all` and `cabal test`, not
+  in a parallel CI surface. Projects that publish via GitHub Actions opt in
+  by registering a narrow exception (specific workflow files), not by
+  removing the default.
+- `.husky/`, `.githooks/`, `.pre-commit-config.yaml`, `pre-commit-*.yaml`
+  — Git hooks are not the canonical lint surface. Style enforcement lives
+  in `tool lint haskell` and the `<project>-haskell-style` test-suite.
+- Project-level `Makefile`, `justfile`, `Taskfile.yml` that duplicate
+  commands the tool already exposes. A wrapper that adds nothing is a drift
+  vector.
+
+**Error-message contract.** On a forbidden-path hit, the failure must
+include:
+
+1. The file path that matched.
+2. The registry key (the pattern that matched).
+3. A remedy hint of the form ``"delete this path; the canonical equivalent
+   is `tool <command>`"``.
+
+### Paired check and write semantics
+
+Every check command must have a `--write` counterpart (or sibling command)
+that fixes what can be auto-fixed:
+
+- `tool lint files --write` strips trailing whitespace, adds final newlines.
+- `tool lint docs --write` regenerates marker-delimited sections (equivalent
+  to `tool docs generate`).
+- `tool lint haskell --write` runs `fourmolu --mode inplace` and `cabal
+  format` in place. hlint hints stay advisory; the contributor is
+  responsible for restructuring.
+
+### Style as a Cabal test-suite
+
+The Haskell-style check is exposed both as the CLI command above and as a
+separate `test-suite <project>-haskell-style` with `type:
+exitcode-stdio-1.0`. `cabal test` runs it as part of the normal test
+surface, so style enforcement does not require a separate developer
+workflow, a Makefile, or a pre-commit hook. The CLI command and the
+test-suite call the same Haskell function.
+
+### Aggregate dispatch
+
+- `tool test lint` (or `tool lint all`) runs the full lint surface plus
+  `cabal build all`.
+- `tool test all` includes `tool test lint` as its first step before running
+  `cabal test`.
+
+### Readability and nesting
+
+> Avoid nested case / if / lambda chains that push structural keywords far
+> to the right. Prefer extracting helper bindings, pattern-matching at the
+> function head, using guards, or returning early via `let` / `where`. Two
+> levels of `case` is a code smell worth examining; three or more should be
+> refactored.
+
+Automated enforcement is partial:
+
+1. **Column limit (primary lever).** `fourmolu.yaml` sets
+   `column-limit: 100`. A four-deep `case` typically cannot wrap to satisfy
+   this limit without becoming visually painful, which pressures authors to
+   refactor.
+2. **Existing hlint hints (free wins).** `Use guards`, `Redundant case`,
+   `Use let`, `Eta reduce`, `Avoid lambda`, `Use bracket`, `Use when`,
+   `Use unless`. Run hlint in `--with-group=default` plus
+   `--with-group=extra`.
+3. **Project-specific hlint custom warnings** in `.hlint.yaml` accumulate
+   warning rules for nesting anti-patterns observed in code review.
+4. **Code-review checklist.** *"Does any function exceed two levels of
+   nested case/if? If so, can it be flattened?"*
+
+The doctrine does not include strict AST-based nesting enforcement.
+
 ## Cross-References
 
 - [Haskell Code Guide](./haskell_code_guide.md)

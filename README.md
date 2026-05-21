@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md, HASKELL_CLI_TOOL.md
+**Referenced by**: CLAUDE.md, AGENTS.md, DEVELOPMENT_PLAN/README.md
 **Generated sections**: none
 
 > **Purpose**: Project overview, operator guide, installation guide, and documentation index for
@@ -20,10 +20,18 @@ validation environments.
 
 - The authoritative target architecture, sprint status, and cleanup ownership live in
   [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).
-- The authoritative CLI doctrine — command topology, generated artifacts, daemon lifecycle,
-  lint discipline, and the testing stack — lives in
-  [HASKELL_CLI_TOOL.md](./HASKELL_CLI_TOOL.md). Phase documents in `DEVELOPMENT_PLAN/` cite
-  doctrine sections by name when scheduling adoption work.
+- The authoritative CLI doctrine is distributed across per-surface engineering docs under
+  [documents/engineering/](./documents/engineering/README.md): command topology,
+  progressive introspection, and reconcilers in `cli_command_surface.md`; Plan / Apply
+  and GADT-indexed state machines in `pure_fp_standards.md`; project structure,
+  subprocesses, smart constructors, error handling, capability classes, retry policy, and
+  application environment in `haskell_code_guide.md`; generated artifacts and lint stack
+  in `code_quality.md`; output rules and at-least-once event processing in
+  `streaming_doctrine.md`; prerequisites as typed effects in `prerequisite_doctrine.md`;
+  daemon lifecycle in `distributed_gateway_architecture.md`; testing doctrine in
+  `unit_testing_policy.md`; toolchain pinning in `dependency_management.md`. Phase
+  documents in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling
+  adoption work.
 - The repository is Haskell-only on the supported path: the public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
@@ -42,8 +50,16 @@ validation environments.
   ownership does not use a root Pulumi project. The test harness is the exclusive owner of every
   AWS resource any `prodbox` flow may create or destroy; the authoritative inventory and
   per-resource lifecycle class (auto-managed per-run stacks vs long-lived cross-substrate shared
-  infrastructure) live in
+  infrastructure vs K8s-controller-created cluster-tagged AWS) live in
   [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](./DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
+- Lifecycle commands enforce leak-safety by refusing to proceed when residue is detected and by
+  sweeping for cluster-tagged AWS resources after every destructive run; the consolidated doctrine
+  lives in
+  [documents/engineering/lifecycle_reconciliation_doctrine.md](./documents/engineering/lifecycle_reconciliation_doctrine.md).
+  `prodbox rke2 delete` opens with a refuse-path on live per-run Pulumi stacks; `--cascade` is the
+  positive-framed "clean teardown" path that orchestrates K8s drain + per-run destroys + cluster
+  uninstall + postflight tag sweep. `prodbox nuke` is the operator-only total-teardown path that
+  also destroys long-lived shared infrastructure.
 - This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
   stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
 - The current shipped edge workloads share the single public hostname
@@ -300,7 +316,7 @@ Validate the repository config:
 |------|----------|----------|
 | Config | `config setup`, `config show`, `config validate` | You need to create, inspect, or validate `prodbox-config.dhall` |
 | Host checks | `host ensure-tools`, `host check-ports`, `host firewall`, `host info`, `host public-edge` | You need to verify the host runtime or diagnose the public edge and certificate state |
-| Local cluster lifecycle | `rke2 reconcile`, `rke2 status`, `rke2 start`, `rke2 stop`, `rke2 restart`, `rke2 logs`, `rke2 delete --yes` | You need to create, reconcile, inspect, or remove the local RKE2 environment |
+| Local cluster lifecycle | `rke2 reconcile`, `rke2 status`, `rke2 start`, `rke2 stop`, `rke2 restart`, `rke2 logs`, `rke2 delete --yes`, `rke2 delete --cascade`, `nuke` | You need to create, reconcile, inspect, or remove the local RKE2 environment. `--cascade` is the leak-safe "wipe and rebuild" path that also destroys per-run Pulumi stacks and drains K8s-controller-created AWS resources; `prodbox nuke` is the operator-only total-teardown path that also destroys long-lived shared infrastructure. |
 | Chart lifecycle | `charts list`, `charts status`, `charts deploy`, `charts delete --yes` | You need to manage the supported `gateway`, `keycloak`, `vscode`, `api`, or `websocket` chart stacks |
 | Kubernetes helpers | `k8s health`, `k8s wait`, `k8s logs` | You need cluster or workload diagnostics without dropping into raw `kubectl` |
 | Gateway operations | `gateway config-gen`, `gateway start --config <path>`, `gateway status --config <path>` | You need to generate a gateway config, run a daemon manually, or inspect daemon state |
@@ -517,9 +533,10 @@ prodbox/
 ## Documentation
 
 - [Development Plan](./DEVELOPMENT_PLAN/README.md)
-- [Haskell CLI Doctrine](./HASKELL_CLI_TOOL.md)
+- [Engineering Docs Index](./documents/engineering/README.md)
 - [Documentation Standards](./documents/documentation_standards.md)
 - [Engineering Docs Index](./documents/engineering/README.md)
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)
 - [Code Quality Doctrine](./documents/engineering/code_quality.md)
+- [Lifecycle Reconciliation Doctrine](./documents/engineering/lifecycle_reconciliation_doctrine.md)
 - [Unit Testing Policy](./documents/engineering/unit_testing_policy.md)

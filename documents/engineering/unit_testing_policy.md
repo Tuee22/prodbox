@@ -9,6 +9,7 @@ documents/engineering/code_quality.md, documents/engineering/distributed_gateway
 documents/engineering/envoy_gateway_edge_doctrine.md,
 documents/engineering/helm_chart_platform_doctrine.md,
 documents/engineering/integration_fixture_doctrine.md,
+documents/engineering/lifecycle_reconciliation_doctrine.md,
 documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
@@ -62,7 +63,7 @@ In the current repository:
 
 Daemon lifecycle and golden treatment of health-endpoint responses are owned by
 Sprints `2.10`, `2.14`, and `2.16` per
-[../../HASKELL_CLI_TOOL.md → Daemon Lifecycle Tests](../../HASKELL_CLI_TOOL.md) §1618–1620
+[Daemon Lifecycle Tests](../../documents/engineering/README.md)
 and `Test Categories → Daemon Lifecycle Tests` §2252–2254. Filesystem readiness markers,
 `sd_notify(READY=1)`, and `threadDelay`-based readiness probes are explicitly forbidden;
 `/readyz` is the only supported readiness signal, and lifecycle waits use the shared retry helper
@@ -214,6 +215,31 @@ build-plus-suite contract:
 
 Named real-world validation commands provide operational proof rather than synthetic line coverage.
 
+## 7A. Destroy-Path Validation
+
+Every destructive lifecycle command carries explicit unit and integration test
+obligations.
+
+- **Unit tests of preflight predicates.** The `Precondition` library at
+  `src/Prodbox/Lifecycle/Preconditions.hs` (planned in Sprint `4.11`) must be
+  pure-testable: each predicate's diff and rendering logic is exercised in
+  `test/unit/` with synthetic stack snapshots, no AWS, no kubectl. See
+  [lifecycle_reconciliation_doctrine.md → §4 Predicate Library Inventory](./lifecycle_reconciliation_doctrine.md).
+- **Postflight tag-sweep assertion.** Every destructive lifecycle integration
+  test (`prodbox rke2 delete`, `prodbox aws teardown`, `prodbox pulumi
+  <stack>-destroy`, `prodbox nuke`) must assert that the postflight tag sweep
+  returns empty after success. A non-empty sweep is a hard test failure with
+  the leak list in the failure record.
+- **`--dry-run` golden snapshots.** `prodbox rke2 delete --dry-run`,
+  `prodbox rke2 delete --cascade --dry-run`, and `prodbox nuke --dry-run`
+  outputs are captured as golden tests in `test/integration/CliSuite.hs` so
+  changes to the plan rendering require an explicit golden update.
+- **`prodbox nuke` opt-in suite.** Because `prodbox nuke` destroys long-lived
+  shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend`
+  bucket), its end-to-end integration test is **not** part of the default
+  canonical suite. It is gated behind an explicit nuke-validation suite
+  invocation; CI runs it only on explicit operator request.
+
 ## 8. Intent Ownership
 
 This SSoT co-owns the public testing doctrine.
@@ -223,6 +249,150 @@ This SSoT co-owns the public testing doctrine.
 - Linked dependents: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
   `src/Prodbox/TestValidation.hs`, `test/unit/Main.hs`, `test/integration/Main.hs`,
   `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`.
+
+## Testing Doctrine
+
+The canonical developer-facing test command is `prodbox test all`. The
+canonical package-level test command is `cabal test`. `prodbox test all`
+delegates to `cabal test` via subprocess execution. There must not be
+multiple independent test systems; the CLI-level test command is a
+convenience and orchestration layer over Cabal rather than a replacement.
+
+The complete test suite includes pure logic tests, parser tests, property
+tests, golden tests, local integration tests, Pulumi-orchestrated
+infrastructure tests, and lint and style checks (per-artifact lints plus
+the Haskell-style suite). There is no separate developer workflow for
+cloud-backed tests.
+
+Lint and style checks are part of the canonical test suite rather than a
+parallel CI-only workflow. The `<project>-haskell-style` `test-suite`
+stanza makes `cabal test` self-sufficient for style enforcement, so
+contributors and CI run the same command and fail in the same way.
+
+### Standard Testing Stack
+
+```text
+Cabal
++ exitcode-stdio-1.0
++ tasty
++ tasty-hunit
++ tasty-quickcheck
++ tasty-golden
++ typed-process
++ temporary
++ Pulumi
++ fourmolu
++ hlint
++ cabal format
+```
+
+Responsibilities:
+
+| Component | Responsibility |
+|---|---|
+| Cabal | Build and execute test suites |
+| exitcode-stdio-1.0 | Standard test process interface |
+| tasty | Unified test runner and organization |
+| tasty-hunit | Assertions |
+| tasty-quickcheck | Property testing |
+| tasty-golden | Golden/snapshot testing |
+| typed-process | CLI subprocess execution |
+| temporary | Temporary directories/files |
+| Pulumi | Infrastructure orchestration and teardown |
+| fourmolu | Haskell source formatter |
+| hlint | Haskell linter |
+| cabal format | Cabal manifest formatter |
+
+### Test Categories
+
+#### Pure Logic Tests
+
+Pure business logic should be tested directly, avoiding IO whenever
+possible. Targets: configuration merging, command planning, rendering
+logic, validation rules, serialization behavior.
+
+#### Parser Tests
+
+Parser tests verify `argv -> Command ADT`. The parser layer is real
+application logic and should be tested explicitly. Use `execParserPure`
+or equivalent parser-level APIs rather than spawning subprocesses.
+
+#### Property Tests
+
+Use `tasty-quickcheck` for property testing. Appropriate for parsers,
+serialization, normalization, transformations, formatting invariants.
+Example properties: `decode . encode == id`, render is deterministic,
+parser roundtrips.
+
+#### Golden Tests
+
+Golden tests compare current output against committed reference output.
+Especially valuable for CLI tooling because CLIs generate large amounts of
+structured text. Typical targets: `tool --help`, `tool users --help`,
+`tool commands --tree`, `tool commands --json`, generated Markdown docs,
+generated manpages.
+
+Golden outputs must be deterministic. Avoid embedding timestamps, random
+IDs, nondeterministic ordering, or terminal-width-dependent wrapping.
+
+#### Integration Tests
+
+Integration tests execute the real CLI binary as a subprocess. Use
+`typed-process` for subprocess management. Typical targets: stdin/stdout
+behavior, filesystem interactions, config loading, subprocess execution,
+exit codes, JSON output behavior.
+
+#### Pulumi-Orchestrated Infrastructure Tests
+
+Infrastructure tests provision real infrastructure using Pulumi, execute
+tests against deployed systems, then destroy all resources. Pulumi owns
+infrastructure lifecycle management. These tests must use isolated
+ephemeral stacks, generate unique stack names per run, aggressively tag
+all infrastructure, always perform teardown, and use `bracket`, `finally`,
+or equivalent structured cleanup.
+
+#### Daemon Lifecycle Tests
+
+When the binary hosts a long-running daemon, lifecycle tests live in their
+own `test-suite <project>-daemon-lifecycle` stanza. Each test spawns the
+daemon as a subprocess via `typed-process`, polls `/readyz` until ready,
+exercises the protocol surface, sends SIGTERM, asserts graceful shutdown
+within the configured drain deadline, and asserts exit code 0.
+
+Health-endpoint response shapes (`/healthz`, `/readyz`, `/metrics`) belong
+in the golden-test category. Shutdown signal tests assert that a single
+SIGTERM begins drain and a second SIGTERM (or timeout) forces exit.
+
+Forbidden test patterns: `terminateProcess` without first attempting
+graceful shutdown, `threadDelay`-based readiness probes, polling for
+filesystem readiness markers when `/readyz` exists.
+
+See
+[distributed_gateway_architecture.md → Daemon Lifecycle](./distributed_gateway_architecture.md#daemon-lifecycle)
+for the lifecycle these tests validate.
+
+### Test Organization
+
+Each test tier is a separate Cabal `test-suite` stanza with
+`type: exitcode-stdio-1.0`:
+
+```text
+test-suite <project>-unit
+test-suite <project>-integration
+test-suite <project>-haskell-style
+test-suite <project>-daemon-lifecycle  (when the binary hosts a daemon)
+test-suite <project>-pulumi            (when infrastructure tests apply)
+```
+
+`cabal test` runs every stanza. A single `tasty` tree spanning all tiers
+is forbidden: separate stanzas give Cabal-native parallelism, let CI and
+developers target one tier (`cabal test <project>-unit`), and isolate
+dependency creep so heavy integration deps do not leak into the unit
+suite.
+
+Each stanza's `main-is` is a small `Main.hs` that calls into a library
+module where the actual tests live; tasty (or HUnit / QuickCheck used
+directly) builds the in-stanza test tree.
 
 ## Cross-References
 

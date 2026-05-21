@@ -7,7 +7,7 @@
 [substrates.md](substrates.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Switch Keycloak from the current hardcoded-`emailVerified` state to operator-invited,
 > email-verified authentication. Use AWS SES as the email transport, with SES receive rules + S3
@@ -157,8 +157,7 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
   `prodbox pulumi aws-ses-resources` / `aws-ses-destroy` as the provisioning surface
   for the SES sending identity, receive subdomain + MX, receive rule set + S3 capture
   bucket, and SMTP IAM user.
-- [documents/engineering/aws_integration_environment_doctrine.md](../../documents/engineering/aws_integration_environment_doctrine.md)
-  § 6.4 records the cross-substrate shared SES infrastructure doctrine and names
+- [documents/engineering/aws_integration_environment_doctrine.md](../../documents/engineering/aws_integration_environment_doctrine.md).4 records the cross-substrate shared SES infrastructure doctrine and names
   `src/Prodbox/Infra/AwsSesStack.hs` as the exclusive provisioning surface.
 - Validated with `prodbox check-code` (exit 0), `prodbox lint docs` (exit 0),
   `prodbox docs check` (exit 0), and `prodbox test unit` (300/300) on May 18, 2026.

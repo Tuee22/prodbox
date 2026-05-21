@@ -137,6 +137,371 @@ workflow or hook surfaces that would violate that policy.
 See [Code Quality Doctrine](./code_quality.md#2a-development-tooling-policy) for the public policy
 statement.
 
+## Project Structure
+
+Prefer a library-first project layout:
+
+```text
+my-tool/
+  app/Main.hs
+  src/MyTool/App.hs
+  src/MyTool/CLI.hs
+  src/MyTool/Commands.hs
+  src/MyTool/Config.hs
+  src/MyTool/Output.hs
+  src/MyTool/Error.hs
+  test/
+```
+
+`Main.hs` should be small:
+
+```haskell
+module Main where
+
+import MyTool.App qualified as App
+
+main :: IO ()
+main = App.main
+```
+
+Most logic should live in `src/`, not `app/`, so it can be imported by tests and reused by other programs.
+
+The prescribed module layout for a CLI app:
+
+```text
+MyTool.CLI.Spec       -- command metadata
+MyTool.CLI.Parser     -- optparse-applicative backend
+MyTool.CLI.Docs       -- Markdown/manpage generation
+MyTool.CLI.Tree       -- command tree rendering
+MyTool.CLI.Json       -- JSON command schema
+MyTool.Commands       -- command ADTs
+MyTool.Subprocess     -- typed subprocess values + interpreter
+MyTool.App            -- application runtime
+```
+
+## Subprocesses as Typed Values
+
+Subprocess invocations are pure values, not IO calls scattered through command
+runners. Build them in pure code, render them in pure code, and hand them to an
+interpreter only at the boundary.
+
+The prescribed shape:
+
+```haskell
+data Subprocess = Subprocess
+  { subprocessPath             :: FilePath
+  , subprocessArguments        :: [Text]
+  , subprocessEnvironment      :: Maybe [(Text, Text)]
+  , subprocessWorkingDirectory :: Maybe FilePath
+  }
+  deriving stock (Eq, Show)
+
+renderSubprocess :: Subprocess -> Text  -- pure; for logs, --dry-run, golden tests
+```
+
+The interpreter API:
+
+```haskell
+runStreaming :: Subprocess -> IO (Either AppError ExitCode)
+capture      :: Subprocess -> IO (Either AppError ProcessOutput)
+```
+
+Why this matters:
+
+- Subprocess sequences become deterministic golden-test targets.
+- `--dry-run` is trivial: render and print the planned subprocesses, exit 0.
+- The type system rules out "forgot to set cwd" or "leaked stale env" bugs at
+  the call site.
+- Subprocesses compose as plain data — a `[Subprocess]` is a first-class plan
+  (see [Plan / Apply](./pure_fp_standards.md#plan--apply)).
+
+**Forbidden patterns:**
+
+- Calling `callProcess`, `readCreateProcess`, `System.Process` constructors, or
+  `typed-process` smart constructors directly from a command runner. The two
+  interpreter functions above are the only IO boundary for subprocess
+  execution.
+- Resolving paths, expanding env vars, or branching on the host inside the
+  interpreter. The builder is total; the interpreter executes what it's given.
+- Returning subprocess output through `IORef`, `MVar`, or other shared mutable
+  state instead of the typed `ProcessOutput` record.
+
+## Smart Constructors for Paired Resources
+
+When a system creates related resources that must stay consistent (e.g., a Kubernetes
+PersistentVolume and its PersistentVolumeClaim, a database user and its grants, a queue
+and its dead-letter queue), derive both resources from a single source of truth via a
+smart constructor. The smart constructor guarantees consistency by construction — there
+is no code path that can create one resource without creating its pair.
+
+```haskell
+-- | Paired PV + PVC that are guaranteed to bind
+data StorageBinding = StorageBinding
+    { bindingPV :: PlannedPV
+    , bindingPVC :: ExpectedPVC
+    }
+    deriving stock (Show, Eq)
+
+-- | Smart constructor: both resources derived from same inputs
+mkStorageBinding ::
+    Text -> Text -> Text -> Text -> Int -> Text -> Text -> [Text] ->
+    StorageBinding
+mkStorageBinding namespace release workload claimTemplate ordinal
+                 storageClass capacity accessModes =
+    let
+        baseName = T.intercalate "-"
+            [claimTemplate, workload, T.pack (show ordinal)]
+        pvcName = boundedResourceName namespace release baseName
+        pvName = "pv-" <> hashSuffix (namespace <> "/" <> pvcName)
+    in
+        StorageBinding
+            { bindingPV = PlannedPV { pvName = pvName, ..., pvClaimRef = PVClaimRef pvcName namespace }
+            , bindingPVC = ExpectedPVC { pvcName = pvcName, pvcNamespace = namespace, ... }
+            }
+```
+
+### Naming helpers for platform constraints
+
+When resources have naming constraints (DNS-1123 labels, maximum lengths, character
+restrictions), centralize enforcement in helper functions:
+
+```haskell
+-- | Enforce DNS-1123 label constraints (max 63 chars)
+boundedResourceName :: Text -> Text -> Text -> Text
+boundedResourceName namespace release base =
+    let full = T.intercalate "-" [release, base]
+        maxLen = 63
+    in
+        if T.length full <= maxLen
+            then sanitizeResourceName full
+            else
+                let suffix = hashSuffix full
+                    truncated = T.take (maxLen - 1 - T.length suffix) full
+                in sanitizeResourceName (truncated <> "-" <> suffix)
+
+sanitizeResourceName :: Text -> Text
+sanitizeResourceName = T.map sanitizeChar . T.toLower
+  where
+    sanitizeChar c
+        | c >= 'a' && c <= 'z' = c
+        | c >= '0' && c <= '9' = c
+        | c == '-' = c
+        | otherwise = '-'
+
+hashSuffix :: Text -> Text
+hashSuffix input = T.take 8 . T.pack . show $
+    (hash (BS8.pack (T.unpack input)) :: Digest SHA256)
+```
+
+**Forbidden patterns:**
+
+- Constructing paired resources independently in separate code paths.
+- Hardcoding resource names without platform constraint enforcement.
+- Manual name synchronization between related resources.
+- Length truncation without hash suffixes (collisions).
+
+## Error Handling
+
+Define domain-level errors as ADTs:
+
+```haskell
+data AppError
+  = ConfigMissing FilePath
+  | InvalidInput Text
+  | UserNotFound Text
+  | NetworkFailed Text
+  deriving stock (Show, Eq)
+```
+
+Render errors only at the CLI boundary:
+
+```haskell
+renderError :: AppError -> Text
+renderError = \case
+  ConfigMissing path -> "config file not found: " <> toText path
+  InvalidInput msg   -> "invalid input: " <> msg
+  UserNotFound name  -> "user not found: " <> name
+  NetworkFailed msg  -> "network error: " <> msg
+```
+
+Keep the core logic free of:
+
+- `putStrLn`
+- `print`
+- `exitFailure`
+- direct terminal formatting
+
+Daemons require an additional axis: errors carry an `ErrorKind` of `Recoverable`
+or `Fatal`. Worker loops handle `Recoverable` by logging at warn level and
+retrying with bounded backoff; `Fatal` propagates to the top-level supervisor,
+which begins drain. See
+[distributed_gateway_architecture.md → Daemon Lifecycle → Error handling: recoverable vs fatal](./distributed_gateway_architecture.md#daemon-lifecycle).
+
+## Capability Classes and Service Errors
+
+Subsystem boundaries (object storage, cache, database, message queue) are abstracted
+through capability classes. Each subsystem has its own error newtype wrapping a unified
+`ServiceError`, and a conversion typeclass enables generic handling (retry logic, unified
+reporting) without coupling.
+
+### Unified service error type
+
+```haskell
+data ServiceError
+    = SEConnectionFailed Text
+    | SETimeout Text
+    | SENotFound Text
+    | SEPermissionDenied Text
+    | SEConflict Text
+    | SEInternalError Text
+    deriving stock (Show, Eq)
+
+newtype MinIOError = MinIOError { unMinIOError :: ServiceError }
+    deriving stock (Show, Eq)
+
+newtype RedisError = RedisError { unRedisError :: ServiceError }
+    deriving stock (Show, Eq)
+
+newtype PgError = PgError { unPgError :: ServiceError }
+    deriving stock (Show, Eq)
+```
+
+### Conversion typeclass
+
+```haskell
+class AsServiceError e where
+    toServiceError :: e -> ServiceError
+    fromServiceError :: ServiceError -> e
+
+instance AsServiceError MinIOError where
+    toServiceError = unMinIOError
+    fromServiceError = MinIOError
+```
+
+### Capability classes
+
+```haskell
+class (Monad m) => HasMinIO m where
+    minioPutObject ::
+        BucketName -> ObjectKey -> ByteString -> m (Either MinIOError ())
+    minioGetObject ::
+        BucketName -> ObjectKey -> m (Either MinIOError (Maybe ByteString))
+    minioDeleteObject ::
+        BucketName -> ObjectKey -> m (Either MinIOError ())
+
+class (Monad m) => HasRedis m where
+    redisGet :: RedisKey -> m (Either RedisError (Maybe ByteString))
+    redisSet :: RedisKey -> ByteString -> TTLSeconds -> m (Either RedisError ())
+    redisDelete :: RedisKey -> m (Either RedisError ())
+```
+
+### Generic retry across service errors
+
+```haskell
+retryServiceAction ::
+    (AsServiceError e, MonadIO m) =>
+    RetryPolicy ->
+    m (Either e a) ->
+    m (Either e a)
+retryServiceAction policy action = go 1
+  where
+    go attempt
+        | attempt > retryMaxAttempts policy = action
+        | otherwise = do
+            result <- action
+            case result of
+                Right a -> pure (Right a)
+                Left e
+                    | serviceErrorRetryable (toServiceError e) -> do
+                        liftIO $ threadDelay (retryDelayMicros policy attempt)
+                        go (attempt + 1)
+                    | otherwise -> pure (Left e)
+```
+
+The `AsServiceError` constraint allows a single retry function to work with `MinIOError`,
+`RedisError`, `PgError`, or any future subsystem error type.
+
+**Forbidden patterns:**
+
+- Stringly-typed errors (`Left "connection failed"`).
+- Bare `SomeException` in return types.
+- Subsystem-specific retry logic duplicated across call sites.
+- Service errors that do not implement `AsServiceError`.
+
+## Retry Policy as First-Class Values
+
+Retry policies are explicit typed values, not hardcoded loops with magic numbers. The
+policy definition is separate from error classification.
+
+```haskell
+data RetryPolicy = RetryPolicy
+    { retryBaseDelayMicros :: Int
+    , retryMaxDelayMicros :: Int
+    , retryMaxAttempts :: Int
+    }
+    deriving stock (Show, Eq)
+
+defaultRetryPolicy :: RetryPolicy
+defaultRetryPolicy = RetryPolicy
+    { retryBaseDelayMicros = 10_000
+    , retryMaxDelayMicros = 1_000_000
+    , retryMaxAttempts = 5
+    }
+
+retryDelayMicros :: RetryPolicy -> Int -> Int
+retryDelayMicros policy attemptNumber =
+    fromInteger $
+        min (toInteger (retryMaxDelayMicros policy))
+            (toInteger (retryBaseDelayMicros policy) *
+             ((2 :: Integer) ^ max 0 (attemptNumber - 1)))
+
+serviceErrorRetryable :: ServiceError -> Bool
+serviceErrorRetryable = \case
+    SEConnectionFailed _ -> True
+    SETimeout _ -> True
+    SEConflict _ -> True
+    SEInternalError _ -> True
+    SENotFound _ -> False
+    SEPermissionDenied _ -> False
+```
+
+Default policy delay sequence: `[10000, 20000, 40000, 80000, 160000]` (10 ms → 160 ms).
+
+**Forbidden patterns:**
+
+- Hardcoded retry counts or delays in call sites.
+- Retry logic without exponential backoff.
+- Retrying non-retryable errors (not found, permission denied).
+- Magic numbers for delay or attempt limits.
+
+## Application Environment
+
+Use an `Env` record threaded via `ReaderT Env IO`:
+
+```haskell
+data Env = Env
+  { envConfig :: Config
+  , envLog    :: LogFn
+  }
+
+newtype App a = App
+  { unApp :: ReaderT Env IO a
+  }
+  deriving newtype
+    ( Functor
+    , Applicative
+    , Monad
+    , MonadIO
+    , MonadReader Env
+    )
+```
+
+This keeps configuration, logging, and dependencies organized.
+
+Daemons need a richer `Env` (resource handles, structured logger, metrics
+registry, shutdown signal, hot-reloadable live config). See
+[distributed_gateway_architecture.md → Daemon Lifecycle → The Env record grows](./distributed_gateway_architecture.md#daemon-lifecycle).
+
 ## Cross-References
 
 - [Code Quality Doctrine](./code_quality.md)

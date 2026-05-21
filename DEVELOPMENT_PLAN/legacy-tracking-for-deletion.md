@@ -14,7 +14,7 @@
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Record completed removal work and any surviving compatibility helper, duplicate
 > surface, or tooling residue that is slated for deletion on the supported Haskell path.

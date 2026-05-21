@@ -2,7 +2,7 @@
 
 **Status**: Reference only
 **Supersedes**: N/A
-**Referenced by**: README.md, HASKELL_CLI_TOOL.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
+**Referenced by**: README.md, documents/engineering/README.md, documents/documentation_standards.md, documents/engineering/dependency_management.md, documents/engineering/pure_fp_standards.md, documents/engineering/unit_testing_policy.md
 **Generated sections**: none
 
 > **Purpose**: Guide for Claude Code development on the current `prodbox` worktree baseline.
@@ -11,10 +11,17 @@
 
 - `DEVELOPMENT_PLAN/README.md` is the authoritative live tracker for target architecture, status,
   blockers, and cleanup ownership.
-- [HASKELL_CLI_TOOL.md](HASKELL_CLI_TOOL.md) is the authoritative CLI doctrine — command
-  topology, generated artifacts, daemon lifecycle, lint discipline, and the testing stack.
-  Phase documents in `DEVELOPMENT_PLAN/` cite doctrine sections by name when scheduling
-  adoption work.
+- The authoritative CLI doctrine is distributed across per-surface engineering docs under
+  [documents/engineering/](./documents/engineering/README.md): command topology, progressive
+  introspection, and reconcilers in `cli_command_surface.md`; Plan / Apply and GADT-indexed
+  state machines in `pure_fp_standards.md`; subprocesses, smart constructors, error
+  handling, capability classes, retry policy, and application environment in
+  `haskell_code_guide.md`; generated artifacts and lint stack in `code_quality.md`; output
+  rules and at-least-once event processing in `streaming_doctrine.md`; prerequisites as
+  typed effects in `prerequisite_doctrine.md`; daemon lifecycle in
+  `distributed_gateway_architecture.md`; testing doctrine in `unit_testing_policy.md`;
+  toolchain pinning in `dependency_management.md`. Phase documents in `DEVELOPMENT_PLAN/`
+  cite doctrine sections by name when scheduling adoption work.
 - The repository is Haskell-only on the supported path. The public CLI, lifecycle runtime, Pulumi
   orchestration, gateway runtime, chart platform, onboarding flow, AWS administration commands,
   and test harness all live under `app/`, `src/Prodbox/`, `test/`, `prodbox.cabal`,
@@ -43,7 +50,19 @@ local-cluster lifecycle on this host.
 - `prodbox rke2 reconcile` is the canonical idempotent reconcile entrypoint. Running it on this
   machine — including installing RKE2 if it is absent, or reconciling the existing cluster — is
   the supported, expected operation, not an unauthorized state change.
-- `prodbox rke2 delete --yes` is the canonical teardown.
+- `prodbox rke2 delete --yes` is the canonical teardown. By default it refuses if any per-run
+  Pulumi stack (`aws-eks`, `aws-eks-subzone`, `aws-test`) reports live resources, naming each
+  stack and the canonical destroy command. `--cascade` is the recommended "clean teardown" path
+  for wipe-and-rebuild cycles: K8s drain + per-run destroys + cluster uninstall + postflight
+  tag sweep, all in one atomic operator action. `aws-ses` is never touched by `rke2 delete`
+  regardless of flag — its Pulumi state lives in the long-lived
+  `pulumi_state_backend` S3 bucket (independent of cluster lifetime). See
+  [documents/engineering/lifecycle_reconciliation_doctrine.md](documents/engineering/lifecycle_reconciliation_doctrine.md).
+- `prodbox nuke` is the operator-only total-teardown command — the only sanctioned path to
+  destroy long-lived shared infrastructure transitively (`aws-ses`, the
+  `pulumi_state_backend` bucket). TTY-only; refuses non-interactive contexts; requires the
+  typed confirmation literal `NUKE EVERYTHING`; no `--yes` shorthand. Automation contexts must
+  compose the canonical commands individually instead.
 - `prodbox test all` exercises the full lifecycle (install, validate, reconcile, sometimes
   delete) on this host. It is **expected to start RKE2, etcd, kubelet, containerd, and Pulumi
   flows on this machine**. Do not treat the resulting processes or the running cluster as a
@@ -140,6 +159,8 @@ prompts, you have picked the wrong command, not hit a blocker.
 | Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
 | Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
 | Tear down operational `aws.*` + per-run stacks | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
+| Wipe-and-rebuild the local cluster (leak-safe) | `prodbox rke2 delete --cascade` (already non-interactive) | same |
+| Total teardown including long-lived shared infrastructure | (no automation alias — compose `prodbox pulumi aws-ses-destroy --yes` + `prodbox aws teardown` + `prodbox rke2 delete --cascade` + long-lived state-bucket cleanup individually) | `prodbox nuke` |
 | Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox pulumi <stack>-resources` |
 | Destroy a Pulumi stack | `prodbox pulumi <stack>-destroy --yes` (already non-interactive) | same |
 | Author repo config | edit `prodbox-config.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
@@ -159,6 +180,16 @@ run `prodbox test all --substrate aws` (or the targeted integration
 command) — the harness handles credentials non-interactively. The
 interactive command will refuse with `exit 1` and the message names the
 automation equivalent.
+
+**Common mistake**: attempting to invoke `prodbox nuke` from automation
+(CI, agents, scripted workflows). The command refuses non-TTY by design;
+it exists only as an operator-driven total-teardown entrypoint that
+requires the typed confirmation literal `NUKE EVERYTHING`. Automation
+contexts must instead compose the canonical commands individually:
+`prodbox pulumi aws-ses-destroy --yes`, `prodbox aws teardown`,
+`prodbox rke2 delete --cascade`, and (if the long-lived
+`pulumi_state_backend` bucket should also be destroyed) the explicit
+S3 bucket-destroy step.
 
 ## Substrate Equivalence
 
@@ -256,7 +287,7 @@ contracts.
 ## Documentation
 
 - [Development Plan](./DEVELOPMENT_PLAN/README.md)
-- [Haskell CLI Doctrine](./HASKELL_CLI_TOOL.md)
+- [Engineering Docs Index](./documents/engineering/README.md)
 - [Documentation Standards](./documents/documentation_standards.md)
 - [Engineering Docs Index](./documents/engineering/README.md)
 - [CLI Command Surface](./documents/engineering/cli_command_surface.md)

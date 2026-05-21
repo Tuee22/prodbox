@@ -14,7 +14,7 @@
 [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the
 > provision and teardown surface each substrate owns, and the current parity status of each
@@ -86,10 +86,11 @@ for the authoritative doctrine.
 
 ## Resource Lifecycle Classes
 
-Every AWS resource any `prodbox` flow creates falls into exactly one of two lifecycle classes.
+Every AWS resource any `prodbox` flow creates falls into exactly one of three lifecycle classes.
 This section is the authoritative classification — when adding a new AWS resource to any
-`prodbox` code path, it must land in one of these two classes (and in the matching inventory
-table below).
+`prodbox` code path, it must land in one of these three classes (and in the matching inventory
+table below). Pulumi state lifetime must also match resource lifetime per class; see
+[../documents/engineering/lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
 The per-run vs long-lived partition is mirrored in code by `Prodbox.Aws.perRunStackNames`
 and `Prodbox.Aws.longLivedStackNames` (Sprint `7.7`), which the
@@ -103,34 +104,63 @@ authoritative here.
 
 ### Per-run stacks (auto-managed by the harness)
 
-| Stack | Provisioned by | Destroyed by |
-|-------|----------------|--------------|
-| `aws-eks` | `prodbox pulumi eks-resources` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | `prodbox pulumi eks-destroy --yes`; auto-destroyed by the test-harness postflight on success, failure, **and** Ctrl-C (Sprint `7.6`) |
-| `aws-eks-subzone` | `prodbox pulumi aws-subzone-resources` | `prodbox pulumi aws-subzone-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`) |
-| `aws-test` (HA-RKE2 EC2) | `prodbox pulumi test-resources` | `prodbox pulumi test-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`) |
+| Stack | Provisioned by | Destroyed by | Pulumi state backend |
+|-------|----------------|--------------|----------------------|
+| `aws-eks` | `prodbox pulumi eks-resources` (and implicitly by `prodbox test all` / `prodbox test integration … --substrate aws` when needed) | `prodbox pulumi eks-destroy --yes`; auto-destroyed by the test-harness postflight on success, failure, **and** Ctrl-C (Sprint `7.6`); also destroyed by `prodbox rke2 delete --cascade` (Sprint `4.11`) | MinIO in-cluster (`s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000`) |
+| `aws-eks-subzone` | `prodbox pulumi aws-subzone-resources` | `prodbox pulumi aws-subzone-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox rke2 delete --cascade` (Sprint `4.11`) | MinIO in-cluster |
+| `aws-test` (HA-RKE2 EC2) | `prodbox pulumi test-resources` | `prodbox pulumi test-destroy --yes`; auto-destroyed by the test-harness postflight (Sprint `7.6`); also destroyed by `prodbox rke2 delete --cascade` (Sprint `4.11`) | MinIO in-cluster |
 
 Per-run stacks exist only for the lifetime of a suite run that needs them. The harness owns
 the full create/destroy lifecycle; operators do not normally invoke the destroy commands by
-hand because the harness already does so on every exit path.
+hand because the harness already does so on every exit path. Pulumi state for these stacks
+lives in MinIO inside the rke2 cluster — state lifetime matches resource lifetime (both die
+with the cluster).
 
 ### Long-lived cross-substrate shared infrastructure (retained by design)
 
-| Resource | Provisioned by | Destroyed by |
-|----------|----------------|--------------|
-| `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight |
-| Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Operator action against Route 53 — outside the harness surface |
+| Resource | Provisioned by | Destroyed by | Pulumi state backend |
+|----------|----------------|--------------|----------------------|
+| `aws-ses` stack (sending identity, DKIM, MX, receive rule set, S3 capture bucket, SMTP IAM user) | `prodbox pulumi aws-ses-resources` | `prodbox pulumi aws-ses-destroy --yes` — **only on explicit invocation**; never auto-destroyed by the test-harness postflight, never destroyed by `prodbox rke2 delete` (any flag); destroyed transitively by `prodbox nuke` (Sprint `4.13`) | Dedicated AWS S3 bucket per `prodbox-config.dhall` `pulumi_state_backend` block (Sprint `4.10`) |
+| Long-lived `pulumi_state_backend` S3 bucket (Sprint `4.10`) | `ensureLongLivedPulumiStateBucket` precondition in `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (idempotent, admin-credentialed) | `prodbox nuke` (Sprint `4.13`) — final pass after all long-lived stacks are gone; never destroyed by `aws teardown` or `rke2 delete` | n/a (the bucket *is* the backend) |
+| Operator-owned Route 53 parent zone for the configured public FQDN | Operator-managed in Route 53 (no `prodbox pulumi` flow) | Operator action against Route 53 — outside the harness surface | n/a |
 
 Retained by design — not orphaned. SES domain identity + DKIM verification requires 5–30 min
 of DNS propagation per provision; only one receive rule set may be active per AWS account; S3
 bucket names have a ~24-hour reuse cooldown. Per-run re-provision is impractical at suite
 cadence. The harness explicitly carves these resources out of postflight auto-destroy so
 operators can run the suite at a sane cadence without rebuilding shared infrastructure each
-time.
+time. Pulumi state for the `aws-ses` stack lives in the dedicated long-lived S3 bucket
+(Sprint `4.10`) rather than in MinIO, so cluster wipes and rebuilds preserve the ability to
+reconcile the stack.
 
 When an operator wants the long-lived resources gone (e.g., decommissioning the project or
-account), the supported path is the explicit destroy command in the table above. There is no
-"managed-by-someone-else" category — the harness still owns the create/destroy lifecycle; it
-simply does not invoke destroy on its own for this class.
+account), the supported path is the explicit destroy command in the table above, or the
+operator-only `prodbox nuke` for total teardown. There is no "managed-by-someone-else"
+category — the harness still owns the create/destroy lifecycle; it simply does not invoke
+destroy on its own for this class.
+
+### K8s-controller-created AWS resources (cluster-tagged)
+
+| Resource | Created by | Tag signature | Destroyed by |
+|----------|------------|---------------|--------------|
+| EBS volumes for PVCs | EBS CSI driver responding to `PersistentVolumeClaim` resources | `kubernetes.io/cluster/<cluster-name>: owned`, `ebs.csi.aws.com/cluster-name: <cluster-name>` | K8s drain phase (Sprint `4.12`); fallback postflight tag sweep |
+| ALBs / NLBs / target groups / security groups | AWS Load Balancer Controller responding to `Service type=LoadBalancer` and `Ingress` resources | `kubernetes.io/cluster/<cluster-name>: owned`, `elbv2.k8s.aws/cluster`, `ingress.k8s.aws/stack` | K8s drain phase (Sprint `4.12`); fallback postflight tag sweep |
+| Route 53 TXT records (`_acme-challenge.*`) | cert-manager DNS01 solver | Record-name pattern `_acme-challenge.*.<configured public FQDN>` | K8s drain phase (Sprint `4.12`) by deleting `Certificate` resources first; fallback postflight tag sweep |
+| Route 53 A records for DNS bootstrap | Direct `aws` CLI subprocess in `src/Prodbox/CLI/Rke2.hs:2484` and `src/Prodbox/TestValidation.hs:1547` | None reliably; identified by content (configured public FQDN) | Best-effort cleanup paths in the same modules; fallback postflight tag sweep |
+
+These resources are **not** Pulumi-tracked. They are created by Kubernetes operators or by
+direct AWS API calls from the harness and survive Pulumi-stack destruction unless drained
+first. The leak class is owned by the K8s drain phase in Sprint `4.12` plus the postflight
+tag sweep that fails any destructive lifecycle command if cluster-tagged resources survive;
+see
+[../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+
+### Lifecycle ownership rule
+
+No new AWS resource type may be added by any `prodbox` code path without first appearing in
+one of these three classes, and no new Pulumi stack may be added without first declaring its
+state-lifetime class (per-run MinIO backend vs long-lived S3 backend) in this section and in
+the matching code-side list (`Prodbox.Aws.perRunStackNames` / `longLivedStackNames`).
 
 ## Cross-Substrate Shared Resources
 

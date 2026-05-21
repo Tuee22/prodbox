@@ -2,15 +2,22 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, HASKELL_CLI_TOOL.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/pure_fp_standards.md
+**Referenced by**: README.md, CLAUDE.md, documents/documentation_standards.md, documents/engineering/README.md, documents/engineering/pure_fp_standards.md
 **Generated sections**: none
 
 > **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
 
 `DEVELOPMENT_PLAN/README.md` is the authoritative source for target architecture, sprint status,
-and cleanup ownership. [HASKELL_CLI_TOOL.md](HASKELL_CLI_TOOL.md) is the authoritative source
-for the CLI doctrine — command topology, generated artifacts, daemon lifecycle, lint
-discipline, and the testing stack. The repository is Haskell-only on the supported path.
+and cleanup ownership. The authoritative CLI doctrine is distributed across per-surface
+engineering docs under [documents/engineering/](./documents/engineering/README.md): command
+topology and reconcilers in `cli_command_surface.md`; Plan / Apply and GADT-indexed state
+machines in `pure_fp_standards.md`; subprocesses, error handling, capability classes, and
+application environment in `haskell_code_guide.md`; generated artifacts and lint stack in
+`code_quality.md`; output rules and at-least-once event processing in `streaming_doctrine.md`;
+prerequisites as typed effects in `prerequisite_doctrine.md`; daemon lifecycle in
+`distributed_gateway_architecture.md`; testing doctrine in `unit_testing_policy.md`;
+toolchain pinning in `dependency_management.md`. The repository is Haskell-only on the
+supported path.
 
 ## Current Worktree Structure
 
@@ -216,7 +223,7 @@ automation equivalent.
 ## Cross-References
 
 - **CLAUDE.md**: Detailed AI assistant guidelines
-- **[HASKELL_CLI_TOOL.md](HASKELL_CLI_TOOL.md)**: Canonical Haskell CLI doctrine
+- **[documents/engineering/README.md](./documents/engineering/README.md)**: Engineering docs index (canonical CLI doctrine is distributed across these per-surface docs)
 - **documents/documentation_standards.md**: Documentation rules
 - **documents/engineering/**: Architecture and doctrine documentation
 - **[DEVELOPMENT_PLAN/README.md](DEVELOPMENT_PLAN/README.md)**: Development plan, sprint status, and cleanup ownership

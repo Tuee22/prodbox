@@ -115,6 +115,96 @@ This SSoT co-owns prerequisite doctrine intention.
 - Linked dependents: `src/Prodbox/Prerequisite.hs`, `src/Prodbox/EffectDAG.hs`,
   `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`.
 
+## Prerequisites as Typed Effects
+
+Preconditions — required binaries on `$PATH`, valid credentials, reachable
+endpoints, supported OS, required files on disk — are encoded as a typed
+directed acyclic graph, not as scattered `unless (toolExists "kubectl") fail`
+checks in command runners.
+
+The prescribed three types:
+
+```haskell
+data Validation
+  = RequireTool FilePath [Text]       -- binary + accepted version args
+  | RequireFileExists FilePath
+  | RequireEnvVar Text
+  | RequireReachable URI
+  | RequireOS SupportedOS
+  -- ...extend per project
+  deriving stock (Eq, Show)
+
+data PrerequisiteNode = PrerequisiteNode
+  { nodeId            :: Text
+  , nodeDescription   :: Text
+  , nodePrerequisites :: [Text]       -- IDs of dependency nodes
+  , nodeCheck         :: Validation
+  }
+
+prerequisiteRegistry :: Map Text PrerequisiteNode
+```
+
+The registry is the single source of truth. Adding a prerequisite means
+adding one entry to the map. Declaring a command's needs means listing the
+root IDs that command depends on.
+
+Expansion is pure:
+
+```haskell
+transitiveClosure
+  :: [Text]                            -- root IDs
+  -> Map Text PrerequisiteNode
+  -> Either AppError [PrerequisiteNode]
+```
+
+Missing IDs are a registry error caught at expansion time, not at runtime,
+so typos and stale references never reach an end user.
+
+Interpretation lives at the IO boundary:
+
+```haskell
+checkPrerequisites
+  :: Env
+  -> [PrerequisiteNode]
+  -> IO (Either PrerequisiteFailure ())
+```
+
+**Required error-message contract.** A prerequisite failure must include:
+
+1. The failing `nodeId`.
+2. The `nodeDescription`.
+3. A remedy hint (install command, doc URL, configuration snippet).
+
+This mirrors the **Required error-message contract** in
+[code_quality.md → Generated Artifacts](./code_quality.md#generated-artifacts).
+Failures that name a problem but offer no remedy are forbidden in both
+lines of discipline.
+
+Where in the lifecycle:
+
+- One-shot commands: `transitiveClosure` runs immediately before `apply`
+  (see [Plan / Apply](./pure_fp_standards.md#plan--apply)). A single unmet
+  prerequisite aborts with non-zero exit before any plan step executes.
+- Daemons: the prereq DAG runs between `load` and `acquire` (see
+  [distributed_gateway_architecture.md → Daemon Lifecycle](./distributed_gateway_architecture.md#daemon-lifecycle)).
+  The daemon refuses to enter `acquire` if any node fails.
+
+**Forbidden patterns:**
+
+- Inline `unless` / `when` checks of prerequisite-shaped conditions in
+  command runners. Add a registry node instead.
+- Multiple registries (per-command, per-module). The single
+  `Map Text PrerequisiteNode` is the source of truth.
+- Silent fallback when a prerequisite is unmet. The command refuses to
+  proceed; it does not paper over the gap.
+- Checking prerequisites *after* a mutating step. The DAG is a gate, not a
+  postflight check.
+
+This section composes with [Plan / Apply](./pure_fp_standards.md#plan--apply)
+above (prereqs gate `apply`) and
+[Reconcilers](./cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command)
+(prereqs gate every reconcile run).
+
 ## Cross-References
 
 - [Prerequisite DAG System](./prerequisite_dag_system.md)

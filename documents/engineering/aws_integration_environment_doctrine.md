@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: DEVELOPMENT_PLAN/README.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_test_environment.md, AGENTS.md
+**Referenced by**: DEVELOPMENT_PLAN/README.md, README.md, documents/engineering/README.md, documents/engineering/unit_testing_policy.md, documents/engineering/integration_fixture_doctrine.md, documents/engineering/lifecycle_reconciliation_doctrine.md, documents/engineering/prerequisite_doctrine.md, documents/engineering/aws_admin_credentials.md, documents/engineering/aws_test_environment.md, AGENTS.md
 
 > **Purpose**: Define how `prodbox` authenticates to AWS for integration work and how the
 > supported AWS validation path creates, owns, and tears down real AWS resources.
@@ -83,6 +83,25 @@
   to an optional prompt with an explanatory hint. The four user-facing prompt strings
   were renamed from "Elevated AWS …" / "elevated operations" to "Temporary admin AWS …"
   / "admin operations" inline with the May 2026 doctrine alignment.
+- **Sprint `4.10` (planned)**: long-lived Pulumi state is decoupled from the in-cluster
+  MinIO backend onto a dedicated AWS S3 bucket configured via the new
+  `pulumi_state_backend` block in `prodbox-config.dhall`. The `aws-ses` stack moves to
+  the new backend so its state survives arbitrary `rke2 delete + rke2 reconcile` cycles.
+  Per-run stacks continue using MinIO. State lifetime matches resource lifetime per class.
+  See [lifecycle_reconciliation_doctrine.md → §2 State-Lifetime Rule](lifecycle_reconciliation_doctrine.md).
+- **Sprint `4.11` (planned)**: `prodbox rke2 delete` carries a symmetric refuse-path
+  scoped to per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`). `aws-ses`
+  is excluded because Sprint `4.10` places its state outside the cluster. The new
+  `--cascade` flag is the positive-framed "clean teardown" path; `--allow-pulumi-residue`
+  matches the `aws teardown` escape hatch.
+- **Sprint `4.12` (planned)**: K8s drain phase + postflight tag sweep close the
+  K8s-controller-created AWS leak classes (CSI volumes, ALBs, cert-manager DNS01 TXTs,
+  direct-aws-CLI shell-out Route 53 records). Together with Sprint `4.11`'s refuse-path
+  these make `prodbox rke2 delete --cascade` structurally leak-safe.
+- **Sprint `4.13` (planned)**: `prodbox nuke` is the operator-only total-teardown command
+  that destroys long-lived shared infrastructure transitively, including the `aws-ses`
+  stack and the long-lived `pulumi_state_backend` bucket. TTY-only, typed-confirmation
+  literal `NUKE EVERYTHING`, no `--yes` shorthand.
 - Every interactive `prodbox` entry point (`prodbox config setup`,
   `prodbox aws setup`, `prodbox aws teardown`, `prodbox aws check-quotas`,
   `prodbox aws request-quotas`, and the `prodbox charts delete` confirmation prompt)
@@ -290,7 +309,13 @@ Minimum rule:
 4. `prodbox pulumi test-resources` is the only supported surface for creating or inspecting the AWS
    HA stack
 5. `prodbox pulumi test-destroy --yes` is the only supported surface for destroying that stack
-6. `prodbox rke2 delete --yes` must invoke both destroy paths before backend teardown
+6. `prodbox rke2 delete` opens with the Sprint `4.11` per-run refuse-path: it refuses when
+   any of `aws-eks`, `aws-eks-subzone`, `aws-test` reports live resources, naming each
+   stack and the canonical destroy command. The `--cascade` flag orchestrates K8s drain
+   (Sprint `4.12`) + per-run destroys + cluster uninstall + postflight tag sweep as one
+   atomic operator action — the canonical "wipe and rebuild" path. `aws-ses` is ignored
+   throughout because its Pulumi state lives outside the cluster (Sprint `4.10`) and may
+   only be destroyed by `prodbox pulumi aws-ses-destroy --yes` or `prodbox nuke`
 7. the AWS validation Pulumi programs take non-secret operator-CIDR and SSH-public-key inputs
    through explicit stack config synchronized by the Haskell orchestration layer, while AWS
    provider credentials stay in the Haskell-owned subprocess environment

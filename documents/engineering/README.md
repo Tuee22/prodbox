@@ -38,6 +38,7 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 | [effect_interpreter.md](./effect_interpreter.md) | Interpreter runtime execution contract |
 | [haskell_code_guide.md](./haskell_code_guide.md) | Hard-gate Haskell quality doctrine and review-guidance split |
 | [integration_fixture_doctrine.md](./integration_fixture_doctrine.md) | Cluster-backed integration setup and teardown doctrine |
+| [lifecycle_reconciliation_doctrine.md](./lifecycle_reconciliation_doctrine.md) | Reconciler-with-predicates pattern that every destructive lifecycle command composes; AWS-resource leak classes and the state-lifetime rule (per-run MinIO backend vs long-lived S3 backend) |
 | [local_registry_pipeline.md](./local_registry_pipeline.md) | Harbor-first workload sourcing, public-image reconcile, and native-host-architecture image publication |
 | [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md) | Retained storage and deterministic PVC/PV rebinding doctrine |
 | [prerequisite_doctrine.md](./prerequisite_doctrine.md) | Fail-fast prerequisite philosophy and registry doctrine |

@@ -3,11 +3,11 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [README.md](README.md), [00-overview.md](00-overview.md),
-[system-components.md](system-components.md), [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[system-components.md](system-components.md), [the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Capture the Haskell chart platform, deterministic retained storage model, the
 > supported public workload delivery path, and the CLI-doctrine adoption sprints that align chart
-> orchestration with [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md).
+> orchestration with [the engineering doctrine docs](../documents/engineering/README.md).
 
 ## Phase Status
 
@@ -505,8 +505,7 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Smart Constructors for Paired
-Resources](../HASKELL_CLI_TOOL.md) on the chart platform.
+Adopt [haskell_code_guide.md#smart-constructors-for-paired-resources](../documents/engineering/haskell_code_guide.md#smart-constructors-for-paired-resources) on the chart platform.
 
 ### Deliverables
 
@@ -535,8 +534,7 @@ None.
 
 ### Objective
 
-Apply [../HASKELL_CLI_TOOL.md → Capability Classes and Service
-Errors](../HASKELL_CLI_TOOL.md) (Sprint 1.12) to chart-platform call sites.
+Apply [haskell_code_guide.md#capability-classes-and-service-errors](../documents/engineering/haskell_code_guide.md#capability-classes-and-service-errors) (Sprint 1.12) to chart-platform call sites.
 
 ### Deliverables
 
@@ -568,8 +566,7 @@ boundary.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Reconcilers: Idempotent Mutation as a Single
-Command](../HASKELL_CLI_TOOL.md).
+Adopt [cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command).
 
 ### Deliverables
 
@@ -579,8 +576,7 @@ Command](../HASKELL_CLI_TOOL.md).
 - Forbid any `--force` / `--reinstall` flag flavor on the chart surface; document
   already-deployed as the success case.
 - Sprint 0.4 round-3 extension: name the forbidden flags and sister commands
-  explicitly per [../HASKELL_CLI_TOOL.md → Reconcilers → Forbidden
-  Patterns](../HASKELL_CLI_TOOL.md) §1781–1803. The chart reconciler surface
+  explicitly per [cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-mutation-as-a-single-command). The chart reconciler surface
   refuses the literal flag names `--force` and `--reinstall` at parse time
   (Sprint 1.6 `CommandSpec` for `prodbox charts deploy|delete` does not register
   them; `execParserPure` returns a doctrine-named error if they are passed). The
@@ -636,9 +632,8 @@ None.
 
 ### Objective
 
-Adopt [../HASKELL_CLI_TOOL.md → Lint, Format, and Code-Quality Stack → CLI Surface →
-`tool lint chart`](../HASKELL_CLI_TOOL.md) §1820–1823 and §1870, and apply
-[../HASKELL_CLI_TOOL.md → Generated Artifacts](../HASKELL_CLI_TOOL.md) §341–343 / §394–443
+Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack)and §1870, and apply
+[code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)/ §394–443
 to the `src/Prodbox/PublicEdge.hs` route catalog so chart artifacts consume the route
 inventory through marker-delimited generation rather than hand-maintained YAML.
 

@@ -7,7 +7,7 @@
 [substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
 [../documents/documentation_standards.md](../documents/documentation_standards.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Define the maintenance rules for the prodbox development plan so the repository
 > keeps one coherent, execution-ordered plan and one explicit ledger of cleanup/removal work.
@@ -204,7 +204,7 @@ only. Do not add live Mermaid blocks here.
 
 ### L. CLI Doctrine Alignment
 
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md) is the authoritative CLI doctrine. Phase
+[the engineering doctrine docs](../documents/engineering/README.md) is the authoritative CLI doctrine. Phase
 documents and sprint blocks that schedule adoption work must cite the doctrine sections they
 implement by name (for example, `CommandSpec`, `Plan / Apply`, `Long-Running Daemons in the Same
 Binary → Lifecycle`, `Lint, Format, and Code-Quality Stack → Forbidden Surfaces`,
@@ -299,7 +299,7 @@ validation, because validations are suite content.
 - [README.md](README.md)
 - [substrates.md](substrates.md)
 - [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
-- [../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+- [the engineering doctrine docs](../documents/engineering/README.md)
 
 ## Cross-Reference Conventions
 

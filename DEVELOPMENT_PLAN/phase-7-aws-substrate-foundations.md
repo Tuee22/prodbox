@@ -7,7 +7,7 @@
 [substrates.md](substrates.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md)
+[the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Own the AWS substrate's foundations — the interactive onboarding wizard, the
 > standalone AWS IAM and quota command surface, the temporary-admin-credential validation harness
@@ -21,7 +21,7 @@ closed on interactive onboarding, AWS IAM management, quota automation, and the
 temporary-admin-credential validation harness. Per
 [development_plan_standards.md](development_plan_standards.md) standards rule E, Phase 7 stays
 `Done` on its owned legacy scope while Phases `0`–`4` are reopened by Sprint 0.2 to adopt
-[../HASKELL_CLI_TOOL.md](../HASKELL_CLI_TOOL.md). The interactive onboarding flow and standalone
+[the engineering doctrine docs](../documents/engineering/README.md). The interactive onboarding flow and standalone
 `prodbox aws ...` surface inherit the Plan / Apply + `--dry-run` discipline (Sprint 1.7), the
 `CommandSpec` source-of-truth split (Sprint 1.6), and the capability classes for AWS subsystems
 (Sprint 1.12) without scheduling a new Sprint 7.X for those concerns.
@@ -1956,6 +1956,16 @@ identified in the May 19, 2026 audit:
   `aws.*`. The `aws-ses` stack is **explicitly excluded** from auto-destroy per
   the long-lived cross-substrate shared-infrastructure class in
   [substrates.md → Resource Lifecycle Classes](substrates.md#resource-lifecycle-classes).
+
+Sprint `7.6` closes the `aws teardown` gap. The companion work — the
+`aws-ses` Pulumi-backend decoupling, the symmetric refuse-path on
+`prodbox rke2 delete`, the K8s-operator-created AWS leak classes
+(CSI volumes, LBC load balancers, cert-manager TXTs, direct-aws-CLI
+shell-out Route 53 records), and the operator-only `prodbox nuke` —
+is owned by Sprints `4.10` / `4.11` / `4.12` / `4.13` under phase 4.
+See
+[../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+for the consolidated doctrine.
 
 ### Deliverables
 

@@ -99,6 +99,11 @@ runPulumiCommand repoRoot command =
         planOptions
         (buildPulumiExecutionPlan "aws-ses-destroy" summary)
         (\_ -> SesStack.destroyAwsSesStack repoRoot summary)
+    PulumiAwsSesMigrateBackend planOptions ->
+      runPlanWithOptions
+        planOptions
+        (buildPulumiExecutionPlan "aws-ses-migrate-backend" False)
+        (\_ -> SesStack.migrateAwsSesStackBackend repoRoot)
 
 buildPulumiExecutionPlan :: String -> Bool -> Plan String
 buildPulumiExecutionPlan commandName confirmed =

@@ -192,7 +192,9 @@ integrationCliSuite = do
           ""
 
       exitCode `shouldBe` ExitSuccess
-      stderrText `shouldBe` ""
+      stderrText `shouldContain` "[validation=gateway-partition substrate=home-local] entering body"
+      stderrText
+        `shouldContain` "[validation=gateway-partition substrate=home-local] body exit=ExitSuccess"
       stdoutText `shouldContain` "Validation: gateway-partition"
       stdoutText `shouldContain` "FORMAL_MODEL_DELEGATED=false"
       stdoutText `shouldContain` "SINGLE_WRITER_AFTER_TAKEOVER=true"
@@ -935,7 +937,8 @@ integrationCliSuite = do
             ""
 
         exitCode `shouldBe` ExitSuccess
-        stderrText `shouldBe` ""
+        stderrText `shouldContain` "[validation=aws-iam substrate=home-local] entering body"
+        stderrText `shouldContain` "[validation=aws-iam substrate=home-local] body exit=ExitSuccess"
         stdoutText `shouldContain` "Phase 1/2: validating integration prerequisites"
         stdoutText `shouldContain` "Phase 2/2: running test suites"
         stdoutText `shouldContain` "Validation: aws-iam"
@@ -2202,6 +2205,7 @@ validConfigWithBlankOperationalAwsAndConfiguredAdmin =
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
     ]
 
@@ -2217,6 +2221,7 @@ validConfigWithLeakedOperationalAwsAndConfiguredAdmin =
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
     ]
 
@@ -2280,5 +2285,6 @@ configWithAwsAndAcme accessKeyId secretAccessKey sessionTokenValue acmeServer ea
         ++ " }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
     ]

@@ -1,3 +1,11 @@
 name: prodbox-aws-ses
 runtime: yaml
 description: Pulumi-managed cross-substrate AWS SES sending identity, receive subdomain, receive rule set, S3 capture bucket, and SMTP IAM user for Phase 8 operator-invited email auth
+backend:
+  # Long-lived cross-substrate state lives on the dedicated operator-account
+  # S3 bucket named by `pulumi_state_backend` in prodbox-config.dhall, so the
+  # aws-ses stack's state survives `rke2 delete + rke2 reconcile` cycles.
+  # Operators running pulumi directly outside the prodbox harness pick this
+  # backend up automatically; the prodbox runtime still overrides via
+  # `PULUMI_BACKEND_URL`.
+  url: s3://prodbox-pulumi-state-long-lived?region=us-west-2&awssdk=v2&prefix=pulumi/

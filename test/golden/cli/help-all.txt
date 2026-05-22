@@ -232,8 +232,12 @@ Examples:
 prodbox host public-edge - Check public DNS/TLS edge state
 
 Inspect Route 53, certificate, and shared-host readiness.
+Options:
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
 Examples:
-- prodbox host public-edge  # Inspect public-edge readiness.
+- prodbox host public-edge  # Inspect public-edge readiness (home substrate).
+- prodbox host public-edge --substrate aws  # Inspect public-edge readiness on the AWS substrate.
 
 ## prodbox k8s health
 prodbox k8s health - Check cluster health
@@ -307,6 +311,17 @@ prodbox lint chart - Run Helm chart structural lint checks
 Run the Helm chart structural invariants linter.
 Examples:
 - prodbox lint chart  # Run the Helm chart structural invariants linter.
+
+## prodbox nuke
+prodbox nuke - Total teardown of every prodbox-owned AWS resource (operator-only)
+
+The only sanctioned path to destroy long-lived shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend` bucket) transitively. TTY-only; refuses non-interactive contexts. Requires the typed confirmation literal `NUKE EVERYTHING`. No `--yes` shorthand by design. `--dry-run` renders the plan without mutating any state.
+Options:
+- --dry-run - Render the teardown plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox nuke --dry-run  # Render the total-teardown plan.
 
 ## prodbox pulumi eks-resources
 prodbox pulumi eks-resources - Provision or inspect EKS test stack
@@ -400,6 +415,17 @@ Options:
 Examples:
 - prodbox pulumi aws-ses-destroy --yes  # Destroy the cross-substrate SES infrastructure.
 
+## prodbox pulumi aws-ses-migrate-backend
+prodbox pulumi aws-ses-migrate-backend - Migrate aws-ses Pulumi state onto the long-lived S3 backend
+
+Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts.
+Options:
+- --dry-run - Render the migration plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
+
+Examples:
+- prodbox pulumi aws-ses-migrate-backend  # Migrate aws-ses state onto the long-lived S3 backend.
+
 ## prodbox rke2 status
 prodbox rke2 status - Check RKE2 status
 
@@ -443,12 +469,17 @@ Examples:
 ## prodbox rke2 delete
 prodbox rke2 delete - Delete RKE2
 
-Delete the local cluster.
+Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time.
 Options:
 - --yes, -y - Confirm full RKE2 cluster deletion
+- --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action
+- --allow-pulumi-residue - Bypass the per-run Pulumi residue refuse-path (recovery only)
+- --dry-run - Render the delete plan without mutating state
+- --plan-file <PATH> - Write the rendered plan to a file
 
 Examples:
-- prodbox rke2 delete --yes  # Delete the local cluster.
+- prodbox rke2 delete --yes  # Delete the local cluster (refuses if per-run Pulumi stacks are live).
+- prodbox rke2 delete --yes --cascade  # Orchestrate the full teardown as one atomic operator action.
 
 ## prodbox rke2 logs
 prodbox rke2 logs - Show RKE2 logs

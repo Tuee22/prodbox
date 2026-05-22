@@ -57,11 +57,13 @@ import Prodbox.CLI.Command
   , K8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
+  , NukeOptions (..)
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
   , PulumiResiduePolicy (..)
   , Rke2Command (..)
+  , Rke2DeleteFlags (..)
   , TestCommand (..)
   , TestScope (..)
   , UsersCommand (..)
@@ -125,6 +127,7 @@ commandRegistry =
         , hostGroup
         , k8sGroup
         , lintGroup
+        , nukeLeaf
         , pulumiGroup
         , rke2Group
         , testGroupSpec
@@ -279,7 +282,8 @@ parserForPath path =
     ["host", "check-ports"] -> Just (pure (RunNative (NativeHost HostCheckPorts)))
     ["host", "info"] -> Just (pure (RunNative (NativeHost HostInfo)))
     ["host", "firewall"] -> Just (pure (RunNative (NativeHost HostFirewall)))
-    ["host", "public-edge"] -> Just (pure (RunNative (NativeHost HostPublicEdge)))
+    ["host", "public-edge"] ->
+      Just (fmap (RunNative . NativeHost . HostPublicEdge) substrateOptionParser)
     ["k8s", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
     ["k8s", "wait"] ->
       Just $
@@ -353,6 +357,8 @@ parserForPath path =
               RunNative (NativePulumi (PulumiAwsSesDestroy confirmed planOptions'))
           )
           ((,) <$> yesSwitchParser "Skip confirmation prompts" <*> planOptionsParser)
+    ["pulumi", "aws-ses-migrate-backend"] ->
+      Just (fmap (RunNative . NativePulumi . PulumiAwsSesMigrateBackend) planOptionsParser)
     ["users", "invite"] ->
       Just $
         ( \email maybeRole planOptions' ->
@@ -395,8 +401,7 @@ parserForPath path =
     ["rke2", "reconcile"] ->
       Just (fmap (RunNative . NativeRke2 . Rke2Reconcile) planOptionsParser)
     ["rke2", "delete"] ->
-      Just
-        (fmap (RunNative . NativeRke2 . Rke2Delete) (yesSwitchParser "Confirm full RKE2 cluster deletion"))
+      Just (rke2DeleteParser <$> rke2DeleteFlagsParser <*> planOptionsParser)
     ["rke2", "logs"] ->
       Just $
         fmap
@@ -438,6 +443,21 @@ parserForPath path =
     ["test", "integration", "admin-routes"] -> Just (withCoverage (TestIntegration IntegrationAdminRoutes))
     ["test", "integration", "public-dns"] -> Just (withCoverage (TestIntegration IntegrationPublicDns))
     ["test", "integration", "keycloak-invite"] -> Just (withCoverage (TestIntegration IntegrationKeycloakInvite))
+    ["nuke"] ->
+      Just
+        ( fmap
+            (RunNative . NativeNuke)
+            ( NukeOptions
+                <$> switch (long "dry-run" <> help "Render the teardown plan without mutating state")
+                <*> optional
+                  ( strOption
+                      ( long "plan-file"
+                          <> metavar "PATH"
+                          <> help "Write the rendered plan to a file"
+                      )
+                  )
+            )
+        )
     ["tla-check"] -> Just (pure (RunNative NativeTlaCheck))
     ["workload", "start"] ->
       Just (fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser)
@@ -635,6 +655,60 @@ yesSwitchParser helpText =
         <> help helpText
     )
 
+-- | Sprint 4.11: parser for the @prodbox rke2 delete@ flag matrix.
+-- @--yes@ is independent; @--cascade@ and @--allow-pulumi-residue@
+-- are mutually exclusive (enforced via 'flag'' + '<|>' so the second
+-- flag's appearance produces a parse-time error when the first has
+-- already consumed its match). The default (neither cascade nor
+-- allow-pulumi-residue) is the refuse-on-per-run-residue path.
+rke2DeleteFlagsParser :: Parser Rke2DeleteFlags
+rke2DeleteFlagsParser =
+  buildFlags
+    <$> yesSwitchParser "Confirm full RKE2 cluster deletion"
+    <*> ( flag'
+            CascadeMode
+            ( long "cascade"
+                <> help
+                  ( "Orchestrate the full teardown — K8s drain, per-run "
+                      ++ "Pulumi destroys, cluster uninstall, postflight "
+                      ++ "tag sweep — as one atomic operator action. The "
+                      ++ "K8s drain phase skips gracefully when no cluster "
+                      ++ "is reachable. Mutually exclusive with "
+                      ++ "--allow-pulumi-residue."
+                  )
+            )
+            <|> flag'
+              AllowResidueMode
+              ( long "allow-pulumi-residue"
+                  <> help
+                    ( "Bypass the per-run Pulumi residue refuse-path "
+                        ++ "(recovery only). Allows uninstalling RKE2 even "
+                        ++ "while aws-eks / aws-eks-subzone / aws-test "
+                        ++ "stacks still have live resources. Mutually "
+                        ++ "exclusive with --cascade."
+                    )
+              )
+            <|> pure RefuseMode
+        )
+ where
+  buildFlags confirmed mode =
+    Rke2DeleteFlags
+      { rke2DeleteYes = confirmed
+      , rke2DeleteCascade = mode == CascadeMode
+      , rke2DeleteAllowPulumiResidue = mode == AllowResidueMode
+      }
+
+data Rke2DeleteMode
+  = RefuseMode
+  | CascadeMode
+  | AllowResidueMode
+  deriving (Eq, Show)
+
+-- | Sprint 4.11: build an 'Rke2Delete' request from parsed flags.
+rke2DeleteParser :: Rke2DeleteFlags -> PlanOptions -> CommandRequest
+rke2DeleteParser flags planOptions =
+  RunNative (NativeRke2 (Rke2Delete flags planOptions))
+
 -- | Sprint 7.7 — parser for the two mutually-exclusive Pulumi-residue
 -- flags on @prodbox aws teardown@.
 --
@@ -658,25 +732,27 @@ awsTeardownFlagsParser =
             DestroyPulumiResidueFirst
             ( long "destroy-pulumi-residue"
                 <> help
-                  ( "Sprint 7.7: run `prodbox pulumi <stack>-destroy --yes` "
-                      ++ "for each live Pulumi-managed AWS stack (in canonical "
-                      ++ "order: aws-eks-subzone, aws-eks, aws-test, aws-ses) "
-                      ++ "before deleting the operational IAM user. Mutually "
-                      ++ "exclusive with --allow-pulumi-residue. Destroying "
-                      ++ "the long-lived aws-ses stack triggers a 5-30 min "
-                      ++ "SES re-verification + ~24h S3 bucket name cooldown."
+                  ( "Run `prodbox pulumi <stack>-destroy --yes` for each "
+                      ++ "live Pulumi-managed AWS stack (in canonical "
+                      ++ "order: aws-eks-subzone, aws-eks, aws-test, "
+                      ++ "aws-ses) before deleting the operational IAM "
+                      ++ "user. Mutually exclusive with "
+                      ++ "--allow-pulumi-residue. Destroying the "
+                      ++ "long-lived aws-ses stack triggers a 5-30 min "
+                      ++ "SES re-verification + ~24h S3 bucket name "
+                      ++ "cooldown."
                   )
             )
             <|> flag'
               AcceptOrphanResidue
               ( long "allow-pulumi-residue"
                   <> help
-                    ( "Bypass the Sprint 7.6 refuse-path check that prevents "
+                    ( "Bypass the refuse-path check that prevents "
                         ++ "deleting the operational IAM user while "
                         ++ "Pulumi-managed AWS stacks still have live "
-                        ++ "resources. Operator-acknowledged recovery only; "
-                        ++ "stacks become orphaned. Mutually exclusive with "
-                        ++ "--destroy-pulumi-residue."
+                        ++ "resources. Operator-acknowledged recovery "
+                        ++ "only; stacks become orphaned. Mutually "
+                        ++ "exclusive with --destroy-pulumi-residue."
                     )
               )
             <|> pure RefuseOnAnyResidue
@@ -897,8 +973,12 @@ hostGroup =
         "public-edge"
         "Check public DNS/TLS edge state"
         "Inspect Route 53, certificate, and shared-host readiness."
-        []
-        [example ["host", "public-edge"] "Inspect public-edge readiness."]
+        [substrateOption]
+        [ example ["host", "public-edge"] "Inspect public-edge readiness (home substrate)."
+        , example
+            ["host", "public-edge", "--substrate", "aws"]
+            "Inspect public-edge readiness on the AWS substrate."
+        ]
     ]
     []
     [example ["host", "info"] "Render host information."]
@@ -1195,6 +1275,17 @@ pulumiGroup =
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
         ]
         [example ["pulumi", "aws-ses-destroy", "--yes"] "Destroy the cross-substrate SES infrastructure."]
+    , leaf
+        "aws-ses-migrate-backend"
+        "Migrate aws-ses Pulumi state onto the long-lived S3 backend"
+        "Operator-interactive command: migrate the `aws-ses` stack's Pulumi state from the in-cluster MinIO backend onto the dedicated long-lived S3 bucket named by `pulumi_state_backend` in `prodbox-config.dhall`. Idempotent; no-op when the stack already lives in the long-lived backend. TTY-only; refuses non-interactive contexts."
+        [ flagOption "dry-run" Nothing Nothing "Render the migration plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [ example
+            ["pulumi", "aws-ses-migrate-backend"]
+            "Migrate aws-ses state onto the long-lived S3 backend."
+        ]
     ]
     []
     [example ["pulumi", "eks-resources"] "Reconcile the EKS validation stack."]
@@ -1237,9 +1328,28 @@ rke2Group =
     , leaf
         "delete"
         "Delete RKE2"
-        "Delete the local cluster."
-        [flagOption "yes" (Just 'y') Nothing "Confirm full RKE2 cluster deletion"]
-        [example ["rke2", "delete", "--yes"] "Delete the local cluster."]
+        "Delete the local cluster. Default mode opens with a per-run-residue check and refuses if `aws-eks`, `aws-eks-subzone`, or `aws-test` still have live resources. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action; the K8s drain phase skips gracefully when no cluster is reachable. `--allow-pulumi-residue` bypasses the residue check for operator-acknowledged recovery scenarios. `--cascade` and `--allow-pulumi-residue` are mutually exclusive at parse time."
+        [ flagOption "yes" (Just 'y') Nothing "Confirm full RKE2 cluster deletion"
+        , flagOption
+            "cascade"
+            Nothing
+            Nothing
+            "Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + cluster uninstall + postflight tag sweep) as one atomic operator action"
+        , flagOption
+            "allow-pulumi-residue"
+            Nothing
+            Nothing
+            "Bypass the per-run Pulumi residue refuse-path (recovery only)"
+        , flagOption "dry-run" Nothing Nothing "Render the delete plan without mutating state"
+        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        ]
+        [ example
+            ["rke2", "delete", "--yes"]
+            "Delete the local cluster (refuses if per-run Pulumi stacks are live)."
+        , example
+            ["rke2", "delete", "--yes", "--cascade"]
+            "Orchestrate the full teardown as one atomic operator action."
+        ]
     , leaf
         "logs"
         "Show RKE2 logs"
@@ -1317,12 +1427,32 @@ testGroupSpec =
       leafSummary
       coverageOptions
       [example ["test", "integration", leafName] ("Run the `" ++ leafName ++ "` integration suite.")]
-  substrateOption =
-    optionalOption
-      "substrate"
-      Nothing
-      "SUBSTRATE"
-      "Target substrate (home-local, aws); default home-local"
+
+substrateOption :: OptionSpec
+substrateOption =
+  optionalOption
+    "substrate"
+    Nothing
+    "SUBSTRATE"
+    "Target substrate (home-local, aws); default home-local"
+
+nukeLeaf :: CommandSpec
+nukeLeaf =
+  leaf
+    "nuke"
+    "Total teardown of every prodbox-owned AWS resource (operator-only)"
+    ( "The only sanctioned path to destroy long-lived shared "
+        ++ "infrastructure (`aws-ses`, the long-lived `pulumi_state_backend` "
+        ++ "bucket) transitively. TTY-only; refuses non-interactive contexts. "
+        ++ "Requires the typed confirmation literal `NUKE EVERYTHING`. No "
+        ++ "`--yes` shorthand by design. `--dry-run` renders the plan without "
+        ++ "mutating any state."
+    )
+    [ flagOption "dry-run" Nothing Nothing "Render the teardown plan without mutating state"
+    , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+    ]
+    [ example ["nuke", "--dry-run"] "Render the total-teardown plan."
+    ]
 
 checkCodeLeaf :: CommandSpec
 checkCodeLeaf =

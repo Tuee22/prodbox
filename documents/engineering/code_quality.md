@@ -329,6 +329,24 @@ tool lint haskell     — fourmolu --mode check + hlint + cabal format roundtrip
 tool lint all         — runs every lint above, plus `cabal build all`
 ```
 
+### Operator Vocabulary Enforcement
+
+The lint stack enforces the operator vocabulary contract defined in
+[cli_command_surface.md § 2A](./cli_command_surface.md#2a-operator-vocabulary-contract):
+no `Sprint <number>` or `Sprints <list>` literal may appear in
+operator-facing surfaces (CLI help strings under
+`src/Prodbox/CLI/Spec.hs`, manpages under `share/man/`, shell
+completions under `share/completion/`, the generated CLI command
+reference at `documents/cli/commands.md`, test goldens at
+`test/golden/cli/`, or any string the binary writes to
+`stdout` / `stderr` at runtime).  Source-code comments,
+`DEVELOPMENT_PLAN/`, and the engineering docs under
+`documents/engineering/` are exempt because they are
+developer-facing.  The regex scan lives alongside the existing
+doctrine-alignment scans in `src/Prodbox/CheckCode.hs` (forbidden
+subprocess primitives, direct-stderr writes, generated-section
+integrity).
+
 ### Forbidden Surfaces (Negative-Space Lint)
 
 The lint stack enforces both that required artifacts are correct *and* that

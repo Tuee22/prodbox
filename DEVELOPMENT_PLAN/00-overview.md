@@ -26,8 +26,9 @@ Build a clean-room Haskell `prodbox` repository with:
 
 1. One explicit `prodbox` CLI surface implemented in Haskell.
 2. One supported local lifecycle operator environment: `Ubuntu 24.04 LTS` with systemd.
-3. One host-owned `prodbox rke2 reconcile|delete --yes|status|start|stop|restart|logs` surface for
-   the local RKE2 cluster.
+3. One host-owned `prodbox rke2 reconcile|delete [--yes|--cascade [--yes]|--allow-pulumi-residue [--yes]]|status|start|stop|restart|logs` surface for
+   the local RKE2 cluster, plus the operator-only `prodbox nuke` total-teardown command that
+   refuses non-TTY contexts and requires the typed-confirmation literal `NUKE EVERYTHING`.
 4. One canonical test suite (the named-validation set in `src/Prodbox/TestValidation.hs`) that
    runs against substrates rather than against separate home-cluster and AWS validation
    surfaces. Substrates today are the home local RKE2 cluster on the operator host and the AWS

@@ -448,7 +448,7 @@ list consumes these nodes; the integration with `Prodbox.TestPlan` happens there
 
 ## Sprint 8.5: `ValidationKeycloakInvite` Canonical-Suite Content 🔄
 
-**Status**: Active (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form POST + fresh OIDC login + claim assertions remain as a future sub-sprint)
+**Status**: Active (suite content + dispatch arm + live invite + capture + link-follow steps landed May 18, 2026; credential-setup form parser scaffold landed May 21, 2026 in `src/Prodbox/Keycloak/CredentialSetupForm.hs` with synthetic-fixture unit tests, ready for the live form-structure capture step; credential-setup form POST + fresh OIDC login + claim assertions wire-in to `runKeycloakInviteValidation` remain pending the live capture)
 **Blocked by**: Sprints `8.1`, `8.2`, `8.3`, `8.4`
 **Implementation**: `src/Prodbox/TestPlan.hs` (add `ValidationKeycloakInvite` variant and
 `IntegrationKeycloakInvite` integration suite), `src/Prodbox/TestValidation.hs` (add the

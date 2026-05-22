@@ -42,6 +42,7 @@ prodbox
     docs
     haskell
     chart
+  nuke
   pulumi
     eks-resources
     eks-destroy
@@ -51,6 +52,7 @@ prodbox
     aws-subzone-destroy
     aws-ses-resources
     aws-ses-destroy
+    aws-ses-migrate-backend
   rke2
     status
     start

@@ -5,7 +5,7 @@ _prodbox()
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   if (( COMP_CWORD <= 1 )); then
-    words="aws charts check-code commands config dns docs gateway help host k8s lint pulumi rke2 test tla-check users workload"
+    words="aws charts check-code commands config dns docs gateway help host k8s lint nuke pulumi rke2 test tla-check users workload"
   else
     key="${COMP_WORDS[@]:1:COMP_CWORD-1}"
     case "$key" in
@@ -37,7 +37,7 @@ _prodbox()
         words="all files docs haskell chart"
         ;;
       "pulumi")
-        words="eks-resources eks-destroy test-resources test-destroy aws-subzone-resources aws-subzone-destroy aws-ses-resources aws-ses-destroy"
+        words="eks-resources eks-destroy test-resources test-destroy aws-subzone-resources aws-subzone-destroy aws-ses-resources aws-ses-destroy aws-ses-migrate-backend"
         ;;
       "rke2")
         words="status start stop restart reconcile delete logs"

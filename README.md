@@ -58,8 +58,12 @@ validation environments.
   [documents/engineering/lifecycle_reconciliation_doctrine.md](./documents/engineering/lifecycle_reconciliation_doctrine.md).
   `prodbox rke2 delete` opens with a refuse-path on live per-run Pulumi stacks; `--cascade` is the
   positive-framed "clean teardown" path that orchestrates K8s drain + per-run destroys + cluster
-  uninstall + postflight tag sweep. `prodbox nuke` is the operator-only total-teardown path that
-  also destroys long-lived shared infrastructure.
+  uninstall + postflight tag sweep. The K8s drain phase tolerates the case where the Kubernetes
+  cluster is already absent (partial teardown, first-time provisioning, repeated reruns): a quick
+  reachability probe skips the drain with an operator-visible reason and the cascade continues to
+  the per-run Pulumi destroys, so re-running `--cascade` against an already-torn-down host is safe.
+  `prodbox nuke` is the operator-only total-teardown path that also destroys long-lived shared
+  infrastructure.
 - This target edge doctrine applies to the self-managed local-cluster path; the AWS validation
   stacks remain separate and do not currently provision MetalLB or Envoy Gateway.
 - The current shipped edge workloads share the single public hostname

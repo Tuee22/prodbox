@@ -225,3 +225,7 @@ processEvents conn handler = do
 
 - [Unit Testing Policy](./unit_testing_policy.md)
 - [Effect Interpreter Runtime Contract](./effect_interpreter.md)
+- [CLI Command Surface § 2A — Operator Vocabulary Contract](./cli_command_surface.md#2a-operator-vocabulary-contract)
+  — every string this doctrine governs (stdout/stderr phase banners,
+  refusal messages, success summaries) must use operator vocabulary,
+  not development-plan tracking identifiers.

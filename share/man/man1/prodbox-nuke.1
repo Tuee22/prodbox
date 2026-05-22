@@ -1,0 +1,18 @@
+.TH PRODBOX_nuke 1
+.SH NAME
+prodbox-nuke \- Total teardown of every prodbox-owned AWS resource (operator-only)
+.SH SYNOPSIS
+.B prodbox nuke
+.SH DESCRIPTION
+The only sanctioned path to destroy long-lived shared infrastructure (`aws-ses`, the long-lived `pulumi_state_backend` bucket) transitively. TTY-only; refuses non-interactive contexts. Requires the typed confirmation literal `NUKE EVERYTHING`. No `--yes` shorthand by design. `--dry-run` renders the plan without mutating any state.
+.SH OPTIONS
+.TP
+\fB--dry-run\fR
+Render the teardown plan without mutating state
+.TP
+\fB--plan-file\fR <PATH>
+Write the rendered plan to a file
+.SH EXAMPLES
+.TP
+\fBprodbox nuke --dry-run\fR
+Render the total-teardown plan.

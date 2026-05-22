@@ -209,15 +209,31 @@ runNativeValidation
 runNativeValidation substrate repoRoot environment validation = do
   writeOutputLine
     ("Validation: " ++ nativeValidationId validation ++ " (substrate=" ++ substrateId substrate ++ ")")
-  withSubstrateKubeconfigEnv repoRoot substrate runSubstrateValidation
+  writeDiagnosticLine
+    ( "[validation="
+        ++ nativeValidationId validation
+        ++ " substrate="
+        ++ substrateId substrate
+        ++ "] entering body"
+    )
+  result <- withSubstrateKubeconfigEnv repoRoot substrate runSubstrateValidation
+  writeDiagnosticLine
+    ( "[validation="
+        ++ nativeValidationId validation
+        ++ " substrate="
+        ++ substrateId substrate
+        ++ "] body exit="
+        ++ show result
+    )
+  pure result
  where
   runSubstrateValidation =
     case validation of
-      ValidationChartsVscode -> runChartsVscodeValidation repoRoot
-      ValidationChartsApi -> runChartsApiValidation repoRoot
-      ValidationChartsWebsocket -> runChartsWebsocketValidation repoRoot environment
-      ValidationAdminRoutes -> runAdminRoutesValidation repoRoot
-      ValidationPublicDns -> runPublicDnsValidation repoRoot
+      ValidationChartsVscode -> runChartsVscodeValidation repoRoot substrate
+      ValidationChartsApi -> runChartsApiValidation repoRoot substrate
+      ValidationChartsWebsocket -> runChartsWebsocketValidation repoRoot environment substrate
+      ValidationAdminRoutes -> runAdminRoutesValidation repoRoot substrate
+      ValidationPublicDns -> runPublicDnsValidation repoRoot substrate
       ValidationDnsAws -> runDnsAwsValidation repoRoot
       ValidationAwsIam ->
         assertProducedOutputContainsAll
@@ -284,8 +300,21 @@ runNativeValidation substrate repoRoot environment validation = do
               ["CHART_DELETION", "HOST_STORAGE_PRESERVED=true"]
           ]
       ValidationLifecycle ->
+        -- The Sprint 4.11 `noLivePerRunPulumiStacks` predicate guards
+        -- `rke2 delete --yes` against orphaning per-run AWS stacks.
+        -- The canonical suite provisions the `aws-eks` and (sometimes)
+        -- `aws-test` Pulumi stacks earlier in the run and destroys
+        -- them at suite postflight, so by the time this validation
+        -- fires the predicate sees live residue. The suite harness
+        -- has explicit residue ownership semantics — it knows the
+        -- postflight will clean up — so the `--allow-pulumi-residue`
+        -- bypass is the documented operator-acknowledged escape hatch
+        -- and the right tool for the suite-internal call.
         runSequentially
-          [ runNativeCliCommandForExitCode repoRoot environment ["rke2", "delete", "--yes"]
+          [ runNativeCliCommandForExitCode
+              repoRoot
+              environment
+              ["rke2", "delete", "--yes", "--allow-pulumi-residue"]
           , runNativeCliCommandForExitCode repoRoot environment ["rke2", "reconcile"]
           , runNativeCliCommandForExitCode repoRoot environment ["k8s", "health"]
           ]
@@ -466,13 +495,13 @@ ensurePartitionInvariant :: Bool -> String -> Either String ()
 ensurePartitionInvariant condition err =
   if condition then Right () else Left err
 
-runChartsVscodeValidation :: FilePath -> IO ExitCode
-runChartsVscodeValidation repoRoot = do
+runChartsVscodeValidation :: FilePath -> Substrate -> IO ExitCode
+runChartsVscodeValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
-      readyExit <- waitForPublicEdgeReady repoRoot
+      readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess ->
@@ -497,13 +526,13 @@ runChartsVscodeValidation repoRoot = do
                 chartsVscodeCurlDelayMicroseconds
             ]
 
-runChartsApiValidation :: FilePath -> IO ExitCode
-runChartsApiValidation repoRoot = do
+runChartsApiValidation :: FilePath -> Substrate -> IO ExitCode
+runChartsApiValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
-      readyExit <- waitForPublicEdgeReady repoRoot
+      readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
@@ -535,13 +564,13 @@ runChartsApiValidation repoRoot = do
                     ["\"mode\":\"api\"", "\"pod\":\""]
                 ]
 
-runChartsWebsocketValidation :: FilePath -> [(String, String)] -> IO ExitCode
-runChartsWebsocketValidation repoRoot environment = do
+runChartsWebsocketValidation :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
+runChartsWebsocketValidation repoRoot environment substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
-      readyExit <- waitForPublicEdgeReady repoRoot
+      readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
@@ -563,13 +592,13 @@ data ManagedWebsocketConnection = ManagedWebsocketConnection
   , managedWebsocketFinalize :: IO ()
   }
 
-runAdminRoutesValidation :: FilePath -> IO ExitCode
-runAdminRoutesValidation repoRoot = do
+runAdminRoutesValidation :: FilePath -> Substrate -> IO ExitCode
+runAdminRoutesValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
-      readyExit <- waitForPublicEdgeReady repoRoot
+      readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess ->
@@ -1332,12 +1361,12 @@ encodeRedirectUri :: String -> String
 encodeRedirectUri =
   replaceAll "/" "%2F" . replaceAll ":" "%3A"
 
-waitForPublicEdgeReady :: FilePath -> IO ExitCode
-waitForPublicEdgeReady repoRoot = do
+waitForPublicEdgeReady :: FilePath -> Substrate -> IO ExitCode
+waitForPublicEdgeReady repoRoot substrate = do
   let spec =
         Subprocess
           { subprocessPath = canonicalOperatorBinaryPath repoRoot
-          , subprocessArguments = ["host", "public-edge"]
+          , subprocessArguments = ["host", "public-edge", "--substrate", substrateId substrate]
           , subprocessEnvironment = Nothing
           , subprocessWorkingDirectory = Just repoRoot
           }
@@ -1375,8 +1404,8 @@ waitForPublicEdgeReady repoRoot = do
                 threadDelay publicEdgeReadyDelayMicroseconds
                 waitForClassification spec (attemptsLeft - 1)
 
-runPublicDnsValidation :: FilePath -> IO ExitCode
-runPublicDnsValidation repoRoot = do
+runPublicDnsValidation :: FilePath -> Substrate -> IO ExitCode
+runPublicDnsValidation repoRoot _substrate = do
   settingsEnvResult <- settingsAwsEnvironment repoRoot
   case settingsEnvResult of
     Left err -> failWith err

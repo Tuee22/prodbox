@@ -11,6 +11,7 @@ module Prodbox.Settings
   , DeploymentSection (..)
   , DomainSection (..)
   , MetallbBgpPeer (..)
+  , PulumiStateBackendSection (..)
   , Route53Section (..)
   , SesSection (..)
   , StorageSection (..)
@@ -28,9 +29,17 @@ where
 
 import Control.Exception (SomeException, displayException, try)
 import Data.Char (isDigit, isHexDigit, toLower)
+import Data.Char qualified as Char
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Dhall (FromDhall, auto, inputFile)
+import Dhall
+  ( FromDhall (..)
+  , InterpretOptions (..)
+  , auto
+  , defaultInterpretOptions
+  , genericAutoWith
+  , inputFile
+  )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Repo
@@ -110,6 +119,46 @@ data StorageSection = StorageSection
   }
   deriving (Eq, Show, Generic, FromDhall)
 
+-- | Sprint 4.10: dedicated S3 bucket that backs long-lived Pulumi
+-- stacks (today: @aws-ses@). Per-run stacks (@aws-eks@,
+-- @aws-eks-subzone@, @aws-test@) continue using the in-cluster MinIO
+-- backend; this record names the long-lived destination only. An
+-- empty @bucket_name@ means the operator has not yet provisioned the
+-- long-lived backend, and long-lived Pulumi operations remain on the
+-- legacy MinIO backend until the migration command runs.
+--
+-- The Haskell field names carry a @psb@ prefix to avoid collision
+-- with @Credentials.region@; a custom 'FromDhall' instance strips the
+-- prefix so the Dhall config keeps bare field names
+-- (@bucket_name@, @region@, @key_prefix@).
+data PulumiStateBackendSection = PulumiStateBackendSection
+  { psbBucketName :: Text
+  , psbRegion :: Text
+  , psbKeyPrefix :: Text
+  }
+  deriving (Eq, Show, Generic)
+
+instance FromDhall PulumiStateBackendSection where
+  autoWith _ =
+    genericAutoWith
+      defaultInterpretOptions {fieldModifier = stripPsbPrefix}
+   where
+    stripPsbPrefix :: Text -> Text
+    stripPsbPrefix value = case Text.stripPrefix "psb" value of
+      Just stripped -> haskellCamelToDhallSnake stripped
+      Nothing -> value
+
+haskellCamelToDhallSnake :: Text -> Text
+haskellCamelToDhallSnake value =
+  Text.toLower
+    ( Text.concat
+        [ if i > 0 && Char.isUpper c
+            then Text.pack ['_', c]
+            else Text.singleton c
+        | (i :: Int, c) <- zip [0 ..] (Text.unpack value)
+        ]
+    )
+
 data ConfigFile = ConfigFile
   { aws :: Credentials
   , aws_admin_for_test_simulation :: Credentials
@@ -120,6 +169,7 @@ data ConfigFile = ConfigFile
   , acme :: AcmeSection
   , deployment :: DeploymentSection
   , storage :: StorageSection
+  , pulumi_state_backend :: PulumiStateBackendSection
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -187,6 +237,12 @@ renderSettingsDisplay showSecrets settings =
     , "deployment.api_replicas=" ++ renderMaybeNatural (api_replicas (deployment config))
     , "deployment.websocket_replicas=" ++ renderMaybeNatural (websocket_replicas (deployment config))
     , "storage.manual_pv_host_root=" ++ resolvedManualPvHostRoot settings
+    , "pulumi_state_backend.bucket_name="
+        ++ renderText (psbBucketName (pulumi_state_backend config))
+    , "pulumi_state_backend.region="
+        ++ renderText (psbRegion (pulumi_state_backend config))
+    , "pulumi_state_backend.key_prefix="
+        ++ renderText (psbKeyPrefix (pulumi_state_backend config))
     ]
  where
   config = validatedConfig settings
@@ -523,6 +579,12 @@ defaultConfigFile =
           , websocket_replicas = Just 2
           }
     , storage = StorageSection {manual_pv_host_root = ".data"}
+    , pulumi_state_backend =
+        PulumiStateBackendSection
+          { psbBucketName = ""
+          , psbRegion = ""
+          , psbKeyPrefix = "pulumi/"
+          }
     }
 
 renderConfigDhall :: ConfigFile -> String
@@ -584,6 +646,11 @@ renderConfigDhall config =
     , "        }"
     , "    , storage = Config.default.storage // {"
     , "        , manual_pv_host_root = " ++ dhallText (manual_pv_host_root (storage config))
+    , "        }"
+    , "    , pulumi_state_backend = Config.default.pulumi_state_backend // {"
+    , "        , bucket_name = " ++ dhallText (psbBucketName (pulumi_state_backend config))
+    , "        , region = " ++ dhallText (psbRegion (pulumi_state_backend config))
+    , "        , key_prefix = " ++ dhallText (psbKeyPrefix (pulumi_state_backend config))
     , "        }"
     , "    }"
     , ""

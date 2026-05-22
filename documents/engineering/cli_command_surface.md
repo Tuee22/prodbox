@@ -63,6 +63,77 @@ Top-level commands:
 | `help` | Command | Render help for a command path |
 | `check-code` | Command | Doctrine-policy, formatter, lint, warning-clean build, and operator-binary sync gate |
 | `tla-check` | Command | TLA+ model checking via Docker |
+| `nuke` | Command | Operator-only total teardown (TTY-only, typed-confirmation literal `NUKE EVERYTHING`) |
+
+## 2A. Operator Vocabulary Contract
+
+Every string the operator can read at the terminal must use **operator
+vocabulary**, not development-plan tracking vocabulary. Sprint
+identifiers, phase numbers, and other dev-plan tracking labels are
+confined to `DEVELOPMENT_PLAN/` and the governed engineering docs;
+they must not leak into the binary or its generated artifacts.
+
+### Operator-facing surfaces
+
+The contract applies to every one of these surfaces:
+
+- `prodbox <command> --help` output and any text in
+  `src/Prodbox/CLI/Spec.hs` that contributes to it (flag-help
+  strings, leaf descriptions, example help, group descriptions).
+- Manpages under `share/man/man1/*.1`.
+- Shell completions under `share/completion/{bash,zsh,fish}/*`.
+- The generated CLI command reference at `documents/cli/commands.md`.
+- Test goldens that capture operator-facing output at
+  `test/golden/cli/*` (`commands.json`, `commands-tree.txt`,
+  `help-all.txt`).
+- Anything the binary writes to `stdout` / `stderr` at runtime,
+  including phase banners, refusal messages, and the dry-run /
+  plan-file renderers (`runNativeDeleteCascade`, `renderNukePlan`,
+  `renderPreconditionFailures`, `renderTagSweepRefusal`,
+  `renderDrainTimeoutRefusal`).
+
+### Forbidden vocabulary in operator-facing strings
+
+- Literal `Sprint <number>` or `Sprints <list>` (regardless of decimal
+  depth: `4.11`, `7.5.c.v.f`, etc.).
+- Phase numbers in the form `Phase <N>` when used as a tracking
+  identifier rather than as part of an operator-visible "phase
+  banner" the binary itself writes (e.g., `Phase 1/2 prerequisites`
+  is fine; `Phase 7 substrate work` is not — the latter is a
+  dev-plan label).
+- Direct cross-references to `DEVELOPMENT_PLAN/` from the binary's
+  output (operator should not have to read the dev-plan to act on a
+  message; if the operator needs guidance, the message links to
+  governed engineering docs under `documents/engineering/`).
+
+### Required operator vocabulary
+
+- Describe what the command does, what flags mean, what failure
+  modes look like, what state changed.
+- For refusals, name the canonical remedy command (`prodbox pulumi
+  <stack>-destroy --yes`, `prodbox rke2 delete --cascade`, etc.) so
+  the operator can re-run.
+- For runbook references, link to operator-meaningful entries under
+  `documents/` or operator-facing manpages — never `DEVELOPMENT_PLAN/`.
+
+### Enforcement
+
+`prodbox check-code` enforces this contract with a regex scan over
+the operator-facing surfaces listed above. Any literal `Sprint
+[0-9]` (case-sensitive, word-boundaried) or `Sprints [0-9]` outside
+of comments-in-code or governed dev-plan files fails the gate. The
+scan is implemented in `src/Prodbox/CheckCode.hs` alongside the
+existing doctrine-alignment scans (forbidden subprocess primitives,
+direct-stderr-write rules, generated-section integrity).
+
+The contract does **not** apply to:
+
+- Source-code comments and Haddock haddocks. These are developer
+  documentation and routinely cite sprint identifiers for
+  archaeology.
+- `DEVELOPMENT_PLAN/` and every file under it.
+- The governed engineering docs under `documents/engineering/`.
+- `legacy-tracking-for-deletion.md` cleanup-ledger entries.
 
 ## 3. Command Matrix
 

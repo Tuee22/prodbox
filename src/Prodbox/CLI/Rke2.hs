@@ -12,6 +12,7 @@ module Prodbox.CLI.Rke2
   , MinioImageSource (..)
   , renderNativeInstallPlan
   , renderMinioChartArgs
+  , runNativeDeleteWithResiduePolicy
   , runRke2Command
   )
 where
@@ -55,6 +56,7 @@ import Prodbox.CLI.Command
   , PlanOptions (..)
   , PulumiCommand (..)
   , Rke2Command (..)
+  , Rke2DeleteFlags (..)
   , buildPlan
   , runPlanWithOptions
   )
@@ -84,6 +86,8 @@ import Prodbox.Lib.EksCustomImagePush
   , eksCustomImagePushPodManifest
   , rewriteChartRefForInClusterPush
   )
+import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
+import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
   , patroniOperatorNamespace
@@ -484,10 +488,13 @@ runRke2Command repoRoot command =
             }
     Rke2Reconcile planOptions ->
       requireLinux (runNativeInstall repoRoot planOptions)
-    Rke2Delete confirmed ->
+    Rke2Delete flags _planOptions ->
       requireLinux $
-        if confirmed
-          then runNativeDelete repoRoot
+        if rke2DeleteYes flags
+          then
+            if rke2DeleteCascade flags
+              then runNativeDeleteCascade repoRoot
+              else runNativeDeleteWithResiduePolicy repoRoot flags
           else failWith "rke2 delete requires --yes confirmation"
     Rke2Logs maybeLines ->
       requireLinux $
@@ -632,6 +639,74 @@ runNativeDelete repoRoot = do
     , removeManagedKubeconfig
     , renderRetainedStateNotice repoRoot retainedManualPvRoot
     ]
+
+-- | Sprint 4.11: @prodbox rke2 delete@ (default mode) opens with
+-- @checkAll [noLivePerRunPulumiStacks]@. When @--allow-pulumi-residue@
+-- is set the operator has explicitly acknowledged the risk and the
+-- precondition is skipped. Per the doctrine, the K8s drain phase and
+-- postflight tag sweep land in Sprints 4.12; this sprint only adds
+-- the refuse-path and the @--cascade@ entry point.
+runNativeDeleteWithResiduePolicy :: FilePath -> Rke2DeleteFlags -> IO ExitCode
+runNativeDeleteWithResiduePolicy repoRoot flags
+  | rke2DeleteAllowPulumiResidue flags = runNativeDelete repoRoot
+  | otherwise = do
+      checkResult <-
+        Preconditions.checkAll [Preconditions.noLivePerRunPulumiStacks repoRoot]
+      case checkResult of
+        Left failures -> do
+          writeOutputLine (Preconditions.renderPreconditionFailures failures)
+          pure (ExitFailure 1)
+        Right () -> runNativeDelete repoRoot
+
+-- | Sprint 4.11/4.12/4.15: @prodbox rke2 delete --cascade@
+-- orchestrates the full teardown as one atomic operator action:
+-- K8s drain → per-run Pulumi destroys → cluster uninstall →
+-- postflight tag sweep. The drain runs **before** any per-run
+-- Pulumi destroy so the AWS Load Balancer Controller and EBS CSI
+-- driver are still alive and can unwind their AWS resources.
+--
+-- Skip-is-success invariant (Sprint 4.15): when the Kubernetes
+-- cluster is already absent, the drain phase emits 'DrainSkipped'
+-- with an operator-visible reason and the cascade continues to the
+-- per-run Pulumi destroys. Per
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md § 3
+-- layer 1@, the cascade is safe to continue from 'DrainSkipped'
+-- because the K8s controllers that would have owned AWS resources
+-- are already gone, and the postflight tag sweep is the backstop.
+-- The cascade only aborts on 'DrainTimedOut' / 'DrainFailed',
+-- which by construction can only occur when the cluster was
+-- reachable and a delete-or-poll step errored.
+runNativeDeleteCascade :: FilePath -> IO ExitCode
+runNativeDeleteCascade repoRoot = do
+  writeOutputLine "Running K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs)..."
+  parentEnv <- getEnvironment
+  rke2KubeconfigPresent <- doesFileExist rke2KubeconfigPath
+  let drainEnvWithKubeconfig =
+        if rke2KubeconfigPresent
+          then ("KUBECONFIG", rke2KubeconfigPath) : parentEnv
+          else parentEnv
+      drainEnv =
+        K8sDrain.K8sDrainEnv
+          { K8sDrain.drainEnvironment = drainEnvWithKubeconfig
+          , K8sDrain.drainWorkingDirectory = Just repoRoot
+          }
+  drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
+  case K8sDrain.cascadeDecisionFromDrainResult drainResult of
+    K8sDrain.CascadeContinue maybeSkipReason -> do
+      case maybeSkipReason of
+        Nothing ->
+          writeOutputLine
+            "K8s drain phase complete. Proceeding with per-run Pulumi destroys + cluster uninstall."
+        Just reason ->
+          writeOutputLine
+            ("K8s drain skipped: " ++ reason ++ " Proceeding with per-run Pulumi destroys + cluster uninstall.")
+      runNativeDelete repoRoot
+    K8sDrain.CascadeAbort reason -> do
+      case drainResult of
+        K8sDrain.DrainTimedOut survivors ->
+          writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
+        _ -> writeOutputLine reason
+      pure (ExitFailure 1)
 
 resolveRetainedManualPvRoot :: FilePath -> IO FilePath
 resolveRetainedManualPvRoot repoRoot = do

@@ -2,9 +2,11 @@ module Prodbox.CheckCode
   ( DoctrineViolation (..)
   , GeneratedSectionRule (..)
   , doctrineViolationsInPaths
+  , extractStringLiterals
   , generatedSectionRules
   , haskellStyleViolations
   , listRepoOwnedPaths
+  , matchesSprintToken
   , renderGeneratedSection
   , renderTrackedGeneratedPath
   , rendererDeterminismViolations
@@ -380,6 +382,7 @@ haskellStyleViolations repoRoot = do
   daemonLifecycleTestViolations <- checkDaemonLifecycleTestBoundaries repoRoot
   subprocessViolations <- checkSubprocessBoundaries repoRoot
   errorBoundaryViolations <- checkErrorBoundaryViolations repoRoot
+  operatorVocabularyViolations <- checkOperatorVocabulary repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   pure
     ( either pure (const []) thinMainResult
@@ -391,6 +394,7 @@ haskellStyleViolations repoRoot = do
         ++ daemonLifecycleTestViolations
         ++ subprocessViolations
         ++ errorBoundaryViolations
+        ++ operatorVocabularyViolations
         ++ testSuiteTypeViolations
     )
 
@@ -782,6 +786,136 @@ checkErrorBoundaryViolations repoRoot = do
                 || any (`isInfixOf` contents) directStderrWrites
             ]
       )
+
+-- | Sprint 4.14: enforce the operator vocabulary contract defined in
+-- @documents/engineering/cli_command_surface.md § 2A@. Sprint
+-- identifiers (`Sprint <number>`, `Sprints <list>`) must not appear
+-- in any operator-facing surface. This check scans:
+--
+--   * `src/Prodbox/CLI/Spec.hs` (string literals only — comments are
+--     exempt because they are developer documentation, not operator
+--     output)
+--   * Every file under `share/man/`, `share/completion/`,
+--     `documents/cli/`, and `test/golden/cli/`
+--
+-- A match anywhere in these paths fails the gate. The check is
+-- conservative: it does not parse Haskell, it just extracts string
+-- literals out of source files and greps the token sequence for an
+-- adjacent `Sprint`/`Sprints` + digit. The non-source paths are
+-- searched whole because they have no comment syntax that needs
+-- stripping.
+checkOperatorVocabulary :: FilePath -> IO [String]
+checkOperatorVocabulary repoRoot = do
+  specViolations <- scanSpecHsStringLiterals
+  artifactViolations <- scanGeneratedArtifacts
+  pure (specViolations ++ artifactViolations)
+ where
+  scanSpecHsStringLiterals :: IO [String]
+  scanSpecHsStringLiterals = do
+    let specPath = repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Spec.hs"
+    contents <- readFile specPath
+    let literals = extractStringLiterals contents
+        offenders =
+          [ "src/Prodbox/CLI/Spec.hs string literal contains sprint identifier: "
+              ++ shortenSprintLeak lit
+          | lit <- literals
+          , matchesSprintToken lit
+          ]
+    pure offenders
+
+  scanGeneratedArtifacts :: IO [String]
+  scanGeneratedArtifacts = do
+    repoPaths <- listRepoOwnedPaths repoRoot
+    let targetPaths =
+          [ path
+          | path <- repoPaths
+          , any
+              (`isPrefixOf` path)
+              [ "share/man/"
+              , "share/completion/"
+              , "documents/cli/"
+              , "test/golden/cli/"
+              ]
+          ]
+    concat
+      <$> forM
+        targetPaths
+        ( \relativePath -> do
+            let absolutePath = repoRoot </> relativePath
+            isFile <- doesFileExist absolutePath
+            if not isFile
+              then pure []
+              else do
+                contents <- readFile absolutePath
+                pure $
+                  [ relativePath
+                      ++ " contains sprint identifier in operator-facing "
+                      ++ "artifact (see "
+                      ++ "documents/engineering/cli_command_surface.md § 2A)."
+                  | any matchesSprintToken (lines contents)
+                  ]
+        )
+
+-- | Sprint 4.14: does a single line contain the forbidden adjacent
+-- `Sprint <digit>` or `Sprints <digit>` token pair? Exposed for unit
+-- tests; consumed by 'checkOperatorVocabulary'.
+--
+-- Tokens are normalized by stripping leading and trailing
+-- non-alphanumeric characters so the check fires on
+-- @"(Sprint 4.11)"@ as well as @"Sprint 4.11:"@.
+matchesSprintToken :: String -> Bool
+matchesSprintToken line =
+  let tokens = map stripPunct (words line)
+      adjacentDigit (token : nextToken : rest)
+        | token == "Sprint" || token == "Sprints"
+        , firstChar : _ <- nextToken
+        , firstChar `elem` ['0' .. '9'] =
+            True
+        | otherwise = adjacentDigit (nextToken : rest)
+      adjacentDigit _ = False
+   in adjacentDigit tokens
+ where
+  stripPunct :: String -> String
+  stripPunct = dropWhileEnd (not . isAlphaNum) . dropWhile (not . isAlphaNum)
+
+  dropWhileEnd :: (a -> Bool) -> [a] -> [a]
+  dropWhileEnd p = foldr (\c acc -> if null acc && p c then [] else c : acc) []
+
+shortenSprintLeak :: String -> String
+shortenSprintLeak lit
+  | length lit <= 80 = lit
+  | otherwise = take 77 lit ++ "..."
+
+-- | Walk a Haskell source string and emit the contents of every
+-- @"..."@ string literal (in source order). Escaped quotes inside
+-- literals are preserved as part of the body. Line- and block-
+-- comments are ignored. Conservative: when in doubt, errs on the
+-- side of treating data as outside a literal. Exposed for unit
+-- tests; consumed by 'checkOperatorVocabulary'.
+extractStringLiterals :: String -> [String]
+extractStringLiterals = goOutside []
+ where
+  goOutside :: String -> String -> [String]
+  goOutside _ [] = []
+  goOutside acc ('-' : '-' : rest) =
+    let _ = acc
+     in goOutside [] (dropWhile (/= '\n') rest)
+  goOutside acc ('{' : '-' : rest) =
+    let _ = acc
+     in goOutside [] (skipBlockComment rest)
+  goOutside _ ('"' : rest) = goInside [] rest
+  goOutside acc (_ : rest) = goOutside acc rest
+
+  goInside :: String -> String -> [String]
+  goInside acc [] = [reverse acc]
+  goInside acc ('\\' : c : rest) = goInside (c : '\\' : acc) rest
+  goInside acc ('"' : rest) = reverse acc : goOutside [] rest
+  goInside acc (c : rest) = goInside (c : acc) rest
+
+  skipBlockComment :: String -> String
+  skipBlockComment [] = []
+  skipBlockComment ('-' : '}' : rest) = rest
+  skipBlockComment (_ : rest) = skipBlockComment rest
 
 checkTestSuiteInterfaces :: FilePath -> IO [String]
 checkTestSuiteInterfaces repoRoot = do

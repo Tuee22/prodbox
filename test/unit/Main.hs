@@ -23,6 +23,7 @@ import Data.IORef
   )
 import Data.List
   ( elemIndex
+  , isInfixOf
   , isPrefixOf
   , sort
   )
@@ -85,11 +86,13 @@ import Prodbox.CLI.Command
   , IntegrationSuite (..)
   , K8sCommand (..)
   , NativeCommand (..)
+  , NukeOptions (..)
   , PlanOptions (..)
   , PolicyTier (..)
   , PulumiCommand (..)
   , PulumiResiduePolicy (..)
   , Rke2Command (..)
+  , Rke2DeleteFlags (..)
   , TestCommand (..)
   , TestScope (..)
   , buildPlan
@@ -108,6 +111,7 @@ import Prodbox.CLI.Interactive
   , renderNonTtyError
   )
 import Prodbox.CLI.Json (renderCommandJson)
+import Prodbox.CLI.Nuke qualified as Nuke
 import Prodbox.CLI.Output
   ( ColorMode (..)
   , OutputFormat (..)
@@ -137,7 +141,9 @@ import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CheckCode
   ( DoctrineViolation (..)
   , doctrineViolationsInPaths
+  , extractStringLiterals
   , listRepoOwnedPaths
+  , matchesSprintToken
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Daemon.Events qualified as DaemonEvents
@@ -210,11 +216,24 @@ import Prodbox.Host
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
+import Prodbox.Infra.LongLivedPulumiBackend
+  ( LongLivedBackendError (..)
+  , adminCredentialsConfigured
+  , longLivedBackendErrorMessage
+  , longLivedPulumiBackendUrl
+  , longLivedPulumiBackendUrlEither
+  , renderDeletePayload
+  )
 import Prodbox.Infra.MinioBackend
   ( parseDeletedMinioExportHostPath
   )
 import Prodbox.K8s
   ( parseKubectlObjectNames
+  )
+import Prodbox.Keycloak.CredentialSetupForm
+  ( CredentialSetupForm (..)
+  , parseCredentialSetupForm
+  , renderCredentialSetupFormPost
   )
 import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.AwsSubstratePlatform qualified
@@ -235,6 +254,14 @@ import Prodbox.Lib.Storage
   , ChartStorageSpec (..)
   , storageBinding
   )
+import Prodbox.Lifecycle.K8sDrain
+  ( CascadeDecision (..)
+  , DrainResult (..)
+  , K8sDrainEnv (..)
+  , cascadeDecisionFromDrainResult
+  )
+import Prodbox.Lifecycle.Preconditions qualified as Preconditions
+import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Naming
   ( boundedResourceName
   , hashSuffix
@@ -266,6 +293,7 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , DomainSection (..)
   , MetallbBgpPeer (..)
+  , PulumiStateBackendSection (..)
   , Route53Section (..)
   , StorageSection (..)
   , ValidatedSettings (..)
@@ -323,6 +351,15 @@ import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
 
+-- | Predicate helper for `Either String a` test assertions: passes
+-- when the result is `Left msg` and `msg` contains the supplied
+-- substring. Lets the `shouldSatisfy` call site stay free of nested
+-- case lambdas (forbidden by `haskell-style` linting rules).
+leftContains :: String -> Either String a -> Bool
+leftContains needle result = case result of
+  Left msg -> needle `isInfixOf` msg
+  Right _ -> False
+
 main :: IO ()
 main = mainWithSuite "prodbox-unit" $ do
   parserSuite
@@ -337,7 +374,11 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "routes host public-edge through the native Haskell runtime" $ do
       parseArgs ["host", "public-edge"]
-        `shouldBe` Right (Options False (RunNative (NativeHost HostPublicEdge)))
+        `shouldBe` Right (Options False (RunNative (NativeHost (HostPublicEdge SubstrateHomeLocal))))
+
+    it "routes host public-edge --substrate aws to the AWS-substrate diagnostic" $ do
+      parseArgs ["host", "public-edge", "--substrate", "aws"]
+        `shouldBe` Right (Options False (RunNative (NativeHost (HostPublicEdge SubstrateAws))))
 
     it "routes dns check through the native Haskell runtime" $ do
       parseArgs ["dns", "check"]
@@ -447,9 +488,90 @@ main = mainWithSuite "prodbox-unit" $ do
       parseArgs ["tla-check"]
         `shouldBe` Right (Options False (RunNative NativeTlaCheck))
 
+    it "routes nuke --dry-run through the native Haskell runtime" $ do
+      parseArgs ["nuke", "--dry-run"]
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativeNuke (NukeOptions {nukeDryRun = True, nukePlanFile = Nothing})))
+          )
+
+    it "routes plain nuke through the native Haskell runtime" $ do
+      parseArgs ["nuke"]
+        `shouldBe` Right
+          ( Options
+              False
+              (RunNative (NativeNuke (NukeOptions {nukeDryRun = False, nukePlanFile = Nothing})))
+          )
+
     it "routes rke2 commands through the native Haskell runtime" $ do
       parseArgs ["rke2", "delete", "--yes"]
-        `shouldBe` Right (Options False (RunNative (NativeRke2 (Rke2Delete True))))
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeRke2
+                      ( Rke2Delete
+                          ( Rke2DeleteFlags
+                              { rke2DeleteYes = True
+                              , rke2DeleteCascade = False
+                              , rke2DeleteAllowPulumiResidue = False
+                              }
+                          )
+                          (PlanOptions False Nothing)
+                      )
+                  )
+              )
+          )
+
+    it "routes rke2 delete --cascade through the native Haskell runtime" $ do
+      parseArgs ["rke2", "delete", "--yes", "--cascade"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeRke2
+                      ( Rke2Delete
+                          ( Rke2DeleteFlags
+                              { rke2DeleteYes = True
+                              , rke2DeleteCascade = True
+                              , rke2DeleteAllowPulumiResidue = False
+                              }
+                          )
+                          (PlanOptions False Nothing)
+                      )
+                  )
+              )
+          )
+
+    it "routes rke2 delete --allow-pulumi-residue through the native Haskell runtime" $ do
+      parseArgs ["rke2", "delete", "--yes", "--allow-pulumi-residue"]
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  ( NativeRke2
+                      ( Rke2Delete
+                          ( Rke2DeleteFlags
+                              { rke2DeleteYes = True
+                              , rke2DeleteCascade = False
+                              , rke2DeleteAllowPulumiResidue = True
+                              }
+                          )
+                          (PlanOptions False Nothing)
+                      )
+                  )
+              )
+          )
+
+    it "rejects rke2 delete --cascade --allow-pulumi-residue (mutual exclusion)" $ do
+      case parseArgs ["rke2", "delete", "--yes", "--cascade", "--allow-pulumi-residue"] of
+        Left _ -> pure ()
+        Right value ->
+          expectationFailure
+            ( "Expected parse failure for --cascade + --allow-pulumi-residue, got: "
+                ++ show value
+            )
 
     it "routes pulumi commands through the native Haskell runtime" $ do
       parseArgs ["pulumi", "test-resources"]
@@ -2715,6 +2837,327 @@ main = mainWithSuite "prodbox-unit" $ do
                      , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
                      ]
 
+  describe "Sprint 4.15 cascade decision from drain result" $ do
+    it "DrainSucceeded maps to CascadeContinue Nothing" $
+      cascadeDecisionFromDrainResult DrainSucceeded `shouldBe` CascadeContinue Nothing
+
+    it "DrainSkipped maps to CascadeContinue (Just reason)" $
+      cascadeDecisionFromDrainResult (DrainSkipped "no cluster")
+        `shouldBe` CascadeContinue (Just "no cluster")
+
+    it "DrainTimedOut maps to CascadeAbort with surviving resources listed" $ do
+      let result = cascadeDecisionFromDrainResult (DrainTimedOut ["Service/foo", "Ingress/bar"])
+      case result of
+        CascadeAbort reason -> do
+          reason `shouldContain` "timed out"
+          reason `shouldContain` "Service/foo"
+          reason `shouldContain` "Ingress/bar"
+        _ -> expectationFailure ("expected CascadeAbort, got: " ++ show result)
+
+    it "DrainFailed maps to CascadeAbort with the error" $ do
+      let result = cascadeDecisionFromDrainResult (DrainFailed "kubectl exit code 42")
+      case result of
+        CascadeAbort reason -> do
+          reason `shouldContain` "K8s drain failed"
+          reason `shouldContain` "kubectl exit code 42"
+        _ -> expectationFailure ("expected CascadeAbort, got: " ++ show result)
+
+    it "skip-is-success invariant: every CascadeContinue path returns no abort" $
+      -- This codifies the doctrine's invariant: only DrainTimedOut and
+      -- DrainFailed can produce CascadeAbort. If a future contributor
+      -- adds a new DrainResult ctor that maps to CascadeAbort, this
+      -- test still passes; if they accidentally map DrainSucceeded or
+      -- DrainSkipped to CascadeAbort, this test fires.
+      mapM_
+        assertSkipIsSuccess
+        [ ("DrainSucceeded", DrainSucceeded)
+        , ("DrainSkipped \"x\"", DrainSkipped "x")
+        ]
+
+  describe "Sprint 4.14 operator vocabulary scan" $ do
+    it "matchesSprintToken returns True for an adjacent Sprint + digit pair" $ do
+      matchesSprintToken "Sprint 4.11: orchestrate the full teardown" `shouldBe` True
+      matchesSprintToken "(Sprint 4.11)" `shouldBe` True
+      matchesSprintToken "see Sprint 7.5.c.v.f" `shouldBe` True
+      matchesSprintToken "Sprints 4.11/4.12 cover the cascade" `shouldBe` True
+
+    it "matchesSprintToken returns False on clean operator vocabulary" $ do
+      matchesSprintToken "Orchestrate the full teardown" `shouldBe` False
+      matchesSprintToken "K8s drain skipped: cluster not reachable" `shouldBe` False
+      matchesSprintToken "Confirm full RKE2 cluster deletion" `shouldBe` False
+      matchesSprintToken "" `shouldBe` False
+
+    it "matchesSprintToken does not fire on Sprint without an adjacent digit" $ do
+      -- Bare 'Sprint' as an English word (no version number) should
+      -- not be a violation; the check is conservatively scoped to
+      -- adjacent digit tokens.
+      matchesSprintToken "Sprint planning is a developer concern" `shouldBe` False
+
+    it "extractStringLiterals pulls bodies of double-quoted strings" $ do
+      let source =
+            unlines
+              [ "module M where"
+              , "x :: String"
+              , "x = \"hello, world\""
+              , "y = \"second\""
+              ]
+      extractStringLiterals source `shouldContain` ["hello, world"]
+      extractStringLiterals source `shouldContain` ["second"]
+
+    it "extractStringLiterals ignores line comments" $ do
+      let source = "x = \"good\" -- \"Sprint 4.11: in a comment\""
+      extractStringLiterals source `shouldBe` ["good"]
+
+    it "extractStringLiterals ignores block comments" $ do
+      let source = "x = \"good\" {- \"Sprint 4.11: in a comment\" -}"
+      extractStringLiterals source `shouldBe` ["good"]
+
+    it "extractStringLiterals preserves escaped quotes inside literals" $ do
+      let source = "x = \"a \\\"quoted\\\" thing\""
+      extractStringLiterals source `shouldBe` ["a \\\"quoted\\\" thing"]
+
+  describe "Sprint 4.10 long-lived Pulumi backend URL renderer" $ do
+    it "renders an s3:// URL with region and prefix when bucket_name and region are set" $ do
+      let section =
+            PulumiStateBackendSection
+              { psbBucketName = "prodbox-pulumi-state-long-lived"
+              , psbRegion = "us-west-2"
+              , psbKeyPrefix = "pulumi/"
+              }
+      longLivedPulumiBackendUrl section
+        `shouldBe` Just "s3://prodbox-pulumi-state-long-lived?region=us-west-2&awssdk=v2&prefix=pulumi/"
+
+    it "omits the prefix segment when key_prefix is empty" $ do
+      let section =
+            PulumiStateBackendSection
+              { psbBucketName = "bucket"
+              , psbRegion = "us-east-1"
+              , psbKeyPrefix = ""
+              }
+      longLivedPulumiBackendUrl section
+        `shouldBe` Just "s3://bucket?region=us-east-1&awssdk=v2"
+
+    it "returns Nothing when bucket_name is empty (no fallback)" $ do
+      let section =
+            PulumiStateBackendSection
+              { psbBucketName = "   "
+              , psbRegion = "us-west-2"
+              , psbKeyPrefix = "pulumi/"
+              }
+      longLivedPulumiBackendUrl section `shouldBe` Nothing
+
+    it "returns Nothing when region is empty (no fallback)" $ do
+      let section =
+            PulumiStateBackendSection
+              { psbBucketName = "bucket"
+              , psbRegion = ""
+              , psbKeyPrefix = "pulumi/"
+              }
+      longLivedPulumiBackendUrl section `shouldBe` Nothing
+
+    it "Either form reports BackendBucketNameEmpty for missing bucket" $ do
+      let section =
+            PulumiStateBackendSection
+              { psbBucketName = ""
+              , psbRegion = "us-west-2"
+              , psbKeyPrefix = "pulumi/"
+              }
+      longLivedPulumiBackendUrlEither section `shouldBe` Left BackendBucketNameEmpty
+
+    it "Either form reports BackendRegionEmpty for missing region" $ do
+      let section =
+            PulumiStateBackendSection
+              { psbBucketName = "bucket"
+              , psbRegion = ""
+              , psbKeyPrefix = "pulumi/"
+              }
+      longLivedPulumiBackendUrlEither section `shouldBe` Left BackendRegionEmpty
+
+    it "renders structured error messages" $ do
+      longLivedBackendErrorMessage BackendBucketNameEmpty
+        `shouldContain` "pulumi_state_backend.bucket_name"
+      longLivedBackendErrorMessage BackendRegionEmpty
+        `shouldContain` "pulumi_state_backend.region"
+      longLivedBackendErrorMessage (BucketEnsureFailed "boom")
+        `shouldContain` "boom"
+
+  describe "Sprint 8.5 Keycloak credential-setup form parser" $ do
+    let syntheticForm =
+          "<!DOCTYPE html>\
+          \<html><body>\
+          \<form id=\"kc-passwd-update-form\" \
+          \action=\"https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE\" \
+          \method=\"post\">\
+          \<input type=\"hidden\" name=\"session_code\" value=\"SCODE\">\
+          \<input type=\"hidden\" name=\"execution\" value=\"UPDATE_PASSWORD\">\
+          \<input type=\"hidden\" name=\"client_id\" value=\"account\">\
+          \<input type=\"password\" name=\"password\" />\
+          \<input type=\"password\" name=\"password-confirm\" />\
+          \</form></body></html>"
+
+    it "parses the synthetic Keycloak fixture into the expected shape" $ do
+      let parsed = parseCredentialSetupForm syntheticForm
+      (formActionUrl <$> parsed)
+        `shouldBe` Right
+          "https://test.resolvefintech.com/auth/realms/prodbox/login-actions/required-action?session_code=SCODE"
+      (formPasswordFieldName <$> parsed) `shouldBe` Right "password"
+      (formPasswordConfirmFieldName <$> parsed) `shouldBe` Right "password-confirm"
+
+    it "collects all hidden inputs verbatim, preserving order" $ do
+      let parsed = parseCredentialSetupForm syntheticForm
+      (formHiddenFields <$> parsed)
+        `shouldBe` Right
+          [ ("session_code", "SCODE")
+          , ("execution", "UPDATE_PASSWORD")
+          , ("client_id", "account")
+          ]
+
+    it "refuses HTML that lacks the kc-passwd-update-form id" $
+      parseCredentialSetupForm "<html><body><form></form></body></html>"
+        `shouldSatisfy` leftContains "kc-passwd-update-form"
+
+    it "refuses HTML that has only one password input" $ do
+      let onlyOnePassword =
+            "<form id=\"kc-passwd-update-form\" action=\"/x\" method=\"post\">\
+            \<input type=\"password\" name=\"password\" />\
+            \</form>"
+      parseCredentialSetupForm onlyOnePassword
+        `shouldSatisfy` leftContains "expected two"
+
+    it "renderCredentialSetupFormPost emits canonical URL-encoded body" $ do
+      let form =
+            CredentialSetupForm
+              { formActionUrl = "/post"
+              , formHiddenFields = [("session_code", "SCODE"), ("client_id", "ac count")]
+              , formPasswordFieldName = "password"
+              , formPasswordConfirmFieldName = "password-confirm"
+              }
+      renderCredentialSetupFormPost form "secret!" "secret!"
+        `shouldBe` "session_code=SCODE&client_id=ac+count&password=secret%21&password-confirm=secret%21"
+
+  describe "Sprint 4.11 predicate-library labels" $ do
+    it "noLiveClusterTaggedAws exposes its label" $
+      Preconditions.preconditionLabel
+        ( Preconditions.noLiveClusterTaggedAws
+            TagSweep.TagSweepInput
+              { TagSweep.tagSweepEnvironment = []
+              , TagSweep.tagSweepClusterName = Nothing
+              , TagSweep.tagSweepWorkingDirectory = Nothing
+              }
+        )
+        `shouldBe` "noLiveClusterTaggedAws"
+
+    it "noUndrainedK8sAwsResources exposes its label" $
+      Preconditions.preconditionLabel
+        ( Preconditions.noUndrainedK8sAwsResources
+            K8sDrainEnv
+              { drainEnvironment = []
+              , drainWorkingDirectory = Nothing
+              }
+        )
+        `shouldBe` "noUndrainedK8sAwsResources"
+
+    it "noLiveOperationalIamUser exposes its label" $
+      Preconditions.preconditionLabel
+        ( Preconditions.noLiveOperationalIamUser
+            "/tmp/repo"
+            Credentials
+              { access_key_id = "AKIA"
+              , secret_access_key = "secret"
+              , session_token = Nothing
+              , region = "us-west-2"
+              }
+        )
+        `shouldBe` "noLiveOperationalIamUser"
+
+    it "noLeftoverDnsBootstrapRecords exposes its label" $
+      Preconditions.preconditionLabel
+        ( Preconditions.noLeftoverDnsBootstrapRecords
+            "/tmp/repo"
+            Credentials
+              { access_key_id = "AKIA"
+              , secret_access_key = "secret"
+              , session_token = Nothing
+              , region = "us-west-2"
+              }
+        )
+        `shouldBe` "noLeftoverDnsBootstrapRecords"
+
+  describe "Sprint 4.10 admin-credential predicate" $ do
+    it "adminCredentialsConfigured accepts a fully populated credential block" $
+      adminCredentialsConfigured
+        Credentials
+          { access_key_id = "AKIAEXAMPLE"
+          , secret_access_key = "secret"
+          , session_token = Nothing
+          , region = "us-west-2"
+          }
+        `shouldBe` True
+
+    it "adminCredentialsConfigured refuses an empty access_key_id" $
+      adminCredentialsConfigured
+        Credentials
+          { access_key_id = ""
+          , secret_access_key = "secret"
+          , session_token = Nothing
+          , region = "us-west-2"
+          }
+        `shouldBe` False
+
+    it "adminCredentialsConfigured refuses an empty secret_access_key" $
+      adminCredentialsConfigured
+        Credentials
+          { access_key_id = "AKIAEXAMPLE"
+          , secret_access_key = "   "
+          , session_token = Nothing
+          , region = "us-west-2"
+          }
+        `shouldBe` False
+
+    it "adminCredentialsConfigured refuses an empty region" $
+      adminCredentialsConfigured
+        Credentials
+          { access_key_id = "AKIAEXAMPLE"
+          , secret_access_key = "secret"
+          , session_token = Nothing
+          , region = ""
+          }
+        `shouldBe` False
+
+    it "adminCredentialsConfigured tolerates an optional session_token" $
+      adminCredentialsConfigured
+        Credentials
+          { access_key_id = "ASIAEXAMPLE"
+          , secret_access_key = "secret"
+          , session_token = Just "tok"
+          , region = "us-east-1"
+          }
+        `shouldBe` True
+
+  describe "Sprint 4.13 long-lived state-bucket destroy payload" $ do
+    it "renderDeletePayload emits the canonical S3 delete-objects shape for one version" $ do
+      renderDeletePayload [("pulumi/.pulumi/stacks/aws-ses.json", "vid-1")]
+        `shouldBe` "{\"Objects\":[{\"Key\":\"pulumi/.pulumi/stacks/aws-ses.json\",\"VersionId\":\"vid-1\"}]}"
+
+    it "renderDeletePayload emits an empty Objects array when given no entries" $ do
+      renderDeletePayload [] `shouldBe` "{\"Objects\":[]}"
+
+    it "renderDeletePayload preserves order across multiple entries" $ do
+      renderDeletePayload [("a", "v1"), ("b", "v2"), ("c", "v3")]
+        `shouldBe` "{\"Objects\":[{\"Key\":\"a\",\"VersionId\":\"v1\"},{\"Key\":\"b\",\"VersionId\":\"v2\"},{\"Key\":\"c\",\"VersionId\":\"v3\"}]}"
+
+  describe "Sprint 4.13 prodbox nuke renderer + confirmation literal" $ do
+    it "confirmation literal is `NUKE EVERYTHING` (case-sensitive, no shorthand)" $
+      Nuke.confirmationLiteral `shouldBe` "NUKE EVERYTHING"
+    it "renderNukePlan lists the five-step orchestration in order" $ do
+      let plan = Nuke.renderNukePlan "/tmp/repo"
+      plan `shouldContain` "STEP=1 K8s drain"
+      plan `shouldContain` "STEP=2 prodbox pulumi aws-ses-destroy"
+      plan `shouldContain` "STEP=3 prodbox aws teardown"
+      plan `shouldContain` "STEP=4 postflight tag sweep"
+      plan `shouldContain` "STEP=5 destroy long-lived `pulumi_state_backend` S3 bucket"
+      plan `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
+
   describe "Sprint 7.7 residue lifecycle partition" $ do
     it "perRunStackNames matches substrates-doctrine Resource Lifecycle Classes verbatim" $
       perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
@@ -3242,6 +3685,7 @@ validConfig =
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
     , "}"
     ]
 invalidZeroSslConfig :: String
@@ -3256,8 +3700,23 @@ invalidZeroSslConfig =
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme.zerossl.com/v2/DV90\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = " ++ pulumiStateBackendDhallFragment
     , "}"
     ]
+
+-- | Sprint 4.15 helper: assert that a 'DrainResult' maps to a
+-- 'CascadeContinue' arm. Extracted to a named helper to satisfy the
+-- `Refactor nested case` lint rule (no `case` inside `lambda` body).
+assertSkipIsSuccess :: (String, DrainResult) -> Expectation
+assertSkipIsSuccess (label, result) = case cascadeDecisionFromDrainResult result of
+  CascadeContinue _ -> pure ()
+  CascadeAbort reason ->
+    expectationFailure
+      (label ++ " must map to CascadeContinue but got CascadeAbort: " ++ reason)
+
+pulumiStateBackendDhallFragment :: String
+pulumiStateBackendDhallFragment =
+  "{ bucket_name = \"\", region = \"\", key_prefix = \"pulumi/\" }"
 
 deploymentDhallFragment :: String
 deploymentDhallFragment =

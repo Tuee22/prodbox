@@ -44,6 +44,7 @@
 | `prodbox lint docs` | Check generated documentation sections |
 | `prodbox lint haskell` | Run Haskell formatter and lint checks |
 | `prodbox lint chart` | Run Helm chart structural lint checks |
+| `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `prodbox pulumi eks-resources` | Provision or inspect EKS test stack |
 | `prodbox pulumi eks-destroy` | Destroy EKS test stack |
 | `prodbox pulumi test-resources` | Provision or inspect HA RKE2 test stack |
@@ -52,6 +53,7 @@
 | `prodbox pulumi aws-subzone-destroy` | Destroy the per-substrate Route 53 subzone |
 | `prodbox pulumi aws-ses-resources` | Provision cross-substrate AWS SES infrastructure |
 | `prodbox pulumi aws-ses-destroy` | Destroy cross-substrate AWS SES infrastructure |
+| `prodbox pulumi aws-ses-migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
 | `prodbox rke2 status` | Check RKE2 status |
 | `prodbox rke2 start` | Start RKE2 |
 | `prodbox rke2 stop` | Stop RKE2 |

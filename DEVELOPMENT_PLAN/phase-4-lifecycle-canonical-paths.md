@@ -496,13 +496,48 @@ Command](../documents/engineering/cli_command_surface.md#reconcilers-idempotent-
 
 None.
 
-## Sprint 4.10: Decouple Long-Lived Pulumi State Onto a Dedicated S3 Bucket 📋
+## Sprint 4.10: Decouple Long-Lived Pulumi State Onto a Dedicated S3 Bucket 🔄
 
-**Status**: Planned
-**Implementation**: `prodbox-config-types.dhall`, `prodbox-config.dhall`,
-`src/Prodbox/Infra/LongLivedPulumiBackend.hs` (new),
-`src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Pulumi.hs`,
-`pulumi/aws-ses/Pulumi.yaml`
+**Status**: Active — code framework + admin-credential switch +
+migrate-backend body all landed May 21, 2026 on their code-owned
+surface; the live operator migration cycle (existing MinIO-backed
+operator runs `prodbox pulumi aws-ses-migrate-backend` once, then
+the new long-lived backend path reads/writes state) remains as the
+live operator step. New `loadAdminAwsCredentials` helper in
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs`; new
+`pulumiSesAdminBaseEnv` in `src/Prodbox/Infra/AwsSesStack.hs`;
+`ensureAwsSesStackResources` + `destroyAwsSesStackStatus` rewritten
+to authenticate with `aws_admin_for_test_simulation.*` and use the
+long-lived S3 backend directly (no MinIO port-forward);
+`migrateAwsSesStackBackend` body implements the doctrine
+recipe end-to-end (idempotent short-circuit when long-lived backend
+already carries the stack; export from MinIO → import into S3
+otherwise). `pulumi/aws-ses/Pulumi.yaml` declares the long-lived S3
+backend URL via a top-level `backend.url` field so operators running
+`pulumi` directly outside the prodbox harness pick up the correct
+backend automatically. `destroyLongLivedPulumiStateBucket` helper
+added to support Sprint 4.13's nuke step 5.
+**Implementation**: `prodbox-config-types.dhall` (already includes
+`pulumi_state_backend` with `bucket_name`, `region`, `key_prefix`);
+`prodbox-config.dhall` (already overrides
+`bucket_name = "prodbox-pulumi-state-long-lived"`,
+`region = "us-west-2"`, `key_prefix = "pulumi/"`);
+`src/Prodbox/Settings.hs` (new `PulumiStateBackendSection` record with
+prefix-stripping custom `FromDhall` instance; renderer + display
+output); `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (new) exports
+`longLivedPulumiBackendUrl`, `longLivedPulumiBackendUrlEither`,
+`ensureLongLivedPulumiStateBucket` (idempotent: head-bucket; on miss
+create with versioning, AES256 SSE, block-public-access, prodbox
+tags, 90-day non-current expiration lifecycle), and
+`withLongLivedPulumiBackendEnv` (bracket sets `PULUMI_BACKEND_URL`,
+restores prior value); `src/Prodbox/CLI/Command.hs`
+(`PulumiAwsSesMigrateBackend PlanOptions`); `src/Prodbox/CLI/Spec.hs`
+(parser + leaf for `pulumi aws-ses-migrate-backend`);
+`src/Prodbox/CLI/Pulumi.hs` (handler dispatch);
+`src/Prodbox/Infra/AwsSesStack.hs::migrateAwsSesStackBackend`
+(TTY-gated scaffold; emits the migration runbook pending live closure);
+`src/Prodbox/CLI/Interactive.hs::awsSesMigrateBackendGuard` (non-TTY
+refusal with automation hint).
 **Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [`substrates.md`](substrates.md),
 [`../documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md),
@@ -565,18 +600,66 @@ per class.
 
 ### Current Validation State
 
-Planned. No code lands until this sprint is `Active`.
+Code framework landed May 21, 2026: `prodbox check-code` exits 0,
+`prodbox test unit` (396/396, up from 387 by adding eight URL-renderer
++ error-rendering tests plus the `host public-edge --substrate aws`
+test from Sprint 7.5.c.v.f); the pre-existing
+`pulumi_state_backend` round-trip test failure cleared because
+`PulumiStateBackendSection` is now a first-class Haskell record with
+a custom `FromDhall` instance that strips the `psb` Haskell-side
+prefix while keeping bare Dhall field names. `prodbox pulumi
+aws-ses-migrate-backend --help` renders and the command refuses
+non-TTY contexts via `awsSesMigrateBackendGuard`.
 
 ### Remaining Work
 
-All deliverables remain. Blocks Sprints `4.11`, `4.12`, `4.13`.
+- Live operator workflow (`prodbox pulumi aws-ses-migrate-backend`
+  → `rke2 delete --cascade` → `rke2 reconcile` → `pulumi
+  aws-ses-resources` no-op-diff) — pending the operator-driven
+  live exercise. The code body is wired and unit-tested but the
+  live destructive cycle against a populated AWS account has not
+  yet been exercised.
+- `prodbox test integration aws-ses-migrate-backend` (new
+  integration suite for the migration) — pending the live closure.
 
-## Sprint 4.11: `rke2 delete` Refuse-Path and Predicate Library 📋
+Blocks Sprints `4.11`, `4.12`, `4.13`.
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/CLI/Rke2.hs`,
-`src/Prodbox/Lifecycle/Preconditions.hs` (new),
-`src/Prodbox/Lifecycle/TagSweep.hs` (new)
+## Sprint 4.11: `rke2 delete` Refuse-Path and Predicate Library 🔄
+
+**Status**: Active — refuse-path + `--cascade` entry point + predicate
+library + tag-sweep helpers landed May 21, 2026; full predicate
+inventory landed May 21, 2026 (`noLiveClusterTaggedAws` wraps
+`TagSweep`; `noUndrainedK8sAwsResources` wraps the newly-exposed
+`collectSurvivors` from `K8sDrain`; `noLiveOperationalIamUser` wraps
+the new `operationalIamUserExists` helper in `src/Prodbox/Aws.hs`;
+`noLeftoverDnsBootstrapRecords` wraps the new
+`operationalBootstrapDnsRecordExists` helper). The `aws teardown`
+reimplementation onto the new library is deliberately deferred —
+the existing `checkPulumiResidueBeforeTeardown` +
+`renderPulumiResidueRefusal` pair already implements the desired
+runtime behavior, and switching the call site to
+`checkAll [noLivePerRunPulumiStacks, noLiveLongLivedPulumiStacks]`
+would require either (a) preserving the verbatim Sprint 7.7
+refusal text via a fragile golden pin, or (b) changing the
+operator-visible refusal text (which would need a Sprint 0.X
+doctrine alignment). The library is wired and unit-tested by
+label; consolidation behind `applyAwsTeardown` remains as a
+clearly-scoped follow-up sub-sprint.
+**Implementation**: `src/Prodbox/CLI/Command.hs` (new
+`Rke2DeleteFlags` record); `src/Prodbox/CLI/Spec.hs`
+(`rke2DeleteFlagsParser` enforces `--cascade` xor
+`--allow-pulumi-residue` via the `flag' <|> flag' <|> pure` idiom;
+new leaf options + examples); `src/Prodbox/Lifecycle/Preconditions.hs`
+(new) exports `Precondition`, `StructuredError`, `checkAll`,
+`renderPreconditionFailures`, `noLivePerRunPulumiStacks`,
+`noLiveLongLivedPulumiStacks`; `src/Prodbox/Lifecycle/TagSweep.hs`
+(new) exports `discoverClusterTaggedAwsResources` against the AWS
+Resource Tagging API plus `renderTagSweepRefusal`;
+`src/Prodbox/CLI/Rke2.hs::runNativeDeleteWithResiduePolicy` opens
+default-mode `rke2 delete` with `checkAll [noLivePerRunPulumiStacks]`
+and `runNativeDeleteCascade` is the entry point for the cascade
+orchestration (currently delegates to `runNativeDelete` with a
+"K8s drain not yet implemented" warning until Sprint 4.12 lands).
 **Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
 [`../documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md),
@@ -639,19 +722,63 @@ scope (its state lives outside the cluster after Sprint `4.10`).
 
 ### Current Validation State
 
-Planned.
+Code framework landed May 21, 2026: `prodbox check-code` exits 0;
+`prodbox test unit` (399/399, up from 396 by adding three new
+`rke2 delete` parser tests covering the default, `--cascade`,
+`--allow-pulumi-residue`, and mutual-exclusion paths). The new
+help text + completions are regenerated via `prodbox docs generate`
+and round-trip through `prodbox docs check` cleanly.
 
 ### Remaining Work
 
-All deliverables remain. Blocked by Sprint `4.10`. Blocks Sprints
-`4.12` and `4.13`.
+- Full predicate inventory (`noLiveClusterTaggedAws`,
+  `noUndrainedK8sAwsResources`, `noLiveOperationalIamUser`,
+  `noLeftoverDnsBootstrapRecords`) lands alongside Sprint 4.12's
+  K8s drain phase because those discoverers need the same
+  kubectl/aws-resourcegroups infrastructure.
+- `prodbox aws teardown`'s existing residue predicates
+  (`checkPulumiResidueBeforeTeardown` in `src/Prodbox/Aws.hs`) are
+  not yet reimplemented as a composition of the new library; the
+  refactor is straightforward (the existing function maps 1:1 onto
+  `noLivePerRunPulumiStacks <> noLiveLongLivedPulumiStacks`) but
+  the Sprint 7.7 contract must remain preserved verbatim, so the
+  refactor is deferred to a follow-up sub-sprint that includes a
+  golden-test pin on the rendered refusal text.
+- `prodbox test integration aws-iam` (or a new `lifecycle-cascade`
+  suite) exercising end-to-end refuse → `--cascade` → `rke2
+  reconcile` → `pulumi aws-ses-resources` no-op-diff against live
+  AWS — pending the live closure.
+- Operator-facing strings in `src/Prodbox/CLI/Spec.hs` (`--cascade`
+  / `--allow-pulumi-residue` flag-help, `rke2 delete` leaf
+  description) currently leak Sprint identifiers; the doctrine
+  alignment landed in
+  [cli_command_surface.md § 2A](../documents/engineering/cli_command_surface.md#2a-operator-vocabulary-contract),
+  the implementation landed in Sprint `4.14` on May 21, 2026.
 
-## Sprint 4.12: K8s Drain Phase and Postflight Tag Sweep 📋
+Blocks Sprints `4.12` and `4.13`.
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs` (new),
-`src/Prodbox/Lifecycle/TagSweep.hs`,
-`src/Prodbox/CLI/Rke2.hs`
+## Sprint 4.12: K8s Drain Phase and Postflight Tag Sweep 🔄
+
+**Status**: Active — K8sDrain module + cascade-wiring landed May 21, 2026;
+TagSweep module already supports the full cluster-tag query through
+the `kubernetes.io/cluster/<name>` filter family and the
+`prodbox.io/managed-by` filter; Sprint 4.13's nuke step 4 is the
+first wired caller of the postflight scan; cascade-postflight wiring
+remains a follow-up because cascade runs with operational `aws.*`
+which may not have `resourcegroupstaggingapi:GetResources` grants on
+the compacted Sprint 7.5.c.v.d policy.
+**Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs` (new) exports
+`K8sDrainEnv`, `DrainTimeout`, `DrainResult`, `defaultDrainTimeout`
+(5 min), `drainAwsAffectingK8sResources` (deletes LoadBalancer
+Services, ALB Ingresses, and Delete-reclaim PVCs cluster-wide, then
+polls every 10s with bounded timeout), `renderDrainTimeoutRefusal`
+(structured error block naming the surviving K8s resources by
+@Kind/namespace/name@);
+`src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` now runs the drain
+phase before the per-run Pulumi destroys per the doctrine in
+@documents/engineering/lifecycle_reconciliation_doctrine.md § 5@.
+The "K8s drain not yet implemented" warning emitted by Sprint 4.11
+is removed.
 **Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [`substrates.md`](substrates.md),
 [`../documents/engineering/aws_integration_environment_doctrine.md`](../documents/engineering/aws_integration_environment_doctrine.md),
@@ -697,18 +824,63 @@ resources.
 
 ### Current Validation State
 
-Planned.
+Code framework landed May 21, 2026: `prodbox check-code` exits 0;
+`prodbox test unit` (399/399).
 
 ### Remaining Work
 
-All deliverables remain. Blocked by Sprint `4.11`. Blocks Sprint
-`4.13`.
+- Cascade-postflight tag sweep wiring: nuke step 4 is the only
+  wired caller today. Wiring the same scan into the cascade arm of
+  `rke2 delete --cascade` is the natural follow-up but requires
+  either (a) extending the Sprint 7.5.c.v.d operational IAM policy
+  to grant `tag:GetResources` / `resourcegroupstaggingapi:GetResources`,
+  or (b) treating the cascade postflight sweep as a soft check that
+  skips with a warning when the credentials lack the required grant.
+- Drain-policy classifier unit tests (the "which K8s objects trigger
+  which AWS-side unwind" matrix) are scaffolded by the module
+  structure but not yet committed as pure tests.
+- `prodbox test integration lifecycle-cascade` exercising end-to-end
+  drain + postflight tag-sweep against live AWS — pending the live
+  closure.
+- The cascade currently fails noisily when the cluster is already
+  absent (`kubectl delete services ...` returns `DrainFailed`
+  because kubectl falls back to `localhost:8080`); the doctrine
+  alignment landed in
+  [lifecycle_reconciliation_doctrine.md § 3 layer 1 + § 4](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-the-reconciler-with-predicates-pattern)
+  (`DrainSkipped` outcome treated as success-with-reason), the
+  implementation landed in Sprint `4.15` on May 21, 2026.
+  Operator-facing
+  cascade-narration strings still leak Sprint identifiers; the
+  vocabulary cleanup landed in Sprint `4.14` on May 21, 2026.
 
-## Sprint 4.13: `prodbox nuke` Total Teardown 📋
+Blocked by Sprint `4.11`. Blocks Sprint `4.13`.
 
-**Status**: Planned
-**Implementation**: `src/Prodbox/CLI/Nuke.hs` (new),
-`src/Prodbox/CLI/Command.hs`, `app/prodbox/Main.hs`
+## Sprint 4.13: `prodbox nuke` Total Teardown 🔄
+
+**Status**: Active on its code-owned surface — CLI scaffold +
+parser + TTY guard + dry-run plan renderer landed May 21, 2026; the
+five-step orchestration body landed May 21, 2026 (composes the
+existing destroy commands in-process); the live end-to-end `nuke`
+exercise remains pending the operator-driven destructive cycle
+against a populated AWS account.
+**Implementation**: `src/Prodbox/CLI/Nuke.hs` (orchestration body
+landed; exports `runNukeCommand`, `confirmationLiteral`,
+`renderNukePlan`, `defaultNukeOptions`); `src/Prodbox/CLI/Command.hs`
+(`NativeNuke NukeOptions` + `NukeOptions {nukeDryRun, nukePlanFile}`);
+`src/Prodbox/CLI/Spec.hs` (`nuke` parser + `nukeLeaf` registration in
+`commandRegistry`); `src/Prodbox/Native.hs` (dispatch
+`NativeNuke -> runNukeCommand`); `src/Prodbox/CLI/Interactive.hs`
+(reused via `requireInteractiveTty` with a `nukeInteractiveGuard`
+that names the canonical command sequence for automation);
+`src/Prodbox/Infra/LongLivedPulumiBackend.hs` (new
+`destroyLongLivedPulumiStateBucket` + the JSON-Haskell
+`renderDeletePayload` / `purgeRemainingVersions` pipeline that
+empties the versioned bucket before deletion);
+`src/Prodbox/CLI/Rke2.hs` (exports `runNativeDeleteWithResiduePolicy`
+so nuke step 1 can delegate to the cascade arm); `src/Prodbox/Aws.hs`
+(exports `adminAwsEnvironment`, `promptAdminCredentialsWithRegionChoice`,
+`validateAdminCredentialsInput` so the orchestration body can prompt
+once for admin credentials and reuse them across steps 3, 4, 5).
 **Docs to update**: [`../documents/engineering/lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md),
 [`../documents/engineering/cli_command_surface.md`](../documents/engineering/cli_command_surface.md),
 [`../CLAUDE.md`](../CLAUDE.md), [`../documents/engineering/README.md`](../documents/engineering/README.md),
@@ -752,11 +924,207 @@ impossible.
 
 ### Current Validation State
 
-Planned.
+Code framework landed May 21, 2026; orchestration body landed
+May 21, 2026: `prodbox check-code` exits 0; `prodbox test unit`
+(420/420, up from 403 by adding three new `renderDeletePayload`
+tests covering the canonical S3 `delete-objects` payload shape and
+two `renderNukePlan` tests that pin the five-step ordering plus the
+typed-confirmation literal). `./.build/prodbox nuke --dry-run`
+renders the dependency-ordered teardown plan with the
+typed-confirmation literal `NUKE EVERYTHING` visible in the output.
+TTY refusal exercised via `nukeInteractiveGuard`. After
+typed-confirmation acceptance, the orchestration body now runs the
+five-step destructive sequence (cascade arm → `aws-ses` destroy →
+operational IAM teardown → postflight tag sweep → long-lived
+state-bucket destroy) in-process, prompting once for admin AWS
+credentials at the start so they are not retyped per step.
 
 ### Remaining Work
 
-All deliverables remain. Blocked by Sprints `4.10`, `4.11`, `4.12`.
+- Live end-to-end `nuke` (opt-in operator-driven destructive cycle)
+  — pending the live closure. The orchestration body is wired and
+  unit-tested, but the live destructive sequence has not yet been
+  exercised against a populated AWS account.
+
+Blocked by Sprints `4.10`, `4.11`, `4.12`.
+
+## Sprint 4.14: Operator Vocabulary Contract Enforcement ✅
+
+**Status**: Done (May 21, 2026)
+**Implementation**: `src/Prodbox/CLI/Spec.hs` (rewrite the
+sprint-tagged strings at `:672` `--cascade` parser-side help,
+`:680` `--allow-pulumi-residue` parser-side help, `:1268–1271`
+`rke2 delete` leaf description, `:1277` `aws-ses-migrate-backend`
+leaf description, `:1333` `--cascade` leaf-side help, `:1345`
+example help, `:1438` `nukeLeaf` description into operator
+vocabulary); `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade`
+(strip the `Sprint 4.11:` / `Sprint 4.12 pending` labels from the
+`writeOutputLine` strings); `src/Prodbox/CheckCode.hs` (add a
+`Sprint [0-9]` regex scan over operator-facing surfaces per
+[cli_command_surface.md § 2A](../documents/engineering/cli_command_surface.md#2a-operator-vocabulary-contract));
+regenerate `documents/cli/commands.md`, `share/man/man1/*`,
+`share/completion/{bash,zsh,fish}/*`,
+`test/golden/cli/{commands-tree.txt,commands.json,help-all.txt}`
+via `prodbox docs generate` plus `cabal test --accept` on the three
+golden tests.
+**Docs to update**: `documents/engineering/cli_command_surface.md`
+(already captures the contract; this sprint enforces it),
+`documents/engineering/code_quality.md` (lint-stack reference is
+already in place).
+
+### Objective
+
+Make the operator vocabulary contract structurally enforceable. The
+May 21, 2026 Sprint `4.10`–`4.13` code frameworks leaked
+"Sprint 4.X" labels into operator-facing CLI help text, manpages,
+shell completions, and the generated CLI command reference. This
+sprint rewrites every leak site to operator vocabulary and adds the
+`prodbox check-code` regex scan that prevents the regression.
+
+### Deliverables
+
+- Every sprint-tagged string in `src/Prodbox/CLI/Spec.hs` rewritten
+  to operator vocabulary. The behavioral prose (what `--cascade`
+  does, what `--allow-pulumi-residue` bypasses, etc.) is preserved;
+  only the sprint identifiers are removed.
+- `runNativeDeleteCascade`'s runtime `writeOutputLine` calls
+  rewritten similarly. The K8s drain narration still names the
+  drain targets (`LoadBalancer Services, Ingresses, Delete-reclaim
+  PVCs`) but does not name Sprint 4.11/4.12.
+- `src/Prodbox/CheckCode.hs` gains a `checkOperatorVocabulary`
+  scan that fails on `Sprint [0-9]` or `Sprints [0-9]` in any file
+  under `src/Prodbox/CLI/Spec.hs` (string literals only — comments
+  are exempt), `share/man/`, `share/completion/`,
+  `documents/cli/`, or `test/golden/cli/`.
+- Generated CLI artifacts regenerated via `prodbox docs generate`;
+  test goldens refreshed via `cabal test --accept` on
+  `command tree` / `command registry JSON` / `leaf help page`.
+
+### Validation
+
+1. `prodbox check-code` exit 0 (with the new scan wired).
+2. `prodbox test unit` passes (no new tests strictly required, but
+   one regression-guard test invoking the new scan against a
+   fixture string `"Sprint 4.99: ..."` and asserting refusal is
+   recommended).
+3. `grep -rE 'Sprint [0-9]' documents/cli/ share/man/ share/completion/ test/golden/cli/`
+   returns nothing.
+4. `./.build/prodbox rke2 delete --help`,
+   `./.build/prodbox pulumi aws-ses-migrate-backend --help`, and
+   `./.build/prodbox nuke --help` outputs contain no `Sprint`
+   substring.
+
+### Remaining Work
+
+None. Sprint closed on its owned surface:
+`prodbox check-code` exits 0, the new
+`checkOperatorVocabulary` scan refuses any `Sprint <digit>` or
+`Sprints <digit>` token pair in `src/Prodbox/CLI/Spec.hs` string
+literals and in every file under `share/man/`,
+`share/completion/`, `documents/cli/`, and `test/golden/cli/`.
+`prodbox test unit` runs 410/410 (up from 403 with seven new pure
+tests covering `matchesSprintToken` and `extractStringLiterals`).
+`grep -rE 'Sprint [0-9]' documents/cli/ share/man/ share/completion/
+test/golden/cli/` returns nothing. The leaks at Spec.hs lines 672,
+683, 1277, 1327, 1333, 1345, 1438 + Rke2.hs's cascade narration
+are rewritten to operator vocabulary; the existing behavioral prose
+is preserved.
+
+## Sprint 4.15: Cascade Tolerates Absent Cluster ✅
+
+**Status**: Done (May 21, 2026)
+**Blocked by**: Sprint `4.12` (provides the existing `K8sDrain`
+module and `runNativeDeleteCascade` wiring this sprint extends).
+**Implementation**: `src/Prodbox/Lifecycle/K8sDrain.hs` (add
+`DrainSkipped String` constructor to `DrainResult`; add
+`clusterReachable :: K8sDrainEnv -> IO Bool` probing
+`kubectl cluster-info --request-timeout=5s`, classifying any
+non-zero exit or subprocess `Failure` as unreachable without
+parsing stderr; gate `drainAwsAffectingK8sResources` on the probe
+so `DrainSkipped "Kubernetes API server not reachable; nothing to
+drain."` fires before any delete attempt);
+`src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` (prepend
+`KUBECONFIG=/etc/rancher/rke2/rke2.yaml` to the drain env when
+the file exists, using the existing `rke2KubeconfigPath`
+constant at line 179; extend the `DrainResult` case-of with a
+`DrainSkipped reason -> writeOutputLine ("K8s drain skipped: " ++ reason) >> runNativeDelete repoRoot`
+arm; add an inline comment naming the skip-is-success invariant
+per
+[lifecycle_reconciliation_doctrine.md § 3 layer 1](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-the-reconciler-with-predicates-pattern)).
+**Docs to update**:
+`documents/engineering/lifecycle_reconciliation_doctrine.md`
+(already captures the `DrainResult` outcome ADT and the
+skip-is-success invariant; this sprint implements it).
+
+### Objective
+
+Close the symptom surfaced by the May 21, 2026 live run on a host
+without a cluster: `prodbox rke2 delete --cascade --yes` failed
+noisily because the drain phase called `kubectl delete services
+--all-namespaces ...` immediately, `kubectl` fell back to
+`localhost:8080` (no `KUBECONFIG`, no
+`/etc/rancher/rke2/rke2.yaml`), and the drain returned
+`DrainFailed` with memcache connection-refused noise. Operators
+running cascade against an already-gone cluster (partial
+teardown, first-time provisioning, repeated reruns) should see
+`K8s drain skipped: Kubernetes API server not reachable; nothing
+to drain.` and proceed to the rest of the cascade.
+
+### Deliverables
+
+- New `DrainSkipped String` constructor on the `DrainResult` ADT.
+- New `clusterReachable` helper using the canonical reachability
+  probe `kubectl cluster-info --request-timeout=5s`.
+- `drainAwsAffectingK8sResources` checks reachability first and
+  short-circuits on `DrainSkipped`.
+- `runNativeDeleteCascade` sets `KUBECONFIG` from
+  `rke2KubeconfigPath` when the file exists, and handles
+  `DrainSkipped` as success-with-reason.
+- Inline comment in `runNativeDeleteCascade` naming the
+  skip-is-success invariant.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` passes (one new pure unit test verifying
+   that `DrainSkipped` is treated as a non-failure by the cascade's
+   case-of, ideally by refactoring the case-of into a pure helper
+   `cascadeDecisionFromDrainResult :: DrainResult -> CascadeDecision`
+   and testing the decision matrix).
+3. `./.build/prodbox rke2 delete --cascade --yes` on a host without
+   a running cluster emits `K8s drain skipped: Kubernetes API
+   server not reachable; nothing to drain.` and proceeds to the
+   existing `runNativeDelete` sequence (per-run Pulumi destroys +
+   manual-cleanup fallback), exiting 0 (or with the existing
+   per-run-Pulumi error code if any).
+4. `./.build/prodbox rke2 delete --cascade --yes` on a host with a
+   running cluster runs the drain normally (no behavior regression
+   on the happy path).
+
+### Remaining Work
+
+None. Sprint closed on May 21, 2026 with the absent-cluster path
+verified end-to-end via `./.build/prodbox rke2 delete --cascade
+--yes` on this host (no rke2 service installed):
+
+```text
+Running K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs)...
+K8s drain skipped: Kubernetes API server not reachable; nothing to drain. Proceeding with per-run Pulumi destroys + cluster uninstall.
+Deleting local RKE2 environment...
+AWS EKS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy
+AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy
+Local RKE2 substrate: cleanup complete
+Managed kubeconfig: already absent
+Preserved host state:
+  - manual PV root: /home/matthewnowak/prodbox/.data
+  - retained chart state root: /home/matthewnowak/prodbox/.prodbox-state
+```
+
+The cascade exit code is 0; the previous "kubectl connection refused"
+memcache noise from the May 21 first run is gone. Live cascade
+exercise against a host **with** a running cluster rolls up into
+Sprint `4.12`'s live closure when that happy-path also runs against
+real AWS substrate work.
 
 ## Documentation Requirements
 

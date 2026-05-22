@@ -8,6 +8,7 @@ module Prodbox.Dns
   , preferredPublicHostFqdn
   , preferredWebsocketHostFqdn
   , queryRoute53Record
+  , queryRoute53RecordInZone
   , renderDnsStatusReport
   , runDnsCommand
   )
@@ -20,6 +21,7 @@ import Data.Aeson
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (nub)
+import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment
@@ -130,7 +132,23 @@ fetchPublicIp = do
                 Left ("public IP lookup failed: " ++ outputDetail output)
 
 queryRoute53Record :: FilePath -> ValidatedSettings -> String -> IO (Either String (Maybe String))
-queryRoute53Record repoRoot settings fqdn = do
+queryRoute53Record repoRoot settings fqdn =
+  queryRoute53RecordInZone repoRoot settings (zone_id (route53 (validatedConfig settings))) fqdn
+
+-- | Query a Route 53 hosted zone for an A record by FQDN. The hosted
+-- zone is named explicitly so substrate-aware callers
+-- (`prodbox host public-edge --substrate aws`) can target the
+-- AWS-substrate subzone instead of the home substrate's zone. The
+-- subprocess environment still authenticates with the operational
+-- `aws.*` credentials from `prodbox-config.dhall` because every supported
+-- Route 53 read on the supported path runs through that block.
+queryRoute53RecordInZone
+  :: FilePath
+  -> ValidatedSettings
+  -> Text
+  -> String
+  -> IO (Either String (Maybe String))
+queryRoute53RecordInZone repoRoot settings hostedZoneId fqdn = do
   outputResult <-
     captureSubprocessResult
       Subprocess
@@ -139,7 +157,7 @@ queryRoute53Record repoRoot settings fqdn = do
             [ "route53"
             , "list-resource-record-sets"
             , "--hosted-zone-id"
-            , Text.unpack (zone_id (route53 config))
+            , Text.unpack hostedZoneId
             , "--output"
             , "json"
             ]

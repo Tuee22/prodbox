@@ -3,6 +3,7 @@ module Prodbox.CLI.Interactive
   , allowNonTtyInteractiveEnvVar
   , awsCheckQuotasGuard
   , awsRequestQuotasGuard
+  , awsSesMigrateBackendGuard
   , awsSetupGuard
   , awsTeardownGuard
   , chartsDeleteGuard
@@ -124,5 +125,18 @@ chartsDeleteGuard =
         unlines
           [ "Pass --yes to skip the confirmation prompt:"
           , "  prodbox charts delete <chart> --yes"
+          ]
+    }
+
+awsSesMigrateBackendGuard :: InteractiveGuard
+awsSesMigrateBackendGuard =
+  InteractiveGuard
+    { guardCommand = "prodbox pulumi aws-ses-migrate-backend"
+    , guardAutomationHint =
+        unlines
+          [ "prodbox pulumi aws-ses-migrate-backend is a one-shot operator"
+          , "migration. There is no automation equivalent; the migration is"
+          , "exercised end-to-end by the operator workflow documented in"
+          , "DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md (Sprint 4.10)."
           ]
     }

@@ -13,6 +13,7 @@ import Prodbox.CLI.Command
   ( ConfigCommand (..)
   , NativeCommand (..)
   )
+import Prodbox.CLI.Nuke (runNukeCommand)
 import Prodbox.CLI.Output
   ( writeError
   , writeOutput
@@ -54,6 +55,7 @@ runNativeCommand repoRoot command =
     NativeHost hostCommand -> runHostCommand repoRoot hostCommand
     NativeK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
     NativeLint lintCommand -> runLintCommand repoRoot lintCommand
+    NativeNuke nukeOptions -> runNukeCommand repoRoot nukeOptions
     NativePulumi pulumiCommand -> runPulumiCommand repoRoot pulumiCommand
     NativeRke2 rke2Command -> runRke2Command repoRoot rke2Command
     NativeTest testCommand -> runTests repoRoot testCommand

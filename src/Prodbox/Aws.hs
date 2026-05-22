@@ -7,13 +7,18 @@ module Prodbox.Aws
   , ConfigSetupInput (..)
   , PulumiResiduePolicy (..)
   , SessionTokenPromptShape (..)
+  , adminAwsEnvironment
   , applyAwsTeardown
   , buildIamPolicyDocument
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
   , longLivedStackNames
+  , operationalBootstrapDnsRecordExists
+  , operationalIamUserExists
   , partitionResidueByLifecycle
   , perRunStackNames
+  , promptAdminCredentialsWithRegionChoice
+  , prodboxIamUserName
   , pulumiDestroyPlanForResidue
   , renderAwsSetupPlan
   , renderAwsTeardownPlan
@@ -27,6 +32,7 @@ module Prodbox.Aws
   , runInteractiveConfigSetup
   , runInteractiveConfigSetupWithPlan
   , sessionTokenPromptShape
+  , validateAdminCredentialsInput
   )
 where
 
@@ -572,22 +578,48 @@ extraPolicyStatements policyTier =
           "Ec2TestStackLifecycle"
           ["ec2:*"]
           "*"
-      , statement
+      , -- Sprint 7.5.c.v.d follow-up (May 21, 2026): added the IAM
+        -- customer-managed policy lifecycle actions
+        -- (`iam:CreatePolicy`, `DeletePolicy`, `GetPolicy`,
+        -- `ListPolicyVersions`, `DeletePolicyVersion`) the AWS Load
+        -- Balancer Controller IRSA path needs. The `awsLbControllerPolicy`
+        -- in `pulumi/aws-eks/Main.yaml` provisions a customer-managed
+        -- policy and attaches it to the LB controller IRSA role; the
+        -- prior policy granted role lifecycle only, so `iam:CreatePolicy`
+        -- failed with AccessDenied on the `aws-eks` validation.
+        statement
           "IamEksRoleLifecycle"
           [ "iam:AttachRolePolicy"
+          , "iam:CreateOpenIDConnectProvider"
+          , "iam:CreatePolicy"
+          , "iam:CreatePolicyVersion"
           , "iam:CreateRole"
           , "iam:CreateServiceLinkedRole"
+          , "iam:DeleteOpenIDConnectProvider"
+          , "iam:DeletePolicy"
+          , "iam:DeletePolicyVersion"
           , "iam:DeleteRole"
           , "iam:DetachRolePolicy"
+          , "iam:GetOpenIDConnectProvider"
+          , "iam:GetPolicy"
+          , "iam:GetPolicyVersion"
           , "iam:GetRole"
           , "iam:GetRolePolicy"
           , "iam:ListAttachedRolePolicies"
+          , "iam:ListEntitiesForPolicy"
           , "iam:ListInstanceProfilesForRole"
+          , "iam:ListOpenIDConnectProviders"
+          , "iam:ListPolicyVersions"
           , "iam:ListRolePolicies"
           , "iam:ListRoleTags"
           , "iam:PassRole"
+          , "iam:TagOpenIDConnectProvider"
+          , "iam:TagPolicy"
           , "iam:TagRole"
+          , "iam:UntagOpenIDConnectProvider"
+          , "iam:UntagPolicy"
           , "iam:UntagRole"
+          , "iam:UpdateOpenIDConnectProviderThumbprint"
           ]
           "*"
       , -- Sprint 7.5.c.v.d: compressed from explicit per-action list to
@@ -2166,6 +2198,75 @@ deleteNamedUserPolicyIfPresent repoRoot adminCredentials userName = do
 deleteOperationalUserIfPresent :: FilePath -> Credentials -> IO Bool
 deleteOperationalUserIfPresent repoRoot adminCredentials =
   deleteUserIfPresent repoRoot adminCredentials prodboxIamUserName
+
+-- | Sprint 4.11: predicate-library probe. Returns 'Right True' when
+-- the dedicated operational IAM user @prodbox@ exists; 'Right False'
+-- when it does not; 'Left' on any other AWS error. Idempotent.
+operationalIamUserExists :: FilePath -> Credentials -> IO (Either String Bool)
+operationalIamUserExists repoRoot adminCredentials = do
+  result <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "get-user"
+      , "--user-name"
+      , Text.unpack prodboxIamUserName
+      ]
+  pure $ case processExitCode result of
+    ExitSuccess -> Right True
+    ExitFailure _ ->
+      case awsErrorCode (errorDetail result) of
+        Just "NoSuchEntity" -> Right False
+        _ -> Left ("aws iam get-user failed: " ++ errorDetail result)
+
+-- | Sprint 4.11: predicate-library probe for the bootstrap DNS
+-- record that @prodbox rke2 reconcile@ writes to the operator's
+-- Route 53 hosted zone. Returns 'Right True' when the record set
+-- exists, 'Right False' when no matching record set is present, and
+-- 'Left' on any other AWS error.
+--
+-- The bootstrap record name is the configured public FQDN
+-- (e.g. @test.resolvefintech.com@) on the configured parent hosted
+-- zone. The function reads the parent zone id from the supplied
+-- repo-root config.
+operationalBootstrapDnsRecordExists
+  :: FilePath -> Credentials -> IO (Either String Bool)
+operationalBootstrapDnsRecordExists repoRoot adminCredentials = do
+  configResult <- loadConfigFile repoRoot
+  case configResult of
+    Left err -> pure (Left err)
+    Right config -> do
+      let zoneIdValue = Text.strip (zone_id (route53 config))
+          fqdnValue = Text.unpack supportedPublicHostname
+      if Text.null zoneIdValue
+        then pure (Right False)
+        else do
+          result <-
+            runAwsCliCompleted
+              repoRoot
+              adminCredentials
+              [ "route53"
+              , "list-resource-record-sets"
+              , "--hosted-zone-id"
+              , Text.unpack zoneIdValue
+              , "--query"
+              , "ResourceRecordSets[?Name == '" ++ fqdnValue ++ ".' && Type == 'A']"
+              , "--output"
+              , "json"
+              ]
+          pure $ case processExitCode result of
+            ExitFailure _ ->
+              Left ("aws route53 list-resource-record-sets failed: " ++ errorDetail result)
+            ExitSuccess ->
+              let payload = trimWhitespace (processStdout result)
+               in Right (not (null payload) && payload /= "[]" && payload /= "null")
+ where
+  trimWhitespace =
+    dropWhile (`elem` (" \t\r\n" :: String))
+      . reverse
+      . dropWhile (`elem` (" \t\r\n" :: String))
+      . reverse
 
 deleteUserIfPresent :: FilePath -> Credentials -> Text -> IO Bool
 deleteUserIfPresent repoRoot adminCredentials userName = do

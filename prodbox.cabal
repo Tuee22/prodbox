@@ -43,7 +43,13 @@ library
         Prodbox.Infra.AwsEksTestStack
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
+        Prodbox.Infra.LongLivedPulumiBackend
+        Prodbox.CLI.Nuke
+        Prodbox.Lifecycle.K8sDrain
+        Prodbox.Lifecycle.Preconditions
+        Prodbox.Lifecycle.TagSweep
         Prodbox.Keycloak.Admin
+        Prodbox.Keycloak.CredentialSetupForm
         Prodbox.Keycloak.Email
         Prodbox.Ses.Capture
         Prodbox.Ses.SmtpPassword

@@ -10,11 +10,12 @@ module Prodbox.Infra.AwsSesStack
   , clearAwsSesStackSnapshot
   , awsSesStackHasLiveResources
   , assertNoAwsSesStackResidue
+  , migrateAwsSesStackBackend
   , renderAwsSesStackReport
   )
 where
 
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, bracket, try)
 import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
@@ -33,6 +34,10 @@ import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
+import Prodbox.CLI.Interactive
+  ( awsSesMigrateBackendGuard
+  , requireInteractiveTty
+  )
 import Prodbox.CLI.Output
   ( writeDiagnosticLine
   , writeError
@@ -41,14 +46,17 @@ import Prodbox.CLI.Output
   )
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
-  ( loadOperationalAwsCredentials
-  , pulumiAwsProviderEnv
-  , pulumiBackendBaseEnv
+  ( pulumiAwsProviderEnv
   , settingsAwsEnv
   )
+import Prodbox.Infra.LongLivedPulumiBackend
+  ( ensureLongLivedPulumiStateBucket
+  , loadAdminAwsCredentials
+  , longLivedBackendErrorMessage
+  , longLivedPulumiBackendUrlEither
+  )
 import Prodbox.Infra.MinioBackend
-  ( bucketObjectCount
-  , ensureMinioBackendBucket
+  ( ensureMinioBackendBucket
   , pulumiBackendLoginTimeoutSeconds
   , pulumiBackendUrl
   , readMinioCredentials
@@ -58,13 +66,16 @@ import Prodbox.Result (Result (..))
 import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
   ( Credentials (..)
+  , PulumiStateBackendSection
   , Route53Section (..)
   , SesSection (..)
   , ValidatedSettings (..)
   , aws
+  , pulumi_state_backend
   , route53
   , ses
   , validateAndLoadSettings
+  , validatedConfig
   )
 import Prodbox.Subprocess
   ( ProcessOutput (..)
@@ -75,11 +86,13 @@ import Prodbox.Subprocess
 import System.Directory
   ( createDirectoryIfMissing
   , doesFileExist
+  , getTemporaryDirectory
   , removeFile
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 
 awsSesStackName :: String
 awsSesStackName = "aws-ses"
@@ -334,30 +347,46 @@ syncAwsSesStackConfig projectDir environment stackConfig =
       environment
       ["config", "set", "--stack", awsSesStackName, key, value]
 
-pulumiSesBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
-pulumiSesBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
-    Left err -> pure (Left err)
-    Right settings -> do
+-- | Sprint 4.10 admin-credential build: emit the env vars that the
+-- aws-ses Pulumi flow needs when state lives on the long-lived S3
+-- backend and the AWS provider authenticates with admin credentials
+-- (`aws_admin_for_test_simulation.*`). The same admin creds are used
+-- both for S3 backend authentication (via the `AWS_*` env vars) and
+-- for the AWS Pulumi provider (via the `PRODBOX_PULUMI_AWS_*` env
+-- vars). The operational `aws.*` block is no longer read on this
+-- path.
+pulumiSesAdminBaseEnv
+  :: FilePath
+  -> Credentials
+  -> PulumiStateBackendSection
+  -> IO (Either String [(String, String)])
+pulumiSesAdminBaseEnv _repoRoot adminCreds backend =
+  case longLivedPulumiBackendUrlEither backend of
+    Left err -> pure (Left (longLivedBackendErrorMessage err))
+    Right backendUrl -> do
       currentEnv <- getEnvironment
       let path = maybe "" id (lookup "PATH" currentEnv)
           home = maybe "" id (lookup "HOME" currentEnv)
-          providerEnv = pulumiAwsProviderEnv (aws (validatedConfig settings))
+          providerEnv = pulumiAwsProviderEnv adminCreds
+          adminRegion = Text.unpack (region adminCreds)
+          sessionTokenEntries = case session_token adminCreds of
+            Just token -> [("AWS_SESSION_TOKEN", Text.unpack token)]
+            Nothing -> []
       pure
         ( Right
-            ( [ ("AWS_ACCESS_KEY_ID", minioAccessKey)
-              , ("AWS_SECRET_ACCESS_KEY", minioSecretKey)
-              , ("AWS_REGION", "us-east-1")
-              , ("AWS_DEFAULT_REGION", "us-east-1")
+            ( [ ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id adminCreds))
+              , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key adminCreds))
+              , ("AWS_REGION", adminRegion)
+              , ("AWS_DEFAULT_REGION", adminRegion)
               , ("AWS_EC2_METADATA_DISABLED", "true")
-              , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+              , ("PULUMI_BACKEND_URL", backendUrl)
               , ("PULUMI_CONFIG_PASSPHRASE", "")
               , ("PULUMI_SKIP_UPDATE_CHECK", "true")
               , ("PATH", path)
               , ("HOME", home)
               , ("LANG", "C.UTF-8")
               ]
+                ++ sessionTokenEntries
                 ++ providerEnv
             )
         )
@@ -638,6 +667,13 @@ renderProcessDetail output =
 trim :: String -> String
 trim = reverse . dropWhile (\c -> c == '\n' || c == '\r' || c == ' ') . reverse
 
+-- | Sprint 4.10: aws-ses Pulumi reconcile authenticates with the
+-- admin credential block (`aws_admin_for_test_simulation.*`) and
+-- consults the long-lived S3 backend named by
+-- `pulumi_state_backend`. The in-cluster MinIO backend is no longer
+-- read on this path; operators with existing MinIO-backed state must
+-- run `prodbox pulumi aws-ses-migrate-backend` once to copy state
+-- onto the long-lived bucket.
 ensureAwsSesStackResources :: FilePath -> IO ExitCode
 ensureAwsSesStackResources repoRoot = do
   let projectDir = awsSesPulumiProjectDir repoRoot
@@ -646,73 +682,79 @@ ensureAwsSesStackResources repoRoot = do
     then failWith ("Pulumi AWS SES project missing: " ++ projectDir)
     else do
       configResult <- resolveAwsSesStackConfig repoRoot
-      case configResult of
-        Left err -> failWith err
-        Right stackConfig -> do
-          portForwardResult <- withMinioPortForward $ \localPort -> do
-            credsResult <- readMinioCredentials
-            case credsResult of
-              Left err -> pure (Left err)
-              Right (accessKey, secretKey) -> do
-                bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-                case bucketResult of
-                  Left err -> pure (Left err)
-                  Right () -> do
-                    baseEnvironmentResult <-
-                      pulumiSesBaseEnv repoRoot localPort accessKey secretKey
-                    case baseEnvironmentResult of
-                      Left err -> pure (Left err)
-                      Right baseEnvironment -> do
-                        loginExit <- pulumiLogin projectDir baseEnvironment
-                        case loginExit of
-                          ExitFailure _ -> pure (Left "pulumi login failed")
-                          ExitSuccess -> do
-                            selectExit <- pulumiStackSelect projectDir baseEnvironment True
-                            case selectExit of
-                              PulumiStackMissing ->
-                                pure (Left "pulumi stack select reported a missing stack after --create")
-                              PulumiStackSelectFailed detail ->
-                                pure (Left ("pulumi stack select failed: " ++ detail))
-                              PulumiStackSelected -> do
-                                syncExit <-
-                                  syncAwsSesStackConfig projectDir baseEnvironment stackConfig
-                                case syncExit of
-                                  ExitFailure _ -> pure (Left "pulumi config set failed")
-                                  ExitSuccess -> do
-                                    upExit <- pulumiUp projectDir baseEnvironment
-                                    case upExit of
-                                      ExitFailure _ -> pure (Left "pulumi up failed")
-                                      ExitSuccess -> do
-                                        outputsResult <- pulumiStackOutputs projectDir baseEnvironment
-                                        case outputsResult of
-                                          Left err -> pure (Left err)
-                                          Right outputs ->
-                                            case snapshotFromOutputs outputs of
-                                              Left err -> pure (Left err)
-                                              Right snapshot -> do
-                                                saveAwsSesStackSnapshot repoRoot snapshot
-                                                persistResult <-
-                                                  persistKeycloakSmtpChartSecrets
-                                                    repoRoot
-                                                    projectDir
-                                                    baseEnvironment
-                                                    stackConfig
-                                                    snapshot
-                                                case persistResult of
-                                                  Left err -> pure (Left err)
-                                                  Right () -> do
-                                                    objectCountResult <-
-                                                      bucketObjectCount localPort accessKey secretKey
-                                                    case objectCountResult of
-                                                      Left err -> pure (Left err)
-                                                      Right objectCount -> do
-                                                        writeOutput
-                                                          (renderAwsSesStackReport snapshot objectCount)
-                                                        pure (Right ())
-          case portForwardResult of
+      adminResult <- loadAdminAwsCredentials repoRoot
+      settingsResult <- validateAndLoadSettings repoRoot
+      case (configResult, adminResult, settingsResult) of
+        (Left err, _, _) -> failWith err
+        (_, Left err, _) -> failWith err
+        (_, _, Left err) -> failWith err
+        (Right stackConfig, Right adminCreds, Right settings) -> do
+          let backend = pulumi_state_backend (validatedConfig settings)
+          baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
+          case baseEnvResult of
             Left err -> failWith err
-            Right (Left err) -> failWith err
-            Right (Right ()) -> pure ExitSuccess
+            Right baseEnvironment -> do
+              bucketResult <-
+                ensureLongLivedPulumiStateBucket repoRoot baseEnvironment backend
+              case bucketResult of
+                Left err -> failWith (longLivedBackendErrorMessage err)
+                Right () -> do
+                  runResult <-
+                    runEnsureAwsSesPulumiCycle
+                      repoRoot
+                      projectDir
+                      baseEnvironment
+                      stackConfig
+                  case runResult of
+                    Left err -> failWith err
+                    Right () -> pure ExitSuccess
+
+runEnsureAwsSesPulumiCycle
+  :: FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> AwsSesStackConfig
+  -> IO (Either String ())
+runEnsureAwsSesPulumiCycle repoRoot projectDir baseEnvironment stackConfig = do
+  loginExit <- pulumiLogin projectDir baseEnvironment
+  case loginExit of
+    ExitFailure _ -> pure (Left "pulumi login failed")
+    ExitSuccess -> do
+      selectExit <- pulumiStackSelect projectDir baseEnvironment True
+      case selectExit of
+        PulumiStackMissing ->
+          pure (Left "pulumi stack select reported a missing stack after --create")
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
+        PulumiStackSelected -> do
+          syncExit <- syncAwsSesStackConfig projectDir baseEnvironment stackConfig
+          case syncExit of
+            ExitFailure _ -> pure (Left "pulumi config set failed")
+            ExitSuccess -> do
+              upExit <- pulumiUp projectDir baseEnvironment
+              case upExit of
+                ExitFailure _ -> pure (Left "pulumi up failed")
+                ExitSuccess -> do
+                  outputsResult <- pulumiStackOutputs projectDir baseEnvironment
+                  case outputsResult of
+                    Left err -> pure (Left err)
+                    Right outputs ->
+                      case snapshotFromOutputs outputs of
+                        Left err -> pure (Left err)
+                        Right snapshot -> do
+                          saveAwsSesStackSnapshot repoRoot snapshot
+                          persistResult <-
+                            persistKeycloakSmtpChartSecrets
+                              repoRoot
+                              projectDir
+                              baseEnvironment
+                              stackConfig
+                              snapshot
+                          case persistResult of
+                            Left err -> pure (Left err)
+                            Right () -> do
+                              writeOutput (renderAwsSesStackReport snapshot 0)
+                              pure (Right ())
 
 destroyAwsSesStack :: FilePath -> Bool -> IO ExitCode
 destroyAwsSesStack repoRoot summary = do
@@ -723,73 +765,67 @@ destroyAwsSesStack repoRoot summary = do
       writeOutputLine ("AWS SES stack: " ++ status)
       pure ExitSuccess
 
+-- | Sprint 4.10: aws-ses destroy authenticates with admin credentials
+-- (`aws_admin_for_test_simulation.*`) and consults the long-lived S3
+-- backend. The operational @aws.*@ block is no longer read on this
+-- path. The MinIO port-forward is gone — a missing long-lived bucket
+-- is treated as "already destroyed" only when no on-disk snapshot
+-- exists; otherwise it is an actionable failure.
 destroyAwsSesStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsSesStackStatus repoRoot summary = do
   currentSnapshot <- loadAwsSesStackSnapshot repoRoot
   let projectDir = awsSesPulumiProjectDir repoRoot
-  portForwardResult <- withMinioPortForward $ \localPort -> do
-    credsResult <- readMinioCredentials
-    case credsResult of
-      Left err -> pure (Left err)
-      Right (accessKey, secretKey) -> do
-        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
-        case bucketResult of
-          Left err -> pure (Left err)
-          Right () -> do
-            backendEnvironment <- pulumiBackendBaseEnv localPort accessKey secretKey
-            loginResult <- pulumiLoginEither projectDir backendEnvironment summary
-            case loginResult of
-              Left err -> pure (Left ("pulumi login failed: " ++ err))
-              Right () -> do
-                selectExit <- pulumiStackSelect projectDir backendEnvironment False
-                case selectExit of
-                  PulumiStackSelected -> do
-                    operationalCredentialsResult <- loadOperationalAwsCredentials repoRoot
-                    case operationalCredentialsResult of
-                      Left err ->
-                        pure
-                          ( Left
-                              ( "operational AWS credentials are required to destroy the AWS SES stack: "
-                                  ++ err
-                              )
-                          )
-                      Right operationalCredentials -> do
-                        configResult <- resolveAwsSesStackConfig repoRoot
-                        case configResult of
-                          Left err -> pure (Left err)
-                          Right stackConfig -> do
-                            let providerEnvironment =
-                                  backendEnvironment ++ pulumiAwsProviderEnv operationalCredentials
-                            syncExit <-
-                              syncAwsSesStackConfig projectDir providerEnvironment stackConfig
-                            case syncExit of
-                              ExitFailure _ -> pure (Left "pulumi config set failed")
-                              ExitSuccess -> do
-                                destroyResult <-
-                                  pulumiDestroyEither projectDir providerEnvironment summary
-                                case destroyResult of
-                                  Left err -> pure (Left ("pulumi destroy failed: " ++ err))
-                                  Right () -> completeDestroy repoRoot projectDir providerEnvironment summary
-                  PulumiStackMissing ->
-                    case currentSnapshot of
-                      Nothing -> pure (Right "already absent from the local Pulumi backend")
-                      Just _ -> finalizeDestroy repoRoot
-                  PulumiStackSelectFailed detail ->
-                    pure (Left ("pulumi stack select failed: " ++ detail))
-  case portForwardResult of
-    Left err ->
+  adminResult <- loadAdminAwsCredentials repoRoot
+  settingsResult <- validateAndLoadSettings repoRoot
+  case (adminResult, settingsResult) of
+    (Left err, _) ->
       case currentSnapshot of
         Nothing ->
-          pure (Right "no local Pulumi backend or saved residue snapshot; nothing to destroy")
-        Just _ ->
           pure
-            ( Left
-                ( "local MinIO backend unavailable while an AWS SES stack snapshot still exists: "
-                    ++ err
-                )
-            )
-    Right (Left err) -> pure (Left err)
-    Right (Right status) -> pure (Right status)
+            (Right "no admin AWS credentials configured and no saved residue snapshot; nothing to destroy")
+        Just _ -> pure (Left ("admin AWS credentials required to destroy the AWS SES stack: " ++ err))
+    (_, Left err) -> pure (Left err)
+    (Right adminCreds, Right settings) -> do
+      let backend = pulumi_state_backend (validatedConfig settings)
+      baseEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
+      case baseEnvResult of
+        Left err -> pure (Left err)
+        Right backendEnvironment ->
+          runDestroyAwsSesPulumiCycle repoRoot projectDir backendEnvironment currentSnapshot summary
+
+runDestroyAwsSesPulumiCycle
+  :: FilePath
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe AwsSesStackSnapshot
+  -> Bool
+  -> IO (Either String String)
+runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot summary = do
+  loginResult <- pulumiLoginEither projectDir baseEnvironment summary
+  case loginResult of
+    Left err -> pure (Left ("pulumi login failed: " ++ err))
+    Right () -> do
+      selectExit <- pulumiStackSelect projectDir baseEnvironment False
+      case selectExit of
+        PulumiStackSelected -> do
+          configResult <- resolveAwsSesStackConfig repoRoot
+          case configResult of
+            Left err -> pure (Left err)
+            Right stackConfig -> do
+              syncExit <- syncAwsSesStackConfig projectDir baseEnvironment stackConfig
+              case syncExit of
+                ExitFailure _ -> pure (Left "pulumi config set failed")
+                ExitSuccess -> do
+                  destroyResult <- pulumiDestroyEither projectDir baseEnvironment summary
+                  case destroyResult of
+                    Left err -> pure (Left ("pulumi destroy failed: " ++ err))
+                    Right () -> completeDestroy repoRoot projectDir baseEnvironment summary
+        PulumiStackMissing ->
+          case currentSnapshot of
+            Nothing -> pure (Right "already absent from the long-lived Pulumi backend")
+            Just _ -> finalizeDestroy repoRoot
+        PulumiStackSelectFailed detail ->
+          pure (Left ("pulumi stack select failed: " ++ detail))
 
 completeDestroy
   :: FilePath -> FilePath -> [(String, String)] -> Bool -> IO (Either String String)
@@ -891,3 +927,181 @@ failWith :: String -> IO ExitCode
 failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
+
+-- | Sprint 4.10: migrate the @aws-ses@ stack's Pulumi state from the
+-- in-cluster MinIO backend onto the dedicated long-lived S3 bucket
+-- named by @pulumi_state_backend@ in @prodbox-config.dhall@.
+-- Idempotent: detects whether the long-lived backend already carries
+-- a recent state checkpoint and short-circuits without exporting.
+--
+-- Operator-driven: gated by 'requireInteractiveTty' at the CLI layer
+-- (see 'Prodbox.CLI.Interactive.awsSesMigrateBackendGuard'). The
+-- migration sequence follows the doctrine in
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md § 2@:
+--
+--   1. Validate that @pulumi_state_backend.bucket_name@ and
+--      @pulumi_state_backend.region@ are non-empty (no fallback).
+--   2. Ensure the long-lived S3 bucket exists (idempotent
+--      @head-bucket@ + @create-bucket@ with versioning, SSE,
+--      block-public-access, prodbox tags, and a 90-day
+--      noncurrent-version expiration lifecycle rule).
+--   3. Detect whether the long-lived backend already carries the
+--      stack's checkpoint; short-circuit if so.
+--   4. Export the stack from MinIO, log in to the S3 backend, import
+--      into S3.
+--   5. Persist the operator-visible status report.
+migrateAwsSesStackBackend :: FilePath -> IO ExitCode
+migrateAwsSesStackBackend repoRoot = do
+  requireInteractiveTty awsSesMigrateBackendGuard
+  adminResult <- loadAdminAwsCredentials repoRoot
+  settingsResult <- validateAndLoadSettings repoRoot
+  case (adminResult, settingsResult) of
+    (Left err, _) -> failWith err
+    (_, Left err) -> failWith err
+    (Right adminCreds, Right settings) -> do
+      let backend = pulumi_state_backend (validatedConfig settings)
+          projectDir = awsSesPulumiProjectDir repoRoot
+      writeOutputLine "AWS_SES_BACKEND_MIGRATION"
+      longLivedEnvResult <- pulumiSesAdminBaseEnv repoRoot adminCreds backend
+      case longLivedEnvResult of
+        Left err -> failWith err
+        Right longLivedEnv -> do
+          bucketResult <-
+            ensureLongLivedPulumiStateBucket repoRoot longLivedEnv backend
+          case bucketResult of
+            Left err -> failWith (longLivedBackendErrorMessage err)
+            Right () -> runMigrateAwsSesBackend repoRoot projectDir longLivedEnv
+
+-- | Idempotent migrate-backend orchestration body. Returns
+-- 'ExitSuccess' both when the migration runs to completion AND when
+-- it short-circuits because the long-lived backend already carries
+-- the stack (subsequent re-runs are no-ops).
+runMigrateAwsSesBackend
+  :: FilePath -> FilePath -> [(String, String)] -> IO ExitCode
+runMigrateAwsSesBackend repoRoot projectDir longLivedEnv = do
+  loginExit <- pulumiLogin projectDir longLivedEnv
+  case loginExit of
+    ExitFailure _ -> failWith "pulumi login against long-lived backend failed"
+    ExitSuccess -> do
+      selectExit <- pulumiStackSelect projectDir longLivedEnv False
+      case selectExit of
+        PulumiStackSelected -> do
+          writeOutputLine
+            "long-lived backend already carries the aws-ses stack; nothing to migrate"
+          writeOutputLine "STATUS=already-migrated"
+          pure ExitSuccess
+        PulumiStackSelectFailed detail ->
+          failWith ("pulumi stack select on long-lived backend failed: " ++ detail)
+        PulumiStackMissing ->
+          performAwsSesBackendMigration repoRoot projectDir longLivedEnv
+
+-- | Drive the export-from-MinIO → import-into-long-lived sequence.
+-- Brackets a temporary JSON file holding the exported checkpoint;
+-- the file is removed even on failure paths.
+performAwsSesBackendMigration
+  :: FilePath -> FilePath -> [(String, String)] -> IO ExitCode
+performAwsSesBackendMigration repoRoot projectDir longLivedEnv = do
+  temporaryDirectory <- getTemporaryDirectory
+  bracket
+    ( do
+        (path, handle) <- openTempFile temporaryDirectory "aws-ses-export-.json"
+        hClose handle
+        pure path
+    )
+    ( \tempPath -> do
+        _ <- try (removeFile tempPath) :: IO (Either IOException ())
+        pure ()
+    )
+    ( \exportFile -> do
+        exportResult <- exportAwsSesFromMinIO repoRoot projectDir exportFile
+        case exportResult of
+          ExitFailure code -> pure (ExitFailure code)
+          ExitSuccess -> importAwsSesIntoLongLived projectDir longLivedEnv exportFile
+    )
+
+-- | Open a MinIO port-forward, log in to the in-cluster MinIO Pulumi
+-- backend, select the aws-ses stack, and export its checkpoint to
+-- the supplied file path.
+exportAwsSesFromMinIO :: FilePath -> FilePath -> FilePath -> IO ExitCode
+exportAwsSesFromMinIO _repoRoot projectDir exportFile = do
+  portForwardResult <- withMinioPortForward $ \localPort -> do
+    credsResult <- readMinioCredentials
+    case credsResult of
+      Left err -> pure (Left err)
+      Right (accessKey, secretKey) -> do
+        bucketResult <- ensureMinioBackendBucket localPort accessKey secretKey
+        case bucketResult of
+          Left err -> pure (Left err)
+          Right () -> do
+            currentEnv <- getEnvironment
+            let path = maybe "" id (lookup "PATH" currentEnv)
+                home = maybe "" id (lookup "HOME" currentEnv)
+                minioEnv =
+                  [ ("AWS_ACCESS_KEY_ID", accessKey)
+                  , ("AWS_SECRET_ACCESS_KEY", secretKey)
+                  , ("AWS_REGION", "us-east-1")
+                  , ("AWS_DEFAULT_REGION", "us-east-1")
+                  , ("AWS_EC2_METADATA_DISABLED", "true")
+                  , ("PULUMI_BACKEND_URL", pulumiBackendUrl localPort)
+                  , ("PULUMI_CONFIG_PASSPHRASE", "")
+                  , ("PULUMI_SKIP_UPDATE_CHECK", "true")
+                  , ("PATH", path)
+                  , ("HOME", home)
+                  , ("LANG", "C.UTF-8")
+                  ]
+            loginExit <- pulumiLogin projectDir minioEnv
+            case loginExit of
+              ExitFailure _ -> pure (Left "pulumi login against MinIO backend failed")
+              ExitSuccess -> do
+                selectExit <- pulumiStackSelect projectDir minioEnv False
+                case selectExit of
+                  PulumiStackMissing ->
+                    pure (Left "aws-ses stack is absent from the MinIO backend; nothing to migrate")
+                  PulumiStackSelectFailed detail ->
+                    pure (Left ("pulumi stack select on MinIO backend failed: " ++ detail))
+                  PulumiStackSelected -> do
+                    exportExit <- pulumiStackExport projectDir minioEnv exportFile
+                    pure $ case exportExit of
+                      ExitSuccess -> Right ()
+                      ExitFailure code ->
+                        Left ("pulumi stack export from MinIO failed with exit code " ++ show code)
+  case portForwardResult of
+    Left err -> failWith ("MinIO port-forward unavailable for migration export: " ++ err)
+    Right (Left err) -> failWith err
+    Right (Right ()) -> pure ExitSuccess
+
+-- | Already authenticated against the long-lived backend (the
+-- caller invoked @pulumi login@ against it). Create the @aws-ses@
+-- stack and import the checkpoint from the supplied file.
+importAwsSesIntoLongLived
+  :: FilePath -> [(String, String)] -> FilePath -> IO ExitCode
+importAwsSesIntoLongLived projectDir longLivedEnv exportFile = do
+  selectExit <- pulumiStackSelect projectDir longLivedEnv True
+  case selectExit of
+    PulumiStackMissing ->
+      failWith "pulumi stack select reported a missing stack after --create on long-lived backend"
+    PulumiStackSelectFailed detail ->
+      failWith ("pulumi stack --create on long-lived backend failed: " ++ detail)
+    PulumiStackSelected -> do
+      importExit <- pulumiStackImport projectDir longLivedEnv exportFile
+      case importExit of
+        ExitFailure code ->
+          failWith ("pulumi stack import into long-lived backend failed with exit code " ++ show code)
+        ExitSuccess -> do
+          writeOutputLine "stack migrated from MinIO backend onto the long-lived S3 backend"
+          writeOutputLine "STATUS=migrated"
+          pure ExitSuccess
+
+pulumiStackExport :: FilePath -> [(String, String)] -> FilePath -> IO ExitCode
+pulumiStackExport projectDir environment outputFile =
+  runPulumiCommand
+    projectDir
+    environment
+    ["stack", "export", "--stack", awsSesStackName, "--file", outputFile]
+
+pulumiStackImport :: FilePath -> [(String, String)] -> FilePath -> IO ExitCode
+pulumiStackImport projectDir environment inputFile =
+  runPulumiCommand
+    projectDir
+    environment
+    ["stack", "import", "--stack", awsSesStackName, "--file", inputFile]

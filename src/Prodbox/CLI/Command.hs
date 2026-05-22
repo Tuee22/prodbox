@@ -18,10 +18,12 @@ module Prodbox.CLI.Command
   , K8sCommand (..)
   , LintCommand (..)
   , NativeCommand (..)
+  , NukeOptions (..)
   , Plan (..)
   , PolicyTier (..)
   , PulumiCommand (..)
   , Rke2Command (..)
+  , Rke2DeleteFlags (..)
   , PlanOptions (..)
   , runPlanWithOptions
   , TestCommand (..)
@@ -63,12 +65,26 @@ data NativeCommand
   | NativeHost HostCommand
   | NativeK8s K8sCommand
   | NativeLint LintCommand
+  | -- | Sprint 4.13: total teardown command. TTY-only, no @--yes@,
+    -- typed-confirmation literal. Carries a 'NukeOptions' for the
+    -- @--dry-run@ / @--plan-file@ flags but no other arguments.
+    NativeNuke NukeOptions
   | NativePulumi PulumiCommand
   | NativeRke2 Rke2Command
   | NativeTest TestCommand
   | NativeTlaCheck
   | NativeUsers UsersCommand
   | NativeWorkload WorkloadCommand
+  deriving (Eq, Show)
+
+-- | Sprint 4.13: options for @prodbox nuke@. Duplicated here rather
+-- than imported from "Prodbox.CLI.Nuke" so the command record and
+-- the optparse-applicative parser surface live in the same module
+-- as every other command.
+data NukeOptions = NukeOptions
+  { nukeDryRun :: Bool
+  , nukePlanFile :: Maybe FilePath
+  }
   deriving (Eq, Show)
 
 data ChartsCommand
@@ -83,7 +99,7 @@ data HostCommand
   | HostCheckPorts
   | HostInfo
   | HostFirewall
-  | HostPublicEdge
+  | HostPublicEdge Substrate
   deriving (Eq, Show)
 
 data DnsCommand
@@ -213,6 +229,20 @@ data PulumiCommand
   | PulumiAwsSubzoneDestroy Bool PlanOptions
   | PulumiAwsSesResources PlanOptions
   | PulumiAwsSesDestroy Bool PlanOptions
+  | -- | Sprint 4.10 operator-interactive command: migrate the
+    -- @aws-ses@ stack's Pulumi state from the in-cluster MinIO backend
+    -- onto the dedicated long-lived S3 bucket named by
+    -- @pulumi_state_backend@ in @prodbox-config.dhall@. Idempotent;
+    -- no-op if the stack already lives in the long-lived backend.
+    -- TTY-only; refuses non-interactive contexts.
+    PulumiAwsSesMigrateBackend PlanOptions
+  deriving (Eq, Show)
+
+data Rke2DeleteFlags = Rke2DeleteFlags
+  { rke2DeleteYes :: Bool
+  , rke2DeleteCascade :: Bool
+  , rke2DeleteAllowPulumiResidue :: Bool
+  }
   deriving (Eq, Show)
 
 data Rke2Command
@@ -221,7 +251,7 @@ data Rke2Command
   | Rke2Stop
   | Rke2Restart
   | Rke2Reconcile PlanOptions
-  | Rke2Delete Bool
+  | Rke2Delete Rke2DeleteFlags PlanOptions
   | Rke2Logs (Maybe Int)
   deriving (Eq, Show)
 

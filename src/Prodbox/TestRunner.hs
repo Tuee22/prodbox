@@ -57,6 +57,7 @@ import Prodbox.Subprocess
   , commandDisplay
   , runSubprocessStreaming
   )
+import Prodbox.Substrate (Substrate (..), substrateId)
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation
@@ -330,6 +331,7 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
       , runWaitForPublicEdgeReady
           repoRoot
           environment
+          SubstrateHomeLocal
           publicEdgeReadyAttempts
           publicEdgeReadyDelayMicroseconds
       ]
@@ -359,6 +361,7 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
       , runWaitForPublicEdgeReady
           repoRoot
           environment
+          SubstrateHomeLocal
           publicEdgeReadyAttempts
           publicEdgeReadyDelayMicroseconds
       ]
@@ -453,11 +456,16 @@ runCommandForExitCode spec = do
     Failure err -> failWith err
     Success exitCode -> pure exitCode
 
-runWaitForPublicEdgeReady :: FilePath -> [(String, String)] -> Int -> Int -> IO ExitCode
-runWaitForPublicEdgeReady repoRoot environment attempts delayMicroseconds =
+runWaitForPublicEdgeReady
+  :: FilePath -> [(String, String)] -> Substrate -> Int -> Int -> IO ExitCode
+runWaitForPublicEdgeReady repoRoot environment substrate attempts delayMicroseconds =
   go attempts publicEdgeCertificateRepairAttempts
  where
-  spec = nativeCliCommandSpec repoRoot environment ["host", "public-edge"]
+  spec =
+    nativeCliCommandSpec
+      repoRoot
+      environment
+      ["host", "public-edge", "--substrate", substrateId substrate]
 
   go :: Int -> Int -> IO ExitCode
   go attemptsLeft repairsLeft = do

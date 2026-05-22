@@ -64,14 +64,29 @@ proof, clean-room rerun contract). Phase `7` is `Done` on its **legacy** owned s
 temporary-admin-credential validation harness) **and** has reopened for AWS-substrate parity:
 Sprint `7.5` is `Active` (sub-sprints `7.5.a`/`7.5.b.*`/`7.5.b.iii`/`7.5.c.i`–`7.5.c.iv`/
 `7.5.c.v.b`/`7.5.c.v.c`/`7.5.c.v.d`/`7.5.c.v.e` are `Done` on their code-owned surfaces;
-Sprint `7.5.c.v.f` is `Active` to diagnose and fix the May 20 live-run silent-exit failure
-mode in the substrate-aware validation bodies; Sprint `7.5.c.v` remains blocked on
-`7.5.c.v.f`); Sprints `7.6` (orphan-safety refuse-path + auto-destroy postflight) and
-`7.7` (generalized `aws teardown` + `PulumiResiduePolicy` ADT + harness teardown bug closure
-+ admin-credential prompt UX) are both `Done` (May 19, 2026). Phase `8` is `Active` on
-Sprints `8.5`–`8.6`. The doctrine-adoption handoff is closed; remaining open work is
-substrate-parity live validation (Sprint `7.5.c.v.f` → `7.5.c.v`) and live Keycloak invite
-OIDC closure (Sprint `8.5`).
+Sprint `7.5.c.v.f` is `Done` on its code-owned surface (May 21, 2026: substrate-aware
+`prodbox host public-edge --substrate {home-local,aws}` plus stderr breadcrumbs in
+`runNativeValidation` that make silent exit structurally impossible); the live
+`--substrate aws` re-run rolls up into Sprint `7.5.c.v`); Sprints `7.6` (orphan-safety
+refuse-path + auto-destroy postflight) and `7.7` (generalized `aws teardown` +
+`PulumiResiduePolicy` ADT + harness teardown bug closure + admin-credential prompt UX)
+are both `Done` (May 19, 2026). Phase `4` reopened May 21, 2026 to schedule Sprints
+`4.10`–`4.15`: code frameworks for Sprints `4.10`–`4.13` landed the same day
+(long-lived Pulumi backend decouple, lifecycle predicate library + `--cascade`,
+K8s drain phase, `prodbox nuke` scaffold), Sprint `4.14`
+(operator vocabulary contract enforcement) closed the same day —
+every `Sprint <digit>` leak in operator-facing surfaces is removed
+and a new `checkOperatorVocabulary` scan refuses regressions — and
+Sprint `4.15` (cascade tolerates absent cluster) closed the same
+day with a live verification on this host: `prodbox rke2 delete
+--cascade --yes` now skips the K8s drain phase cleanly when the
+cluster is already gone and proceeds to the per-run Pulumi destroys.
+The live AwsSesStack admin-credential switch / live cascade
+exercise against a running cluster / live `nuke` exercise are
+scheduled as remaining work for Sprints `4.10`–`4.13`. Phase `8` is `Active` on Sprints
+`8.5`–`8.6`. The doctrine-adoption handoff is closed; remaining open work is
+substrate-parity live validation (Sprint `7.5.c.v`), the residual Phase `4` live closures
+for Sprints `4.10`–`4.13`, and live Keycloak invite OIDC closure (Sprint `8.5`).
 
 Reopened sprints by phase:
 
@@ -189,6 +204,46 @@ Reopened sprints by phase:
   `force-install` are rejected at parse time. Sprint `4.8` makes successful
   `prodbox rke2 delete --yes` runs hermetic and summary-owned by `prodbox`, while preserving
   actionable upstream context on failure.
+- Phase 4 — **Sprints 4.10–4.13** (added May 21, 2026 to bind the lifecycle reconciliation
+  doctrine into code): Sprint `4.10` decouples long-lived Pulumi state onto a dedicated
+  operator-account S3 bucket so the `aws-ses` stack survives `rke2 delete + rke2 reconcile`
+  cycles. Sprint `4.11` introduces the composable `Precondition` algebra and the
+  `prodbox rke2 delete --cascade` / `--allow-pulumi-residue` flag matrix (mutually exclusive
+  at parse time) so orphaning per-run Pulumi-managed AWS resources is structurally
+  impossible. Sprint `4.12` adds the K8s drain phase that deletes LoadBalancer Services, ALB
+  Ingresses, and Delete-reclaim PVCs before per-run Pulumi destroys, so AWS-side controllers
+  can unwind cleanly. Sprint `4.13` introduces `prodbox nuke`, the operator-only total-
+  teardown command that refuses non-TTY contexts and requires the typed-confirmation
+  literal `NUKE EVERYTHING`. Code frameworks for all four sprints landed May 21, 2026; the
+  live operator validations (AwsSesStack admin-credential switch + live migration body,
+  live cascade exercise against a running cluster, live `nuke` exercise) are tracked as
+  remaining work in the respective sprint blocks.
+- Phase 4 — **Sprints 4.14 + 4.15** (added May 21, 2026 from the live
+  `prodbox rke2 delete --help` and `--cascade --yes` review):
+  Sprint `4.14` enforces the operator vocabulary contract introduced
+  in
+  [cli_command_surface.md § 2A](../documents/engineering/cli_command_surface.md#2a-operator-vocabulary-contract)
+  — `Sprint <number>` labels and other dev-plan tracking vocabulary
+  must not appear in any operator-facing CLI surface
+  (`prodbox <command> --help`, manpages under `share/man/`, shell
+  completions under `share/completion/`, the generated
+  `documents/cli/commands.md`, or stdout/stderr emitted by the
+  binary at runtime). Implementation rewrites the sprint-tagged
+  strings in `src/Prodbox/CLI/Spec.hs` and the cascade narration in
+  `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade`, then adds a
+  `Sprint [0-9]` regex scan to `prodbox check-code`. Sprint `4.15`
+  closes the symptom surfaced when an operator runs
+  `prodbox rke2 delete --cascade --yes` on a host without a cluster:
+  the drain phase currently calls `kubectl delete services` against
+  `localhost:8080` and fails noisily. Implementation adds a
+  `DrainSkipped <reason>` constructor to the `DrainResult` ADT in
+  `src/Prodbox/Lifecycle/K8sDrain.hs`, a quick
+  `kubectl cluster-info --request-timeout=5s` reachability probe,
+  and a cascade caller arm that treats `DrainSkipped` as
+  success-with-reason — matching the
+  [reconciler-with-predicates doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md#3-the-reconciler-with-predicates-pattern)
+  rule that source-of-truth queries tolerate the case where the
+  authoritative source is already gone.
 - Phase 5 — **Sprint 5.5**: Add a Gateway API HTTP listener on port `80` that never routes
   plaintext backend traffic and only returns a permanent redirect to the canonical
   `https://test.resolvefintech.com/<service-path>` URL. Extend `prodbox host public-edge` and
@@ -304,10 +359,10 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.27) | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8); 📋 Planned (Sprints 4.10–4.13: long-lived Pulumi-backend decouple, `rke2 delete` refuse-path + `--cascade`, K8s drain + tag sweep, `prodbox nuke`) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8); 🔄 Active Sprints 4.10–4.13 (code frameworks landed May 21, 2026: 4.10 Dhall types + Settings.hs decoder + `LongLivedPulumiBackend` module + `aws-ses-migrate-backend` CLI scaffold; 4.11 `Lifecycle/Preconditions` + `Lifecycle/TagSweep` + `rke2 delete --cascade` / `--allow-pulumi-residue` flags with mutual exclusion; 4.12 `Lifecycle/K8sDrain` module wired into cascade; 4.13 `prodbox nuke` CLI scaffold with TTY guard + typed-confirmation literal + dry-run plan renderer. Sprint 4.13's five-step nuke orchestration body landed May 21, 2026 (composes cascade arm → `aws-ses` destroy → operational IAM teardown → postflight tag sweep → long-lived state-bucket destroy in-process, prompting once for admin AWS credentials at the start); Sprint 4.10's `pulumi/aws-ses/Pulumi.yaml` long-lived S3 backend URL declaration landed the same day. AwsSesStack admin-credential switch + migrate-backend body + `aws teardown` predicate library reimplementation + every live operator validation remain pending.); ✅ Sprint 4.14 (operator vocabulary contract enforcement: `Sprint <digit>` leaks removed from CLI help / manpages / completions / generated CLI docs / test goldens; new `checkOperatorVocabulary` scan in `src/Prodbox/CheckCode.hs` refuses regressions; May 21, 2026); ✅ Sprint 4.15 (cascade tolerates absent cluster: new `DrainSkipped String` constructor on `DrainResult`; new `clusterReachable` probe; `runNativeDeleteCascade` treats `DrainSkipped` as success-with-reason and continues to per-run Pulumi destroys; verified live on a host without an rke2 cluster; May 21, 2026) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
-| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a–7.5.c.iv on their code-owned surfaces, May 17–19, 2026; ✅ 7.5.c.v.b in-cluster custom-image push, May 19, 2026; ✅ 7.5.c.v.c harness preflight residue policy `BypassAllResidueForHarnessRefresh`, May 20, 2026; ✅ 7.5.c.v.d operational IAM policy compaction + S3 grants on SES capture bucket, May 20, 2026; ✅ 7.5.c.v.e read-only SES grants for Sprint 8.4 prereqs, May 20, 2026; 🔄 Active Sprint 7.5.c.v.f to diagnose and fix the May 20 silent-exit failure mode in `runChartsVscodeValidation` and its `runCharts*Validation` / `runAdminRoutesValidation` / `runPublicDnsValidation` siblings under `substrate=aws`; 🔄 Sprint 7.5.c.v blocked on `7.5.c.v.f`); ✅ Sprint 7.6 (orphan-safety refuse-path + auto-destroy postflight, May 19, 2026); ✅ Sprint 7.7 (generalized `aws teardown` + `PulumiResiduePolicy` ADT + admin-credential prompt UX, May 19, 2026) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
+| 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a–7.5.c.iv on their code-owned surfaces, May 17–19, 2026; ✅ 7.5.c.v.b in-cluster custom-image push, May 19, 2026; ✅ 7.5.c.v.c harness preflight residue policy `BypassAllResidueForHarnessRefresh`, May 20, 2026; ✅ 7.5.c.v.d operational IAM policy compaction + S3 grants on SES capture bucket, May 20, 2026; ✅ 7.5.c.v.e read-only SES grants for Sprint 8.4 prereqs, May 20, 2026; ✅ 7.5.c.v.f silent-exit closure on code-owned surface (substrate-aware `prodbox host public-edge --substrate {home-local,aws}` + stderr breadcrumbs on `runNativeValidation`), May 21, 2026; 🔄 Sprint 7.5.c.v live AWS-substrate canonical-suite re-run remains as the residual live operator step); ✅ Sprint 7.6 (orphan-safety refuse-path + auto-destroy postflight, May 19, 2026); ✅ Sprint 7.7 (generalized `aws teardown` + `PulumiResiduePolicy` ADT + admin-credential prompt UX, May 19, 2026) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
 | 8 | Operator-Invited Email Authentication via Keycloak + AWS SES | 🔄 Active (✅ Sprint 8.1 code + doctrine + live SES provisioning + verification May 18, 2026; ✅ Sprint 8.2 Keycloak realm chart + live deploy proof on home substrate May 18, 2026; ✅ Sprint 8.3 CLI surface + live Keycloak admin API HTTP integration; ✅ Sprint 8.4 SES prerequisites; 🔄 Sprint 8.5 suite content + dispatch arm + live invite/capture/link-follow steps + SES SMTP IAM-to-SMTP-password derivation + chart-secrets persistence landed (credential-setup form POST + fresh OIDC login + claim assertions remain operator-driven sub-sprint, blocked on live Keycloak form-structure capture); 🔄 Sprint 8.6 doc parity landed (live cross-substrate proof pending 7.5.c + 8.5 OIDC follow-up closure). Sprints 8.1–8.4 ✅ Done; 8.5–8.6 carry the only remaining live OIDC closure work) | [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md) |
 
 **Status interpretation**: Phase `0` reopened through Sprints `0.2`–`0.7` to adopt
@@ -333,10 +388,14 @@ Sprint `7.5.c`'s code follow-up landed May 18, 2026 — `substratePublicFqdn` /
 compacted the operational IAM policy under AWS's 2048-byte inline-user-policy cap, and added
 the read-only SES grants the Sprint 8.4 prereqs need. The May 20 live re-run cleared every
 prior gate and entered Phase 2/2 of the suite, but every named `--substrate aws` validation
-body returned silently before producing output. The diagnosis and fix are owned by Sprint
-`7.5.c.v.f` (Active). After `7.5.c.v.f` lands, the live AWS-substrate canonical-suite
-re-run (`prodbox test all --substrate aws`) closes Sprint `7.5.c.v` and the parent Sprint
-`7.5.c`; the documented operator workflow lives in
+body returned silently before producing output. Sprint `7.5.c.v.f` closed that diagnosis
+on May 21, 2026 on its code-owned surface: `prodbox host public-edge --substrate
+{home-local,aws}` threads `Substrate` end-to-end through `runHostPublicEdge`,
+`queryRoute53RecordInZone`, `waitForPublicEdgeReady`, and the four substrate-aware
+public-edge validation bodies, while `runNativeValidation` emits stderr breadcrumbs around
+every body so silent exit is structurally impossible at the runner level. The live
+AWS-substrate canonical-suite re-run (`prodbox test all --substrate aws`) closes Sprint
+`7.5.c.v` and the parent Sprint `7.5.c`; the documented operator workflow lives in
 [phase-7-aws-substrate-foundations.md → Sprint 7.5.c Operator Workflow](phase-7-aws-substrate-foundations.md).
 
 Phase `8` was opened May 18, 2026 with the full code + doctrine layer of Sprints
@@ -381,22 +440,37 @@ per-run stacks vs long-lived cross-substrate shared infrastructure) live in
 | Substrate | Provision | Teardown | Suite parity | Phase ownership |
 |-----------|-----------|----------|--------------|-----------------|
 | Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
-| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Substrate-platform install (13 steps) lands on EKS; harness preflight and IAM policy compaction landed May 20, 2026; live `--substrate aws` validation bodies blocked on Sprint `7.5.c.v.f` (silent-exit failure diagnosis) | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
+| AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Substrate-platform install (13 steps) lands on EKS; harness preflight and IAM policy compaction landed May 20, 2026; substrate-aware validation bodies + stderr-breadcrumb runner landed May 21, 2026 (Sprint `7.5.c.v.f`); live `prodbox test all --substrate aws` re-run rolls up into Sprint `7.5.c.v` | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
 
 ## Current Plan Status
 
 The development plan remains authoritative. The repository worktree is fully closed against the
 pre-reopen scope (Sprints 1.1–1.5, 2.1–2.8, 3.1–3.7, 4.1–4.4, 5.1–5.4, 6.1–6.3, 7.1–7.4), and
 the doctrine-adoption reopen is now closed as well. Current worktree evidence puts Sprints
-`0.7`, `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, `5.5`,
+`0.7`, `1.6`–`1.27`, `2.9`–`2.16`, `3.8`–`3.12`, `4.5`–`4.8`, `4.14`, `4.15`, `5.5`,
 `7.5.a`/`7.5.b.*`/`7.5.b.iii`/`7.5.c.i`–`7.5.c.iv`/`7.5.c.v.b`/`7.5.c.v.c`/`7.5.c.v.d`/
-`7.5.c.v.e`, `7.6`, `7.7`, and `8.1`–`8.4` in `Done` state on their owned surfaces. The
-remaining `Active` work is: Sprint `7.5.c.v.f` (diagnose + fix the May 20 silent-exit failure
-mode in the substrate-aware validation bodies — code-side, not operator-driven), Sprint
-`7.5.c.v` (live AWS-substrate canonical-suite re-run, blocked on `7.5.c.v.f`), and Sprints
-`8.5`–`8.6` (live Keycloak credential-setup form POST + fresh OIDC login + cross-substrate
-parity flip). The following implemented baseline surfaces remain current on the supported
-path:
+`7.5.c.v.e`/`7.5.c.v.f`, `7.6`, `7.7`, and `8.1`–`8.4` in `Done` state on their owned surfaces.
+Sprints `4.10`–`4.13` have their full code bodies landed on their code-owned surfaces (May 21,
+2026: Sprint 4.10's admin-credential switch + in-process migrate-backend body + Pulumi.yaml
+backend URL; Sprint 4.11's full predicate inventory `noLivePerRunPulumiStacks`,
+`noLiveLongLivedPulumiStacks`, `noLiveClusterTaggedAws`, `noUndrainedK8sAwsResources`,
+`noLiveOperationalIamUser`, `noLeftoverDnsBootstrapRecords`; Sprint 4.13's
+five-step nuke orchestration body + `destroyLongLivedPulumiStateBucket` helper); each was
+exercised against the home substrate through `prodbox test all` runs that reached
+`ready-for-external-proof` classification and ran every named canonical validation through to
+the per-run Pulumi destroys. The live destructive `nuke` exercise and the live cascade exercise
+against a running AWS-side cluster remain operator-driven follow-ups. A Sprint `7.5.c.v.d`
+follow-up landed the same day to extend the operational IAM policy with the
+`iam:CreatePolicy` / `CreateOpenIDConnectProvider` lifecycle actions the EKS Pulumi program
+needs (run 3 / run 4 surfaced both gaps via live AWS AccessDenied); after the grants landed the
+`aws-eks` validation provisioned EKS + LB controller IRSA + EBS CSI IRSA + OIDC provider and
+destroyed cleanly. The remaining `Active` work outside Phase `4`
+is: Sprint `7.5.c.v` (live AWS-substrate canonical-suite re-run, operator-driven against live
+AWS) and Sprints `8.5`–`8.6` (live Keycloak credential-setup form-structure capture +
+parser wire-in into `runKeycloakInviteValidation` + cross-substrate parity flip; the
+form-parser scaffold lives in `src/Prodbox/Keycloak/CredentialSetupForm.hs` with synthetic
+fixture). The following implemented baseline surfaces remain current on
+the supported path:
 
 - `src/Prodbox/Settings.hs` preserves the supported direct `Dhall -> Haskell types` contract by
   decoding repo-root `prodbox-config.dhall` in-process through the native `dhall` library, without

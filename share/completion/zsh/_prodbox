@@ -4,7 +4,7 @@ _prodbox() {
   local -a words
   case "$CURRENT" in
     2)
-      words=("aws" "charts" "check-code" "commands" "config" "dns" "docs" "gateway" "help" "host" "k8s" "lint" "pulumi" "rke2" "test" "tla-check" "users" "workload")
+      words=("aws" "charts" "check-code" "commands" "config" "dns" "docs" "gateway" "help" "host" "k8s" "lint" "nuke" "pulumi" "rke2" "test" "tla-check" "users" "workload")
       _describe 'command group' words
       ;;
     3)
@@ -82,7 +82,7 @@ _prodbox() {
     3)
       case "$words[2,2]" in
         "pulumi")
-          words=("eks-resources" "eks-destroy" "test-resources" "test-destroy" "aws-subzone-resources" "aws-subzone-destroy" "aws-ses-resources" "aws-ses-destroy")
+          words=("eks-resources" "eks-destroy" "test-resources" "test-destroy" "aws-subzone-resources" "aws-subzone-destroy" "aws-ses-resources" "aws-ses-destroy" "aws-ses-migrate-backend")
           _describe 'subcommand' words
           ;;
       esac

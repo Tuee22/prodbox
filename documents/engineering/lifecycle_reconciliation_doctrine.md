@@ -120,6 +120,40 @@ no shared in-memory state.
    New discoverers added by Sprints 4.11–4.12:
    `discoverClusterTaggedAwsResources` (AWS Resource Tagging API),
    `discoverK8sAwsAffectingResources` (kubectl).
+
+   **Source-of-truth queries must tolerate the case where the source
+   is already gone.** Destructive lifecycle commands run against
+   partially- or fully-torn-down infrastructure routinely (operator
+   reruns, partial-teardown recovery, first-time provisioning). A
+   `discover` whose authoritative source is unreachable returns a
+   distinct "not present" / "skipped" outcome that the caller treats
+   as success-with-reason, not failure. The Kubernetes-side drain
+   discoverer makes this explicit through the `DrainResult` ADT in
+   `src/Prodbox/Lifecycle/K8sDrain.hs`:
+
+   - **`DrainSucceeded`** — the cluster was reachable, the targeted
+     K8s resources were deleted, and the bounded poll loop observed
+     them gone before the deadline. No surviving K8s objects.
+   - **`DrainSkipped <reason>`** — the cluster was unreachable on the
+     quick probe `kubectl cluster-info --request-timeout=5s`. No
+     delete was attempted; the cascade caller treats this as a
+     success-with-reason and proceeds to the next phase (per-run
+     Pulumi destroys talk to AWS, not kubectl). The probe classifies
+     **any** non-zero exit or subprocess `Failure` as unreachable —
+     it does not parse stderr. Pre-flight reachability checks are
+     deliberately cheap and stateless; they exist only to gate the
+     subsequent destructive subprocess invocations.
+   - **`DrainFailed <error>`** — the cluster was reachable AND a
+     delete-or-poll step errored. This is the only outcome that
+     fails the cascade.
+
+   The same skip-on-unreachable rule applies to any future
+   `discover` whose source can be absent during a destructive run
+   (the operator's parent Route 53 zone if the operator account is
+   torn down, future EKS-side discoverers, etc.). Each such
+   `discover` exposes the three-outcome ADT pattern (succeeded /
+   skipped-with-reason / failed) rather than collapsing
+   skipped+succeeded into a single boolean.
 2. **Composable precondition algebra.** Each named `Precondition`
    wraps one `discover` and returns `IO (Either StructuredError ())`.
    Predicates are composed with `checkAll [...]`. Existing example:
@@ -176,7 +210,16 @@ compose. The library lives at `src/Prodbox/Lifecycle/Preconditions.hs`
 | `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` has a non-empty Pulumi stack snapshot | `prodbox rke2 delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
 | `noLiveLongLivedPulumiStacks` | `aws-ses` has a non-empty Pulumi stack snapshot | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing) |
 | `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox rke2 delete --cascade` and `prodbox nuke` |
-| `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
+| `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained, **and** the cluster was reachable on the pre-drain `kubectl cluster-info --request-timeout=5s` probe | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
+
+The `noUndrainedK8sAwsResources` predicate returns `Left` only on the
+`DrainFailed` arm of the `DrainResult` ADT (see §3 layer 1).
+`DrainSucceeded` and `DrainSkipped` are both preflight success: the
+former because every targeted K8s resource is gone, the latter
+because the cluster controllers that would have owned AWS resources
+are already gone. The cascade is safe to continue after either
+outcome — the postflight tag sweep (§6) is the backstop that catches
+any AWS-side residue left by a `DrainSkipped` cascade.
 | `noLiveOperationalIamUser` | The operational `prodbox` IAM user exists | Postflight of `prodbox aws teardown` and `prodbox nuke` |
 | `noLeftoverDnsBootstrapRecords` | The configured public FQDN has stale prodbox-written Route 53 records | Postflight of `prodbox rke2 delete --cascade` and `prodbox nuke` |
 

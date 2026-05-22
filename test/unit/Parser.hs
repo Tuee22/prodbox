@@ -198,7 +198,7 @@ commandPathOfRequest request =
               HostCheckPorts -> ["check-ports"]
               HostInfo -> ["info"]
               HostFirewall -> ["firewall"]
-              HostPublicEdge -> ["public-edge"]
+              HostPublicEdge _ -> ["public-edge"]
         NativeK8s k8sCommand ->
           "k8s"
             : case k8sCommand of
@@ -224,6 +224,7 @@ commandPathOfRequest request =
               PulumiAwsSubzoneDestroy _ _ -> ["aws-subzone-destroy"]
               PulumiAwsSesResources _ -> ["aws-ses-resources"]
               PulumiAwsSesDestroy _ _ -> ["aws-ses-destroy"]
+              PulumiAwsSesMigrateBackend _ -> ["aws-ses-migrate-backend"]
         NativeRke2 rke2Command ->
           "rke2"
             : case rke2Command of
@@ -232,7 +233,7 @@ commandPathOfRequest request =
               Rke2Stop -> ["stop"]
               Rke2Restart -> ["restart"]
               Rke2Reconcile _ -> ["reconcile"]
-              Rke2Delete _ -> ["delete"]
+              Rke2Delete _ _ -> ["delete"]
               Rke2Logs _ -> ["logs"]
         NativeTest testCommand ->
           "test"
@@ -263,6 +264,7 @@ commandPathOfRequest request =
                     IntegrationAdminRoutes -> ["admin-routes"]
                     IntegrationPublicDns -> ["public-dns"]
                     IntegrationKeycloakInvite -> ["keycloak-invite"]
+        NativeNuke _ -> ["nuke"]
         NativeTlaCheck -> ["tla-check"]
         NativeUsers usersCommand ->
           "users"

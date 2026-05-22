@@ -32,14 +32,17 @@ import Prodbox.CLI.Output
   )
 import Prodbox.Dns
   ( fetchPublicIp
-  , queryRoute53Record
+  , queryRoute53RecordInZone
   )
 import Prodbox.Effect (Effect (..))
 import Prodbox.EffectDAG (fromRootIds)
 import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectDAG)
 import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite (prerequisiteRegistry)
-import Prodbox.PublicEdge (publicFqdn)
+import Prodbox.PublicEdge
+  ( substrateHostedZoneId
+  , substratePublicFqdn
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( DeploymentSection (..)
@@ -50,6 +53,7 @@ import Prodbox.Settings
   , validatedConfig
   )
 import Prodbox.Subprocess (ProcessOutput (..), Subprocess (..), captureSubprocessResult)
+import Prodbox.Substrate (Substrate, substrateId)
 import System.Directory (doesFileExist, findExecutable)
 import System.Exit (ExitCode (..))
 
@@ -141,19 +145,22 @@ runHostCommand repoRoot command =
     HostCheckPorts -> runHostCheckPorts
     HostInfo -> runHostInfo repoRoot
     HostFirewall -> runSingleEffect repoRoot "Check firewall status" (commandEffect "ufw" ["status"] repoRoot)
-    HostPublicEdge -> runHostPublicEdge repoRoot
+    HostPublicEdge substrate -> runHostPublicEdge repoRoot substrate
 
-runHostPublicEdge :: FilePath -> IO ExitCode
-runHostPublicEdge repoRoot = do
+runHostPublicEdge :: FilePath -> Substrate -> IO ExitCode
+runHostPublicEdge repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
+      let publicHost = substratePublicFqdn settings substrate
+          hostedZoneId = substrateHostedZoneId settings substrate
+      writeOutputLine ("PUBLIC_EDGE_SUBSTRATE=" ++ substrateId substrate)
       publicIpResult <- fetchPublicIp
       case publicIpResult of
         Left err -> failWith err
         Right publicIp -> do
-          route53Result <- queryRoute53Record repoRoot settings (publicFqdn settings)
+          route53Result <- queryRoute53RecordInZone repoRoot settings hostedZoneId publicHost
           case firstFailure [toUnit route53Result] of
             Just err -> failWith err
             Nothing -> do
@@ -314,7 +321,7 @@ runHostPublicEdge repoRoot = do
                         let runtime =
                               EdgeRuntime
                                 { edgePublicIp = publicIp
-                                , edgePublicHost = publicFqdn settings
+                                , edgePublicHost = publicHost
                                 , edgeRoute53RecordIp = route53RecordIp
                                 , edgeActiveLanInterface = lanInterfaceName lan
                                 , edgeActiveLanIpv4 = lanInterfaceIpv4 lan

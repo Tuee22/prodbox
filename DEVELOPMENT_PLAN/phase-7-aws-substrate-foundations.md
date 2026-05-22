@@ -1131,8 +1131,8 @@ each closes its own validation gate, and the parent flips to ✅ when
 | [`7.5.c.v.c`](#sprint-75cvc-harness-preflight-residue-policy-bypassallresidueforharnessrefresh-) | ✅ Done | New `PulumiResiduePolicy` constructor `BypassAllResidueForHarnessRefresh` unblocks `runAwsIamHarnessSetup` preflight when the long-lived `aws-ses` stack is alive (the Sprint 7.7 `BypassPerRunResidueOnly` policy refused on `aws-ses`, blocking every harness-driven test run). |
 | [`7.5.c.v.d`](#sprint-75cvd-operational-iam-policy-compaction--s3-grants-) | ✅ Done | Operational `prodbox` IAM inline policy compacted to fit under AWS's 2048-byte inline-user-policy cap: explicit `ec2:*` / `eks:*` action lists collapsed to service wildcards; new `SesCaptureBucketRead` / `SesCaptureObjectRead` (S3 grants on the SES capture bucket); policy submission switched to compact `Data.Aeson.encode`. |
 | [`7.5.c.v.e`](#sprint-75cve-read-only-ses-grants-for-sprint-84-prerequisites-) | ✅ Done | New `SesReadOnly` statement (`ses:Describe*` / `Get*` / `List*`) so the harness IAM user can run the Sprint 8.4 `ses_sending_identity_verified` + `ses_receive_rule_set_active` prereq checks. |
-| [`7.5.c.v.f`](#sprint-75cvf-silent-exit-failure-mode-in-substrate-aware-validation-bodies-) | 🔄 Active | Silent-exit failure mode in the substrate-aware `runChartsVscodeValidation` body (and likely the other `runCharts*Validation` / `runAdminRoutesValidation` / `runPublicDnsValidation` siblings) when invoked under `substrate=aws`. May 20, 2026 live re-run reached Phase 2/2, the first validation header emitted, then the harness postflight fired with no body output. Blocks the parent `7.5.c.v` live re-run. |
-| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | 🔄 Active | Five `--substrate aws` validations green + harness postflight teardown (Sprint `7.6`); blocked on `7.5.c.v.f`. |
+| [`7.5.c.v.f`](#sprint-75cvf-silent-exit-failure-mode-in-substrate-aware-validation-bodies-) | ✅ Done on code-owned surface | Substrate-awareness threaded end-to-end through `prodbox host public-edge --substrate {home-local,aws}`, `runHostPublicEdge`, `queryRoute53RecordInZone`, `waitForPublicEdgeReady`, and the five sibling validation bodies. `runNativeValidation` now emits stderr breadcrumbs around every body so silent exit is structurally impossible at the runner level. Live `--substrate aws` re-run rolls up into Sprint `7.5.c.v`. |
+| [`7.5.c.v`](#sprint-75cv-live-aws-substrate-canonical-suite-proof-) | 🔄 Active | Five `--substrate aws` validations green + harness postflight teardown (Sprint `7.6`); unblocked by `7.5.c.v.f`. |
 
 When 7.5.c.v lands, the substrate parity row in
 [`substrates.md`](substrates.md) flips to ✅ and Sprint `7.5.c` closes.
@@ -1845,23 +1845,46 @@ prereqs failed with `AccessDenied` on the harness IAM user.
 
 None on the sprint-owned surface.
 
-## Sprint 7.5.c.v.f: Silent-Exit Failure Mode in Substrate-Aware Validation Bodies 🔄
+## Sprint 7.5.c.v.f: Silent-Exit Failure Mode in Substrate-Aware Validation Bodies ✅
 
-**Status**: Active — diagnosed May 20, 2026; fix not yet authored.
+**Status**: Done on the code-owned surface (May 20, 2026); live
+`--substrate aws` re-run observation is rolled up into Sprint
+`7.5.c.v`.
 **Blocked by**: none (this sprint owns its own diagnosis + fix).
 **Blocks**: Sprint `7.5.c.v` (live AWS-substrate canonical-suite proof).
-**Implementation (to be authored)**: `src/Prodbox/TestValidation.hs`
-(`runChartsVscodeValidation` and the
-`runCharts{Api,Websocket}Validation` /
-`runAdminRoutesValidation` / `runPublicDnsValidation` siblings —
-audit for a substrate-aware code path that lacks an AWS branch and
-short-circuits without `failWith`); possibly
-`src/Prodbox/PublicEdge.hs::waitForPublicEdgeReady` or the
-`prodbox host public-edge` subprocess wiring underneath it.
+**Implementation**: `src/Prodbox/CLI/Command.hs`
+(`HostCommand.HostPublicEdge` now carries `Substrate`);
+`src/Prodbox/CLI/Spec.hs` (`host public-edge` parser + leaf threads
+`--substrate {home-local,aws}`; promoted `substrateOption :: OptionSpec`
+out of `testGroupSpec`'s where-clause for reuse);
+`src/Prodbox/Host.hs::runHostPublicEdge` now takes `Substrate`, uses
+`substratePublicFqdn` / `substrateHostedZoneId` (no fallback), and
+emits a stdout breadcrumb `PUBLIC_EDGE_SUBSTRATE=<id>` so the
+substrate is visible in the operator log;
+`src/Prodbox/Dns.hs` (new `queryRoute53RecordInZone` takes an
+explicit hosted-zone id; legacy `queryRoute53Record` is now a
+home-substrate adapter);
+`src/Prodbox/TestValidation.hs::runNativeValidation` now emits a
+stderr breadcrumb `[validation=<id> substrate=<id>] entering body`
+before the body and `... body exit=<ExitCode>` after, so a silent
+exit is structurally impossible at the runner level; the four
+substrate-aware public-edge validation bodies
+(`runChartsVscodeValidation`, `runChartsApiValidation`,
+`runChartsWebsocketValidation`, `runAdminRoutesValidation`) and the
+shared `waitForPublicEdgeReady` thread `Substrate` and pass
+`--substrate <id>` to the spawned `prodbox host public-edge`
+subprocess; `runPublicDnsValidation` accepts a `Substrate` parameter
+to keep the runner-level dispatch uniform but its current body still
+reads `route53.zone_id` from `prodbox-config.dhall` rather than the
+substrate-aware hosted-zone helper, so its substrate-aware
+assertions land alongside the live AWS-substrate re-run in Sprint
+`7.5.c.v`; `src/Prodbox/TestRunner.hs::runWaitForPublicEdgeReady`
+takes `Substrate` (the home-cluster bootstrap and postflight
+restore paths pass `SubstrateHomeLocal` explicitly).
 **Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
-(move the Pending Removal row to Completed once the fix lands),
-`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (flip status
-to ✅).
+(move the Pending Removal row to Completed once the live re-run lands
+in Sprint `7.5.c.v`), `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`
+(this status flip).
 
 ### Objective
 
@@ -1915,9 +1938,18 @@ five share the same `waitForPublicEdgeReady` plumbing.
 
 ### Remaining Work
 
-Diagnose, fix, and validate. Closes Sprint `7.5.c.v` and the parent
-Sprint `7.5.c`; flips the substrate parity row in
-[`substrates.md`](substrates.md) to ✅ once the live re-run lands.
+Code, doctrine alignment, and unit-level guards (golden-test goldens
+for the new `--substrate` parser leaf and the breadcrumb-emitting
+runner shape) landed May 20, 2026. `prodbox check-code` exits 0;
+`prodbox test unit` golden goldens for the JSON command registry and
+the leaf help pages were refreshed via `--accept`. The single
+remaining validation step (a live targeted re-run of
+`./.build/prodbox test integration charts-vscode --substrate aws`)
+is operator-driven against live AWS infrastructure and is folded
+into Sprint `7.5.c.v`'s closure. The `prodbox-config-types.dhall`
+round-trip unit test is unrelated to this sprint and tracks Sprint
+`4.10` (Settings.hs lacks the matching `PulumiStateBackendSection`
+record decoder).
 
 ## Sprint 7.6: AWS Harness Orphan-Safety Guards ✅
 

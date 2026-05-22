@@ -115,6 +115,7 @@ validConfig =
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
     ]
 
@@ -130,6 +131,7 @@ invalidConfig =
     , ", acme = { email = \"test@resolvefintech.com\", server = \"https://acme-staging-v02.api.letsencrypt.org/directory\", eab_key_id = None Text, eab_hmac_key = None Text }"
     , ", deployment = " ++ deploymentDhallFragment
     , ", storage = { manual_pv_host_root = \".data\" }"
+    , ", pulumi_state_backend = { bucket_name = \"\", region = \"\", key_prefix = \"\" }"
     , "}"
     ]
 

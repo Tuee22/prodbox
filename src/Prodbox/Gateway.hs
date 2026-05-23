@@ -15,7 +15,6 @@ import Control.Applicative ((<|>))
 import Control.Exception (IOException, try)
 import Data.Aeson
   ( Value (..)
-  , eitherDecode
   , object
   , (.=)
   )
@@ -47,6 +46,7 @@ import Prodbox.EffectInterpreter
   , runEffectDAG
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Daemon qualified as Daemon
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
@@ -54,7 +54,6 @@ import Prodbox.Gateway.Types
   , PeerEndpoint (..)
   , parseDaemonConfig
   , parseOrders
-  , peerRestUrl
   , supportedDaemonConfigSchemaVersion
   , validateDaemonTimingAgainstOrders
   )
@@ -70,12 +69,6 @@ import Prodbox.Settings
   , route53
   , validateAndLoadSettings
   )
-import Prodbox.Subprocess
-  ( ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessResult
-  )
-import System.Directory (findExecutable)
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
@@ -283,38 +276,11 @@ renderGatewayStatusReport payload =
     _ -> Left "gateway state response was not a JSON object"
 
 queryGatewayState :: FilePath -> PeerEndpoint -> IO (Either String Value)
-queryGatewayState configPath endpoint = do
-  curlExists <- findExecutable "curl"
-  case curlExists of
-    Nothing -> pure (Left "`gateway status` requires `curl` to query the daemon REST API.")
-    Just _ -> do
-      outputResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "curl"
-            , subprocessArguments =
-                [ "-fsSL"
-                , "--max-time"
-                , "5"
-                , gatewayStatusUrl endpoint
-                ]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just (takeDirectory configPath)
-            }
-      pure $
-        case outputResult of
-          Failure err -> Left ("failed to start gateway status curl request: " ++ err)
-          Success output ->
-            case processExitCode output of
-              ExitSuccess ->
-                case eitherDecode (BL8.pack (processStdout output)) of
-                  Left err -> Left ("gateway state response was not valid JSON: " ++ err)
-                  Right value -> Right value
-              ExitFailure _ -> Left ("gateway state query failed: " ++ outputDetail output)
-
-gatewayStatusUrl :: PeerEndpoint -> String
-gatewayStatusUrl endpoint =
-  peerRestUrl endpoint ++ "/v1/state"
+queryGatewayState _configPath endpoint = do
+  result <- GatewayClient.queryState endpoint
+  pure $ case result of
+    Left err -> Left ("gateway state query failed: " ++ GatewayClient.renderGatewayError err)
+    Right value -> Right value
 
 lookupPeerEndpoint :: String -> Orders -> Maybe PeerEndpoint
 lookupPeerEndpoint nodeId orders =
@@ -469,18 +435,6 @@ boolText False = "false"
 
 fallback :: String -> Maybe String -> String
 fallback defaultValue maybeValue = fromMaybe defaultValue maybeValue
-
-outputDetail :: ProcessOutput -> String
-outputDetail output =
-  case (trim (processStderr output), trim (processStdout output)) of
-    (stderrText, _) | stderrText /= "" -> stderrText
-    ("", stdoutText) | stdoutText /= "" -> stdoutText
-    _ -> "subprocess exited without output"
-
-trim :: String -> String
-trim = f . f
- where
-  f = reverse . dropWhile (`elem` [' ', '\n', '\r', '\t'])
 
 mapLeft :: (a -> b) -> Either a c -> Either b c
 mapLeft transform value =

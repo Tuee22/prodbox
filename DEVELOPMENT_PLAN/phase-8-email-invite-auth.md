@@ -135,10 +135,12 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
   `awsSesStackName`, `ensureAwsSesStackResources`, `destroyAwsSesStack`,
   `loadAwsSesStackSnapshot`, `saveAwsSesStackSnapshot`, `clearAwsSesStackSnapshot`,
   `assertNoAwsSesStackResidue`, and `renderAwsSesStackReport`. The reconcile path
-  brings up `pulumi/aws-ses/` against the MinIO-backed local Pulumi backend, syncs
-  `parentZoneId` / `senderDomain` / `receiveSubdomain` / `captureBucket` to the stack,
-  runs `pulumi up`, parses the JSON outputs into a snapshot under
-  `.prodbox-state/aws-ses/stack-snapshot.json`, and emits a `STACK=…` report. Destroy
+  brings up `pulumi/aws-ses/` against the dedicated long-lived S3 backend (per
+  Sprint `4.10`), syncs `parentZoneId` / `senderDomain` / `receiveSubdomain` /
+  `captureBucket` to the stack, runs `pulumi up`, and emits a `STACK=…` report.
+  Output values are read on demand via `Prodbox.Infra.StackOutputs.fetch` (Sprint
+  `4.16`) and `<stack>ResidueStatus` queries the long-lived S3 backend directly;
+  the legacy `.prodbox-state/aws-ses/stack-snapshot.json` output cache is removed. Destroy
   mirrors `AwsEksSubzoneStack`'s idempotent destroy path with summary-mode quiet output
   and post-destroy residue scan (S3 capture bucket existence check via `aws s3api
   head-bucket`).
@@ -361,9 +363,11 @@ Add an operator-facing user management surface that wraps the Keycloak admin API
   actionable. Pure named handlers (`parseAccessToken`, `handleCreateUserResponse`,
   `expect204`, …) satisfy the doctrine's "Avoid case inside lambda body" guard.
 - `src/Prodbox/UsersAdmin.hs` now composes the admin client: `loadKeycloakAdminPassword`
-  reads `.prodbox-state/charts/keycloak/.secrets.json::keycloak_admin_password` (owned
-  by `Prodbox.Lib.ChartPlatform.resolveChartSecrets`) so the admin module stays free
-  of the chart-platform module graph. `inviteUser` creates the user, then triggers
+  reads the `keycloak-runtime.admin` field from the namespace-local k8s Secret
+  (materialized by the gateway service per Sprint `3.13`; derived from the master
+  seed at MinIO `prodbox/master-seed` per
+  [secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md))
+  so the admin module stays free of the chart-platform module graph. `inviteUser` creates the user, then triggers
   `["VERIFY_EMAIL", "UPDATE_PASSWORD"]` via `executeActionsEmail`. `listUsers` filters
   by `UsersListStatus`. `revokeUser` accepts either an email or a user id and
   defaults to disable; `--delete` performs a hard delete.
@@ -570,10 +574,13 @@ on whichever substrate is active.
   the Pulumi `up` succeeds: `pulumiStackOutputSecret` fetches
   `smtp_iam_secret_access_key` via `pulumi stack output --show-secrets`,
   `derivedSesSmtpPassword` derives the password using the configured
-  `aws.region`, and `persistKeycloakSmtpChartSecrets` merges four keys
+  `aws.region`, and `persistKeycloakSmtpChartSecrets` writes four fields
   (`ses_smtp_endpoint`, `ses_smtp_user`, `ses_smtp_password`, `ses_smtp_from`)
-  into `.prodbox-state/charts/keycloak/.secrets.json`. The IAM secret access key
-  never lands on disk.
+  directly into the `keycloak-smtp` k8s Secret in the keycloak namespace
+  (k8s-Secret-as-source-of-truth per Sprint `3.13`; not data-bound, so not
+  derived from the master seed — the SES SMTP password is recomputed from the
+  Pulumi-managed IAM secret access key on each `pulumi up`). The IAM secret
+  access key never lands on disk.
 - `src/Prodbox/Lib/ChartPlatform.hs::valuesForKeycloak` adds a new
   `keycloakSmtpValues` helper that renders the chart's `smtp` block from the
   four `ses_smtp_*` chart-secret keys when all four are present. Without them

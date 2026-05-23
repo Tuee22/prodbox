@@ -84,9 +84,40 @@ cluster is already gone and proceeds to the per-run Pulumi destroys.
 The live AwsSesStack admin-credential switch / live cascade
 exercise against a running cluster / live `nuke` exercise are
 scheduled as remaining work for Sprints `4.10`–`4.13`. Phase `8` is `Active` on Sprints
-`8.5`–`8.6`. The doctrine-adoption handoff is closed; remaining open work is
-substrate-parity live validation (Sprint `7.5.c.v`), the residual Phase `4` live closures
-for Sprints `4.10`–`4.13`, and live Keycloak invite OIDC closure (Sprint `8.5`).
+`8.5`–`8.6`. **Phase `2`, Phase `3`, and Phase `4` reopened May 23, 2026** to schedule
+the `.prodbox-state/` elimination work surfaced by the May 22 cascade-credentials
+failure on this host: Phase `2` adds Sprints `2.17` (native Haskell HTTP client replaces
+`curl` shell-outs) **— ✅ Done on the host-side host-CLI surface (5 callers migrated;
+`Prodbox.Http.Client` + `Prodbox.Gateway.Client` modules; 10 unit tests; the
+TestValidation-suite callers and the RKE2 installer download remain on the cleanup
+ledger as Sprint 4.18 follow-up)**; `2.18` (127.0.0.1-only NodePort enforcement via
+`host firewall`) **— ✅ Done on the foundational host-side surface (pure
+`gatewayNodePortFirewallRuleArgs` + `runHostFirewallGatewayRestrict` + new `host
+firewall gateway-restrict --port PORT` subcommand; 7 unit tests; chart-side NodePort
+Service + reconcile/delete wiring land with Sprint 2.19)**; and `2.19` (gateway daemon
+becomes secret-derivation service) **— 🔄 Active: pure `Prodbox.Secret.Derive` module
+landed (HMAC-SHA-256 + per-secret context-string table + 13 unit tests, including the
+five canonical context strings from the doctrine table); MinIO IAM bootstrap +
+`Prodbox.Secret.MasterSeed` MinIO read/write + gateway daemon `/v1/secret/*` endpoint
+handlers + chart-side `gateway-minio-creds` Secret + reconcile/delete wiring + the
+`amazonka-s3` (or `minio-hs`) dependency addition remain as coupled deliverables for a
+dedicated session**. Phase `3` adds Sprint `3.13` (chart secrets derived by the gateway
+service; eliminates the host-side `.prodbox-state/<ns>/.secrets.json` cache) **— 📋
+Planned (blocked on Sprint 2.19's full closure)**. Phase `4` adds Sprints `4.16`
+(`ResidueStatus` ADT replaces file-existence predicates) **— 📋 Planned**, `4.17`
+(cascade canonical order + self-materialize operational creds) **— 🔄 Active: the
+credential-fallback half landed May 23, 2026 and **structurally closes the May 22
+cascade-credentials failure class** by making each per-run
+`loadOperationalAwsCredentials` fall back to `aws_admin_for_test_simulation.*` when
+operational `aws.*` is empty (4 unit tests); the full cascade-order rewrite
+(confirm-MinIO → per-run destroys → drain → uninstall → sweep) blocks on Sprint
+4.16's `ResidueStatus` ADT**, and `4.18` (removes remaining `.prodbox-state/`
+artifacts) **— 📋 Planned**. New doctrine SSoT
+[secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md)
+governs the master seed and the host↔cluster boundary. The doctrine-adoption handoff
+is closed; remaining open work is substrate-parity live validation (Sprint `7.5.c.v`),
+the residual Phase `4` live closures for Sprints `4.10`–`4.13`, live Keycloak invite
+OIDC closure (Sprint `8.5`), and the Phase `2`/`3`/`4` reopened sprints above.
 
 Reopened sprints by phase:
 
@@ -107,7 +138,7 @@ Reopened sprints by phase:
   the `Cabal 3.16.1.0` reference), library-first / thin-`Main.hs` layout, the
   `CommandSpec` / `OptionSpec` record-field bindings plus daemon-as-typed-`Command`
   dispatch, forbidden subprocess primitives (`callProcess`, `readCreateProcess`,
-  direct `System.Process` constructors), the twelve minimum `fourmolu.yaml` settings,
+  direct `System.Process` constructors), the thirteen minimum `fourmolu.yaml` settings,
   the canonical property-test invariants (`decode . encode == id`,
   `render is deterministic`, `parser roundtrips`), the service-error newtype inventory
   (`MinIOError`, `RedisError`, `PgError` wrapping `ServiceError`), the daemon
@@ -157,7 +188,7 @@ Reopened sprints by phase:
   (`CommandSpec` / `OptionSpec` record-field bindings plus daemon-as-typed-`Command`
   dispatch), Sprint 1.8 (typed `Subprocess` record plus removal of the pre-doctrine
   `CommandSpec`, `runStreamingCommand`, and `captureCommand` compatibility names), Sprint 1.10
-  (twelve minimum `fourmolu.yaml` settings bound), Sprint 1.11 (canonical
+  (thirteen minimum `fourmolu.yaml` settings bound), Sprint 1.11 (canonical
   property-test invariants `decode . encode == id`, `render is deterministic`,
   `parser roundtrips`), Sprint 1.12 (service-error newtype inventory `MinIOError`,
   `RedisError`, `PgError`), Sprint 1.14 (`AppError` record shape `errorKind`,
@@ -288,8 +319,9 @@ The authoritative target still closes on:
 - one Redis surface that currently backs WebSocket shared state and may later back an explicit
   external rate-limit service, but does not yet ship a standalone rate-limit-service workload or
   validation surface
-- one cleanup ledger that preserves completed removal history and has no still-open
-  doctrine-adoption residue
+- one cleanup ledger that preserves completed removal history; after the May 23, 2026 reopen of
+  Phases `2`, `3`, and `4` the only open rows are the cluster-as-source-of-truth and
+  native-HTTP-client cleanups owned by Sprints `2.17`, `3.13`, `4.16`, and `4.18`
 
 The implemented clean-room rerun proof remains the Phase `6` command contract expressed through
 `prodbox test all`, `prodbox config show`, `prodbox config validate`, and
@@ -626,8 +658,13 @@ the supported path:
   Route 53, public-edge, EKS, HA-RKE2, destructive lifecycle, and post-test restore.
 - The final Phase `6` destructive rerun and handoff validation are closed on that aggregate rerun
   contract and the supported postflight restore path.
-- The legacy ledger preserves completed cleanup history, and its pending-removal section is empty
-  after the doctrine-adoption reopen closure.
+- The legacy ledger preserves completed cleanup history. After the doctrine-adoption reopen
+  closure the `Pending Removal` section was empty; the May 23, 2026 reopen of Phases `2`, `3`,
+  and `4` (Sprints `2.17`, `2.18`, `2.19`, `3.13`, `4.16`, `4.17`, `4.18`) reintroduced
+  doctrine-aligned residue rows (file-existence stack predicates, the `.prodbox-state/` host-side
+  cache, the host-side chart-secret cache plus `.patroni-anchor-volume` marker, and the remaining
+  `curl` shell-outs in `src/Prodbox/TestValidation.hs`, `Workload.hs`, and `CLI/Rke2.hs`), each
+  scoped to its owning sprint.
 
 ## Exit Definition
 

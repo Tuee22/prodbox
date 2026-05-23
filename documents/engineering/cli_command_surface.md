@@ -199,9 +199,17 @@ key) skips the session-token prompt entirely.
 | `prodbox host check-ports` | none | none |
 | `prodbox host info` | none | none |
 | `prodbox host firewall` | none | none |
+| `prodbox host firewall gateway-restrict` | none | none |
 | `prodbox host public-edge` | none | none |
 
 `src/Prodbox/Host.hs` owns the full public `prodbox host ...` surface.
+
+`prodbox host firewall gateway-restrict` (Sprint `2.18`) is the idempotent installer for
+the iptables INPUT-DROP rule that restricts the gateway-service NodePort to `127.0.0.1`
+on the operator host. `prodbox rke2 reconcile` invokes the installer as part of the
+host post-install phase; `prodbox rke2 delete --yes` removes the rule on clean teardown.
+The rule survives reboot via `iptables-save` to the host's persistence path. Authoritative
+contract: [Secret Derivation Doctrine](./secret_derivation_doctrine.md) §5.
 
 The target public-edge doctrine for that surface is defined in
 [Envoy Gateway Edge Doctrine](./envoy_gateway_edge_doctrine.md). `prodbox host public-edge`
@@ -248,12 +256,17 @@ exclusive at parse time:
 - (default, no flag) → **refuse** with the actionable per-stack remedy list. The cluster is
   not touched; the operator runs the named `prodbox pulumi <stack>-destroy --yes` commands
   while the MinIO backend for those stacks is still up.
-- `--cascade` → **orchestrate the full clean teardown**. In canonical order: (1) K8s drain
-  phase (Sprint `4.12`) — delete LoadBalancer Services, Ingresses, and Delete-reclaim PVCs
-  cluster-wide and wait for the LBC and EBS CSI driver to unwind their AWS resources; (2)
-  `prodbox pulumi <stack>-destroy --yes` for live per-run stacks in canonical order; (3) the
-  existing cluster uninstall; (4) postflight tag sweep that fails the command if any
-  cluster-tagged AWS resource survives. This is the recommended path for wipe-and-rebuild
+- `--cascade` → **orchestrate the full clean teardown**. Sprint `4.17` reorders the cascade
+  to release AWS resources tracked in MinIO before tearing down the local cluster. Canonical
+  order: (1) confirm MinIO reachable and query `<stack>ResidueStatus` (Sprint `4.16`) for
+  each per-run stack; (2) `prodbox pulumi <stack>-destroy --yes` for stacks reporting
+  `ResiduePresent`, wrapped in `withMaterializedOperationalCreds` so empty operational
+  `aws.*` is filled transparently from `aws_admin_for_test_simulation.*` and restored on
+  exit; (3) K8s drain phase (Sprint `4.12`) — delete LoadBalancer Services, Ingresses, and
+  Delete-reclaim PVCs cluster-wide; (4) cluster uninstall; (5) postflight tag sweep that
+  fails the command if any cluster-tagged AWS resource survives. The
+  [Lifecycle Reconciliation Doctrine](lifecycle_reconciliation_doctrine.md) §5b is the
+  authoritative cascade-order reference. This is the recommended path for wipe-and-rebuild
   cycles.
 - `--allow-pulumi-residue` → **operator-acknowledged orphan**. Bypass the refuse-path; per-run
   stacks become orphaned (their MinIO backend dies with the cluster). Recovery-only.
@@ -494,7 +507,7 @@ is defined in
 [Haskell Code Guide](./haskell_code_guide.md).
 
 The policy-scan portion is scoped to repo-owned surfaces and excludes generated or retained
-runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 
 ### `prodbox tla-check`
 

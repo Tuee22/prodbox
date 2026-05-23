@@ -34,7 +34,7 @@
 | `prodbox host ensure-tools` | Verify required host tools |
 | `prodbox host check-ports` | Check required ports |
 | `prodbox host info` | Display host diagnostics |
-| `prodbox host firewall` | Check firewall requirements |
+| `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
 | `prodbox host public-edge` | Check public DNS/TLS edge state |
 | `prodbox k8s health` | Check cluster health |
 | `prodbox k8s wait` | Wait for deployments to be ready |

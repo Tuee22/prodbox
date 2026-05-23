@@ -2,7 +2,8 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md
+**Referenced by**: README.md, DEVELOPMENT_PLAN/README.md, DEVELOPMENT_PLAN/system-components.md, documents/engineering/README.md, documents/engineering/envoy_gateway_edge_doctrine.md, documents/engineering/local_registry_pipeline.md, documents/engineering/tla_modelling_assumptions.md, documents/engineering/secret_derivation_doctrine.md, documents/engineering/storage_lifecycle_doctrine.md
+**Generated sections**: none
 
 > **Purpose**: Define the fully peer-to-peer prodbox architecture using shared Orders + append-only commit log with formally constrained gateway leadership rules.
 
@@ -436,6 +437,49 @@ port. It is separate from the peer-to-peer event-batch transport used for gatewa
 communication. The REST handler consumes the inbound HTTP request before closing the socket so the
 operator-facing response contract stays intact when queried through `kubectl port-forward`.
 
+### `GET /v1/secret/derive?context=<context-string>`
+
+Returns the master-seed-derived 32-byte value for the requested context string,
+base64-url-encoded. Authoritative contract:
+[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §4.
+
+```json
+{ "context": "patroni:keycloak:keycloak:app", "derived": "base64url=...", "encoding": "base64url" }
+```
+
+`400` for malformed or unknown context; `500` if the gateway cannot read
+`prodbox/master-seed` from MinIO. Used by ad-hoc callers that already know the context
+string.
+
+### `POST /v1/secret/ensure-namespace`
+
+Idempotently materializes every data-bound k8s Secret for a release from the master
+seed. Authoritative contract:
+[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §4.
+
+Request:
+
+```json
+{ "namespace": "keycloak", "release": "keycloak" }
+```
+
+Response (no plaintext; the SHA-256 column lets the caller confirm the Secret exists
+and matches the derived value):
+
+```json
+{
+    "namespace": "keycloak",
+    "release": "keycloak",
+    "secrets": [
+        { "name": "prodbox-keycloak-pg-pguser-keycloak", "sha256": "..." },
+        { "name": "keycloak-runtime",                    "sha256": "..." }
+    ]
+}
+```
+
+Used by chart pre-install Jobs (via the in-cluster ClusterIP) and by the host CLI (via
+the 127.0.0.1-only NodePort, see §12.1) before chart deploy.
+
 ### `GET /healthz`, `GET /readyz`, and `GET /metrics`
 
 The gateway REST listener also exposes daemon-health endpoints on the same in-pod REST port:
@@ -497,16 +541,55 @@ prodbox charts deploy gateway                 # Install/upgrade in-cluster gatew
 prodbox charts status gateway                 # Inspect installed gateway release
 ```
 
+### 12.1 Host-CLI Access via 127.0.0.1-Only NodePort
+
+The gateway chart renders two Services per ranked node: the existing per-node
+`gateway-<id>` ClusterIP for in-cluster callers (chart pre-install Jobs, peer-mesh
+traffic) and an additional NodePort Service that exposes the REST listener for host-CLI
+access. The NodePort is restricted to `127.0.0.1` on the operator host via a host
+iptables rule installed by `prodbox rke2 reconcile` and removed by `prodbox rke2
+delete --yes`. External access (LAN, WAN) is dropped at the host firewall.
+
+The host CLI calls the gateway via the native Haskell HTTP client in
+`Prodbox.Http.Client` and the typed gateway client in `Prodbox.Gateway.Client`. The
+legacy `curl` shell-out pattern (`src/Prodbox/Gateway.queryGatewayState` et al.) is
+removed in Sprint 2.17.
+
+Authoritative contract and bootstrap order:
+[Secret Derivation Doctrine](./secret_derivation_doctrine.md) §5 and §7.
+
+### 12.2 MinIO Bucket Access for the Master Seed
+
+The gateway daemon is the sole reader and writer of the master seed stored at the
+`prodbox/master-seed` object in MinIO. Access control:
+
+| Element | Value |
+|---|---|
+| MinIO bucket | `prodbox` |
+| MinIO IAM principal | `prodbox-gateway` |
+| Policy actions on `prodbox/*` | `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` |
+| Other principals (including MinIO root) | not used to read or write `prodbox/*` |
+| Persistence | MinIO PV under `.data/minio/...` per [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md) §1 |
+
+The per-run Pulumi-state bucket (`prodbox-test-pulumi-backends`) is unaffected by this
+IAM addition — it continues to use MinIO root credentials. The `prodbox` bucket and
+the `prodbox-gateway` user are bootstrapped by reconcile (either through a Pulumi
+program or a one-shot Job using MinIO root creds) before the gateway daemon starts.
+
 ---
 
 ## 13. Verification Surfaces
 
-Gateway verification lives in four canonical places:
+Gateway verification lives in five canonical places:
 
-1. `test/unit/Main.hs` for daemon logic, rendering, and DNS-write gating support behavior.
-2. `test/daemon-lifecycle/Main.hs` for process-level startup, readiness, signal drain, and
-   daemon flag/env precedence coverage.
-3. `prodbox test integration gateway-daemon` for daemon-oriented validation.
+1. `test/unit/Main.hs` for daemon logic, rendering, DNS-write gating support
+   behavior, and the secret-derivation handler unit coverage
+   (Sprint 2.19).
+2. `test/daemon-lifecycle/Main.hs` for process-level startup, readiness, signal drain,
+   and daemon flag/env precedence coverage.
+3. `prodbox test integration gateway-daemon` for daemon-oriented validation, including
+   the `/v1/secret/derive` and `/v1/secret/ensure-namespace` round-trip against a real
+   MinIO `prodbox` bucket.
 4. `prodbox test integration gateway-pods` for pod-backed mesh validation.
 5. `prodbox tla-check` plus `documents/engineering/tla/gateway_orders_rule.tla`
    for formal safety checks.

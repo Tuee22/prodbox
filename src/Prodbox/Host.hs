@@ -4,11 +4,15 @@ module Prodbox.Host
   ( LanAddressing (..)
   , PortStatus (..)
   , NtpDisposition (..)
+  , FirewallRuleAction (..)
   , detectLanAddressing
   , renderPortAvailabilityReport
   , parseTimedatectlNtpDisposition
   , renderHostInfoReport
   , runHostCommand
+  , gatewayNodePortFirewallRuleArgs
+  , gatewayNodePortFirewallCheckArgs
+  , renderFirewallRuleAction
   )
 where
 
@@ -145,6 +149,7 @@ runHostCommand repoRoot command =
     HostCheckPorts -> runHostCheckPorts
     HostInfo -> runHostInfo repoRoot
     HostFirewall -> runSingleEffect repoRoot "Check firewall status" (commandEffect "ufw" ["status"] repoRoot)
+    HostFirewallGatewayRestrict port -> runHostFirewallGatewayRestrict port
     HostPublicEdge substrate -> runHostPublicEdge repoRoot substrate
 
 runHostPublicEdge :: FilePath -> Substrate -> IO ExitCode
@@ -1156,3 +1161,112 @@ failWith :: String -> IO ExitCode
 failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
+
+-- | Action outcome reported by the firewall-rule installer.
+data FirewallRuleAction
+  = FirewallRuleInstalled
+  | FirewallRuleAlreadyPresent
+  | FirewallRuleRemoved
+  | FirewallRuleNotPresent
+  deriving (Eq, Show)
+
+renderFirewallRuleAction :: FirewallRuleAction -> String
+renderFirewallRuleAction action = case action of
+  FirewallRuleInstalled -> "installed"
+  FirewallRuleAlreadyPresent -> "already-present"
+  FirewallRuleRemoved -> "removed"
+  FirewallRuleNotPresent -> "not-present"
+
+-- | iptables argv for inserting the gateway-NodePort restriction. Drops any
+-- INPUT packet to the named NodePort whose ingress interface is not 'lo'.
+-- The rule is appended (not inserted at the head) so existing operator
+-- iptables rules retain their precedence; the DROP semantics make
+-- precedence irrelevant for the protected port either way.
+gatewayNodePortFirewallRuleArgs :: Int -> [String]
+gatewayNodePortFirewallRuleArgs port =
+  [ "-A"
+  , "INPUT"
+  , "!"
+  , "-i"
+  , "lo"
+  , "-p"
+  , "tcp"
+  , "--dport"
+  , show port
+  , "-j"
+  , "DROP"
+  , "-m"
+  , "comment"
+  , "--comment"
+  , gatewayNodePortFirewallRuleComment
+  ]
+
+-- | iptables argv for checking whether the rule is already installed.
+-- Uses the 'iptables -C' (check) verb which exits 0 if the rule exists,
+-- non-zero otherwise.
+gatewayNodePortFirewallCheckArgs :: Int -> [String]
+gatewayNodePortFirewallCheckArgs port =
+  "-C" : drop 1 (gatewayNodePortFirewallRuleArgs port)
+
+-- | The comment tag attached to the rule so operators can grep for it and
+-- so the install path can recognize an existing rule. Stable across
+-- versions per the contract in secret_derivation_doctrine.md §5.
+gatewayNodePortFirewallRuleComment :: String
+gatewayNodePortFirewallRuleComment = "prodbox-gateway-nodeport-loopback-only"
+
+runHostFirewallGatewayRestrict :: Int -> IO ExitCode
+runHostFirewallGatewayRestrict port = do
+  iptablesExists <- findExecutable "iptables"
+  case iptablesExists of
+    Nothing ->
+      failWith
+        "`host firewall gateway-restrict` requires `iptables` to install the gateway NodePort restriction."
+    Just _ -> do
+      checkResult <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "iptables"
+            , subprocessArguments = gatewayNodePortFirewallCheckArgs port
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
+            }
+      case checkResult of
+        Failure err ->
+          failWith ("failed to probe iptables for gateway NodePort rule: " ++ err)
+        Success checkOutput ->
+          case processExitCode checkOutput of
+            ExitSuccess -> do
+              writeOutputLine
+                ( "Gateway NodePort firewall rule on port "
+                    ++ show port
+                    ++ ": "
+                    ++ renderFirewallRuleAction FirewallRuleAlreadyPresent
+                )
+              pure ExitSuccess
+            ExitFailure _ -> do
+              installResult <-
+                captureSubprocessResult
+                  Subprocess
+                    { subprocessPath = "iptables"
+                    , subprocessArguments = gatewayNodePortFirewallRuleArgs port
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Nothing
+                    }
+              case installResult of
+                Failure err ->
+                  failWith ("failed to install gateway NodePort iptables rule: " ++ err)
+                Success installOutput ->
+                  case processExitCode installOutput of
+                    ExitFailure _ ->
+                      failWith
+                        ( "iptables refused to install the gateway NodePort rule: "
+                            ++ trim (processStderr installOutput)
+                        )
+                    ExitSuccess -> do
+                      writeOutputLine
+                        ( "Gateway NodePort firewall rule on port "
+                            ++ show port
+                            ++ ": "
+                            ++ renderFirewallRuleAction FirewallRuleInstalled
+                        )
+                      pure ExitSuccess

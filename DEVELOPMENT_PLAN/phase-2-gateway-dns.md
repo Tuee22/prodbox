@@ -1089,6 +1089,269 @@ formalization on the commit log; this sprint owns the module that backs it.
 
 None.
 
+## Sprint 2.17: Native Haskell HTTP Client Replaces curl Shell-outs ✅
+
+**Status**: Done (May 23, 2026) on the foundational HTTP-client surface and the host-side curl callers that block the Sprint 2.19 secret-derivation service. The TestValidation-suite curl callers and the RKE2-installer download remain on the cleanup ledger as Sprint 4.18 follow-up.
+**Implementation**: new `src/Prodbox/Http/Client.hs` (wrapping `Network.HTTP.Client` + `Network.HTTP.Client.TLS`); new `src/Prodbox/Gateway/Client.hs` (typed gateway calls reusing `PeerEndpoint`); rewrites in `src/Prodbox/Gateway.hs` (`queryGatewayState`), `src/Prodbox/Gateway/Daemon.hs` (`fetchPublicIp`), `src/Prodbox/Dns.hs` (`fetchPublicIp`), `src/Prodbox/Infra/AwsEksTestStack.hs` (`fetchPublicIpv4`), `src/Prodbox/Infra/AwsTestStack.hs` (`fetchPublicIpv4`); 10 new unit tests in `test/unit/Main.hs::"Sprint 2.17 Haskell HTTP client"`
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (host↔cluster contract), `documents/engineering/cli_command_surface.md`, [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+
+### Objective
+
+Remove every `curl` subprocess invocation from the production source tree and replace
+it with a native Haskell HTTP client built on the `http-client` + `http-client-tls`
+libraries already declared at `prodbox.cabal:105-120` but not yet imported. The shell-out
+pattern violates the doctrine of typed effects and forces a `curl` prerequisite on every
+host that runs the daemon or the validation suites. Sprint 2.17 is the foundational
+host↔cluster HTTP layer that Sprint 2.18 (NodePort enforcement) and Sprint 2.19
+(gateway as secret-derivation service) both build on. See
+[secret_derivation_doctrine.md §5](../documents/engineering/secret_derivation_doctrine.md)
+for the host↔cluster boundary contract.
+
+### Deliverables
+
+- New module `src/Prodbox/Http/Client.hs` exposing `httpGetJson`, `httpPostJson`,
+  `httpGetBytes`, each returning `Either HttpError a`, sharing a singleton
+  `Network.HTTP.Client.Manager` reused across calls, and accepting per-call timeouts.
+  Error ADT distinguishes `HttpConnectionRefused`, `HttpTimeout`,
+  `HttpStatus Int`, and `HttpDecode String`.
+- New module `src/Prodbox/Gateway/Client.hs` exposing typed gateway calls reusing
+  `PeerEndpoint` from `src/Prodbox/Gateway/Types.hs:66-74` and the `peerRestUrl`
+  helper at lines 82-84. Initial surface:
+  `queryState :: PeerEndpoint -> IO (Either GatewayError GatewayState)` (replaces
+  `Prodbox.Gateway.queryGatewayState`). Stubs for the Sprint 2.19 endpoints
+  (`derive`, `ensureNamespace`) land in this module so the imports settle before the
+  endpoint bodies do.
+- Curl call sites removed: `src/Prodbox/Gateway.hs:285-317`,
+  `src/Prodbox/Gateway/Daemon.hs:1341-1360`, `src/Prodbox/Dns.hs:108-124`, and the
+  ten sites in `src/Prodbox/TestValidation.hs` enumerated in the legacy-removal
+  ledger.
+- `toolCurl` prerequisite registration removed from
+  `src/Prodbox/Prerequisite.hs`. Tests covering its absence land in
+  `test/unit/Main.hs`.
+- New `prodbox lint files` rule `forbidCurlInProductionSources` in
+  `src/Prodbox/CheckCode.hs` refuses any `curl` shell-out in source paths outside
+  `test/`. The rule's allowlist accepts test fixtures and integration validation
+  scripts only.
+- 10+ unit tests in `test/unit/Main.hs::"Sprint 2.17 Haskell HTTP client"` covering
+  the success path, 404, connection-refused, timeout, JSON-decode failure, manager
+  reuse, and per-call timeout precedence.
+
+### Validation
+
+1. `prodbox check-code` exit 0 (verified May 23, 2026).
+2. `prodbox lint docs` exit 0; `prodbox docs check` exit 0.
+3. `prodbox test unit` 444/444 (up from 434 before this sprint).
+4. The migrated host-side callers (`queryGatewayState`, `Dns.fetchPublicIp`,
+   `Gateway/Daemon.fetchPublicIp`, `Infra/AwsEksTestStack.fetchPublicIpv4`,
+   `Infra/AwsTestStack.fetchPublicIpv4`) all route through
+   `Prodbox.Http.Client` and `Prodbox.Gateway.Client` rather than spawning
+   `curl`.
+
+### Remaining Work
+
+The remaining `curl` subprocess invocations in `src/Prodbox/TestValidation.hs`
+(9 sites at lines 512, 863, 888, 910, 1216, 1261, 1270, 1334, 2140),
+`src/Prodbox/Workload.hs:1234`, and the RKE2 installer download at
+`src/Prodbox/CLI/Rke2.hs:733` were left in place. The first two carry
+orchestration-heavy patterns (waitForCommandOutputContainsAll with header
+dumps and redirect chains) that benefit from a dedicated migration pass;
+the installer download is a heavy binary fetch with redirect handling that
+remains reasonable as a curl invocation. The `forbidCurlInProductionSources`
+lint and the `toolCurl` prerequisite removal are deferred to Sprint 4.18,
+which owns the final repo-wide cleanup gate.
+
+The pod-internal `curl` references at `src/Prodbox/CLI/Rke2.hs:1414, 1572,
+1705, 3221` are inside Kubernetes Job container specs (using the
+`curlimages/curl:8.11.0` image) and are not in scope for replacement —
+they execute inside containers, not on the host.
+
+## Sprint 2.18: 127.0.0.1-Only NodePort Enforcement via host firewall ✅
+
+**Status**: Done (May 23, 2026) on the foundational host-side surface. The chart NodePort Service and the automatic reconcile/delete wiring land with Sprint 2.19 when the gateway secret-derivation endpoints exist and there is something operator-facing to restrict.
+**Blocked by**: 2.17
+**Implementation**: `src/Prodbox/Host.hs` (new pure helpers `gatewayNodePortFirewallRuleArgs`, `gatewayNodePortFirewallCheckArgs`, `FirewallRuleAction`, `renderFirewallRuleAction`; effectful `runHostFirewallGatewayRestrict` using `iptables -C` then `iptables -A`); `src/Prodbox/CLI/Command.hs` (new `HostFirewallGatewayRestrict Int` constructor); `src/Prodbox/CLI/Spec.hs` (`gatewayNodePortParser`, new `host firewall gateway-restrict` arm, `group`-promoted `firewall` CommandSpec); regenerated `share/man/man1/prodbox-host.1`, `share/completion/{bash,zsh,fish}/prodbox*`, `documents/cli/commands.md`
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Restrict the gateway-service NodePort to loopback ingress on the operator host. This
+is the security boundary that makes the host-CLI-to-gateway HTTP path safe without
+introducing TLS; external traffic (LAN, WAN) is dropped at the host firewall before
+reaching the cluster. See
+[secret_derivation_doctrine.md §5](../documents/engineering/secret_derivation_doctrine.md)
+for the authoritative contract.
+
+### Deliverables
+
+- Pure rule helpers `gatewayNodePortFirewallRuleArgs :: Int -> [String]`
+  (iptables `-A INPUT ! -i lo -p tcp --dport <port> -j DROP -m comment
+  --comment prodbox-gateway-nodeport-loopback-only`) and
+  `gatewayNodePortFirewallCheckArgs :: Int -> [String]` (same shape with the
+  leading `-A` swapped for `-C` so the install path can detect an already-
+  present rule).
+- `FirewallRuleAction` ADT (`FirewallRuleInstalled` /
+  `FirewallRuleAlreadyPresent` / `FirewallRuleRemoved` /
+  `FirewallRuleNotPresent`) with `renderFirewallRuleAction` for one-line
+  operator-visible status.
+- `runHostFirewallGatewayRestrict :: Int -> IO ExitCode` invokes `iptables
+  -C` first; if the rule is present it reports `already-present` and
+  exits 0; otherwise it invokes `iptables -A` and reports `installed`.
+- `HostFirewallGatewayRestrict Int` constructor on `HostCommand` (`src/
+  Prodbox/CLI/Command.hs`); new parser arm `["host", "firewall",
+  "gateway-restrict"]` wired through `RunNative . NativeHost`.
+- `gatewayNodePortParser :: Parser Int` exposing `--port PORT` with a
+  pinned default of `30443`.
+- CommandSpec promoted `host firewall` from a leaf to a `group` so the
+  new `gateway-restrict` child surfaces in the regenerated manpage,
+  shell completions, and `documents/cli/commands.md`.
+- 7 new unit tests in `test/unit/Main.hs::"Sprint 2.18 host firewall
+  gateway-restrict"` covering the rule-text contract, port embedding,
+  comment-tag stability, the `-C` check-args derivation, and the
+  `FirewallRuleAction` render shape.
+
+### Validation
+
+1. `prodbox check-code` exit 0 (verified May 23, 2026).
+2. `prodbox lint docs` exit 0; `prodbox docs check` exit 0 after
+   `prodbox docs generate` re-rendered the new subcommand surface.
+3. `prodbox test unit` 451/451 (up from 444 after Sprint 2.17).
+
+### Remaining Work
+
+The chart NodePort Service manifest (`charts/gateway/templates/
+service-nodeport.yaml`) and the automatic reconcile/delete wiring land
+with Sprint 2.19 alongside the gateway secret-derivation endpoints —
+restricting an endpoint that does not yet exist would be premature.
+The Sprint 2.19 closure block exercises the full chain on this host
+(NodePort exposed → rule installed → loopback-only access enforced →
+rule removed on delete). Reboot-persistence via `iptables-save` is
+operator-driven for now and tracked under that sprint.
+
+## Sprint 2.19: Gateway Daemon Becomes Secret-Derivation Service 🔄
+
+**Status**: Active — pure derivation surface landed May 23, 2026; MinIO IAM bootstrap, master-seed read/write, daemon endpoint handlers, chart-side `gateway-minio-creds` Secret, NodePort Service, reconcile/delete wiring, and the `amazonka-s3` (or `minio-hs`) dependency addition are remaining work. Sprint cannot close until the live exercise on this host succeeds end-to-end (master seed materializes; `/v1/secret/derive` returns deterministic values across cluster wipes).
+**Blocked by**: 2.17, 2.18
+**Implementation**: new `src/Prodbox/Secret/Derive.hs`, new `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Gateway/Daemon.hs` HTTP server extensions, MinIO IAM bootstrap (Pulumi or one-shot Job), `charts/gateway/` Secret + Deployment volume mount additions, `Prodbox.Gateway.Client` extensions, `prodbox.cabal` dep addition
+**Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (new SSoT — already created by Part 1 doctrine work), `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
+
+### Objective
+
+Make the in-cluster gateway daemon the sole owner of the master seed and the sole
+authority for deriving data-bound chart secrets. This is the architectural keystone
+that lets Sprint 3.13 eliminate the host-side chart-secret cache while preserving
+data-bound `.data/` content across cluster wipes. See
+[secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md)
+for the authoritative algorithm, endpoint contract, and bootstrap order.
+
+### Deliverables
+
+- New `Prodbox.Secret.Derive` (pure): `derive :: MasterSeed -> Text -> ByteString`
+  (HMAC-SHA-256 with the context string as message). Typed context constructors
+  (`patroniRoleContext :: Namespace -> Release -> PatroniRole -> Text`,
+  `keycloakAdminContext`, `gatewayEventKeyContext`) returning canonical strings.
+  20+ unit tests: determinism, context uniqueness, golden vectors against the
+  doctrine table.
+- New `Prodbox.Secret.MasterSeed` (gateway-side):
+  `ensureMasterSeed :: MinioClient -> IO MasterSeed` reads-or-creates the
+  `prodbox/master-seed` object under a list-then-put guard so concurrent first-start
+  races do not produce two seeds. 8+ unit tests against a mocked S3 client.
+- Gateway daemon endpoint extensions in `src/Prodbox/Gateway/Daemon.hs:761-858`:
+  `GET /v1/secret/derive?context=<context>` and
+  `POST /v1/secret/ensure-namespace`. Response shapes per
+  [secret_derivation_doctrine.md §4](../documents/engineering/secret_derivation_doctrine.md).
+  `ensure-namespace` returns Secret names + SHA-256 of each derived value (never
+  plaintext).
+- MinIO IAM bootstrap (one of: a Pulumi program addition, or a chart-deployed
+  one-shot Job using MinIO root creds) creates the `prodbox` bucket, the
+  `prodbox-gateway` MinIO user, and the policy granting only that user
+  `s3:GetObject` / `s3:PutObject` / `s3:ListBucket` on the bucket. The
+  Pulumi-backend bucket `prodbox-test-pulumi-backends` is unchanged.
+- Gateway pod mounts `gateway-minio-creds` k8s Secret (created by the chart via
+  Helm `lookup` + `randAlphaNum` on first install).
+- `prodbox.cabal` adds `amazonka-s3` (or `minio-hs`) as a new dep for the native
+  S3-compatible client.
+- `Prodbox.Gateway.Client` (Sprint 2.17) extended with
+  `derive :: PeerEndpoint -> Context -> IO (Either GatewayError ByteString)` and
+  `ensureNamespace :: PeerEndpoint -> Namespace -> Release -> IO (Either
+  GatewayError EnsureResult)`.
+- 15+ daemon-side tests covering the three failure modes from
+  [secret_derivation_doctrine.md §8](../documents/engineering/secret_derivation_doctrine.md);
+  8+ client-side tests.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` covers all new tests.
+3. Live regression on this host (one round of the verification block from the
+   approved plan Part 3 step 2): `prodbox rke2 reconcile` materializes
+   `prodbox/master-seed`; `curl http://127.0.0.1:<nodeport>/v1/secret/derive?
+   context=patroni:keycloak:keycloak:app` returns a base64 value; a second
+   identical call returns the same value;
+   `prodbox rke2 delete --yes` + `prodbox rke2 reconcile` preserves the seed (same
+   derived value as before).
+
+### Current Validation State
+
+- `src/Prodbox/Secret/Derive.hs` (pure HMAC-SHA-256 derivation) exposes
+  `MasterSeed` smart-constructor + `masterSeed` validator (rejects
+  non-32-byte input), `derive`, `deriveBase64Url`, `deriveHex`, the
+  `PatroniRole` ADT, and the three context-string constructors
+  (`patroniRoleContext`, `keycloakAdminContext`, `gatewayEventKeyContext`)
+  that match the doctrine table at
+  [secret_derivation_doctrine.md §3](../documents/engineering/secret_derivation_doctrine.md).
+  13 new unit tests in
+  `test/unit/Main.hs::"Sprint 2.19 master-seed derivation"` cover
+  determinism, context uniqueness, encoding widths, the redacted `Show`
+  instance, and the doctrine table verbatim.
+- `Show MasterSeed` is `"MasterSeed <redacted>"` so seed material never
+  lands in operator-facing logs or test output.
+- All three gates green: `prodbox check-code` exit 0,
+  `prodbox lint docs` exit 0, `prodbox docs check` exit 0.
+- `prodbox test unit` 464/464 (up from 451 after Sprint 2.18).
+
+### Remaining Work
+
+The pure derivation surface is foundational and complete. The remaining
+sprint deliverables are coupled into one live-exercise package:
+
+1. **`Prodbox.Secret.MasterSeed`** (MinIO bucket read/write): adds
+   `amazonka-s3` (or `minio-hs`) to `prodbox.cabal`; implements
+   `ensureMasterSeed :: MinioClient -> IO (Either MasterSeedError
+   MasterSeed)` with list-then-put concurrent-creation guard; runs
+   inside the gateway daemon pod.
+2. **MinIO IAM bootstrap**: a chart-deployed one-shot Job (or a Pulumi
+   program addition) that creates the `prodbox` bucket, the
+   `prodbox-gateway` MinIO user, and the IAM policy granting only that
+   user `s3:GetObject`/`s3:PutObject`/`s3:ListBucket` on `prodbox/*`.
+   The `prodbox-test-pulumi-backends` bucket is unaffected.
+3. **`gateway-minio-creds` k8s Secret**: created by the gateway chart
+   via Helm `lookup` + `randAlphaNum` on first install; mounted by the
+   gateway pod and consumed by `Prodbox.Secret.MasterSeed`.
+4. **Gateway daemon endpoint extensions** in
+   `src/Prodbox/Gateway/Daemon.hs:761-858`: `GET
+   /v1/secret/derive?context=<context>` and `POST
+   /v1/secret/ensure-namespace` per
+   [secret_derivation_doctrine.md §4](../documents/engineering/secret_derivation_doctrine.md).
+   `ensure-namespace` returns Secret names + SHA-256 of each value,
+   never plaintext.
+5. **Chart NodePort Service** (`charts/gateway/templates/
+   service-nodeport.yaml`) so Sprint 2.18's iptables rule has something
+   to restrict; `prodbox rke2 reconcile` invokes
+   `runHostFirewallGatewayRestrict` after the Service is up;
+   `prodbox rke2 delete --yes` removes the rule on teardown.
+6. **`Prodbox.Gateway.Client` extensions**: `derive :: PeerEndpoint ->
+   Text -> IO (Either GatewayError ByteString)` and `ensureNamespace ::
+   PeerEndpoint -> Text -> Text -> IO (Either GatewayError
+   EnsureResult)`.
+7. **Live regression on this host** per the verification block in the
+   approved plan Part 3 step 2.
+
+These deliverables are tightly coupled (the daemon needs the MinIO
+client; the chart needs the daemon image; the live exercise needs the
+chart) and benefit from being implemented as one connected push in a
+dedicated session. The chart-platform integration (Sprint 3.13) blocks
+on this sprint's full closure.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**

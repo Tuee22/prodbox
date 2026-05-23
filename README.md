@@ -355,8 +355,11 @@ Remove the local runtime and destroy AWS validation residue:
 ```
 
 `rke2 delete --yes` is destructive. It removes the local cluster, destroys the AWS validation
-stacks if they still exist, removes the managed kubeconfig, and preserves the retained state roots
-under `.data/` and `.prodbox-state/`.
+stacks if they still exist, removes the managed kubeconfig, and preserves `.data/` as the sole
+retained operator-host directory. The per-run Pulumi state in MinIO and the gateway-owned
+master seed both live on MinIO's PV under `.data/minio/...`, so they survive cluster wipes
+whenever `.data/` is preserved. `prodbox` never deletes `.data/`; removing it is an
+operator-only action.
 
 ### Chart Stacks
 

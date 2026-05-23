@@ -2050,6 +2050,14 @@ for the consolidated doctrine.
   live, matching the existing harness contract whereby
   `save<Stack>StackSnapshot` writes the file on `pulumi up` success
   and `clear<Stack>StackSnapshot` removes it on `pulumi destroy`.
+  **Pre-doctrine pragma** — the file-existence approximation is on
+  the cleanup ledger (see
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)),
+  scheduled for removal by Sprint `4.16` in favor of
+  `<stack>ResidueStatus` queries against the actual MinIO (per-run)
+  or S3 (long-lived) Pulumi backend per
+  [secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md)
+  and [lifecycle_reconciliation_doctrine.md §3](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
 ### Validation
 

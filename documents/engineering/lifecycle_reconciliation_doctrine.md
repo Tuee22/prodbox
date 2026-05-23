@@ -12,6 +12,8 @@
 [aws_integration_environment_doctrine.md](aws_integration_environment_doctrine.md),
 [cli_command_surface.md](cli_command_surface.md),
 [pure_fp_standards.md](pure_fp_standards.md),
+[secret_derivation_doctrine.md](secret_derivation_doctrine.md),
+[storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md),
 [unit_testing_policy.md](unit_testing_policy.md)
 **Generated sections**: none
 
@@ -53,6 +55,18 @@ The dedicated S3 bucket is itself a long-lived shared resource owned
 by the operator AWS account. It lives in the same lifecycle class as
 the `aws-ses` capture bucket and the operator-owned parent Route 53
 zone.
+
+**Per-run state survives cluster wipes via `.data/` preservation.** MinIO runs from a
+host-pathed PV under `.data/minio/...`
+([storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md) §1, §7). Whenever
+`.data/` is preserved (the default for both `prodbox rke2 delete --yes` and
+`prodbox rke2 delete --cascade --yes`), MinIO's bucket contents — the per-run Pulumi
+state, and the gateway-owned master seed at `prodbox/master-seed` — persist across the
+cluster cycle. This is what makes `prodbox rke2 delete --allow-pulumi-residue` a
+leak-free recovery shape: abandon the cluster with state intact in MinIO; rebuild RKE2
+on the same `.data/`; MinIO returns with the same bucket data; `prodbox pulumi
+<stack>-destroy --yes` releases the AWS resources cleanly. No permanent leak even
+under abnormal teardown sequences.
 
 **Configuration.** The bucket and region are declared in
 `prodbox-config.dhall` under the `pulumi_state_backend` block. The
@@ -115,11 +129,29 @@ no shared in-memory state.
 
 1. **Source-of-truth queries.** Each resource class has a `discover` IO
    action that asks the authoritative source. No in-memory shadow
-   state. Example: `awsTestStackHasLiveResources` at
-   `src/Prodbox/Infra/AwsTestStack.hs:90` (file-based snapshot check).
-   New discoverers added by Sprints 4.11–4.12:
-   `discoverClusterTaggedAwsResources` (AWS Resource Tagging API),
-   `discoverK8sAwsAffectingResources` (kubectl).
+   state. The canonical example for Pulumi residue is the
+   `<stack>ResidueStatus :: ... -> IO ResidueStatus` family in
+   `src/Prodbox/Infra/Aws*Stack.hs` (introduced in Sprint 4.16): each
+   per-run stack queries its MinIO Pulumi backend; the long-lived
+   `aws-ses` stack queries the S3 backend. The result ADT is
+
+   ```haskell
+   data ResidueStatus
+     = ResidueAbsent
+     | ResiduePresent ResidueDetails
+     | ResidueUnreachable ResidueUnreachableReason
+   ```
+
+   `Unreachable` is the credential-free "we cannot tell" signal that
+   the pre-Sprint-4.16 file-existence predicate
+   (`<stack>HasLiveResources = doesFileExist .prodbox-state/<stack>/
+   stack-snapshot.json`) used to approximate. The new ADT exposes the
+   distinction explicitly: per-run callers treat `Unreachable` as
+   absent (per-run state dies with the cluster); long-lived callers
+   treat `Unreachable` as a refusal (S3 unreachable is a real failure
+   that needs operator attention). Other discoverers added by Sprints
+   4.11–4.12: `discoverClusterTaggedAwsResources` (AWS Resource
+   Tagging API), `discoverK8sAwsAffectingResources` (kubectl).
 
    **Source-of-truth queries must tolerate the case where the source
    is already gone.** Destructive lifecycle commands run against
@@ -207,8 +239,8 @@ compose. The library lives at `src/Prodbox/Lifecycle/Preconditions.hs`
 
 | Predicate | Returns `Left` when | Used by |
 |---|---|---|
-| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` has a non-empty Pulumi stack snapshot | `prodbox rke2 delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
-| `noLiveLongLivedPulumiStacks` | `aws-ses` has a non-empty Pulumi stack snapshot | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing) |
+| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` returns `ResiduePresent` against its MinIO backend. `ResidueUnreachable` is treated as absent for per-run stacks because their state lives with the cluster. | `prodbox rke2 delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
+| `noLiveLongLivedPulumiStacks` | `aws-ses` returns `ResiduePresent` against its S3 backend, **or** `ResidueUnreachable` (S3 unreachable is a real failure for long-lived stacks; failing closed is the correct behavior) | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing) |
 | `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox rke2 delete --cascade` and `prodbox nuke` |
 | `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained, **and** the cluster was reachable on the pre-drain `kubectl cluster-info --request-timeout=5s` probe | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
 
@@ -242,10 +274,32 @@ backend / credentials are still up at the point of refusal).
 | Command | Preflight predicates | Default on residue |
 |---|---|---|
 | `prodbox rke2 delete` | `noLivePerRunPulumiStacks` | Refuse with list and per-stack destroy command (or run `--cascade` for "orchestrate the full teardown") |
-| `prodbox rke2 delete --cascade` | none at entry — the command **is** the orchestration | Drain + destroy + uninstall + sweep |
+| `prodbox rke2 delete --cascade` | none at entry — the command **is** the orchestration | Confirm-MinIO → per-run destroys → drain → uninstall → sweep (see §5b) |
 | `prodbox aws teardown` | `noLivePerRunPulumiStacks`, `noLiveLongLivedPulumiStacks` (Sprint 7.6) | Refuse with list and per-stack destroy command |
 | `prodbox pulumi <stack>-destroy` | (none beyond Pulumi's own dependency check) | n/a |
 | `prodbox nuke` | TTY refusal; typed-confirmation literal `NUKE EVERYTHING`; otherwise no residue refusal — the command **is** the total-teardown orchestration | Drain + destroy all stacks + IAM teardown + uninstall + sweep |
+
+### 5b. Canonical Cascade Order
+
+`prodbox rke2 delete --cascade --yes` orchestrates these phases in order. The order is
+deliberate: MinIO-tracked AWS resources are released **before** the local cluster is
+uninstalled, so the cascade always reaches AWS through a still-reachable Pulumi
+backend.
+
+| # | Phase | What it does | Failure mode |
+|---|---|---|---|
+| 1 | Confirm MinIO reachable | `<stack>ResidueStatus` queries the MinIO backend for each per-run stack. If MinIO is reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
+| 2 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket fills `aws.*` from `aws_admin_for_test_simulation.*` when `aws.*` is empty and restores-to-empty on exit (success or exception). | Empty `aws.*` no longer refuses the destroy; the bracket fills it transparently. |
+| 3 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 4 — the controllers can't have created new AWS resources after the cluster died. | `DrainFailed` is the only failure path; `DrainSkipped` is success-with-reason. |
+| 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
+| 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API. Any surviving cluster-tagged resource fails the command with a structured leak list and the per-class remedy command. | Non-empty leak list is the hard-failure case. |
+
+The cascade order replaces the pre-Sprint-4.17 sequence (drain → destroys → uninstall),
+which had drain before destroys. The new order trades a small amount of "destroys may
+race the in-cluster LB controller's last cleanup" for the explicit guarantee that the
+operator-named cascade phrase "releases AWS resources before deleting the cluster"
+matches what actually happens. The postflight tag sweep is the backstop for any
+controller-created AWS resources that fail to drain in time.
 
 ## 6. Mandatory Postflight Tag Sweep
 

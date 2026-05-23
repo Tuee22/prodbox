@@ -14,6 +14,7 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString qualified as BS
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.IORef
   ( modifyIORef'
@@ -171,6 +172,7 @@ import Prodbox.Gateway
   , renderGatewayStartPlan
   , renderGatewayStatusReport
   )
+import Prodbox.Gateway.Client qualified
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , severityFromLogLevel
@@ -208,12 +210,18 @@ import Prodbox.Gateway.Types
   , validateDaemonTimingAgainstOrders
   )
 import Prodbox.Host
-  ( NtpDisposition (..)
+  ( FirewallRuleAction (..)
+  , NtpDisposition (..)
   , PortStatus (..)
+  , gatewayNodePortFirewallCheckArgs
+  , gatewayNodePortFirewallRuleArgs
   , parseTimedatectlNtpDisposition
+  , renderFirewallRuleAction
   , renderHostInfoReport
   , renderPortAvailabilityReport
   )
+import Prodbox.Http.Client qualified
+import Prodbox.Secret.Derive qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.LongLivedPulumiBackend
@@ -2187,6 +2195,244 @@ main = mainWithSuite "prodbox-unit" $ do
                       _ -> expectationFailure "expected dns_write_gate object"
                   _ -> expectationFailure "expected boot object"
               Right _ -> expectationFailure "expected config template object"
+
+  describe "Sprint 2.17 Haskell HTTP client" $ do
+    it "renders HttpConnectionFailure as a single-line operator-facing string" $
+      Prodbox.Http.Client.renderHttpError
+        (Prodbox.Http.Client.HttpConnectionFailure "connection refused")
+        `shouldBe` "HTTP connection failure: connection refused"
+
+    it "renders HttpTimeout with the underlying reason" $
+      Prodbox.Http.Client.renderHttpError
+        (Prodbox.Http.Client.HttpTimeout "response timeout")
+        `shouldBe` "HTTP timeout: response timeout"
+
+    it "renders HttpStatus with the status code and body" $
+      Prodbox.Http.Client.renderHttpError
+        (Prodbox.Http.Client.HttpStatus 404 "not found")
+        `shouldBe` "HTTP 404 response: not found"
+
+    it "truncates oversized HttpStatus bodies at 200 chars" $
+      let longBody = replicate 500 'x'
+          rendered =
+            Prodbox.Http.Client.renderHttpError
+              (Prodbox.Http.Client.HttpStatus 500 longBody)
+       in (length rendered <= 250) `shouldBe` True
+
+    it "renders HttpDecode with the decode error" $
+      Prodbox.Http.Client.renderHttpError
+        (Prodbox.Http.Client.HttpDecode "key not found")
+        `shouldBe` "HTTP response decode error: key not found"
+
+    it "defaultHttpConfig uses a 10-second timeout" $
+      Prodbox.Http.Client.httpRequestTimeoutMicros Prodbox.Http.Client.defaultHttpConfig
+        `shouldBe` (10 * 1000 * 1000 :: Int)
+
+    it "renderGatewayError wraps a transport error" $
+      Prodbox.Gateway.Client.renderGatewayError
+        ( Prodbox.Gateway.Client.GatewayTransport
+            (Prodbox.Http.Client.HttpTimeout "response timeout")
+        )
+        `shouldBe` "HTTP timeout: response timeout"
+
+    it "renderGatewayError surfaces a payload error" $
+      Prodbox.Gateway.Client.renderGatewayError
+        (Prodbox.Gateway.Client.GatewayPayload "missing field")
+        `shouldBe` "gateway response payload error: missing field"
+
+    it "statusUrl appends /v1/state to the peer REST URL" $
+      let endpoint =
+            PeerEndpoint
+              { peerNodeId = "node-a"
+              , peerStableDnsName = "node-a.example"
+              , peerRestHost = "192.0.2.10"
+              , peerRestPort = 8443
+              , peerSocketHost = "192.0.2.10"
+              , peerSocketPort = 8444
+              }
+       in Prodbox.Gateway.Client.statusUrl endpoint
+            `shouldBe` "http://192.0.2.10:8443/v1/state"
+
+    it "statusUrl prefers stable DNS name when REST host is 0.0.0.0" $
+      let endpoint =
+            PeerEndpoint
+              { peerNodeId = "node-a"
+              , peerStableDnsName = "gateway.svc.cluster.local"
+              , peerRestHost = "0.0.0.0"
+              , peerRestPort = 8443
+              , peerSocketHost = "0.0.0.0"
+              , peerSocketPort = 8444
+              }
+       in Prodbox.Gateway.Client.statusUrl endpoint
+            `shouldBe` "http://gateway.svc.cluster.local:8443/v1/state"
+
+  describe "Sprint 2.18 host firewall gateway-restrict" $ do
+    it "renders an iptables INPUT-append DROP rule scoped to non-loopback ingress" $
+      gatewayNodePortFirewallRuleArgs 30443
+        `shouldBe` [ "-A"
+                   , "INPUT"
+                   , "!"
+                   , "-i"
+                   , "lo"
+                   , "-p"
+                   , "tcp"
+                   , "--dport"
+                   , "30443"
+                   , "-j"
+                   , "DROP"
+                   , "-m"
+                   , "comment"
+                   , "--comment"
+                   , "prodbox-gateway-nodeport-loopback-only"
+                   ]
+
+    it "embeds the port number into the rule argv" $
+      ("31443" `elem` gatewayNodePortFirewallRuleArgs 31443) `shouldBe` True
+
+    it "always tags the rule with the stable comment for grep + dedup" $
+      ( "prodbox-gateway-nodeport-loopback-only"
+          `elem` gatewayNodePortFirewallRuleArgs 30443
+      )
+        `shouldBe` True
+
+    it "check-args use -C and drop the leading -A action" $
+      take 2 (gatewayNodePortFirewallCheckArgs 30443) `shouldBe` ["-C", "INPUT"]
+
+    it "check-args otherwise match the install rule shape" $
+      drop 1 (gatewayNodePortFirewallCheckArgs 30443)
+        `shouldBe` drop 1 (gatewayNodePortFirewallRuleArgs 30443)
+
+    it "FirewallRuleInstalled renders as 'installed' for operator logs" $
+      renderFirewallRuleAction FirewallRuleInstalled `shouldBe` "installed"
+
+    it "FirewallRuleAlreadyPresent renders as 'already-present'" $
+      renderFirewallRuleAction FirewallRuleAlreadyPresent `shouldBe` "already-present"
+
+  describe "Sprint 2.19 master-seed derivation" $ do
+    it "rejects a master seed of the wrong length" $
+      Prodbox.Secret.Derive.masterSeed (BS.replicate 16 0)
+        `shouldBe` Left "master seed must be exactly 32 bytes; got 16"
+
+    it "accepts a master seed of exactly 32 bytes" $
+      case Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0) of
+        Right _ -> pure () :: IO ()
+        Left err -> expectationFailure ("expected Right, got Left: " ++ err)
+
+    it "derive is deterministic across repeated calls" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42)
+          context = "patroni:keycloak:keycloak:app"
+      Prodbox.Secret.Derive.derive seed context
+        `shouldBe` Prodbox.Secret.Derive.derive seed context
+
+    it "different context strings produce different derived values" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42)
+          appValue = Prodbox.Secret.Derive.derive seed "patroni:keycloak:keycloak:app"
+          standbyValue = Prodbox.Secret.Derive.derive seed "patroni:keycloak:keycloak:standby"
+      (appValue == standbyValue) `shouldBe` False
+
+    it "different seeds produce different derived values for the same context" $ do
+      let Right seedA = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x01)
+          Right seedB = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x02)
+          context = "patroni:keycloak:keycloak:app"
+      (Prodbox.Secret.Derive.derive seedA context == Prodbox.Secret.Derive.derive seedB context)
+        `shouldBe` False
+
+    it "derived secret is exactly 32 bytes" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42)
+      BS.length (Prodbox.Secret.Derive.derive seed "patroni:keycloak:keycloak:app")
+        `shouldBe` 32
+
+    it "patroniRoleContext renders the canonical shape per doctrine table" $ do
+      Prodbox.Secret.Derive.patroniRoleContext
+        "keycloak"
+        "keycloak"
+        Prodbox.Secret.Derive.PatroniRoleApp
+        `shouldBe` "patroni:keycloak:keycloak:app"
+      Prodbox.Secret.Derive.patroniRoleContext
+        "vscode"
+        "vscode"
+        Prodbox.Secret.Derive.PatroniRoleSuperuser
+        `shouldBe` "patroni:vscode:vscode:superuser"
+      Prodbox.Secret.Derive.patroniRoleContext
+        "keycloak"
+        "keycloak"
+        Prodbox.Secret.Derive.PatroniRoleStandby
+        `shouldBe` "patroni:keycloak:keycloak:standby"
+
+    it "keycloakAdminContext renders the canonical shape" $
+      Prodbox.Secret.Derive.keycloakAdminContext "keycloak"
+        `shouldBe` "keycloak:keycloak:admin"
+
+    it "gatewayEventKeyContext renders the canonical shape" $
+      Prodbox.Secret.Derive.gatewayEventKeyContext "gateway" "node-a"
+        `shouldBe` "gateway:gateway:node-a:event-key"
+
+    it "the five canonical context strings from the doctrine are all distinct" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42)
+          contexts =
+            [ Prodbox.Secret.Derive.patroniRoleContext "ns" "rel" Prodbox.Secret.Derive.PatroniRoleApp
+            , Prodbox.Secret.Derive.patroniRoleContext "ns" "rel" Prodbox.Secret.Derive.PatroniRoleSuperuser
+            , Prodbox.Secret.Derive.patroniRoleContext "ns" "rel" Prodbox.Secret.Derive.PatroniRoleStandby
+            , Prodbox.Secret.Derive.keycloakAdminContext "ns"
+            , Prodbox.Secret.Derive.gatewayEventKeyContext "ns" "node-a"
+            ]
+          derived = map (Prodbox.Secret.Derive.derive seed) contexts
+      length (Set.toList (Set.fromList derived)) `shouldBe` length derived
+
+    it "deriveBase64Url encodes the 32-byte derived value as 43 base64url characters (unpadded)" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42)
+          encoded = Prodbox.Secret.Derive.deriveBase64Url seed "patroni:ns:rel:app"
+      Text.length encoded `shouldBe` 43
+
+    it "deriveHex encodes the 32-byte derived value as 64 lowercase-hex characters" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42)
+          encoded = Prodbox.Secret.Derive.deriveHex seed "patroni:ns:rel:app"
+      Text.length encoded `shouldBe` 64
+
+    it "Show on MasterSeed never leaks the bytes" $ do
+      let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0xff)
+      show seed `shouldBe` "MasterSeed <redacted>"
+
+  describe "Sprint 4.17 destroy-path credential fallback" $ do
+    it "AwsEks.credentialsConfigured rejects creds with an empty access_key_id" $
+      let empty =
+            Credentials
+              { access_key_id = ""
+              , secret_access_key = "S"
+              , session_token = Nothing
+              , region = "us-west-2"
+              }
+       in AwsEks.credentialsConfigured empty `shouldBe` False
+
+    it "AwsEks.credentialsConfigured rejects creds with an empty secret_access_key" $
+      let empty =
+            Credentials
+              { access_key_id = "A"
+              , secret_access_key = ""
+              , session_token = Nothing
+              , region = "us-west-2"
+              }
+       in AwsEks.credentialsConfigured empty `shouldBe` False
+
+    it "AwsEks.credentialsConfigured rejects creds with an empty region" $
+      let empty =
+            Credentials
+              { access_key_id = "A"
+              , secret_access_key = "S"
+              , session_token = Nothing
+              , region = ""
+              }
+       in AwsEks.credentialsConfigured empty `shouldBe` False
+
+    it "AwsEks.credentialsConfigured accepts a fully-populated triple" $
+      let full =
+            Credentials
+              { access_key_id = "A"
+              , secret_access_key = "S"
+              , session_token = Nothing
+              , region = "us-west-2"
+              }
+       in AwsEks.credentialsConfigured full `shouldBe` True
 
   describe "gateway commit-log dispositions" $ do
     it "computes node disposition from claim/yield events in chronological order" $ do

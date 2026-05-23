@@ -99,6 +99,7 @@ data HostCommand
   | HostCheckPorts
   | HostInfo
   | HostFirewall
+  | HostFirewallGatewayRestrict Int
   | HostPublicEdge Substrate
   deriving (Eq, Show)
 

@@ -97,7 +97,7 @@ closed on the cabal-manifest toolchain declarations plus library-first entrypoin
   Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary sync step, closing on the
   governed doctrine-alignment contract described by `documents/engineering/code_quality.md`. The
   repo-owned policy scan excludes generated or retained runtime roots such as `.build/`,
-  `dist-newstyle/`, `.prodbox-state/`, and `.data/`, so retained PV content does not become a
+  `dist-newstyle/`, and `.data/`, so retained PV content does not become a
   false-positive doctrine surface.
 - `src/Prodbox/CLI/Docs.hs` and `src/Prodbox/CheckCode.hs` now derive the durable CLI
   documentation artifacts from the command registry: the marker-delimited Markdown command
@@ -247,7 +247,7 @@ Keep the settings, interpreter, subprocess, and test contracts on Haskell-owned 
   and git-hook policy scan, Fourmolu, HLint, warning-clean
   `cabal build --builddir=.build all --ghc-options=-Werror`, then syncs the built executable to
   `.build/prodbox`. That policy scan now skips generated and retained runtime roots including
-  `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+  `.build/`, `dist-newstyle/`, and `.data/`.
 - `src/Prodbox/TestRunner.hs` owns `prodbox test ...`; it runs Haskell suites via `cabal test`,
   drives phase banners plus prerequisite and runbook gating through native
   `src/Prodbox/Effect*.hs` and `src/Prodbox/Prerequisite.hs`, and executes the named real-world
@@ -665,7 +665,7 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
   and asserts byte-equality with the on-disk file per
   [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack). The check pass never rewrites in place;
   rewrite-in-place is reserved for `prodbox lint haskell --write`.
-- Sprint 0.4 round-3 extension: bind the twelve minimum `fourmolu.yaml` settings
+- Sprint 0.4 round-3 extension: bind the thirteen minimum `fourmolu.yaml` settings
   explicitly. The repo-root `fourmolu.yaml` carries `indentation: 2`,
   `column-limit: 100`, `function-arrows: leading`, `comma-style: leading`,
   `import-export-style: leading`, `indent-wheres: false`,
@@ -673,7 +673,7 @@ Adopt [code_quality.md#lint-format-and-code-quality-stack](../documents/engineer
   `haddock-style: single-line`, `let-style: auto`, `in-style: right-align`,
   `unicode: never`, and `respectful: true`, per
   [code_quality.md#lint-format-and-code-quality-stack](../documents/engineering/code_quality.md#lint-format-and-code-quality-stack). A `prodbox-haskell-style` unit
-  test parses `fourmolu.yaml` and asserts each of the twelve keys is present with
+  test parses `fourmolu.yaml` and asserts each of the thirteen keys is present with
   the doctrine-named value; substituting a value is allowed only when the same
   test is updated to match.
 

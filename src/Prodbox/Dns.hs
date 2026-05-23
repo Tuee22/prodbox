@@ -33,6 +33,11 @@ import Prodbox.CLI.Output
   , writeOutput
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Http.Client
+  ( defaultHttpConfig
+  , httpGetText
+  , renderHttpError
+  )
 import Prodbox.PublicEdge
   ( publicFqdn
   , sharedPublicHostFqdns
@@ -51,7 +56,6 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
-import System.Directory (findExecutable)
 import System.Exit
   ( ExitCode (..)
   )
@@ -107,29 +111,12 @@ configuredPublicHostFqdns settings = nub (sharedPublicHostFqdns settings)
 
 fetchPublicIp :: IO (Either String String)
 fetchPublicIp = do
-  curlExists <- findExecutable "curl"
-  case curlExists of
-    Nothing -> pure (Left "`dns check` requires `curl` to resolve the current public IP.")
-    Just _ -> do
-      outputResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "curl"
-            , subprocessArguments = ["-fsSL", "https://api.ipify.org"]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Nothing
-            }
-      pure $
-        case outputResult of
-          Failure err -> Left ("failed to start `curl -fsSL https://api.ipify.org`: " ++ err)
-          Success output ->
-            case processExitCode output of
-              ExitSuccess ->
-                case words (processStdout output) of
-                  (value : _) -> Right value
-                  [] -> Left "public IP lookup returned an empty response"
-              ExitFailure _ ->
-                Left ("public IP lookup failed: " ++ outputDetail output)
+  result <- httpGetText defaultHttpConfig "https://api.ipify.org"
+  pure $ case result of
+    Left err -> Left ("public IP lookup failed: " ++ renderHttpError err)
+    Right body -> case words body of
+      (value : _) -> Right value
+      [] -> Left "public IP lookup returned an empty response"
 
 queryRoute53Record :: FilePath -> ValidatedSettings -> String -> IO (Either String (Maybe String))
 queryRoute53Record repoRoot settings fqdn =

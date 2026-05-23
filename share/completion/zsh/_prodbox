@@ -63,6 +63,14 @@ _prodbox() {
           ;;
       esac
       ;;
+    4)
+      case "$words[2,3]" in
+        "host firewall")
+          words=("gateway-restrict")
+          _describe 'subcommand' words
+          ;;
+      esac
+      ;;
     3)
       case "$words[2,2]" in
         "k8s")

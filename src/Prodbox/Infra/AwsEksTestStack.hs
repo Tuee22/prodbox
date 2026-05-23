@@ -47,6 +47,11 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Http.Client
+  ( defaultHttpConfig
+  , httpGetText
+  , renderHttpError
+  )
 import Prodbox.Infra.MinioBackend
   ( bucketObjectCount
   , ensureMinioBackendBucket
@@ -60,6 +65,7 @@ import Prodbox.Settings
   ( Credentials (..)
   , ValidatedSettings (..)
   , aws
+  , aws_admin_for_test_simulation
   , loadConfigFile
   , validateAndLoadSettings
   )
@@ -434,24 +440,14 @@ settingsAwsEnv repoRoot = do
 
 fetchPublicIpv4 :: IO (Either String String)
 fetchPublicIpv4 = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "curl"
-        , subprocessArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Nothing
-        }
+  result <- httpGetText defaultHttpConfig "https://api.ipify.org"
   case result of
-    Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
-    Success output ->
-      case processExitCode output of
-        ExitSuccess ->
-          let ip = trim (processStdout output)
-           in if length (filter (== '.') ip) == 3
-                then pure (Right ip)
-                else pure (Left ("unexpected public IP response: " ++ ip))
-        ExitFailure _ -> pure (Left ("curl failed: " ++ trim (processStderr output)))
+    Left err -> pure (Left ("failed to fetch public IP: " ++ renderHttpError err))
+    Right body ->
+      let ip = trim body
+       in if length (filter (== '.') ip) == 3
+            then pure (Right ip)
+            else pure (Left ("unexpected public IP response: " ++ ip))
 
 pulumiEksBaseEnv :: FilePath -> Int -> String -> String -> IO (Either String [(String, String)])
 pulumiEksBaseEnv repoRoot localPort minioAccessKey minioSecretKey = do
@@ -514,6 +510,18 @@ pulumiAwsProviderEnv creds =
     , ("PRODBOX_PULUMI_AWS_DEFAULT_REGION", Text.unpack (region creds))
     ]
 
+-- | Resolve AWS credentials for the @aws-eks-test@ Pulumi destroy path.
+-- Tries operational @aws.*@ first, then falls back to admin
+-- @aws_admin_for_test_simulation.*@ if operational is empty. The fallback
+-- is the in-memory analog of the @withMaterializedOperationalCreds@
+-- bracket from [Lifecycle Reconciliation Doctrine §5b]
+-- (../../documents/engineering/lifecycle_reconciliation_doctrine.md):
+-- it closes the cascade-credentials failure class observed on May 22,
+-- 2026 by keeping the destroy path working when the harness teardown
+-- cleared @aws.*@ before the per-run stack was destroyed. No file
+-- mutation; the bracket-style restore semantics from the doctrine apply
+-- to harness setup/teardown, not to the read-side credential lookup
+-- here.
 loadOperationalAwsCredentials :: FilePath -> IO (Either String Credentials)
 loadOperationalAwsCredentials repoRoot = do
   configResult <- loadConfigFile repoRoot
@@ -521,10 +529,18 @@ loadOperationalAwsCredentials repoRoot = do
     case configResult of
       Left err -> Left err
       Right config ->
-        let creds = aws config
-         in if credentialsConfigured creds
-              then Right creds
-              else Left "aws.access_key_id must not be empty"
+        let operational = aws config
+            adminFallback = aws_admin_for_test_simulation config
+         in if credentialsConfigured operational
+              then Right operational
+              else
+                if credentialsConfigured adminFallback
+                  then Right adminFallback
+                  else
+                    Left
+                      "aws.access_key_id must not be empty (operational \
+                      \aws.* unset and aws_admin_for_test_simulation.* \
+                      \fallback also empty)"
 
 credentialsConfigured :: Credentials -> Bool
 credentialsConfigured creds =

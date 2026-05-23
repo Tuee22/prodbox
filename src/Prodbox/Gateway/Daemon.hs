@@ -129,6 +129,11 @@ import Prodbox.Gateway.Types
   , peerDialSocketHost
   , validateDaemonTimingAgainstOrders
   )
+import Prodbox.Http.Client
+  ( defaultHttpConfig
+  , httpGetText
+  , renderHttpError
+  )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
   ( RetryPolicy (..)
@@ -1340,24 +1345,14 @@ renderPeerTransport now state =
 
 fetchPublicIp :: IO (Either String String)
 fetchPublicIp = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "curl"
-        , subprocessArguments = ["-s", "--max-time", "10", "https://api.ipify.org"]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Nothing
-        }
+  result <- httpGetText defaultHttpConfig "https://api.ipify.org"
   case result of
-    Failure err -> pure (Left ("failed to fetch public IP: " ++ err))
-    Success output ->
-      case processExitCode output of
-        ExitSuccess ->
-          let ip = trim (processStdout output)
-           in if length (filter (== '.') ip) == 3
-                then pure (Right ip)
-                else pure (Left ("unexpected public IP: " ++ ip))
-        ExitFailure _ -> pure (Left ("curl failed: " ++ trim (processStderr output)))
+    Left err -> pure (Left ("failed to fetch public IP: " ++ renderHttpError err))
+    Right body ->
+      let ip = trim body
+       in if length (filter (== '.') ip) == 3
+            then pure (Right ip)
+            else pure (Left ("unexpected public IP: " ++ ip))
 
 writeDnsRecord :: DnsWriteGate -> String -> IO (Either String ())
 writeDnsRecord gate ip = do

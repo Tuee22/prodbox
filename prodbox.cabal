@@ -37,8 +37,10 @@ library
         Prodbox.Gateway.Daemon
         Prodbox.Gateway.Logging
         Prodbox.Gateway.Peer
+        Prodbox.Gateway.Client
         Prodbox.Gateway.Types
         Prodbox.Host
+        Prodbox.Http.Client
         Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
         Prodbox.Infra.AwsSesStack
@@ -71,6 +73,7 @@ library
         Prodbox.Repo
         Prodbox.Retry
         Prodbox.Result
+        Prodbox.Secret.Derive
         Prodbox.Service
         Prodbox.Settings
         Prodbox.StateMachine

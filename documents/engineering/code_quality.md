@@ -49,7 +49,7 @@ Do not add or rely on:
    `pre-merge-commit`
 
 The policy scan is scoped to repo-owned source and guidance surfaces. It excludes generated or
-retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+retained runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 
 Use local CLI entrypoints only:
 

@@ -282,6 +282,8 @@ parserForPath path =
     ["host", "check-ports"] -> Just (pure (RunNative (NativeHost HostCheckPorts)))
     ["host", "info"] -> Just (pure (RunNative (NativeHost HostInfo)))
     ["host", "firewall"] -> Just (pure (RunNative (NativeHost HostFirewall)))
+    ["host", "firewall", "gateway-restrict"] ->
+      Just (RunNative . NativeHost . HostFirewallGatewayRestrict <$> gatewayNodePortParser)
     ["host", "public-edge"] ->
       Just (fmap (RunNative . NativeHost . HostPublicEdge) substrateOptionParser)
     ["k8s", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
@@ -577,6 +579,20 @@ substrateOptionParser =
         <> metavar "SUBSTRATE"
         <> value defaultSubstrate
         <> help "Target substrate (home-local, aws); default home-local"
+    )
+
+-- | --port for the @host firewall gateway-restrict@ subcommand. Defaults
+-- to the gateway chart's NodePort. The default value is intentionally
+-- pinned here rather than read from chart values so the host-side firewall
+-- installer remains a pure CLI surface.
+gatewayNodePortParser :: Parser Int
+gatewayNodePortParser =
+  option
+    auto
+    ( long "port"
+        <> metavar "PORT"
+        <> value 30443
+        <> help "Gateway-service NodePort to restrict to 127.0.0.1 (default: 30443)"
     )
 
 daemonLaunchOptionsParser :: Parser DaemonLaunchOptions
@@ -963,10 +979,20 @@ hostGroup =
         "Show host diagnostics."
         []
         [example ["host", "info"] "Render host diagnostics."]
-    , leaf
+    , group
         "firewall"
-        "Check firewall requirements"
-        "Inspect required firewall rules."
+        "Inspect or install host firewall rules"
+        "Inspect required firewall rules; subcommands install gateway-NodePort restrictions."
+        [ leaf
+            "gateway-restrict"
+            "Restrict the gateway NodePort to 127.0.0.1"
+            "Install an idempotent iptables INPUT-DROP rule restricting the gateway NodePort to loopback ingress."
+            [ optionalOption "port" Nothing "PORT" "Gateway-service NodePort to restrict (default: 30443)"
+            ]
+            [ example ["host", "firewall", "gateway-restrict"] "Install the loopback-only restriction on the default NodePort."
+            , example ["host", "firewall", "gateway-restrict", "--port", "30443"] "Install the restriction on an explicit NodePort."
+            ]
+        ]
         []
         [example ["host", "firewall"] "Inspect firewall expectations."]
     , leaf

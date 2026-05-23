@@ -74,19 +74,28 @@ landed the same day with a live verification on this host: a new
 `clusterReachable` probe make `prodbox rke2 delete --cascade --yes`
 on a host without a cluster skip the drain cleanly and proceed to
 the per-run Pulumi destroys. Sprint `4.15` has no `Pending Removal`
-row because it is new behavior, not a vocabulary leak. The
-`Pending Removal` section is empty; other remaining open work is
-operator-driven live validation (Sprint `7.5.c.v` live AWS run,
-the AwsSesStack admin-credential switch + live migration body for
-Sprint `4.10`, the live cascade exercise against a host with a
-running cluster + AWS substrate for Sprints `4.11`/`4.12`, the
+row because it is new behavior, not a vocabulary leak. The May 23, 2026
+reopen of Phases `2`, `3`, and `4` (Sprints `2.17`, `2.18`, `2.19`,
+`3.13`, `4.16`, `4.17`, `4.18`) reintroduced doctrine-aligned residue
+to the `Pending Removal` table — file-existence stack predicates, the
+`.prodbox-state/` host-side cache, the host-side chart-secret cache
+and `.patroni-anchor-volume` marker, and the remaining `curl`
+shell-outs — each scoped to its owning sprint. Other remaining open
+work is operator-driven live validation (Sprint `7.5.c.v` live AWS
+run, the live AwsSesStack admin-credential switch + migration body
+exercise for Sprint `4.10`, the live cascade exercise against a host
+with a running cluster + AWS substrate for Sprints `4.11`/`4.12`, the
 live `nuke` exercise for Sprint `4.13`, and Sprints `8.5`/`8.6`).
 
 ## Pending Removal
 
 | Item | Owning Sprint | Notes |
 |------|---------------|-------|
-| _(empty)_ | _(no open code-side removal residue)_ | Remaining open work is operator-driven live validation; see prelude for current inventory. |
+| File-existence residue predicates `awsEksTestStackHasLiveResources`, `awsEksSubzoneStackHasLiveResources`, `awsTestStackHasLiveResources`, `awsSesStackHasLiveResources` (and the underlying `<stack>HasLiveResources :: FilePath -> IO Bool` shape) across `src/Prodbox/Infra/AwsEksTestStack.hs`, `AwsEksSubzoneStack.hs`, `AwsTestStack.hs`, `AwsSesStack.hs`. The file-existence approximation is the doctrine-violating piece the May 22, 2026 cascade failure exposed. | Sprint `4.16` | Replaced by `<stack>ResidueStatus :: ... -> IO ResidueStatus` (`ResidueAbsent | ResiduePresent | ResidueUnreachable`) querying the actual MinIO (per-run) or S3 (long-lived) backend per [secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md) and [lifecycle_reconciliation_doctrine.md §3](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
+| `.prodbox-state/` directory entirely, along with the helpers `awsEksTestStateDir` / `awsEksTestSnapshotPath` / `saveAwsEksTestStackSnapshot` / `loadAwsEksTestStackSnapshot` / `clearAwsEksTestStackSnapshot` (and their per-stack siblings), plus the `awsEksTestKubeconfigPath` helper and the SSH-key paths under `.prodbox-state/aws-test/id_ed25519{,.pub}`. The host-side cache is the root cause that made the cascade-credentials failure class possible in the first place. | Sprints `4.16`, `4.18` | Output caches replaced by on-demand `pulumi stack output --show-secrets` reads via new `Prodbox.Infra.StackOutputs.fetch`; kubeconfig replaced by an on-demand `aws eks update-kubeconfig` bracket; SSH key fetched into `mktemp` via the Pulumi stack-output secret. `forbidDotProdboxState` lint in `prodbox check-code` refuses any new `.prodbox-state/*` write. |
+| Host-side chart-secret cache `resolveChartSecrets` (`src/Prodbox/Lib/ChartPlatform.hs:1212-1280`) plus `recoverPatroniSecretValues`, `mergeChartSecretValues`, and `shouldResetPatroniStorage`'s silent-reset arm (line 1343). The cache was a host-side bypass of the cluster-as-source-of-truth invariant. | Sprint `3.13` | Chart secrets become k8s Secrets materialized by the in-cluster gateway service per [secret_derivation_doctrine.md](../documents/engineering/secret_derivation_doctrine.md). Data-bound values derive from the master seed at MinIO `prodbox/master-seed`; non-data-bound values use Helm `lookup` + `randAlphaNum`. `shouldResetPatroniStorage` becomes a loud-failure check (derived password vs `pg_authid` mismatch), never a silent reset. |
+| `<namespace>/.patroni-anchor-volume` marker file path and the rebind-decision consumer that reads it. The marker was a host-side cache of state already available from Kubernetes PVC objects. | Sprint `3.13` | Patroni anchor decision derives from `kubectl get pvc` state alone; the marker file path is removed; `forbidDotProdboxState` covers regression. |
+| Every `curl` shell-out in `src/`: `Prodbox.Gateway.queryGatewayState` at `src/Prodbox/Gateway.hs:285-317`, `Prodbox.Gateway.Daemon.fetchPublicIp` at `src/Prodbox/Gateway/Daemon.hs:1341-1360`, `Prodbox.Dns.fetchPublicIp` at `src/Prodbox/Dns.hs:108-124`, and 10 sites in `src/Prodbox/TestValidation.hs` (lines 512, 863, 888, 910, 1216, 1234, 1261, 1270, 1334, 2140). The `toolCurl` prerequisite registration is removed in the same change. | Sprint `2.17` | Replaced by `Prodbox.Http.Client` (wrapping `Network.HTTP.Client` + `Network.HTTP.Client.TLS`, both already declared in `prodbox.cabal:105-120`) plus `Prodbox.Gateway.Client` reusing `PeerEndpoint` from `src/Prodbox/Gateway/Types.hs:66-74`. New `prodbox lint files` rule refuses curl invocations in non-test sources. |
 
 ## Pending Removal Notes
 

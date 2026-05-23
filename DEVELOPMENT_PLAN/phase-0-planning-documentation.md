@@ -280,7 +280,7 @@ thirteen deliverable extensions to existing sprints.
     `System.Process` smart constructors as forbidden subprocess primitives in the
     `prodbox lint files` rules and the `.hlint.yaml` negative-space symbol set per
     [haskell_code_guide.md#subprocesses-as-typed-values](../documents/engineering/haskell_code_guide.md#subprocesses-as-typed-values).
-  - Sprint 1.10 binds the twelve minimum `fourmolu.yaml` settings (`indentation`,
+  - Sprint 1.10 binds the thirteen minimum `fourmolu.yaml` settings (`indentation`,
     `column-limit`, `function-arrows`, `comma-style`, `import-export-style`,
     `indent-wheres`, `record-brace-space`, `newlines-between-decls`, `haddock-style`,
     `let-style`, `in-style`, `unicode`, `respectful`) per

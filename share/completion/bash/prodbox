@@ -30,6 +30,9 @@ _prodbox()
       "host")
         words="ensure-tools check-ports info firewall public-edge"
         ;;
+      "host firewall")
+        words="gateway-restrict"
+        ;;
       "k8s")
         words="health wait logs"
         ;;

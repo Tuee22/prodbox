@@ -42,7 +42,7 @@ Current hard gates:
 - operator-binary sync to `.build/prodbox` after a successful quality gate
 
 The workflow or hook policy scan is scoped to repo-owned surfaces and excludes generated or
-retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+retained runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 
 ### 2.2 Review Guidance
 
@@ -114,7 +114,7 @@ prodbox check-code
 5. sync of the built operator binary to `.build/prodbox`
 
 The policy-scan phase ignores generated or retained runtime roots such as `.build/`,
-`dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+`dist-newstyle/`, and `.data/`.
 
 The broader validation surfaces remain separate:
 

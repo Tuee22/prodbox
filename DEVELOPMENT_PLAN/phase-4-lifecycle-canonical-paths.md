@@ -1126,6 +1126,181 @@ exercise against a host **with** a running cluster rolls up into
 Sprint `4.12`'s live closure when that happy-path also runs against
 real AWS substrate work.
 
+## Sprint 4.16: ResidueStatus ADT Replaces File-Existence Predicates 📋
+
+**Status**: Planned
+**Blocked by**: Part 1 doctrine merged
+([lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md) §3)
+**Implementation**: new `src/Prodbox/Lifecycle/ResidueStatus.hs`, rewrites in `src/Prodbox/Infra/AwsEksTestStack.hs`, `AwsEksSubzoneStack.hs`, `AwsTestStack.hs`, `AwsSesStack.hs`; new `src/Prodbox/Infra/StackOutputs.hs`; caller updates in `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestRunner.hs`
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`, [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
+
+### Objective
+
+Replace the file-existence predicate
+(`<stack>HasLiveResources :: FilePath -> IO Bool` = `doesFileExist` on
+`.prodbox-state/<stack>/stack-snapshot.json`) with source-of-truth `ResidueStatus`
+queries against the actual Pulumi backend (MinIO for per-run, S3 for long-lived).
+The May 22, 2026 cascade-credentials failure on this host exposed the predicate as
+the doctrine-violating piece that enables stale-state refusals. See
+[lifecycle_reconciliation_doctrine.md §3](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+
+### Deliverables
+
+- New `Prodbox.Lifecycle.ResidueStatus` module:
+  `data ResidueStatus = ResidueAbsent | ResiduePresent ResidueDetails | ResidueUnreachable ResidueUnreachableReason`.
+  Pure ADT with deriving `Eq`, `Show`, and structured-render helpers.
+- `<stack>ResidueStatus :: ... -> IO ResidueStatus` per stack in each of
+  `src/Prodbox/Infra/AwsEksTestStack.hs`, `AwsEksSubzoneStack.hs`, `AwsTestStack.hs`,
+  `AwsSesStack.hs`. Per-run implementations open the MinIO port-forward + login +
+  `pulumi stack ls --json` to check for stack presence; long-lived
+  (`aws-ses`) implementation queries the S3 backend.
+- Removal of `save<Stack>StackSnapshot`, `load<Stack>StackSnapshot`,
+  `clear<Stack>StackSnapshot`, `<stack>StateDir`, `<stack>SnapshotPath`, and the
+  `AwsXxxStackSnapshot` records' file-IO surface. Output cache replaced by
+  `Prodbox.Infra.StackOutputs.fetch :: StackName -> IO (Map Text Text)` which
+  shells out to `pulumi stack output --show-secrets` on demand and decodes the
+  result.
+- Caller updates: `aws teardown` residue policy
+  (`src/Prodbox/Aws.hs::checkPulumiResidueBeforeTeardown`,
+  `partitionResidueByLifecycle`), `rke2 delete` cascade
+  (`src/Prodbox/CLI/Rke2.hs::runNativeDelete{,Cascade}`), harness postflight
+  (`src/Prodbox/TestRunner.hs::runWithAwsHarnessCleanup`,
+  `src/Prodbox/Aws.hs::runAwsIamHarnessSetup`/`Teardown`). All four switch from
+  file-existence to `ResidueStatus`. Per-run `ResidueUnreachable` is treated as
+  absent; long-lived `ResidueUnreachable` is a refusal.
+- 15+ unit tests in `test/unit/Main.hs::"Sprint 4.16 ResidueStatus"` covering the
+  three constructors per stack. 4 cascade-flow tests covering MinIO-up-and-stack-
+  present, MinIO-up-and-stack-absent, MinIO-down-per-run (graceful), MinIO-down-
+  long-lived (refusal).
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` covers the new tests.
+3. Live regression: a full `prodbox test all --substrate aws` cycle on this host
+   produces zero `.prodbox-state/aws-*/` files at any point during the run.
+
+### Remaining Work
+
+The cascade order rewrite + self-materialize creds bracket are Sprint 4.17. The
+final `.prodbox-state/` cleanup (kubeconfig, SSH key, tmp tarball, lint rule) is
+Sprint 4.18.
+
+## Sprint 4.17: Cascade Canonical Order and Self-Materialize Operational Creds 🔄
+
+**Status**: Active. The credential-fallback half landed May 23, 2026 and closes the May 22 cascade-credentials failure class: each per-run `loadOperationalAwsCredentials` (in `AwsEksTestStack`, `AwsTestStack`, and transitively `AwsEksSubzoneStack` via re-import) now falls back to `aws_admin_for_test_simulation.*` when operational `aws.*` is empty, so the cascade no longer refuses on the doctrine-violating predicate-file evidence. The cascade-order rewrite (confirm-MinIO → per-run destroys → drain → uninstall → sweep) is remaining work and lands alongside Sprint 4.16's `ResidueStatus` ADT replacement.
+**Blocked by**: 4.16 only for the cascade-order rewrite; the credential-fallback half is independent and already shipped.
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs::loadOperationalAwsCredentials` and `src/Prodbox/Infra/AwsTestStack.hs::loadOperationalAwsCredentials` (May 23, 2026, in-memory operational→admin fallback; doc comment explains the doctrine connection); `AwsEksSubzoneStack.hs` inherits via re-import. Remaining: cascade-order rewrite of `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` + `runNativeDelete`; explicit `withMaterializedOperationalCreds` bracket abstraction in `src/Prodbox/Aws.hs` if the file-mutating restore-on-exit semantics ever become required (currently the in-memory fallback is sufficient because destroy paths never write to `aws.*`).
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`, `documents/engineering/aws_integration_environment_doctrine.md`, `documents/engineering/cli_command_surface.md`
+
+### Objective
+
+Reorder `prodbox rke2 delete --cascade` to release MinIO-tracked AWS resources
+before the local cluster is uninstalled, and eliminate the cascade-credentials
+failure class by generalizing the Sprint 7.7 `aws-ses` self-materialize bracket to
+all per-run stacks. See
+[lifecycle_reconciliation_doctrine.md §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+for the authoritative cascade-order table.
+
+### Deliverables
+
+- **Credential-fallback half (Done May 23, 2026)**: each per-run
+  `loadOperationalAwsCredentials` (in
+  `src/Prodbox/Infra/AwsEksTestStack.hs` and
+  `src/Prodbox/Infra/AwsTestStack.hs`) tries operational `aws.*` first and
+  transparently falls back to `aws_admin_for_test_simulation.*` when
+  operational is empty. `src/Prodbox/Infra/AwsEksSubzoneStack.hs` inherits
+  the new behavior because it re-imports `loadOperationalAwsCredentials`
+  from `AwsEksTestStack`. No file mutation: the destroy paths only *read*
+  credentials, so the in-memory fallback is sufficient. 4 new unit tests
+  in `test/unit/Main.hs::"Sprint 4.17 destroy-path credential fallback"`
+  cover the `credentialsConfigured` smart-constructor semantics that drive
+  the fallback branch.
+- **Cascade-order rewrite (Remaining)**:
+  `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` reordered to:
+  1. Confirm MinIO reachable (or treat per-run residue as absent via
+     Sprint 4.16's `<stack>ResidueStatus` if not).
+  2. Per-run `pulumi destroy` against MinIO.
+  3. K8s drain (Sprint 4.12).
+  4. RKE2 uninstall.
+  5. Postflight cluster-tag sweep (Sprint 4.12).
+- **Optional ergonomic bracket (Remaining)**: an explicit
+  `Prodbox.Aws.withMaterializedOperationalCreds :: IO a -> IO a` that
+  *mutates* `aws.*` in `prodbox-config.dhall` for the body and restores
+  on exit. Only required if a future call site needs the mutating
+  semantics (today's in-memory fallback satisfies every destroy-path
+  reader).
+
+### Validation
+
+1. `prodbox check-code` exit 0 (May 23, 2026).
+2. `prodbox lint docs` exit 0; `prodbox docs check` exit 0.
+3. `prodbox test unit` 468/468.
+4. **Live regression (deferred to operator)**: bring up `aws-eks` via
+   `prodbox test integration aws-iam --substrate aws`; manually clear
+   `aws.*` in `prodbox-config.dhall`; run `prodbox rke2 delete --cascade
+   --yes`; confirm it succeeds. The May 22 error message ("operational
+   AWS credentials are required to destroy the AWS EKS test stack once a
+   Pulumi stack exists: aws.access_key_id must not be empty") should be
+   structurally impossible because the load helper now falls back.
+
+### Remaining Work
+
+The cascade-order rewrite blocks on Sprint 4.16's `ResidueStatus` ADT (so
+the "MinIO-unreachable treated as absent" branch has source-of-truth
+backing). The final cleanup (kubeconfig on-demand, SSH key via Pulumi
+output, tmp tarball, `forbidDotProdboxState` lint) is Sprint 4.18.
+
+## Sprint 4.18: Remove Remaining .prodbox-state Artifacts and Final Lint 📋
+
+**Status**: Planned
+**Blocked by**: 3.13, 4.16, 4.17
+**Implementation**: `src/Prodbox/Infra/AwsEksTestStack.hs` (kubeconfig), `src/Prodbox/Infra/AwsTestStack.hs` (SSH keys), `src/Prodbox/Lib/EksCustomImagePush.hs` (tmp tarball), `.gitignore`, `CLAUDE.md`, `prodbox.cabal`, `src/Prodbox/CheckCode.hs` (new `forbidDotProdboxState` lint)
+**Docs to update**: all remaining doc files holding the legacy `.prodbox-state/` references after Sprints 3.13/4.16/4.17 land
+
+### Objective
+
+Finish removing every code-side and config-side `.prodbox-state/` reference. After
+this sprint, `grep -rn '\.prodbox-state' src/ app/ test/ charts/ pulumi/ documents/
+DEVELOPMENT_PLAN/ README.md CLAUDE.md AGENTS.md` returns zero hits.
+
+### Deliverables
+
+- EKS kubeconfig re-derives on demand via a new
+  `Prodbox.Infra.EksKubeconfig.withEksKubeconfig` bracket that materializes a
+  `mktemp` file by invoking `aws eks update-kubeconfig` and cleans up on exit.
+- HA-RKE2 validation SSH key: read from
+  `pulumi stack output --show-secrets ssh_private_key` into a `mktemp` file scoped
+  to the validation run; old `.prodbox-state/aws-test/id_ed25519{,.pub}` paths
+  removed from the source tree.
+- Custom-image tarball at
+  `/tmp/prodbox-custom-image-<run-id>.tar` instead of
+  `.prodbox-state/tmp/prodbox-custom-image.tar`; caller `bracket`s the cleanup.
+- New `prodbox lint files` rule `forbidDotProdboxState` in
+  `src/Prodbox/CheckCode.hs` refuses any `.prodbox-state/*` write in source.
+  Allowlist accepts only the legacy-tracking ledger references and historical
+  sprint blocks.
+- `.gitignore`, `CLAUDE.md`, and `prodbox.cabal` cleaned of `.prodbox-state/`
+  references.
+- Final grep gate: `! grep -rn '\.prodbox-state' src/ app/ test/ charts/ pulumi/
+  documents/ DEVELOPMENT_PLAN/ README.md CLAUDE.md AGENTS.md` returns zero hits.
+
+### Validation
+
+1. `prodbox check-code` exit 0 (the new lint rule fires on any future
+   regression).
+2. `prodbox docs check` exit 0.
+3. `prodbox test unit` exit 0.
+4. `prodbox test integration cli` + `prodbox test integration env` exit 0.
+5. Live verification: the four-block end-to-end run from the approved plan Part 3
+   exercises every preserved-data + recovery-escape-hatch + original-failure-mode
+   path.
+
+### Remaining Work
+
+None on the sprint-owned surface. Part 3 of the approved plan rolls up the end-to-
+end verification.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**

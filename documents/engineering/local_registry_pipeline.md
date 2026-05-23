@@ -25,7 +25,12 @@ This document is the SSoT for the local image-registry doctrine:
    repository-owned nginx auth-proxy image.
 
 Retained storage and MinIO persistence doctrine remain defined in
-[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
+[Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md). The same MinIO server
+hosts a separate `prodbox` bucket used by the gateway daemon for the master-seed object,
+governed by [Secret Derivation Doctrine](./secret_derivation_doctrine.md). The
+`prodbox` bucket is access-restricted to the MinIO IAM principal `prodbox-gateway`;
+the Harbor-backing `prodbox-test-pulumi-backends` and any Harbor-internal buckets
+continue to use MinIO root credentials and are unaffected.
 
 ## 2. Runtime Contract
 

@@ -74,10 +74,14 @@ Build a clean-room Haskell `prodbox` repository with:
     exists only as an HTTP-to-HTTPS redirect into the same shared-host path model.
 16. One retained PV host-path model rooted at the configured manual PV root, defaulting to
     `.data/<namespace>/<release>/<workload>/<ordinal>/<claim>`.
-17. One retained repo-local state root under `.prodbox-state/`, including namespace-local
-    chart state under `.prodbox-state/<namespace>/`, AWS stack snapshots under
-    `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/`, and the HA-RKE2 validation
-    SSH key under `.prodbox-state/aws-test/`.
+17. Exactly one preserved operator-host directory: `.data/`. Chart secrets, gateway
+    peer-event keys, AWS stack outputs, EKS kubeconfig material, and HA-RKE2 SSH key
+    material all live inside the cluster (k8s Secrets, or Pulumi stack outputs read
+    on demand). The legacy `.prodbox-state/` repo-local cache is removed. The
+    gateway-owned master seed at MinIO bucket `prodbox/master-seed` is the persistence
+    anchor for data-bound secrets; it survives cluster wipes because MinIO's PV lives
+    under `.data/minio/...`. See [Secret Derivation Doctrine](../documents/engineering/secret_derivation_doctrine.md)
+    and [Retained Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
 18. One PostgreSQL doctrine for Helm-managed application data: every supported PostgreSQL
     deployment is external, Percona-operator-backed Patroni HA with exactly three PostgreSQL
     replicas, synchronous replication, and no embedded chart-local PostgreSQL subchart.
@@ -179,8 +183,14 @@ and quota administration) per standards rule E. The earlier
 implementation-alignment follow-up on Phases `2`, `3`, and `4`, and the later Phase `2` cleanup
 follow-up that removed the retained legacy `NTP synchronized` `timedatectl` parser branch in
 `src/Prodbox/Host.hs`, remain closed in code and governed docs. The doctrine-driven reopens add
-new sprints across Phases `1`–`4`; all of those reopens are now closed, and the cleanup ledger
-records the delete-output residue under `Completed`.
+new sprints across Phases `1`–`4`; the original doctrine-adoption rows are now closed, and the
+cleanup ledger records the delete-output residue under `Completed`. The May 23, 2026 reopen of
+Phases `2`, `3`, and `4` (Sprints `2.17`, `2.18`, `2.19`, `3.13`, `4.16`, `4.17`, `4.18`)
+addresses the cluster-as-source-of-truth invariant exposed by the May 22 cascade-credentials
+failure; Sprints `2.17` (host-side surface) and `2.18` are `Done`, Sprints `2.19` and `4.17`
+are `Active`, and Sprints `3.13`, `4.16`, and `4.18` are `Planned`. The Pending Removal table
+in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) carries the corresponding
+rows.
 
 The doctrine's cross-language type-bridge full-file generation surface
 ([code_quality.md#generated-artifacts](../documents/engineering/code_quality.md#generated-artifacts)) lists cross-language type
@@ -215,7 +225,7 @@ The reopened ranges close on the following sprint sets:
   extends Sprint 1.6 with the `CommandSpec` / `OptionSpec` record-field bindings
   (§283–304) plus the daemon-as-typed-`Command` dispatch pattern (§1156–1196), Sprint 1.8
   with the named forbidden subprocess primitives `callProcess`, `readCreateProcess`, and
-  direct `System.Process` smart constructors (§531), Sprint 1.10 with the twelve minimum
+  direct `System.Process` smart constructors (§531), Sprint 1.10 with the thirteen minimum
   `fourmolu.yaml` settings (§1834–1860), Sprint 1.11 with the canonical property-test
   invariants `decode . encode == id`, `render is deterministic`, and `parser roundtrips`
   (§2179–2188), Sprint 1.12 with the service-error newtype inventory `MinIOError`,
@@ -288,7 +298,8 @@ The reopened ranges close on the following sprint sets:
 | AWS substrate provision/teardown (EKS) | `prodbox pulumi eks-resources|eks-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EKS portion of the AWS substrate. The `aws-eks` canonical suite validation runs against it. |
 | AWS substrate provision/teardown (HA RKE2) | `prodbox pulumi test-resources|test-destroy --yes` | Haskell orchestration plus Pulumi; provisions the EC2 portion of the AWS substrate. The `ha-rke2-aws` canonical suite validation runs against it. |
 | Pulumi backend state | MinIO bucket `prodbox-test-pulumi-backends` on the local cluster | Local cluster bootstrap plus bounded repo-backed backend login and deleted-mount repair |
-| Retained repo-local validation state | `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Haskell Pulumi orchestration and AWS substrate helpers |
+| Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/minio/...`) | `s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000` | Haskell Pulumi orchestration and AWS substrate helpers |
+| Gateway-owned secret-derivation MinIO bucket | `s3://prodbox?endpoint=127.0.0.1:39000` (master seed at `prodbox/master-seed`) | Gateway daemon (`prodbox-gateway` MinIO principal) |
 | Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
 | Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate for the single canonical public record |
@@ -342,9 +353,11 @@ its storage backend bootstrap from public registries, every later Helm deploymen
 Harbor, and `amd64` or `arm64` hosts build and publish only their own architecture. The stack
 closes on in-image `ghcup` with pinned GHC `9.14.1` in the frontend and gateway Dockerfiles, the
 Percona operator-backed Patroni PostgreSQL doctrine, and config-selected MetalLB L2 or BGP
-advertisement. The cleanup ledger preserves completed history and carries no remaining doctrine-
-adoption pending-removal items. The separate Haskell
-distributed gateway daemon remains distinct from the Envoy Gateway public edge.
+advertisement. The cleanup ledger preserves completed history and, after the May 23, 2026
+reopen of Phases `2`, `3`, and `4`, carries the cluster-as-source-of-truth and
+native-HTTP-client removal rows owned by Sprints `2.17`, `3.13`, `4.16`, and `4.18`. The
+separate Haskell distributed gateway daemon remains distinct from the Envoy Gateway public
+edge.
 
 The canonical validation contract for this worktree is the `prodbox` command surface documented
 below; environment-dependent AWS and public-edge proof remain attached to those commands rather
@@ -367,7 +380,7 @@ than restated here as a fresh rerun log.
   runs Fourmolu, HLint, warning-clean Cabal builds, and the operator-binary sync step, closing on
   the governed doctrine-alignment contract described by
   `documents/engineering/code_quality.md`. The repo-owned policy scan excludes generated or
-  retained runtime roots such as `.build/`, `dist-newstyle/`, `.prodbox-state/`, and `.data/`.
+  retained runtime roots such as `.build/`, `dist-newstyle/`, and `.data/`.
 - `src/Prodbox/Aws.hs` owns both the public onboarding flow and the standalone AWS administration
   command family, with prompt-driven temporary admin credentials on public paths and stored
   `aws_admin_for_test_simulation.*` reserved only for test-suite simulation of that prompt input,
@@ -417,9 +430,13 @@ than restated here as a fresh rerun log.
   deleted MinIO export host-path mount by recreating the declared retained directory plus
   restarting `deployment/minio` before backend validation continues.
 - `src/Prodbox/Infra/AwsTestStack.hs` and `src/Prodbox/Infra/AwsEksTestStack.hs` generate and
-  retain AWS substrate stack snapshots under `.prodbox-state/aws-test/` and
-  `.prodbox-state/aws-eks-test/`, with the HA-RKE2 validation SSH key stored under
-  `.prodbox-state/aws-test/`; the HA-RKE2 validation destroys and recreates the retained
+  rely on MinIO-backed Pulumi state that survives cluster wipes via MinIO's PV under
+  `.data/minio/...` (Sprint `4.16` replaces the prior `.prodbox-state/<stack>/
+  stack-snapshot.json` file-existence predicate with `<stack>ResidueStatus` queries
+  against the MinIO/S3 backend); the HA-RKE2 validation SSH key is fetched on demand
+  from `pulumi stack output --show-secrets` into a `mktemp` file scoped to the
+  validation run (Sprint `4.18`); the HA-RKE2 validation destroys and recreates the
+  retained
   `aws-test` stack once when Pulumi reconcile succeeds but SSH validation fails, repairing stale
   EC2 instances left by interrupted runs or operator network moves.
 - `src/Prodbox/CLI/Rke2.hs` now closes the supported lifecycle on the clean-room Envoy Gateway
@@ -471,12 +488,12 @@ Patroni application-database path. Compatibility-cleanup history now lives only 
 | Configuration and settings | `src/Prodbox/Settings.hs`, `src/Prodbox/Repo.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall` | Phase 1 |
 | Host and Kubernetes helpers | `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs` | Phase 1 |
 | Container packaging and registry doctrine | `docker/`, `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ContainerImage.hs`, `src/Prodbox/Lib/ChartPlatform.hs` | Phases 1-4 |
-| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus generated state under `.prodbox-state/aws-test/` and `.prodbox-state/aws-eks-test/` | Phase 4 |
+| Pulumi orchestration and YAML stack programs | `src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/`, `pulumi/aws-eks/Pulumi.yaml`, `pulumi/aws-eks/Main.yaml`, `pulumi/aws-test/Pulumi.yaml`, `pulumi/aws-test/Main.yaml`, plus per-run Pulumi state in the MinIO `prodbox-test-pulumi-backends` bucket (anchored to `.data/minio/...`) | Phase 4 |
 | DNS inspection | `src/Prodbox/Dns.hs` | Phase 2 |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Phase 3 |
 | Gateway runtime and packaging | `src/Prodbox/Gateway.hs`, `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Peer.hs`, `src/Prodbox/Gateway/Types.hs`, `docker/gateway.Dockerfile` | Phase 2 |
 | Formal verification | `src/Prodbox/Tla.hs`, `documents/engineering/tla/` | Phase 2 |
-| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus generated retained non-PV state under `.prodbox-state/` and the Percona-operator-backed Patroni application-database contract | Phase 3 |
+| Chart platform and retained state | `src/Prodbox/CLI/Charts.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/PostgresPlatform.hs`, `charts/`, plus chart-secret derivation by the in-cluster gateway service from the master seed at MinIO `prodbox/master-seed` (Sprint `3.13`), and the Percona-operator-backed Patroni application-database contract | Phase 3 |
 | Public workload runtime | `src/Prodbox/Workload.hs` | Phase 3 |
 | Public-edge diagnostics | `src/Prodbox/Host.hs` | Phase 5 |
 | Onboarding and AWS administration | `src/Prodbox/Aws.hs`, `src/Prodbox/AwsEnvironment.hs`, `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/Native.hs` | Phase 7 |
@@ -532,7 +549,7 @@ and `8.5`–`8.6` carry the remaining operator-driven live OIDC closure work.
   round-3 extensions through Sprints 1.6, 1.8, 1.10, 1.11, 1.12, 1.14, 1.15, and 1.21
   binding the `CommandSpec` / `OptionSpec` record shape, daemon-as-typed-`Command`
   dispatch, forbidden subprocess primitives (`callProcess`, `readCreateProcess`, direct
-  `System.Process` constructors), the twelve minimum `fourmolu.yaml` settings, the
+  `System.Process` constructors), the thirteen minimum `fourmolu.yaml` settings, the
   canonical property-test invariants (`decode . encode == id`, `render is deterministic`,
   `parser roundtrips`), the service-error newtype inventory (`MinIOError`, `RedisError`,
   `PgError`), the `AppError` record shape (`errorKind`, `errorMsg`, `errorCause :: Maybe
@@ -652,7 +669,8 @@ and `8.5`–`8.6` carry the remaining operator-driven live OIDC closure work.
   cert-manager Route 53 DNS01 credentials do not support an STS session-token field, and clears
   operational `aws.*` from `prodbox-config.dhall` before returning.
 - Full cluster delete preserves exactly two retained host roots: the configured manual PV root and
-  the repo-local `.prodbox-state/` root.
+  k8s Secrets materialized by the in-cluster gateway service from the master seed at
+  MinIO `prodbox/master-seed` (Sprint `3.13`).
 - Direct public-registry pulls are permitted on the supported path only for Harbor and Harbor's
   storage backend during bootstrap.
 - Every later Helm deployment must obtain its images through Harbor.

@@ -198,6 +198,7 @@ commandPathOfRequest request =
               HostCheckPorts -> ["check-ports"]
               HostInfo -> ["info"]
               HostFirewall -> ["firewall"]
+              HostFirewallGatewayRestrict _ -> ["firewall", "gateway-restrict"]
               HostPublicEdge _ -> ["public-edge"]
         NativeK8s k8sCommand ->
           "k8s"

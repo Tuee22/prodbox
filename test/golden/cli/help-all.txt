@@ -221,12 +221,16 @@ Show host diagnostics.
 Examples:
 - prodbox host info  # Render host diagnostics.
 
-## prodbox host firewall
-prodbox host firewall - Check firewall requirements
+## prodbox host firewall gateway-restrict
+prodbox host firewall gateway-restrict - Restrict the gateway NodePort to 127.0.0.1
 
-Inspect required firewall rules.
+Install an idempotent iptables INPUT-DROP rule restricting the gateway NodePort to loopback ingress.
+Options:
+- --port <PORT> - Gateway-service NodePort to restrict (default: 30443)
+
 Examples:
-- prodbox host firewall  # Inspect firewall expectations.
+- prodbox host firewall gateway-restrict  # Install the loopback-only restriction on the default NodePort.
+- prodbox host firewall gateway-restrict --port 30443  # Install the restriction on an explicit NodePort.
 
 ## prodbox host public-edge
 prodbox host public-edge - Check public DNS/TLS edge state

@@ -284,6 +284,8 @@ parserForPath path =
     ["host", "firewall"] -> Just (pure (RunNative (NativeHost HostFirewall)))
     ["host", "firewall", "gateway-restrict"] ->
       Just (RunNative . NativeHost . HostFirewallGatewayRestrict <$> gatewayNodePortParser)
+    ["host", "firewall", "gateway-unrestrict"] ->
+      Just (RunNative . NativeHost . HostFirewallGatewayUnrestrict <$> gatewayNodePortParser)
     ["host", "public-edge"] ->
       Just (fmap (RunNative . NativeHost . HostPublicEdge) substrateOptionParser)
     ["k8s", "health"] -> Just (pure (RunNative (NativeK8s K8sHealth)))
@@ -934,11 +936,27 @@ awsGroup =
     , leaf
         "teardown"
         "Delete operational IAM user"
-        "Delete the operational IAM user."
+        "Delete the operational IAM user. Default mode opens with a Pulumi-residue check and refuses if any AWS substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) still owns live resources. `--destroy-pulumi-residue` orchestrates `prodbox pulumi <stack>-destroy --yes` in canonical order before deleting the operational IAM user; destroying the long-lived `aws-ses` stack triggers a 5-30 min SES re-verification and ~24h S3 bucket-name cooldown. `--allow-pulumi-residue` is the operator-acknowledged recovery escape hatch that bypasses the residue check entirely (stacks become orphaned). `--destroy-pulumi-residue` and `--allow-pulumi-residue` are mutually exclusive at parse time."
         [ flagOption "dry-run" Nothing Nothing "Render the IAM teardown plan without mutating state"
         , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        , flagOption
+            "destroy-pulumi-residue"
+            Nothing
+            Nothing
+            "Run `prodbox pulumi <stack>-destroy --yes` for each live Pulumi-managed AWS stack in canonical order before deleting the operational IAM user (mutually exclusive with --allow-pulumi-residue)"
+        , flagOption
+            "allow-pulumi-residue"
+            Nothing
+            Nothing
+            "Bypass the Pulumi-residue refuse-path that prevents deleting the operational IAM user while AWS substrate stacks still have live resources (operator-acknowledged recovery only; mutually exclusive with --destroy-pulumi-residue)"
         ]
-        [example ["aws", "teardown"] "Delete the operational IAM user."]
+        [ example
+            ["aws", "teardown"]
+            "Delete the operational IAM user (refuses if any AWS substrate stack is live)."
+        , example
+            ["aws", "teardown", "--destroy-pulumi-residue"]
+            "Destroy live AWS substrate stacks in canonical order, then delete the operational IAM user."
+        ]
     , leaf
         "check-quotas"
         "Inspect supported AWS quotas"
@@ -989,8 +1007,25 @@ hostGroup =
             "Install an idempotent iptables INPUT-DROP rule restricting the gateway NodePort to loopback ingress."
             [ optionalOption "port" Nothing "PORT" "Gateway-service NodePort to restrict (default: 30443)"
             ]
-            [ example ["host", "firewall", "gateway-restrict"] "Install the loopback-only restriction on the default NodePort."
-            , example ["host", "firewall", "gateway-restrict", "--port", "30443"] "Install the restriction on an explicit NodePort."
+            [ example
+                ["host", "firewall", "gateway-restrict"]
+                "Install the loopback-only restriction on the default NodePort."
+            , example
+                ["host", "firewall", "gateway-restrict", "--port", "30443"]
+                "Install the restriction on an explicit NodePort."
+            ]
+        , leaf
+            "gateway-unrestrict"
+            "Remove the gateway NodePort loopback restriction"
+            "Remove the idempotent iptables INPUT-DROP rule that restricts the gateway NodePort to loopback ingress. Safe to call when the rule is absent (reports `not-present` and exits 0)."
+            [ optionalOption "port" Nothing "PORT" "Gateway-service NodePort to unrestrict (default: 30443)"
+            ]
+            [ example
+                ["host", "firewall", "gateway-unrestrict"]
+                "Remove the loopback-only restriction on the default NodePort."
+            , example
+                ["host", "firewall", "gateway-unrestrict", "--port", "30443"]
+                "Remove the restriction on an explicit NodePort."
             ]
         ]
         []

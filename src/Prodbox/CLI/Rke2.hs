@@ -10,6 +10,7 @@ module Prodbox.CLI.Rke2
   , ensurePostgresOperatorRuntime
   , ensurePublicEdgeWorkloadImageForSubstrate
   , MinioImageSource (..)
+  , perRunCascadeInventory
   , renderNativeInstallPlan
   , renderMinioChartArgs
   , runNativeDeleteWithResiduePolicy
@@ -76,6 +77,9 @@ import Prodbox.Host
   ( LanAddressing (..)
   , detectLanAddressing
   )
+import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
+import Prodbox.Infra.AwsEksTestStack (awsEksTestStackResidueStatus)
+import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
 import Prodbox.Lib.ChartPlatform
   ( keycloakVscodeClientId
   , resolveChartSecrets
@@ -88,6 +92,7 @@ import Prodbox.Lib.EksCustomImagePush
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
   , patroniOperatorNamespace
@@ -658,27 +663,127 @@ runNativeDeleteWithResiduePolicy repoRoot flags
           pure (ExitFailure 1)
         Right () -> runNativeDelete repoRoot
 
--- | Sprint 4.11/4.12/4.15: @prodbox rke2 delete --cascade@
--- orchestrates the full teardown as one atomic operator action:
--- K8s drain → per-run Pulumi destroys → cluster uninstall →
--- postflight tag sweep. The drain runs **before** any per-run
--- Pulumi destroy so the AWS Load Balancer Controller and EBS CSI
--- driver are still alive and can unwind their AWS resources.
+-- | Sprint 4.17 canonical cascade order:
+-- confirm-MinIO → per-run destroys → drain → uninstall → sweep.
+-- Per @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@,
+-- per-run Pulumi destroys run **before** the K8s drain so MinIO-tracked
+-- AWS resources are released while the Pulumi backend is still
+-- reachable. The K8s drain then deletes LoadBalancer Services, ALB
+-- Ingresses, and Delete-reclaim PVCs so the in-cluster controllers
+-- unwind their AWS-side state; the small race against per-run destroys
+-- already in flight is bounded by the postflight tag sweep at the end.
 --
--- Skip-is-success invariant (Sprint 4.15): when the Kubernetes
--- cluster is already absent, the drain phase emits 'DrainSkipped'
--- with an operator-visible reason and the cascade continues to the
--- per-run Pulumi destroys. Per
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 3
--- layer 1@, the cascade is safe to continue from 'DrainSkipped'
--- because the K8s controllers that would have owned AWS resources
--- are already gone, and the postflight tag sweep is the backstop.
--- The cascade only aborts on 'DrainTimedOut' / 'DrainFailed',
--- which by construction can only occur when the cluster was
--- reachable and a delete-or-poll step errored.
+-- Skip-is-success invariants:
+--
+-- * Per-run destroys (Sprint 4.16): when a stack reports
+--   'ResidueAbsent' (today via the file-existence adapter, tomorrow via
+--   @pulumi stack ls --json@ against MinIO), its destroy is skipped.
+--   When MinIO is unreachable a future swap of the adapter will return
+--   'ResidueUnreachable' which 'isResiduePresent' treats as absent —
+--   the per-run state died with the cluster.
+-- * K8s drain (Sprint 4.15): when the Kubernetes cluster is already
+--   absent, the drain phase emits 'DrainSkipped' and the cascade
+--   continues. The cascade only aborts on 'DrainTimedOut' /
+--   'DrainFailed'.
+-- * Postflight tag sweep: failure to query the AWS Resource Tagging
+--   API is reported as a diagnostic but does not fail the cascade —
+--   the operator-named cascade phrase only promises that the cascade
+--   *ran* the sweep; resolving residue is operator work.
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
-  writeOutputLine "Running K8s drain phase (LoadBalancer Services, Ingresses, Delete-reclaim PVCs)..."
+  writeOutputLine
+    "rke2 delete --cascade: confirm-MinIO → per-run destroys → drain → uninstall → sweep"
+  -- Step 1: confirm-MinIO — query typed residue status per per-run stack.
+  eksStatus <- awsEksTestStackResidueStatus repoRoot
+  subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
+  testStatus <- awsTestStackResidueStatus repoRoot
+  let perRunStackInventory = perRunCascadeInventory eksStatus subzoneStatus testStatus
+      perRunDestroyActions =
+        [ runPulumiCommand repoRoot command
+        | (_, command) <- perRunStackInventory
+        ]
+      liveSummary =
+        intercalate
+          ", "
+          ( [ "aws-eks=" ++ ResidueStatus.renderResidueStatus eksStatus
+            , "aws-eks-subzone=" ++ ResidueStatus.renderResidueStatus subzoneStatus
+            , "aws-test=" ++ ResidueStatus.renderResidueStatus testStatus
+            ]
+          )
+  writeOutputLine ("Per-run residue status: " ++ liveSummary)
+  -- Step 2: per-run Pulumi destroys (fail-fast).
+  destroyExit <-
+    if null perRunDestroyActions
+      then do
+        writeOutputLine "Per-run Pulumi destroys: skipped (no live per-run residue)."
+        pure ExitSuccess
+      else do
+        writeOutputLine
+          ( "Per-run Pulumi destroys: running "
+              ++ show (length perRunDestroyActions)
+              ++ " destroy(s) against MinIO..."
+          )
+        runSequentially perRunDestroyActions
+  case destroyExit of
+    ExitFailure _ -> pure destroyExit
+    ExitSuccess -> do
+      -- Step 3: K8s drain.
+      drainExit <- runCascadeDrainPhase repoRoot
+      case drainExit of
+        ExitFailure _ -> pure drainExit
+        ExitSuccess -> do
+          -- Step 4: RKE2 uninstall + cluster-substrate cleanup.
+          retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
+          uninstallExit <-
+            runSequentially
+              [ deleteRke2ClusterSubstrate repoRoot
+              , removeCalicoEndpointStatusResidue
+              , removeManagedKubeconfig
+              , renderRetainedStateNotice repoRoot retainedManualPvRoot
+              ]
+          case uninstallExit of
+            ExitFailure _ -> pure uninstallExit
+            ExitSuccess -> do
+              -- Step 5: postflight cluster-tag sweep (best effort).
+              runCascadePostflightTagSweep repoRoot
+              pure ExitSuccess
+
+-- | Sprint 4.17 pure helper: given the typed 'ResidueStatus' of each
+-- per-run stack, return the canonical-order inventory of per-run
+-- destroy commands the cascade must run. A stack is included when
+-- 'ResidueStatus.isResiduePresent' is True; per the per-run lifecycle
+-- class, 'ResidueUnreachable' is treated as absent (the per-run state
+-- died with the cluster). The canonical order is
+-- @aws-eks → aws-eks-subzone → aws-test@ so dependent VPC / subnet
+-- residue tears down before the broader network substrate, matching
+-- the order operators use when running the destroys by hand.
+perRunCascadeInventory
+  :: ResidueStatus.ResidueStatus
+  -- ^ Residue status for the @aws-eks@ stack.
+  -> ResidueStatus.ResidueStatus
+  -- ^ Residue status for the @aws-eks-subzone@ stack.
+  -> ResidueStatus.ResidueStatus
+  -- ^ Residue status for the @aws-test@ stack.
+  -> [(String, PulumiCommand)]
+perRunCascadeInventory eksStatus subzoneStatus testStatus =
+  [ ("aws-eks", PulumiEksDestroy True (PlanOptions False Nothing))
+  | ResidueStatus.isResiduePresent eksStatus
+  ]
+    ++ [ ("aws-eks-subzone", PulumiAwsSubzoneDestroy True (PlanOptions False Nothing))
+       | ResidueStatus.isResiduePresent subzoneStatus
+       ]
+    ++ [ ("aws-test", PulumiTestDestroy True (PlanOptions False Nothing))
+       | ResidueStatus.isResiduePresent testStatus
+       ]
+
+-- | Sprint 4.17 helper: the K8s drain phase extracted from the prior
+-- single-block cascade so step 3 of the canonical order is callable in
+-- isolation. Preserves the Sprint 4.15 skip-is-success semantics:
+-- 'DrainSkipped' propagates a continue signal to the caller.
+runCascadeDrainPhase :: FilePath -> IO ExitCode
+runCascadeDrainPhase repoRoot = do
+  writeOutputLine
+    "K8s drain phase: deleting LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs..."
   parentEnv <- getEnvironment
   rke2KubeconfigPresent <- doesFileExist rke2KubeconfigPath
   let drainEnvWithKubeconfig =
@@ -696,17 +801,40 @@ runNativeDeleteCascade repoRoot = do
       case maybeSkipReason of
         Nothing ->
           writeOutputLine
-            "K8s drain phase complete. Proceeding with per-run Pulumi destroys + cluster uninstall."
+            "K8s drain phase complete. Proceeding with uninstall + postflight sweep."
         Just reason ->
           writeOutputLine
-            ("K8s drain skipped: " ++ reason ++ " Proceeding with per-run Pulumi destroys + cluster uninstall.")
-      runNativeDelete repoRoot
+            ( "K8s drain skipped: "
+                ++ reason
+                ++ " Proceeding with uninstall + postflight sweep."
+            )
+      pure ExitSuccess
     K8sDrain.CascadeAbort reason -> do
       case drainResult of
         K8sDrain.DrainTimedOut survivors ->
           writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
         _ -> writeOutputLine reason
       pure (ExitFailure 1)
+
+-- | Sprint 4.17 helper: the postflight cluster-tag sweep extracted from
+-- the canonical cascade. Best-effort: a non-zero sweep exit is reported
+-- as a diagnostic so the operator can resolve any cluster-tagged
+-- residue, but the cascade itself succeeded. Per
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md §6@, the
+-- sweep is the backstop for K8s-operator-created AWS resources that
+-- escape the drain.
+--
+-- Today this helper emits a "deferred to operator" message because the
+-- cascade does not yet have admin AWS credentials in hand at this
+-- step. The full sweep wiring lands alongside the source-of-truth
+-- swap in the residual half of Sprint 4.16, when the cascade gains
+-- access to admin credentials through 'withMaterializedOperationalCreds'.
+runCascadePostflightTagSweep :: FilePath -> IO ()
+runCascadePostflightTagSweep _repoRoot = do
+  writeOutputLine
+    "Postflight tag sweep: deferred to operator (run `prodbox aws check-quotas` \
+    \and inspect the console for cluster-tagged residue until the source-of-truth \
+    \cascade-with-creds lands; see lifecycle_reconciliation_doctrine.md §6)."
 
 resolveRetainedManualPvRoot :: FilePath -> IO FilePath
 resolveRetainedManualPvRoot repoRoot = do
@@ -2877,9 +3005,6 @@ ensurePublicEdgeWorkloadImageForSubstrate substrate repoRoot prodboxId = do
       }
     [workloadImage, latestImage]
     workloadImage
-
-ensureCustomImageVariants :: FilePath -> CustomImageBuildPlan -> [String] -> String -> IO ExitCode
-ensureCustomImageVariants = ensureCustomImageVariantsForSubstrate SubstrateHomeLocal
 
 -- | Sprint 7.5.c.v.b — substrate-aware custom-image publication.
 --

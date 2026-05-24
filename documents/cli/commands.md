@@ -35,6 +35,7 @@
 | `prodbox host check-ports` | Check required ports |
 | `prodbox host info` | Display host diagnostics |
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
+| `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
 | `prodbox host public-edge` | Check public DNS/TLS edge state |
 | `prodbox k8s health` | Check cluster health |
 | `prodbox k8s wait` | Wait for deployments to be ready |

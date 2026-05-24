@@ -35,14 +35,15 @@ import Prodbox.Aws
   , operationalIamUserExists
   , prodboxIamUserName
   )
-import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackHasLiveResources)
-import Prodbox.Infra.AwsEksTestStack (awsEksTestStackHasLiveResources)
-import Prodbox.Infra.AwsSesStack (awsSesStackHasLiveResources)
-import Prodbox.Infra.AwsTestStack (awsTestStackHasLiveResources)
+import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
+import Prodbox.Infra.AwsEksTestStack (awsEksTestStackResidueStatus)
+import Prodbox.Infra.AwsSesStack (awsSesStackResidueStatus)
+import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
 import Prodbox.Lifecycle.K8sDrain
   ( K8sDrainEnv
   , collectSurvivors
   )
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.TagSweep
   ( TagSweepInput (..)
   , TaggedResource (..)
@@ -112,13 +113,19 @@ noLivePerRunPulumiStacks repoRoot =
   Precondition
     { preconditionLabel = "noLivePerRunPulumiStacks"
     , preconditionCheck = do
-        eksLive <- awsEksTestStackHasLiveResources repoRoot
-        subzoneLive <- awsEksSubzoneStackHasLiveResources repoRoot
-        testLive <- awsTestStackHasLiveResources repoRoot
+        eksStatus <- awsEksTestStackResidueStatus repoRoot
+        subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
+        testStatus <- awsTestStackResidueStatus repoRoot
         let live =
-              [("aws-eks", "prodbox pulumi eks-destroy --yes") | eksLive]
-                ++ [("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes") | subzoneLive]
-                ++ [("aws-test", "prodbox pulumi test-destroy --yes") | testLive]
+              [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+              | ResidueStatus.isResiduePresentOrUnknownPerRun eksStatus
+              ]
+                ++ [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+                   | ResidueStatus.isResiduePresentOrUnknownPerRun subzoneStatus
+                   ]
+                ++ [ ("aws-test", "prodbox pulumi test-destroy --yes")
+                   | ResidueStatus.isResiduePresentOrUnknownPerRun testStatus
+                   ]
         pure $ case live of
           [] -> Right ()
           _ ->
@@ -156,8 +163,11 @@ noLiveLongLivedPulumiStacks repoRoot =
   Precondition
     { preconditionLabel = "noLiveLongLivedPulumiStacks"
     , preconditionCheck = do
-        sesLive <- awsSesStackHasLiveResources repoRoot
-        let live = [("aws-ses", "prodbox pulumi aws-ses-destroy --yes") | sesLive]
+        sesStatus <- awsSesStackResidueStatus repoRoot
+        let live =
+              [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+              | ResidueStatus.isResiduePresentOrUnknownLongLived sesStatus
+              ]
         pure $ case live of
           [] -> Right ()
           _ ->

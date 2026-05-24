@@ -69,6 +69,24 @@ spec:
                   name: gateway-aws-credentials
                   key: AWS_SESSION_TOKEN
                   optional: true
+            # Sprint 2.19: MinIO credentials for the master-seed read/write
+            # path in `Prodbox.Secret.MasterSeed`. The chart materializes
+            # `gateway-minio-creds` via `lookup` + `randAlphaNum` so the
+            # credentials persist across helm upgrades; the daemon reads
+            # them once at startup. Until `Prodbox.Secret.MasterSeed`
+            # lands the daemon ignores these env vars (no crash; the
+            # `/v1/secret/*` routes still return structured 503 per the
+            # doctrine §8 placeholder).
+            - name: MINIO_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-minio-creds
+                  key: MINIO_ACCESS_KEY_ID
+            - name: MINIO_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gateway-minio-creds
+                  key: MINIO_SECRET_ACCESS_KEY
           volumeMounts:
             - name: tls
               mountPath: /tls

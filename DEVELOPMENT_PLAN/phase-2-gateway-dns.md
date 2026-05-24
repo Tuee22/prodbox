@@ -1218,18 +1218,22 @@ for the authoritative contract.
 
 ### Remaining Work
 
-The chart NodePort Service manifest (`charts/gateway/templates/
-service-nodeport.yaml`) and the automatic reconcile/delete wiring land
-with Sprint 2.19 alongside the gateway secret-derivation endpoints —
-restricting an endpoint that does not yet exist would be premature.
-The Sprint 2.19 closure block exercises the full chain on this host
+The chart NodePort Service manifest landed in Sprint 2.19's chart-side
+scaffolding (May 23, 2026); the symmetric
+`runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` helper +
+`prodbox host firewall gateway-unrestrict --port PORT` subcommand also
+landed in Sprint 2.19's same-day push. The automatic reconcile/delete
+wiring (calling `runHostFirewallGatewayRestrict 30443` after the gateway
+chart deploys and `runHostFirewallGatewayUnrestrict 30443` on
+`prodbox rke2 delete --yes`) lands with Sprint 2.19's full closure
+alongside the live exercise on this host
 (NodePort exposed → rule installed → loopback-only access enforced →
 rule removed on delete). Reboot-persistence via `iptables-save` is
 operator-driven for now and tracked under that sprint.
 
 ## Sprint 2.19: Gateway Daemon Becomes Secret-Derivation Service 🔄
 
-**Status**: Active — pure derivation surface landed May 23, 2026; MinIO IAM bootstrap, master-seed read/write, daemon endpoint handlers, chart-side `gateway-minio-creds` Secret, NodePort Service, reconcile/delete wiring, and the `amazonka-s3` (or `minio-hs`) dependency addition are remaining work. Sprint cannot close until the live exercise on this host succeeds end-to-end (master seed materializes; `/v1/secret/derive` returns deterministic values across cluster wipes).
+**Status**: Active — pure derivation surface landed May 23, 2026; wire-contract layer (typed request/response shapes in `Prodbox.Secret.Wire`, typed `derive` / `ensureNamespace` client functions in `Prodbox.Gateway.Client`, daemon route stubs at `/v1/secret/derive` and `/v1/secret/ensure-namespace` returning structured 503 "master-seed unavailable" per doctrine §8) landed the same day; chart-side scaffolding landed the same day too — new `charts/gateway/templates/secret-minio-creds.yaml` materializes the `gateway-minio-creds` Opaque Secret using the `lookup`-then-`randAlphaNum` pattern (re-used across helm upgrades so the operator-host CLI and in-cluster gateway pods see stable credentials across reconcile cycles), and new `charts/gateway/templates/service-nodeport.yaml` exposes the gateway daemon's REST port on a stable NodePort (`30443` by default, matching the Sprint 2.18 iptables-rule default) for host-CLI loopback access. MinIO IAM bootstrap, master-seed read/write (`Prodbox.Secret.MasterSeed`), live daemon endpoint bodies that replace the 503 stubs, reconcile/delete wiring that calls `runHostFirewallGatewayRestrict` after the NodePort Service is up, and the `amazonka-s3` (or `minio-hs`) dependency addition remain as coupled deliverables for a dedicated session. Sprint cannot close until the live exercise on this host succeeds end-to-end (master seed materializes; `/v1/secret/derive` returns deterministic values across cluster wipes).
 **Blocked by**: 2.17, 2.18
 **Implementation**: new `src/Prodbox/Secret/Derive.hs`, new `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Gateway/Daemon.hs` HTTP server extensions, MinIO IAM bootstrap (Pulumi or one-shot Job), `charts/gateway/` Secret + Deployment volume mount additions, `Prodbox.Gateway.Client` extensions, `prodbox.cabal` dep addition
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (new SSoT — already created by Part 1 doctrine work), `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
@@ -1305,14 +1309,75 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
   instance, and the doctrine table verbatim.
 - `Show MasterSeed` is `"MasterSeed <redacted>"` so seed material never
   lands in operator-facing logs or test output.
+- **Wire-contract layer landed May 23, 2026**: new
+  `src/Prodbox/Secret/Wire.hs` exposes the typed request/response shapes
+  for both endpoints (`DeriveResponse`, `EnsureNamespaceRequest`,
+  `EnsureNamespaceResponse`, `SecretSha256Entry`) with explicit JSON
+  derivations so the snake_case wire shape stays stable across record
+  renames; `Prodbox.Gateway.Client` extends to typed
+  `derive :: PeerEndpoint -> Text -> IO (Either GatewayError DeriveResponse)`
+  and
+  `ensureNamespace :: PeerEndpoint -> Text -> Text -> IO (Either GatewayError EnsureNamespaceResponse)`
+  built on `Prodbox.Http.Client.httpGetJson` / `httpPostJsonResponseJson`
+  (URL-encoded context query parameter for `derive`; standard
+  `Content-Type: application/json` body for `ensureNamespace`);
+  `Prodbox.Gateway.Daemon::handleRestClient` now routes
+  `/v1/secret/derive*` and `/v1/secret/ensure-namespace` to structured
+  `503 master-seed unavailable` responses per
+  [secret_derivation_doctrine.md §8](../documents/engineering/secret_derivation_doctrine.md)
+  while the MinIO IAM bootstrap + `MasterSeed` read/write remain
+  scheduled. 8 new unit tests in
+  `test/unit/Main.hs::"Sprint 2.19 gateway secret-endpoint wire types"`
+  cover JSON round-trips for all three shapes, the canonical encoding
+  pinning, the plaintext-never invariant, and the URL helpers'
+  canonical strings.
+- **Chart-side scaffolding landed May 23, 2026**: new
+  `charts/gateway/templates/secret-minio-creds.yaml` materializes the
+  `gateway-minio-creds` Opaque Secret using the `lookup`-guarded
+  `randAlphaNum` pattern so the credentials survive helm upgrades — the
+  username is `prodbox-gateway-<8-char-suffix>` and the password is 40
+  random alphanumeric characters; both regenerate only when the Secret
+  is absent. New `charts/gateway/templates/service-nodeport.yaml` adds a
+  cluster-wide NodePort (`gateway-nodeport`) exposing the gateway
+  daemon's REST port on `30443` by default (matching the Sprint 2.18
+  iptables-rule default), selector intentionally omits `gateway-node`
+  so any gateway pod in the release answers host-CLI requests. New
+  `nodePort.rest` value in `charts/gateway/values.yaml` lets operators
+  override the port if it collides with another NodePort on the host.
+  `charts/gateway/templates/deployments.yaml` adds `MINIO_ACCESS_KEY_ID`
+  / `MINIO_SECRET_ACCESS_KEY` env vars from the new Secret via explicit
+  `valueFrom: secretKeyRef:` entries; the daemon ignores them today and
+  the `/v1/secret/*` routes still serve the structured 503 placeholder
+  per doctrine §8 until `Prodbox.Secret.MasterSeed` reads the vars.
+  `helm template gateway charts/gateway` renders all three manifests
+  cleanly; `prodbox check-code` chart-lint passes.
+- **Symmetric firewall-rule removal landed May 23, 2026**: new
+  `runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` in
+  `src/Prodbox/Host.hs` mirrors the Sprint 2.18 install path — probes
+  via `iptables -C` first, treats absent-rule as success-with-reason
+  (`FirewallRuleNotPresent`), otherwise invokes `iptables -D` and
+  reports `FirewallRuleRemoved`. Exposed via the new operator-facing
+  `prodbox host firewall gateway-unrestrict --port PORT` subcommand
+  (default port `30443`); generated CLI artifacts under
+  `share/man/man1/prodbox-host.1`,
+  `share/completion/{bash,zsh,fish}/prodbox*`, and
+  `documents/cli/commands.md` regenerated via `prodbox docs generate`.
+  The new `gatewayNodePortFirewallDeleteArgs :: Int -> [String]` pure
+  helper mirrors `gatewayNodePortFirewallRuleArgs` verbatim except for
+  the leading `-D` verb so the install and remove paths target the
+  same rule (matched on the stable `prodbox-gateway-nodeport-loopback-only`
+  comment tag).
 - All three gates green: `prodbox check-code` exit 0,
   `prodbox lint docs` exit 0, `prodbox docs check` exit 0.
-- `prodbox test unit` 464/464 (up from 451 after Sprint 2.18).
+- `prodbox test unit` 497/497 (up from 495 after the new
+  `host firewall gateway-unrestrict` subcommand added two auto-generated
+  parser cases; 464 before Sprint 2.18 work).
 
 ### Remaining Work
 
-The pure derivation surface is foundational and complete. The remaining
-sprint deliverables are coupled into one live-exercise package:
+The pure derivation surface and the wire-contract layer are
+foundational and complete. The remaining sprint deliverables are
+coupled into one live-exercise package:
 
 1. **`Prodbox.Secret.MasterSeed`** (MinIO bucket read/write): adds
    `amazonka-s3` (or `minio-hs`) to `prodbox.cabal`; implements
@@ -1324,26 +1389,32 @@ sprint deliverables are coupled into one live-exercise package:
    `prodbox-gateway` MinIO user, and the IAM policy granting only that
    user `s3:GetObject`/`s3:PutObject`/`s3:ListBucket` on `prodbox/*`.
    The `prodbox-test-pulumi-backends` bucket is unaffected.
-3. **`gateway-minio-creds` k8s Secret**: created by the gateway chart
-   via Helm `lookup` + `randAlphaNum` on first install; mounted by the
-   gateway pod and consumed by `Prodbox.Secret.MasterSeed`.
-4. **Gateway daemon endpoint extensions** in
-   `src/Prodbox/Gateway/Daemon.hs:761-858`: `GET
-   /v1/secret/derive?context=<context>` and `POST
-   /v1/secret/ensure-namespace` per
-   [secret_derivation_doctrine.md §4](../documents/engineering/secret_derivation_doctrine.md).
-   `ensure-namespace` returns Secret names + SHA-256 of each value,
-   never plaintext.
-5. **Chart NodePort Service** (`charts/gateway/templates/
-   service-nodeport.yaml`) so Sprint 2.18's iptables rule has something
-   to restrict; `prodbox rke2 reconcile` invokes
-   `runHostFirewallGatewayRestrict` after the Service is up;
-   `prodbox rke2 delete --yes` removes the rule on teardown.
-6. **`Prodbox.Gateway.Client` extensions**: `derive :: PeerEndpoint ->
-   Text -> IO (Either GatewayError ByteString)` and `ensureNamespace ::
-   PeerEndpoint -> Text -> Text -> IO (Either GatewayError
-   EnsureResult)`.
-7. **Live regression on this host** per the verification block in the
+3. **Gateway pod consumes `gateway-minio-creds`** (Done May 23, 2026):
+   `charts/gateway/templates/deployments.yaml` now wires the
+   `MINIO_ACCESS_KEY_ID` / `MINIO_SECRET_ACCESS_KEY` env vars from the
+   chart-side `gateway-minio-creds` Secret via explicit `valueFrom:
+   secretKeyRef:` entries (chosen over `envFrom: secretRef:` so the
+   daemon doesn't accidentally receive unrelated keys if the Secret
+   gains extra fields later). The daemon ignores the env vars today;
+   they wire in when `Prodbox.Secret.MasterSeed` lands.
+4. **Gateway daemon endpoint bodies**: replace the structured 503 stubs
+   in `Prodbox.Gateway.Daemon::handleRestClient` with the live
+   handlers that compose `Prodbox.Secret.MasterSeed.ensureMasterSeed`
+   with `Prodbox.Secret.Derive.derive` (and the per-context inventory
+   table from doctrine §6 for `ensure-namespace`). Response shapes are
+   already pinned by `Prodbox.Secret.Wire`.
+5. **Reconcile/delete wiring**: the chart-side NodePort Service already
+   exists (landed May 23, 2026), and the symmetric
+   `runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` helper +
+   operator-facing `prodbox host firewall gateway-unrestrict --port
+   PORT` subcommand also landed May 23, 2026 (idempotent — probes via
+   `iptables -C` and treats absent-rule as success-with-reason, mirror
+   of Sprint 2.18's install path). The remaining work is the
+   `prodbox rke2 reconcile` post-deploy hook that invokes
+   `runHostFirewallGatewayRestrict 30443` and the matching
+   `prodbox rke2 delete --yes` teardown hook that invokes
+   `runHostFirewallGatewayUnrestrict 30443`.
+6. **Live regression on this host** per the verification block in the
    approved plan Part 3 step 2.
 
 These deliverables are tightly coupled (the daemon needs the MinIO

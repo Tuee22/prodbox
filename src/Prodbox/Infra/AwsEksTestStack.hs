@@ -10,6 +10,7 @@ module Prodbox.Infra.AwsEksTestStack
   , saveAwsEksTestStackSnapshot
   , clearAwsEksTestStackSnapshot
   , awsEksTestStackHasLiveResources
+  , awsEksTestStackResidueStatus
   , materializeAwsEksKubeconfig
   , assertNoAwsEksTestStackResidue
   , credentialsConfigured
@@ -60,6 +61,7 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( Credentials (..)
@@ -105,7 +107,18 @@ awsEksTestSnapshotPath repoRoot = awsEksTestStateDir repoRoot </> "stack-snapsho
 -- exist.
 awsEksTestStackHasLiveResources :: FilePath -> IO Bool
 awsEksTestStackHasLiveResources repoRoot =
-  doesFileExist (awsEksTestSnapshotPath repoRoot)
+  ResidueStatus.isResiduePresentOrUnknownPerRun
+    <$> awsEksTestStackResidueStatus repoRoot
+
+-- | Sprint 4.16 typed residue status. Today this adapter wraps the
+-- legacy file-existence check; a later sprint replaces it with a
+-- source-of-truth @pulumi stack ls --json@ query against the in-cluster
+-- MinIO backend.
+awsEksTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
+awsEksTestStackResidueStatus repoRoot = do
+  let snapshotPath = awsEksTestSnapshotPath repoRoot
+  exists <- doesFileExist snapshotPath
+  pure (ResidueStatus.residuePresentByFileExistence awsEksTestStackName snapshotPath exists)
 
 awsEksTestKubeconfigPath :: FilePath -> FilePath
 awsEksTestKubeconfigPath repoRoot = awsEksTestStateDir repoRoot </> "kubeconfig"

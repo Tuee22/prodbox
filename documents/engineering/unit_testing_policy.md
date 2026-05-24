@@ -3,14 +3,28 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md,
+DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md,
+DEVELOPMENT_PLAN/phase-0-planning-documentation.md,
+DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md,
+DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md,
+DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md,
+DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md,
+DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md,
+DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md,
+DEVELOPMENT_PLAN/phase-8-email-invite-auth.md,
 documents/engineering/README.md, documents/engineering/aws_integration_environment_doctrine.md,
 documents/engineering/aws_test_environment.md, documents/engineering/cli_command_surface.md,
-documents/engineering/code_quality.md, documents/engineering/distributed_gateway_architecture.md,
+documents/engineering/code_quality.md, documents/engineering/dependency_management.md,
+documents/engineering/distributed_gateway_architecture.md,
+documents/engineering/effectful_dag_architecture.md,
+documents/engineering/effect_interpreter.md,
 documents/engineering/envoy_gateway_edge_doctrine.md,
 documents/engineering/helm_chart_platform_doctrine.md,
 documents/engineering/integration_fixture_doctrine.md,
 documents/engineering/lifecycle_reconciliation_doctrine.md,
-documents/engineering/prerequisite_dag_system.md, documents/engineering/streaming_doctrine.md
+documents/engineering/prerequisite_dag_system.md, documents/engineering/prerequisite_doctrine.md,
+documents/engineering/pure_fp_standards.md, documents/engineering/refactoring_patterns.md,
+documents/engineering/streaming_doctrine.md
 
 > **Purpose**: Define the interpreter-only mocking doctrine and public test-runner contract for
 > `prodbox`.

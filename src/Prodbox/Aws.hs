@@ -102,10 +102,11 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackHasLiveResources)
-import Prodbox.Infra.AwsEksTestStack (awsEksTestStackHasLiveResources)
-import Prodbox.Infra.AwsSesStack (awsSesStackHasLiveResources)
-import Prodbox.Infra.AwsTestStack (awsTestStackHasLiveResources)
+import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
+import Prodbox.Infra.AwsEksTestStack (awsEksTestStackResidueStatus)
+import Prodbox.Infra.AwsSesStack (awsSesStackResidueStatus)
+import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
@@ -1596,22 +1597,33 @@ dispatchPulumiDestroysForResidue repoRoot plan = go plan
       "aws-ses" -> ["pulumi", "aws-ses-destroy", "--yes"]
       other -> ["pulumi", other ++ "-destroy", "--yes"]
 
--- | Sprint 7.6 refuse-path: enumerate live Pulumi-managed AWS stacks
--- by querying each stack's on-disk snapshot. Returns the list of live
--- stacks paired with the canonical destroy command operators should run
--- to clean them up. An empty list means it is safe to delete the
--- operational IAM user.
+-- | Sprint 7.6 refuse-path generalized to typed Pulumi-stack residue
+-- queries per Sprint 4.16: each stack's 'ResidueStatus' is consulted
+-- through the per-lifecycle-class predicate
+-- ('isResiduePresentOrUnknownPerRun' for per-run stacks,
+-- 'isResiduePresentOrUnknownLongLived' for the long-lived @aws-ses@
+-- stack). Returns the list of live stacks paired with the canonical
+-- destroy command operators should run to clean them up. An empty list
+-- means it is safe to delete the operational IAM user.
 checkPulumiResidueBeforeTeardown :: FilePath -> IO [(String, String)]
 checkPulumiResidueBeforeTeardown repoRoot = do
-  eksLive <- awsEksTestStackHasLiveResources repoRoot
-  subzoneLive <- awsEksSubzoneStackHasLiveResources repoRoot
-  testLive <- awsTestStackHasLiveResources repoRoot
-  sesLive <- awsSesStackHasLiveResources repoRoot
+  eksStatus <- awsEksTestStackResidueStatus repoRoot
+  subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
+  testStatus <- awsTestStackResidueStatus repoRoot
+  sesStatus <- awsSesStackResidueStatus repoRoot
   pure $
-    [("aws-eks", "prodbox pulumi eks-destroy --yes") | eksLive]
-      ++ [("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes") | subzoneLive]
-      ++ [("aws-test", "prodbox pulumi test-destroy --yes") | testLive]
-      ++ [("aws-ses", "prodbox pulumi aws-ses-destroy --yes") | sesLive]
+    [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+    | ResidueStatus.isResiduePresentOrUnknownPerRun eksStatus
+    ]
+      ++ [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+         | ResidueStatus.isResiduePresentOrUnknownPerRun subzoneStatus
+         ]
+      ++ [ ("aws-test", "prodbox pulumi test-destroy --yes")
+         | ResidueStatus.isResiduePresentOrUnknownPerRun testStatus
+         ]
+      ++ [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+         | ResidueStatus.isResiduePresentOrUnknownLongLived sesStatus
+         ]
 
 renderPulumiResidueRefusal :: [(String, String)] -> String
 renderPulumiResidueRefusal residue =

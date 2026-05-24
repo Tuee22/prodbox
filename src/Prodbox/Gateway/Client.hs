@@ -9,17 +9,31 @@ module Prodbox.Gateway.Client
   , queryState
   , statusUrl
   , renderGatewayError
+  , derive
+  , ensureNamespace
+  , deriveUrl
+  , ensureNamespaceUrl
   )
 where
 
 import Data.Aeson (Value)
+import Data.ByteString.Char8 qualified as BS8
+import Data.Text (Text)
+import Data.Text.Encoding qualified as TE
+import Network.HTTP.Types.URI (urlEncode)
 import Prodbox.Gateway.Types (PeerEndpoint, peerRestUrl)
 import Prodbox.Http.Client
   ( HttpConfig (..)
   , HttpError
   , defaultHttpConfig
   , httpGetJson
+  , httpPostJsonResponseJson
   , renderHttpError
+  )
+import Prodbox.Secret.Wire
+  ( DeriveResponse (..)
+  , EnsureNamespaceRequest (..)
+  , EnsureNamespaceResponse (..)
   )
 
 -- | Errors that surface from a gateway-client call.
@@ -48,3 +62,57 @@ queryState endpoint = do
   pure $ case result of
     Left httpErr -> Left (GatewayTransport httpErr)
     Right value -> Right value
+
+-- | Canonical URL for the gateway daemon's @GET /v1/secret/derive@
+-- endpoint with the given context string URL-encoded as the @context@
+-- query parameter.
+deriveUrl :: PeerEndpoint -> Text -> String
+deriveUrl endpoint context =
+  peerRestUrl endpoint
+    ++ "/v1/secret/derive?context="
+    ++ BS8.unpack (urlEncode True (TE.encodeUtf8 context))
+
+-- | Request a derived secret value from the gateway daemon. The context
+-- string must match one of the canonical entries in
+-- @documents/engineering/secret_derivation_doctrine.md@ §3; the daemon
+-- returns @400@ for malformed or unknown contexts and @500 / 503@ for
+-- master-seed availability failures (both surfaced as 'GatewayTransport'
+-- with the status code preserved).
+derive :: PeerEndpoint -> Text -> IO (Either GatewayError DeriveResponse)
+derive endpoint context = do
+  let config =
+        defaultHttpConfig {httpRequestTimeoutMicros = 10 * 1000 * 1000}
+  result <- httpGetJson config (deriveUrl endpoint context)
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right response -> Right response
+
+-- | Canonical URL for the gateway daemon's
+-- @POST /v1/secret/ensure-namespace@ endpoint.
+ensureNamespaceUrl :: PeerEndpoint -> String
+ensureNamespaceUrl endpoint =
+  peerRestUrl endpoint ++ "/v1/secret/ensure-namespace"
+
+-- | Idempotently materialize every data-bound Kubernetes Secret for a
+-- release through the gateway daemon. Used by chart pre-install Jobs and
+-- by the host CLI before chart deploy. Returns the Secret names + SHA-256
+-- of each derived value (never plaintext, per doctrine §4).
+ensureNamespace
+  :: PeerEndpoint
+  -> Text
+  -- ^ Kubernetes namespace.
+  -> Text
+  -- ^ Helm release name within the namespace.
+  -> IO (Either GatewayError EnsureNamespaceResponse)
+ensureNamespace endpoint namespace release = do
+  let config =
+        defaultHttpConfig {httpRequestTimeoutMicros = 30 * 1000 * 1000}
+      payload =
+        EnsureNamespaceRequest
+          { ensureNamespaceRequestNamespace = namespace
+          , ensureNamespaceRequestRelease = release
+          }
+  result <- httpPostJsonResponseJson config (ensureNamespaceUrl endpoint) payload
+  pure $ case result of
+    Left httpErr -> Left (GatewayTransport httpErr)
+    Right response -> Right response

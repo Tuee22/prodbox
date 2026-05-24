@@ -6,6 +6,13 @@
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
 [../../DEVELOPMENT_PLAN/00-overview.md](../../DEVELOPMENT_PLAN/00-overview.md),
 [../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
+[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
+[../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md](../../DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md),
+[../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
+[../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md),
+[../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
+[../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md),
+[../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md),
 [README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md),
 [distributed_gateway_architecture.md](./distributed_gateway_architecture.md),
 [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md),
@@ -56,8 +63,15 @@ This document is normative public-edge doctrine only.
 Implementation status, validation closure, remaining work, and cleanup ownership live in
 [../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md).
 
-This doctrine applies to the self-managed local-cluster path only. The AWS validation stacks under
-`pulumi/aws-eks/` and `pulumi/aws-test/` do not currently provision MetalLB or Envoy Gateway.
+This doctrine applies to both supported substrates per
+[../../DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md). On the home local
+substrate (RKE2 on the operator host) MetalLB + Envoy Gateway terminate the public edge directly;
+on the AWS substrate the AWS Load Balancer Controller replaces MetalLB while Envoy Gateway remains
+the in-cluster public-edge controller per
+`Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstrateEnvoyGatewayRuntime`. The Pulumi stacks under
+`pulumi/aws-eks/`, `pulumi/aws-eks-subzone/`, `pulumi/aws-test/`, and `pulumi/aws-ses/` provision
+AWS substrate substrate-platform inputs and SES shared infrastructure; the public-edge controller
+itself remains in-cluster on both substrates.
 
 ## 2. Current Worktree Baseline
 

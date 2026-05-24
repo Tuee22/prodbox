@@ -3,8 +3,30 @@ module CliSuite
   )
 where
 
-import Control.Monad (when)
+import Control.Concurrent (forkIO)
+import Control.Concurrent.MVar (MVar, newEmptyMVar, putMVar, takeMVar)
+import Control.Exception (SomeException, bracket, try)
+import Control.Monad (void, when)
+import Data.ByteString.Char8 qualified as BS8
 import Data.List (find, findIndex, isInfixOf, sort)
+import Network.Socket
+  ( Family (AF_INET)
+  , SockAddr (SockAddrInet)
+  , Socket
+  , SocketOption (ReuseAddr)
+  , SocketType (Stream)
+  , accept
+  , bind
+  , close
+  , defaultProtocol
+  , getSocketName
+  , listen
+  , setSocketOption
+  , socket
+  , tupleToHostAddress
+  , withSocketsDo
+  )
+import Network.Socket.ByteString (recv, sendAll)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
@@ -129,30 +151,27 @@ integrationCliSuite = do
         rendered `shouldContain` "\"fqdn\": \"test.resolvefintech.com\""
         rendered `shouldContain` "\"zone_id\": \"Z1234567890ABC\""
 
-    it "runs native gateway status through the built frontend with a fake curl" $
-      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath
-        writeRepoMarkers tmpDir
-        let configPath = tmpDir </> "gateway.json"
-        writeFile configPath gatewayStatusConfig
-        writeFile (tmpDir </> "orders.json") gatewayOrders
-        envVars <- fakeCurlEnvironment tmpDir
+    it "runs native gateway status against a loopback HTTP server through the native HTTP client" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
+        withGatewayStateServer gatewayStateResponseJson $ \port requestRef -> do
+          binary <- resolveBinaryPath
+          writeRepoMarkers tmpDir
+          let configPath = tmpDir </> "gateway.json"
+          writeFile configPath gatewayStatusConfig
+          writeFile (tmpDir </> "orders.json") (gatewayOrdersAt port)
 
-        (exitCode, stdoutText, stderrText) <-
-          readCreateProcessWithExitCode
-            (proc binary ["gateway", "status", "--config", configPath]) {cwd = Just tmpDir, env = Just envVars}
-            ""
+          (exitCode, stdoutText, stderrText) <-
+            readCreateProcessWithExitCode
+              (proc binary ["gateway", "status", "--config", configPath]) {cwd = Just tmpDir}
+              ""
 
-        exitCode `shouldBe` ExitSuccess
-        stderrText `shouldBe` ""
-        stdoutText `shouldContain` "Gateway status"
-        stdoutText `shouldContain` "DNS_WRITE_GATE=test.resolvefintech.com@Z123 ttl=60"
-        stdoutText `shouldContain` "HEARTBEAT_NODE_B=1.5"
-        curlArgs <- readFile (tmpDir </> "curl-args.txt")
-        curlArgs `shouldContain` "http://node-a.example.test:31001/v1/state"
-        curlArgs `shouldNotContain` "--cert"
-        curlArgs `shouldNotContain` "--key"
-        curlArgs `shouldNotContain` "--cacert"
+          exitCode `shouldBe` ExitSuccess
+          stderrText `shouldBe` ""
+          stdoutText `shouldContain` "Gateway status"
+          stdoutText `shouldContain` "DNS_WRITE_GATE=test.resolvefintech.com@Z123 ttl=60"
+          stdoutText `shouldContain` "HEARTBEAT_NODE_B=1.5"
+          requestLine <- takeMVar requestRef
+          requestLine `shouldContain` "GET /v1/state"
 
     it "fails fast when gateway start is missing required trust material" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1025,34 +1044,58 @@ copySchema :: FilePath -> FilePath -> IO ()
 copySchema sourceRoot targetRoot =
   copyFile (sourceRoot </> "prodbox-config-types.dhall") (targetRoot </> "prodbox-config-types.dhall")
 
-fakeCurlEnvironment :: FilePath -> IO [(String, String)]
-fakeCurlEnvironment repoRoot = do
-  fakeBin <- writeFakeCurlScript repoRoot
-  currentEnvironment <- getEnvironment
-  let existingPath = maybe "" id (lookup "PATH" currentEnvironment)
-      updatedPath = fakeBin ++ ":" ++ existingPath
-  pure (("PATH", updatedPath) : filter ((/= "PATH") . fst) currentEnvironment)
+gatewayStateResponseJson :: String
+gatewayStateResponseJson =
+  "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"event_count\":5,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"test.resolvefintech.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
 
-writeFakeCurlScript :: FilePath -> IO FilePath
-writeFakeCurlScript repoRoot = do
-  let binDir = repoRoot </> "bin"
-      scriptPath = binDir </> "curl"
-  createDirectoryIfMissing True binDir
-  writeFile scriptPath (fakeCurlScript (repoRoot </> "curl-args.txt"))
-  permissions <- getPermissions scriptPath
-  setPermissions scriptPath permissions {executable = True}
-  pure binDir
-
-fakeCurlScript :: FilePath -> String
-fakeCurlScript recordPath =
-  unlines
-    [ "#!/usr/bin/env bash"
-    , "set -euo pipefail"
-    , "printf '%s\\n' \"$*\" > " ++ show recordPath
-    , "cat <<'JSON'"
-    , "{\"node_id\":\"node-a\",\"gateway_owner\":\"node-a\",\"has_active_claim\":true,\"mesh_peers\":[\"node-b\"],\"event_count\":5,\"last_public_ip_observed\":\"203.0.113.10\",\"last_dns_write_ip\":\"203.0.113.10\",\"last_dns_write_at_utc\":\"2026-04-06T10:00:00Z\",\"dns_write_gate\":{\"zone_id\":\"Z123\",\"fqdn\":\"test.resolvefintech.com\",\"ttl\":60},\"heartbeat_age_seconds\":{\"node-a\":0.0,\"node-b\":1.5}}"
-    , "JSON"
-    ]
+-- | Run @action@ against an ephemeral 127.0.0.1 HTTP server that serves
+-- @body@ as JSON once. Returns the loopback port and an 'MVar' holding
+-- the first line of the request the server received (e.g. @GET /v1/state HTTP/1.1@).
+-- Used by the gateway-status integration test to verify the native HTTP client
+-- path that replaced curl shell-outs in Sprint 2.17.
+withGatewayStateServer
+  :: String
+  -> (Int -> MVar String -> IO a)
+  -> IO a
+withGatewayStateServer body action =
+  withSocketsDo $
+    bracket
+      ( do
+          sock <- socket AF_INET Stream defaultProtocol
+          setSocketOption sock ReuseAddr 1
+          bind sock (SockAddrInet 0 (tupleToHostAddress (127, 0, 0, 1)))
+          listen sock 1
+          pure sock
+      )
+      close
+      ( \sock -> do
+          addr <- getSocketName sock
+          port <- case addr of
+            SockAddrInet p _ -> pure (fromIntegral p)
+            _ -> ioError (userError "expected IPv4 socket address while allocating a test port")
+          requestRef <- newEmptyMVar
+          let response =
+                "HTTP/1.1 200 OK\r\n"
+                  ++ "Content-Type: application/json\r\n"
+                  ++ "Content-Length: "
+                  ++ show (length body)
+                  ++ "\r\n"
+                  ++ "Connection: close\r\n"
+                  ++ "\r\n"
+                  ++ body
+          void $ forkIO $ do
+            acceptResult <- try (accept sock)
+            case acceptResult :: Either SomeException (Socket, SockAddr) of
+              Left _ -> pure ()
+              Right (client, _) -> do
+                requestBytes <- recv client 8192
+                let requestText = BS8.unpack requestBytes
+                    firstLine = takeWhile (/= '\r') requestText
+                putMVar requestRef firstLine
+                _ <- try (sendAll client (BS8.pack response)) :: IO (Either SomeException ())
+                close client
+          action port requestRef
+      )
 
 fakeAwsEnvironment :: FilePath -> IO [(String, String)]
 fakeAwsEnvironment repoRoot = do
@@ -2168,7 +2211,12 @@ gatewayStatusConfig =
     ]
 
 gatewayOrders :: String
-gatewayOrders =
+gatewayOrders = gatewayOrdersAt 31001
+
+-- | Orders fixture pointing at 127.0.0.1:port. Used by integration tests that
+-- spin up a loopback HTTP server to exercise the native HTTP client path.
+gatewayOrdersAt :: Int -> String
+gatewayOrdersAt port =
   unlines
     [ "{"
     , "  \"version_utc\": 1,"
@@ -2176,9 +2224,9 @@ gatewayOrders =
     , "    {"
     , "      \"node_id\": \"node-a\","
     , "      \"stable_dns_name\": \"node-a.example.test\","
-    , "      \"rest_host\": \"0.0.0.0\","
-    , "      \"rest_port\": 31001,"
-    , "      \"socket_host\": \"0.0.0.0\","
+    , "      \"rest_host\": \"127.0.0.1\","
+    , "      \"rest_port\": " ++ show port ++ ","
+    , "      \"socket_host\": \"127.0.0.1\","
     , "      \"socket_port\": 32001"
     , "    }"
     , "  ],"

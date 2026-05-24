@@ -1,0 +1,27 @@
+{{- /*
+NodePort exposing the gateway daemon's REST port to the operator host on a
+stable port. The host CLI calls the gateway via 127.0.0.1:<nodePort> per
+@documents/engineering/secret_derivation_doctrine.md@ §5. External (LAN/WAN)
+ingress is dropped at the host firewall by the iptables rule installed by
+`prodbox host firewall gateway-restrict --port <nodePort>` (Sprint 2.18).
+
+The selector intentionally omits the `gateway-node` label so any gateway pod
+in the release can answer the host's request; the daemon's read paths are
+idempotent and don't require sticky routing.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway-nodeport
+  labels:
+    {{- include "gateway.labels" . | nindent 4 }}
+spec:
+  type: NodePort
+  selector:
+    {{- include "gateway.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: rest
+      port: {{ .Values.ports.rest }}
+      targetPort: rest
+      nodePort: {{ .Values.nodePort.rest }}
+      protocol: TCP

@@ -23,13 +23,16 @@ Examples:
 ## prodbox aws teardown
 prodbox aws teardown - Delete operational IAM user
 
-Delete the operational IAM user.
+Delete the operational IAM user. Default mode opens with a Pulumi-residue check and refuses if any AWS substrate stack (`aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`) still owns live resources. `--destroy-pulumi-residue` orchestrates `prodbox pulumi <stack>-destroy --yes` in canonical order before deleting the operational IAM user; destroying the long-lived `aws-ses` stack triggers a 5-30 min SES re-verification and ~24h S3 bucket-name cooldown. `--allow-pulumi-residue` is the operator-acknowledged recovery escape hatch that bypasses the residue check entirely (stacks become orphaned). `--destroy-pulumi-residue` and `--allow-pulumi-residue` are mutually exclusive at parse time.
 Options:
 - --dry-run - Render the IAM teardown plan without mutating state
 - --plan-file <PATH> - Write the rendered plan to a file
+- --destroy-pulumi-residue - Run `prodbox pulumi <stack>-destroy --yes` for each live Pulumi-managed AWS stack in canonical order before deleting the operational IAM user (mutually exclusive with --allow-pulumi-residue)
+- --allow-pulumi-residue - Bypass the Pulumi-residue refuse-path that prevents deleting the operational IAM user while AWS substrate stacks still have live resources (operator-acknowledged recovery only; mutually exclusive with --destroy-pulumi-residue)
 
 Examples:
-- prodbox aws teardown  # Delete the operational IAM user.
+- prodbox aws teardown  # Delete the operational IAM user (refuses if any AWS substrate stack is live).
+- prodbox aws teardown --destroy-pulumi-residue  # Destroy live AWS substrate stacks in canonical order, then delete the operational IAM user.
 
 ## prodbox aws check-quotas
 prodbox aws check-quotas - Inspect supported AWS quotas
@@ -231,6 +234,17 @@ Options:
 Examples:
 - prodbox host firewall gateway-restrict  # Install the loopback-only restriction on the default NodePort.
 - prodbox host firewall gateway-restrict --port 30443  # Install the restriction on an explicit NodePort.
+
+## prodbox host firewall gateway-unrestrict
+prodbox host firewall gateway-unrestrict - Remove the gateway NodePort loopback restriction
+
+Remove the idempotent iptables INPUT-DROP rule that restricts the gateway NodePort to loopback ingress. Safe to call when the rule is absent (reports `not-present` and exits 0).
+Options:
+- --port <PORT> - Gateway-service NodePort to unrestrict (default: 30443)
+
+Examples:
+- prodbox host firewall gateway-unrestrict  # Remove the loopback-only restriction on the default NodePort.
+- prodbox host firewall gateway-unrestrict --port 30443  # Remove the restriction on an explicit NodePort.
 
 ## prodbox host public-edge
 prodbox host public-edge - Check public DNS/TLS edge state

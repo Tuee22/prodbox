@@ -9,6 +9,7 @@ module Prodbox.Infra.AwsEksSubzoneStack
   , saveAwsEksSubzoneStackSnapshot
   , clearAwsEksSubzoneStackSnapshot
   , awsEksSubzoneStackHasLiveResources
+  , awsEksSubzoneStackResidueStatus
   , assertNoAwsEksSubzoneStackResidue
   , renderAwsEksSubzoneStackReport
   )
@@ -51,6 +52,7 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( AwsSubstrateSection (..)
@@ -89,10 +91,24 @@ awsEksSubzoneSnapshotPath :: FilePath -> FilePath
 awsEksSubzoneSnapshotPath repoRoot = awsEksSubzoneStateDir repoRoot </> "stack-snapshot.json"
 
 -- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
--- AWS EKS subzone stack. Sprint 7.6 orphan-safety predicate.
+-- AWS EKS subzone stack. Sprint 7.6 orphan-safety predicate. Kept as a
+-- thin alias over 'awsEksSubzoneStackResidueStatus' for callers that
+-- have not yet migrated to the typed 'ResidueStatus' surface introduced
+-- by Sprint 4.16.
 awsEksSubzoneStackHasLiveResources :: FilePath -> IO Bool
 awsEksSubzoneStackHasLiveResources repoRoot =
-  doesFileExist (awsEksSubzoneSnapshotPath repoRoot)
+  ResidueStatus.isResiduePresentOrUnknownPerRun
+    <$> awsEksSubzoneStackResidueStatus repoRoot
+
+-- | Sprint 4.16 typed residue status. Today this adapter wraps the
+-- legacy file-existence check; a later sprint replaces it with a
+-- source-of-truth @pulumi stack ls --json@ query against the in-cluster
+-- MinIO backend.
+awsEksSubzoneStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
+awsEksSubzoneStackResidueStatus repoRoot = do
+  let snapshotPath = awsEksSubzoneSnapshotPath repoRoot
+  exists <- doesFileExist snapshotPath
+  pure (ResidueStatus.residuePresentByFileExistence awsEksSubzoneStackName snapshotPath exists)
 
 data AwsEksSubzoneStackSnapshot = AwsEksSubzoneStackSnapshot
   { subzoneSnapshotStackName :: String

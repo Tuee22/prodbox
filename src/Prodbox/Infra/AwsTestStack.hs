@@ -10,6 +10,7 @@ module Prodbox.Infra.AwsTestStack
   , saveAwsTestStackSnapshot
   , clearAwsTestStackSnapshot
   , awsTestStackHasLiveResources
+  , awsTestStackResidueStatus
   , assertNoAwsTestStackResidue
   , renderAwsTestStackReport
   , ensureAwsTestSshKey
@@ -55,6 +56,7 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( Credentials (..)
@@ -92,10 +94,25 @@ awsTestSnapshotPath :: FilePath -> FilePath
 awsTestSnapshotPath repoRoot = awsTestStateDir repoRoot </> "stack-snapshot.json"
 
 -- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
--- AWS HA-RKE2 test stack. Sprint 7.6 orphan-safety predicate.
+-- AWS HA-RKE2 test stack. Sprint 7.6 orphan-safety predicate. Kept as a
+-- thin alias over 'awsTestStackResidueStatus' for callers that have not
+-- yet migrated to the typed 'ResidueStatus' surface introduced by
+-- Sprint 4.16.
 awsTestStackHasLiveResources :: FilePath -> IO Bool
 awsTestStackHasLiveResources repoRoot =
-  doesFileExist (awsTestSnapshotPath repoRoot)
+  ResidueStatus.isResiduePresentOrUnknownPerRun
+    <$> awsTestStackResidueStatus repoRoot
+
+-- | Sprint 4.16 typed residue status. Today this adapter wraps the
+-- legacy file-existence check; a later sprint replaces it with a
+-- source-of-truth @pulumi stack ls --json@ query against the in-cluster
+-- MinIO backend. The 'ResidueStatus' surface is already exported so
+-- callers can migrate before the underlying source-of-truth swap.
+awsTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
+awsTestStackResidueStatus repoRoot = do
+  let snapshotPath = awsTestSnapshotPath repoRoot
+  exists <- doesFileExist snapshotPath
+  pure (ResidueStatus.residuePresentByFileExistence awsTestStackName snapshotPath exists)
 
 awsTestPrivateKeyPath :: FilePath -> FilePath
 awsTestPrivateKeyPath repoRoot = awsTestStateDir repoRoot </> "id_ed25519"

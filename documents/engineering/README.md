@@ -18,8 +18,11 @@ The documents in this directory are stable doctrine and architecture references.
 development plan changes the supported architecture, the affected doctrine docs must be updated in
 the same change so they continue to describe the implemented repository state.
 
-Pulumi doctrine in this directory applies only to the AWS validation stacks under
-`pulumi/aws-eks/` and `pulumi/aws-test/`.
+Pulumi doctrine in this directory applies only to the AWS substrate stacks under
+`pulumi/aws-eks/`, `pulumi/aws-eks-subzone/`, `pulumi/aws-test/`, and `pulumi/aws-ses/`. Of those,
+`aws-eks`, `aws-eks-subzone`, and `aws-test` are per-run stacks; `aws-ses` is long-lived
+cross-substrate shared infrastructure (see
+[../../DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)).
 
 ## Documents
 
@@ -51,6 +54,7 @@ Pulumi doctrine in this directory applies only to the AWS validation stacks unde
 | [code_quality.md](./code_quality.md) | Policy guardrails and the `check-code` gate |
 | [refactoring_patterns.md](./refactoring_patterns.md) | Imperative to pure FP migration patterns |
 | [helm_chart_platform_doctrine.md](./helm_chart_platform_doctrine.md) | Singleton chart identity, namespace isolation, storage lifecycle, and delete semantics for `prodbox charts` |
+| [secret_derivation_doctrine.md](./secret_derivation_doctrine.md) | Master-seed derivation, host↔cluster secret boundary, and the gateway-as-secret-service contract |
 
 ## Quick Navigation
 

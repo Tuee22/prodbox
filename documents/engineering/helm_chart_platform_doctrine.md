@@ -3,11 +3,19 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Referenced by**: [../../README.md](../../README.md),
-[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md), [README.md](./README.md),
-[cli_command_surface.md](./cli_command_surface.md),
+[../../DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md),
+[../../DEVELOPMENT_PLAN/system-components.md](../../DEVELOPMENT_PLAN/system-components.md),
+[../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md](../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md),
+[../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md),
+[../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md](../../DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md),
+[../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md),
+[../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md),
+[../documentation_standards.md](../documentation_standards.md),
+[README.md](./README.md), [cli_command_surface.md](./cli_command_surface.md),
 [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md),
+[secret_derivation_doctrine.md](./secret_derivation_doctrine.md),
 [storage_lifecycle_doctrine.md](./storage_lifecycle_doctrine.md),
-[secret_derivation_doctrine.md](./secret_derivation_doctrine.md)
+[unit_testing_policy.md](./unit_testing_policy.md)
 **Generated sections**: none
 
 > **Purpose**: Define the singleton chart identity, shared public-edge attachment model, external Patroni

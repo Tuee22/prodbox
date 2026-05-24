@@ -49,6 +49,7 @@ library
         Prodbox.CLI.Nuke
         Prodbox.Lifecycle.K8sDrain
         Prodbox.Lifecycle.Preconditions
+        Prodbox.Lifecycle.ResidueStatus
         Prodbox.Lifecycle.TagSweep
         Prodbox.Keycloak.Admin
         Prodbox.Keycloak.CredentialSetupForm
@@ -74,6 +75,7 @@ library
         Prodbox.Retry
         Prodbox.Result
         Prodbox.Secret.Derive
+        Prodbox.Secret.Wire
         Prodbox.Service
         Prodbox.Settings
         Prodbox.StateMachine
@@ -179,6 +181,7 @@ test-suite prodbox-integration
         bytestring ^>=0.11.5.3,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
+        network ^>=3.1.4,
         process ^>=1.6.19.0,
         scientific ^>=0.3.7,
         prodbox,

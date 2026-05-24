@@ -22,6 +22,13 @@ ports:
   rest: 8443
   events: 8444
 
+# NodePort exposed by the gateway-nodeport Service for host-CLI access
+# (127.0.0.1:<rest> per documents/engineering/secret_derivation_doctrine.md
+# §5). The default matches the port the iptables rule installed by
+# `prodbox host firewall gateway-restrict` restricts to loopback ingress.
+nodePort:
+  rest: 30443
+
 # Daemon timing knobs. The defaults align with the in-pod test suite.
 timing:
   heartbeatIntervalSeconds: 0.5

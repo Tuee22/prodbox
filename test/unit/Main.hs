@@ -129,6 +129,7 @@ import Prodbox.CLI.Parser
 import Prodbox.CLI.Pulumi (renderPulumiPlan)
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
+  , perRunCascadeInventory
   , renderMinioChartArgs
   , renderNativeInstallPlan
   )
@@ -221,7 +222,6 @@ import Prodbox.Host
   , renderPortAvailabilityReport
   )
 import Prodbox.Http.Client qualified
-import Prodbox.Secret.Derive qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.LongLivedPulumiBackend
@@ -269,6 +269,7 @@ import Prodbox.Lifecycle.K8sDrain
   , cascadeDecisionFromDrainResult
   )
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
+import Prodbox.Lifecycle.ResidueStatus qualified as Residue
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Naming
   ( boundedResourceName
@@ -289,6 +290,8 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
+import Prodbox.Secret.Derive qualified
+import Prodbox.Secret.Wire qualified
 import Prodbox.Service
   ( RedisError (..)
   , ServiceError (..)
@@ -2393,6 +2396,85 @@ main = mainWithSuite "prodbox-unit" $ do
       let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0xff)
       show seed `shouldBe` "MasterSeed <redacted>"
 
+  describe "Sprint 2.19 gateway secret-endpoint wire types" $ do
+    it "DeriveResponse JSON round-trips through encode/decode" $ do
+      let response =
+            Prodbox.Secret.Wire.DeriveResponse
+              { Prodbox.Secret.Wire.deriveResponseContext = "patroni:keycloak:keycloak:app"
+              , Prodbox.Secret.Wire.deriveResponseDerived = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+              , Prodbox.Secret.Wire.deriveResponseEncoding = Prodbox.Secret.Wire.deriveEncodingBase64Url
+              }
+      Data.Aeson.eitherDecode (Data.Aeson.encode response)
+        `shouldBe` Right response
+
+    it "DeriveResponse encodes the wire shape doctrine 4 prescribes" $ do
+      let response =
+            Prodbox.Secret.Wire.DeriveResponse
+              { Prodbox.Secret.Wire.deriveResponseContext = "patroni:keycloak:keycloak:app"
+              , Prodbox.Secret.Wire.deriveResponseDerived = "abc"
+              , Prodbox.Secret.Wire.deriveResponseEncoding = Prodbox.Secret.Wire.deriveEncodingBase64Url
+              }
+          encoded = BL8.unpack (Data.Aeson.encode response)
+      encoded `shouldContain` "\"context\":\"patroni:keycloak:keycloak:app\""
+      encoded `shouldContain` "\"derived\":\"abc\""
+      encoded `shouldContain` "\"encoding\":\"base64url\""
+
+    it "deriveEncodingBase64Url pins the canonical encoding name" $
+      Prodbox.Secret.Wire.deriveEncodingBase64Url `shouldBe` "base64url"
+
+    it "EnsureNamespaceRequest JSON round-trips through encode/decode" $ do
+      let request =
+            Prodbox.Secret.Wire.EnsureNamespaceRequest
+              { Prodbox.Secret.Wire.ensureNamespaceRequestNamespace = "keycloak"
+              , Prodbox.Secret.Wire.ensureNamespaceRequestRelease = "keycloak"
+              }
+      Data.Aeson.eitherDecode (Data.Aeson.encode request)
+        `shouldBe` Right request
+
+    it "EnsureNamespaceResponse JSON round-trips through encode/decode" $ do
+      let response =
+            Prodbox.Secret.Wire.EnsureNamespaceResponse
+              { Prodbox.Secret.Wire.ensureNamespaceResponseNamespace = "keycloak"
+              , Prodbox.Secret.Wire.ensureNamespaceResponseRelease = "keycloak"
+              , Prodbox.Secret.Wire.ensureNamespaceResponseSecrets =
+                  [ Prodbox.Secret.Wire.SecretSha256Entry "prodbox-keycloak-pg-pguser-keycloak" "abc123"
+                  , Prodbox.Secret.Wire.SecretSha256Entry "keycloak-runtime" "def456"
+                  ]
+              }
+      Data.Aeson.eitherDecode (Data.Aeson.encode response)
+        `shouldBe` Right response
+
+    it "SecretSha256Entry never serializes plaintext (only name + sha256 are members)" $ do
+      let entry = Prodbox.Secret.Wire.SecretSha256Entry "keycloak-runtime" "deadbeef"
+          encoded = BL8.unpack (Data.Aeson.encode entry)
+      encoded `shouldBe` "{\"name\":\"keycloak-runtime\",\"sha256\":\"deadbeef\"}"
+
+    it "deriveUrl produces the canonical URL with URL-encoded context query parameter" $
+      let endpoint =
+            PeerEndpoint
+              { peerNodeId = "node-a"
+              , peerStableDnsName = "node-a.example.test"
+              , peerRestHost = "127.0.0.1"
+              , peerRestPort = 8080
+              , peerSocketHost = "127.0.0.1"
+              , peerSocketPort = 8081
+              }
+       in Prodbox.Gateway.Client.deriveUrl endpoint "patroni:keycloak:keycloak:app"
+            `shouldBe` "http://127.0.0.1:8080/v1/secret/derive?context=patroni%3Akeycloak%3Akeycloak%3Aapp"
+
+    it "ensureNamespaceUrl produces the canonical URL without query parameters" $
+      let endpoint =
+            PeerEndpoint
+              { peerNodeId = "node-a"
+              , peerStableDnsName = "node-a.example.test"
+              , peerRestHost = "127.0.0.1"
+              , peerRestPort = 8080
+              , peerSocketHost = "127.0.0.1"
+              , peerSocketPort = 8081
+              }
+       in Prodbox.Gateway.Client.ensureNamespaceUrl endpoint
+            `shouldBe` "http://127.0.0.1:8080/v1/secret/ensure-namespace"
+
   describe "Sprint 4.17 destroy-path credential fallback" $ do
     it "AwsEks.credentialsConfigured rejects creds with an empty access_key_id" $
       let empty =
@@ -2433,6 +2515,117 @@ main = mainWithSuite "prodbox-unit" $ do
               , region = "us-west-2"
               }
        in AwsEks.credentialsConfigured full `shouldBe` True
+
+  describe "Sprint 4.16 ResidueStatus typed predicates" $ do
+    it "residuePresentByFileExistence returns ResidueAbsent when the file is missing" $
+      Residue.residuePresentByFileExistence "aws-eks" "/some/snapshot.json" False
+        `shouldBe` Residue.ResidueAbsent
+
+    it
+      "residuePresentByFileExistence returns ResiduePresent with file-existence evidence when the file is present"
+      $ Residue.residuePresentByFileExistence "aws-eks" "/some/snapshot.json" True
+        `shouldBe` Residue.ResiduePresent
+          Residue.ResidueDetails
+            { Residue.residueEvidence = "file-existence: /some/snapshot.json"
+            , Residue.residueStackName = "aws-eks"
+            }
+
+    it "isResidueAbsent is the only constructor that matches absent" $ do
+      Residue.isResidueAbsent Residue.ResidueAbsent `shouldBe` True
+      Residue.isResidueAbsent (Residue.ResiduePresent residueFixtureDetails) `shouldBe` False
+      Residue.isResidueAbsent (Residue.ResidueUnreachable residueFixtureMinioReason) `shouldBe` False
+
+    it "isResiduePresent is the only constructor that matches present" $ do
+      Residue.isResiduePresent (Residue.ResiduePresent residueFixtureDetails) `shouldBe` True
+      Residue.isResiduePresent Residue.ResidueAbsent `shouldBe` False
+      Residue.isResiduePresent (Residue.ResidueUnreachable residueFixtureMinioReason) `shouldBe` False
+
+    it "isResidueUnreachable is the only constructor that matches unreachable" $ do
+      Residue.isResidueUnreachable (Residue.ResidueUnreachable residueFixtureMinioReason) `shouldBe` True
+      Residue.isResidueUnreachable Residue.ResidueAbsent `shouldBe` False
+      Residue.isResidueUnreachable (Residue.ResiduePresent residueFixtureDetails) `shouldBe` False
+
+    it "per-run treats unreachable as absent (graceful MinIO-down degradation)" $ do
+      Residue.isResiduePresentOrUnknownPerRun (Residue.ResidueUnreachable residueFixtureMinioReason)
+        `shouldBe` False
+      Residue.isResiduePresentOrUnknownPerRun Residue.ResidueAbsent `shouldBe` False
+      Residue.isResiduePresentOrUnknownPerRun (Residue.ResiduePresent residueFixtureDetails)
+        `shouldBe` True
+
+    it "long-lived treats unreachable as still-present (refuse when S3 cannot be queried)" $ do
+      Residue.isResiduePresentOrUnknownLongLived (Residue.ResidueUnreachable residueFixtureS3Reason)
+        `shouldBe` True
+      Residue.isResiduePresentOrUnknownLongLived Residue.ResidueAbsent `shouldBe` False
+      Residue.isResiduePresentOrUnknownLongLived (Residue.ResiduePresent residueFixtureDetails)
+        `shouldBe` True
+
+    it "renderResidueStatus produces operator-readable evidence per constructor" $ do
+      Residue.renderResidueStatus Residue.ResidueAbsent `shouldBe` "absent"
+      Residue.renderResidueStatus (Residue.ResiduePresent residueFixtureDetails)
+        `shouldBe` "present (aws-eks; evidence: file-existence: /some/snapshot.json)"
+      Residue.renderResidueStatus (Residue.ResidueUnreachable residueFixtureMinioReason)
+        `shouldBe` "unreachable (MinIO backend unreachable: connection refused)"
+
+    it "renderResidueUnreachableReason discriminates the four reason constructors" $ do
+      Residue.renderResidueUnreachableReason (Residue.ResidueBackendMinioUnreachable "x")
+        `shouldBe` "MinIO backend unreachable: x"
+      Residue.renderResidueUnreachableReason (Residue.ResidueBackendS3Unreachable "y")
+        `shouldBe` "S3 backend unreachable: y"
+      Residue.renderResidueUnreachableReason (Residue.ResidueQueryFailed "z")
+        `shouldBe` "backend query failed: z"
+      Residue.renderResidueUnreachableReason (Residue.ResidueQueryNotImplemented "ev")
+        `shouldBe` "source-of-truth query not yet implemented (ev)"
+
+    it "renderResidueDetails includes both stack name and evidence string" $
+      Residue.renderResidueDetails residueFixtureDetails
+        `shouldBe` "aws-eks; evidence: file-existence: /some/snapshot.json"
+
+    it "ResidueStatus values are Eq-comparable by constructor and payload" $ do
+      (Residue.ResidueAbsent == Residue.ResidueAbsent) `shouldBe` True
+      (Residue.ResiduePresent residueFixtureDetails == Residue.ResiduePresent residueFixtureDetails)
+        `shouldBe` True
+      (Residue.ResiduePresent residueFixtureDetails == Residue.ResidueAbsent) `shouldBe` False
+      ( Residue.ResidueUnreachable residueFixtureMinioReason
+          == Residue.ResidueUnreachable residueFixtureS3Reason
+        )
+        `shouldBe` False
+
+    it "residueAbsent constructor matches the ResidueAbsent value" $
+      Residue.residueAbsent `shouldBe` Residue.ResidueAbsent
+
+  describe "Sprint 4.17 cascade per-run inventory" $ do
+    it "all-absent produces an empty inventory (cascade skips per-run destroys)" $
+      perRunCascadeInventory Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent
+        `shouldBe` []
+
+    it "all-present produces every per-run destroy in canonical order" $
+      map fst (perRunCascadeInventory residueFixturePresent residueFixturePresent residueFixturePresent)
+        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+
+    it "all-present pairs each stack with its PulumiCommand" $
+      perRunCascadeInventory residueFixturePresent residueFixturePresent residueFixturePresent
+        `shouldBe` [ ("aws-eks", PulumiEksDestroy True (PlanOptions False Nothing))
+                   , ("aws-eks-subzone", PulumiAwsSubzoneDestroy True (PlanOptions False Nothing))
+                   , ("aws-test", PulumiTestDestroy True (PlanOptions False Nothing))
+                   ]
+
+    it "only-middle-present preserves the canonical ordering position" $
+      map fst (perRunCascadeInventory Residue.ResidueAbsent residueFixturePresent Residue.ResidueAbsent)
+        `shouldBe` ["aws-eks-subzone"]
+
+    it "only-eks-present yields a single aws-eks destroy" $
+      map fst (perRunCascadeInventory residueFixturePresent Residue.ResidueAbsent Residue.ResidueAbsent)
+        `shouldBe` ["aws-eks"]
+
+    it "only-test-present yields a single aws-test destroy" $
+      map fst (perRunCascadeInventory Residue.ResidueAbsent Residue.ResidueAbsent residueFixturePresent)
+        `shouldBe` ["aws-test"]
+
+    it "ResidueUnreachable on any per-run stack is treated as absent (per-run lifecycle class)" $ do
+      let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
+      perRunCascadeInventory minioDown minioDown minioDown `shouldBe` []
+      map fst (perRunCascadeInventory residueFixturePresent minioDown residueFixturePresent)
+        `shouldBe` ["aws-eks", "aws-test"]
 
   describe "gateway commit-log dispositions" $ do
     it "computes node disposition from claim/yield events in chronological order" $ do
@@ -3959,6 +4152,26 @@ assertSkipIsSuccess (label, result) = case cascadeDecisionFromDrainResult result
   CascadeAbort reason ->
     expectationFailure
       (label ++ " must map to CascadeContinue but got CascadeAbort: " ++ reason)
+
+-- | Sprint 4.16 test fixtures.
+residueFixtureDetails :: Residue.ResidueDetails
+residueFixtureDetails =
+  Residue.ResidueDetails
+    { Residue.residueEvidence = "file-existence: /some/snapshot.json"
+    , Residue.residueStackName = "aws-eks"
+    }
+
+residueFixtureMinioReason :: Residue.ResidueUnreachableReason
+residueFixtureMinioReason = Residue.ResidueBackendMinioUnreachable "connection refused"
+
+residueFixtureS3Reason :: Residue.ResidueUnreachableReason
+residueFixtureS3Reason = Residue.ResidueBackendS3Unreachable "credentials missing"
+
+-- | Sprint 4.17 helper fixture: stack-present value with placeholder
+-- details, suitable for cascade-inventory tests where the stack name
+-- is asserted at the consumer rather than inside the fixture.
+residueFixturePresent :: Residue.ResidueStatus
+residueFixturePresent = Residue.ResiduePresent residueFixtureDetails
 
 pulumiStateBackendDhallFragment :: String
 pulumiStateBackendDhallFragment =

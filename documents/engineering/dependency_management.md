@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: README.md, CLAUDE.md, DEVELOPMENT_PLAN/README.md, documents/engineering/README.md, documents/engineering/haskell_code_guide.md
+**Referenced by**: README.md, AGENTS.md, CLAUDE.md, DEVELOPMENT_PLAN/system-components.md, DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md, DEVELOPMENT_PLAN/phase-0-planning-documentation.md, DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md, DEVELOPMENT_PLAN/phase-2-gateway-dns.md, DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md, DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md, documents/engineering/README.md, documents/engineering/cli_command_surface.md, documents/engineering/haskell_code_guide.md, documents/engineering/pure_fp_standards.md
 
 > **Purpose**: Define current dependency-management doctrine for the Haskell `prodbox` repository.
 
@@ -30,8 +30,9 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   Debian architecture because the in-cluster gateway daemon shells out to `aws route53 ...` for
   DNS writes. The supported custom-image publish path uses ordinary host-native `docker build`
   plus `docker push` to the canonical Harbor endpoint `127.0.0.1:30080`.
-- Pulumi programs are YAML-based under `pulumi/aws-eks/` and `pulumi/aws-test/` only and do not
-  introduce a Python runtime dependency.
+- Pulumi programs are YAML-based under `pulumi/aws-eks/`, `pulumi/aws-eks-subzone/`,
+  `pulumi/aws-test/`, and `pulumi/aws-ses/` only and do not introduce a Python runtime
+  dependency.
 
 ## 2. Lock File Policy
 

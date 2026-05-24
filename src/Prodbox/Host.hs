@@ -12,6 +12,7 @@ module Prodbox.Host
   , runHostCommand
   , gatewayNodePortFirewallRuleArgs
   , gatewayNodePortFirewallCheckArgs
+  , gatewayNodePortFirewallDeleteArgs
   , renderFirewallRuleAction
   )
 where
@@ -150,6 +151,7 @@ runHostCommand repoRoot command =
     HostInfo -> runHostInfo repoRoot
     HostFirewall -> runSingleEffect repoRoot "Check firewall status" (commandEffect "ufw" ["status"] repoRoot)
     HostFirewallGatewayRestrict port -> runHostFirewallGatewayRestrict port
+    HostFirewallGatewayUnrestrict port -> runHostFirewallGatewayUnrestrict port
     HostPublicEdge substrate -> runHostPublicEdge repoRoot substrate
 
 runHostPublicEdge :: FilePath -> Substrate -> IO ExitCode
@@ -1208,6 +1210,14 @@ gatewayNodePortFirewallCheckArgs :: Int -> [String]
 gatewayNodePortFirewallCheckArgs port =
   "-C" : drop 1 (gatewayNodePortFirewallRuleArgs port)
 
+-- | iptables argv for removing the gateway-NodePort restriction. Mirrors
+-- 'gatewayNodePortFirewallRuleArgs' verbatim except for the leading verb
+-- so the rule the install path appended is the same rule the delete
+-- path removes (matched on the @-m comment --comment@ tag).
+gatewayNodePortFirewallDeleteArgs :: Int -> [String]
+gatewayNodePortFirewallDeleteArgs port =
+  "-D" : drop 1 (gatewayNodePortFirewallRuleArgs port)
+
 -- | The comment tag attached to the rule so operators can grep for it and
 -- so the install path can recognize an existing rule. Stable across
 -- versions per the contract in secret_derivation_doctrine.md §5.
@@ -1268,5 +1278,78 @@ runHostFirewallGatewayRestrict port = do
                             ++ show port
                             ++ ": "
                             ++ renderFirewallRuleAction FirewallRuleInstalled
+                        )
+                      pure ExitSuccess
+
+-- | Symmetric removal path for the gateway NodePort restriction. Probes
+-- via @iptables -C@ first; if the rule is absent it reports
+-- @FirewallRuleNotPresent@ and exits 0; otherwise it invokes @iptables
+-- -D@ to remove the rule and reports @FirewallRuleRemoved@. Idempotent:
+-- safe to call from @prodbox rke2 delete --yes@ regardless of whether
+-- the rule was previously installed.
+runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode
+runHostFirewallGatewayUnrestrict port = do
+  iptablesExists <- findExecutable "iptables"
+  case iptablesExists of
+    Nothing -> do
+      -- Symmetric to the install path's missing-iptables error, but
+      -- treat the delete path as success-with-reason: a host without
+      -- iptables cannot have the rule installed, so there is nothing
+      -- to remove.
+      writeOutputLine
+        ( "Gateway NodePort firewall rule on port "
+            ++ show port
+            ++ ": "
+            ++ renderFirewallRuleAction FirewallRuleNotPresent
+            ++ " (iptables binary absent)"
+        )
+      pure ExitSuccess
+    Just _ -> do
+      checkResult <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "iptables"
+            , subprocessArguments = gatewayNodePortFirewallCheckArgs port
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
+            }
+      case checkResult of
+        Failure err ->
+          failWith ("failed to probe iptables for gateway NodePort rule: " ++ err)
+        Success checkOutput ->
+          case processExitCode checkOutput of
+            ExitFailure _ -> do
+              writeOutputLine
+                ( "Gateway NodePort firewall rule on port "
+                    ++ show port
+                    ++ ": "
+                    ++ renderFirewallRuleAction FirewallRuleNotPresent
+                )
+              pure ExitSuccess
+            ExitSuccess -> do
+              deleteResult <-
+                captureSubprocessResult
+                  Subprocess
+                    { subprocessPath = "iptables"
+                    , subprocessArguments = gatewayNodePortFirewallDeleteArgs port
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Nothing
+                    }
+              case deleteResult of
+                Failure err ->
+                  failWith ("failed to remove gateway NodePort iptables rule: " ++ err)
+                Success deleteOutput ->
+                  case processExitCode deleteOutput of
+                    ExitFailure _ ->
+                      failWith
+                        ( "iptables refused to remove the gateway NodePort rule: "
+                            ++ trim (processStderr deleteOutput)
+                        )
+                    ExitSuccess -> do
+                      writeOutputLine
+                        ( "Gateway NodePort firewall rule on port "
+                            ++ show port
+                            ++ ": "
+                            ++ renderFirewallRuleAction FirewallRuleRemoved
                         )
                       pure ExitSuccess

@@ -9,6 +9,7 @@ module Prodbox.Infra.AwsSesStack
   , saveAwsSesStackSnapshot
   , clearAwsSesStackSnapshot
   , awsSesStackHasLiveResources
+  , awsSesStackResidueStatus
   , assertNoAwsSesStackResidue
   , migrateAwsSesStackBackend
   , renderAwsSesStackReport
@@ -62,6 +63,7 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.SmtpPassword (derivedSesSmtpPassword)
 import Prodbox.Settings
@@ -114,9 +116,25 @@ awsSesSnapshotPath repoRoot = awsSesStateDir repoRoot </> "stack-snapshot.json"
 -- @applyAwsTeardown@ refuse-path still consults this predicate so the
 -- operational IAM user is not deleted while SES (which depends on
 -- operational credentials for its eventual destroy) is still live.
+-- Kept as a thin alias over 'awsSesStackResidueStatus' for callers
+-- that have not yet migrated to the typed 'ResidueStatus' surface
+-- introduced by Sprint 4.16. Long-lived semantics: an unreachable S3
+-- backend is treated as still-present (refusal) because the operator
+-- cannot prove the stack is gone.
 awsSesStackHasLiveResources :: FilePath -> IO Bool
 awsSesStackHasLiveResources repoRoot =
-  doesFileExist (awsSesSnapshotPath repoRoot)
+  ResidueStatus.isResiduePresentOrUnknownLongLived
+    <$> awsSesStackResidueStatus repoRoot
+
+-- | Sprint 4.16 typed residue status. Today this adapter wraps the
+-- legacy file-existence check; a later sprint replaces it with a
+-- source-of-truth @pulumi stack ls --json@ query against the long-lived
+-- S3 backend declared by 'Prodbox.Infra.LongLivedPulumiBackend'.
+awsSesStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
+awsSesStackResidueStatus repoRoot = do
+  let snapshotPath = awsSesSnapshotPath repoRoot
+  exists <- doesFileExist snapshotPath
+  pure (ResidueStatus.residuePresentByFileExistence awsSesStackName snapshotPath exists)
 
 data AwsSesStackSnapshot = AwsSesStackSnapshot
   { sesSnapshotStackName :: String

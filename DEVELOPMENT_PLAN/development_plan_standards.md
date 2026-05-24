@@ -3,10 +3,20 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Referenced by**: [README.md](README.md), [system-components.md](system-components.md),
+**Referenced by**: [../README.md](../README.md), [README.md](README.md),
+[00-overview.md](00-overview.md), [system-components.md](system-components.md),
 [substrates.md](substrates.md),
 [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md),
+[phase-0-planning-documentation.md](phase-0-planning-documentation.md),
+[phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md),
+[phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md),
+[phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [../documents/documentation_standards.md](../documents/documentation_standards.md),
+[../documents/engineering/aws_integration_environment_doctrine.md](../documents/engineering/aws_integration_environment_doctrine.md),
+[../documents/engineering/cli_command_surface.md](../documents/engineering/cli_command_surface.md),
+[../documents/engineering/integration_fixture_doctrine.md](../documents/engineering/integration_fixture_doctrine.md),
+[../documents/engineering/prerequisite_doctrine.md](../documents/engineering/prerequisite_doctrine.md),
+[../documents/engineering/unit_testing_policy.md](../documents/engineering/unit_testing_policy.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
 
 > **Purpose**: Define the maintenance rules for the prodbox development plan so the repository

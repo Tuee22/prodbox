@@ -100,6 +100,7 @@ data HostCommand
   | HostInfo
   | HostFirewall
   | HostFirewallGatewayRestrict Int
+  | HostFirewallGatewayUnrestrict Int
   | HostPublicEdge Substrate
   deriving (Eq, Show)
 

@@ -32,6 +32,7 @@ prodbox
     info
     firewall
       gateway-restrict
+      gateway-unrestrict
     public-edge
   k8s
     health

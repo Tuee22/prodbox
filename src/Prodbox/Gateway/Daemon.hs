@@ -794,6 +794,31 @@ handleRestClient sock env = do
       "/v1/state" -> do
         state <- readTVarIO (envState env)
         sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
+      path
+        | "/v1/secret/derive" `isPrefixOf` path ->
+            -- Sprint 2.19: the derive endpoint exists at the wire-contract
+            -- level but the master-seed read path through MinIO has not yet
+            -- landed. Per @secret_derivation_doctrine.md §8@, a daemon that
+            -- cannot read or create the master seed serves 503 here until
+            -- the MinIO IAM bootstrap closure lands.
+            sendHttpResponse
+              sock
+              503
+              "application/json"
+              ( "{\"error\":\"master-seed unavailable\",\"reason\":\"Prodbox.Secret.MasterSeed not yet wired (Sprint 2.19 remaining); see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
+              )
+        | path == "/v1/secret/ensure-namespace" ->
+            -- Sprint 2.19: same wire-contract placeholder as
+            -- /v1/secret/derive above. The route is reserved at the
+            -- daemon-router level so callers receive a deterministic
+            -- "not yet wired" response with stable JSON shape rather
+            -- than a generic 404.
+            sendHttpResponse
+              sock
+              503
+              "application/json"
+              ( "{\"error\":\"master-seed unavailable\",\"reason\":\"Prodbox.Secret.MasterSeed not yet wired (Sprint 2.19 remaining); see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
+              )
       _ ->
         sendHttpResponse sock 404 "text/plain" "not found\n"
 

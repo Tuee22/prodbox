@@ -46,6 +46,7 @@ library
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
         Prodbox.Infra.LongLivedPulumiBackend
+        Prodbox.Infra.StackOutputs
         Prodbox.CLI.Nuke
         Prodbox.Lifecycle.K8sDrain
         Prodbox.Lifecycle.Preconditions
@@ -75,6 +76,7 @@ library
         Prodbox.Retry
         Prodbox.Result
         Prodbox.Secret.Derive
+        Prodbox.Secret.MasterSeed
         Prodbox.Secret.Wire
         Prodbox.Service
         Prodbox.Settings

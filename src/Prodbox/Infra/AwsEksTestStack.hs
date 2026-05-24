@@ -3,6 +3,7 @@
 module Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
   , awsEksTestStackName
+  , awsEksCanonicalClusterName
   , awsEksTestKubeconfigPath
   , ensureAwsEksTestStackResources
   , destroyAwsEksTestStack

@@ -352,9 +352,10 @@ stderr through `src/Prodbox/Gateway/Logging.hs`, backed by `co-log`. Log sites p
 through `field`; daemon-path lint rejects inline log-object construction in log calls.
 
 Gateway log filtering reads `envLiveConfig` at each log site. The configured log level is seeded
-from launch/config precedence at startup and subsequent `SIGHUP` reloads update the live log
-threshold for later log calls without restart. The `prodbox-daemon-lifecycle` stanza verifies the
-stderr JSON envelope and the hot-reload log-level path.
+from the Dhall `--config` file at startup and subsequent file-watch reloads (per
+[config_doctrine.md §7](./config_doctrine.md#7-file-watch-reload-trigger)) update the live
+log threshold for later log calls without restart. The `prodbox-daemon-lifecycle` stanza
+verifies the stderr JSON envelope and the file-watch-driven log-level path.
 
 ### Route53DnsWriteClient
 
@@ -526,7 +527,9 @@ Containerization is first-class for integration/runtime image publishing:
 - Harbor is the supported source for the gateway workload image, and the host-arch variant is
   pulled back into local Docker before import into the RKE2 containerd cache
 - Kubernetes pod integration tests run against that Harbor-published image by default
-- `PRODBOX_GATEWAY_IMAGE` remains an override for explicit image pinning/testing
+- Image pinning for explicit testing is expressed via the operator-authored Dhall config
+  (`gateway.image_override` field), not via environment variables — see
+  [config_doctrine.md](./config_doctrine.md)
 
 See [Local Registry Pipeline](./local_registry_pipeline.md) for Harbor install,
 native-host-architecture publish flow, explicit public-image reconcile, and RKE2 registry behavior.
@@ -729,8 +732,9 @@ the top-level supervisor, which begins drain and exits.
   prescribes `co-log` as the logger library. `putStrLn` is forbidden in
   daemon code paths.
 - Log levels are first-class: `debug`, `info`, `warn`, `error`. Daemons
-  start at `info` by default; the level is set by `BootConfig` at startup
-  and refreshed from `LiveConfig` on every hot reload.
+  start at `info` by default; the level is set by the Dhall `--config`
+  file at startup and refreshed from `LiveConfig` on every file-watch
+  reload (see [config_doctrine.md](./config_doctrine.md)).
 - The logger lives in `Env`. All daemon code paths take `MonadReader Env`
   (or receive `Env` explicitly) so log calls attach contextual fields
   without rethreading.
@@ -828,7 +832,7 @@ inject observable variants.
   production).
 - Tests that rely on `threadDelay` instead of hooks for timing.
 
-### Configuration: Dhall file with mandatory hot reload
+### Configuration: Dhall file with mandatory file-watch reload
 
 Configuration is a single `.dhall` file on the filesystem. YAML, JSON, and
 TOML for daemon config are forbidden.
@@ -856,35 +860,31 @@ data LiveConfig = LiveConfig
   }
 ```
 
-Only `LiveConfig` is hot-reloadable. Changes to `BootConfig` (listening
-port, pool sizes, schema version, etc.) require a restart; the reload pass
-rejects them: log at warn level, keep the old `BootConfig`, do not
-partially apply.
+Both classes survive; only the response to a change differs. `LiveConfig`
+fields hot-reload via atomic STM swap. `BootConfig` fields trigger a
+drain-and-exit so the kubelet (or other supervisor) restarts the process
+against the new file. The reload trigger, classification, and restart
+contract are owned by [config_doctrine.md](./config_doctrine.md) — this
+section defers to that SSoT for the operational details and only restates
+the contract relevant to the gateway daemon implementation:
 
-**Reload trigger.** SIGHUP is the single trigger. `kill -HUP <pid>` or
-`systemctl reload <unit>` initiates a reload. The signal handler enqueues a
-reload request onto a `TBQueue ()` consumed by a dedicated reload worker
-spawned with `withAsync`. `fsnotify`, `inotify`, and any other
-file-watcher mechanism are forbidden. Polling the file's `mtime` is
-forbidden.
-
-**Reload procedure** (the dedicated reload worker):
-
-```text
-1. Read the config file path from BootConfig (set once at startup).
-2. Call Dhall.inputFile to parse + type-check + decode in one step.
-3. If parse/typecheck/decode fails: log warn with the Dhall error, keep
-   current LiveConfig, emit a `config_reload_failed` log event.
-4. If decode succeeds but BootConfig fields differ from the running
-   BootConfig: log warn that those changes are ignored until restart, emit
-   a `config_boot_changes_ignored` event, still apply the LiveConfig
-   portion.
-5. Validate the schema version field. On mismatch: same handling as step 3.
-6. atomically (writeTVar envLiveConfig newLiveConfig).
-7. Emit a `config_reloaded` log event with a structured diff summary.
-8. Publish on an STM broadcast channel (`TChan` or `TBQueue`) so
-   subscribers that derive internal state from LiveConfig refresh.
-```
+- The daemon watches its `--config` path via filesystem-watch primitives
+  (the supported library is named by the implementing sprint). The same
+  `TBQueue ()` reload-worker the implementation already drains is fed by
+  the file watcher; the previously-supported SIGHUP signal handler is
+  removed. See [config_doctrine.md §7](./config_doctrine.md#7-file-watch-reload-trigger).
+- On detection of any change, the worker re-decodes the Dhall in-process
+  via `Dhall.inputFile auto`. Decode failures log
+  `config_reload_decode_failed` and leave the running config in place.
+- Decode success with LiveConfig-only diffs atomically swaps
+  `envLiveConfig` via STM and publishes on the existing broadcast
+  channel.
+- Decode success with any BootConfig diff logs
+  `config_reload_boot_change_detected`, calls the existing drain
+  machinery within `liveDrainDeadlineSeconds`, and exits with
+  `ExitSuccess`. Pod-level restart-on-exit is the supervisor's
+  responsibility, not the daemon's; see
+  [config_doctrine.md §8](./config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract).
 
 **Atomic swap discipline.** `envLiveConfig` is `TVar LiveConfig`. `IORef`
 for live config is forbidden. Workers read from the `TVar` at the start of
@@ -894,23 +894,20 @@ await/yield boundary is forbidden.
 ### CLI-to-daemon plumbing
 
 Daemon-launching commands follow the same `CommandSpec` discipline as
-everything else. Standard flags every daemon command accepts:
+everything else. The single startup-time CLI knob:
 
 - `--config <path>` — path to the `.dhall` config file. The daemon refuses
-  to start if the path does not exist or does not parse.
-- `--log-level <level>` — startup default only; the Dhall file overrides
-  this once read and continues to override across hot reloads.
-- `--port <int>` — startup-only override of the listening port; treated as
-  a `BootConfig` default that the Dhall file replaces.
-- `--foreground` is the default. Self-daemonization (`--detach`) is
-  forbidden; the supervisor (systemd, Kubernetes, Docker) owns the process
-  model.
+  to start if the path does not exist or does not parse. Foreground
+  execution is the only supported mode; the supervisor (systemd,
+  Kubernetes, Docker) owns the process model.
 
-Environment-variable overrides are limited to `BootConfig` startup
-defaults, namespaced `<PROJECT>_<SETTING>` (e.g. `MYTOOL_LOG_LEVEL`,
-`MYTOOL_CONFIG_PATH`). Precedence at startup: CLI flag > env var > Dhall
-file default > built-in default. Once the daemon is running, the Dhall
-file is the sole source of truth for `LiveConfig`.
+`--log-level`, `--port`, `--node-id`, `--foreground`, `--detach`, and
+similar runtime-override flags are not supported. Every value the daemon
+needs lives in the Dhall file at `--config`. Environment-variable
+precedence is forbidden on supported paths: no `PRODBOX_*` startup
+fallback, no `<PROJECT>_<SETTING>` override ladder. See
+[config_doctrine.md §10](./config_doctrine.md#10-forbidden-surfaces) for
+the authoritative forbidden-surface list.
 
 ### Daemon lifecycle tests
 

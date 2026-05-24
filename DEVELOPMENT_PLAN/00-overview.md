@@ -301,7 +301,7 @@ The reopened ranges close on the following sprint sets:
 | Per-run Pulumi state (MinIO-backed; survives cluster wipes via MinIO's PV under `.data/minio/...`) | `s3://prodbox-test-pulumi-backends?endpoint=127.0.0.1:39000` | Haskell Pulumi orchestration and AWS substrate helpers |
 | Gateway-owned secret-derivation MinIO bucket | `s3://prodbox?endpoint=127.0.0.1:39000` (master seed at `prodbox/master-seed`) | Gateway daemon (`prodbox-gateway` MinIO principal) |
 | Gateway runtime operations | `prodbox gateway start --config <path>|status --config <path>|config-gen <output-path> --node-id <node-id>` | Haskell gateway runtime |
-| Public workload runtime | `prodbox workload start` | Haskell runtime selected through `PRODBOX_WORKLOAD_MODE=api|websocket` for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
+| Public workload runtime | `prodbox workload start --config <path>` | Haskell runtime selected through the `workload.mode = Api \| Websocket` field of the mounted Dhall config per [config_doctrine.md](../documents/engineering/config_doctrine.md) (migration from `PRODBOX_WORKLOAD_MODE` env-var scheduled by Sprint 3.14) for the supported path-routed API and real-WebSocket surfaces behind the shared public hostname |
 | Gateway DNS writes | `dns_write_gate` | In-cluster Haskell gateway ownership and DNS-write gate for the single canonical public record |
 | DNS check | `prodbox dns check` | Haskell CLI |
 | Shared public-edge route catalog | `src/Prodbox/PublicEdge.hs` | Haskell-owned shared-host path catalog and issuer derivation for application and admin routes |
@@ -566,11 +566,14 @@ and `8.5`–`8.6` carry the remaining operator-driven live OIDC closure work.
   2.9–2.16, including the explicit daemon lifecycle with worker loops wrapped in
   `try`/`catch` + bounded retry-with-backoff, `/healthz` / `/readyz` / `/metrics` endpoints
   with response shapes captured as golden tests, the `BootConfig` / `LiveConfig` split with
-  `SIGHUP` hot reload and atomic-swap discipline on `envLiveConfig`, `co-log` structured
-  logging, test hooks in `Env`, the `prodbox-daemon-lifecycle` stanza asserting single
-  SIGTERM begins drain and second SIGTERM (or drain deadline) forces exit, the daemon CLI
-  plumbing (`--config`, `--log-level`, `--port`, `--foreground`) plus `PRODBOX_*` env-var
-  precedence rule, and the at-least-once event-processing module
+  mounted-Dhall file-watch reload and atomic-swap discipline on `envLiveConfig` (boot-field
+  changes drain and exit so the kubelet restarts the Pod; live-field changes hot-reload in
+  place; see [config_doctrine.md](../documents/engineering/config_doctrine.md)), `co-log`
+  structured logging, test hooks in `Env`, the `prodbox-daemon-lifecycle` stanza asserting
+  single SIGTERM begins drain and second SIGTERM (or drain deadline) forces exit, the
+  daemon CLI plumbing (`--config <path>` is the sole startup knob; `--log-level`,
+  `--port`, `--node-id`, `--foreground`, and `PRODBOX_*` env-var precedence are forbidden
+  per the config doctrine), and the at-least-once event-processing module
   (`src/Prodbox/Daemon/Events.hs`) introduced in Sprint 2.16 covering `StoredEvent`,
   `recordEvent`, `markEventProcessed`, `fetchUnprocessedEvents`, and the idempotent
   `EventHandler` precondition. Sprint 0.3 extends Sprints 2.9–2.12 with the audit-driven
@@ -578,13 +581,15 @@ and `8.5`–`8.6` carry the remaining operator-driven live OIDC closure work.
   external-side-effect resources (Sprint 2.9), the `envMetrics :: MetricsRegistry` typed
   daemon `Env` field backing `/metrics` (Sprint 2.10), the STM broadcast channel for
   `LiveConfig` subscribers plus the prescribed on-disk Dhall file shape (Sprint 2.11), and
-  the daemon log level refreshed from `LiveConfig` on every hot reload (Sprint 2.12).
+  the daemon log level refreshed from `LiveConfig` on every file-watch reload (Sprint 2.12).
   Sprint 0.4 extends Sprints 2.9, 2.11, 2.12, 2.13, and 2.14 with the round-3 residue:
   the enumerated structured-concurrency primitive set `withAsync` / `race` /
-  `concurrently` / `replicateConcurrently` (Sprint 2.9); the forbidden reload triggers
-  `fsnotify`, `inotify`, and `mtime` polling, the typed Dhall field
-  `schemaVersion : Natural` with mismatch-as-parse-failure, and the eight-step reload
-  procedure bound step-by-step (Sprint 2.11); the typed field helper
+  `concurrently` / `replicateConcurrently` (Sprint 2.9); the file-watch reload trigger
+  (replacing the previously-scheduled forbid-fsnotify / forbid-inotify / forbid-mtime
+  clause, superseded by [config_doctrine.md](../documents/engineering/config_doctrine.md)
+  and tracked in legacy-tracking-for-deletion.md), the typed Dhall field
+  `schemaVersion : Natural` with mismatch-as-parse-failure, and the reload procedure
+  bound step-by-step (Sprint 2.11); the typed field helper
   `field :: (Aeson.ToJSON a) => Text -> a -> (Text, Aeson.Value)` plus `logStructured`,
   `logDebug`, `logInfo`, `logWarn`, and `logError` wrappers (Sprint 2.12); the
   production-no-op / test-injected hook contract pattern (Sprint 2.13); and the

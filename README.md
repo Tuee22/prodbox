@@ -42,9 +42,15 @@ validation environments.
   remains the identity provider, Envoy Gateway `SecurityPolicy` owns the browser-auth path, Envoy
   validates the shipped JWT API routes locally, and the Redis plus WebSocket boundaries are
   defined there.
-- The supported configuration contract is repository-root `prodbox-config.dhall` decoded directly
-  into Haskell types. `prodbox-config.json` and `prodbox config compile` are not part of the
-  supported interface.
+- The supported configuration contract is described by
+  [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md):
+  every `prodbox` binary instance — host CLI and in-cluster gateway daemon — takes its
+  configuration from exactly one Dhall file passed via `--config <path>`, decoded
+  in-process by the native Haskell `dhall` library. On the host that file is the
+  repository-root `prodbox-config.dhall`. In the cluster it is a mounted ConfigMap that
+  may import credentials from a sibling Secret-mounted Dhall fragment. `prodbox-config.json`,
+  `prodbox config compile`, and `PRODBOX_*` environment-variable precedence are not part
+  of the supported interface.
 - The supported Pulumi scope is limited to the AWS validation stacks under `pulumi/aws-eks/`,
   `pulumi/aws-eks-subzone/`, `pulumi/aws-test/`, and `pulumi/aws-ses/`; local-cluster platform
   ownership does not use a root Pulumi project. The test harness is the exclusive owner of every
@@ -251,13 +257,19 @@ What this does:
 
 ## Configuration
 
-All supported configuration is authored in the repository-root `prodbox-config.dhall` using the
-schema in `prodbox-config-types.dhall`.
+All supported configuration is authored in Dhall and decoded in-process by the native
+Haskell `dhall` library. The host CLI loads the repository-root `prodbox-config.dhall`
+against the schema in `prodbox-config-types.dhall`; the in-cluster gateway daemon and
+workload Pods load a Dhall file mounted from a ConfigMap (with credentials imported from
+a sibling Secret). The complete sourcing, mount, and reload contract lives in
+[documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 
 - `prodbox config setup` writes and validates Dhall directly.
 - `prodbox config show` renders the decoded Haskell settings model, masking secrets by default.
 - `prodbox config validate` verifies the required fields and binding rules.
-- No supported command materializes `prodbox-config.json`.
+- No supported command materializes `prodbox-config.json` or any other JSON projection.
+- No supported `prodbox` binary reads `PRODBOX_*` environment variables for runtime
+  configuration; `--config <path>` is the sole startup-time CLI knob.
 - `prodbox config show --show-secrets` reveals full secret values when you explicitly need them.
 
 ### Supported Onboarding

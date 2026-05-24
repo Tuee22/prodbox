@@ -78,9 +78,13 @@ prodbox check-code
   `src/Prodbox/Gateway/Logging.hs`, with gateway and workload daemon entrypoints writing JSON
   log lines to stderr.
 - Repository config decoding is operator-authored `Dhall -> Haskell types`, performed in-process
-  by the native `dhall` Haskell library (`Dhall.inputFile`) in `src/Prodbox/Settings.hs`. The
-  decoder produces typed Haskell settings values directly; `prodbox-config.json` is never
-  materialized on the supported path.
+  by the native `dhall` Haskell library (`Dhall.inputFile`) in `src/Prodbox/Settings.hs` and
+  (per [config_doctrine.md](./config_doctrine.md)) in the gateway daemon's
+  `src/Prodbox/Gateway/Settings.hs`. The decoder produces typed Haskell settings values
+  directly; `prodbox-config.json` and any other JSON projection of the Dhall are never
+  materialized on the supported path. Under GHC `9.14.1`, `cabal.project` carries
+  `allow-newer` clauses for `dhall`'s transitive dependencies so the pinned `dhall ^>=1.42`
+  bound continues to build cleanly.
 - Gateway runtime: network, TLS, concurrency, hashing, and JSON support required by
   `src/Prodbox/Gateway/`
 - Test suites: `tasty`, `tasty-hunit`, `tasty-quickcheck`, `tasty-golden`, `temporary`, and the

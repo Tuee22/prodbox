@@ -225,6 +225,14 @@ Why this matters:
   interpreter. The builder is total; the interpreter executes what it's given.
 - Returning subprocess output through `IORef`, `MVar`, or other shared mutable
   state instead of the typed `ProcessOutput` record.
+- Reading configuration from environment variables. `lookupEnv`, `getEnv`, and
+  `getEnvironment` from `System.Environment` are linted out of supported config-
+  loading paths (host `Settings.hs`, daemon `Gateway/Settings.hs`, workload
+  entrypoint). Every runtime configuration value lives in the Dhall file at
+  `--config`. The k8s Pod environment may still carry runtime metadata (Pod
+  name, namespace) that the binary does not read; the lint rule is scoped to
+  the config-loading paths. See
+  [config_doctrine.md](./config_doctrine.md).
 
 ## Smart Constructors for Paired Resources
 

@@ -213,8 +213,13 @@ secrets. The reconcile order:
    `prodbox` bucket exists, the `prodbox-gateway` user exists, and the policy granting
    that user `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `prodbox/` is applied.
    This step uses MinIO root credentials and runs once per cluster.
-5. Gateway daemon starts; reads `gateway-minio-creds`; connects to MinIO; reads
-   `prodbox/master-seed` if present, or creates it under a list-then-put guard if absent.
+5. Gateway daemon starts. It reads its mounted Dhall config at
+   `/etc/gateway/config.dhall` per [config_doctrine.md](./config_doctrine.md), which
+   imports `/etc/gateway/secrets/minio.dhall` (sourced from the `gateway-minio-creds`
+   Secret mounted as a Dhall file) and the canonical MinIO endpoint URL from the same
+   Dhall config. It then connects to MinIO and reads `prodbox/master-seed` if present, or
+   creates it under a list-then-put guard if absent. No `MINIO_*` environment variable is
+   read on the supported path.
 6. Gateway daemon becomes ready (`/readyz` reports 200); the host iptables rule
    restricting the NodePort to `127.0.0.1` is installed by reconcile.
 7. Chart deploys proceed. Each chart's pre-install Job POSTs to
@@ -231,6 +236,7 @@ authoritative references for the inverse (teardown) order.
 |---|---|---|
 | Master seed missing and MinIO writable | first-ever reconcile, or first reconcile after `.data/` wipe | gateway daemon creates seed under list-then-put; subsequent calls succeed |
 | Master seed missing and MinIO unwritable | misconfigured MinIO IAM, or write race | gateway daemon refuses to serve `/v1/secret/*` until resolved; `/readyz` reports `503` with reason |
+| Dhall `--config` file missing or fails to decode | misconfigured ConfigMap, malformed Dhall, missing Secret import | gateway daemon refuses to start (initial decode); after startup, file-watch reload classifies the change as `config_reload_decode_failed`, leaves the in-memory config in place, and `/v1/secret/*` continues to serve from the last successfully-decoded config per [config_doctrine.md §8](./config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract) |
 | Master seed present, derivation produces value that mismatches `pg_authid` | preserved `.data/` from an incompatible seed (e.g., seed regenerated while data preserved) | `shouldResetPatroniStorage` in `Prodbox.Lib.ChartPlatform` reports a loud failure naming the namespace/role pair; operator must either restore the matching `.data/` or wipe the affected `.data/<ns>/<release>/` subtree |
 | Gateway service unreachable from host | iptables rule misconfigured, NodePort not exposed, daemon not running | host CLI returns a structured error from `Prodbox.Gateway.Client`; never silently falls back to a host-side cache (none exists) |
 

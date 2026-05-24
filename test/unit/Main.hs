@@ -235,6 +235,7 @@ import Prodbox.Infra.LongLivedPulumiBackend
 import Prodbox.Infra.MinioBackend
   ( parseDeletedMinioExportHostPath
   )
+import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.K8s
   ( parseKubectlObjectNames
   )
@@ -291,6 +292,7 @@ import Prodbox.Retry
   , retryDelayMicros
   )
 import Prodbox.Secret.Derive qualified
+import Prodbox.Secret.MasterSeed qualified as MasterSeed
 import Prodbox.Secret.Wire qualified
 import Prodbox.Service
   ( RedisError (..)
@@ -2626,6 +2628,293 @@ main = mainWithSuite "prodbox-unit" $ do
       perRunCascadeInventory minioDown minioDown minioDown `shouldBe` []
       map fst (perRunCascadeInventory residueFixturePresent minioDown residueFixturePresent)
         `shouldBe` ["aws-eks", "aws-test"]
+
+  describe "Sprint 4.16 StackOutputs pulumi-shape parsing" $ do
+    it "parseListStacksPayload decodes an empty JSON array as no stacks" $
+      StackOutputs.parseListStacksPayload "[]" `shouldBe` Right []
+
+    it "parseListStacksPayload decodes a one-stack non-current entry" $ do
+      let payload = "[{\"name\":\"aws-eks\",\"current\":false}]"
+      StackOutputs.parseListStacksPayload payload
+        `shouldBe` Right
+          [ StackOutputs.StackListEntry
+              { StackOutputs.stackListEntryName = "aws-eks"
+              , StackOutputs.stackListEntryCurrent = False
+              }
+          ]
+
+    it "parseListStacksPayload decodes the current flag when set" $ do
+      let payload = "[{\"name\":\"aws-eks\",\"current\":true}]"
+      StackOutputs.parseListStacksPayload payload
+        `shouldBe` Right
+          [ StackOutputs.StackListEntry
+              { StackOutputs.stackListEntryName = "aws-eks"
+              , StackOutputs.stackListEntryCurrent = True
+              }
+          ]
+
+    it "parseListStacksPayload ignores entries missing the name field" $ do
+      let payload = "[{\"current\":false},{\"name\":\"aws-test\"}]"
+      StackOutputs.parseListStacksPayload payload
+        `shouldBe` Right
+          [ StackOutputs.StackListEntry
+              { StackOutputs.stackListEntryName = "aws-test"
+              , StackOutputs.stackListEntryCurrent = False
+              }
+          ]
+
+    it "parseListStacksPayload rejects a non-array root" $
+      StackOutputs.parseListStacksPayload "{\"name\":\"aws-eks\"}"
+        `shouldBe` Left "pulumi stack ls payload must be a JSON array"
+
+    it "parseListStacksPayload reports JSON-decode failures verbatim" $
+      case StackOutputs.parseListStacksPayload "not-json" of
+        Left _ -> pure ()
+        Right entries -> expectationFailure ("expected decode failure, got " ++ show entries)
+
+    it "stackPresentInList matches the short bare name" $
+      StackOutputs.stackPresentInList
+        (StackOutputs.StackName "aws-eks")
+        [ StackOutputs.StackListEntry
+            { StackOutputs.stackListEntryName = "aws-eks"
+            , StackOutputs.stackListEntryCurrent = False
+            }
+        ]
+        `shouldBe` True
+
+    it "stackPresentInList matches the qualified organization/project/stack form" $
+      StackOutputs.stackPresentInList
+        (StackOutputs.StackName "aws-eks")
+        [ StackOutputs.StackListEntry
+            { StackOutputs.stackListEntryName = "organization/aws-eks/aws-eks"
+            , StackOutputs.stackListEntryCurrent = False
+            }
+        ]
+        `shouldBe` True
+
+    it "stackPresentInList returns False when the listing has no matching name" $
+      StackOutputs.stackPresentInList
+        (StackOutputs.StackName "aws-eks")
+        [ StackOutputs.StackListEntry
+            { StackOutputs.stackListEntryName = "aws-test"
+            , StackOutputs.stackListEntryCurrent = True
+            }
+        ]
+        `shouldBe` False
+
+    it "stackPresentInList does not match when the short name is a prefix substring" $
+      StackOutputs.stackPresentInList
+        (StackOutputs.StackName "aws-eks")
+        [ StackOutputs.StackListEntry
+            { StackOutputs.stackListEntryName = "aws-eks-subzone"
+            , StackOutputs.stackListEntryCurrent = False
+            }
+        ]
+        `shouldBe` False
+
+    it "parseOutputsPayload decodes an empty object as no outputs" $
+      StackOutputs.parseOutputsPayload "{}" `shouldBe` Right Map.empty
+
+    it "parseOutputsPayload decodes string outputs verbatim" $ do
+      let payload = "{\"cluster_name\":\"aws-eks-test-cluster\",\"vpc_id\":\"vpc-abc\"}"
+      StackOutputs.parseOutputsPayload payload
+        `shouldBe` Right
+          ( Map.fromList
+              [ ("cluster_name", "aws-eks-test-cluster")
+              , ("vpc_id", "vpc-abc")
+              ]
+          )
+
+    it "parseOutputsPayload re-encodes non-string outputs as compact JSON" $ do
+      let payload = "{\"subnet_ids\":[\"subnet-a\",\"subnet-b\"]}"
+      StackOutputs.parseOutputsPayload payload
+        `shouldBe` Right (Map.singleton "subnet_ids" "[\"subnet-a\",\"subnet-b\"]")
+
+    it "parseOutputsPayload decodes null as empty Text" $ do
+      let payload = "{\"placeholder\":null}"
+      StackOutputs.parseOutputsPayload payload
+        `shouldBe` Right (Map.singleton "placeholder" "")
+
+    it "parseOutputsPayload treats a JSON null root as no outputs" $
+      StackOutputs.parseOutputsPayload "null" `shouldBe` Right Map.empty
+
+    it "parseOutputsPayload rejects a non-object, non-null root" $
+      StackOutputs.parseOutputsPayload "[1,2,3]"
+        `shouldBe` Left "pulumi stack output payload must be a JSON object"
+
+    it "renderStackOutputsError discriminates the three failure constructors" $ do
+      StackOutputs.renderStackOutputsError (StackOutputs.StackOutputsSubprocessFailed "fork failed")
+        `shouldBe` "failed to start `pulumi`: fork failed"
+      StackOutputs.renderStackOutputsError (StackOutputs.StackOutputsCommandFailed "denied")
+        `shouldBe` "`pulumi` exited non-zero: denied"
+      StackOutputs.renderStackOutputsError (StackOutputs.StackOutputsParseFailed "expected value")
+        `shouldBe` "failed to parse pulumi JSON output: expected value"
+
+    it "StackName preserves the wrapped Text identity" $
+      StackOutputs.unStackName (StackOutputs.StackName "aws-ses") `shouldBe` "aws-ses"
+
+  describe "Sprint 4.17 postflight tag sweep wiring" $ do
+    it "renderTagSweepRefusal includes the cluster-tagged resource ARN and matched tag" $ do
+      let resources =
+            [ TagSweep.TaggedResource
+                { TagSweep.taggedResourceArn = "arn:aws:ec2:us-east-1:123:vpc/vpc-abc"
+                , TagSweep.taggedResourceMatchedTagKey = "kubernetes.io/cluster/aws-eks-test-cluster"
+                }
+            ]
+          rendered = TagSweep.renderTagSweepRefusal resources
+      rendered
+        `shouldContain` "arn:aws:ec2:us-east-1:123:vpc/vpc-abc"
+      rendered
+        `shouldContain` "kubernetes.io/cluster/aws-eks-test-cluster"
+      rendered `shouldContain` "Postflight tag sweep refused"
+
+    it "renderTagSweepRefusal renders each resource on its own bullet line" $ do
+      let resources =
+            [ TagSweep.TaggedResource
+                { TagSweep.taggedResourceArn = "arn:aws:s3:::prodbox-leftover"
+                , TagSweep.taggedResourceMatchedTagKey = "prodbox.io/managed-by"
+                }
+            , TagSweep.TaggedResource
+                { TagSweep.taggedResourceArn = "arn:aws:iam::123:role/prodbox-residual"
+                , TagSweep.taggedResourceMatchedTagKey = "prodbox.io/managed-by"
+                }
+            ]
+          rendered = TagSweep.renderTagSweepRefusal resources
+          bulletLines = filter (\line -> take 4 line == "  - ") (lines rendered)
+      length bulletLines `shouldBe` 2
+
+    it "renderTagSweepRefusal still emits the header when the list is empty" $ do
+      let rendered = TagSweep.renderTagSweepRefusal []
+      rendered `shouldContain` "Postflight tag sweep refused"
+
+    it "TagSweepInput record is constructible with all three fields" $ do
+      let input =
+            TagSweep.TagSweepInput
+              { TagSweep.tagSweepEnvironment = [("AWS_REGION", "us-east-1")]
+              , TagSweep.tagSweepClusterName = Just "aws-eks-test-cluster"
+              , TagSweep.tagSweepWorkingDirectory = Just "/tmp/work"
+              }
+      TagSweep.tagSweepClusterName input `shouldBe` Just "aws-eks-test-cluster"
+      TagSweep.tagSweepWorkingDirectory input `shouldBe` Just "/tmp/work"
+
+  describe "Sprint 2.19 MasterSeed MinIO read-write contract" $ do
+    let cfg =
+          MasterSeed.MinioMasterSeedConfig
+            { MasterSeed.minioMasterSeedEndpoint = "http://127.0.0.1:9000"
+            , MasterSeed.minioMasterSeedBucket = "prodbox"
+            , MasterSeed.minioMasterSeedKey = "master-seed"
+            , MasterSeed.minioMasterSeedAccessKey = "AKIA"
+            , MasterSeed.minioMasterSeedSecretKey = "secret"
+            }
+
+    it "masterSeedObjectKey pins the canonical object key" $
+      MasterSeed.masterSeedObjectKey `shouldBe` "master-seed"
+
+    it "defaultMinioMasterSeedConfig resolves the endpoint via the local MinIO port" $ do
+      let resolved = MasterSeed.defaultMinioMasterSeedConfig 39000 "AKIA" "secret"
+      MasterSeed.minioMasterSeedEndpoint resolved `shouldBe` "http://127.0.0.1:39000"
+      MasterSeed.minioMasterSeedBucket resolved `shouldBe` "prodbox"
+      MasterSeed.minioMasterSeedKey resolved `shouldBe` "master-seed"
+
+    it "awsS3ApiHeadArgs pins the canonical head-object wire shape" $
+      MasterSeed.awsS3ApiHeadArgs cfg
+        `shouldBe` [ "--endpoint-url"
+                   , "http://127.0.0.1:9000"
+                   , "s3api"
+                   , "head-object"
+                   , "--bucket"
+                   , "prodbox"
+                   , "--key"
+                   , "master-seed"
+                   ]
+
+    it "awsS3ApiGetArgs pins the canonical get-object wire shape with output path" $
+      MasterSeed.awsS3ApiGetArgs cfg "/tmp/master-seed.bin"
+        `shouldBe` [ "--endpoint-url"
+                   , "http://127.0.0.1:9000"
+                   , "s3api"
+                   , "get-object"
+                   , "--bucket"
+                   , "prodbox"
+                   , "--key"
+                   , "master-seed"
+                   , "/tmp/master-seed.bin"
+                   ]
+
+    it "awsS3ApiPutArgs pins the canonical put-object wire shape with If-None-Match guard" $
+      MasterSeed.awsS3ApiPutArgs cfg "/tmp/master-seed-put.bin"
+        `shouldBe` [ "--endpoint-url"
+                   , "http://127.0.0.1:9000"
+                   , "s3api"
+                   , "put-object"
+                   , "--bucket"
+                   , "prodbox"
+                   , "--key"
+                   , "master-seed"
+                   , "--body"
+                   , "/tmp/master-seed-put.bin"
+                   , "--if-none-match"
+                   , "*"
+                   ]
+
+    it "isAwsCliNoSuchKeyMessage matches the canonical AWS CLI NoSuchKey blob" $ do
+      MasterSeed.isAwsCliNoSuchKeyMessage
+        "An error occurred (NoSuchKey) when calling the HeadObject operation: Not Found"
+        `shouldBe` True
+
+    it "isAwsCliNoSuchKeyMessage matches when only Not Found is present" $
+      MasterSeed.isAwsCliNoSuchKeyMessage "Not Found" `shouldBe` True
+
+    it "isAwsCliNoSuchKeyMessage does not match unrelated AWS CLI failures" $
+      MasterSeed.isAwsCliNoSuchKeyMessage "Access Denied" `shouldBe` False
+
+    it "isAwsCliPreconditionFailedMessage matches the canonical 412 blob" $ do
+      MasterSeed.isAwsCliPreconditionFailedMessage
+        "An error occurred (PreconditionFailed) when calling the PutObject operation"
+        `shouldBe` True
+      MasterSeed.isAwsCliPreconditionFailedMessage
+        "At least one of the pre-conditions you specified did not hold"
+        `shouldBe` True
+
+    it "isAwsCliPreconditionFailedMessage matches when the If-None-Match header is named" $
+      MasterSeed.isAwsCliPreconditionFailedMessage "If-None-Match header violated"
+        `shouldBe` True
+
+    it "isAwsCliPreconditionFailedMessage does not match unrelated failures" $
+      MasterSeed.isAwsCliPreconditionFailedMessage "Network unreachable" `shouldBe` False
+
+    it "renderMasterSeedError discriminates the six error constructors" $ do
+      MasterSeed.renderMasterSeedError (MasterSeed.MasterSeedEntropyUnavailable "permission denied")
+        `shouldBe` "master seed entropy source unavailable: permission denied"
+      MasterSeed.renderMasterSeedError
+        (MasterSeed.MasterSeedInvalidSize "master seed must be exactly 32 bytes; got 16")
+        `shouldBe` "master seed validator rejected MinIO payload: master seed must be exactly 32 bytes; got 16"
+      MasterSeed.renderMasterSeedError (MasterSeed.MasterSeedSubprocessFailed "fork: no entropy")
+        `shouldBe` "failed to start `aws s3api`: fork: no entropy"
+      MasterSeed.renderMasterSeedError (MasterSeed.MasterSeedGetFailed "403 Forbidden")
+        `shouldBe` "`aws s3api get-object` failed: 403 Forbidden"
+      MasterSeed.renderMasterSeedError (MasterSeed.MasterSeedPutFailed "503 ServiceUnavailable")
+        `shouldBe` "`aws s3api put-object` failed: 503 ServiceUnavailable"
+      MasterSeed.renderMasterSeedError (MasterSeed.MasterSeedFileIoFailed "EACCES")
+        `shouldBe` "master seed temporary file IO failed: EACCES"
+
+    it "generateFreshSeedBytes produces 32 bytes from /dev/urandom" $ do
+      result <- MasterSeed.generateFreshSeedBytes
+      case result of
+        Left err ->
+          expectationFailure
+            ("expected 32 bytes from /dev/urandom, got error: " ++ MasterSeed.renderMasterSeedError err)
+        Right bytes ->
+          BS.length bytes `shouldBe` 32
+
+    it "generateFreshSeedBytes produces distinct outputs across invocations" $ do
+      firstResult <- MasterSeed.generateFreshSeedBytes
+      secondResult <- MasterSeed.generateFreshSeedBytes
+      case (firstResult, secondResult) of
+        (Right firstBytes, Right secondBytes) ->
+          (firstBytes == secondBytes) `shouldBe` False
+        _ ->
+          expectationFailure "expected two successful /dev/urandom reads"
 
   describe "gateway commit-log dispositions" $ do
     it "computes node disposition from claim/yield events in chronological order" $ do

@@ -183,6 +183,9 @@ for the authoritative inventory:
 - Store AWS auth only in the repository Dhall config (`prodbox-config.dhall`).
 - AWS auth must come only from Dhall config; ambient AWS auth env vars, shared-profile discovery,
   and system `aws` CLI host auth state are not valid auth sources for supported `prodbox` flows.
+- Daemon bootstrap config comes only from a mounted Dhall file at `--config <path>`;
+  env-var fallbacks (`PRODBOX_*`, `MINIO_*`, `AWS_*` on the daemon Pod) are forbidden on
+  supported paths. See [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - Validate all external input, especially FQDN and IP address values.
 - Keep IAM scopes least-privilege.
 

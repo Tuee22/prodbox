@@ -49,6 +49,7 @@ import Data.List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
+import Prodbox.Aws (adminAwsEnvironment)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
   )
@@ -78,8 +79,12 @@ import Prodbox.Host
   , detectLanAddressing
   )
 import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
-import Prodbox.Infra.AwsEksTestStack (awsEksTestStackResidueStatus)
+import Prodbox.Infra.AwsEksTestStack
+  ( awsEksCanonicalClusterName
+  , awsEksTestStackResidueStatus
+  )
 import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
+import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
   ( keycloakVscodeClientId
   , resolveChartSecrets
@@ -93,6 +98,7 @@ import Prodbox.Lib.EksCustomImagePush
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
   , patroniOperatorNamespace
@@ -824,17 +830,54 @@ runCascadeDrainPhase repoRoot = do
 -- sweep is the backstop for K8s-operator-created AWS resources that
 -- escape the drain.
 --
--- Today this helper emits a "deferred to operator" message because the
--- cascade does not yet have admin AWS credentials in hand at this
--- step. The full sweep wiring lands alongside the source-of-truth
--- swap in the residual half of Sprint 4.16, when the cascade gains
--- access to admin credentials through 'withMaterializedOperationalCreds'.
+-- The sweep runs when admin AWS credentials are present in
+-- @aws_admin_for_test_simulation.*@. When they are absent (operator
+-- has not yet bootstrapped admin credentials, or is running on a
+-- home-only cluster with no AWS substrate provisioned), the sweep
+-- emits a single-line diagnostic and the cascade continues — the
+-- absence of admin credentials is itself evidence that no AWS resources
+-- could have been created by this cluster lifecycle.
+--
+-- Best-effort: when admin credentials are present the sweep calls the
+-- AWS Resource Tagging API for any resource carrying the canonical
+-- @aws-eks-test-cluster@ Kubernetes cluster tag or the
+-- @prodbox.io/managed-by=prodbox@ ownership tag. A non-zero sweep is
+-- reported with the structured refusal block so the operator can
+-- resolve any cluster-tagged residue, but the cascade itself still
+-- returns 'ExitSuccess' — destructive lifecycle commands do not retry
+-- on a postflight diagnostic per
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 6@.
 runCascadePostflightTagSweep :: FilePath -> IO ()
-runCascadePostflightTagSweep _repoRoot = do
-  writeOutputLine
-    "Postflight tag sweep: deferred to operator (run `prodbox aws check-quotas` \
-    \and inspect the console for cluster-tagged residue until the source-of-truth \
-    \cascade-with-creds lands; see lifecycle_reconciliation_doctrine.md §6)."
+runCascadePostflightTagSweep repoRoot = do
+  adminResult <- loadAdminAwsCredentials repoRoot
+  case adminResult of
+    Left _ -> do
+      writeOutputLine
+        "Postflight tag sweep: skipped (aws_admin_for_test_simulation.* not configured, \
+        \so no AWS resources could have been created by this cluster lifecycle)."
+    Right adminCredentials -> do
+      environment <- adminAwsEnvironment adminCredentials
+      let input =
+            TagSweep.TagSweepInput
+              { TagSweep.tagSweepEnvironment = environment
+              , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+              , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+              }
+      sweepResult <- TagSweep.discoverClusterTaggedAwsResources input
+      case sweepResult of
+        Left err ->
+          writeOutputLine
+            ("Postflight tag sweep: query failed (continuing): " ++ err)
+        Right [] ->
+          writeOutputLine
+            "Postflight tag sweep: clean (no cluster-tagged or prodbox-owned AWS residue)."
+        Right resources -> do
+          writeOutputLine
+            ( "Postflight tag sweep: "
+                ++ show (length resources)
+                ++ " resource(s) still tagged — operator action required:"
+            )
+          writeOutputLine (TagSweep.renderTagSweepRefusal resources)
 
 resolveRetainedManualPvRoot :: FilePath -> IO FilePath
 resolveRetainedManualPvRoot repoRoot = do

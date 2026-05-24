@@ -199,7 +199,12 @@ None.
 
 ## Sprint 1.2: Dhall Settings, Command ADTs, and Haskell Test Harness ✅
 
-**Status**: Done
+**Status**: Done (May 24, 2026 alignment note: the host-side `Dhall.inputFile auto`
+decoder in `src/Prodbox/Settings.hs` is the model for the in-cluster gateway daemon's
+new `src/Prodbox/Gateway/Settings.hs` scheduled in Sprint 2.20. No host-side regression
+or revision is required by the pure-Dhall config doctrine — Sprint 1.2's deliverables
+already match the new SSoT at
+[config_doctrine.md §9](../documents/engineering/config_doctrine.md#9-host-cli).)
 **Implementation**: `src/Prodbox/Settings.hs`, `src/Prodbox/BuildSupport.hs`, `src/Prodbox/CheckCode.hs`, `src/Prodbox/Effect.hs`, `src/Prodbox/EffectDAG.hs`, `src/Prodbox/EffectInterpreter.hs`, `src/Prodbox/Host.hs`, `src/Prodbox/K8s.hs`, `src/Prodbox/Prerequisite.hs`, `src/Prodbox/Result.hs`, `src/Prodbox/Subprocess.hs`, `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/TestValidation.hs`, `src/Prodbox/Native.hs`, `src/Prodbox/Repo.hs`, `test/unit/`, `test/integration/Main.hs`, `test/integration/CliSuite.hs`, `test/integration/EnvSuite.hs`
 **Docs to update**: `README.md`, `AGENTS.md`, `CLAUDE.md`, `documents/engineering/README.md`, `documents/engineering/cli_command_surface.md`, `documents/engineering/code_quality.md`, `documents/engineering/dependency_management.md`, `documents/engineering/effect_interpreter.md`, `documents/engineering/effectful_dag_architecture.md`, `documents/engineering/haskell_code_guide.md`, `documents/engineering/integration_fixture_doctrine.md`, `documents/engineering/prerequisite_dag_system.md`, `documents/engineering/prerequisite_doctrine.md`, `documents/engineering/streaming_doctrine.md`, `documents/engineering/unit_testing_policy.md`
 
@@ -1572,6 +1577,58 @@ None.
 **Cross-references to add:**
 
 - Keep Phase `1` linked from [README.md](README.md) and [00-overview.md](00-overview.md).
+
+## Sprint 1.28: `dhall` allow-newer Clauses and Env-Var-Read Lint Rule 📋
+
+**Status**: Planned (May 24, 2026, blocked by Sprint 0.8 doctrine adoption)
+**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md))
+**Implementation**: `cabal.project` (`allow-newer` clauses), `prodbox.cabal` (no version bound
+changes expected), `src/Prodbox/CheckCode.hs` (new `forbidEnvVarConfigReads` lint rule)
+**Docs to update**: `documents/engineering/dependency_management.md`,
+`documents/engineering/haskell_code_guide.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Make the `dhall ^>=1.42` library bound build cleanly under GHC `9.14.1` by extending the
+existing `cabal.project` `allow-newer` clause set with whatever transitive deps `cabal
+build` reports as version-bound-incompatible, and add the lint rule that enforces the
+no-env-var-reads contract from
+[config_doctrine.md §10](../documents/engineering/config_doctrine.md#10-forbidden-surfaces)
+on supported config-loading paths.
+
+### Deliverables
+
+- Extend `cabal.project` `allow-newer` clause to cover whatever `dhall` transitive
+  dependencies cabal complains about on GHC `9.14.1` (current clause is `allow-newer:
+  *:base, *:template-haskell`; the implementing sprint will add named entries only after
+  observing the specific cabal errors).
+- New `src/Prodbox/CheckCode.hs::forbidEnvVarConfigReads` lint rule: refuses uses of
+  `lookupEnv`, `getEnv`, `getEnvironment` from `System.Environment` in
+  `src/Prodbox/Settings.hs`, `src/Prodbox/Gateway/Settings.hs`, `src/Prodbox/Gateway.hs`,
+  `src/Prodbox/Workload.hs`, and any future config-loading module added to the registry.
+  The rule strips string literals before token checks so doctrine references in comments
+  don't false-positive.
+- Migration note in `documents/engineering/dependency_management.md` listing the named
+  `allow-newer` clauses and the conditions under which they may be removed (when an
+  upstream `dhall` release bumps the bounds to match GHC `9.14.1`).
+- Removal of the `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var
+  reads in `src/Prodbox/Gateway.hs` (the matching ledger row sits in
+  `legacy-tracking-for-deletion.md` and is owned by this sprint).
+
+### Validation
+
+1. `prodbox check-code` exit 0 (proves the new lint rule fires only on intentional
+   violations, not on legitimate non-config env-var reads in test helpers).
+2. `prodbox test unit` exit 0 (no test text changes expected).
+3. `prodbox build` succeeds cleanly under GHC `9.14.1` with the extended `allow-newer`
+   set (currently it already does; this sprint is preemptive).
+
+### Remaining Work
+
+- The implementing sprint discovers the exact `allow-newer` set by running `cabal build`
+  against the current `cabal.project` and reading the errors. Until that build is run, the
+  `allow-newer` set listed in Deliverables is a placeholder.
 
 ## Related Documents
 

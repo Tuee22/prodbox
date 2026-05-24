@@ -34,6 +34,7 @@ cross-substrate shared infrastructure (see
 | [acme_provider_guide.md](./acme_provider_guide.md) | ZeroSSL vs Let's Encrypt guidance for the interactive onboarding flow |
 | [dependency_management.md](./dependency_management.md) | Cabal- and toolchain-level dependency doctrine |
 | [cli_command_surface.md](./cli_command_surface.md) | Canonical operator command matrix |
+| [config_doctrine.md](./config_doctrine.md) | Pure-Dhall config sourcing, mount contract, file-watch reload, and forbidden surfaces for every `prodbox` binary instance |
 | [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md) | Real AWS integration environment creation, tagging, and cleanup doctrine |
 | [distributed_gateway_architecture.md](./distributed_gateway_architecture.md) | Multi-node gateway leadership and failover design |
 | [envoy_gateway_edge_doctrine.md](./envoy_gateway_edge_doctrine.md) | Canonical MetalLB + Envoy Gateway + Keycloak public-edge doctrine, including JWT, Redis, and WebSocket boundaries |

@@ -37,8 +37,13 @@ Prodbox manages a home Kubernetes cluster with a Haskell command surface.
 - `src/Prodbox/` owns the command parser, runtime modules, infra orchestration, gateway runtime,
   chart platform, AWS administration flows, and test harness.
 - `test/` contains the Haskell unit and integration suites.
-- `prodbox-config.dhall` is decoded directly into Haskell types; `prodbox-config.json` is not part
-  of the supported interface.
+- `prodbox-config.dhall` is decoded directly into Haskell types by the native `dhall`
+  library; `prodbox-config.json` is not part of the supported interface. The in-cluster
+  gateway daemon and workload Pods load their own Dhall config from a mounted ConfigMap
+  (with credentials imported from a sibling Secret-mounted Dhall fragment). Every
+  `prodbox` binary instance takes its configuration from `--config <path>`; no supported
+  binary reads `PRODBOX_*` environment variables. See
+  [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
 - `pulumi/aws-eks/Pulumi.yaml` plus `pulumi/aws-eks/Main.yaml` and `pulumi/aws-test/Pulumi.yaml`
   plus `pulumi/aws-test/Main.yaml` are the supported Pulumi programs for AWS validation IaC.
 

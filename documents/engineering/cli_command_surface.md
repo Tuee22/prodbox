@@ -373,13 +373,14 @@ Kubernetes Gateway API or Envoy Gateway controller.
 
 | Command | Arguments | Options |
 |---------|-----------|---------|
-| `prodbox workload start` | none | `--log-level`, `--port`, `--foreground` |
+| `prodbox workload start` | none | `--config <path>` |
 
 `src/Prodbox/Workload.hs` owns the internal public workload runtime used by the `api` and
-`websocket` chart surfaces. It is repo-rootless and selected through environment such as
-`PRODBOX_WORKLOAD_MODE=api|websocket`. The current `websocket` runtime owns the workload-managed
-OIDC bootstrap under `/ws/oidc`, the JWT-protected `/ws` upgrade path, and readiness-based drain for
-live upgraded connections.
+`websocket` chart surfaces. It is repo-rootless and selects its runtime mode (api vs.
+websocket) from the `workload.mode` field of its mounted Dhall config (see
+[config_doctrine.md](./config_doctrine.md)). The current `websocket` runtime owns the
+workload-managed OIDC bootstrap under `/ws/oidc`, the JWT-protected `/ws` upgrade path, and
+readiness-based drain for live upgraded connections.
 
 ### `prodbox charts`
 
@@ -612,17 +613,19 @@ validator command.
 
 ### Daemon-launching flags
 
-Per Sprint 2.15, `prodbox gateway start` and `prodbox gateway status` accept `--config <path>`,
-while the daemon-launching commands `prodbox gateway start` and `prodbox workload start`
-accept `--log-level <level>`, `--port <int>`, and `--foreground` (default). Self-daemonization (`--detach`, double-fork, `setsid`,
-`forkProcess`) is forbidden per
+`prodbox gateway start`, `prodbox gateway status`, and `prodbox workload start` accept
+exactly one startup-time CLI knob — `--config <path>` — per
+[config_doctrine.md §2](./config_doctrine.md#2-single-dhall-surface-per-binary-instance).
+Foreground execution is the only supported mode; self-daemonization (`--detach`,
+double-fork, `setsid`, `forkProcess`) is forbidden per
 [CLI-to-Daemon Plumbing](../../documents/engineering/README.md).
-Startup precedence is command-specific: CLI flag > env var > config-file default > built-in
-default. `PRODBOX_CONFIG_PATH` applies to gateway commands, `PRODBOX_LOG_LEVEL` applies to
-gateway and workload startup, and `PRODBOX_PORT` applies to both gateway and workload port
-resolution. The committed repo-root Dhall config keeps its local imports frozen with
-`dhall freeze --all --inplace`; `prodbox check-code` refuses unfrozen committed imports after
-intentional schema or defaults edits.
+`--log-level`, `--port`, `--node-id`, and similar runtime-override flags are not supported;
+every value the daemon needs lives in the Dhall file. Environment-variable precedence is
+forbidden on supported paths: no `PRODBOX_*` startup fallback ladder. See
+[config_doctrine.md §10](./config_doctrine.md#10-forbidden-surfaces) for the authoritative
+forbidden-surface list. The committed repo-root Dhall config keeps its local imports
+frozen with `dhall freeze --all --inplace`; `prodbox check-code` refuses unfrozen committed
+imports after intentional schema or defaults edits.
 
 ### One-shot output flags
 

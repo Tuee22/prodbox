@@ -162,7 +162,14 @@ None.
 
 ## Sprint 0.3: Audit-Driven Doctrine-Gap Scheduling ✅
 
-**Status**: Done
+**Status**: Done (with May 24, 2026 supersession note on the forbid-fsnotify clause). The
+sprint's residual Phase 2 extension that bound `fsnotify`, `inotify`, and `mtime` polling
+as forbidden reload triggers is superseded by Sprint 0.8 (pure-Dhall config doctrine
+adoption); the daemon's reload trigger becomes a file watcher per
+[config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger),
+and the matching lint-rule removal moves to
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md). Every other Sprint 0.3
+deliverable stands.
 **Implementation**: `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
 `DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
 `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`, `DEVELOPMENT_PLAN/README.md`,
@@ -240,7 +247,14 @@ None.
 
 ## Sprint 0.4: Round-3 Doctrine Adoption Closure ✅
 
-**Status**: Done
+**Status**: Done (with May 24, 2026 supersession notes). The Sprint 2.11 extensions that
+bound the forbid-fsnotify/inotify/mtime rule and the SIGHUP "TBQueue () worker is the
+only sanctioned trigger" wording are superseded by Sprint 0.8 (pure-Dhall config doctrine
+adoption); under the new doctrine the daemon's reload trigger is a file watcher per
+[config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger).
+The Sprint 2.12 extension that bound "daemon log level refreshed from `LiveConfig` on
+every hot reload" stands semantically — only the trigger label changes from "SIGHUP
+reload" to "file-watch reload." Every other Sprint 0.4 deliverable stands.
 **Implementation**: `DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
 `DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
 `DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
@@ -682,6 +696,87 @@ automation equivalent.
 ### Remaining Work
 
 None. The legacy-tracking ledger row records the closure.
+
+## Sprint 0.8: Pure-Dhall Config Doctrine Adoption 🔄
+
+**Status**: Active (May 24, 2026 — doctrine SSoT created and governed engineering and
+root docs updated; downstream code-implementation sprints land in Phases 1, 2, 3)
+**Implementation**: new `documents/engineering/config_doctrine.md`;
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/cli_command_surface.md`,
+`documents/engineering/dependency_management.md`,
+`documents/engineering/haskell_code_guide.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/secret_derivation_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/README.md`, `documents/documentation_standards.md`,
+`README.md`, `CLAUDE.md`, `AGENTS.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`DEVELOPMENT_PLAN/phase-0-planning-documentation.md`,
+`DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
+`DEVELOPMENT_PLAN/phase-2-gateway-dns.md`,
+`DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`
+**Docs to update**: every file listed above.
+
+### Objective
+
+Consolidate `prodbox`'s configuration sourcing to a single doctrine — every binary
+instance takes its config from one Dhall file passed via `--config <path>`, decoded
+in-process by the native Haskell `dhall` library, with no env-var precedence ladder, no
+JSON projection, and no SIGHUP-driven reload. The new SSoT
+[config_doctrine.md](../documents/engineering/config_doctrine.md) holds the authoritative
+contract; this sprint adopts that SSoT into every governed doc and the development plan,
+per [development_plan_standards.md §L](development_plan_standards.md). The code
+implementation of the new doctrine is scheduled in Phase 1 (Sprint 1.28), Phase 2
+(Sprints 2.20, 2.21, 2.22), and Phase 3 (Sprint 3.14).
+
+### Deliverables
+
+- New `documents/engineering/config_doctrine.md` SSoT covering: single Dhall surface per
+  binary, canonical paths (host repo-root, in-cluster mount), native `dhall`-library
+  decoding, Dhall imports for credentials and Orders, cluster mount contract
+  (ConfigMaps for non-credential content, Secrets for credentials), file-watch reload
+  trigger, BootConfig-vs-LiveConfig classification with drain-and-exit on boot-field
+  changes, and the forbidden-surfaces list.
+- Revision passes on every governed engineering doc named under **Implementation**, each
+  deferring config-sourcing language to the new SSoT and removing contradicting passages
+  (SIGHUP-only reload, forbid-fsnotify, `PRODBOX_*` env-var precedence ladder, env-var-
+  sourced daemon credentials, JSON-rendered daemon config, `--log-level` /
+  `--port` runtime override flags).
+- Revision passes on `README.md`, `CLAUDE.md`, and `AGENTS.md` to point operators and
+  agents at the new SSoT and remove env-var precedence claims.
+- Revision passes on `DEVELOPMENT_PLAN/README.md` (Closure Status reopen paragraph,
+  Phase Overview table updates for Phases 0/1/2/3), `00-overview.md` (BootConfig /
+  LiveConfig and daemon CLI plumbing paragraphs), `system-components.md` (rows for
+  BootConfig / LiveConfig, daemon CLI, prescribed daemon config shape, reload trigger,
+  reload procedure), and `legacy-tracking-for-deletion.md` (new Pending Removal rows
+  per the implementing sprints).
+- Revision notes on Sprint 0.3 and Sprint 0.4 calling out the superseded forbid-fsnotify
+  and SIGHUP-trigger extensions; both sprints stay `Done` on their non-superseded
+  surfaces per `development_plan_standards.md §A`.
+
+### Validation
+
+1. `prodbox lint docs` exit 0 (proves Generated Sections metadata stays consistent with
+   markers across every governed doc).
+2. `prodbox docs check` exit 0 (proves CLI-doc generated artifacts stay consistent — this
+   sprint touches no generated content).
+3. `prodbox check-code` exit 0 (no code changes; passes by no-op).
+4. `prodbox test unit` 533/533 (no test text changes expected; goldens unaffected).
+5. Manual narrative check: read `DEVELOPMENT_PLAN/00-overview.md` and the revised phase
+   docs start-to-finish; the rewrite reads as a coherent buildout, no phase contradicts
+   another, per `development_plan_standards.md §A`.
+
+### Remaining Work
+
+- The code implementation of the new doctrine lands in the Phase 1/2/3 sprints named in
+  Objective. Sprint 0.8 closes when its doc revisions are complete and the four lint /
+  build / test gates exit 0; the live exercise of the file-watch reload trigger is the
+  closure gate for Sprint 2.21, not Sprint 0.8.
 
 ## Related Documents
 

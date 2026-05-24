@@ -211,6 +211,14 @@ The following variables are forbidden as ambient auth sources:
 10. `AWS_ROLE_ARN`
 11. `AWS_ROLE_SESSION_NAME`
 
+The same forbidden-env-var posture extends to the in-cluster gateway daemon: AWS
+credentials reach the daemon Pod via a k8s Secret mounted as a Dhall file at
+`/etc/gateway/secrets/aws.dhall`, imported by the main Dhall config per
+[config_doctrine.md](./config_doctrine.md). No `AWS_*` environment variable is read by
+supported daemon paths; the subprocess that calls `aws route53 ...` receives credentials
+through an explicit subprocess-environment overlay assembled from the decoded Dhall
+config, not from the Pod environment.
+
 ## 3. Harness Preflight Contract
 
 ### 3.1 Required Harness Checks

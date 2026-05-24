@@ -207,6 +207,8 @@ Rules:
 
 ## Cross-References
 
+- [Config Doctrine](./config_doctrine.md) — storage paths and MinIO coordinates live in
+  the daemon's Dhall config, not in environment variables
 - [Secret Derivation Doctrine](./secret_derivation_doctrine.md)
 - [Lifecycle Reconciliation Doctrine](./lifecycle_reconciliation_doctrine.md)
 - [Prerequisite Doctrine](./prerequisite_doctrine.md)

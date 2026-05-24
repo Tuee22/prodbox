@@ -19,11 +19,17 @@ daemon discipline from [the engineering doctrine docs](../documents/engineering/
 `load→prereq→acquire→ready→serve→drain→exit` lifecycle with worker loops wrapped in
 `try`/`catch` plus bounded retry-with-backoff, `/healthz` / `/readyz` / `/metrics` endpoints
 with golden-captured response shapes, the `BootConfig` / `LiveConfig` split with `SIGHUP` hot
-reload and atomic-swap discipline on `envLiveConfig`, `co-log` structured JSON logging, test
+reload and atomic-swap discipline on `envLiveConfig` (the reload trigger is reopened by
+Sprints 2.20/2.21 under the pure-Dhall config doctrine — see
+[config_doctrine.md](../documents/engineering/config_doctrine.md) — and becomes a
+file-watch worker on the mounted Dhall path, with boot-field changes draining and exiting
+so the kubelet restarts the Pod), `co-log` structured JSON logging, test
 hooks in `Env`, the `prodbox-daemon-lifecycle` test stanza asserting that single SIGTERM
 begins drain and second SIGTERM (or drain deadline) forces exit, the daemon CLI plumbing
-(`--config`, `--log-level`, `--port`, `--foreground`) plus `PRODBOX_*` env-var precedence
-rule, and the formal at-least-once event-processing module
+(`--config <path>` is the sole startup knob under the new doctrine; `--log-level`, `--port`,
+`--foreground`, and `PRODBOX_*` env-var precedence are forbidden — see
+[config_doctrine.md §10](../documents/engineering/config_doctrine.md#10-forbidden-surfaces)),
+and the formal at-least-once event-processing module
 (`src/Prodbox/Daemon/Events.hs`) introduced in Sprint `2.16`. Sprint 0.3 extends the
 deliverable lists of Sprints `2.9`–`2.12` with the doctrine items surfaced by the May 2026
 audit: the default 30 s drain deadline plus explicit `bracketOnError` for resources with
@@ -529,7 +535,14 @@ None.
 
 ## Sprint 2.9: Explicit Daemon Lifecycle ✅
 
-**Status**: Done
+**Status**: Done (with May 24, 2026 revision note for the pure-Dhall config doctrine
+adoption — Sprint 0.8). Under
+[config_doctrine.md §8](../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract),
+the existing drain machinery (`liveDrainDeadlineSeconds` default 30s, `bracketOnError`)
+is reused verbatim for the new boot-field-change exit path: file-watch detects a
+BootConfig diff, daemon drains, exits with `ExitSuccess`, and the kubelet restarts the
+Pod. No Sprint 2.9 deliverable regresses; the drain bracket gains a new caller in
+Sprint 2.21.
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/effect_interpreter.md`
@@ -679,9 +692,20 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
 
 None.
 
-## Sprint 2.11: BootConfig / LiveConfig Split with SIGHUP Hot Reload ✅
+## Sprint 2.11: BootConfig / LiveConfig Split with Mounted-Dhall File-Watch Reload 🔄
 
-**Status**: Done
+**Status**: Reopened May 24, 2026 for pure-Dhall config doctrine adoption (Sprint 0.8).
+The BootConfig / LiveConfig record-level split survives; the reload trigger and the
+boot-field-change response change. Under
+[config_doctrine.md §7–§8](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger),
+the daemon watches its `--config` Dhall path via filesystem-watch primitives (not SIGHUP),
+re-decodes via `Dhall.inputFile auto` on change, atomic-swaps `envLiveConfig` for
+LiveConfig-only diffs, and drains-and-exits for any BootConfig diff so the kubelet restarts
+the Pod. The implementing code work lives in Sprints 2.20 (daemon Dhall settings module) and
+2.21 (file-watch trigger + drain-and-exit). The legacy SIGHUP handler, the
+`config_boot_changes_ignored` "ignore and continue" branch, and the JSON-flat-compat
+schema branch are scheduled for removal in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Gateway/Types.hs`
 **Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`
@@ -788,7 +812,12 @@ None.
 
 ## Sprint 2.12: Structured JSON Logging via co-log ✅
 
-**Status**: Done
+**Status**: Done (with May 24, 2026 revision note: the LiveConfig log-level refresh
+contract survives unchanged; the trigger relabels from "SIGHUP reload" to "file-watch
+reload" per [config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger)).
+The STM broadcast channel `envLiveConfigReloads` and the per-log-site
+`readTVarIO envLiveConfig` reads stay verbatim; only the upstream reload-worker's input
+source changes from `installHandler sigHUP` to the file watcher in Sprint 2.21.
 **Implementation**: `src/Prodbox/Gateway/Logging.hs`, `src/Prodbox/Gateway/Daemon.hs`,
 `src/Prodbox/Workload.hs`, `src/Prodbox/CheckCode.hs`, `test/daemon-lifecycle/Main.hs`,
 `test/haskell-style/Main.hs`
@@ -859,7 +888,11 @@ dependency boundary, direct terminal writes, and inline log-object construction.
 
 ## Sprint 2.13: Test Hooks in Env, At-Least-Once Formalization ✅
 
-**Status**: Done
+**Status**: Done (with May 24, 2026 revision note: the daemon `Env` hook contract is
+unchanged; the lifecycle test stanza extends in Sprint 2.21 to cover the new file-watch
+reload trigger as well as the SIGHUP-based reload trigger it supersedes, per
+[unit_testing_policy.md](../documents/engineering/unit_testing_policy.md) "Daemon
+lifecycle tests" row).
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs`, `src/Prodbox/Daemon/Events.hs`
 **Docs to update**: `documents/engineering/unit_testing_policy.md`,
 `documents/engineering/distributed_gateway_architecture.md`
@@ -975,9 +1008,21 @@ Adopt [Daemon Lifecycle Tests](../documents/engineering/README.md) and
 
 None.
 
-## Sprint 2.15: Daemon CLI Plumbing and Env-Var Precedence ✅
+## Sprint 2.15: Daemon CLI Plumbing — `--config <path>` Only 🔄
 
-**Status**: Done
+**Status**: Reopened May 24, 2026 for pure-Dhall config doctrine adoption (Sprint 0.8).
+Under
+[config_doctrine.md §2 and §10](../documents/engineering/config_doctrine.md#2-single-dhall-surface-per-binary-instance),
+`prodbox gateway start` and `prodbox workload start` accept exactly one startup-time
+CLI knob — `--config <path>`. The `--log-level`, `--port`, `--node-id`, `--foreground`,
+and `--detach` flags are not supported; every value the daemon needs lives in the Dhall
+file. The `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var precedence
+ladder is forbidden. The implementing code work — `src/Prodbox/Gateway.hs` env-var
+reads at lines 168, 178, 183 and the matching parser-spec entries in
+`src/Prodbox/CLI/Spec.hs` and `src/Prodbox/CLI/Parser.hs` — lands in Sprint 2.20 (the
+host CLI surface) and 2.21 (the daemon entrypoint). The legacy `PRODBOX_*` env-var
+reads are scheduled for removal in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 **Implementation**: `src/Prodbox/CLI/Parser.hs`, `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/Gateway.hs`, `src/Prodbox/Workload.hs`, `test/daemon-lifecycle/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
 `documents/engineering/distributed_gateway_architecture.md`,
@@ -1233,8 +1278,23 @@ operator-driven for now and tracked under that sprint.
 
 ## Sprint 2.19: Gateway Daemon Becomes Secret-Derivation Service 🔄
 
-**Status**: Active — pure derivation surface landed May 23, 2026; wire-contract layer (typed request/response shapes in `Prodbox.Secret.Wire`, typed `derive` / `ensureNamespace` client functions in `Prodbox.Gateway.Client`, daemon route stubs at `/v1/secret/derive` and `/v1/secret/ensure-namespace` returning structured 503 "master-seed unavailable" per doctrine §8) landed the same day; chart-side scaffolding landed the same day too — new `charts/gateway/templates/secret-minio-creds.yaml` materializes the `gateway-minio-creds` Opaque Secret using the `lookup`-then-`randAlphaNum` pattern (re-used across helm upgrades so the operator-host CLI and in-cluster gateway pods see stable credentials across reconcile cycles), and new `charts/gateway/templates/service-nodeport.yaml` exposes the gateway daemon's REST port on a stable NodePort (`30443` by default, matching the Sprint 2.18 iptables-rule default) for host-CLI loopback access. MinIO IAM bootstrap, master-seed read/write (`Prodbox.Secret.MasterSeed`), live daemon endpoint bodies that replace the 503 stubs, reconcile/delete wiring that calls `runHostFirewallGatewayRestrict` after the NodePort Service is up, and the `amazonka-s3` (or `minio-hs`) dependency addition remain as coupled deliverables for a dedicated session. Sprint cannot close until the live exercise on this host succeeds end-to-end (master seed materializes; `/v1/secret/derive` returns deterministic values across cluster wipes).
-**Blocked by**: 2.17, 2.18
+**Status**: Active — **re-scoped May 24, 2026 under the pure-Dhall config doctrine
+(Sprint 0.8)**. The `MINIO_ENDPOINT_URL` env-var addition attempted in the earlier
+May 24 session was rolled back the same day; under
+[config_doctrine.md](../documents/engineering/config_doctrine.md) the MinIO endpoint and
+credentials reach the daemon via its mounted Dhall config (not env vars). The remaining
+Sprint 2.19 deliverables (MinIO IAM bootstrap, live daemon endpoint bodies replacing
+the 503 stubs, reconcile/delete firewall-hook wiring) now block on Sprints 2.20 (daemon
+Dhall settings module), 2.21 (file-watch reload + drain-and-exit on boot-field changes),
+and 2.22 (chart-side Dhall ConfigMap + Secret-mounted credentials). The earlier-landed
+pure derivation surface (`Prodbox.Secret.Derive`), wire-contract layer
+(`Prodbox.Secret.Wire`, typed `Prodbox.Gateway.Client.derive` / `ensureNamespace`),
+chart-side scaffolding (`secret-minio-creds.yaml`, `service-nodeport.yaml`), and
+`Prodbox.Secret.MasterSeed` foundation all stand unchanged. Sprint cannot close until
+the live exercise on this host succeeds end-to-end (master seed materializes;
+`/v1/secret/derive` returns deterministic values across cluster wipes) under the new
+Dhall-sourced config.
+**Blocked by**: 2.17, 2.18, 2.20, 2.21, 2.22
 **Implementation**: new `src/Prodbox/Secret/Derive.hs`, new `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Gateway/Daemon.hs` HTTP server extensions, MinIO IAM bootstrap (Pulumi or one-shot Job), `charts/gateway/` Secret + Deployment volume mount additions, `Prodbox.Gateway.Client` extensions, `prodbox.cabal` dep addition
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (new SSoT — already created by Part 1 doctrine work), `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
 
@@ -1375,15 +1435,35 @@ for the authoritative algorithm, endpoint contract, and bootstrap order.
 
 ### Remaining Work
 
-The pure derivation surface and the wire-contract layer are
-foundational and complete. The remaining sprint deliverables are
-coupled into one live-exercise package:
+The pure derivation surface, the wire-contract layer, and the
+foundational `Prodbox.Secret.MasterSeed` MinIO read\/write module are
+landed. The remaining sprint deliverables are coupled into one
+live-exercise package:
 
-1. **`Prodbox.Secret.MasterSeed`** (MinIO bucket read/write): adds
-   `amazonka-s3` (or `minio-hs`) to `prodbox.cabal`; implements
-   `ensureMasterSeed :: MinioClient -> IO (Either MasterSeedError
-   MasterSeed)` with list-then-put concurrent-creation guard; runs
-   inside the gateway daemon pod.
+1. **`Prodbox.Secret.MasterSeed`** (MinIO bucket read\/write,
+   **Done May 23, 2026 later session**): new
+   `src/Prodbox/Secret/MasterSeed.hs` exposes
+   `MinioMasterSeedConfig` (endpoint URL + bucket + key + MinIO
+   credentials), `MasterSeedError` ADT (`MasterSeedEntropyUnavailable`
+   / `MasterSeedInvalidSize` / `MasterSeedSubprocessFailed` /
+   `MasterSeedGetFailed` / `MasterSeedPutFailed` /
+   `MasterSeedFileIoFailed`), `ensureMasterSeed` (read-or-create
+   with `If-None-Match: *` concurrent-creation guard +
+   post-PUT GET re-read so racing first-starts converge),
+   `generateFreshSeedBytes` (32 bytes from `/dev/urandom`), and the
+   pure `awsS3ApiHeadArgs` / `awsS3ApiGetArgs` / `awsS3ApiPutArgs`
+   helpers plus `isAwsCliNoSuchKeyMessage` /
+   `isAwsCliPreconditionFailedMessage` pattern matchers that pin the
+   AWS CLI error-blob recognition surface. Shells out to `aws s3api`
+   via `Prodbox.Service.runMinIOWithEnv` (no new `amazonka-s3` or
+   `minio-hs` dependency required at this stage — the daemon already
+   carries the AWS CLI in its container image). 14 new unit tests
+   in `test/unit/Main.hs::"Sprint 2.19 MasterSeed MinIO read-write contract"`
+   cover the wire-shape pinning, the doctrine-canonical object key,
+   the `defaultMinioMasterSeedConfig` endpoint resolution, the six
+   error renderings, both AWS-CLI message matchers, and live
+   `/dev/urandom` invocation (32 bytes, distinct across calls). Test
+   count 533/533 after the new cases. `prodbox check-code` exit 0.
 2. **MinIO IAM bootstrap**: a chart-deployed one-shot Job (or a Pulumi
    program addition) that creates the `prodbox` bucket, the
    `prodbox-gateway` MinIO user, and the IAM policy granting only that
@@ -1402,7 +1482,17 @@ coupled into one live-exercise package:
    handlers that compose `Prodbox.Secret.MasterSeed.ensureMasterSeed`
    with `Prodbox.Secret.Derive.derive` (and the per-context inventory
    table from doctrine §6 for `ensure-namespace`). Response shapes are
-   already pinned by `Prodbox.Secret.Wire`.
+   already pinned by `Prodbox.Secret.Wire`. The handler also needs
+   a startup-time `MinioMasterSeedConfig` resolver. **Re-scoped May 24,
+   2026 under the pure-Dhall config doctrine
+   ([config_doctrine.md](../documents/engineering/config_doctrine.md))**:
+   the daemon resolves `MinioMasterSeedConfig` from its parsed Dhall
+   config (the `minio` block carries the endpoint URL; the credentials
+   come from a Dhall import at `/etc/gateway/secrets/minio.dhall` mounted
+   from a sibling k8s Secret per Sprint 2.22). No `MINIO_*` env var is
+   read on the supported path. A `DaemonEnv` field caches the resolved
+   `MasterSeed` between requests so each `/v1/secret/derive` call is one
+   HMAC, not one MinIO round-trip.
 5. **Reconcile/delete wiring**: the chart-side NodePort Service already
    exists (landed May 23, 2026), and the symmetric
    `runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` helper +
@@ -1422,6 +1512,186 @@ client; the chart needs the daemon image; the live exercise needs the
 chart) and benefit from being implemented as one connected push in a
 dedicated session. The chart-platform integration (Sprint 3.13) blocks
 on this sprint's full closure.
+
+## Sprint 2.20: Daemon Dhall Settings Module 📋
+
+**Status**: Planned (May 24, 2026, blocked by Sprint 0.8 doctrine adoption)
+**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md))
+**Implementation**: new `src/Prodbox/Gateway/Settings.hs`, `src/Prodbox/Gateway/Types.hs`
+(remove `parseDaemonConfig` JSON path), `src/Prodbox/Gateway/Daemon.hs` (remove the
+JSON-flat-compat schema branch), `src/Prodbox/Gateway.hs` (remove `PRODBOX_*` env-var
+reads), `src/Prodbox/CLI/Spec.hs` and `src/Prodbox/CLI/Parser.hs` (remove `--log-level`,
+`--port`, `--node-id`, `--foreground` daemon flags), `prodbox-config-types.dhall`
+(extend with daemon BootConfig / LiveConfig record types if not already covered),
+`test/unit/Main.hs` (extend with Dhall round-trip tests)
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/cli_command_surface.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Implement the host-CLI Dhall decoder pattern (Sprint 1.2) for the in-cluster gateway
+daemon, replacing the JSON config parser. The daemon's `BootConfig` and `LiveConfig`
+record types come from a Dhall expression at `--config <path>`, decoded in-process via
+`Dhall.inputFile auto`. See
+[config_doctrine.md §4](../documents/engineering/config_doctrine.md#4-decoding) for the
+authoritative decoder contract.
+
+### Deliverables
+
+- New `src/Prodbox/Gateway/Settings.hs` exposing `loadDaemonConfig :: FilePath -> IO
+  DaemonConfig` built on `Dhall.inputFile auto`. The module mirrors `src/Prodbox/Settings.hs`
+  in structure.
+- Removal of `Prodbox.Gateway.Types.parseDaemonConfig` and the structured-vs-flat JSON
+  branch in `Prodbox.Gateway.Daemon`. The `DaemonConfig`, `BootConfig`, and `LiveConfig`
+  record types stay; only the parser changes.
+- Removal of `PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`, `PRODBOX_PORT` env-var reads in
+  `src/Prodbox/Gateway.hs`. The `prodbox gateway start` / `prodbox workload start` parser
+  spec accepts only `--config <path>`.
+- Extension of `prodbox-config-types.dhall` (or a new sibling `prodbox-gateway-types.dhall`)
+  with the daemon `BootConfig` and `LiveConfig` schema, so chart-rendered Dhall files have
+  a typed schema to validate against.
+- 20+ unit tests covering: happy-path Dhall decode, malformed-Dhall surface,
+  schemaVersion-mismatch handling, BootConfig-vs-LiveConfig classifier purity.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` adds Dhall round-trip coverage for the new decoder.
+3. `prodbox test integration cli` continues to pass (28/28).
+4. Live exercise: `prodbox gateway start --config <path-to-test-dhall>` decodes a
+   minimal Dhall fixture and serves `/healthz` 200.
+
+### Remaining Work
+
+- The implementing sprint chooses between extending `prodbox-config-types.dhall` and
+  creating a sibling daemon-only types file. The choice should follow whichever keeps
+  the Dhall import graph cleanest for the chart-rendered gateway config.
+
+## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change 📋
+
+**Status**: Planned (May 24, 2026, blocked by Sprint 2.20)
+**Blocked by**: Sprint 2.20
+**Implementation**: `src/Prodbox/Gateway/Daemon.hs` (remove SIGHUP handler, add
+file-watch worker, implement drain-and-exit on BootConfig change), `prodbox.cabal` (add
+`fsnotify` or equivalent dep), `src/Prodbox/CheckCode.hs` (remove `forbidFsnotify` /
+`forbidInotify` / forbid-mtime lint rules), `.hlint.yaml` (remove matching marker set),
+`test/daemon-lifecycle/Main.hs` (extend with file-watch reload + drain-and-exit goldens)
+**Docs to update**: `documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/unit_testing_policy.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Replace the SIGHUP-driven reload trigger with a file-watch trigger on the daemon's
+`--config` Dhall path. Implement the BootConfig-change drain-and-exit path so the
+kubelet restarts the Pod with the new config. See
+[config_doctrine.md §7 and §8](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger).
+
+### Deliverables
+
+- New file-watch worker in `Prodbox.Gateway.Daemon` that subscribes to events on the
+  parent directory of the `--config` path (so the kubelet's atomic `..data` symlink
+  swap fires the event). The worker feeds the same `TBQueue ()` reload queue the
+  current implementation already drains.
+- Removal of the `installHandler sigHUP` call and the SIGHUP-handler scaffolding.
+  SIGHUP becomes an ordinary terminate signal handled by the existing `drain + exit`
+  path.
+- Implementation of the drain-and-exit branch on BootConfig change: when the re-decoded
+  Dhall differs from the running config on any BootConfig field, the worker logs
+  `config_reload_boot_change_detected`, calls the existing drain machinery
+  (`liveDrainDeadlineSeconds` default 30s), and exits with `ExitSuccess`. The kubelet
+  restarts the Pod against the new Dhall.
+- Removal of the `forbidFsnotify`, `forbidInotify`, and forbid-mtime-polling lint rules
+  in `src/Prodbox/CheckCode.hs` and the matching marker set in `.hlint.yaml`.
+- New `test/daemon-lifecycle/Main.hs` cases: file-watch picks up a write, LiveConfig
+  diff hot-reloads, BootConfig diff drains and exits with `ExitSuccess`.
+- Extension of the `prodbox-daemon-lifecycle` golden set for the new event labels.
+
+### Validation
+
+1. `prodbox check-code` exit 0 (proves the lint-rule removal is symmetric with the
+   doctrine update).
+2. `prodbox test unit` exit 0.
+3. `prodbox test integration cli` exit 0.
+4. `cabal test prodbox-daemon-lifecycle` exit 0 (new file-watch goldens pass).
+5. Live exercise on this host: `prodbox rke2 reconcile` brings up the gateway daemon
+   with a mounted Dhall config; editing the ConfigMap changes the rendered file; the
+   daemon picks up the change within ~kubelet sync period; LiveConfig-only changes
+   reload in-process, BootConfig changes drain-and-exit and the kubelet restarts the
+   Pod.
+
+### Remaining Work
+
+- The implementing sprint chooses between `fsnotify` and `hinotify`. The chosen
+  library binding is documented in [config_doctrine.md §7](../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger).
+- The live exercise is the closure gate for this sprint. Code work that lands without
+  the live exercise leaves the sprint `Active` until the operator runs the verification
+  block.
+
+## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials 📋
+
+**Status**: Planned (May 24, 2026, blocked by Sprints 2.20 and 2.21)
+**Blocked by**: Sprints 2.20, 2.21
+**Implementation**: `charts/gateway/templates/configmap-config.yaml` (rewrite to render
+Dhall content), `charts/gateway/templates/configmap-orders.yaml` (rewrite to render
+Dhall content), `charts/gateway/templates/secret-aws-credentials.yaml` (replace with
+Dhall-content Secret), `charts/gateway/templates/secret-minio-creds.yaml` (replace with
+Dhall-content Secret), new `charts/gateway/templates/secret-secrets-aws.yaml` /
+`secret-secrets-minio.yaml` mounted at `/etc/gateway/secrets/`,
+`charts/gateway/templates/deployments.yaml` (remove `AWS_*`, `MINIO_*`,
+`GATEWAY_NODE_ID` env vars; mount the new Dhall ConfigMaps and Secrets at the canonical
+paths), `charts/gateway/values.yaml` (add/adjust knobs for the Dhall surface)
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`,
+`documents/engineering/secret_derivation_doctrine.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+
+### Objective
+
+Replace the chart's JSON-rendering `configmap-config.yaml` and `configmap-orders.yaml`
+with Dhall-rendering templates, and replace env-var-sourced daemon credentials with
+Secret-mounted Dhall fragments imported by the main Dhall via Dhall's native import
+system. See
+[helm_chart_platform_doctrine.md "Daemon and workload config mount contract"](../documents/engineering/helm_chart_platform_doctrine.md)
+for the authoritative mount layout.
+
+### Deliverables
+
+- Rewrite `charts/gateway/templates/configmap-config.yaml` to render Dhall content at
+  `/etc/gateway/config.dhall`. The Dhall expression imports
+  `/etc/gateway/orders.dhall`, `/etc/gateway/secrets/aws.dhall`, and
+  `/etc/gateway/secrets/minio.dhall`.
+- Rewrite `charts/gateway/templates/configmap-orders.yaml` to render Dhall content at
+  `/etc/gateway/orders.dhall`.
+- New `gateway-secrets-aws` Secret containing a Dhall fragment for AWS credentials,
+  mounted at `/etc/gateway/secrets/aws.dhall`. Replaces the `gateway-aws-credentials`
+  env-var-sourced Secret.
+- New `gateway-secrets-minio` Secret containing a Dhall fragment for MinIO credentials,
+  mounted at `/etc/gateway/secrets/minio.dhall`. Replaces the env-var path through
+  `gateway-minio-creds`.
+- Removal of `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`,
+  `MINIO_ACCESS_KEY_ID`, `MINIO_SECRET_ACCESS_KEY`, `GATEWAY_NODE_ID` env vars from
+  `charts/gateway/templates/deployments.yaml`. The daemon Pod's only environment is
+  k8s runtime metadata the binary does not read for config.
+- The `gateway-minio-creds` Secret name may be reused for the new Dhall-content Secret,
+  but the key shape changes (single `minio.dhall` key instead of two env-var-shaped
+  keys).
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `helm template gateway charts/gateway` renders cleanly.
+3. `prodbox lint chart` exit 0 (chart structural invariants stay green).
+4. Live exercise: `prodbox rke2 reconcile` brings up the gateway daemon with the new
+   chart layout; the daemon reads `/etc/gateway/config.dhall`, imports the credential
+   Secrets, connects to MinIO, and serves `/healthz` 200.
+
+### Remaining Work
+
+- The implementing sprint decides whether to keep the existing Secret names (renaming
+  keys) or introduce new Secret names. The chart-side migration must not break a running
+  cluster on `helm upgrade` — `lookup`-guarded creation patterns preserve credentials
+  across upgrades per the existing chart conventions.
 
 ## Documentation Requirements
 

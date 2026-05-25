@@ -94,6 +94,7 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
+import Prodbox.Workload.Settings qualified as WorkloadSettings
 import System.Environment (lookupEnv)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
@@ -213,37 +214,41 @@ runWorkloadCommand command =
 
 runWorkloadServer :: WorkloadOptions -> IO ExitCode
 runWorkloadServer options = do
-  modeResult <- resolveWorkloadMode
-  case modeResult of
+  dhallResult <- resolveWorkloadDhallConfig options
+  case dhallResult of
     Left err -> failWith err
-    Right mode -> do
-      port <- resolveHttpPort options
-      podName <- resolvePodName
-      websocketRuntimeResult <- resolveWebsocketRuntime mode podName
-      case websocketRuntimeResult of
+    Right maybeDhall -> do
+      modeResult <- resolveWorkloadModeFromDhall (workloadConfigPath options) maybeDhall
+      case modeResult of
         Left err -> failWith err
-        Right maybeRuntime -> do
-          logLevel <- resolveWorkloadLogLevel options
-          logStructuredAt
-            (severityFromLogLevel logLevel)
-            Info
-            "public_workload_starting"
-            [ field "mode" (renderMode mode)
-            , field "port" port
-            , field "log_level" logLevel
-            ]
-          serverSocketResult <- openListeningSocket port
-          case serverSocketResult of
+        Right mode -> do
+          port <- resolveHttpPortWithDhall options maybeDhall
+          podName <- resolvePodName
+          websocketRuntimeResult <- resolveWebsocketRuntime maybeDhall mode podName
+          case websocketRuntimeResult of
             Left err -> failWith err
-            Right serverSocket ->
-              bracket (pure serverSocket) close $ \boundSocket -> do
-                listen boundSocket 16
-                forever $ do
-                  (clientSocket, _) <- accept boundSocket
-                  void $
-                    forkFinally
-                      (handleClient mode podName maybeRuntime clientSocket)
-                      (\_ -> void (tryCloseSocket clientSocket))
+            Right maybeRuntime -> do
+              logLevel <- resolveWorkloadLogLevelWithDhall options maybeDhall
+              logStructuredAt
+                (severityFromLogLevel logLevel)
+                Info
+                "public_workload_starting"
+                [ field "mode" (renderMode mode)
+                , field "port" port
+                , field "log_level" logLevel
+                ]
+              serverSocketResult <- openListeningSocket port
+              case serverSocketResult of
+                Left err -> failWith err
+                Right serverSocket ->
+                  bracket (pure serverSocket) close $ \boundSocket -> do
+                    listen boundSocket 16
+                    forever $ do
+                      (clientSocket, _) <- accept boundSocket
+                      void $
+                        forkFinally
+                          (handleClient mode podName maybeRuntime clientSocket)
+                          (\_ -> void (tryCloseSocket clientSocket))
 
 handleClient :: WorkloadMode -> String -> Maybe WebsocketRuntime -> Socket -> IO ()
 handleClient mode podName maybeRuntime clientSocket = do
@@ -659,19 +664,86 @@ resolveWorkloadMode = do
           )
       Nothing -> Left "PRODBOX_WORKLOAD_MODE must be set to `api` or `websocket`"
 
+-- | Sprint 3.14: load the workload Dhall config once when @--config@ is
+-- passed. The chart-side config_doctrine contract is "Dhall as sole
+-- source"; legacy env-var resolution is retained only when no @--config@
+-- flag is given (operator-mode tests, host smoke runs).
+resolveWorkloadDhallConfig
+  :: WorkloadOptions -> IO (Either String (Maybe WorkloadSettings.WorkloadConfigDhall))
+resolveWorkloadDhallConfig options =
+  case workloadConfigPath options of
+    Nothing -> pure (Right Nothing)
+    Just path -> do
+      result <- WorkloadSettings.loadWorkloadConfig path
+      pure $ case result of
+        Left err -> Left err
+        Right dto -> Right (Just dto)
+
+-- | Sprint 3.14: resolve the workload mode from an already-loaded Dhall
+-- DTO (the canonical entrypoint used by 'runWorkloadServer'). When the
+-- DTO is 'Nothing' (no @--config@ passed) the legacy env-var path runs.
+resolveWorkloadModeFromDhall
+  :: Maybe FilePath
+  -> Maybe WorkloadSettings.WorkloadConfigDhall
+  -> IO (Either String WorkloadMode)
+resolveWorkloadModeFromDhall maybePath maybeDhall =
+  case (maybePath, maybeDhall) of
+    (Just _, Just dto) -> pure (Right (workloadModeFromDhall dto))
+    _ -> resolveWorkloadMode
+
+workloadModeFromDhall :: WorkloadSettings.WorkloadConfigDhall -> WorkloadMode
+workloadModeFromDhall dto = case WorkloadSettings.mode dto of
+  WorkloadSettings.Api -> WorkloadApi
+  WorkloadSettings.Websocket -> WorkloadWebsocket
+
 resolveHttpPort :: WorkloadOptions -> IO Int
-resolveHttpPort options = do
+resolveHttpPort options = resolveHttpPortWithDhall options Nothing
+
+-- | Sprint 3.14: resolve the listener port with precedence
+-- CLI flag > Dhall @workload_port@ > @PRODBOX_PORT@ env var > legacy
+-- @PRODBOX_HTTP_PORT@ env var > built-in default (8080).
+resolveHttpPortWithDhall
+  :: WorkloadOptions -> Maybe WorkloadSettings.WorkloadConfigDhall -> IO Int
+resolveHttpPortWithDhall options maybeDhall = do
   maybeModernPort <- lookupEnv "PRODBOX_PORT"
   maybeLegacyPort <- lookupEnv "PRODBOX_HTTP_PORT"
+  let dhallPort =
+        maybeDhall >>= WorkloadSettings.workload_port >>= naturalToPositiveInt
   pure $
-    case firstJust [workloadPort options, maybeModernPort >>= readMaybeInt, maybeLegacyPort >>= readMaybeInt] of
+    case firstJust
+      [ workloadPort options
+      , dhallPort
+      , maybeModernPort >>= readMaybeInt
+      , maybeLegacyPort >>= readMaybeInt
+      ] of
       Just portNumber | portNumber > 0 -> portNumber
       _ -> 8080
 
+naturalToPositiveInt :: (Integral n) => n -> Maybe Int
+naturalToPositiveInt n =
+  let value = fromIntegral n :: Int
+   in if value > 0 then Just value else Nothing
+
 resolveWorkloadLogLevel :: WorkloadOptions -> IO String
-resolveWorkloadLogLevel options = do
+resolveWorkloadLogLevel options = resolveWorkloadLogLevelWithDhall options Nothing
+
+-- | Sprint 3.14: resolve the log level with precedence
+-- CLI flag > Dhall @log_level@ > @PRODBOX_LOG_LEVEL@ env var > "info".
+resolveWorkloadLogLevelWithDhall
+  :: WorkloadOptions -> Maybe WorkloadSettings.WorkloadConfigDhall -> IO String
+resolveWorkloadLogLevelWithDhall options maybeDhall = do
   maybeEnvLogLevel <- lookupEnv "PRODBOX_LOG_LEVEL"
-  pure (fromMaybe "info" (workloadLogLevel options <|> maybeEnvLogLevel))
+  let dhallLevel = maybeDhall >>= WorkloadSettings.log_level >>= textToNonEmptyString
+  pure
+    ( fromMaybe
+        "info"
+        (workloadLogLevel options <|> dhallLevel <|> maybeEnvLogLevel)
+    )
+
+textToNonEmptyString :: Text.Text -> Maybe String
+textToNonEmptyString t =
+  let s = Text.unpack t
+   in if null s then Nothing else Just s
 
 resolvePodName :: IO String
 resolvePodName = do
@@ -681,13 +753,17 @@ resolvePodName = do
       Just podName | podName /= "" -> podName
       _ -> "unknown-pod"
 
-resolveWebsocketRuntime :: WorkloadMode -> String -> IO (Either String (Maybe WebsocketRuntime))
-resolveWebsocketRuntime mode podName =
+resolveWebsocketRuntime
+  :: Maybe WorkloadSettings.WorkloadConfigDhall
+  -> WorkloadMode
+  -> String
+  -> IO (Either String (Maybe WebsocketRuntime))
+resolveWebsocketRuntime maybeDhall mode podName =
   case mode of
     WorkloadApi -> pure (Right Nothing)
     WorkloadWebsocket -> do
-      redisConfigResult <- resolveRedisConfig
-      oidcConfigResult <- resolveOidcConfig
+      redisConfigResult <- resolveRedisConfig maybeDhall
+      oidcConfigResult <- resolveOidcConfig maybeDhall
       case (redisConfigResult, oidcConfigResult) of
         (Left err, _) -> pure (Left err)
         (_, Left err) -> pure (Left err)
@@ -711,41 +787,80 @@ resolveWebsocketRuntime mode podName =
                 )
             )
 
-resolveRedisConfig :: IO (Either String RedisConfig)
-resolveRedisConfig = do
-  maybeHost <- lookupEnv "PRODBOX_REDIS_HOST"
-  maybePort <- lookupEnv "PRODBOX_REDIS_PORT"
-  pure $
-    case (maybeHost, maybePort) of
-      (Just host, Just port)
-        | host /= "" && port /= "" ->
-            Right RedisConfig {redisHost = host, redisPort = port}
-      _ ->
-        Left
-          "PRODBOX_REDIS_HOST and PRODBOX_REDIS_PORT must be set for websocket mode"
+resolveRedisConfig
+  :: Maybe WorkloadSettings.WorkloadConfigDhall -> IO (Either String RedisConfig)
+resolveRedisConfig maybeDhall =
+  case maybeDhall >>= WorkloadSettings.redis of
+    Just dhallRedis ->
+      let host = Text.unpack (WorkloadSettings.host dhallRedis)
+          port = Text.unpack (WorkloadSettings.port dhallRedis)
+       in if not (null host) && not (null port)
+            then pure (Right RedisConfig {redisHost = host, redisPort = port})
+            else
+              pure
+                ( Left
+                    "redis.host and redis.port must be non-empty in the workload Dhall config for websocket mode"
+                )
+    Nothing -> do
+      maybeHost <- lookupEnv "PRODBOX_REDIS_HOST"
+      maybePortEnv <- lookupEnv "PRODBOX_REDIS_PORT"
+      pure $
+        case (maybeHost, maybePortEnv) of
+          (Just host, Just port)
+            | host /= "" && port /= "" ->
+                Right RedisConfig {redisHost = host, redisPort = port}
+          _ ->
+            Left
+              "redis must be Some in the workload Dhall config (or PRODBOX_REDIS_HOST/PRODBOX_REDIS_PORT must be set) for websocket mode"
 
-resolveOidcConfig :: IO (Either String OidcConfig)
-resolveOidcConfig = do
-  maybeIssuer <- lookupEnv "PRODBOX_OIDC_ISSUER"
-  maybeClientId <- lookupEnv "PRODBOX_OIDC_CLIENT_ID"
-  maybeClientSecret <- lookupEnv "PRODBOX_OIDC_CLIENT_SECRET"
-  maybePublicBaseUrl <- lookupEnv "PRODBOX_OIDC_PUBLIC_BASE_URL"
-  maybeTokenEndpoint <- lookupEnv "PRODBOX_OIDC_TOKEN_ENDPOINT"
-  pure $
-    case (maybeIssuer, maybeClientId, maybeClientSecret, maybePublicBaseUrl, maybeTokenEndpoint) of
-      (Just issuer, Just clientId, Just clientSecret, Just publicBaseUrl, Just tokenEndpoint)
-        | "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint] ->
-            Right
-              OidcConfig
-                { oidcIssuer = issuer
-                , oidcClientId = clientId
-                , oidcClientSecret = clientSecret
-                , oidcPublicBaseUrl = publicBaseUrl
-                , oidcTokenEndpoint = tokenEndpoint
-                }
-      _ ->
-        Left
-          "PRODBOX_OIDC_ISSUER, PRODBOX_OIDC_CLIENT_ID, PRODBOX_OIDC_CLIENT_SECRET, PRODBOX_OIDC_PUBLIC_BASE_URL, and PRODBOX_OIDC_TOKEN_ENDPOINT must be set for websocket mode"
+resolveOidcConfig
+  :: Maybe WorkloadSettings.WorkloadConfigDhall -> IO (Either String OidcConfig)
+resolveOidcConfig maybeDhall =
+  case maybeDhall >>= WorkloadSettings.oidc of
+    Just dhallOidc ->
+      let issuer = Text.unpack (WorkloadSettings.issuer dhallOidc)
+          clientId = Text.unpack (WorkloadSettings.client_id dhallOidc)
+          clientSecret = Text.unpack (WorkloadSettings.client_secret dhallOidc)
+          publicBaseUrl = Text.unpack (WorkloadSettings.public_base_url dhallOidc)
+          tokenEndpoint = Text.unpack (WorkloadSettings.token_endpoint dhallOidc)
+       in if "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint]
+            then
+              pure
+                ( Right
+                    OidcConfig
+                      { oidcIssuer = issuer
+                      , oidcClientId = clientId
+                      , oidcClientSecret = clientSecret
+                      , oidcPublicBaseUrl = publicBaseUrl
+                      , oidcTokenEndpoint = tokenEndpoint
+                      }
+                )
+            else
+              pure
+                ( Left
+                    "oidc.{issuer,client_id,client_secret,public_base_url,token_endpoint} must be non-empty in the workload Dhall config for websocket mode"
+                )
+    Nothing -> do
+      maybeIssuer <- lookupEnv "PRODBOX_OIDC_ISSUER"
+      maybeClientId <- lookupEnv "PRODBOX_OIDC_CLIENT_ID"
+      maybeClientSecret <- lookupEnv "PRODBOX_OIDC_CLIENT_SECRET"
+      maybePublicBaseUrl <- lookupEnv "PRODBOX_OIDC_PUBLIC_BASE_URL"
+      maybeTokenEndpoint <- lookupEnv "PRODBOX_OIDC_TOKEN_ENDPOINT"
+      pure $
+        case (maybeIssuer, maybeClientId, maybeClientSecret, maybePublicBaseUrl, maybeTokenEndpoint) of
+          (Just issuer, Just clientId, Just clientSecret, Just publicBaseUrl, Just tokenEndpoint)
+            | "" `notElem` [issuer, clientId, clientSecret, publicBaseUrl, tokenEndpoint] ->
+                Right
+                  OidcConfig
+                    { oidcIssuer = issuer
+                    , oidcClientId = clientId
+                    , oidcClientSecret = clientSecret
+                    , oidcPublicBaseUrl = publicBaseUrl
+                    , oidcTokenEndpoint = tokenEndpoint
+                    }
+          _ ->
+            Left
+              "oidc must be Some in the workload Dhall config (or PRODBOX_OIDC_* env vars must all be set) for websocket mode"
 
 openListeningSocket :: Int -> IO (Either String Socket)
 openListeningSocket port = do

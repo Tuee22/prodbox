@@ -1,0 +1,35 @@
+{{- /*
+Sprint 3.14 (May 24, 2026): the api workload Pod's config is rendered as a
+Dhall expression (`config.dhall`) per
+@documents/engineering/config_doctrine.md §6@. The workload binary decodes
+this file in-process via the native Haskell `dhall` library through
+`Prodbox.Workload.Settings.loadWorkloadConfig`.
+
+The transitional state keeps the `PRODBOX_WORKLOAD_MODE` /
+`PRODBOX_HTTP_PORT` env vars on the Pod alongside this new ConfigMap so the
+binary can fall back if the chart is rolled back. Sprint 3.14 follow-up
+removes those env vars and makes `--config` the sole source.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: api-config
+  labels:
+    {{- include "api.labels" . | nindent 4 }}
+data:
+  config.dhall: |-
+    { schemaVersion = 1
+    , mode = < Api | Websocket >.Api
+    , log_level = None Text
+    , workload_port = Some {{ .Values.api.port }}
+    , redis =
+        None { host : Text, port : Text }
+    , oidc =
+        None
+          { issuer : Text
+          , client_id : Text
+          , client_secret : Text
+          , public_base_url : Text
+          , token_endpoint : Text
+          }
+    }

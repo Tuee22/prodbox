@@ -11,17 +11,10 @@ module Prodbox.Gateway
   )
 where
 
-import Control.Applicative ((<|>))
 import Control.Exception (IOException, try)
-import Data.Aeson
-  ( Value (..)
-  , object
-  , (.=)
-  )
-import Data.Aeson.Encode.Pretty qualified as Pretty
+import Data.Aeson (Value (..))
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toUpper)
 import Data.List (intercalate, sortOn)
 import Data.Maybe (fromMaybe)
@@ -48,12 +41,11 @@ import Prodbox.EffectInterpreter
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Daemon qualified as Daemon
+import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , Orders (..)
   , PeerEndpoint (..)
-  , parseDaemonConfig
-  , parseOrders
   , supportedDaemonConfigSchemaVersion
   , validateDaemonTimingAgainstOrders
   )
@@ -69,10 +61,8 @@ import Prodbox.Settings
   , route53
   , validateAndLoadSettings
   )
-import System.Environment (lookupEnv)
 import System.Exit (ExitCode (..))
 import System.FilePath (isAbsolute, takeDirectory, (</>))
-import Text.Read (readMaybe)
 
 runGatewayCommand :: FilePath -> GatewayCommand -> IO ExitCode
 runGatewayCommand repoRoot command =
@@ -164,33 +154,18 @@ renderGatewayStartPlan configPath logLevel portOverride foreground config =
     ]
 
 resolveGatewayConfigPath :: Maybe FilePath -> IO (Either String FilePath)
-resolveGatewayConfigPath maybeCliPath = do
-  maybeEnvPath <- lookupEnv "PRODBOX_CONFIG_PATH"
-  pure $
-    case maybeCliPath <|> maybeEnvPath of
-      Just configPath -> Right configPath
-      Nothing ->
-        Left
-          "Missing gateway config path. Pass `--config <path>` or set `PRODBOX_CONFIG_PATH`."
+resolveGatewayConfigPath maybeCliPath =
+  pure $ case maybeCliPath of
+    Just configPath -> Right configPath
+    Nothing -> Left "Missing gateway config path. Pass `--config <path>`."
 
 resolveGatewayLogLevel :: Maybe String -> IO String
-resolveGatewayLogLevel maybeCliLevel = do
-  maybeEnvLevel <- lookupEnv "PRODBOX_LOG_LEVEL"
-  pure (fromMaybe "info" (maybeCliLevel <|> maybeEnvLevel))
+resolveGatewayLogLevel maybeCliLevel =
+  pure (fromMaybe "info" maybeCliLevel)
 
 resolveGatewayPortOverride :: Maybe Int -> IO (Either String (Maybe Int))
-resolveGatewayPortOverride maybeCliPort = do
-  maybeEnvPort <- lookupEnv "PRODBOX_PORT"
-  pure $
-    case maybeCliPort of
-      Just portOverride -> Right (Just portOverride)
-      Nothing ->
-        case maybeEnvPort of
-          Nothing -> Right Nothing
-          Just portText ->
-            case readMaybe portText of
-              Just parsedPort -> Right (Just parsedPort)
-              Nothing -> Left ("Invalid PRODBOX_PORT value: " ++ portText)
+resolveGatewayPortOverride maybeCliPort =
+  pure (Right maybeCliPort)
 
 buildGatewayStartExecutionPlan
   :: FilePath
@@ -216,42 +191,46 @@ runGatewayDaemonAcquirePrerequisites repoRoot =
     Left err -> pure (Failure err)
     Right dag -> runEffectDAG (InterpreterContext repoRoot) dag
 
+-- | Sprint 2.20 / 2.22: render the operator-facing gateway daemon config
+-- as a Dhall expression instead of JSON. The operator runs `prodbox gateway
+-- config-gen <out>.dhall --node-id <id>` to obtain a starter template that
+-- is then edited and fed back to `prodbox gateway start --config <out>.dhall`.
 renderGatewayConfigTemplate :: ValidatedSettings -> String -> String
 renderGatewayConfigTemplate settings nodeId =
-  BL8.unpack (Pretty.encodePretty' prettyJsonConfig template) ++ "\n"
+  unlines
+    [ "{ schemaVersion = " ++ show supportedDaemonConfigSchemaVersion
+    , ", boot ="
+    , "  { node_id = " ++ show nodeId
+    , "  , cert_file = " ++ show ("/path/to/" ++ nodeId ++ ".crt")
+    , "  , key_file = " ++ show ("/path/to/" ++ nodeId ++ ".key")
+    , "  , ca_file = \"/path/to/ca.crt\""
+    , "  , orders_file = \"/path/to/orders.dhall\""
+    , "  , event_keys ="
+    , "    [ { name = " ++ show nodeId ++ ", value = \"REPLACE_WITH_SECRET_KEY\" } ]"
+    , "  , dns_write_gate ="
+    , "      Some"
+    , "        { zone_id = " ++ show (Text.unpack (zone_id (route53 config)))
+    , "        , fqdn = " ++ show (preferredGatewayFqdn settings)
+    , "        , ttl = " ++ show (fromIntegral (demo_ttl (domain config)) :: Integer)
+    , "        , aws_region = " ++ show (Text.unpack (region (aws config)))
+    , "        }"
+    , "  , aws_creds ="
+    , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "  , minio_creds ="
+    , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "  }"
+    , ", live ="
+    , "  { heartbeat_interval_seconds = 1.0"
+    , "  , reconnect_interval_seconds = 1.0"
+    , "  , sync_interval_seconds = 5.0"
+    , "  , max_clock_skew_seconds = 10.0"
+    , "  , drain_deadline_seconds = Some 30"
+    , "  , log_level = Some \"info\""
+    , "  }"
+    , "}"
+    ]
  where
   config = validatedConfig settings
-  template =
-    object
-      [ "schemaVersion" .= supportedDaemonConfigSchemaVersion
-      , "boot"
-          .= object
-            [ "node_id" .= nodeId
-            , "cert_file" .= ("/path/to/" ++ nodeId ++ ".crt")
-            , "key_file" .= ("/path/to/" ++ nodeId ++ ".key")
-            , "ca_file" .= ("/path/to/ca.crt" :: String)
-            , "orders_file" .= ("/path/to/orders.json" :: String)
-            , "event_keys"
-                .= Object
-                  (KeyMap.singleton (Key.fromString nodeId) (String "REPLACE_WITH_SECRET_KEY"))
-            , "dns_write_gate"
-                .= object
-                  [ "zone_id" .= Text.unpack (zone_id (route53 config))
-                  , "fqdn" .= preferredGatewayFqdn settings
-                  , "ttl" .= (fromIntegral (demo_ttl (domain config)) :: Integer)
-                  , "aws_region" .= Text.unpack (region (aws config))
-                  ]
-            ]
-      , "live"
-          .= object
-            [ "log_level" .= ("info" :: String)
-            , "heartbeat_interval_seconds" .= (1.0 :: Double)
-            , "reconnect_interval_seconds" .= (1.0 :: Double)
-            , "sync_interval_seconds" .= (5.0 :: Double)
-            , "max_clock_skew_seconds" .= (10.0 :: Double)
-            , "drain_deadline_seconds" .= (30 :: Int)
-            ]
-      ]
 
 renderGatewayStatusReport :: Value -> Either String String
 renderGatewayStatusReport payload =
@@ -289,31 +268,20 @@ lookupPeerEndpoint nodeId orders =
     endpoint : _ -> Just endpoint
 
 loadDaemonConfig :: FilePath -> IO (Either String DaemonConfig)
-loadDaemonConfig path = do
-  fileResult <- readTextFile "gateway daemon config" path
-  pure $ do
-    contents <- fileResult
-    mapLeft id (parseDaemonConfig contents)
+loadDaemonConfig = GatewaySettings.loadDaemonConfig
+
+-- Sprint 2.22: 'loadOrdersFile' now dispatches by file extension via
+-- 'GatewaySettings.loadOrders' so both the legacy JSON-rendering chart
+-- template and the new Dhall-rendering template are accepted during the
+-- transition.
 
 loadOrdersFile :: FilePath -> IO (Either String Orders)
-loadOrdersFile path = do
-  fileResult <- readTextFile "gateway orders" path
-  pure $ do
-    contents <- fileResult
-    mapLeft id (parseOrders contents)
-
-readTextFile :: String -> FilePath -> IO (Either String String)
-readTextFile label path = do
-  result <- try (readFile path) :: IO (Either IOException String)
-  pure $ mapLeft (showReadFailure label path) result
+loadOrdersFile = GatewaySettings.loadOrders
 
 writeTextFile :: FilePath -> String -> IO (Either String ())
 writeTextFile path contents = do
   result <- try (writeFile path contents) :: IO (Either IOException ())
   pure $ mapLeft (showWriteFailure path) result
-
-showReadFailure :: String -> FilePath -> IOException -> String
-showReadFailure label path err = "failed to read " ++ label ++ " " ++ path ++ ": " ++ show err
 
 showWriteFailure :: FilePath -> IOException -> String
 showWriteFailure path err = "failed to write " ++ path ++ ": " ++ show err
@@ -425,9 +393,6 @@ preferredGatewayFqdn settings =
   Text.unpack (demo_fqdn (domain config))
  where
   config = validatedConfig settings
-
-prettyJsonConfig :: Pretty.Config
-prettyJsonConfig = Pretty.defConfig {Pretty.confIndent = Pretty.Spaces 2}
 
 boolText :: Bool -> String
 boolText True = "true"

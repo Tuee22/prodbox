@@ -643,6 +643,13 @@ workloadOptionsParser =
   WorkloadOptions
     <$> optional
       ( strOption
+          ( long "config"
+              <> metavar "PATH"
+              <> help "Workload Dhall config path (e.g. /etc/workload/config.dhall)"
+          )
+      )
+    <*> optional
+      ( strOption
           ( long "log-level"
               <> metavar "LEVEL"
               <> help "Override daemon log level"

@@ -188,6 +188,7 @@ import Prodbox.Gateway.Peer
   , parsePeerHttpRequest
   )
 import Prodbox.Gateway.Peer qualified as Peer
+import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( DaemonConfig (..)
   , Disposition (..)
@@ -205,7 +206,6 @@ import Prodbox.Gateway.Types
   , eventTypeHeartbeat
   , eventTypeYield
   , nodeDisposition
-  , parseDaemonConfig
   , parseEvent
   , parseOrders
   , validateDaemonTimingAgainstOrders
@@ -345,6 +345,7 @@ import Prodbox.TestPlan
 import Prodbox.TestValidation
   ( verifyAwsTestSshReachability
   )
+import Prodbox.Workload.Settings qualified as WorkloadSettings
 import System.Directory
   ( Permissions (..)
   , copyFile
@@ -725,10 +726,11 @@ main = mainWithSuite "prodbox-unit" $ do
       "test/golden/plans/gateway-start.txt"
       $ do
         let configText = renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"
-        case parseDaemonConfig configText of
+        decodeResult <- GatewaySettings.decodeDaemonConfigDhall (Text.pack configText)
+        case decodeResult of
           Left err -> fail err
           Right config ->
-            pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.json" "warn" (Just 4200) True config))
+            pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.dhall" "warn" (Just 4200) True config))
 
     goldenTest
       "renders the rke2 reconcile plan deterministically"
@@ -853,19 +855,23 @@ main = mainWithSuite "prodbox-unit" $ do
         repoPaths `shouldSatisfy` notElem ".data"
         doctrineViolationsInPaths repoPaths `shouldBe` [ForbiddenWorkflowDirectory ".github"]
 
-    it "keeps the gateway chart on repo-rootless startup with env-based AWS auth" $ do
+    it "keeps the gateway chart on repo-rootless startup with Dhall-mounted AWS auth" $ do
+      -- Sprint 2.22: AWS credentials are no longer env vars on the Pod;
+      -- they are a Dhall fragment mounted at /etc/gateway/secrets/aws.dhall
+      -- and imported by config.dhall.
       repoRoot <- getCurrentDirectory
       deploymentTemplate <-
         readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "deployments.yaml")
       awsSecretTemplate <-
         readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "secret-aws-credentials.yaml")
 
-      deploymentTemplate `shouldContain` "name: AWS_ACCESS_KEY_ID"
-      deploymentTemplate `shouldContain` "name: gateway-aws-credentials"
+      deploymentTemplate `shouldContain` "secretName: gateway-aws-credentials"
       deploymentTemplate `shouldContain` "scheme: HTTP"
       deploymentTemplate `shouldNotContain` "scheme: HTTPS"
       deploymentTemplate `shouldNotContain` "/app/prodbox-config.json"
+      deploymentTemplate `shouldNotContain` "name: AWS_ACCESS_KEY_ID"
       awsSecretTemplate `shouldContain` "name: gateway-aws-credentials"
+      awsSecretTemplate `shouldContain` "aws.dhall"
       awsSecretTemplate `shouldNotContain` "prodbox-config.json"
 
     it "renders retained PostgreSQL credential secrets before the Percona cluster resource" $ do
@@ -1613,40 +1619,10 @@ main = mainWithSuite "prodbox-unit" $ do
 
         loadConfigFile tmpDir `shouldReturn` Right roundTripConfigFile
 
-    it "round-trips persisted gateway daemon configs through JSON" $ do
-      parseDaemonConfig (BL8.unpack (encodeJsonValue (daemonConfigJsonValue sampleDaemonConfig)))
-        `shouldBe` Right sampleDaemonConfig
-
-    it "accepts the schemaVersion boot/live gateway daemon config shape" $ do
-      let structuredConfig =
-            object
-              [ "schemaVersion" .= (1 :: Int)
-              , "boot"
-                  .= object
-                    [ "node_id" .= daemonNodeId sampleDaemonConfig
-                    , "cert_file" .= daemonCertFile sampleDaemonConfig
-                    , "key_file" .= daemonKeyFile sampleDaemonConfig
-                    , "ca_file" .= daemonCaFile sampleDaemonConfig
-                    , "orders_file" .= daemonOrdersFile sampleDaemonConfig
-                    , "event_keys"
-                        .= object [Key.fromString "node-a" .= ("fake-key" :: String)]
-                    , "dns_write_gate" .= fmap dnsWriteGateJsonValue (daemonDnsWriteGate sampleDaemonConfig)
-                    ]
-              , "live"
-                  .= object
-                    [ "log_level" .= ("debug" :: String)
-                    , "heartbeat_interval_seconds" .= daemonHeartbeatInterval sampleDaemonConfig
-                    , "reconnect_interval_seconds" .= daemonReconnectInterval sampleDaemonConfig
-                    , "sync_interval_seconds" .= daemonSyncInterval sampleDaemonConfig
-                    , "max_clock_skew_seconds" .= daemonMaxClockSkewSeconds sampleDaemonConfig
-                    , "drain_deadline_seconds" .= daemonDrainDeadlineSeconds sampleDaemonConfig
-                    ]
-              ]
-          expectedConfig = sampleDaemonConfig {daemonConfigLogLevel = Just "debug"}
-      parseDaemonConfig (BL8.unpack (encodeJsonValue structuredConfig))
-        `shouldBe` Right expectedConfig
-      parseDaemonConfig "{\"schemaVersion\": 999, \"boot\": {}, \"live\": {}}"
-        `shouldBe` Left "config_schema_mismatch: expected schemaVersion 1, got 999"
+    -- Sprint 2.20: the JSON `parseDaemonConfig` round-trip tests are
+    -- superseded by the Dhall `decodeDaemonConfigDhall` coverage in the
+    -- `Sprint 2.20 daemon Dhall settings` describe block above. The legacy
+    -- JSON parser is removed from `Prodbox.Gateway.Types` as Phase 2 closure.
 
     it "round-trips persisted gateway orders through JSON" $ do
       parseOrders (BL8.unpack (encodeJsonValue (ordersJsonValue sampleOrders)))
@@ -2136,41 +2112,59 @@ main = mainWithSuite "prodbox-unit" $ do
           report `shouldContain` "HEARTBEAT_NODE_B=1.5"
 
     it "enforces gateway timing relationships against the orders timeout" $ do
-      let invalidConfig =
-            unlines
-              [ "{"
-              , "  \"node_id\": \"node-a\","
-              , "  \"cert_file\": \"node-a.crt\","
-              , "  \"key_file\": \"node-a.key\","
-              , "  \"ca_file\": \"ca.crt\","
-              , "  \"orders_file\": \"orders.json\","
-              , "  \"event_keys\": { \"node-a\": \"REPLACE_WITH_SECRET_KEY\" },"
-              , "  \"heartbeat_interval_seconds\": 2.0,"
-              , "  \"reconnect_interval_seconds\": 1.0,"
-              , "  \"sync_interval_seconds\": 5.0"
-              , "}"
-              ]
-          ordersText =
-            unlines
-              [ "{"
-              , "  \"version_utc\": 1,"
-              , "  \"nodes\": ["
-              , "    {"
-              , "      \"node_id\": \"node-a\","
-              , "      \"stable_dns_name\": \"node-a.example.test\","
-              , "      \"rest_host\": \"0.0.0.0\","
-              , "      \"rest_port\": 31001,"
-              , "      \"socket_host\": \"0.0.0.0\","
-              , "      \"socket_port\": 32001"
-              , "    }"
-              , "  ],"
-              , "  \"gateway_rule\": {"
-              , "    \"ranked_nodes\": [\"node-a\"],"
-              , "    \"heartbeat_timeout_seconds\": 3"
-              , "  }"
-              , "}"
-              ]
-      case (parseDaemonConfig invalidConfig, parseOrders ordersText) of
+      let invalidConfigDhall =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 1"
+                  , ", boot ="
+                  , "  { node_id = \"node-a\""
+                  , "  , cert_file = \"node-a.crt\""
+                  , "  , key_file = \"node-a.key\""
+                  , "  , ca_file = \"ca.crt\""
+                  , "  , orders_file = \"orders.dhall\""
+                  , "  , event_keys ="
+                  , "    [ { name = \"node-a\", value = \"REPLACE_WITH_SECRET_KEY\" } ]"
+                  , "  , dns_write_gate ="
+                  , "      None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }"
+                  , "  , aws_creds ="
+                  , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+                  , "  , minio_creds ="
+                  , "      None { minio_access_key : Text, minio_secret_key : Text }"
+                  , "  }"
+                  , ", live ="
+                  , "  { heartbeat_interval_seconds = 2.0"
+                  , "  , reconnect_interval_seconds = 1.0"
+                  , "  , sync_interval_seconds = 5.0"
+                  , "  , max_clock_skew_seconds = 10.0"
+                  , "  , drain_deadline_seconds = Some 30"
+                  , "  , log_level = Some \"info\""
+                  , "  }"
+                  , "}"
+                  ]
+              )
+          ordersDhall =
+            Text.pack
+              ( unlines
+                  [ "{ version_utc = 1"
+                  , ", nodes ="
+                  , "  [ { node_id = \"node-a\""
+                  , "    , stable_dns_name = \"node-a.example.test\""
+                  , "    , rest_host = \"0.0.0.0\""
+                  , "    , rest_port = 31001"
+                  , "    , socket_host = \"0.0.0.0\""
+                  , "    , socket_port = 32001"
+                  , "    }"
+                  , "  ]"
+                  , ", gateway_rule ="
+                  , "    { ranked_nodes = [ \"node-a\" ]"
+                  , "    , heartbeat_timeout_seconds = 3"
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      configResult <- GatewaySettings.decodeDaemonConfigDhall invalidConfigDhall
+      ordersResult <- GatewaySettings.decodeOrdersDhall ordersDhall
+      case (configResult, ordersResult) of
         (Right config, Right orders) ->
           validateDaemonTimingAgainstOrders config orders
             `shouldBe` Left "heartbeat_interval_seconds must be <= heartbeat_timeout_seconds / 2"
@@ -2185,21 +2179,20 @@ main = mainWithSuite "prodbox-unit" $ do
 
         case result of
           Left err -> expectationFailure err
-          Right settings ->
-            case eitherDecode (BL8.pack (renderGatewayConfigTemplate settings "node-a")) of
+          Right settings -> do
+            decoded <-
+              GatewaySettings.decodeDaemonConfigDhall
+                (Text.pack (renderGatewayConfigTemplate settings "node-a"))
+            case decoded of
               Left err -> expectationFailure err
-              Right (Object payload) ->
-                case KeyMap.lookup (Key.fromString "boot") payload of
-                  Just (Object bootPayload) ->
-                    case KeyMap.lookup (Key.fromString "dns_write_gate") bootPayload of
-                      Just (Object gate) -> do
-                        KeyMap.lookup (Key.fromString "fqdn") gate `shouldBe` Just (String "test.resolvefintech.com")
-                        KeyMap.lookup (Key.fromString "zone_id") gate `shouldBe` Just (String "Z1234567890ABC")
-                        KeyMap.lookup (Key.fromString "ttl") gate `shouldBe` Just (Number 60)
-                        KeyMap.lookup (Key.fromString "aws_region") gate `shouldBe` Just (String "us-east-1")
-                      _ -> expectationFailure "expected dns_write_gate object"
-                  _ -> expectationFailure "expected boot object"
-              Right _ -> expectationFailure "expected config template object"
+              Right config ->
+                case daemonDnsWriteGate config of
+                  Nothing -> expectationFailure "expected Just DnsWriteGate"
+                  Just gate -> do
+                    dnsWriteGateFqdn gate `shouldBe` "test.resolvefintech.com"
+                    dnsWriteGateZoneId gate `shouldBe` "Z1234567890ABC"
+                    dnsWriteGateTtl gate `shouldBe` 60
+                    dnsWriteGateAwsRegion gate `shouldBe` "us-east-1"
 
   describe "Sprint 2.17 Haskell HTTP client" $ do
     it "renders HttpConnectionFailure as a single-line operator-facing string" $
@@ -2312,6 +2305,373 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "FirewallRuleAlreadyPresent renders as 'already-present'" $
       renderFirewallRuleAction FirewallRuleAlreadyPresent `shouldBe` "already-present"
+
+  describe "Sprint 2.20 daemon Dhall settings" $ do
+    let happyDhall =
+          Text.pack
+            ( unlines
+                [ "{ schemaVersion = 1"
+                , ", boot ="
+                , "  { node_id = \"node-a\""
+                , "  , cert_file = \"node-a.crt\""
+                , "  , key_file = \"node-a.key\""
+                , "  , ca_file = \"ca.crt\""
+                , "  , orders_file = \"orders.dhall\""
+                , "  , event_keys ="
+                , "    [ { name = \"node-a\", value = \"abcdef0123456789\" } ]"
+                , "  , dns_write_gate ="
+                , "      Some { zone_id = \"Z123\""
+                , "           , fqdn = \"test.example.com\""
+                , "           , ttl = 60"
+                , "           , aws_region = \"us-east-1\""
+                , "           }"
+                , "  , aws_creds ="
+                , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+                , "  , minio_creds ="
+                , "      None { minio_access_key : Text, minio_secret_key : Text }"
+                , "  }"
+                , ", live ="
+                , "  { heartbeat_interval_seconds = 1.0"
+                , "  , reconnect_interval_seconds = 1.0"
+                , "  , sync_interval_seconds = 5.0"
+                , "  , max_clock_skew_seconds = 10.0"
+                , "  , drain_deadline_seconds = Some 30"
+                , "  , log_level = Some \"info\""
+                , "  }"
+                , "}"
+                ]
+            )
+
+    it "decodes a happy-path daemon Dhall config" $ do
+      result <- GatewaySettings.decodeDaemonConfigDhall happyDhall
+      case result of
+        Left err -> expectationFailure err
+        Right config -> do
+          daemonNodeId config `shouldBe` "node-a"
+          daemonCertFile config `shouldBe` "node-a.crt"
+          daemonKeyFile config `shouldBe` "node-a.key"
+          daemonCaFile config `shouldBe` "ca.crt"
+          daemonOrdersFile config `shouldBe` "orders.dhall"
+          daemonHeartbeatInterval config `shouldBe` 1.0
+          daemonReconnectInterval config `shouldBe` 1.0
+          daemonSyncInterval config `shouldBe` 5.0
+          daemonMaxClockSkewSeconds config `shouldBe` 10.0
+          daemonDrainDeadlineSeconds config `shouldBe` Just 30
+          daemonConfigLogLevel config `shouldBe` Just "info"
+          daemonEventKeys config `shouldBe` [("node-a", "abcdef0123456789")]
+
+    it "preserves the DnsWriteGate fields through the Dhall decoder" $ do
+      result <- GatewaySettings.decodeDaemonConfigDhall happyDhall
+      case result of
+        Left err -> expectationFailure err
+        Right config ->
+          case daemonDnsWriteGate config of
+            Nothing -> expectationFailure "expected Just DnsWriteGate"
+            Just gate -> do
+              dnsWriteGateZoneId gate `shouldBe` "Z123"
+              dnsWriteGateFqdn gate `shouldBe` "test.example.com"
+              dnsWriteGateTtl gate `shouldBe` 60
+              dnsWriteGateAwsRegion gate `shouldBe` "us-east-1"
+
+    it "fails fast on a schemaVersion mismatch" $ do
+      let mismatched =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 99"
+                  , ", boot ="
+                  , "  { node_id = \"node-a\""
+                  , "  , cert_file = \"a.crt\""
+                  , "  , key_file = \"a.key\""
+                  , "  , ca_file = \"ca.crt\""
+                  , "  , orders_file = \"orders.dhall\""
+                  , "  , event_keys = [] : List { name : Text, value : Text }"
+                  , "  , dns_write_gate ="
+                  , "      None { zone_id : Text"
+                  , "           , fqdn : Text"
+                  , "           , ttl : Natural"
+                  , "           , aws_region : Text"
+                  , "           }"
+                  , "  , aws_creds ="
+                  , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+                  , "  , minio_creds ="
+                  , "      None { minio_access_key : Text, minio_secret_key : Text }"
+                  , "  }"
+                  , ", live ="
+                  , "  { heartbeat_interval_seconds = 1.0"
+                  , "  , reconnect_interval_seconds = 1.0"
+                  , "  , sync_interval_seconds = 5.0"
+                  , "  , max_clock_skew_seconds = 10.0"
+                  , "  , drain_deadline_seconds = None Natural"
+                  , "  , log_level = None Text"
+                  , "  }"
+                  , "}"
+                  ]
+              )
+      result <- GatewaySettings.decodeDaemonConfigDhall mismatched
+      case result of
+        Right _ -> expectationFailure "expected schema-mismatch failure"
+        Left err -> err `shouldContain` "config_schema_mismatch"
+
+    it "fails fast when a required boot field is empty" $ do
+      let emptyNode =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 1"
+                  , ", boot ="
+                  , "  { node_id = \"\""
+                  , "  , cert_file = \"a.crt\""
+                  , "  , key_file = \"a.key\""
+                  , "  , ca_file = \"ca.crt\""
+                  , "  , orders_file = \"orders.dhall\""
+                  , "  , event_keys = [] : List { name : Text, value : Text }"
+                  , "  , dns_write_gate ="
+                  , "      None { zone_id : Text"
+                  , "           , fqdn : Text"
+                  , "           , ttl : Natural"
+                  , "           , aws_region : Text"
+                  , "           }"
+                  , "  , aws_creds ="
+                  , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+                  , "  , minio_creds ="
+                  , "      None { minio_access_key : Text, minio_secret_key : Text }"
+                  , "  }"
+                  , ", live ="
+                  , "  { heartbeat_interval_seconds = 1.0"
+                  , "  , reconnect_interval_seconds = 1.0"
+                  , "  , sync_interval_seconds = 5.0"
+                  , "  , max_clock_skew_seconds = 10.0"
+                  , "  , drain_deadline_seconds = None Natural"
+                  , "  , log_level = None Text"
+                  , "  }"
+                  , "}"
+                  ]
+              )
+      result <- GatewaySettings.decodeDaemonConfigDhall emptyNode
+      case result of
+        Right _ -> expectationFailure "expected empty-node_id failure"
+        Left err -> err `shouldContain` "node_id is required"
+
+    it "fails fast when heartbeat_interval_seconds is zero" $ do
+      let zeroHb =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 1"
+                  , ", boot ="
+                  , "  { node_id = \"node-a\""
+                  , "  , cert_file = \"a.crt\""
+                  , "  , key_file = \"a.key\""
+                  , "  , ca_file = \"ca.crt\""
+                  , "  , orders_file = \"orders.dhall\""
+                  , "  , event_keys = [] : List { name : Text, value : Text }"
+                  , "  , dns_write_gate ="
+                  , "      None { zone_id : Text"
+                  , "           , fqdn : Text"
+                  , "           , ttl : Natural"
+                  , "           , aws_region : Text"
+                  , "           }"
+                  , "  , aws_creds ="
+                  , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+                  , "  , minio_creds ="
+                  , "      None { minio_access_key : Text, minio_secret_key : Text }"
+                  , "  }"
+                  , ", live ="
+                  , "  { heartbeat_interval_seconds = 0.0"
+                  , "  , reconnect_interval_seconds = 1.0"
+                  , "  , sync_interval_seconds = 5.0"
+                  , "  , max_clock_skew_seconds = 10.0"
+                  , "  , drain_deadline_seconds = None Natural"
+                  , "  , log_level = None Text"
+                  , "  }"
+                  , "}"
+                  ]
+              )
+      result <- GatewaySettings.decodeDaemonConfigDhall zeroHb
+      case result of
+        Right _ -> expectationFailure "expected positive-heartbeat failure"
+        Left err -> err `shouldContain` "heartbeat_interval_seconds must be positive"
+
+    it "dispatches by .dhall extension when loading from a file" $
+      withSystemTempDirectory "prodbox-daemon-dhall" $ \tmpDir -> do
+        let path = tmpDir </> "config.dhall"
+        writeFile path (Text.unpack happyDhall)
+        result <- GatewaySettings.loadDaemonConfig path
+        case result of
+          Left err -> expectationFailure err
+          Right config -> daemonNodeId config `shouldBe` "node-a"
+
+  -- Sprint 2.20 closure: the JSON-dispatch fallback test was removed
+  -- along with the JSON parser itself.
+
+  describe "Sprint 2.22 gateway orders Dhall decoder" $ do
+    it "decodes a happy-path orders Dhall expression" $ do
+      let dhallSrc =
+            Text.pack
+              ( unlines
+                  [ "{ version_utc = 1"
+                  , ", nodes ="
+                  , "  [ { node_id = \"node-a\""
+                  , "    , stable_dns_name = \"gateway-node-a.svc\""
+                  , "    , rest_host = \"0.0.0.0\""
+                  , "    , rest_port = 31001"
+                  , "    , socket_host = \"0.0.0.0\""
+                  , "    , socket_port = 32001"
+                  , "    }"
+                  , "  ]"
+                  , ", gateway_rule ="
+                  , "    { ranked_nodes = [ \"node-a\" ]"
+                  , "    , heartbeat_timeout_seconds = 5"
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      result <- GatewaySettings.decodeOrdersDhall dhallSrc
+      case result of
+        Left err -> expectationFailure err
+        Right orders -> do
+          ordersVersionUtc orders `shouldBe` 1
+          length (ordersNodes orders) `shouldBe` 1
+          rankedNodes (ordersGatewayRule orders) `shouldBe` ["node-a"]
+          heartbeatTimeoutSeconds (ordersGatewayRule orders) `shouldBe` 5
+
+    it "rejects orders with duplicate node_id values" $ do
+      let dhallSrc =
+            Text.pack
+              ( unlines
+                  [ "{ version_utc = 1"
+                  , ", nodes ="
+                  , "  [ { node_id = \"dup\""
+                  , "    , stable_dns_name = \"a.svc\""
+                  , "    , rest_host = \"0.0.0.0\""
+                  , "    , rest_port = 31001"
+                  , "    , socket_host = \"0.0.0.0\""
+                  , "    , socket_port = 32001"
+                  , "    }"
+                  , "  , { node_id = \"dup\""
+                  , "    , stable_dns_name = \"b.svc\""
+                  , "    , rest_host = \"0.0.0.0\""
+                  , "    , rest_port = 31002"
+                  , "    , socket_host = \"0.0.0.0\""
+                  , "    , socket_port = 32002"
+                  , "    }"
+                  , "  ]"
+                  , ", gateway_rule ="
+                  , "    { ranked_nodes = [ \"dup\" ]"
+                  , "    , heartbeat_timeout_seconds = 5"
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      result <- GatewaySettings.decodeOrdersDhall dhallSrc
+      case result of
+        Right _ -> expectationFailure "expected duplicate-node_id failure"
+        Left err -> err `shouldContain` "must be unique"
+
+    it "rejects ranked_nodes referencing an unknown node_id" $ do
+      let dhallSrc =
+            Text.pack
+              ( unlines
+                  [ "{ version_utc = 1"
+                  , ", nodes ="
+                  , "  [ { node_id = \"node-a\""
+                  , "    , stable_dns_name = \"a.svc\""
+                  , "    , rest_host = \"0.0.0.0\""
+                  , "    , rest_port = 31001"
+                  , "    , socket_host = \"0.0.0.0\""
+                  , "    , socket_port = 32001"
+                  , "    }"
+                  , "  ]"
+                  , ", gateway_rule ="
+                  , "    { ranked_nodes = [ \"unknown\" ]"
+                  , "    , heartbeat_timeout_seconds = 5"
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      result <- GatewaySettings.decodeOrdersDhall dhallSrc
+      case result of
+        Right _ -> expectationFailure "expected ranked_nodes subset failure"
+        Left err -> err `shouldContain` "must be a subset"
+
+  describe "Sprint 3.14 workload Dhall settings" $ do
+    it "decodes a happy-path api workload Dhall config" $ do
+      let dhallSrc =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 1"
+                  , ", mode = < Api | Websocket >.Api"
+                  , ", log_level = None Text"
+                  , ", workload_port = Some 8080"
+                  , ", redis = None { host : Text, port : Text }"
+                  , ", oidc = None"
+                  , "    { issuer : Text"
+                  , "    , client_id : Text"
+                  , "    , client_secret : Text"
+                  , "    , public_base_url : Text"
+                  , "    , token_endpoint : Text"
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      result <- WorkloadSettings.decodeWorkloadConfigDhall dhallSrc
+      case result of
+        Left err -> expectationFailure err
+        Right dto -> do
+          WorkloadSettings.mode dto `shouldBe` WorkloadSettings.Api
+          WorkloadSettings.workload_port dto `shouldBe` Just 8080
+          WorkloadSettings.redis dto `shouldBe` Nothing
+
+    it "decodes a happy-path websocket workload Dhall config" $ do
+      let dhallSrc =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 1"
+                  , ", mode = < Api | Websocket >.Websocket"
+                  , ", log_level = Some \"debug\""
+                  , ", workload_port = Some 8081"
+                  , ", redis = Some { host = \"redis\", port = \"6379\" }"
+                  , ", oidc = Some"
+                  , "    { issuer = \"https://test.example.com/auth/realms/r\""
+                  , "    , client_id = \"prodbox\""
+                  , "    , client_secret = \"secret\""
+                  , "    , public_base_url = \"https://test.example.com\""
+                  , "    , token_endpoint = \"/token\""
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      result <- WorkloadSettings.decodeWorkloadConfigDhall dhallSrc
+      case result of
+        Left err -> expectationFailure err
+        Right dto -> do
+          WorkloadSettings.mode dto `shouldBe` WorkloadSettings.Websocket
+          WorkloadSettings.log_level dto `shouldBe` Just "debug"
+          case WorkloadSettings.redis dto of
+            Just r -> WorkloadSettings.host r `shouldBe` "redis"
+            Nothing -> expectationFailure "expected Some redis config"
+
+    it "fails fast on schemaVersion mismatch" $ do
+      let mismatched =
+            Text.pack
+              ( unlines
+                  [ "{ schemaVersion = 99"
+                  , ", mode = < Api | Websocket >.Api"
+                  , ", log_level = None Text"
+                  , ", workload_port = None Natural"
+                  , ", redis = None { host : Text, port : Text }"
+                  , ", oidc = None"
+                  , "    { issuer : Text"
+                  , "    , client_id : Text"
+                  , "    , client_secret : Text"
+                  , "    , public_base_url : Text"
+                  , "    , token_endpoint : Text"
+                  , "    }"
+                  , "}"
+                  ]
+              )
+      result <- WorkloadSettings.decodeWorkloadConfigDhall mismatched
+      case result of
+        Right _ -> expectationFailure "expected schemaVersion mismatch failure"
+        Left err -> err `shouldContain` "config_schema_mismatch"
 
   describe "Sprint 2.19 master-seed derivation" $ do
     it "rejects a master seed of the wrong length" $
@@ -4660,6 +5020,8 @@ sampleDaemonConfig =
             , dnsWriteGateTtl = 60
             , dnsWriteGateAwsRegion = "us-east-1"
             }
+    , daemonAwsCreds = Nothing
+    , daemonMinioCreds = Nothing
     }
 
 sampleSignedEvent :: SignedEvent

@@ -776,10 +776,44 @@ Sprint 4.18's final-cleanup closure.
 - Keep the engineering index aligned with the browser, API, WebSocket, and admin public workload
   paths.
 
-## Sprint 3.14: Workload Mode via Dhall (Replaces `PRODBOX_WORKLOAD_MODE` Env Var) 📋
+## Sprint 3.14: Workload Mode via Dhall (Replaces `PRODBOX_WORKLOAD_MODE` Env Var) 🔄
 
-**Status**: Planned (May 24, 2026, blocked by Sprint 0.8 doctrine adoption)
-**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md))
+**Status**: Active (May 24, 2026 — code-owned surface landed: new
+`src/Prodbox/Workload/Settings.hs` module with `loadWorkloadConfig ::
+FilePath -> IO (Either String WorkloadConfigDhall)` decoder, schema covers
+`mode : < Api | Websocket >` plus optional `log_level` / `workload_port` /
+`redis` / `oidc` sub-records; `workloadConfigPath :: Maybe FilePath` added
+to `WorkloadOptions`; new `--config` flag in `workloadOptionsParser`;
+`runWorkloadServer` now dispatches through `resolveWorkloadModeFromConfig`
+which prefers the Dhall config when `--config` is passed and falls back to
+the legacy `PRODBOX_WORKLOAD_MODE` env-var ladder otherwise; new
+`charts/api/templates/configmap-config.yaml` and
+`charts/websocket/templates/configmap-config.yaml` render Dhall content;
+`charts/api/templates/deployment.yaml` and
+`charts/websocket/templates/deployment.yaml` updated with `args: ["workload",
+"start", "--config", "/etc/workload/config.dhall"]` + matching ConfigMap
+volume mount; `PRODBOX_*` env vars retained for rollback safety. 3 new unit
+tests (543/543 total): happy-path Api and Websocket Dhall decode plus
+schemaVersion mismatch failure. `helm template` renders cleanly for both
+charts. **May 24, 2026 later session — full Dhall read-through landed**:
+`runWorkloadServer` now loads the Dhall config once via
+`resolveWorkloadDhallConfig` and threads the resulting
+`Maybe WorkloadConfigDhall` through every resolver. New helpers
+`resolveWorkloadModeFromDhall`, `resolveHttpPortWithDhall`,
+`resolveWorkloadLogLevelWithDhall`, and the refactored
+`resolveWebsocketRuntime`/`resolveRedisConfig`/`resolveOidcConfig` use the
+Dhall sub-records when `--config` is set and fall back to env vars
+otherwise. `PRODBOX_WORKLOAD_MODE` / `PRODBOX_HTTP_PORT` /
+`PRODBOX_REDIS_HOST` / `PRODBOX_REDIS_PORT` / `PRODBOX_OIDC_*` env vars
+are removed from `charts/api/templates/deployment.yaml` and
+`charts/websocket/templates/deployment.yaml`; the Dhall ConfigMap is the
+sole source on the chart-side surface. Validation: `prodbox check-code`
+exit 0; `prodbox test unit` 543/543; `prodbox test integration cli` 28/28;
+`prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14.
+Remaining work: the live operator exercise (`prodbox rke2 reconcile`
+plus `prodbox charts deploy api` / `prodbox charts deploy websocket`)
+is the closure gate.)
+**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md)) — resolved
 **Implementation**: `src/Prodbox/Workload.hs` (replace env-var read with Dhall config
 field), `charts/api/templates/deployments.yaml` and `charts/websocket/templates/deployments.yaml`
 (remove `PRODBOX_WORKLOAD_MODE` env var, add `--config <path>` arg pointing at a mounted
@@ -827,9 +861,13 @@ via `Dhall.inputFile auto`.
 
 ### Remaining Work
 
-- The implementing sprint decides whether to extend `prodbox-config-types.dhall` or
-  introduce a sibling workload-only types file. The choice should keep the Dhall import
-  graph cleanest for chart-rendered workload configs.
+- All code-owned work is shipped on the workload-binary and chart-side surfaces.
+  Live operator exercise (`prodbox rke2 reconcile` plus `prodbox charts deploy api` /
+  `prodbox charts deploy websocket`) is the only remaining closure gate. The
+  workload-only Dhall schema currently lives inline in
+  `src/Prodbox/Workload/Settings.hs::WorkloadConfigDhall`; promoting it to a
+  sibling `prodbox-workload-types.dhall` is an optional follow-up and not a
+  closure blocker.
 
 ## Related Documents
 

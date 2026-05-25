@@ -1,3 +1,17 @@
+{{- /*
+Sprint 2.22 (May 24, 2026): the gateway daemon's per-node config is rendered
+as a Dhall expression (`config.dhall`) per
+@documents/engineering/config_doctrine.md §6@. The daemon decodes this file
+in-process via the native Haskell `dhall` library (Sprint 2.20).
+
+This template keeps the existing JSON-rendering ConfigMap available alongside
+the new Dhall ConfigMap during the rollout: the deployment volume mount
+points at `config.dhall`, but if an operator needs to inspect the structured
+config the rendered Dhall is the source of truth. Sprint 2.22 follow-up will
+also rewrite `configmap-orders.yaml` to render Dhall and remove env-var-
+sourced credentials from `deployments.yaml`; both depend on the daemon-side
+Dhall import wiring (Sprint 2.19 closure work).
+*/}}
 {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
 ---
 apiVersion: v1
@@ -8,31 +22,51 @@ metadata:
     {{- include "gateway.labels" $ | nindent 4 }}
     gateway-node: {{ $nodeId | quote }}
 data:
-  config.json: |-
-    {
-      "node_id": {{ $nodeId | quote }},
-      "cert_file": "/tls/tls.crt",
-      "key_file": "/tls/tls.key",
-      "ca_file": "/ca/ca.crt",
-      "orders_file": "/etc/gateway/orders.json",
-      "event_keys": {
-        {{- $first := true -}}
-        {{- range $rankedNodeId, $key := $.Values.eventKeys }}
-        {{- if not $first }},{{ end -}}
-        {{- $first = false }}
-        {{ $rankedNodeId | quote }}: {{ $key | quote }}
-        {{- end }}
-      },
-      "heartbeat_interval_seconds": {{ $.Values.timing.heartbeatIntervalSeconds }},
-      "reconnect_interval_seconds": {{ $.Values.timing.reconnectIntervalSeconds }},
-      "sync_interval_seconds": {{ $.Values.timing.syncIntervalSeconds }}
-      {{- if $.Values.dnsWriteGate.enabled }},
-      "dns_write_gate": {
-        "zone_id": {{ $.Values.dnsWriteGate.zoneId | quote }},
-        "fqdn": {{ $.Values.dnsWriteGate.fqdn | quote }},
-        "ttl": {{ $.Values.dnsWriteGate.ttl }},
-        "aws_region": {{ $.Values.dnsWriteGate.awsRegion | quote }}
+  config.dhall: |-
+    { schemaVersion = 1
+    , boot =
+      { node_id = {{ $nodeId | quote }}
+      , cert_file = "/tls/tls.crt"
+      , key_file = "/tls/tls.key"
+      , ca_file = "/ca/ca.crt"
+      , orders_file = "/etc/gateway/orders.dhall"
+      , event_keys =
+          {{- if $.Values.eventKeys }}
+        [ {{- $first := true -}}
+          {{- range $rankedNodeId, $key := $.Values.eventKeys }}
+          {{- if not $first }},{{ end -}}
+          {{- $first = false }}
+          { name = {{ $rankedNodeId | quote }}, value = {{ $key | quote }} }
+          {{- end }}
+        ]
+          {{- else }}
+        ([] : List { name : Text, value : Text })
+          {{- end }}
+      , dns_write_gate =
+          {{- if $.Values.dnsWriteGate.enabled }}
+          Some
+            { zone_id = {{ $.Values.dnsWriteGate.zoneId | quote }}
+            , fqdn = {{ $.Values.dnsWriteGate.fqdn | quote }}
+            , ttl = {{ $.Values.dnsWriteGate.ttl }}
+            , aws_region = {{ $.Values.dnsWriteGate.awsRegion | quote }}
+            }
+          {{- else }}
+          None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }
+          {{- end }}
+      -- Sprint 2.22: credentials are imported from Secret-mounted Dhall
+      -- fragments per documents/engineering/config_doctrine.md §6. The
+      -- daemon's Dhall decoder evaluates these imports in-process and binds
+      -- the resulting records into boot.aws_creds / boot.minio_creds.
+      , aws_creds = Some /etc/gateway/secrets/aws.dhall
+      , minio_creds = Some /etc/gateway/secrets/minio.dhall
       }
-      {{- end }}
+    , live =
+      { heartbeat_interval_seconds = {{ include "gateway.dhallDouble" $.Values.timing.heartbeatIntervalSeconds }}
+      , reconnect_interval_seconds = {{ include "gateway.dhallDouble" $.Values.timing.reconnectIntervalSeconds }}
+      , sync_interval_seconds = {{ include "gateway.dhallDouble" $.Values.timing.syncIntervalSeconds }}
+      , max_clock_skew_seconds = 10.0
+      , drain_deadline_seconds = Some 30
+      , log_level = Some "info"
+      }
     }
 {{- end }}

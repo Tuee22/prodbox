@@ -1278,22 +1278,27 @@ operator-driven for now and tracked under that sprint.
 
 ## Sprint 2.19: Gateway Daemon Becomes Secret-Derivation Service 🔄
 
-**Status**: Active — **re-scoped May 24, 2026 under the pure-Dhall config doctrine
-(Sprint 0.8)**. The `MINIO_ENDPOINT_URL` env-var addition attempted in the earlier
-May 24 session was rolled back the same day; under
-[config_doctrine.md](../documents/engineering/config_doctrine.md) the MinIO endpoint and
-credentials reach the daemon via its mounted Dhall config (not env vars). The remaining
-Sprint 2.19 deliverables (MinIO IAM bootstrap, live daemon endpoint bodies replacing
-the 503 stubs, reconcile/delete firewall-hook wiring) now block on Sprints 2.20 (daemon
-Dhall settings module), 2.21 (file-watch reload + drain-and-exit on boot-field changes),
-and 2.22 (chart-side Dhall ConfigMap + Secret-mounted credentials). The earlier-landed
-pure derivation surface (`Prodbox.Secret.Derive`), wire-contract layer
-(`Prodbox.Secret.Wire`, typed `Prodbox.Gateway.Client.derive` / `ensureNamespace`),
-chart-side scaffolding (`secret-minio-creds.yaml`, `service-nodeport.yaml`), and
-`Prodbox.Secret.MasterSeed` foundation all stand unchanged. Sprint cannot close until
-the live exercise on this host succeeds end-to-end (master seed materializes;
-`/v1/secret/derive` returns deterministic values across cluster wipes) under the new
-Dhall-sourced config.
+**Status**: Active — re-scoped May 24, 2026 under the pure-Dhall config doctrine
+(Sprint 0.8). Additional code-owned closure landed May 24, 2026 (later session):
+the daemon now retrieves the master seed at startup via
+`Prodbox.Gateway.Daemon.acquireInitialMasterSeed` when `daemonMinioCreds` is bound
+in the mounted Dhall config (Sprint 2.22 plumbed those credentials through the
+import chain). The cached seed lives in `envMasterSeed :: Maybe
+Prodbox.Secret.Derive.MasterSeed` on `DaemonEnv`. The `/v1/secret/derive?context=<ctx>`
+endpoint is now live-wired: when the seed is bound it composes
+`Prodbox.Secret.Derive.deriveBase64Url` against the requested context and returns a
+typed `DeriveResponse` per the wire contract; when the seed is `Nothing` it returns
+a structured 503 with a clear "master-seed unavailable" reason (the daemon logs
+`master_seed_unavailable` at startup with the source of the failure: no
+`minio_creds` bound, MinIO unreachable, or the read/create failed). Live verified
+on this host (without MinIO running): the daemon starts cleanly, logs
+`master_seed_unavailable`, and `curl /v1/secret/derive?context=test-context`
+returns the structured 503 response. The `/v1/secret/ensure-namespace` endpoint
+keeps its 503 placeholder pending the K8s-API materialization wiring.
+Sprint closes when the live exercise on this host succeeds end-to-end with a
+running MinIO: master seed materializes; `/v1/secret/derive` returns deterministic
+values across cluster wipes; `/v1/secret/ensure-namespace` writes the per-namespace
+data-bound Secrets via kubectl.
 **Blocked by**: 2.17, 2.18, 2.20, 2.21, 2.22
 **Implementation**: new `src/Prodbox/Secret/Derive.hs`, new `src/Prodbox/Secret/MasterSeed.hs`, `src/Prodbox/Gateway/Daemon.hs` HTTP server extensions, MinIO IAM bootstrap (Pulumi or one-shot Job), `charts/gateway/` Secret + Deployment volume mount additions, `Prodbox.Gateway.Client` extensions, `prodbox.cabal` dep addition
 **Docs to update**: `documents/engineering/secret_derivation_doctrine.md` (new SSoT — already created by Part 1 doctrine work), `documents/engineering/distributed_gateway_architecture.md`, `documents/engineering/storage_lifecycle_doctrine.md`, `documents/engineering/helm_chart_platform_doctrine.md`
@@ -1493,19 +1498,55 @@ live-exercise package:
    read on the supported path. A `DaemonEnv` field caches the resolved
    `MasterSeed` between requests so each `/v1/secret/derive` call is one
    HMAC, not one MinIO round-trip.
-5. **Reconcile/delete wiring**: the chart-side NodePort Service already
-   exists (landed May 23, 2026), and the symmetric
-   `runHostFirewallGatewayUnrestrict :: Int -> IO ExitCode` helper +
-   operator-facing `prodbox host firewall gateway-unrestrict --port
-   PORT` subcommand also landed May 23, 2026 (idempotent — probes via
-   `iptables -C` and treats absent-rule as success-with-reason, mirror
-   of Sprint 2.18's install path). The remaining work is the
-   `prodbox rke2 reconcile` post-deploy hook that invokes
-   `runHostFirewallGatewayRestrict 30443` and the matching
-   `prodbox rke2 delete --yes` teardown hook that invokes
-   `runHostFirewallGatewayUnrestrict 30443`.
+5. **Reconcile/delete wiring (Done May 24, 2026 later session)**: the
+   chart-side NodePort Service already exists (landed May 23, 2026),
+   and the symmetric `runHostFirewallGatewayUnrestrict :: Int -> IO
+   ExitCode` helper + operator-facing
+   `prodbox host firewall gateway-unrestrict --port PORT` subcommand
+   landed May 23, 2026. New `defaultGatewayNodePort = 30443` constant
+   and new `runHostFirewallGatewayRestrictOptional` (treats absent
+   iptables as success-with-reason — the post-deploy hook is
+   defense-in-depth, not the primary contract). The
+   `prodbox charts deploy gateway --substrate home-local` apply path
+   chains `runHostFirewallGatewayRestrictOptional defaultGatewayNodePort`
+   after successful chart deploy via the new
+   `applyChartDeployWithPostHook` wrapper in `src/Prodbox/CLI/Charts.hs`;
+   the matching `prodbox charts delete gateway --substrate home-local`
+   chains `runHostFirewallGatewayUnrestrict defaultGatewayNodePort` via
+   `applyChartDeleteWithPostHook`. The cleanup is also chained as a
+   safety net into `runNativeDelete` (the `rke2 delete --yes` body) and
+   the cascade's step 4 uninstall block in
+   `runNativeDeleteCascade`, so a wipe-and-rebuild cycle removes the
+   rule even when the gateway chart was already gone. Validation:
+   `prodbox check-code` exit 0; `prodbox test unit` 543/543;
+   `prodbox test integration cli` 28/28.
 6. **Live regression on this host** per the verification block in the
-   approved plan Part 3 step 2.
+   approved plan Part 3 step 2. **Attempted May 24, 2026 (later
+   session)**: `./.build/prodbox test all` (home substrate) ran for
+   ~80 minutes; Phase 1+2 reconcile (RKE2 install + cluster platform +
+   MinIO + Harbor + image mirror + custom image push) completed cleanly
+   and the per-validation chart cleanups (vscode/api/websocket/gateway
+   deletions) ran through the new `applyChartDeleteWithPostHook` arm
+   (the unrestrict hook returned `not-present` as expected on an
+   unrestricted host). The aggregate then **timed out at
+   `helm upgrade --install gateway` after 30 min** (`--atomic` rolled
+   the release back); the three gateway pods (`gateway-node-a/b/c`)
+   reached `STATUS=Error` with 10 restarts each before atomic
+   rollback. Root cause is the unresolved MinIO IAM bootstrap +
+   endpoint-via-Dhall threading: the daemon's `acquireInitialMasterSeed`
+   resolves the MinIO endpoint as `127.0.0.1:9000`
+   (`defaultMinioLocalPort`) which is the Pod's own loopback, not the
+   in-cluster MinIO Service, so `aws s3api` calls against the master
+   seed object can't reach MinIO from inside the gateway Pod. The
+   harness postflight ran correctly: IAM user + access keys deleted,
+   per-run AWS Pulumi stacks confirmed absent, operational `aws.*`
+   cleared. **This narrows the remaining work** to a single coupled
+   live push: thread `minio.endpoint_url` (cluster DNS, e.g.
+   `http://minio.prodbox.svc.cluster.local:9000`) through the Dhall
+   config + chart ConfigMap + `MinioMasterSeedConfig` resolver, then
+   add the MinIO IAM bootstrap (chart pre-install Job or substrate
+   platform reconcile step) that creates the `prodbox` bucket + the
+   `prodbox-gateway` user + the IAM policy.
 
 These deliverables are tightly coupled (the daemon needs the MinIO
 client; the chart needs the daemon image; the live exercise needs the
@@ -1513,10 +1554,28 @@ chart) and benefit from being implemented as one connected push in a
 dedicated session. The chart-platform integration (Sprint 3.13) blocks
 on this sprint's full closure.
 
-## Sprint 2.20: Daemon Dhall Settings Module 📋
+## Sprint 2.20: Daemon Dhall Settings Module ✅
 
-**Status**: Planned (May 24, 2026, blocked by Sprint 0.8 doctrine adoption)
-**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md))
+**Status**: Done (May 24, 2026 — full Sprint 2.20 closure: new
+`src/Prodbox/Gateway/Settings.hs` decodes the daemon config via
+`Dhall.inputFile auto` exclusively (the JSON-dispatch fallback arm is
+removed); `Prodbox.Gateway.Types.parseDaemonConfig` (and its
+structured/flat JSON branches) is **removed** from
+`src/Prodbox/Gateway/Types.hs`; `renderGatewayConfigTemplate` in
+`src/Prodbox/Gateway.hs` emits Dhall instead of JSON, so the operator-facing
+`prodbox gateway config-gen` produces a starter `.dhall` file; all JSON
+test fixtures across `test/unit/Main.hs`, `test/integration/CliSuite.hs`,
+and `test/daemon-lifecycle/Main.hs` migrate to Dhall fixtures; the
+`gateway-start.txt` golden is updated to reference the new `.dhall`
+extension. Validation: `prodbox check-code` exit 0; `prodbox test unit`
+543/543; `prodbox test integration cli` 28/28; `prodbox test integration
+env` 28/28; `prodbox-daemon-lifecycle` 14/14. Removal of the
+`--log-level` / `--port` / `--node-id` / `--foreground` daemon CLI flags
+stays pending — these flags are still used by the daemon-lifecycle test
+harness for port allocation and by the operator `gateway status` /
+`config-gen` commands; their removal is coupled with the live RKE2
+reconcile gate where the chart drops them from `args:` in `deployments.yaml`.)
+**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md)) — resolved
 **Implementation**: new `src/Prodbox/Gateway/Settings.hs`, `src/Prodbox/Gateway/Types.hs`
 (remove `parseDaemonConfig` JSON path), `src/Prodbox/Gateway/Daemon.hs` (remove the
 JSON-flat-compat schema branch), `src/Prodbox/Gateway.hs` (remove `PRODBOX_*` env-var
@@ -1568,10 +1627,31 @@ authoritative decoder contract.
   creating a sibling daemon-only types file. The choice should follow whichever keeps
   the Dhall import graph cleanest for the chart-rendered gateway config.
 
-## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change 📋
+## Sprint 2.21: File-Watch Reload Trigger and Auto-Restart on BootConfig Change 🔄
 
-**Status**: Planned (May 24, 2026, blocked by Sprint 2.20)
-**Blocked by**: Sprint 2.20
+**Status**: Active (May 24, 2026 — code-owned surface landed: `fsnotify ^>=0.4`
+declared in `prodbox.cabal`; new `configFileWatchLoop` worker in
+`src/Prodbox/Gateway/Daemon.hs` subscribes to events on the parent directory
+of the daemon's `--config` path and feeds the existing `envReloadSignals`
+queue; the SIGHUP `installHandler sigHUP` arm was removed so SIGHUP returns
+to ordinary `drain + exit` semantics; `reloadLiveConfig` now detects
+BootConfig changes via `daemonBootFieldsChanged` and emits
+`config_reload_boot_change_detected` followed by an enqueue of `BeginDrain`
+onto `envDrainSignals` so the kubelet restarts the Pod against the new
+Dhall; the `reloadTriggerViolations` arm of `checkDaemonRuntimeImports` is
+removed and `checkHlintDoctrineCoverage` no longer requires
+`System.INotify` / `Linux.INotify` / `getModificationTime` markers (the
+surviving `System.FSNotify` marker now records the required-and-mentioned
+file-watch primitive); the SIGHUP-based test
+`refreshes log filtering from reloaded live config` is removed and replaced
+with a documentation comment naming the live operator exercise as the
+closure gate. Validation: `prodbox check-code` exit 0; `prodbox test unit`
+540/540; `cabal test prodbox-daemon-lifecycle` 14/14. Remaining work: live
+operator exercise on this host — `prodbox rke2 reconcile` brings up the
+gateway daemon with a mounted Dhall ConfigMap; editing the ConfigMap
+triggers a LiveConfig reload in-process or a BootConfig drain-and-exit
+followed by a kubelet-driven restart; this gate closes Sprint 2.21.)
+**Blocked by**: Sprint 2.20 — resolved
 **Implementation**: `src/Prodbox/Gateway/Daemon.hs` (remove SIGHUP handler, add
 file-watch worker, implement drain-and-exit on BootConfig change), `prodbox.cabal` (add
 `fsnotify` or equivalent dep), `src/Prodbox/CheckCode.hs` (remove `forbidFsnotify` /
@@ -1629,10 +1709,46 @@ kubelet restarts the Pod with the new config. See
   the live exercise leaves the sprint `Active` until the operator runs the verification
   block.
 
-## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials 📋
+## Sprint 2.22: Chart-Side Dhall ConfigMap + Secret-Mounted Credentials 🔄
 
-**Status**: Planned (May 24, 2026, blocked by Sprints 2.20 and 2.21)
-**Blocked by**: Sprints 2.20, 2.21
+**Status**: Active (May 24, 2026 — code-owned chart-side closure landed:
+`charts/gateway/templates/configmap-config.yaml` and
+`configmap-orders.yaml` render Dhall content;
+`charts/gateway/templates/secret-aws-credentials.yaml` and
+`secret-minio-creds.yaml` now ship Dhall fragments at
+`/etc/gateway/secrets/aws.dhall` and `/etc/gateway/secrets/minio.dhall`
+(stable across helm upgrades for MinIO via `lookup` + `randAlphaNum`);
+`deployments.yaml` removes `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` / `MINIO_ACCESS_KEY_ID` /
+`MINIO_SECRET_ACCESS_KEY` / `GATEWAY_NODE_ID` env vars and mounts the new
+Dhall-fragment Secrets at the canonical paths;
+`charts/gateway/templates/_helpers.tpl` ships `gateway.dhallDouble`.
+`DaemonConfigDhall` extended with `aws_creds` / `minio_creds` Optional
+sub-records; `Prodbox.Gateway.Types.DaemonConfig` extended with
+`daemonAwsCreds :: Maybe GatewayAwsCreds` and
+`daemonMinioCreds :: Maybe GatewayMinioCreds`; `Prodbox.Gateway.Settings`
+exports `AwsCredsDhall` / `MinioCredsDhall` / `awsCredsFromConfig` /
+`minioCredsFromConfig`. `Prodbox.Gateway.Daemon.writeDnsRecord` now takes
+`Maybe GatewayAwsCreds` and projects them into the aws CLI subprocess
+environment via `awsCredsToSubprocessEnv` instead of inheriting the Pod's
+env. Validation: `helm template gateway charts/gateway` renders cleanly;
+standalone `./.build/prodbox gateway start --config <config>.dhall
+--foreground` decodes `config.dhall` + transparent Dhall imports of
+`aws.dhall` / `minio.dhall` + `orders.dhall` and emits
+`gateway_starting` + `orders_loaded` end-to-end (decode-side
+credential binding verified live); `prodbox check-code` exit 0;
+`prodbox test unit` 543/543; `prodbox test integration cli` 28/28;
+`prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14;
+all Dhall test fixtures across `test/unit/Main.hs`,
+`test/integration/CliSuite.hs`, `test/daemon-lifecycle/Main.hs` updated
+with the new boot record shape including `aws_creds = None ...` /
+`minio_creds = None ...`. Remaining work: the live operator gate
+(`prodbox rke2 reconcile` brings up the gateway daemon against the new
+ConfigMap content; `/healthz` returns 200; DNS writes succeed against
+real Route 53 using credentials sourced from the mounted
+`aws.dhall` Secret) closes Sprint 2.22 alongside Sprint 2.19's
+live master-seed wiring.)
+**Blocked by**: Sprints 2.20, 2.21 — resolved
 **Implementation**: `charts/gateway/templates/configmap-config.yaml` (rewrite to render
 Dhall content), `charts/gateway/templates/configmap-orders.yaml` (rewrite to render
 Dhall content), `charts/gateway/templates/secret-aws-credentials.yaml` (replace with

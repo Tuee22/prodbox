@@ -697,10 +697,14 @@ automation equivalent.
 
 None. The legacy-tracking ledger row records the closure.
 
-## Sprint 0.8: Pure-Dhall Config Doctrine Adoption 🔄
+## Sprint 0.8: Pure-Dhall Config Doctrine Adoption ✅
 
-**Status**: Active (May 24, 2026 — doctrine SSoT created and governed engineering and
-root docs updated; downstream code-implementation sprints land in Phases 1, 2, 3)
+**Status**: Done (May 24, 2026 — doctrine SSoT
+[config_doctrine.md](../documents/engineering/config_doctrine.md) created, governed
+engineering docs and root docs revised to defer to it, plan suite updated; the four
+validation gates exit 0 — `prodbox lint docs`, `prodbox docs check`, `prodbox check-code`,
+`prodbox test unit` 533/533. The code implementation lands in Phase 1 Sprint 1.28 and
+Phase 2 Sprints 2.20/2.21/2.22 and Phase 3 Sprint 3.14.)
 **Implementation**: new `documents/engineering/config_doctrine.md`;
 `documents/engineering/distributed_gateway_architecture.md`,
 `documents/engineering/cli_command_surface.md`,

@@ -136,7 +136,7 @@ integrationCliSuite = do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
         writeFile (tmpDir </> "prodbox-config.dhall") validConfig
-        let outputPath = tmpDir </> "gateway.json"
+        let outputPath = tmpDir </> "gateway.dhall"
 
         (exitCode, stdoutText, stderrText) <-
           readCreateProcessWithExitCode
@@ -147,18 +147,18 @@ integrationCliSuite = do
         stderrText `shouldBe` ""
         stdoutText `shouldBe` ""
         rendered <- readFile outputPath
-        rendered `shouldContain` "\"node_id\": \"node-a\""
-        rendered `shouldContain` "\"fqdn\": \"test.resolvefintech.com\""
-        rendered `shouldContain` "\"zone_id\": \"Z1234567890ABC\""
+        rendered `shouldContain` "node_id = \"node-a\""
+        rendered `shouldContain` "fqdn = \"test.resolvefintech.com\""
+        rendered `shouldContain` "zone_id = \"Z1234567890ABC\""
 
     it "runs native gateway status against a loopback HTTP server through the native HTTP client" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir ->
         withGatewayStateServer gatewayStateResponseJson $ \port requestRef -> do
           binary <- resolveBinaryPath
           writeRepoMarkers tmpDir
-          let configPath = tmpDir </> "gateway.json"
+          let configPath = tmpDir </> "gateway.dhall"
           writeFile configPath gatewayStatusConfig
-          writeFile (tmpDir </> "orders.json") (gatewayOrdersAt port)
+          writeFile (tmpDir </> "orders.dhall") (gatewayOrdersAt port)
 
           (exitCode, stdoutText, stderrText) <-
             readCreateProcessWithExitCode
@@ -177,8 +177,8 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        let ordersPath = tmpDir </> "orders.json"
-            configPath = tmpDir </> "gateway-start.json"
+        let ordersPath = tmpDir </> "orders.dhall"
+            configPath = tmpDir </> "gateway-start.dhall"
         writeFile ordersPath gatewayOrders
         writeFile
           configPath
@@ -808,7 +808,7 @@ integrationCliSuite = do
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
         writeRepoMarkers tmpDir
-        let configPath = tmpDir </> "nonexistent-gateway.json"
+        let configPath = tmpDir </> "nonexistent-gateway.dhall"
 
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
@@ -816,12 +816,12 @@ integrationCliSuite = do
             ""
 
         exitCode `shouldBe` ExitFailure 1
-        stderrText `shouldContain` "gateway daemon config"
+        stderrText `shouldContain` "gateway daemon Dhall config"
 
     it "runs native gateway start without requiring repo markers" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
-        let configPath = tmpDir </> "nonexistent-gateway.json"
+        let configPath = tmpDir </> "nonexistent-gateway.dhall"
 
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
@@ -829,7 +829,7 @@ integrationCliSuite = do
             ""
 
         exitCode `shouldBe` ExitFailure 1
-        stderrText `shouldContain` "gateway daemon config"
+        stderrText `shouldContain` "gateway daemon Dhall config"
         stderrText `shouldNotContain` "Could not locate the repository root"
 
     it "runs native config setup through the built frontend with a fake AWS CLI" $
@@ -2175,37 +2175,64 @@ findRecordLineIndex needle haystack =
 gatewayStartConfig :: FilePath -> FilePath -> FilePath -> FilePath -> String
 gatewayStartConfig ordersPath certPath keyPath caPath =
   unlines
-    [ "{"
-    , "  \"node_id\": \"node-a\","
-    , "  \"cert_file\": " ++ show certPath ++ ","
-    , "  \"key_file\": " ++ show keyPath ++ ","
-    , "  \"ca_file\": " ++ show caPath ++ ","
-    , "  \"orders_file\": " ++ show ordersPath ++ ","
-    , "  \"event_keys\": { \"node-a\": \"validation-key\" },"
-    , "  \"heartbeat_interval_seconds\": 1.0,"
-    , "  \"reconnect_interval_seconds\": 1.0,"
-    , "  \"sync_interval_seconds\": 5.0"
+    [ "{ schemaVersion = 1"
+    , ", boot ="
+    , "  { node_id = \"node-a\""
+    , "  , cert_file = " ++ show certPath
+    , "  , key_file = " ++ show keyPath
+    , "  , ca_file = " ++ show caPath
+    , "  , orders_file = " ++ show ordersPath
+    , "  , event_keys ="
+    , "    [ { name = \"node-a\", value = \"validation-key\" } ]"
+    , "  , dns_write_gate ="
+    , "      None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }"
+    , "  , aws_creds ="
+    , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "  , minio_creds ="
+    , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "  }"
+    , ", live ="
+    , "  { heartbeat_interval_seconds = 1.0"
+    , "  , reconnect_interval_seconds = 1.0"
+    , "  , sync_interval_seconds = 5.0"
+    , "  , max_clock_skew_seconds = 10.0"
+    , "  , drain_deadline_seconds = Some 30"
+    , "  , log_level = Some \"info\""
+    , "  }"
     , "}"
     ]
 
 gatewayStatusConfig :: String
 gatewayStatusConfig =
   unlines
-    [ "{"
-    , "  \"node_id\": \"node-a\","
-    , "  \"cert_file\": \"node-a.crt\","
-    , "  \"key_file\": \"node-a.key\","
-    , "  \"ca_file\": \"ca.crt\","
-    , "  \"orders_file\": \"orders.json\","
-    , "  \"event_keys\": { \"node-a\": \"REPLACE_WITH_SECRET_KEY\" },"
-    , "  \"heartbeat_interval_seconds\": 1.0,"
-    , "  \"reconnect_interval_seconds\": 1.0,"
-    , "  \"sync_interval_seconds\": 5.0,"
-    , "  \"dns_write_gate\": {"
-    , "    \"zone_id\": \"Z123\","
-    , "    \"fqdn\": \"test.resolvefintech.com\","
-    , "    \"ttl\": 60,"
-    , "    \"aws_region\": \"us-east-1\""
+    [ "{ schemaVersion = 1"
+    , ", boot ="
+    , "  { node_id = \"node-a\""
+    , "  , cert_file = \"node-a.crt\""
+    , "  , key_file = \"node-a.key\""
+    , "  , ca_file = \"ca.crt\""
+    , "  , orders_file = \"orders.dhall\""
+    , "  , event_keys ="
+    , "    [ { name = \"node-a\", value = \"REPLACE_WITH_SECRET_KEY\" } ]"
+    , "  , dns_write_gate ="
+    , "      Some"
+    , "        { zone_id = \"Z123\""
+    , "        , fqdn = \"test.resolvefintech.com\""
+    , "        , ttl = 60"
+    , "        , aws_region = \"us-east-1\""
+    , "        }"
+    , "  , aws_creds ="
+    , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "  , minio_creds ="
+    , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "  }"
+    , ", live ="
+    , "  { heartbeat_interval_seconds = 1.0"
+    , "  , reconnect_interval_seconds = 1.0"
+    , "  , sync_interval_seconds = 5.0"
+    , "  , max_clock_skew_seconds = 10.0"
+    , "  , drain_deadline_seconds = Some 30"
+    , "  , log_level = Some \"info\""
     , "  }"
     , "}"
     ]
@@ -2218,22 +2245,20 @@ gatewayOrders = gatewayOrdersAt 31001
 gatewayOrdersAt :: Int -> String
 gatewayOrdersAt port =
   unlines
-    [ "{"
-    , "  \"version_utc\": 1,"
-    , "  \"nodes\": ["
-    , "    {"
-    , "      \"node_id\": \"node-a\","
-    , "      \"stable_dns_name\": \"node-a.example.test\","
-    , "      \"rest_host\": \"127.0.0.1\","
-    , "      \"rest_port\": " ++ show port ++ ","
-    , "      \"socket_host\": \"127.0.0.1\","
-    , "      \"socket_port\": 32001"
+    [ "{ version_utc = 1"
+    , ", nodes ="
+    , "  [ { node_id = \"node-a\""
+    , "    , stable_dns_name = \"node-a.example.test\""
+    , "    , rest_host = \"127.0.0.1\""
+    , "    , rest_port = " ++ show port
+    , "    , socket_host = \"127.0.0.1\""
+    , "    , socket_port = 32001"
     , "    }"
-    , "  ],"
-    , "  \"gateway_rule\": {"
-    , "    \"ranked_nodes\": [\"node-a\"],"
-    , "    \"heartbeat_timeout_seconds\": 3"
-    , "  }"
+    , "  ]"
+    , ", gateway_rule ="
+    , "    { ranked_nodes = [ \"node-a\" ]"
+    , "    , heartbeat_timeout_seconds = 3"
+    , "    }"
     , "}"
     ]
 

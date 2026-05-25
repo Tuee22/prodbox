@@ -20,6 +20,9 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - `cabal.project` defines the repository Cabal package set.
 - `cabal.project` pins `with-compiler: ghc-9.14.1` and carries the temporary
   `allow-newer: *:base, *:template-haskell` escape hatch required by the current package set.
+  This clause set is what currently lets the `dhall ^>=1.42` bound build cleanly under GHC
+  `9.14.1`; the clauses may be tightened when an upstream `dhall` release ships bounds that
+  natively match GHC `9.14.1` and `template-haskell` 2.24.
 - Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
   intentionally command-line owned.
 - Repository-owned container builds live under `docker/`. `docker/prodbox.Dockerfile` builds the

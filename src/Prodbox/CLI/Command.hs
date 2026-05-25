@@ -129,7 +129,8 @@ data GatewayCommand
   deriving (Eq, Show)
 
 data WorkloadOptions = WorkloadOptions
-  { workloadLogLevel :: Maybe String
+  { workloadConfigPath :: Maybe FilePath
+  , workloadLogLevel :: Maybe String
   , workloadPort :: Maybe Int
   , workloadForeground :: Bool
   }

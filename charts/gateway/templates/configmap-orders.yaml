@@ -1,3 +1,12 @@
+{{- /*
+Sprint 2.22 (May 24, 2026): the gateway Orders ConfigMap renders Dhall
+content (`orders.dhall`) per
+@documents/engineering/config_doctrine.md §6@. The daemon decodes this file
+through `Prodbox.Gateway.Settings.loadOrders` (Sprint 2.22), which dispatches
+by file extension; the in-cluster mount point is now
+`/etc/gateway/orders.dhall` and the daemon's Dhall config carries that path
+in its `boot.orders_file` field.
+*/}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -5,32 +14,30 @@ metadata:
   labels:
     {{- include "gateway.labels" . | nindent 4 }}
 data:
-  orders.json: |-
-    {
-      "version_utc": 1,
-      "nodes": [
-        {{- $namespace := .Release.Namespace -}}
+  orders.dhall: |-
+    { version_utc = 1
+    , nodes =
+      [ {{- $namespace := .Release.Namespace -}}
         {{- $rest := .Values.ports.rest -}}
         {{- $events := .Values.ports.events -}}
         {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
         {{- if gt $idx 0 }},{{ end }}
-        {
-          "node_id": {{ $nodeId | quote }},
-          "stable_dns_name": "gateway-{{ $nodeId }}.{{ $namespace }}.svc.cluster.local",
-          "rest_host": "0.0.0.0",
-          "rest_port": {{ $rest }},
-          "socket_host": "0.0.0.0",
-          "socket_port": {{ $events }}
+        { node_id = {{ $nodeId | quote }}
+        , stable_dns_name = "gateway-{{ $nodeId }}.{{ $namespace }}.svc.cluster.local"
+        , rest_host = "0.0.0.0"
+        , rest_port = {{ $rest }}
+        , socket_host = "0.0.0.0"
+        , socket_port = {{ $events }}
         }
         {{- end }}
-      ],
-      "gateway_rule": {
-        "ranked_nodes": [
-          {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
+      ]
+    , gateway_rule =
+      { ranked_nodes =
+        [ {{- range $idx, $nodeId := .Values.nodes.rankedIds }}
           {{- if gt $idx 0 }},{{ end }}
           {{ $nodeId | quote }}
           {{- end }}
-        ],
-        "heartbeat_timeout_seconds": {{ .Values.timing.heartbeatTimeoutSeconds }}
+        ]
+      , heartbeat_timeout_seconds = {{ .Values.timing.heartbeatTimeoutSeconds }}
       }
     }

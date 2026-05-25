@@ -19,3 +19,21 @@ The headless service name is hardcoded to "gateway".
 {{- $namespace := index . 1 -}}
 gateway-{{ $ordinal }}.gateway.{{ $namespace }}.svc.cluster.local
 {{- end -}}
+
+{{- /*
+gateway.dhallDouble formats a numeric value as a Dhall `Double` literal. Dhall
+distinguishes `Natural` from `Double` strictly, so integer-valued doubles
+(`1`, `2`, …) must be written `1.0`, `2.0`, … on the wire. Sprint 2.22 uses
+this helper from `configmap-config.yaml` so values like
+`timing.syncIntervalSeconds: 1.0` (which YAML normalizes to `1`) still decode
+as Dhall `Double` via the in-process `Dhall.inputFile auto` decoder
+(Sprint 2.20).
+*/ -}}
+{{- define "gateway.dhallDouble" -}}
+{{- $rendered := printf "%v" . -}}
+{{- if contains "." $rendered -}}
+{{- $rendered -}}
+{{- else -}}
+{{- printf "%s.0" $rendered -}}
+{{- end -}}
+{{- end -}}

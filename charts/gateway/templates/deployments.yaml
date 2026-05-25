@@ -42,7 +42,7 @@ spec:
           imagePullPolicy: {{ $.Values.image.pullPolicy }}
           args:
             - --config
-            - /etc/gateway/config.json
+            - /etc/gateway/config.dhall
           ports:
             - name: rest
               containerPort: {{ $.Values.ports.rest }}
@@ -50,43 +50,12 @@ spec:
             - name: events
               containerPort: {{ $.Values.ports.events }}
               protocol: TCP
-          env:
-            - name: GATEWAY_NODE_ID
-              value: {{ $nodeId | quote }}
-            - name: AWS_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: gateway-aws-credentials
-                  key: AWS_ACCESS_KEY_ID
-            - name: AWS_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: gateway-aws-credentials
-                  key: AWS_SECRET_ACCESS_KEY
-            - name: AWS_SESSION_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: gateway-aws-credentials
-                  key: AWS_SESSION_TOKEN
-                  optional: true
-            # Sprint 2.19: MinIO credentials for the master-seed read/write
-            # path in `Prodbox.Secret.MasterSeed`. The chart materializes
-            # `gateway-minio-creds` via `lookup` + `randAlphaNum` so the
-            # credentials persist across helm upgrades; the daemon reads
-            # them once at startup. Until `Prodbox.Secret.MasterSeed`
-            # lands the daemon ignores these env vars (no crash; the
-            # `/v1/secret/*` routes still return structured 503 per the
-            # doctrine §8 placeholder).
-            - name: MINIO_ACCESS_KEY_ID
-              valueFrom:
-                secretKeyRef:
-                  name: gateway-minio-creds
-                  key: MINIO_ACCESS_KEY_ID
-            - name: MINIO_SECRET_ACCESS_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: gateway-minio-creds
-                  key: MINIO_SECRET_ACCESS_KEY
+          # Sprint 2.22: the Pod's environment is now restricted to k8s
+          # runtime metadata the daemon does not read for configuration.
+          # AWS / MinIO credentials and the node identity come from the
+          # daemon's mounted Dhall config (via Secret-mounted Dhall fragments
+          # imported by config.dhall) per
+          # documents/engineering/config_doctrine.md § 10.
           volumeMounts:
             - name: tls
               mountPath: /tls
@@ -95,12 +64,20 @@ spec:
               mountPath: /ca
               readOnly: true
             - name: orders
-              mountPath: /etc/gateway/orders.json
-              subPath: orders.json
+              mountPath: /etc/gateway/orders.dhall
+              subPath: orders.dhall
               readOnly: true
             - name: config
-              mountPath: /etc/gateway/config.json
-              subPath: config.json
+              mountPath: /etc/gateway/config.dhall
+              subPath: config.dhall
+              readOnly: true
+            - name: aws-secrets
+              mountPath: /etc/gateway/secrets/aws.dhall
+              subPath: aws.dhall
+              readOnly: true
+            - name: minio-secrets
+              mountPath: /etc/gateway/secrets/minio.dhall
+              subPath: minio.dhall
               readOnly: true
           livenessProbe:
             httpGet:
@@ -137,4 +114,16 @@ spec:
         - name: config
           configMap:
             name: gateway-config-{{ $nodeId }}
+        - name: aws-secrets
+          secret:
+            secretName: gateway-aws-credentials
+            items:
+              - key: aws.dhall
+                path: aws.dhall
+        - name: minio-secrets
+          secret:
+            secretName: gateway-minio-creds
+            items:
+              - key: minio.dhall
+                path: minio.dhall
 {{- end }}

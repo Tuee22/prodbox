@@ -83,6 +83,7 @@ import Prodbox.Gateway.Peer
   , handlePeerRequest
   , signEvent
   )
+import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( CommitLog (..)
   , Disposition (..)
@@ -96,7 +97,6 @@ import Prodbox.Gateway.Types
   , eventTypeClaim
   , eventTypeYield
   , nodeDisposition
-  , parseOrders
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
@@ -1693,15 +1693,17 @@ runGatewayDaemonValidation repoRoot environment = do
                     , "configmap"
                     , "gateway-orders"
                     , "-o"
-                    , "jsonpath={.data.orders\\.json}"
+                    , "jsonpath={.data.orders\\.dhall}"
                     ]
                 , subprocessEnvironment = Just environment
                 , subprocessWorkingDirectory = Just repoRoot
                 }
           case ordersTextResult of
             Left err -> failWith err
-            Right ordersText ->
-              case parseOrders ordersText of
+            Right ordersText -> do
+              -- Sprint 2.22 closure: the chart now ships Dhall Orders.
+              ordersResult <- GatewaySettings.decodeOrdersDhall (Text.pack ordersText)
+              case ordersResult of
                 Left err -> failWith ("failed to parse gateway orders from cluster ConfigMap: " ++ err)
                 Right orders ->
                   case selectGatewayValidationPeer orders of

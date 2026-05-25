@@ -383,6 +383,7 @@ haskellStyleViolations repoRoot = do
   subprocessViolations <- checkSubprocessBoundaries repoRoot
   errorBoundaryViolations <- checkErrorBoundaryViolations repoRoot
   operatorVocabularyViolations <- checkOperatorVocabulary repoRoot
+  envVarConfigViolations <- checkEnvVarConfigReads repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
   pure
     ( either pure (const []) thinMainResult
@@ -395,6 +396,7 @@ haskellStyleViolations repoRoot = do
         ++ subprocessViolations
         ++ errorBoundaryViolations
         ++ operatorVocabularyViolations
+        ++ envVarConfigViolations
         ++ testSuiteTypeViolations
     )
 
@@ -428,9 +430,6 @@ checkHlintDoctrineCoverage repoRoot = do
             , "sd_notify"
             , "READY=1"
             , "System.FSNotify"
-            , "System.INotify"
-            , "Linux.INotify"
-            , "getModificationTime"
             , "newIORef"
             , "newMVar"
             , "withAsync"
@@ -588,17 +587,6 @@ checkDaemonRuntimeImports repoRoot = do
                 , "readyFile"
                 ]
             ]
-          reloadTriggerViolations =
-            [ path
-                ++ " must use SIGHUP for config reload; fsnotify, inotify, and mtime polling are forbidden."
-            | any
-                (`isInfixOf` contents)
-                [ "System.FSNotify"
-                , "System.INotify"
-                , "Linux.INotify"
-                , "getModificationTime"
-                ]
-            ]
           mutableMetricsViolations =
             [ path
                 ++ " must keep daemon metrics behind `envMetrics`; module-local `IORef`/`MVar` counters are forbidden."
@@ -631,7 +619,6 @@ checkDaemonRuntimeImports repoRoot = do
             ++ moduleLevelIoRefViolations
             ++ sessionViolations
             ++ readinessSignalViolations
-            ++ reloadTriggerViolations
             ++ mutableMetricsViolations
             ++ asyncPrimitiveViolations
             ++ inlineLogObjectViolations
@@ -786,6 +773,46 @@ checkErrorBoundaryViolations repoRoot = do
                 || any (`isInfixOf` contents) directStderrWrites
             ]
       )
+
+-- | Sprint 1.28: refuse `lookupEnv` / `getEnv` / `getEnvironment` reads on
+-- supported config-loading paths, per
+-- @documents/engineering/config_doctrine.md § 10. Forbidden surfaces@. The
+-- Dhall file passed via `--config <path>` is the sole source for binary
+-- configuration; no `PRODBOX_*` env-var precedence rule survives. Scope is
+-- the modules called out in Phase 1 Sprint 1.28 deliverables. The
+-- `src/Prodbox/Workload.hs` env-var reads migrate with Sprint 3.14 and join
+-- this scope then.
+checkEnvVarConfigReads :: FilePath -> IO [String]
+checkEnvVarConfigReads repoRoot =
+  concat
+    <$> forM
+      scopedPaths
+      ( \relativePath -> do
+          let fullPath = repoRoot </> relativePath
+          fileExists <- doesFileExist fullPath
+          if not fileExists
+            then pure []
+            else do
+              contents <- readFile fullPath
+              let tokens = tokenizeSource (stripStringLiterals contents)
+                  forbiddenTokens =
+                    [ token
+                    | token <- ["lookupEnv", "getEnv", "getEnvironment"]
+                    , token `elem` tokens
+                    ]
+              pure $
+                [ relativePath
+                    ++ " must not read configuration from environment variables. "
+                    ++ "See `documents/engineering/config_doctrine.md` § 10."
+                | not (null forbiddenTokens)
+                ]
+      )
+ where
+  scopedPaths =
+    [ "src/Prodbox/Settings.hs"
+    , "src/Prodbox/Gateway/Settings.hs"
+    , "src/Prodbox/Gateway.hs"
+    ]
 
 -- | Sprint 4.14: enforce the operator vocabulary contract defined in
 -- @documents/engineering/cli_command_surface.md § 2A@. Sprint

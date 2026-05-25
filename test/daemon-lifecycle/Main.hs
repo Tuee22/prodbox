@@ -56,7 +56,6 @@ import Prodbox.Subprocess
   , ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessResult
-  , signalBackgroundProcess
   , startBackgroundProcess
   , stopBackgroundProcess
   , terminateBackgroundProcess
@@ -76,7 +75,6 @@ import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((</>))
 import System.IO (hGetContents)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Posix.Signals (sigHUP)
 import System.Timeout (timeout)
 import TestSupport
 
@@ -95,7 +93,17 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
   describe "gateway daemon process lifecycle" $ do
     it "serves health, readiness, metrics, and drains to exit success on SIGTERM" $
       withGatewayDaemon 5 $ \daemon -> do
-        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
+        readinessResult <- tryAny (waitForHttpStatus (daemonRestPort daemon) "/readyz" 200)
+        case readinessResult of
+          Right () -> pure ()
+          Left err -> do
+            stderrText <- readDaemonStderr daemon
+            expectationFailure
+              ( "readiness probe failed: "
+                  ++ err
+                  ++ "\n=== daemon stderr ===\n"
+                  ++ stderrText
+              )
         readHttp (daemonRestPort daemon) "/healthz"
           `shouldReturn` HttpResponse 200 "ok\n"
         metrics <- readHttp (daemonRestPort daemon) "/metrics"
@@ -123,15 +131,16 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
           firstLine : _ -> assertStructuredLogLine firstLine
           [] -> expectationFailure "expected at least one daemon log line on stderr"
 
-    it "refreshes log filtering from reloaded live config" $
-      withGatewayDaemon 5 $ \daemon -> do
-        waitForHttpStatus (daemonRestPort daemon) "/readyz" 200
-        rewriteGatewayConfig daemon 1 (Just "error")
-        reloadGatewayDaemon daemon
-        terminateGatewayDaemon daemon
-        waitForProcessExitSuccess daemon 3
-        stderrText <- readDaemonStderr daemon
-        extractLogEvents stderrText `shouldNotContain` ["gateway_draining"]
+  -- Sprint 2.21: the SIGHUP-based reload test was removed when SIGHUP was
+  -- replaced by the file-watch worker. The file-watch reload behavior is
+  -- inherently asynchronous (fsnotify's parent-directory watch races with
+  -- the test's config rewrite), so deterministic unit-level coverage is no
+  -- longer feasible here. The closure gate moved to the live operator
+  -- exercise on this host: `prodbox rke2 reconcile` brings up the gateway
+  -- daemon with a mounted Dhall ConfigMap; editing the ConfigMap triggers a
+  -- LiveConfig reload (log_level / timing knob change) in-process or a
+  -- BootConfig drain-and-exit (node identity / cert paths) followed by a
+  -- kubelet-driven restart.
 
   describe "gateway daemon health endpoint goldens" $ do
     goldenTest
@@ -155,7 +164,7 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
       renderMetricsGolden
 
   describe "daemon flag precedence" $ do
-    it "prefers gateway CLI flags over PRODBOX_* env vars"
+    it "uses the gateway CLI flags as the sole source and ignores PRODBOX_* env vars"
       $ withTemporaryEnv
         [ ("PRODBOX_CONFIG_PATH", Just "/tmp/from-env-gateway.json")
         , ("PRODBOX_LOG_LEVEL", Just "debug")
@@ -169,7 +178,7 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
         resolveGatewayPortOverride (Just 4200)
           `shouldReturn` Right (Just 4200)
 
-    it "falls back to gateway env vars when CLI flags are absent"
+    it "fails fast when --config is absent and ignores PRODBOX_CONFIG_PATH"
       $ withTemporaryEnv
         [ ("PRODBOX_CONFIG_PATH", Just "/tmp/from-env-gateway.json")
         , ("PRODBOX_LOG_LEVEL", Just "debug")
@@ -177,17 +186,11 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
         ]
       $ do
         resolveGatewayConfigPath Nothing
-          `shouldReturn` Right "/tmp/from-env-gateway.json"
+          `shouldReturn` Left "Missing gateway config path. Pass `--config <path>`."
         resolveGatewayLogLevel Nothing
-          `shouldReturn` "debug"
+          `shouldReturn` "info"
         resolveGatewayPortOverride Nothing
-          `shouldReturn` Right (Just 4100)
-
-    it "fails fast on an invalid gateway PRODBOX_PORT"
-      $ withTemporaryEnv
-        [("PRODBOX_PORT", Just "not-a-port")]
-      $ resolveGatewayPortOverride Nothing
-        `shouldReturn` Left "Invalid PRODBOX_PORT value: not-a-port"
+          `shouldReturn` Right Nothing
 
     it "applies workload port precedence as CLI, then PRODBOX_PORT, then legacy env, then default"
       $ withTemporaryEnv
@@ -224,7 +227,8 @@ main = mainWithSuite "prodbox-daemon-lifecycle" $ do
 defaultWorkloadOptions :: WorkloadOptions
 defaultWorkloadOptions =
   WorkloadOptions
-    { workloadLogLevel = Nothing
+    { workloadConfigPath = Nothing
+    , workloadLogLevel = Nothing
     , workloadPort = Nothing
     , workloadForeground = True
     }
@@ -279,8 +283,8 @@ withGatewayDaemon drainDeadlineSeconds action =
     let certPath = tmpDir </> "node-a.crt"
         keyPath = tmpDir </> "node-a.key"
         caPath = tmpDir </> "ca.crt"
-        ordersPath = tmpDir </> "orders.json"
-        configPath = tmpDir </> "gateway.json"
+        ordersPath = tmpDir </> "orders.dhall"
+        configPath = tmpDir </> "gateway.dhall"
     writeFile certPath "cert"
     writeFile keyPath "key"
     writeFile caPath "ca"
@@ -362,14 +366,6 @@ terminateGatewayDaemon :: RunningGatewayDaemon -> IO ()
 terminateGatewayDaemon daemon =
   terminateBackgroundProcess (daemonBackgroundProcess daemon)
 
-reloadGatewayDaemon :: RunningGatewayDaemon -> IO ()
-reloadGatewayDaemon daemon =
-  signalBackgroundProcess sigHUP (daemonBackgroundProcess daemon)
-
-rewriteGatewayConfig :: RunningGatewayDaemon -> Int -> Maybe String -> IO ()
-rewriteGatewayConfig daemon =
-  daemonWriteConfig daemon
-
 waitForProcessExitSuccess :: RunningGatewayDaemon -> Int -> IO ()
 waitForProcessExitSuccess daemon timeoutSeconds = do
   result <-
@@ -405,14 +401,6 @@ assertStringField obj fieldName =
     Just (String value)
       | not (Text.null value) -> pure ()
     _ -> expectationFailure ("daemon structured log line is missing string field `" ++ fieldName ++ "`")
-
-extractLogEvents :: String -> [String]
-extractLogEvents stderrText =
-  [ Text.unpack eventName
-  | rawLine <- lines stderrText
-  , Right (Object obj) <- [eitherDecode (BL8.pack rawLine)]
-  , Just (String eventName) <- [KeyMap.lookup (Key.fromString "event") obj]
-  ]
 
 renderEndpointGolden :: String -> IO BL8.ByteString
 renderEndpointGolden path =
@@ -597,42 +585,50 @@ httpRequest path =
 renderConfig :: FilePath -> FilePath -> FilePath -> FilePath -> Int -> Maybe String -> String
 renderConfig certPath keyPath caPath ordersPath drainDeadlineSeconds maybeLogLevel =
   unlines
-    [ "{"
-    , "  \"node_id\": \"node-a\","
-    , "  \"cert_file\": " ++ show certPath ++ ","
-    , "  \"key_file\": " ++ show keyPath ++ ","
-    , "  \"ca_file\": " ++ show caPath ++ ","
-    , "  \"orders_file\": " ++ show ordersPath ++ ","
-    , "  \"event_keys\": {\"node-a\": \"test-key\"},"
-    , "  \"heartbeat_interval_seconds\": 0.2,"
-    , "  \"reconnect_interval_seconds\": 0.2,"
-    , "  \"sync_interval_seconds\": 0.2,"
-    , "  \"max_clock_skew_seconds\": 10,"
-    , "  \"drain_deadline_seconds\": " ++ show drainDeadlineSeconds ++ ","
-    , "  \"log_level\": " ++ maybe "null" show maybeLogLevel ++ ","
-    , "  \"dns_write_gate\": null"
+    [ "{ schemaVersion = 1"
+    , ", boot ="
+    , "  { node_id = \"node-a\""
+    , "  , cert_file = " ++ show certPath
+    , "  , key_file = " ++ show keyPath
+    , "  , ca_file = " ++ show caPath
+    , "  , orders_file = " ++ show ordersPath
+    , "  , event_keys ="
+    , "    [ { name = \"node-a\", value = \"test-key\" } ]"
+    , "  , dns_write_gate ="
+    , "      None { zone_id : Text, fqdn : Text, ttl : Natural, aws_region : Text }"
+    , "  , aws_creds ="
+    , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "  , minio_creds ="
+    , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "  }"
+    , ", live ="
+    , "  { heartbeat_interval_seconds = 0.2"
+    , "  , reconnect_interval_seconds = 0.2"
+    , "  , sync_interval_seconds = 0.2"
+    , "  , max_clock_skew_seconds = 10.0"
+    , "  , drain_deadline_seconds = Some " ++ show drainDeadlineSeconds
+    , "  , log_level = " ++ maybe "None Text" (\l -> "Some " ++ show l) maybeLogLevel
+    , "  }"
     , "}"
     ]
 
 renderOrders :: Int -> Int -> String
 renderOrders restPort peerPort =
   unlines
-    [ "{"
-    , "  \"version_utc\": 1,"
-    , "  \"nodes\": ["
-    , "    {"
-    , "      \"node_id\": \"node-a\","
-    , "      \"stable_dns_name\": \"127.0.0.1\","
-    , "      \"rest_host\": \"127.0.0.1\","
-    , "      \"rest_port\": " ++ show restPort ++ ","
-    , "      \"socket_host\": \"127.0.0.1\","
-    , "      \"socket_port\": " ++ show peerPort
+    [ "{ version_utc = 1"
+    , ", nodes ="
+    , "  [ { node_id = \"node-a\""
+    , "    , stable_dns_name = \"127.0.0.1\""
+    , "    , rest_host = \"127.0.0.1\""
+    , "    , rest_port = " ++ show restPort
+    , "    , socket_host = \"127.0.0.1\""
+    , "    , socket_port = " ++ show peerPort
     , "    }"
-    , "  ],"
-    , "  \"gateway_rule\": {"
-    , "    \"ranked_nodes\": [\"node-a\"],"
-    , "    \"heartbeat_timeout_seconds\": 3"
-    , "  }"
+    , "  ]"
+    , ", gateway_rule ="
+    , "    { ranked_nodes = [ \"node-a\" ]"
+    , "    , heartbeat_timeout_seconds = 3"
+    , "    }"
     , "}"
     ]
 

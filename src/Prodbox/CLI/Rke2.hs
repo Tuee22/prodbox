@@ -76,7 +76,9 @@ import Prodbox.Dns qualified as Dns
 import Prodbox.Error (fatalError)
 import Prodbox.Host
   ( LanAddressing (..)
+  , defaultGatewayNodePort
   , detectLanAddressing
+  , runHostFirewallGatewayUnrestrict
   )
 import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
 import Prodbox.Infra.AwsEksTestStack
@@ -648,6 +650,7 @@ runNativeDelete repoRoot = do
     , deleteRke2ClusterSubstrate repoRoot
     , removeCalicoEndpointStatusResidue
     , removeManagedKubeconfig
+    , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
     , renderRetainedStateNotice repoRoot retainedManualPvRoot
     ]
 
@@ -745,6 +748,7 @@ runNativeDeleteCascade repoRoot = do
               [ deleteRke2ClusterSubstrate repoRoot
               , removeCalicoEndpointStatusResidue
               , removeManagedKubeconfig
+              , runHostFirewallGatewayUnrestrict defaultGatewayNodePort
               , renderRetainedStateNotice repoRoot retainedManualPvRoot
               ]
           case uninstallExit of

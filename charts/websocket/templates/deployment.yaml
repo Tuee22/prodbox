@@ -34,26 +34,12 @@ spec:
         - name: websocket
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: Always
-          args: ["workload", "start"]
-          env:
-            - name: PRODBOX_WORKLOAD_MODE
-              value: websocket
-            - name: PRODBOX_HTTP_PORT
-              value: {{ .Values.websocket.port | quote }}
-            - name: PRODBOX_REDIS_HOST
-              value: {{ .Values.redis.host | quote }}
-            - name: PRODBOX_REDIS_PORT
-              value: {{ .Values.redis.port | quote }}
-            - name: PRODBOX_OIDC_ISSUER
-              value: {{ .Values.oidc.issuer | quote }}
-            - name: PRODBOX_OIDC_CLIENT_ID
-              value: {{ .Values.oidc.clientId | quote }}
-            - name: PRODBOX_OIDC_CLIENT_SECRET
-              value: {{ .Values.oidc.clientSecret | quote }}
-            - name: PRODBOX_OIDC_PUBLIC_BASE_URL
-              value: {{ .Values.oidc.publicBaseUrl | quote }}
-            - name: PRODBOX_OIDC_TOKEN_ENDPOINT
-              value: {{ .Values.oidc.tokenEndpoint | quote }}
+          args: ["workload", "start", "--config", "/etc/workload/config.dhall"]
+          volumeMounts:
+            - name: workload-config
+              mountPath: /etc/workload/config.dhall
+              subPath: config.dhall
+              readOnly: true
           ports:
             - name: http
               containerPort: {{ .Values.websocket.port }}
@@ -74,3 +60,7 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
+      volumes:
+        - name: workload-config
+          configMap:
+            name: websocket-config

@@ -33,12 +33,12 @@ spec:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           imagePullPolicy: Always
-          args: ["workload", "start"]
-          env:
-            - name: PRODBOX_WORKLOAD_MODE
-              value: api
-            - name: PRODBOX_HTTP_PORT
-              value: {{ .Values.api.port | quote }}
+          args: ["workload", "start", "--config", "/etc/workload/config.dhall"]
+          volumeMounts:
+            - name: workload-config
+              mountPath: /etc/workload/config.dhall
+              subPath: config.dhall
+              readOnly: true
           ports:
             - name: http
               containerPort: {{ .Values.api.port }}
@@ -54,3 +54,7 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 10
+      volumes:
+        - name: workload-config
+          configMap:
+            name: api-config

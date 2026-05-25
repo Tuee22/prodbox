@@ -8,7 +8,7 @@
 # - forbid direct terminal output outside Prodbox.CLI.Output: putStr / Text.IO.putStrLn / hPutStrLn stderr
 # - forbid inline daemon log objects: Aeson.object / Aeson.fromList
 # - forbid daemon readiness markers: sd_notify / READY=1 / readiness_marker / ready_file
-# - forbid reload polling triggers: System.FSNotify / System.INotify / Linux.INotify / getModificationTime
+# - require file-watch reload trigger on the daemon `--config` Dhall path (System.FSNotify); SIGHUP becomes ordinary drain
 # - forbid module-local mutable metrics: newIORef / newMVar outside envMetrics
 # - require daemon Async primitive set: withAsync / race / concurrently / replicateConcurrently
 - ignore: {name: "Use fromMaybe"}

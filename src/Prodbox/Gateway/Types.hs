@@ -8,6 +8,8 @@ module Prodbox.Gateway.Types
   , CommitLog (..)
   , DaemonConfig (..)
   , DnsWriteGate (..)
+  , GatewayAwsCreds (..)
+  , GatewayMinioCreds (..)
   , ChannelName (..)
   , ConnectionKey (..)
   , Disposition (..)
@@ -23,7 +25,6 @@ module Prodbox.Gateway.Types
   , appendIfNew
   , sortedEvents
   , latestTimestamp
-  , parseDaemonConfig
   , parseOrders
   , parseEvent
   , encodeEvent
@@ -151,6 +152,27 @@ data DnsWriteGate = DnsWriteGate
   }
   deriving (Eq, Show)
 
+-- | Sprint 2.22: AWS Route 53 credentials for the daemon, sourced from the
+-- daemon's mounted Dhall config (typically imported from a Secret-mounted
+-- Dhall fragment per @config_doctrine.md §6@). Optional so daemons that do
+-- not own DNS writes (e.g. non-DNS-leader nodes) can omit the field.
+data GatewayAwsCreds = GatewayAwsCreds
+  { gatewayAwsAccessKeyId :: String
+  , gatewayAwsSecretAccessKey :: String
+  , gatewayAwsSessionToken :: Maybe String
+  , gatewayAwsRegion :: String
+  }
+  deriving (Eq, Show)
+
+-- | Sprint 2.22: MinIO IAM credentials for the master-seed read/write path.
+-- Sourced from the daemon's mounted Dhall config (typically imported from a
+-- Secret-mounted Dhall fragment) instead of env vars.
+data GatewayMinioCreds = GatewayMinioCreds
+  { gatewayMinioAccessKey :: String
+  , gatewayMinioSecretKey :: String
+  }
+  deriving (Eq, Show)
+
 data DaemonConfig = DaemonConfig
   { daemonNodeId :: String
   , daemonCertFile :: FilePath
@@ -165,6 +187,8 @@ data DaemonConfig = DaemonConfig
   , daemonDrainDeadlineSeconds :: Maybe Int
   , daemonConfigLogLevel :: Maybe String
   , daemonDnsWriteGate :: Maybe DnsWriteGate
+  , daemonAwsCreds :: Maybe GatewayAwsCreds
+  , daemonMinioCreds :: Maybe GatewayMinioCreds
   }
   deriving (Eq, Show)
 
@@ -205,78 +229,11 @@ defaultDrainDeadlineSeconds = 30
 supportedDaemonConfigSchemaVersion :: Int
 supportedDaemonConfigSchemaVersion = 1
 
-parseDaemonConfig :: String -> Either String DaemonConfig
-parseDaemonConfig jsonText =
-  case eitherDecode (BL8.pack jsonText) of
-    Left err -> Left ("failed to parse daemon config: " ++ err)
-    Right (Object obj) ->
-      if hasStructuredDaemonConfigShape obj
-        then parseStructuredDaemonConfig obj
-        else parseFlatDaemonConfig obj
-    Right _ -> Left "daemon config must be a JSON object"
-
-hasStructuredDaemonConfigShape :: KeyMap.KeyMap Value -> Bool
-hasStructuredDaemonConfigShape obj =
-  KeyMap.member (Key.fromString "schemaVersion") obj
-    || KeyMap.member (Key.fromString "boot") obj
-    || KeyMap.member (Key.fromString "live") obj
-
-parseStructuredDaemonConfig :: KeyMap.KeyMap Value -> Either String DaemonConfig
-parseStructuredDaemonConfig obj = do
-  schemaVersion <- requireInt obj "schemaVersion"
-  if schemaVersion == supportedDaemonConfigSchemaVersion
-    then pure ()
-    else
-      Left
-        ( "config_schema_mismatch: expected schemaVersion "
-            ++ show supportedDaemonConfigSchemaVersion
-            ++ ", got "
-            ++ show schemaVersion
-        )
-  bootObj <- requireObject obj "boot"
-  liveObj <- requireObject obj "live"
-  parseDaemonConfigFromObjects bootObj liveObj
-
-parseFlatDaemonConfig :: KeyMap.KeyMap Value -> Either String DaemonConfig
-parseFlatDaemonConfig obj = parseDaemonConfigFromObjects obj obj
-
-parseDaemonConfigFromObjects
-  :: KeyMap.KeyMap Value
-  -> KeyMap.KeyMap Value
-  -> Either String DaemonConfig
-parseDaemonConfigFromObjects bootObj liveObj = do
-  nodeId <- requireStr bootObj "node_id"
-  certFile <- requireStr bootObj "cert_file"
-  keyFile <- requireStr bootObj "key_file"
-  caFile <- requireStr bootObj "ca_file"
-  ordersFile <- requireStr bootObj "orders_file"
-  eventKeys <- parseEventKeys bootObj
-  let heartbeat = readOptionalFloat liveObj "heartbeat_interval_seconds" 1.0
-      reconnect = readOptionalFloat liveObj "reconnect_interval_seconds" 1.0
-      sync = readOptionalFloat liveObj "sync_interval_seconds" 5.0
-      maxSkew = readOptionalFloat liveObj "max_clock_skew_seconds" defaultMaxClockSkewSeconds
-      drainDeadline = readOptionalInt liveObj "drain_deadline_seconds"
-      logLevel = readOptionalString liveObj "log_level"
-  dnsGate <- parseDnsWriteGate bootObj
-  validateIntervals heartbeat reconnect sync
-  validateMaxSkew maxSkew
-  validateDrainDeadline drainDeadline
-  Right
-    DaemonConfig
-      { daemonNodeId = nodeId
-      , daemonCertFile = certFile
-      , daemonKeyFile = keyFile
-      , daemonCaFile = caFile
-      , daemonOrdersFile = ordersFile
-      , daemonEventKeys = eventKeys
-      , daemonHeartbeatInterval = heartbeat
-      , daemonReconnectInterval = reconnect
-      , daemonSyncInterval = sync
-      , daemonMaxClockSkewSeconds = maxSkew
-      , daemonDrainDeadlineSeconds = drainDeadline
-      , daemonConfigLogLevel = logLevel
-      , daemonDnsWriteGate = dnsGate
-      }
+-- Sprint 2.20 closure (May 24, 2026): the JSON `parseDaemonConfig` parser
+-- and its structured-vs-flat branches were removed. The supported decoder is
+-- `Prodbox.Gateway.Settings.loadDaemonConfig` built on
+-- `Dhall.inputFile auto` per
+-- [config_doctrine.md §4](../../documents/engineering/config_doctrine.md#4-decoding).
 
 parseOrders :: String -> Either String Orders
 parseOrders jsonText =

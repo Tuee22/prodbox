@@ -104,11 +104,14 @@ import Prodbox.Gateway.Peer
   , parsePeerHttpRequest
   , renderPeerHttpResponse
   )
+import Prodbox.Gateway.Settings qualified as GatewaySettings
 import Prodbox.Gateway.Types
   ( CommitLog (..)
   , DaemonConfig (..)
   , Disposition (..)
   , DnsWriteGate (..)
+  , GatewayAwsCreds (..)
+  , GatewayMinioCreds (..)
   , GatewayRule (..)
   , Orders (..)
   , PeerEndpoint (..)
@@ -124,8 +127,6 @@ import Prodbox.Gateway.Types
   , eventTypeYield
   , extractOrdersVersionFromEvent
   , nodeDisposition
-  , parseDaemonConfig
-  , parseOrders
   , peerDialSocketHost
   , validateDaemonTimingAgainstOrders
   )
@@ -139,6 +140,9 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
+import Prodbox.Secret.Derive qualified
+import Prodbox.Secret.MasterSeed qualified as MasterSeed
+import Prodbox.Secret.Wire qualified as SecretWire
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -146,10 +150,16 @@ import Prodbox.Subprocess
   )
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
+import System.FSNotify
+  ( Event (..)
+  , defaultConfig
+  , watchDir
+  , withManagerConf
+  )
+import System.FilePath (takeDirectory, takeFileName)
 import System.Posix.Signals
   ( Handler (Catch)
   , installHandler
-  , sigHUP
   , sigINT
   , sigTERM
   )
@@ -212,6 +222,13 @@ data DaemonEnv = DaemonEnv
   , envDrainSignals :: TQueue DrainSignal
   , envReloadSignals :: TQueue ()
   , envHooks :: DaemonHooks
+  , envMasterSeed :: Maybe Prodbox.Secret.Derive.MasterSeed
+  -- ^ Sprint 2.19: the master seed retrieved from MinIO at startup. When
+  -- the daemon has 'daemonMinioCreds' bound and the seed is readable, the
+  -- @/v1/secret/derive@ endpoint composes 'Prodbox.Secret.Derive.derive'
+  -- against this value. When MinIO is unavailable (no credentials bound,
+  -- or the read fails at startup) the field stays 'Nothing' and the
+  -- endpoint returns 503 with the structured reason in the legacy stub.
   }
 
 data DrainSignal
@@ -253,8 +270,12 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
     [ field "node_id" (daemonNodeId config)
     , field "log_level" logLevel
     ]
-  ordersText <- readFile (daemonOrdersFile config)
-  case parseOrders ordersText of
+  -- Sprint 2.22: dispatch by file extension via GatewaySettings.loadOrders
+  -- so the chart-rendered Dhall Orders content decodes through the native
+  -- dhall library; legacy JSON Orders files continue to work during the
+  -- chart transition.
+  ordersResult <- GatewaySettings.loadOrders (daemonOrdersFile config)
+  case ordersResult of
     Left err -> do
       logAtLevel logLevel Error "orders_parse_failed" [field "detail" err]
       pure (ExitFailure 1)
@@ -303,6 +324,11 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                   drainSignals <- newTQueueIO
                   reloadSignals <- newTQueueIO
                   signalCount <- newTVarIO (0 :: Int)
+                  -- Sprint 2.19: attempt to retrieve the master seed from MinIO if
+                  -- credentials are bound in the Dhall config. Failures degrade
+                  -- gracefully: the daemon stays up and @/v1/secret/derive@ returns
+                  -- a structured 503 until the seed becomes available.
+                  initialMasterSeed <- acquireInitialMasterSeed logLevel config
                   let env =
                         DaemonEnv
                           { envConfigPath = maybeConfigPath
@@ -316,6 +342,7 @@ runGatewayDaemon maybeConfigPath restPortOverride logLevel config = withSocketsD
                           , envDrainSignals = drainSignals
                           , envReloadSignals = reloadSignals
                           , envHooks = noopDaemonHooks
+                          , envMasterSeed = initialMasterSeed
                           }
                   installDaemonSignalHandlers env signalCount
 
@@ -371,10 +398,8 @@ installDaemonSignalHandlers env signalCount = do
                 atomically (writeTVar (envReadiness env) Draining)
                 pure ()
               else pure ()
-      reloadHandler = Catch (atomically (writeTQueue (envReloadSignals env) ()))
   _ <- installHandler sigTERM drainHandler Nothing
   _ <- installHandler sigINT drainHandler Nothing
-  _ <- installHandler sigHUP reloadHandler Nothing
   pure ()
  where
   updateSignalCount =
@@ -400,12 +425,45 @@ daemonWorkers restPortOverride localPeer env =
       withAsync (worker "dns_write" (dnsWriteLoop env)) $ \_ ->
         withAsync (worker "rest_server" (restServerLoop restPortOverride localPeer env)) $ \_ ->
           withAsync (worker "peer_listener" (peerListenerLoop localPeer env)) $ \_ ->
-            void $
-              concurrently
-                (worker "peer_dialer" (peerDialerLoop env))
-                (worker "config_reload" (reloadLoop env))
+            withAsync (worker "config_watch" (configFileWatchLoop env)) $ \_ ->
+              void $
+                concurrently
+                  (worker "peer_dialer" (peerDialerLoop env))
+                  (worker "config_reload" (reloadLoop env))
  where
   worker = runWorkerWithRetry env
+
+-- | File-watch worker: subscribes to events on the parent directory of the
+-- daemon's `--config` Dhall path so kubelet `..data` symlink swaps trigger
+-- reloads. Feeds the existing `envReloadSignals` `TQueue ()` that the
+-- `config_reload` worker drains. See
+-- [config_doctrine.md § 7](../../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger).
+configFileWatchLoop :: DaemonEnv -> IO ()
+configFileWatchLoop env =
+  case envConfigPath env of
+    Nothing -> pure ()
+    Just configPath -> do
+      let parentDir = takeDirectory configPath
+          configName = takeFileName configPath
+      withManagerConf defaultConfig $ \manager -> do
+        _ <- watchDir manager parentDir (const True) (handleEvent configName)
+        forever (threadDelay 1000000)
+ where
+  handleEvent configName event =
+    let eventPath = takeFileName (eventPathFromEvent event)
+     in if eventPath == configName || eventPath == "..data"
+          then atomically (writeTQueue (envReloadSignals env) ())
+          else pure ()
+
+  eventPathFromEvent :: Event -> FilePath
+  eventPathFromEvent ev = case ev of
+    Added p _ _ -> p
+    Modified p _ _ -> p
+    ModifiedAttributes p _ _ -> p
+    Removed p _ _ -> p
+    WatchedDirectoryRemoved p _ _ -> p
+    CloseWrite p _ _ -> p
+    Unknown p _ _ _ -> p
 
 drainCoordinator :: DaemonEnv -> IO ()
 drainCoordinator env = do
@@ -520,33 +578,31 @@ reloadLiveConfig env =
   case envConfigPath env of
     Nothing -> pure (Left "config_reload_failed")
     Just path -> do
-      fileResult <- try (readFile path) :: IO (Either IOException String)
-      case fileResult of
-        Left _ -> pure (Left "config_reload_failed")
-        Right rawConfig ->
-          case parseDaemonConfig rawConfig of
-            Left err ->
-              if "config_schema_mismatch" `isPrefixOf` err
-                then pure (Left "config_schema_mismatch")
-                else pure (Left "config_reload_failed")
-            Right newConfig -> do
-              currentLiveConfig <- readTVarIO (envLiveConfig env)
-              let bootEvent =
-                    if daemonBootFieldsChanged (envBootConfig env) newConfig
-                      then Just "config_boot_changes_ignored"
-                      else Nothing
-                  liveConfig =
-                    liveConfigFromDaemonConfig
-                      (liveLogLevel currentLiveConfig)
-                      newConfig
-              case validateDaemonTimingAgainstOrders newConfig (envOrders env) of
-                Left _ -> pure (Left "config_schema_mismatch")
-                Right () -> do
-                  maybe
-                    (pure ())
-                    (\eventName -> logForEnv env Warn (Text.pack eventName) [])
-                    bootEvent
-                  pure (Right liveConfig)
+      loadResult <- GatewaySettings.loadDaemonConfig path
+      case loadResult of
+        Left err ->
+          if "config_schema_mismatch" `isPrefixOf` err
+            then pure (Left "config_schema_mismatch")
+            else pure (Left "config_reload_failed")
+        Right newConfig -> do
+          currentLiveConfig <- readTVarIO (envLiveConfig env)
+          let bootChanged = daemonBootFieldsChanged (envBootConfig env) newConfig
+              liveConfig =
+                liveConfigFromDaemonConfig
+                  (liveLogLevel currentLiveConfig)
+                  newConfig
+          case validateDaemonTimingAgainstOrders newConfig (envOrders env) of
+            Left _ -> pure (Left "config_schema_mismatch")
+            Right () ->
+              if bootChanged
+                then do
+                  -- Per [config_doctrine.md § 8](../../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract):
+                  -- a BootConfig change triggers drain-and-exit so the kubelet
+                  -- restarts the Pod against the new Dhall.
+                  logForEnv env Warn (Text.pack "config_reload_boot_change_detected") []
+                  atomically (writeTQueue (envDrainSignals env) BeginDrain)
+                  pure (Left "config_boot_change_drain")
+                else pure (Right liveConfig)
 
 daemonBootFieldsChanged :: DaemonConfig -> DaemonConfig -> Bool
 daemonBootFieldsChanged old new =
@@ -742,7 +798,7 @@ dnsWriteLoop env = forever $ do
                   Nothing -> True
                   Just lastIp -> lastIp /= currentIp
             when shouldWrite $ do
-              writeResult <- writeDnsRecord gate currentIp
+              writeResult <- writeDnsRecord (daemonAwsCreds config) gate currentIp
               case writeResult of
                 Left err -> logForEnv env Error "dns_write_failed" [field "detail" err]
                 Right () -> do
@@ -795,18 +851,7 @@ handleRestClient sock env = do
         state <- readTVarIO (envState env)
         sendLazyHttpResponse sock 200 "application/json" (renderStateJson now (envBootConfig env) state)
       path
-        | "/v1/secret/derive" `isPrefixOf` path ->
-            -- Sprint 2.19: the derive endpoint exists at the wire-contract
-            -- level but the master-seed read path through MinIO has not yet
-            -- landed. Per @secret_derivation_doctrine.md §8@, a daemon that
-            -- cannot read or create the master seed serves 503 here until
-            -- the MinIO IAM bootstrap closure lands.
-            sendHttpResponse
-              sock
-              503
-              "application/json"
-              ( "{\"error\":\"master-seed unavailable\",\"reason\":\"Prodbox.Secret.MasterSeed not yet wired (Sprint 2.19 remaining); see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
-              )
+        | "/v1/secret/derive" `isPrefixOf` path -> handleSecretDerive env sock path
         | path == "/v1/secret/ensure-namespace" ->
             -- Sprint 2.19: same wire-contract placeholder as
             -- /v1/secret/derive above. The route is reserved at the
@@ -858,6 +903,110 @@ requestPath rawRequest =
   case words (takeWhile (/= '\r') (takeWhile (/= '\n') (BS8.unpack rawRequest))) of
     _method : path : _ -> path
     _ -> "/v1/state"
+
+-- | Sprint 2.19: try to retrieve the master seed from MinIO at daemon
+-- startup. Returns 'Just' when 'daemonMinioCreds' is bound and the read or
+-- create succeeds; returns 'Nothing' otherwise (no creds, MinIO unreachable,
+-- I/O failure). The @/v1/secret/derive@ endpoint serves 503 while
+-- 'envMasterSeed' stays 'Nothing'.
+acquireInitialMasterSeed :: String -> DaemonConfig -> IO (Maybe Prodbox.Secret.Derive.MasterSeed)
+acquireInitialMasterSeed logLevel config =
+  case daemonMinioCreds config of
+    Nothing -> do
+      logAtLevel
+        logLevel
+        Info
+        "master_seed_unavailable"
+        [field "reason" ("no minio_creds bound in daemon config" :: String)]
+      pure Nothing
+    Just creds -> do
+      -- The MinIO endpoint URL is sourced from the chart-side service mesh
+      -- via the doctrine-pinned localPort default (Sprint 2.19 follow-up may
+      -- thread an explicit endpoint through the Dhall config).
+      let cfg =
+            MasterSeed.defaultMinioMasterSeedConfig
+              defaultMinioLocalPort
+              (gatewayMinioAccessKey creds)
+              (gatewayMinioSecretKey creds)
+      result <- MasterSeed.ensureMasterSeed cfg
+      case result of
+        Left err -> do
+          logAtLevel
+            logLevel
+            Warn
+            "master_seed_unavailable"
+            [field "reason" (MasterSeed.renderMasterSeedError err)]
+          pure Nothing
+        Right seed -> do
+          logAtLevel
+            logLevel
+            Info
+            "master_seed_ready"
+            [field "source" ("minio:prodbox/master-seed" :: String)]
+          pure (Just seed)
+ where
+  defaultMinioLocalPort :: Int
+  defaultMinioLocalPort = 9000
+
+-- | Sprint 2.19: serve @/v1/secret/derive?context=<ctx>@. Returns 200 with
+-- the URL-safe base64 derived value when the seed is bound; 400 when the
+-- @context@ query parameter is missing; 503 when 'envMasterSeed' is
+-- 'Nothing'.
+handleSecretDerive :: DaemonEnv -> Socket -> String -> IO ()
+handleSecretDerive env sock path =
+  case envMasterSeed env of
+    Nothing ->
+      sendHttpResponse
+        sock
+        503
+        "application/json"
+        "{\"error\":\"master-seed unavailable\",\"reason\":\"daemon has not yet acquired the master seed from MinIO; see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
+    Just seed ->
+      case extractContextQuery path of
+        Nothing ->
+          sendHttpResponse
+            sock
+            400
+            "application/json"
+            "{\"error\":\"missing context query parameter\",\"reason\":\"GET /v1/secret/derive requires ?context=<context-string>\"}\n"
+        Just contextText -> do
+          let derived =
+                Prodbox.Secret.Derive.deriveBase64Url
+                  seed
+                  (Text.pack contextText)
+              response =
+                SecretWire.DeriveResponse
+                  { SecretWire.deriveResponseContext = Text.pack contextText
+                  , SecretWire.deriveResponseDerived = derived
+                  , SecretWire.deriveResponseEncoding = SecretWire.deriveEncodingBase64Url
+                  }
+          sendLazyHttpResponse sock 200 "application/json" (encode response)
+
+-- | Parse the @context@ query parameter from a path of the form
+-- @/v1/secret/derive?context=<value>@. Returns 'Nothing' when the parameter
+-- is absent. Does not URL-decode; doctrine context strings are ASCII-only.
+extractContextQuery :: String -> Maybe String
+extractContextQuery path =
+  case break (== '?') path of
+    (_, '?' : queryString) -> lookup "context" (parsePairs queryString)
+    _ -> Nothing
+ where
+  parsePairs s =
+    [ (key, value)
+    | pair <- splitOn '&' s
+    , let (key, rest) = break (== '=') pair
+    , value <- case rest of
+        '=' : v -> [v]
+        _ -> [""]
+    ]
+
+splitOn :: Char -> String -> [String]
+splitOn c = foldr step []
+ where
+  step char [] = [[char]]
+  step char (cur : rest)
+    | char == c = "" : cur : rest
+    | otherwise = (char : cur) : rest
 
 renderMetricsText :: UTCTime -> DaemonEnv -> DaemonState -> String
 renderMetricsText now env state =
@@ -1379,8 +1528,13 @@ fetchPublicIp = do
             then pure (Right ip)
             else pure (Left ("unexpected public IP: " ++ ip))
 
-writeDnsRecord :: DnsWriteGate -> String -> IO (Either String ())
-writeDnsRecord gate ip = do
+-- | Sprint 2.22: write a Route 53 A record. AWS credentials are now sourced
+-- from the daemon's mounted Dhall config ('Maybe GatewayAwsCreds') rather
+-- than inherited from the Pod's process environment. When no credentials
+-- are bound the subprocess inherits the parent environment as a transitional
+-- fallback during the chart-side env-var removal.
+writeDnsRecord :: Maybe GatewayAwsCreds -> DnsWriteGate -> String -> IO (Either String ())
+writeDnsRecord maybeAwsCreds gate ip = do
   let changeBatch =
         BL8.unpack $
           encode $
@@ -1398,6 +1552,7 @@ writeDnsRecord gate ip = do
                          ]
                      ]
               ]
+      subprocessEnv = fmap awsCredsToSubprocessEnv maybeAwsCreds
   result <-
     captureSubprocessResult
       Subprocess
@@ -1412,7 +1567,7 @@ writeDnsRecord gate ip = do
             , "--region"
             , dnsWriteGateAwsRegion gate
             ]
-        , subprocessEnvironment = Nothing
+        , subprocessEnvironment = subprocessEnv
         , subprocessWorkingDirectory = Nothing
         }
   case result of
@@ -1421,6 +1576,14 @@ writeDnsRecord gate ip = do
       case processExitCode output of
         ExitSuccess -> pure (Right ())
         ExitFailure _ -> pure (Left ("route53 update failed: " ++ trim (processStderr output)))
+
+awsCredsToSubprocessEnv :: GatewayAwsCreds -> [(String, String)]
+awsCredsToSubprocessEnv creds =
+  [ ("AWS_ACCESS_KEY_ID", gatewayAwsAccessKeyId creds)
+  , ("AWS_SECRET_ACCESS_KEY", gatewayAwsSecretAccessKey creds)
+  , ("AWS_DEFAULT_REGION", gatewayAwsRegion creds)
+  ]
+    ++ maybe [] (\t -> [("AWS_SESSION_TOKEN", t)]) (gatewayAwsSessionToken creds)
 
 createSignedEvent :: String -> String -> Value -> String -> UTCTime -> SignedEvent
 createSignedEvent nodeId evtType payload key now =

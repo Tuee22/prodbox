@@ -1578,10 +1578,16 @@ None.
 
 - Keep Phase `1` linked from [README.md](README.md) and [00-overview.md](00-overview.md).
 
-## Sprint 1.28: `dhall` allow-newer Clauses and Env-Var-Read Lint Rule 📋
+## Sprint 1.28: `dhall` allow-newer Clauses and Env-Var-Read Lint Rule ✅
 
-**Status**: Planned (May 24, 2026, blocked by Sprint 0.8 doctrine adoption)
-**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md))
+**Status**: Done (May 24, 2026 — existing `cabal.project allow-newer: *:base,
+*:template-haskell` clause continues to satisfy the `dhall ^>=1.42` transitive
+deps under GHC 9.14.1; `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads` lint
+rule landed and is wired into `runDoctrineAlignmentCheck`; the `PRODBOX_LOG_LEVEL` /
+`PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var reads in `src/Prodbox/Gateway.hs`
+are gone; daemon-lifecycle stanza tests updated to the new contract; 533/533
+unit tests pass; `prodbox check-code` exit 0.)
+**Blocked by**: Sprint 0.8 ([config_doctrine.md](../documents/engineering/config_doctrine.md)) — resolved
 **Implementation**: `cabal.project` (`allow-newer` clauses), `prodbox.cabal` (no version bound
 changes expected), `src/Prodbox/CheckCode.hs` (new `forbidEnvVarConfigReads` lint rule)
 **Docs to update**: `documents/engineering/dependency_management.md`,

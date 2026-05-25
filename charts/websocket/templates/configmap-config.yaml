@@ -1,0 +1,38 @@
+{{- /*
+Sprint 3.14 (May 24, 2026): the websocket workload Pod's config is rendered
+as a Dhall expression (`config.dhall`) per
+@documents/engineering/config_doctrine.md §6@. The workload binary decodes
+this file in-process via the native Haskell `dhall` library through
+`Prodbox.Workload.Settings.loadWorkloadConfig`.
+
+The transitional state keeps the `PRODBOX_WORKLOAD_MODE` / `PRODBOX_*` env
+vars on the Pod alongside this new ConfigMap so the binary can fall back if
+the chart is rolled back. Sprint 3.14 follow-up removes those env vars and
+makes `--config` the sole source.
+*/}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: websocket-config
+  labels:
+    {{- include "websocket.labels" . | nindent 4 }}
+data:
+  config.dhall: |-
+    { schemaVersion = 1
+    , mode = < Api | Websocket >.Websocket
+    , log_level = None Text
+    , workload_port = Some {{ .Values.websocket.port }}
+    , redis =
+        Some
+          { host = {{ .Values.redis.host | quote }}
+          , port = {{ .Values.redis.port | quote }}
+          }
+    , oidc =
+        Some
+          { issuer = {{ .Values.oidc.issuer | quote }}
+          , client_id = {{ .Values.oidc.clientId | quote }}
+          , client_secret = {{ .Values.oidc.clientSecret | quote }}
+          , public_base_url = {{ .Values.oidc.publicBaseUrl | quote }}
+          , token_endpoint = {{ .Values.oidc.tokenEndpoint | quote }}
+          }
+    }

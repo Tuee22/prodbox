@@ -14,6 +14,10 @@ module Prodbox.Host
   , gatewayNodePortFirewallCheckArgs
   , gatewayNodePortFirewallDeleteArgs
   , renderFirewallRuleAction
+  , defaultGatewayNodePort
+  , runHostFirewallGatewayRestrict
+  , runHostFirewallGatewayUnrestrict
+  , runHostFirewallGatewayRestrictOptional
   )
 where
 
@@ -1223,6 +1227,59 @@ gatewayNodePortFirewallDeleteArgs port =
 -- versions per the contract in secret_derivation_doctrine.md §5.
 gatewayNodePortFirewallRuleComment :: String
 gatewayNodePortFirewallRuleComment = "prodbox-gateway-nodeport-loopback-only"
+
+-- | Canonical gateway-service NodePort. Mirrors the chart-side default in
+-- @charts/gateway/values.yaml@ and the operator-CLI defaults in
+-- @prodbox host firewall gateway-{restrict,unrestrict}@. Lifecycle hooks
+-- (Sprint 2.19 reconcile/delete wiring) reach the rule installer through
+-- this constant so the three call sites stay in sync.
+defaultGatewayNodePort :: Int
+defaultGatewayNodePort = 30443
+
+-- | Sprint 2.19 lifecycle hook: best-effort install of the gateway
+-- NodePort restriction. Unlike the operator-facing
+-- 'runHostFirewallGatewayRestrict', this variant treats an absent
+-- @iptables@ binary, an unprivileged caller, or any other probe
+-- failure as success-with-reason — the post-deploy / reconcile hook
+-- is defense-in-depth, not the primary contract. Operators on hosts
+-- without iptables (containers, CI) or running @prodbox charts deploy@
+-- without sudo still complete the chart deploy; a one-line hint names
+-- the canonical operator command to re-enforce the rule.
+runHostFirewallGatewayRestrictOptional :: Int -> IO ExitCode
+runHostFirewallGatewayRestrictOptional port = do
+  iptablesExists <- findExecutable "iptables"
+  case iptablesExists of
+    Nothing ->
+      skipWithReason "iptables binary absent"
+    Just _ -> do
+      -- Probe permission cheaply via @iptables -S INPUT@ (list rules).
+      -- nf_tables requires root for read as well as write, so a passing
+      -- probe means the upcoming @-C@/@-A@ calls will also pass.
+      probeResult <-
+        captureSubprocessResult
+          Subprocess
+            { subprocessPath = "iptables"
+            , subprocessArguments = ["-S", "INPUT"]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
+            }
+      case probeResult of
+        Failure _ -> skipWithReason "iptables probe failed"
+        Success out -> case processExitCode out of
+          ExitFailure _ -> skipWithReason "insufficient privilege to manage iptables"
+          ExitSuccess -> runHostFirewallGatewayRestrict port
+ where
+  skipWithReason reason = do
+    writeOutputLine
+      ( "Gateway NodePort firewall rule on port "
+          ++ show port
+          ++ ": install skipped ("
+          ++ reason
+          ++ "; rerun `sudo prodbox host firewall gateway-restrict --port "
+          ++ show port
+          ++ "` to enforce loopback-only access)"
+      )
+    pure ExitSuccess
 
 runHostFirewallGatewayRestrict :: Int -> IO ExitCode
 runHostFirewallGatewayRestrict port = do

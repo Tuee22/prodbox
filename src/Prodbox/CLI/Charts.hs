@@ -23,6 +23,11 @@ import Prodbox.CLI.Output
   , writeOutput
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Host
+  ( defaultGatewayNodePort
+  , runHostFirewallGatewayRestrictOptional
+  , runHostFirewallGatewayUnrestrict
+  )
 import Prodbox.Lib.AwsSubstratePlatform (ensureAwsSubstratePlatformRuntime)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
@@ -94,7 +99,7 @@ runChartsCommand repoRoot command =
                               runPlanWithOptions
                                 planOptions
                                 (buildPlan renderChartDeploymentPlan plan)
-                                (applyChartPlanOutput deployChartPlan)
+                                (applyChartDeployWithPostHook rootChart substrate)
     ChartsDelete chartName substrate confirmed planOptions ->
       case requirePublicRootChartName chartName of
         Left err -> failWith err
@@ -110,7 +115,7 @@ runChartsCommand repoRoot command =
                     runPlanWithOptions
                       planOptions
                       (buildPlan renderChartDeletePlan plan)
-                      (applyChartPlanOutput deleteChartPlan)
+                      (applyChartDeleteWithPostHook rootChart substrate)
 
 requirePublicRootChartName :: String -> Either String String
 requirePublicRootChartName chartName
@@ -161,6 +166,30 @@ applyChartPlanOutput
 applyChartPlanOutput applyPlan plan = do
   applyResult <- applyPlan plan
   either failWith writeSuccess applyResult
+
+-- | Sprint 2.19 lifecycle hook: after a successful @charts deploy gateway@
+-- on the home substrate, install the iptables loopback-only rule on the
+-- gateway NodePort. Other charts and substrates pass through unchanged.
+applyChartDeployWithPostHook :: String -> Substrate -> ChartDeploymentPlan -> IO ExitCode
+applyChartDeployWithPostHook rootChart substrate plan = do
+  deployExit <- applyChartPlanOutput deployChartPlan plan
+  case (deployExit, rootChart, substrate) of
+    (ExitSuccess, "gateway", SubstrateHomeLocal) ->
+      runHostFirewallGatewayRestrictOptional defaultGatewayNodePort
+    _ -> pure deployExit
+
+-- | Sprint 2.19 lifecycle hook: symmetric to
+-- 'applyChartDeployWithPostHook'. After @charts delete gateway@ on the
+-- home substrate, remove the iptables loopback-only rule on the gateway
+-- NodePort. Idempotent — @runHostFirewallGatewayUnrestrict@ treats an
+-- absent rule as success-with-reason.
+applyChartDeleteWithPostHook :: String -> Substrate -> ChartDeploymentPlan -> IO ExitCode
+applyChartDeleteWithPostHook rootChart substrate plan = do
+  deleteExit <- applyChartPlanOutput deleteChartPlan plan
+  case (deleteExit, rootChart, substrate) of
+    (ExitSuccess, "gateway", SubstrateHomeLocal) ->
+      runHostFirewallGatewayUnrestrict defaultGatewayNodePort
+    _ -> pure deleteExit
 
 renderChartDeploymentPlan :: ChartDeploymentPlan -> String
 renderChartDeploymentPlan plan =

@@ -31,6 +31,7 @@
 -- ships the AWS CLI in its container image.
 module Prodbox.Secret.MasterSeed
   ( MinioMasterSeedConfig (..)
+  , minioMasterSeedConfigFromUrl
   , MasterSeedError (..)
   , masterSeedObjectKey
   , defaultMinioMasterSeedConfig
@@ -107,6 +108,29 @@ defaultMinioMasterSeedConfig
 defaultMinioMasterSeedConfig localPort accessKey secretKey =
   MinioMasterSeedConfig
     { minioMasterSeedEndpoint = minioEndpointUrl localPort
+    , minioMasterSeedBucket = "prodbox"
+    , minioMasterSeedKey = masterSeedObjectKey
+    , minioMasterSeedAccessKey = accessKey
+    , minioMasterSeedSecretKey = secretKey
+    }
+
+-- | Sprint 2.19: build a 'MinioMasterSeedConfig' from a fully-qualified
+-- endpoint URL string. Used by the gateway daemon when
+-- @boot.minio_endpoint_url@ is bound in the mounted Dhall config, so the
+-- in-cluster MinIO Service DNS (rather than @127.0.0.1:\<port\>@) drives
+-- master-seed acquisition. The bucket and key remain pinned to the
+-- doctrine values.
+minioMasterSeedConfigFromUrl
+  :: String
+  -- ^ Full @http(s):\/\/host:port@ URL of the MinIO endpoint.
+  -> String
+  -- ^ MinIO access key id.
+  -> String
+  -- ^ MinIO secret access key.
+  -> MinioMasterSeedConfig
+minioMasterSeedConfigFromUrl endpoint accessKey secretKey =
+  MinioMasterSeedConfig
+    { minioMasterSeedEndpoint = endpoint
     , minioMasterSeedBucket = "prodbox"
     , minioMasterSeedKey = masterSeedObjectKey
     , minioMasterSeedAccessKey = accessKey

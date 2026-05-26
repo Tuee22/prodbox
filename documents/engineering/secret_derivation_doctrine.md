@@ -207,19 +207,30 @@ secrets. The reconcile order:
 
 1. `prodbox rke2 reconcile` brings RKE2 up.
 2. Storage prerequisites + MinIO chart bring up MinIO with chart-generated root creds.
-3. Gateway chart deploys; chart creates `gateway-minio-creds` k8s Secret holding the
-   `prodbox-gateway` MinIO credentials (rotated freely on cluster rebuild).
-4. MinIO IAM bootstrap (either a Pulumi program or a one-shot Job) ensures the
-   `prodbox` bucket exists, the `prodbox-gateway` user exists, and the policy granting
-   that user `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `prodbox/` is applied.
-   This step uses MinIO root credentials and runs once per cluster.
+3. `ensureGatewayMinioBucket` (Sprint 2.19; in `src/Prodbox/CLI/Rke2.hs`) is the
+   canonical mechanism for the bucket bootstrap: a one-shot Job in the `minio`
+   namespace runs `mc mb --ignore-existing local/prodbox` using the cluster MinIO
+   root Secret as envFrom. Lives in the substrate-platform reconcile rather than
+   the gateway chart so the bucket is ready before any chart consumes it.
+   (Future: the dedicated `prodbox-gateway` user + scoped IAM policy land in this
+   same step as a Sprint 2.19 follow-up; the chart-side `secret-minio-creds.yaml`
+   transitionally sources MinIO root credentials via cross-namespace Helm `lookup`
+   until the dedicated user provisioning lands.)
+4. Gateway chart deploys; chart creates the `gateway-minio-creds` k8s Secret in the
+   gateway namespace. Today this Secret carries MinIO root credentials resolved via
+   `lookup "v1" "Secret" "prodbox" "minio"`; once the dedicated `prodbox-gateway`
+   user lands the same Secret will carry that user's scoped credentials instead.
 5. Gateway daemon starts. It reads its mounted Dhall config at
-   `/etc/gateway/config.dhall` per [config_doctrine.md](./config_doctrine.md), which
-   imports `/etc/gateway/secrets/minio.dhall` (sourced from the `gateway-minio-creds`
-   Secret mounted as a Dhall file) and the canonical MinIO endpoint URL from the same
-   Dhall config. It then connects to MinIO and reads `prodbox/master-seed` if present, or
-   creates it under a list-then-put guard if absent. No `MINIO_*` environment variable is
-   read on the supported path.
+   `/etc/gateway/config.dhall` per [config_doctrine.md](./config_doctrine.md). The
+   chart-side ConfigMap renders `boot.minio_endpoint_url = Some "<URL>"` where the
+   URL is **the canonical in-cluster MinIO Service endpoint for the active
+   substrate**: `http://minio.prodbox.svc.cluster.local:9000` on the home substrate.
+   Credentials are imported from `/etc/gateway/secrets/minio.dhall` (sourced from
+   `gateway-minio-creds`). The daemon connects to MinIO via
+   `Prodbox.Secret.MasterSeed.minioMasterSeedConfigFromUrl`, reads
+   `prodbox/master-seed` if present, or creates it under a list-then-put guard if
+   absent. No `MINIO_*` environment variable is read on the supported path; the
+   endpoint URL flows through the Dhall config only.
 6. Gateway daemon becomes ready (`/readyz` reports 200); the host iptables rule
    restricting the NodePort to `127.0.0.1` is installed by reconcile.
 7. Chart deploys proceed. Each chart's pre-install Job POSTs to

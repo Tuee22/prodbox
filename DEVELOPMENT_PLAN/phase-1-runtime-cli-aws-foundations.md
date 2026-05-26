@@ -455,7 +455,10 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
   with no dedicated public-FQDN config fields on the supported path.
 - `src/Prodbox/CLI/Rke2.hs` now renders config-selected MetalLB L2 or BGP resources, lifts the
   public-edge replica counts into validated settings, and builds or imports both the gateway image
-  and the shared public-edge workload image during `prodbox rke2 reconcile`.
+  and the shared public-edge workload image during `prodbox rke2 reconcile`. The lifecycle-derived
+  MetalLB `IPAddressPool` is sized to a single LAN IP, matching the one Envoy Gateway
+  `LoadBalancer` Service the supported edge needs (`src/Prodbox/Host.hs` `selectMetallbRange`,
+  `poolSize = 1`).
 - `src/Prodbox/Aws.hs` now validates Route 53 hosted-zone alignment for the canonical hostname
   during `prodbox config setup`, while `src/Prodbox/TestValidation.hs` and the built-frontend
   suites align the config and lifecycle proofs with the one-host doctrine.

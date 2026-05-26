@@ -1523,30 +1523,45 @@ live-exercise package:
 6. **Live regression on this host** per the verification block in the
    approved plan Part 3 step 2. **Attempted May 24, 2026 (later
    session)**: `./.build/prodbox test all` (home substrate) ran for
-   ~80 minutes; Phase 1+2 reconcile (RKE2 install + cluster platform +
-   MinIO + Harbor + image mirror + custom image push) completed cleanly
-   and the per-validation chart cleanups (vscode/api/websocket/gateway
-   deletions) ran through the new `applyChartDeleteWithPostHook` arm
-   (the unrestrict hook returned `not-present` as expected on an
-   unrestricted host). The aggregate then **timed out at
-   `helm upgrade --install gateway` after 30 min** (`--atomic` rolled
-   the release back); the three gateway pods (`gateway-node-a/b/c`)
-   reached `STATUS=Error` with 10 restarts each before atomic
-   rollback. Root cause is the unresolved MinIO IAM bootstrap +
-   endpoint-via-Dhall threading: the daemon's `acquireInitialMasterSeed`
-   resolves the MinIO endpoint as `127.0.0.1:9000`
-   (`defaultMinioLocalPort`) which is the Pod's own loopback, not the
-   in-cluster MinIO Service, so `aws s3api` calls against the master
-   seed object can't reach MinIO from inside the gateway Pod. The
-   harness postflight ran correctly: IAM user + access keys deleted,
-   per-run AWS Pulumi stacks confirmed absent, operational `aws.*`
-   cleared. **This narrows the remaining work** to a single coupled
-   live push: thread `minio.endpoint_url` (cluster DNS, e.g.
-   `http://minio.prodbox.svc.cluster.local:9000`) through the Dhall
-   config + chart ConfigMap + `MinioMasterSeedConfig` resolver, then
-   add the MinIO IAM bootstrap (chart pre-install Job or substrate
-   platform reconcile step) that creates the `prodbox` bucket + the
-   `prodbox-gateway` user + the IAM policy.
+   ~80 minutes; Phase 1+2 reconcile completed cleanly and the
+   per-validation chart cleanups ran through the new
+   `applyChartDeleteWithPostHook` arm. The aggregate then timed out at
+   `helm upgrade --install gateway` after 30 min (`--atomic` rolled
+   the release back); the three gateway pods reached `STATUS=Error`
+   with 10 restarts each. Root cause: `acquireInitialMasterSeed`
+   resolved the MinIO endpoint as `127.0.0.1:9000`, the Pod's own
+   loopback, so `aws s3api` against the master-seed object couldn't
+   reach MinIO. **May 24, 2026 still-later session — endpoint
+   threading + bucket bootstrap landed**: (a) new
+   `minio_endpoint_url :: Maybe Text` sibling field on
+   `DaemonBootDhall` plus matching `daemonMinioEndpointUrl :: Maybe
+   String` on `DaemonConfig`; (b) new
+   `Prodbox.Secret.MasterSeed.minioMasterSeedConfigFromUrl` that
+   accepts a full endpoint URL string, and `acquireInitialMasterSeed`
+   now prefers `daemonMinioEndpointUrl` over the `localPort`
+   fallback; (c) `charts/gateway/templates/configmap-config.yaml`
+   renders `boot.minio_endpoint_url = Some "{{ .Values.minio.endpointUrl }}"`
+   with a default of `http://minio.prodbox.svc.cluster.local:9000`
+   in `values.yaml`; (d) new reconcile step `ensureGatewayMinioBucket`
+   (in `src/Prodbox/CLI/Rke2.hs`) deploys a one-shot Job in the
+   `minio` namespace that runs `mc mb --ignore-existing local/prodbox`
+   using the cluster MinIO root Secret as envFrom, mirroring the
+   existing harbor-bucket-init shape; (e) transitional credential
+   sourcing — `charts/gateway/templates/secret-minio-creds.yaml` now
+   resolves MinIO root credentials via a cross-namespace Helm
+   `lookup "v1" "Secret" "prodbox" "minio"` so the gateway daemon
+   authenticates as root until the dedicated `prodbox-gateway` user
+   + IAM policy land in a follow-up. Validation: `prodbox check-code`
+   exit 0; `prodbox test unit` 543/543; `prodbox test integration cli`
+   28/28; `prodbox test integration env` 28/28;
+   `prodbox-daemon-lifecycle` 14/14. The live RKE2 reconcile + gateway
+   chart deploy + master-seed acquisition end-to-end exercise remains
+   pending; on success the master seed materializes at
+   `prodbox/master-seed` and `curl http://127.0.0.1:30443/v1/secret/derive?context=patroni:keycloak:keycloak:app`
+   returns a deterministic base64 value. The dedicated
+   `prodbox-gateway` IAM user + scoped policy (replacing the
+   transitional MinIO-root path) is tracked as the only remaining
+   Sprint 2.19 deliverable.
 
 These deliverables are tightly coupled (the daemon needs the MinIO
 client; the chart needs the daemon image; the live exercise needs the

@@ -920,14 +920,23 @@ acquireInitialMasterSeed logLevel config =
         [field "reason" ("no minio_creds bound in daemon config" :: String)]
       pure Nothing
     Just creds -> do
-      -- The MinIO endpoint URL is sourced from the chart-side service mesh
-      -- via the doctrine-pinned localPort default (Sprint 2.19 follow-up may
-      -- thread an explicit endpoint through the Dhall config).
-      let cfg =
-            MasterSeed.defaultMinioMasterSeedConfig
-              defaultMinioLocalPort
-              (gatewayMinioAccessKey creds)
-              (gatewayMinioSecretKey creds)
+      -- Sprint 2.19: prefer the endpoint URL bound in the daemon Dhall
+      -- config (`boot.minio_endpoint_url`) so in-cluster gateway pods
+      -- reach the MinIO Service DNS (e.g.
+      -- `http://minio.prodbox.svc.cluster.local:9000`) rather than the
+      -- pod's own loopback. Fall back to `http://127.0.0.1:9000` only
+      -- for host-side smoke runs that lack the field.
+      let cfg = case daemonMinioEndpointUrl config of
+            Just url ->
+              MasterSeed.minioMasterSeedConfigFromUrl
+                url
+                (gatewayMinioAccessKey creds)
+                (gatewayMinioSecretKey creds)
+            Nothing ->
+              MasterSeed.defaultMinioMasterSeedConfig
+                defaultMinioLocalPort
+                (gatewayMinioAccessKey creds)
+                (gatewayMinioSecretKey creds)
       result <- MasterSeed.ensureMasterSeed cfg
       case result of
         Left err -> do
@@ -942,7 +951,9 @@ acquireInitialMasterSeed logLevel config =
             logLevel
             Info
             "master_seed_ready"
-            [field "source" ("minio:prodbox/master-seed" :: String)]
+            [ field "source" ("minio:prodbox/master-seed" :: String)
+            , field "endpoint" (MasterSeed.minioMasterSeedEndpoint cfg)
+            ]
           pure (Just seed)
  where
   defaultMinioLocalPort :: Int

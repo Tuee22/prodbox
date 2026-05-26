@@ -70,6 +70,14 @@ aws:
   secretAccessKey: ""
   sessionToken: ""
 
+# Sprint 2.19: in-cluster MinIO endpoint URL the daemon uses to read or
+# create the master seed at prodbox/master-seed. The default points at
+# the home-substrate MinIO Service; AWS-substrate deploys override this
+# via `prodbox charts deploy gateway --substrate aws` (the substrate
+# adapter renders the AWS-side Service DNS).
+minio:
+  endpointUrl: "http://minio.prodbox.svc.cluster.local:9000"
+
 # cert-manager Issuer/Certificate material for mesh mTLS. A self-signed
 # CA Issuer is created in the gateway namespace and used to mint one
 # Certificate per node id with CN=<nodeId> so the daemon can validate

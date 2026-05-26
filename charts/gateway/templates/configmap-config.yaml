@@ -59,6 +59,12 @@ data:
       -- the resulting records into boot.aws_creds / boot.minio_creds.
       , aws_creds = Some /etc/gateway/secrets/aws.dhall
       , minio_creds = Some /etc/gateway/secrets/minio.dhall
+      -- Sprint 2.19: in-cluster MinIO Service endpoint URL used by the
+      -- daemon's master-seed acquisition. Operator-overridable via the
+      -- chart value @minio.endpointUrl@; default is the home-substrate
+      -- canonical Service DNS per
+      -- documents/engineering/secret_derivation_doctrine.md §2.
+      , minio_endpoint_url = Some {{ $.Values.minio.endpointUrl | quote }}
       }
     , live =
       { heartbeat_interval_seconds = {{ include "gateway.dhallDouble" $.Values.timing.heartbeatIntervalSeconds }}

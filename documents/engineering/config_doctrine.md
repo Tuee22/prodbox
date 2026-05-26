@@ -157,7 +157,7 @@ The gateway daemon's Dhall file is materialized by the Helm chart as follows:
 
 | Mount source | Mount path | Content |
 |---|---|---|
-| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config.dhall` | per-node Dhall expression; imports the files below |
+| `gateway-config-<nodeId>` ConfigMap | `/etc/gateway/config.dhall` | per-node Dhall expression; imports the files below, and also carries non-secret service endpoints (notably `boot.minio_endpoint_url`) inline |
 | `gateway-orders` ConfigMap | `/etc/gateway/orders.dhall` | cluster-wide ranked-node + timing Dhall expression |
 | `gateway-secrets-aws` Secret | `/etc/gateway/secrets/aws.dhall` | Dhall expression carrying the AWS Route 53 credentials |
 | `gateway-secrets-minio` Secret | `/etc/gateway/secrets/minio.dhall` | Dhall expression carrying the MinIO IAM credentials |
@@ -166,7 +166,25 @@ The gateway daemon's Dhall file is materialized by the Helm chart as follows:
 
 The chart materializes every credentialed value as a Dhall fragment in a k8s Secret (not a
 ConfigMap). The operator-facing `gateway-config-<nodeId>` ConfigMap contains no secret
-material — only references to the Secret-mounted Dhall imports.
+material — only references to the Secret-mounted Dhall imports plus non-secret service
+endpoints rendered inline.
+
+### Non-secret service-endpoint fields
+
+Service endpoints the daemon must reach (currently: the MinIO endpoint URL used by
+`acquireInitialMasterSeed`) live as fields on the chart-rendered `boot` record rather
+than in Secrets. The endpoint is not credential material; placing it in a Secret would
+unnecessarily restrict who can read it. Today the only such field is:
+
+| Field | Type | Source | Canonical value |
+|---|---|---|---|
+| `boot.minio_endpoint_url` | `Optional Text` | rendered inline by `gateway-config-<nodeId>` ConfigMap from chart value `minio.endpointUrl` | `http://minio.prodbox.svc.cluster.local:9000` on the home substrate |
+
+The daemon decoder (`Prodbox.Gateway.Settings.DaemonBootDhall.minio_endpoint_url`) treats
+the field as `Optional Text` so chart-only smoke installs without a live MinIO can still
+decode the config; the master-seed acquisition path falls back to `127.0.0.1:9000` and
+serves the documented 503 master-seed-unavailable response when the field is `None` and
+MinIO is unreachable.
 
 ConfigMap and Secret volume updates land in the Pod via the kubelet's atomic `..data`
 symlink swap. The file-watch reload trigger (Section 7) follows that symlink swap rather
@@ -245,6 +263,9 @@ The following surfaces are explicitly forbidden on the supported path:
   sole startup-time CLI knob.
 - `PRODBOX_LOG_LEVEL`, `PRODBOX_CONFIG_PATH`, `PRODBOX_PORT`, `PRODBOX_WORKLOAD_MODE`, and
   any other `PRODBOX_*` env-var precedence rule.
+- `MINIO_ENDPOINT_URL` env var on the gateway Pod (the attempted addition rolled back
+  May 24, 2026). The MinIO endpoint reaches the daemon via the `boot.minio_endpoint_url`
+  field of the mounted Dhall config; see §6 "Non-secret service-endpoint fields".
 - SIGHUP-driven reload. The signal handler is removed; SIGHUP becomes a process-level
   terminate signal again with the supported behavior `drain + exit`.
 - ConfigMap-rendered credentials. Credentials live in k8s Secrets, mounted as Dhall files

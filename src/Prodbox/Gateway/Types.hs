@@ -55,7 +55,6 @@ import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.List (nub, sortBy)
 import Data.Ord (comparing)
-import Data.Scientific (toRealFloat)
 import Data.Text qualified as Text
 import Data.Time.Clock (UTCTime, diffUTCTime)
 import Data.Time.Format.ISO8601 (formatShow, iso8601Format, iso8601ParseM)
@@ -189,6 +188,14 @@ data DaemonConfig = DaemonConfig
   , daemonDnsWriteGate :: Maybe DnsWriteGate
   , daemonAwsCreds :: Maybe GatewayAwsCreds
   , daemonMinioCreds :: Maybe GatewayMinioCreds
+  , -- \^ Sprint 2.19: in-cluster MinIO Service endpoint URL the daemon
+    --   uses for master-seed read/write. Sourced from
+    --   @boot.minio_endpoint_url@ of the mounted Dhall config. When
+    --   'Nothing', 'acquireInitialMasterSeed' logs
+    --   @master_seed_unavailable@ and the daemon serves 503 on
+    --   @/v1/secret/derive@. Canonical home-substrate value:
+    --   @http://minio.prodbox.svc.cluster.local:9000@.
+    daemonMinioEndpointUrl :: Maybe String
   }
   deriving (Eq, Show)
 
@@ -316,75 +323,14 @@ requireInt obj key =
     Just (Number n) -> Right (round n)
     _ -> Left (key ++ " must be an integer")
 
-requireObject :: KeyMap.KeyMap Value -> String -> Either String (KeyMap.KeyMap Value)
-requireObject obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Object nested) -> Right nested
-    _ -> Left (key ++ " must be an object")
-
-readOptionalFloat :: KeyMap.KeyMap Value -> String -> Double -> Double
-readOptionalFloat obj key defaultVal =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Number n) -> toRealFloat n
-    _ -> defaultVal
-
-readOptionalInt :: KeyMap.KeyMap Value -> String -> Maybe Int
-readOptionalInt obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (Number n) -> Just (round n)
-    _ -> Nothing
-
-readOptionalString :: KeyMap.KeyMap Value -> String -> Maybe String
-readOptionalString obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (String text) -> Just (Text.unpack text)
-    _ -> Nothing
-
-parseEventKeys :: KeyMap.KeyMap Value -> Either String [(String, String)]
-parseEventKeys obj =
-  case KeyMap.lookup (Key.fromString "event_keys") obj of
-    Just (Object keysObj) ->
-      Right
-        [ (Text.unpack (Key.toText k), Text.unpack v)
-        | (k, String v) <- KeyMap.toList keysObj
-        ]
-    _ -> Left "event_keys must be a JSON object"
-
-parseDnsWriteGate :: KeyMap.KeyMap Value -> Either String (Maybe DnsWriteGate)
-parseDnsWriteGate obj =
-  case KeyMap.lookup (Key.fromString "dns_write_gate") obj of
-    Nothing -> Right Nothing
-    Just Null -> Right Nothing
-    Just (Object gateObj) -> do
-      zoneId <- requireStr gateObj "zone_id"
-      fqdn <- requireStr gateObj "fqdn"
-      let ttl = readOptionalFloat gateObj "ttl" 300
-      awsRegion <- requireStr gateObj "aws_region"
-      rejectForbiddenCredKeys gateObj
-      Right
-        ( Just
-            DnsWriteGate
-              { dnsWriteGateZoneId = zoneId
-              , dnsWriteGateFqdn = fqdn
-              , dnsWriteGateTtl = round ttl
-              , dnsWriteGateAwsRegion = awsRegion
-              }
-        )
-    _ -> Left "dns_write_gate must be a JSON object or null"
-
-rejectForbiddenCredKeys :: KeyMap.KeyMap Value -> Either String ()
-rejectForbiddenCredKeys obj =
-  let forbidden = ["aws_access_key_id", "aws_secret_access_key", "aws_session_token"]
-      present =
-        [ key
-        | key <- forbidden
-        , case KeyMap.lookup (Key.fromString key) obj of
-            Just (String text) -> not (Text.null text)
-            _ -> False
-        ]
-   in if null present
-        then Right ()
-        else Left ("dns_write_gate must not contain explicit AWS credentials: " ++ show present)
+-- Sprint 2.20 closure: `requireObject`, `readOptionalInt`,
+-- `readOptionalString`, `parseEventKeys`, `parseDnsWriteGate`,
+-- `rejectForbiddenCredKeys`, and `readOptionalFloat` were JSON-parser
+-- helpers for the legacy `parseDaemonConfig` path. The pure-Dhall
+-- decoder owns those fields via 'DaemonBootDhall', so the JSON
+-- helpers are removed. The surviving JSON helpers (`requireStr`,
+-- `requireInt`) remain because 'parseOrders' (still used by tests for
+-- the JSON Orders fixture) calls them transitively.
 
 parseNodeList :: KeyMap.KeyMap Value -> Either String [PeerEndpoint]
 parseNodeList obj =
@@ -445,25 +391,11 @@ parseRankedNode value =
     String text -> Right (Text.unpack text)
     _ -> Left "ranked_nodes must contain strings"
 
-validateIntervals :: Double -> Double -> Double -> Either String ()
-validateIntervals heartbeat reconnect sync
-  | heartbeat < 0.1 = Left "heartbeat_interval_seconds must be >= 0.1"
-  | reconnect < 0.1 = Left "reconnect_interval_seconds must be >= 0.1"
-  | sync < 0.1 = Left "sync_interval_seconds must be >= 0.1"
-  | otherwise = Right ()
-
-validateMaxSkew :: Double -> Either String ()
-validateMaxSkew skew
-  | skew < 0.1 = Left "max_clock_skew_seconds must be >= 0.1"
-  | skew > 600 = Left "max_clock_skew_seconds must be <= 600"
-  | otherwise = Right ()
-
-validateDrainDeadline :: Maybe Int -> Either String ()
-validateDrainDeadline Nothing = Right ()
-validateDrainDeadline (Just deadline)
-  | deadline < 1 = Left "drain_deadline_seconds must be >= 1"
-  | deadline > 600 = Left "drain_deadline_seconds must be <= 600"
-  | otherwise = Right ()
+-- Sprint 2.20 closure: `validateIntervals`, `validateMaxSkew`, and
+-- `validateDrainDeadline` were JSON-parser helpers for the legacy
+-- `parseDaemonConfig` path. The pure-Dhall decoder in
+-- `Prodbox.Gateway.Settings.toDaemonConfig` now enforces the same
+-- invariants inline, so the helpers are removed.
 
 validateDaemonTimingAgainstOrders :: DaemonConfig -> Orders -> Either String ()
 validateDaemonTimingAgainstOrders config orders =

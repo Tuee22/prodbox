@@ -218,6 +218,7 @@ renderGatewayConfigTemplate settings nodeId =
     , "      None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
     , "  , minio_creds ="
     , "      None { minio_access_key : Text, minio_secret_key : Text }"
+    , "  , minio_endpoint_url = None Text"
     , "  }"
     , ", live ="
     , "  { heartbeat_interval_seconds = 1.0"

@@ -24,5 +24,6 @@ STEP=ensure_rke2_registries_config
 STEP=ensure_cluster_platform_runtime
 STEP=reconcile_dns_bootstrap_record
 STEP=ensure_minio_runtime_steady_state
+STEP=ensure_gateway_minio_bootstrap
 STEP=ensure_admin_public_edge_routes
 STEP=reconcile_managed_annotations

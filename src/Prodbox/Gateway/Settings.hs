@@ -39,8 +39,7 @@ module Prodbox.Gateway.Settings
 where
 
 import Control.Exception (SomeException, displayException, try)
-import Data.Char (toLower)
-import Data.List (isSuffixOf, nub)
+import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Dhall (FromDhall, auto, input, inputFile)
@@ -80,6 +79,13 @@ data DaemonBootDhall = DaemonBootDhall
   , dns_write_gate :: Maybe DnsWriteGateDhall
   , aws_creds :: Maybe AwsCredsDhall
   , minio_creds :: Maybe MinioCredsDhall
+  , minio_endpoint_url :: Maybe Text
+  -- ^ Sprint 2.19: in-cluster MinIO Service endpoint URL used by
+  -- the daemon's master-seed acquisition path. Sibling field on
+  -- @boot@ rather than nested inside @minio_creds@ so the endpoint
+  -- can be rendered by the chart-side ConfigMap while credentials
+  -- stay in the Secret-mounted Dhall fragment. Canonical home value:
+  -- @http://minio.prodbox.svc.cluster.local:9000@.
   }
   deriving (Eq, Show, Generic, FromDhall)
 
@@ -151,6 +157,7 @@ toDaemonConfig
         , dns_write_gate = maybeDnsGate
         , aws_creds = maybeAwsCreds
         , minio_creds = maybeMinioCreds
+        , minio_endpoint_url = maybeMinioEndpoint
         }
     , live =
       DaemonLiveDhall
@@ -203,6 +210,7 @@ toDaemonConfig
         , daemonDnsWriteGate = toDnsWriteGate <$> maybeDnsGate
         , daemonAwsCreds = toGatewayAwsCreds <$> maybeAwsCreds
         , daemonMinioCreds = toGatewayMinioCreds <$> maybeMinioCreds
+        , daemonMinioEndpointUrl = Text.unpack <$> maybeMinioEndpoint
         }
 
 toGatewayAwsCreds :: AwsCredsDhall -> GatewayAwsCreds
@@ -295,9 +303,6 @@ loadDaemonConfig path = do
             )
         )
     Right dto -> pure (toDaemonConfig dto)
-
-hasSuffix :: String -> String -> Bool
-hasSuffix suffix str = map toLower suffix `isSuffixOf` map toLower str
 
 -- | Dhall-friendly DTO for the gateway Orders file (Sprint 2.22).
 --

@@ -131,8 +131,8 @@ Shared public hostname:
 ### Network Design
 
 - **Node IP**: the server's LAN IP
-- **MetalLB pool**: a dedicated IP range for `LoadBalancer` services
-- **Public edge LB IP**: the reserved MetalLB `LoadBalancer` IP for the edge controller
+- **MetalLB pool**: a single dedicated LAN IP, sized to the one Envoy Gateway `LoadBalancer` Service that the supported edge needs
+- **Public edge LB IP**: that single MetalLB-allocated IP, bound to the public-edge Envoy Gateway controller
 
 Router port forwarding:
 

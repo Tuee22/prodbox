@@ -21,6 +21,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Exception
   ( IOException
+  , SomeException
   , bracket
   , displayException
   , try
@@ -33,10 +34,16 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson.Key qualified as Key
+import Data.ByteString qualified as BS
+import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char
-  ( isHexDigit
+  ( isAsciiLower
+  , isAsciiUpper
+  , isDigit
+  , isHexDigit
   , isSpace
   , toLower
   )
@@ -49,6 +56,7 @@ import Data.List
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
+import Data.Word (Word8)
 import Prodbox.Aws (adminAwsEnvironment)
 import Prodbox.AwsEnvironment
   ( overlayAwsCredentials
@@ -182,6 +190,7 @@ import System.IO
   )
 import System.Info (os)
 import System.Info qualified as SystemInfo
+import Text.Printf (printf)
 
 rke2BinaryPath :: FilePath
 rke2BinaryPath = "/usr/local/bin/rke2"
@@ -314,6 +323,39 @@ harborRegistryStorageBucket = "prodbox-harbor-registry"
 
 harborRegistryStorageBootstrapJobName :: String
 harborRegistryStorageBootstrapJobName = "harbor-registry-bucket-init"
+
+-- | Sprint 2.19: the Job name + bucket name + canonical IAM principal
+-- and policy name for the gateway daemon's master-seed MinIO surface,
+-- provisioned in one unified pass by 'ensureGatewayMinioBootstrap'.
+gatewayMinioBootstrapJobName :: String
+gatewayMinioBootstrapJobName = "gateway-minio-bootstrap"
+
+gatewayMinioBucket :: String
+gatewayMinioBucket = "prodbox"
+
+-- | Namespace where the gateway chart deploys. Reconcile pre-creates
+-- it so the chart-side 'gateway-minio-creds' Secret has a place to
+-- live before @prodbox charts deploy gateway@ runs.
+gatewayNamespace :: String
+gatewayNamespace = "gateway"
+
+-- | k8s Secret name carrying the @prodbox-gateway@ MinIO credentials
+-- (as a Dhall fragment under the @minio.dhall@ key). Created by
+-- 'ensureGatewayMinioBootstrap' and consumed by the gateway chart's
+-- @secret-minio-creds.yaml@ template via Helm @lookup@.
+gatewayMinioCredsSecretName :: String
+gatewayMinioCredsSecretName = "gateway-minio-creds"
+
+-- | Canonical IAM principal name for the gateway daemon's MinIO
+-- access. Suffixed with 8 random hex chars on first provisioning so
+-- the principal name doesn't collide if cluster state diverges.
+gatewayMinioUserPrefix :: String
+gatewayMinioUserPrefix = "prodbox-gateway-"
+
+-- | Canonical IAM policy name granting the gateway user
+-- @s3:GetObject@/@s3:PutObject@/@s3:ListBucket@ on @prodbox/*@.
+gatewayMinioPolicyName :: String
+gatewayMinioPolicyName = "prodbox-gateway-policy"
 
 minioClusterEndpoint :: String
 minioClusterEndpoint =
@@ -574,6 +616,7 @@ renderNativeInstallPlan repoRoot settings machineId prodboxId labelValue =
     , "STEP=ensure_cluster_platform_runtime"
     , "STEP=reconcile_dns_bootstrap_record"
     , "STEP=ensure_minio_runtime_steady_state"
+    , "STEP=ensure_gateway_minio_bootstrap"
     , "STEP=ensure_admin_public_edge_routes"
     , "STEP=reconcile_managed_annotations"
     ]
@@ -636,6 +679,7 @@ applyNativeInstallPlan repoRoot settings (machineId, prodboxId, labelValue) =
     , ensureClusterPlatformRuntime repoRoot settings prodboxId labelValue
     , reconcileDnsBootstrapRecord repoRoot settings
     , ensureMinioRuntime repoRoot SubstrateHomeLocal MinioSteadyStateHarbor
+    , ensureGatewayMinioBootstrap repoRoot
     , ensureAdminPublicEdgeRoutes repoRoot settings prodboxId labelValue
     , reconcileManagedAnnotations repoRoot prodboxId labelValue
     ]
@@ -1303,6 +1347,383 @@ ensureHarborRegistryStorageBackend repoRoot = do
               , subprocessWorkingDirectory = Just repoRoot
               }
         ]
+
+-- | Sprint 2.19: idempotently bootstrap the gateway daemon's MinIO
+-- surface in one unified pass:
+--
+--   1. Create the @gateway@ namespace if absent.
+--   2. Read existing 'gateway-minio-creds' Secret if any (extracting
+--      the @prodbox-gateway-...@ username + password from its
+--      @minio.dhall@ Dhall fragment); otherwise generate fresh
+--      credentials.
+--   3. Write/overwrite the 'gateway-minio-creds' Secret with the
+--      resolved credentials so the gateway chart's
+--      @secret-minio-creds.yaml@ template finds it via Helm @lookup@
+--      and the daemon Pod mounts the canonical Dhall fragment.
+--   4. Apply a Job in the @minio@ namespace that uses the cluster
+--      MinIO root Secret to: create the @prodbox@ bucket
+--      (idempotent), create or update the @prodbox-gateway-...@ user
+--      with the resolved password, create or update the
+--      @prodbox-gateway-policy@ IAM policy granting
+--      @s3:GetObject@/@s3:PutObject@ on @prodbox/*@ and
+--      @s3:ListBucket@ on @prodbox@, and attach the policy to the
+--      user.
+--
+-- Idempotent across reconciles: the existing credentials are reused;
+-- @mc admin user add@ silently overwrites the password if it differs
+-- (ensuring MinIO state matches the Secret); @mc admin policy create@
+-- + @attach@ are tolerant of pre-existing state via @|| true@.
+ensureGatewayMinioBootstrap :: FilePath -> IO ExitCode
+ensureGatewayMinioBootstrap repoRoot = do
+  -- Step 1: ensure gateway namespace exists.
+  nsExit <-
+    runCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "create"
+            , "namespace"
+            , gatewayNamespace
+            , "--dry-run=client"
+            , "-o"
+            , "yaml"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  case nsExit of
+    ExitFailure _ -> pure nsExit
+    ExitSuccess -> do
+      _ <-
+        runCommand
+          Subprocess
+            { subprocessPath = "sh"
+            , subprocessArguments =
+                [ "-c"
+                , "kubectl create namespace "
+                    ++ gatewayNamespace
+                    ++ " --dry-run=client -o yaml | kubectl apply -f -"
+                ]
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      -- Step 2: resolve gateway-minio credentials (read existing or
+      -- generate fresh).
+      credsResult <- resolveGatewayMinioCredentials repoRoot
+      case credsResult of
+        Left err -> failWith err
+        Right (gwUser, gwPass) -> do
+          -- Step 3: write/overwrite gateway-minio-creds Secret.
+          secretExit <- writeGatewayMinioCredsSecret repoRoot gwUser gwPass
+          case secretExit of
+            ExitFailure _ -> pure secretExit
+            ExitSuccess ->
+              -- Step 4: apply MinIO bootstrap Job (bucket + user + policy + attach).
+              runSequentially
+                [ runCommand
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments =
+                          [ "delete"
+                          , "job"
+                          , gatewayMinioBootstrapJobName
+                          , "-n"
+                          , minioNamespace
+                          , "--ignore-not-found=true"
+                          , "--wait=true"
+                          ]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                , withTemporaryJsonManifest
+                    "gateway-minio-bootstrap"
+                    (gatewayMinioBootstrapManifestItems gwUser gwPass)
+                    ( \manifestPath ->
+                        runCommand
+                          Subprocess
+                            { subprocessPath = "kubectl"
+                            , subprocessArguments = ["apply", "-f", manifestPath]
+                            , subprocessEnvironment = Nothing
+                            , subprocessWorkingDirectory = Just repoRoot
+                            }
+                    )
+                , runCommand
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments =
+                          [ "wait"
+                          , "--for=condition=complete"
+                          , "job/" ++ gatewayMinioBootstrapJobName
+                          , "-n"
+                          , minioNamespace
+                          , "--timeout=300s"
+                          ]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                , runCommand
+                    Subprocess
+                      { subprocessPath = "kubectl"
+                      , subprocessArguments =
+                          [ "delete"
+                          , "job"
+                          , gatewayMinioBootstrapJobName
+                          , "-n"
+                          , minioNamespace
+                          , "--ignore-not-found=true"
+                          , "--wait=true"
+                          ]
+                      , subprocessEnvironment = Nothing
+                      , subprocessWorkingDirectory = Just repoRoot
+                      }
+                ]
+
+-- | Sprint 2.19: resolve the gateway-minio credentials, preferring
+-- existing values in the 'gateway-minio-creds' Secret. The Secret
+-- carries credentials as a Dhall fragment under the @minio.dhall@
+-- key — we extract the username and password by scanning for the
+-- @minio_access_key = "..."@ and @minio_secret_key = "..."@ literal
+-- lines (the Dhall content is small and operator-controlled, so a
+-- token-boundary parse is sufficient). When the Secret is absent,
+-- generate fresh credentials by reading from @/dev/urandom@.
+resolveGatewayMinioCredentials :: FilePath -> IO (Either String (String, String))
+resolveGatewayMinioCredentials repoRoot = do
+  existingResult <- readGatewayMinioCredsSecret repoRoot
+  case existingResult of
+    Right (user, password) -> pure (Right (user, password))
+    Left _ -> do
+      freshUserSuffixResult <-
+        try (BS.readFile "/dev/urandom") :: IO (Either SomeException BS.ByteString)
+      case freshUserSuffixResult of
+        Left e ->
+          pure
+            ( Left
+                ( "failed to read /dev/urandom for gateway-minio credentials: "
+                    ++ displayException e
+                )
+            )
+        Right entropyBytes -> do
+          let suffixHex =
+                take 8 . concatMap (printf "%02x" :: Word8 -> String) . BS.unpack $
+                  BS.take 4 entropyBytes
+              passwordBytes = BS.take 30 (BS.drop 4 entropyBytes)
+              passwordBase64 =
+                take 40 . filter isAsciiAlphaNumeric . BS8.unpack $
+                  Base64.encode passwordBytes
+              -- Pad if base64 stripping shortened below 40 chars.
+              password =
+                passwordBase64
+                  ++ replicate (40 - length passwordBase64) 'A'
+          pure (Right (gatewayMinioUserPrefix ++ suffixHex, password))
+ where
+  isAsciiAlphaNumeric c = isAsciiUpper c || isAsciiLower c || isDigit c
+
+-- | Sprint 2.19: read the existing 'gateway-minio-creds' Secret (if
+-- any). Returns 'Left' when the Secret is absent or unparseable so
+-- 'resolveGatewayMinioCredentials' can fall through to fresh
+-- generation.
+readGatewayMinioCredsSecret :: FilePath -> IO (Either String (String, String))
+readGatewayMinioCredsSecret repoRoot = do
+  dhallTextResult <-
+    runTextCommand
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "get"
+            , "secret"
+            , gatewayMinioCredsSecretName
+            , "-n"
+            , gatewayNamespace
+            , "-o"
+            , "go-template={{index .data \"minio.dhall\" | base64decode}}"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case dhallTextResult of
+    Left err -> Left err
+    Right dhallText ->
+      case extractMinioCredsFromDhall dhallText of
+        Nothing ->
+          Left "gateway-minio-creds Dhall content did not contain a minio_access_key/minio_secret_key pair"
+        Just creds -> Right creds
+
+-- | Sprint 2.19: extract @(access_key, secret_key)@ from the
+-- chart-rendered Dhall fragment shape. The expected shape is
+-- @{ minio_access_key = "<user>", minio_secret_key = "<password>" }@;
+-- the helper scans on @=@ and quote boundaries.
+extractMinioCredsFromDhall :: String -> Maybe (String, String)
+extractMinioCredsFromDhall dhallText =
+  let lns = lines dhallText
+      extractFor needle =
+        listToMaybeFirst
+          [ scanQuoted rest
+          | line <- lns
+          , Just rest <- [stripPrefix needle (dropWhile (`elem` (" ,{" :: String)) line)]
+          ]
+      access = extractFor "minio_access_key = "
+      secret = extractFor "minio_secret_key = "
+   in (,) <$> access <*> secret
+ where
+  scanQuoted :: String -> String
+  scanQuoted s = case dropWhile (/= '"') s of
+    '"' : rest -> takeWhile (/= '"') rest
+    _ -> ""
+  listToMaybeFirst :: [String] -> Maybe String
+  listToMaybeFirst [] = Nothing
+  listToMaybeFirst (x : _) = if null x then Nothing else Just x
+
+-- | Sprint 2.19: write/overwrite the 'gateway-minio-creds' Secret in
+-- the gateway namespace with the canonical Dhall fragment shape. Uses
+-- the @kubectl create secret --dry-run | apply@ idiom so the Secret
+-- is created on first reconcile and updated on subsequent reconciles.
+writeGatewayMinioCredsSecret :: FilePath -> String -> String -> IO ExitCode
+writeGatewayMinioCredsSecret repoRoot gwUser gwPass = do
+  let dhallContent =
+        "{ minio_access_key = "
+          ++ show gwUser
+          ++ "\n, minio_secret_key = "
+          ++ show gwPass
+          ++ "\n}\n"
+  runCommand
+    Subprocess
+      { subprocessPath = "sh"
+      , subprocessArguments =
+          [ "-c"
+          , "kubectl create secret generic "
+              ++ gatewayMinioCredsSecretName
+              ++ " --from-literal=minio.dhall="
+              ++ shellQuote dhallContent
+              ++ " -n "
+              ++ gatewayNamespace
+              ++ " --dry-run=client -o yaml | kubectl apply -f -"
+          ]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
+
+-- | Shell-quote a string for safe inclusion inside a single-quoted
+-- shell argument. Replaces every internal single quote with the
+-- @'\\''@ escape sequence.
+shellQuote :: String -> String
+shellQuote s = "'" ++ concatMap escape s ++ "'"
+ where
+  escape '\'' = "'\\''"
+  escape c = [c]
+
+-- | Sprint 2.19: Job manifest that bootstraps the gateway daemon's
+-- MinIO surface (@prodbox@ bucket + @prodbox-gateway-...@ user + IAM
+-- policy + policy attachment) in one pass.
+gatewayMinioBootstrapManifestItems :: String -> String -> [Value]
+gatewayMinioBootstrapManifestItems gwUser gwPass =
+  [ object
+      [ "apiVersion" .= ("batch/v1" :: String)
+      , "kind" .= ("Job" :: String)
+      , "metadata"
+          .= object
+            [ "name" .= gatewayMinioBootstrapJobName
+            , "namespace" .= minioNamespace
+            ]
+      , "spec"
+          .= object
+            [ "backoffLimit" .= (3 :: Int)
+            , "ttlSecondsAfterFinished" .= (60 :: Int)
+            , "template"
+                .= object
+                  [ "spec"
+                      .= object
+                        [ "restartPolicy" .= ("OnFailure" :: String)
+                        , "containers"
+                            .= [ object
+                                   [ "name" .= ("gateway-minio-bootstrap" :: String)
+                                   , "image" .= ContainerImage.renderImageRef ContainerImage.publicMinioMcImage
+                                   , "command" .= ["sh" :: String, "-c"]
+                                   , "args"
+                                       .= [ unlines
+                                              [ "set -eu"
+                                              , "mc alias set local "
+                                                  ++ minioClusterEndpoint
+                                                  ++ " \"$MINIO_ROOT_USER\" \"$MINIO_ROOT_PASSWORD\""
+                                              , "mc mb --ignore-existing local/" ++ gatewayMinioBucket
+                                              , "mc admin user add local \"$GW_USER\" \"$GW_PASS\""
+                                              , "cat > /tmp/policy.json <<'POLICY_EOF'"
+                                              , gatewayMinioPolicyJson
+                                              , "POLICY_EOF"
+                                              , "mc admin policy create local "
+                                                  ++ gatewayMinioPolicyName
+                                                  ++ " /tmp/policy.json || mc admin policy add local "
+                                                  ++ gatewayMinioPolicyName
+                                                  ++ " /tmp/policy.json || true"
+                                              , "mc admin policy attach local "
+                                                  ++ gatewayMinioPolicyName
+                                                  ++ " --user \"$GW_USER\" || mc admin policy set local "
+                                                  ++ gatewayMinioPolicyName
+                                                  ++ " user=\"$GW_USER\""
+                                              ]
+                                          ]
+                                   , "env"
+                                       .= [ object
+                                              [ "name" .= ("MINIO_ROOT_USER" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "secretKeyRef"
+                                                        .= object
+                                                          [ "name" .= minioReleaseName
+                                                          , "key" .= ("rootUser" :: String)
+                                                          ]
+                                                    ]
+                                              ]
+                                          , object
+                                              [ "name" .= ("MINIO_ROOT_PASSWORD" :: String)
+                                              , "valueFrom"
+                                                  .= object
+                                                    [ "secretKeyRef"
+                                                        .= object
+                                                          [ "name" .= minioReleaseName
+                                                          , "key" .= ("rootPassword" :: String)
+                                                          ]
+                                                    ]
+                                              ]
+                                          , object
+                                              [ "name" .= ("GW_USER" :: String)
+                                              , "value" .= gwUser
+                                              ]
+                                          , object
+                                              [ "name" .= ("GW_PASS" :: String)
+                                              , "value" .= gwPass
+                                              ]
+                                          ]
+                                   ]
+                               ]
+                        ]
+                  ]
+            ]
+      ]
+  ]
+
+-- | Sprint 2.19: canonical IAM policy granting the @prodbox-gateway@
+-- principal the minimum permissions needed for master-seed
+-- read/write: @s3:GetObject@/@s3:PutObject@ on @prodbox/*@ plus
+-- @s3:ListBucket@ on @prodbox@.
+gatewayMinioPolicyJson :: String
+gatewayMinioPolicyJson =
+  unlines
+    [ "{"
+    , "  \"Version\": \"2012-10-17\","
+    , "  \"Statement\": ["
+    , "    {"
+    , "      \"Effect\": \"Allow\","
+    , "      \"Action\": [\"s3:GetObject\", \"s3:PutObject\"],"
+    , "      \"Resource\": [\"arn:aws:s3:::" ++ gatewayMinioBucket ++ "/*\"]"
+    , "    },"
+    , "    {"
+    , "      \"Effect\": \"Allow\","
+    , "      \"Action\": [\"s3:ListBucket\"],"
+    , "      \"Resource\": [\"arn:aws:s3:::" ++ gatewayMinioBucket ++ "\"]"
+    , "    }"
+    , "  ]"
+    , "}"
+    ]
 
 readMinioRootCredentials :: FilePath -> IO (Either String (String, String))
 readMinioRootCredentials repoRoot = do

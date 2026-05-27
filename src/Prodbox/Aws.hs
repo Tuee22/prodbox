@@ -562,9 +562,11 @@ extraPolicyStatements policyTier =
     PolicyFull ->
       [ statement
           "Route53HostedZoneLifecycle"
-          [ "route53:CreateHostedZone"
+          [ "route53:ChangeTagsForResource"
+          , "route53:CreateHostedZone"
           , "route53:DeleteHostedZone"
           , "route53:ListHostedZones"
+          , "route53:ListTagsForResource"
           ]
           "*"
       , -- Sprint 7.5.c.v.d: compressed from explicit per-action list to

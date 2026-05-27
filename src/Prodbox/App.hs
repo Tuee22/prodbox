@@ -14,6 +14,7 @@ import Control.Monad.Trans.Reader
   , ask
   )
 import Data.Text qualified as Text
+import GHC.IO.Encoding (setLocaleEncoding, utf8)
 import Options.Applicative
   ( customExecParser
   , prefs
@@ -74,6 +75,13 @@ liftAppIO = App . liftIO
 
 main :: IO ()
 main = do
+  -- Force UTF-8 for stdin/stdout/stderr and file handles so the Dhall
+  -- decoder, log output, and any file reads work in container Pods that
+  -- ship with the C/POSIX default locale (no LANG set). Without this,
+  -- `Dhall.inputFile` fails on UTF-8 byte sequences such as `§` (0xC2 0xA7)
+  -- that appear in chart-rendered config comments per
+  -- documents/engineering/config_doctrine.md §6.
+  setLocaleEncoding utf8
   argv <- getArgs
   case validateCommandArgv argv of
     Left err -> failWith err

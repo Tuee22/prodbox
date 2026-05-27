@@ -256,18 +256,23 @@ exclusive at parse time:
 - (default, no flag) → **refuse** with the actionable per-stack remedy list. The cluster is
   not touched; the operator runs the named `prodbox pulumi <stack>-destroy --yes` commands
   while the MinIO backend for those stacks is still up.
-- `--cascade` → **orchestrate the full clean teardown**. Sprint `4.17` reorders the cascade
-  to release AWS resources tracked in MinIO before tearing down the local cluster. Canonical
-  order: (1) confirm MinIO reachable and query `<stack>ResidueStatus` (Sprint `4.16`) for
-  each per-run stack; (2) `prodbox pulumi <stack>-destroy --yes` for stacks reporting
+- `--cascade` → **orchestrate the full clean teardown**. Sprints `4.17.a` / `4.17.b`
+  establish the doctrine-canonical drain-before-destroys order with substrate-aware
+  drain kubeconfig handling. Canonical order: (1) confirm MinIO reachable and query
+  `<stack>ResidueStatus` (Sprint `4.16`) for each per-run stack; (2) K8s drain phase
+  (Sprint `4.12`) — delete LoadBalancer Services, Ingresses, and Delete-reclaim PVCs
+  cluster-wide, against the substrate's own kubeconfig (the local RKE2 kubeconfig for
+  `SubstrateHomeLocal`, the EKS kubeconfig wrapped in
+  `Prodbox.PublicEdge.withSubstrateKubectlEnvironment` for `SubstrateAws`), so the
+  in-cluster controllers unwind their AWS-side ENIs / ALBs / EBS volumes while still
+  alive; (3) `prodbox pulumi <stack>-destroy --yes` for stacks reporting
   `ResiduePresent`, wrapped in `withMaterializedOperationalCreds` so empty operational
-  `aws.*` is filled transparently from `aws_admin_for_test_simulation.*` and restored on
-  exit; (3) K8s drain phase (Sprint `4.12`) — delete LoadBalancer Services, Ingresses, and
-  Delete-reclaim PVCs cluster-wide; (4) cluster uninstall; (5) postflight tag sweep that
-  fails the command if any cluster-tagged AWS resource survives. The
+  `aws.*` is filled transparently from `aws_admin_for_test_simulation.*` and restored
+  on exit; (4) cluster uninstall; (5) postflight tag sweep that fails the command if
+  any cluster-tagged AWS resource survives. The
   [Lifecycle Reconciliation Doctrine](lifecycle_reconciliation_doctrine.md) §5b is the
-  authoritative cascade-order reference. This is the recommended path for wipe-and-rebuild
-  cycles.
+  authoritative cascade-order reference. This is the recommended path for
+  wipe-and-rebuild cycles.
 - `--allow-pulumi-residue` → **operator-acknowledged orphan**. Bypass the refuse-path; per-run
   stacks become orphaned (their MinIO backend dies with the cluster). Recovery-only.
 

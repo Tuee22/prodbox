@@ -49,8 +49,9 @@ import Prodbox.EffectInterpreter (InterpreterContext (..), runEffect, runEffectD
 import Prodbox.Error (fatalError)
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PublicEdge
-  ( substrateHostedZoneId
+  ( resolveSubstrateHostedZoneId
   , substratePublicFqdn
+  , withSubstrateKubectlEnvironment
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -165,206 +166,216 @@ runHostPublicEdge repoRoot substrate = do
     Left err -> failWith err
     Right settings -> do
       let publicHost = substratePublicFqdn settings substrate
-          hostedZoneId = substrateHostedZoneId settings substrate
       writeOutputLine ("PUBLIC_EDGE_SUBSTRATE=" ++ substrateId substrate)
-      publicIpResult <- fetchPublicIp
-      case publicIpResult of
+      hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings substrate
+      case hostedZoneResult of
         Left err -> failWith err
-        Right publicIp -> do
-          route53Result <- queryRoute53RecordInZone repoRoot settings hostedZoneId publicHost
-          case firstFailure [toUnit route53Result] of
-            Just err -> failWith err
-            Nothing -> do
-              lanResult <- detectLanAddressing
-              envoyGatewayDeploymentResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "envoy-gateway-system")
-                  ["get", "deployment", "envoy-gateway", "-o", "json", "--ignore-not-found=true"]
-              gatewayClassResult <-
-                optionalKubectlJson
-                  repoRoot
-                  Nothing
-                  ["get", "gatewayclass", "prodbox-public-edge", "-o", "json", "--ignore-not-found=true"]
-              envoyServiceResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "envoy-gateway-system")
-                  [ "get"
-                  , "svc"
-                  , "-l"
-                  , "gateway.envoyproxy.io/owning-gateway-namespace=vscode,gateway.envoyproxy.io/owning-gateway-name=public-edge"
-                  , "-o"
-                  , "json"
-                  ]
-              gatewayResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "vscode")
-                  ["get", "gateway", "public-edge", "-o", "json", "--ignore-not-found=true"]
-              vscodeRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "vscode")
-                  ["get", "httproute", "vscode", "-o", "json", "--ignore-not-found=true"]
-              authRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "vscode")
-                  ["get", "httproute", "keycloak", "-o", "json", "--ignore-not-found=true"]
-              httpRedirectRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "vscode")
-                  ["get", "httproute", "public-edge-http-redirect", "-o", "json", "--ignore-not-found=true"]
-              apiRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "api")
-                  ["get", "httproute", "api", "-o", "json", "--ignore-not-found=true"]
-              websocketRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "websocket")
-                  ["get", "httproute", "websocket", "-o", "json", "--ignore-not-found=true"]
-              harborRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "harbor")
-                  ["get", "httproute", "harbor-ui", "-o", "json", "--ignore-not-found=true"]
-              minioRouteResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just prodboxNamespace)
-                  ["get", "httproute", "minio-console", "-o", "json", "--ignore-not-found=true"]
-              vscodeSecurityPolicyResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "vscode")
-                  ["get", "securitypolicy", "vscode-oidc", "-o", "json", "--ignore-not-found=true"]
-              apiSecurityPolicyResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "api")
-                  ["get", "securitypolicy", "api-jwt", "-o", "json", "--ignore-not-found=true"]
-              websocketSecurityPolicyResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "websocket")
-                  ["get", "securitypolicy", "websocket-jwt", "-o", "json", "--ignore-not-found=true"]
-              harborSecurityPolicyResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "harbor")
-                  ["get", "securitypolicy", "harbor-oidc", "-o", "json", "--ignore-not-found=true"]
-              minioSecurityPolicyResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just prodboxNamespace)
-                  ["get", "securitypolicy", "minio-oidc", "-o", "json", "--ignore-not-found=true"]
-              certificateResult <-
-                optionalKubectlJson
-                  repoRoot
-                  (Just "vscode")
-                  ["get", "certificate", "public-edge-tls", "-o", "json", "--ignore-not-found=true"]
-              case firstFailure
-                [ toUnit lanResult
-                , toUnit envoyGatewayDeploymentResult
-                , toUnit gatewayClassResult
-                , toUnit envoyServiceResult
-                , toUnit gatewayResult
-                , toUnit vscodeRouteResult
-                , toUnit authRouteResult
-                , toUnit httpRedirectRouteResult
-                , toUnit apiRouteResult
-                , toUnit websocketRouteResult
-                , toUnit harborRouteResult
-                , toUnit minioRouteResult
-                , toUnit vscodeSecurityPolicyResult
-                , toUnit apiSecurityPolicyResult
-                , toUnit websocketSecurityPolicyResult
-                , toUnit harborSecurityPolicyResult
-                , toUnit minioSecurityPolicyResult
-                , toUnit certificateResult
-                ] of
-                Just err -> failWith err
-                Nothing ->
-                  case ( route53Result
-                       , lanResult
-                       , envoyGatewayDeploymentResult
-                       , gatewayClassResult
-                       , envoyServiceResult
-                       , gatewayResult
-                       , vscodeRouteResult
-                       , authRouteResult
-                       , httpRedirectRouteResult
-                       , apiRouteResult
-                       , websocketRouteResult
-                       , harborRouteResult
-                       , minioRouteResult
-                       , vscodeSecurityPolicyResult
-                       , apiSecurityPolicyResult
-                       , websocketSecurityPolicyResult
-                       , harborSecurityPolicyResult
-                       , minioSecurityPolicyResult
-                       , certificateResult
-                       ) of
-                    ( Right route53RecordIp
-                      , Right lan
-                      , Right envoyGatewayDeploymentDoc
-                      , Right gatewayClassDoc
-                      , Right envoyServiceDoc
-                      , Right gatewayDoc
-                      , Right vscodeRouteDoc
-                      , Right authRouteDoc
-                      , Right httpRedirectRouteDoc
-                      , Right apiRouteDoc
-                      , Right websocketRouteDoc
-                      , Right harborRouteDoc
-                      , Right minioRouteDoc
-                      , Right vscodeSecurityPolicyDoc
-                      , Right apiSecurityPolicyDoc
-                      , Right websocketSecurityPolicyDoc
-                      , Right harborSecurityPolicyDoc
-                      , Right minioSecurityPolicyDoc
-                      , Right certificateDoc
-                      ) -> do
-                        let runtime =
-                              EdgeRuntime
-                                { edgePublicIp = publicIp
-                                , edgePublicHost = publicHost
-                                , edgeRoute53RecordIp = route53RecordIp
-                                , edgeActiveLanInterface = lanInterfaceName lan
-                                , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
-                                , edgeActiveLanCidr = lanNetworkCidr lan
-                                , edgeMetallbPool = lanMetallbPool lan
-                                , edgeMetallbAdvertisementMode = configuredMetallbAdvertisementMode settings
-                                , edgeExpectedLbIp = lanIngressLbIp lan
-                                , edgeEnvoyServiceIp = serviceLoadBalancerIp envoyServiceDoc
-                                , edgeEnvoyServiceHttpPortReady = serviceExposesPort 80 envoyServiceDoc
-                                , edgeEnvoyServiceHttpsPortReady = serviceExposesPort 443 envoyServiceDoc
-                                , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
-                                , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
-                                , edgeGatewayReady = gatewayReady gatewayDoc
-                                , edgeHttpRedirectListenerReady = gatewayListenerReady "http" gatewayDoc
-                                , edgeHttpsListenerReady = gatewayListenerReady "https" gatewayDoc
-                                , edgeHttpRedirectRouteAccepted = httpRouteAccepted httpRedirectRouteDoc
-                                , edgeAuthRouteAccepted = httpRouteAccepted authRouteDoc
-                                , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
-                                , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
-                                , edgeWebsocketRouteAccepted = httpRouteAccepted websocketRouteDoc
-                                , edgeHarborRouteAccepted = httpRouteAccepted harborRouteDoc
-                                , edgeMinioRouteAccepted = httpRouteAccepted minioRouteDoc
-                                , edgeVscodeSecurityPolicyAttached = securityPolicyAttached "vscode" vscodeSecurityPolicyDoc
-                                , edgeApiSecurityPolicyAttached = securityPolicyAttached "api" apiSecurityPolicyDoc
-                                , edgeWebsocketSecurityPolicyAttached = securityPolicyAttached "websocket" websocketSecurityPolicyDoc
-                                , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
-                                , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
-                                , edgeCertificateReady = certificateReady certificateDoc
-                                }
-                        writeOutput (renderPublicEdgeReport runtime)
-                        pure ExitSuccess
-                    _ -> failWith "internal error: host public-edge results were incomplete"
+        Right hostedZoneId ->
+          withSubstrateKubectlEnvironment
+            repoRoot
+            settings
+            substrate
+            (processWithHostedZone settings publicHost hostedZoneId)
+ where
+  processWithHostedZone settings publicHost hostedZoneId = do
+    publicIpResult <- fetchPublicIp
+    case publicIpResult of
+      Left err -> failWith err
+      Right publicIp -> do
+        route53Result <- queryRoute53RecordInZone repoRoot settings hostedZoneId publicHost
+        case firstFailure [toUnit route53Result] of
+          Just err -> failWith err
+          Nothing -> do
+            lanResult <- detectLanAddressing
+            envoyGatewayDeploymentResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "envoy-gateway-system")
+                ["get", "deployment", "envoy-gateway", "-o", "json", "--ignore-not-found=true"]
+            gatewayClassResult <-
+              optionalKubectlJson
+                repoRoot
+                Nothing
+                ["get", "gatewayclass", "prodbox-public-edge", "-o", "json", "--ignore-not-found=true"]
+            envoyServiceResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "envoy-gateway-system")
+                [ "get"
+                , "svc"
+                , "-l"
+                , "gateway.envoyproxy.io/owning-gateway-namespace=vscode,gateway.envoyproxy.io/owning-gateway-name=public-edge"
+                , "-o"
+                , "json"
+                ]
+            gatewayResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "vscode")
+                ["get", "gateway", "public-edge", "-o", "json", "--ignore-not-found=true"]
+            vscodeRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "vscode")
+                ["get", "httproute", "vscode", "-o", "json", "--ignore-not-found=true"]
+            authRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "vscode")
+                ["get", "httproute", "keycloak", "-o", "json", "--ignore-not-found=true"]
+            httpRedirectRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "vscode")
+                ["get", "httproute", "public-edge-http-redirect", "-o", "json", "--ignore-not-found=true"]
+            apiRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "api")
+                ["get", "httproute", "api", "-o", "json", "--ignore-not-found=true"]
+            websocketRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "websocket")
+                ["get", "httproute", "websocket", "-o", "json", "--ignore-not-found=true"]
+            harborRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "harbor")
+                ["get", "httproute", "harbor-ui", "-o", "json", "--ignore-not-found=true"]
+            minioRouteResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just prodboxNamespace)
+                ["get", "httproute", "minio-console", "-o", "json", "--ignore-not-found=true"]
+            vscodeSecurityPolicyResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "vscode")
+                ["get", "securitypolicy", "vscode-oidc", "-o", "json", "--ignore-not-found=true"]
+            apiSecurityPolicyResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "api")
+                ["get", "securitypolicy", "api-jwt", "-o", "json", "--ignore-not-found=true"]
+            websocketSecurityPolicyResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "websocket")
+                ["get", "securitypolicy", "websocket-jwt", "-o", "json", "--ignore-not-found=true"]
+            harborSecurityPolicyResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "harbor")
+                ["get", "securitypolicy", "harbor-oidc", "-o", "json", "--ignore-not-found=true"]
+            minioSecurityPolicyResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just prodboxNamespace)
+                ["get", "securitypolicy", "minio-oidc", "-o", "json", "--ignore-not-found=true"]
+            certificateResult <-
+              optionalKubectlJson
+                repoRoot
+                (Just "vscode")
+                ["get", "certificate", "public-edge-tls", "-o", "json", "--ignore-not-found=true"]
+            case firstFailure
+              [ toUnit lanResult
+              , toUnit envoyGatewayDeploymentResult
+              , toUnit gatewayClassResult
+              , toUnit envoyServiceResult
+              , toUnit gatewayResult
+              , toUnit vscodeRouteResult
+              , toUnit authRouteResult
+              , toUnit httpRedirectRouteResult
+              , toUnit apiRouteResult
+              , toUnit websocketRouteResult
+              , toUnit harborRouteResult
+              , toUnit minioRouteResult
+              , toUnit vscodeSecurityPolicyResult
+              , toUnit apiSecurityPolicyResult
+              , toUnit websocketSecurityPolicyResult
+              , toUnit harborSecurityPolicyResult
+              , toUnit minioSecurityPolicyResult
+              , toUnit certificateResult
+              ] of
+              Just err -> failWith err
+              Nothing ->
+                case ( route53Result
+                     , lanResult
+                     , envoyGatewayDeploymentResult
+                     , gatewayClassResult
+                     , envoyServiceResult
+                     , gatewayResult
+                     , vscodeRouteResult
+                     , authRouteResult
+                     , httpRedirectRouteResult
+                     , apiRouteResult
+                     , websocketRouteResult
+                     , harborRouteResult
+                     , minioRouteResult
+                     , vscodeSecurityPolicyResult
+                     , apiSecurityPolicyResult
+                     , websocketSecurityPolicyResult
+                     , harborSecurityPolicyResult
+                     , minioSecurityPolicyResult
+                     , certificateResult
+                     ) of
+                  ( Right route53RecordIp
+                    , Right lan
+                    , Right envoyGatewayDeploymentDoc
+                    , Right gatewayClassDoc
+                    , Right envoyServiceDoc
+                    , Right gatewayDoc
+                    , Right vscodeRouteDoc
+                    , Right authRouteDoc
+                    , Right httpRedirectRouteDoc
+                    , Right apiRouteDoc
+                    , Right websocketRouteDoc
+                    , Right harborRouteDoc
+                    , Right minioRouteDoc
+                    , Right vscodeSecurityPolicyDoc
+                    , Right apiSecurityPolicyDoc
+                    , Right websocketSecurityPolicyDoc
+                    , Right harborSecurityPolicyDoc
+                    , Right minioSecurityPolicyDoc
+                    , Right certificateDoc
+                    ) -> do
+                      let runtime =
+                            EdgeRuntime
+                              { edgePublicIp = publicIp
+                              , edgePublicHost = publicHost
+                              , edgeRoute53RecordIp = route53RecordIp
+                              , edgeActiveLanInterface = lanInterfaceName lan
+                              , edgeActiveLanIpv4 = lanInterfaceIpv4 lan
+                              , edgeActiveLanCidr = lanNetworkCidr lan
+                              , edgeMetallbPool = lanMetallbPool lan
+                              , edgeMetallbAdvertisementMode = configuredMetallbAdvertisementMode settings
+                              , edgeExpectedLbIp = lanIngressLbIp lan
+                              , edgeEnvoyServiceIp = serviceLoadBalancerIp envoyServiceDoc
+                              , edgeEnvoyServiceHttpPortReady = serviceExposesPort 80 envoyServiceDoc
+                              , edgeEnvoyServiceHttpsPortReady = serviceExposesPort 443 envoyServiceDoc
+                              , edgeEnvoyGatewayDeploymentReady = deploymentReady envoyGatewayDeploymentDoc
+                              , edgeGatewayClassAccepted = gatewayClassAccepted gatewayClassDoc
+                              , edgeGatewayReady = gatewayReady gatewayDoc
+                              , edgeHttpRedirectListenerReady = gatewayListenerReady "http" gatewayDoc
+                              , edgeHttpsListenerReady = gatewayListenerReady "https" gatewayDoc
+                              , edgeHttpRedirectRouteAccepted = httpRouteAccepted httpRedirectRouteDoc
+                              , edgeAuthRouteAccepted = httpRouteAccepted authRouteDoc
+                              , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
+                              , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
+                              , edgeWebsocketRouteAccepted = httpRouteAccepted websocketRouteDoc
+                              , edgeHarborRouteAccepted = httpRouteAccepted harborRouteDoc
+                              , edgeMinioRouteAccepted = httpRouteAccepted minioRouteDoc
+                              , edgeVscodeSecurityPolicyAttached = securityPolicyAttached "vscode" vscodeSecurityPolicyDoc
+                              , edgeApiSecurityPolicyAttached = securityPolicyAttached "api" apiSecurityPolicyDoc
+                              , edgeWebsocketSecurityPolicyAttached = securityPolicyAttached "websocket" websocketSecurityPolicyDoc
+                              , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
+                              , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
+                              , edgeCertificateReady = certificateReady certificateDoc
+                              }
+                      writeOutput (renderPublicEdgeReport runtime)
+                      pure ExitSuccess
+                  _ -> failWith "internal error: host public-edge results were incomplete"
 
 renderPortAvailabilityReport :: [PortStatus] -> String
 renderPortAvailabilityReport statuses =

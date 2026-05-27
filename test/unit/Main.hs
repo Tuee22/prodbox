@@ -129,6 +129,8 @@ import Prodbox.CLI.Parser
 import Prodbox.CLI.Pulumi (renderPulumiPlan)
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
+  , cascadeOrderNarration
+  , inferCascadeSubstrate
   , perRunCascadeInventory
   , renderMinioChartArgs
   , renderNativeInstallPlan
@@ -2993,6 +2995,50 @@ main = mainWithSuite "prodbox-unit" $ do
       perRunCascadeInventory minioDown minioDown minioDown `shouldBe` []
       map fst (perRunCascadeInventory residueFixturePresent minioDown residueFixturePresent)
         `shouldBe` ["aws-eks", "aws-test"]
+
+  describe "Sprint 4.17.a canonical cascade phase order" $ do
+    it "narration lists drain before per-run destroys (doctrine §5b)" $
+      ("drain → per-run destroys" `isInfixOf` cascadeOrderNarration) `shouldBe` True
+
+    it "narration places confirm-MinIO first" $
+      ("confirm-MinIO → drain" `isInfixOf` cascadeOrderNarration) `shouldBe` True
+
+    it "narration places uninstall between per-run destroys and sweep" $
+      ("per-run destroys → uninstall → sweep" `isInfixOf` cascadeOrderNarration) `shouldBe` True
+
+    it "narration does NOT list the pre-Sprint-4.17.a inverted order" $
+      ("per-run destroys → drain" `isInfixOf` cascadeOrderNarration) `shouldBe` False
+
+    it "narration is the full canonical cascade phrase" $
+      cascadeOrderNarration
+        `shouldBe` "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → uninstall → sweep"
+
+  describe "Sprint 4.17.b cascade substrate inference" $ do
+    it "all-absent residue → SubstrateHomeLocal (drain targets local cluster)" $
+      inferCascadeSubstrate Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent
+        `shouldBe` SubstrateHomeLocal
+
+    it "aws-eks present → SubstrateAws (drain targets EKS)" $
+      inferCascadeSubstrate residueFixturePresent Residue.ResidueAbsent Residue.ResidueAbsent
+        `shouldBe` SubstrateAws
+
+    it "aws-eks-subzone present → SubstrateAws" $
+      inferCascadeSubstrate Residue.ResidueAbsent residueFixturePresent Residue.ResidueAbsent
+        `shouldBe` SubstrateAws
+
+    it "aws-test present → SubstrateAws" $
+      inferCascadeSubstrate Residue.ResidueAbsent Residue.ResidueAbsent residueFixturePresent
+        `shouldBe` SubstrateAws
+
+    it "all-present → SubstrateAws" $
+      inferCascadeSubstrate residueFixturePresent residueFixturePresent residueFixturePresent
+        `shouldBe` SubstrateAws
+
+    it
+      "ResidueUnreachable on every stack → SubstrateHomeLocal (per-run lifecycle class treats unreachable as absent)"
+      $ do
+        let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
+        inferCascadeSubstrate minioDown minioDown minioDown `shouldBe` SubstrateHomeLocal
 
   describe "Sprint 4.16 StackOutputs pulumi-shape parsing" $ do
     it "parseListStacksPayload decodes an empty JSON array as no stacks" $

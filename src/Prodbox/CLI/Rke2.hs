@@ -2,6 +2,7 @@
 
 module Prodbox.CLI.Rke2
   ( acmeRuntimeManifest
+  , acmeRuntimeManifestWith
   , acmeClusterIssuerSpec
   , ensureGatewayImagesForSubstrate
   , ensureHarborRegistryRuntime
@@ -10,6 +11,8 @@ module Prodbox.CLI.Rke2
   , ensurePostgresOperatorRuntime
   , ensurePublicEdgeWorkloadImageForSubstrate
   , MinioImageSource (..)
+  , cascadeOrderNarration
+  , inferCascadeSubstrate
   , perRunCascadeInventory
   , renderNativeInstallPlan
   , renderMinioChartArgs
@@ -123,6 +126,7 @@ import Prodbox.PublicEdge
   , publicFqdn
   , publicRouteUrl
   , substrateHostedZoneId
+  , substrateKubeconfigPath
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
@@ -155,6 +159,7 @@ import Prodbox.Settings
   , route53
   , secret_access_key
   , server
+  , session_token
   , storage
   , validateAndLoadSettings
   , validatedConfig
@@ -166,7 +171,7 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Substrate (Substrate (..), substrateId)
 import System.Directory
   ( doesDirectoryExist
   , doesFileExist
@@ -185,7 +190,9 @@ import System.FilePath
   , (</>)
   )
 import System.IO
-  ( hClose
+  ( IOMode (ReadMode)
+  , hClose
+  , openBinaryFile
   , openTempFile
   )
 import System.Info (os)
@@ -716,15 +723,19 @@ runNativeDeleteWithResiduePolicy repoRoot flags
           pure (ExitFailure 1)
         Right () -> runNativeDelete repoRoot
 
--- | Sprint 4.17 canonical cascade order:
--- confirm-MinIO → per-run destroys → drain → uninstall → sweep.
--- Per @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@,
--- per-run Pulumi destroys run **before** the K8s drain so MinIO-tracked
--- AWS resources are released while the Pulumi backend is still
--- reachable. The K8s drain then deletes LoadBalancer Services, ALB
--- Ingresses, and Delete-reclaim PVCs so the in-cluster controllers
--- unwind their AWS-side state; the small race against per-run destroys
--- already in flight is bounded by the postflight tag sweep at the end.
+-- | Sprint 4.17.a canonical cascade order:
+-- confirm-MinIO → drain → per-run destroys → uninstall → sweep.
+-- Per @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@
+-- the K8s drain runs **before** any per-run Pulumi destroy so the
+-- in-cluster controllers (AWS Load Balancer Controller, EBS CSI driver,
+-- cert-manager) unwind their AWS-side ENIs / ALBs / EBS volumes while
+-- still alive. Per-run destroys then delete the underlying network
+-- substrate (VPC, subnets, EKS cluster) without tripping on orphan
+-- controller-owned dependencies. On the home substrate the order is
+-- equivalent either way because no in-cluster controllers create AWS
+-- resources; on the AWS substrate the pre-Sprint-4.17.a inverted order
+-- (destroys → drain) produced @DependencyViolation@ on subnet deletion
+-- because controller-owned ENIs blocked the destroy.
 --
 -- Skip-is-success invariants:
 --
@@ -734,18 +745,30 @@ runNativeDeleteWithResiduePolicy repoRoot flags
 --   When MinIO is unreachable a future swap of the adapter will return
 --   'ResidueUnreachable' which 'isResiduePresent' treats as absent —
 --   the per-run state died with the cluster.
--- * K8s drain (Sprint 4.15): when the Kubernetes cluster is already
---   absent, the drain phase emits 'DrainSkipped' and the cascade
---   continues. The cascade only aborts on 'DrainTimedOut' /
---   'DrainFailed'.
+-- * K8s drain (Sprint 4.15): on the home substrate, when the local
+--   Kubernetes cluster is absent, the drain phase emits 'DrainSkipped'
+--   and the cascade continues — there are no in-cluster controllers
+--   creating AWS resources, so nothing to drain. Sprint 4.17.b adds the
+--   substrate-aware drain that targets the EKS cluster's kubeconfig on
+--   @SubstrateAws@; on AWS, 'DrainSkipped' becomes a hard failure
+--   because the source of the AWS resources the per-run destroys would
+--   need to delete is exactly the cluster the drain failed to reach.
 -- * Postflight tag sweep: failure to query the AWS Resource Tagging
 --   API is reported as a diagnostic but does not fail the cascade —
 --   the operator-named cascade phrase only promises that the cascade
 --   *ran* the sweep; resolving residue is operator work.
+-- | Sprint 4.17.a: the operator-facing narration string for the canonical
+-- cascade phase order. Exposed as a top-level constant so unit tests can pin
+-- the drain-before-destroys order without re-implementing it. The order text
+-- must match the doctrine table at
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@.
+cascadeOrderNarration :: String
+cascadeOrderNarration =
+  "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → uninstall → sweep"
+
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
-  writeOutputLine
-    "rke2 delete --cascade: confirm-MinIO → per-run destroys → drain → uninstall → sweep"
+  writeOutputLine cascadeOrderNarration
   -- Step 1: confirm-MinIO — query typed residue status per per-run stack.
   eksStatus <- awsEksTestStackResidueStatus repoRoot
   subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
@@ -764,26 +787,34 @@ runNativeDeleteCascade repoRoot = do
             ]
           )
   writeOutputLine ("Per-run residue status: " ++ liveSummary)
-  -- Step 2: per-run Pulumi destroys (fail-fast).
-  destroyExit <-
-    if null perRunDestroyActions
-      then do
-        writeOutputLine "Per-run Pulumi destroys: skipped (no live per-run residue)."
-        pure ExitSuccess
-      else do
-        writeOutputLine
-          ( "Per-run Pulumi destroys: running "
-              ++ show (length perRunDestroyActions)
-              ++ " destroy(s) against MinIO..."
-          )
-        runSequentially perRunDestroyActions
-  case destroyExit of
-    ExitFailure _ -> pure destroyExit
+  -- Step 2: K8s drain. Runs before per-run destroys so in-cluster
+  -- controllers (AWS LBC, EBS CSI) release their AWS-side ENIs / ALBs /
+  -- EBS volumes while still alive. Substrate is inferred from per-run
+  -- residue presence (Sprint 4.17.b): any AWS per-run stack with residue
+  -- means the EKS cluster is in scope and the drain must target the
+  -- substrate's own kubeconfig instead of the local RKE2 cluster's.
+  let cascadeSubstrate = inferCascadeSubstrate eksStatus subzoneStatus testStatus
+  drainExit <- runCascadeDrainPhase repoRoot cascadeSubstrate
+  case drainExit of
+    ExitFailure _ -> pure drainExit
     ExitSuccess -> do
-      -- Step 3: K8s drain.
-      drainExit <- runCascadeDrainPhase repoRoot
-      case drainExit of
-        ExitFailure _ -> pure drainExit
+      -- Step 3: per-run Pulumi destroys (fail-fast). Controller-owned
+      -- AWS resources are now drained, so subnet / VPC deletes succeed
+      -- without DependencyViolation.
+      destroyExit <-
+        if null perRunDestroyActions
+          then do
+            writeOutputLine "Per-run Pulumi destroys: skipped (no live per-run residue)."
+            pure ExitSuccess
+          else do
+            writeOutputLine
+              ( "Per-run Pulumi destroys: running "
+                  ++ show (length perRunDestroyActions)
+                  ++ " destroy(s) against MinIO..."
+              )
+            runSequentially perRunDestroyActions
+      case destroyExit of
+        ExitFailure _ -> pure destroyExit
         ExitSuccess -> do
           -- Step 4: RKE2 uninstall + cluster-substrate cleanup.
           retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
@@ -830,45 +861,129 @@ perRunCascadeInventory eksStatus subzoneStatus testStatus =
        | ResidueStatus.isResiduePresent testStatus
        ]
 
--- | Sprint 4.17 helper: the K8s drain phase extracted from the prior
--- single-block cascade so step 3 of the canonical order is callable in
--- isolation. Preserves the Sprint 4.15 skip-is-success semantics:
--- 'DrainSkipped' propagates a continue signal to the caller.
-runCascadeDrainPhase :: FilePath -> IO ExitCode
-runCascadeDrainPhase repoRoot = do
+-- | Sprint 4.17.b: derive the cascade's substrate from per-run residue
+-- presence. Any per-run AWS stack with @ResiduePresent@ residue means
+-- the AWS substrate is in scope (the EKS cluster is alive and the
+-- substrate-platform install's controllers may have created AWS-side
+-- ENIs / ALBs / EBS volumes that the drain phase must release). The
+-- home substrate is the fallback when no per-run AWS residue is
+-- detected.
+inferCascadeSubstrate
+  :: ResidueStatus.ResidueStatus
+  -> ResidueStatus.ResidueStatus
+  -> ResidueStatus.ResidueStatus
+  -> Substrate
+inferCascadeSubstrate eksStatus subzoneStatus testStatus =
+  if any
+    ResidueStatus.isResiduePresent
+    [eksStatus, subzoneStatus, testStatus]
+    then SubstrateAws
+    else SubstrateHomeLocal
+
+-- | Sprint 4.17.a/4.17.b helper: the K8s drain phase extracted from the
+-- prior single-block cascade so step 2 of the canonical order is
+-- callable in isolation, with substrate-aware kubeconfig + AWS env
+-- handling.
+--
+-- For @SubstrateHomeLocal@: keeps the Sprint 4.15 skip-is-success
+-- semantics — when the local Kubernetes cluster is absent, the drain
+-- phase emits @DrainSkipped@ and the cascade continues (no in-cluster
+-- controllers means nothing to drain).
+--
+-- For @SubstrateAws@: sets @KUBECONFIG@ to the substrate's kubeconfig
+-- (@.prodbox-state\/aws-eks-test\/kubeconfig@) plus
+-- @AWS_ACCESS_KEY_ID@ \/ @AWS_SECRET_ACCESS_KEY@ \/ @AWS_DEFAULT_REGION@
+-- \/ @AWS_REGION@ \/ @AWS_SESSION_TOKEN@ from
+-- @settings.aws@ so @aws eks get-token@ can authenticate. Treats
+-- @DrainSkipped@ as a hard failure because the EKS cluster is the
+-- source of the AWS resources the per-run destroys will try to delete
+-- — skipping the drain guarantees the next phase fails with
+-- @DependencyViolation@ per
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md §5b@.
+runCascadeDrainPhase :: FilePath -> Substrate -> IO ExitCode
+runCascadeDrainPhase repoRoot substrate = do
   writeOutputLine
-    "K8s drain phase: deleting LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs..."
-  parentEnv <- getEnvironment
-  rke2KubeconfigPresent <- doesFileExist rke2KubeconfigPath
-  let drainEnvWithKubeconfig =
-        if rke2KubeconfigPresent
-          then ("KUBECONFIG", rke2KubeconfigPath) : parentEnv
-          else parentEnv
-      drainEnv =
+    ( "K8s drain phase (substrate="
+        ++ substrateId substrate
+        ++ "): deleting LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs..."
+    )
+  drainEnvVars <- buildDrainEnvironment repoRoot substrate
+  let drainEnv =
         K8sDrain.K8sDrainEnv
-          { K8sDrain.drainEnvironment = drainEnvWithKubeconfig
+          { K8sDrain.drainEnvironment = drainEnvVars
           , K8sDrain.drainWorkingDirectory = Just repoRoot
           }
   drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
   case K8sDrain.cascadeDecisionFromDrainResult drainResult of
-    K8sDrain.CascadeContinue maybeSkipReason -> do
-      case maybeSkipReason of
-        Nothing ->
-          writeOutputLine
-            "K8s drain phase complete. Proceeding with uninstall + postflight sweep."
-        Just reason ->
-          writeOutputLine
-            ( "K8s drain skipped: "
-                ++ reason
-                ++ " Proceeding with uninstall + postflight sweep."
-            )
+    K8sDrain.CascadeContinue Nothing -> do
+      writeOutputLine
+        "K8s drain phase complete. Proceeding with per-run destroys + uninstall + postflight sweep."
       pure ExitSuccess
+    K8sDrain.CascadeContinue (Just reason) -> case substrate of
+      SubstrateHomeLocal -> do
+        writeOutputLine
+          ( "K8s drain skipped: "
+              ++ reason
+              ++ " Proceeding with per-run destroys + uninstall + postflight sweep."
+          )
+        pure ExitSuccess
+      SubstrateAws -> do
+        -- Sprint 4.17.b: skipped drain on AWS substrate is a hard failure.
+        -- The EKS cluster is the source of the AWS resources the per-run
+        -- destroys would need to delete; skipping the drain guarantees
+        -- the next phase will fail with DependencyViolation on subnet
+        -- deletion. See lifecycle_reconciliation_doctrine.md §5b.
+        writeOutputLine
+          ( "K8s drain phase failed on the AWS substrate: "
+              ++ reason
+              ++ " Cascade aborts because the EKS cluster's in-cluster controllers (AWS LBC, EBS CSI) could not be drained; per-run Pulumi destroys would fail with DependencyViolation on subnet deletion."
+          )
+        pure (ExitFailure 1)
     K8sDrain.CascadeAbort reason -> do
       case drainResult of
         K8sDrain.DrainTimedOut survivors ->
           writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
         _ -> writeOutputLine reason
       pure (ExitFailure 1)
+
+-- | Sprint 4.17.b helper: build the env-var list passed to
+-- 'K8sDrain.K8sDrainEnv' per substrate. For home-local, prepends
+-- @KUBECONFIG=\/etc\/rancher\/rke2\/rke2.yaml@ when that file exists. For
+-- AWS, prepends @KUBECONFIG=<substrate kubeconfig>@ + @AWS_*@ projected
+-- from @settings.aws@. On AWS substrate the function falls back to the
+-- parent environment if substrate config cannot be loaded — downstream
+-- kubectl invocations will then fail loudly rather than silently
+-- talking to the wrong cluster.
+buildDrainEnvironment :: FilePath -> Substrate -> IO [(String, String)]
+buildDrainEnvironment repoRoot substrate = do
+  parentEnv <- getEnvironment
+  case substrate of
+    SubstrateHomeLocal -> do
+      rke2KubeconfigPresent <- doesFileExist rke2KubeconfigPath
+      pure $
+        if rke2KubeconfigPresent
+          then ("KUBECONFIG", rke2KubeconfigPath) : parentEnv
+          else parentEnv
+    SubstrateAws -> do
+      case substrateKubeconfigPath repoRoot SubstrateAws of
+        Nothing -> pure parentEnv
+        Just kubeconfigPath -> do
+          settingsResult <- validateAndLoadSettings repoRoot
+          case settingsResult of
+            Left _ -> pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
+            Right settings ->
+              let awsCreds = aws (validatedConfig settings)
+                  baseOverrides =
+                    [ ("KUBECONFIG", kubeconfigPath)
+                    , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
+                    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
+                    , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
+                    , ("AWS_REGION", Text.unpack (region awsCreds))
+                    ]
+                  tokenOverrides = case session_token awsCreds of
+                    Nothing -> []
+                    Just tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]
+               in pure (baseOverrides ++ tokenOverrides ++ parentEnv)
 
 -- | Sprint 4.17 helper: the postflight cluster-tag sweep extracted from
 -- the canonical cascade. Best-effort: a non-zero sweep exit is reported
@@ -1493,7 +1608,14 @@ resolveGatewayMinioCredentials repoRoot = do
     Right (user, password) -> pure (Right (user, password))
     Left _ -> do
       freshUserSuffixResult <-
-        try (BS.readFile "/dev/urandom") :: IO (Either SomeException BS.ByteString)
+        try
+          ( do
+              handle <- openBinaryFile "/dev/urandom" ReadMode
+              bytes <- BS.hGet handle 34
+              hClose handle
+              pure bytes
+          )
+          :: IO (Either SomeException BS.ByteString)
       case freshUserSuffixResult of
         Left e ->
           pure
@@ -1510,7 +1632,6 @@ resolveGatewayMinioCredentials repoRoot = do
               passwordBase64 =
                 take 40 . filter isAsciiAlphaNumeric . BS8.unpack $
                   Base64.encode passwordBytes
-              -- Pad if base64 stripping shortened below 40 chars.
               password =
                 passwordBase64
                   ++ replicate (40 - length passwordBase64) 'A'
@@ -2964,7 +3085,18 @@ ensureAcmeRuntime repoRoot settings prodboxId labelValue = do
     )
 
 acmeRuntimeManifest :: Substrate -> ValidatedSettings -> String -> String -> [Value]
-acmeRuntimeManifest substrate settings prodboxId labelValue =
+acmeRuntimeManifest substrate settings =
+  acmeRuntimeManifestWith substrate settings (substrateHostedZoneId settings substrate)
+
+-- | Sprint 7.5.c.v follow-up: variant of 'acmeRuntimeManifest' that takes
+-- an externally-resolved hosted-zone ID so the IO caller can fall back to
+-- the live aws-eks-subzone Pulumi stack snapshot when
+-- @aws_substrate.hosted_zone_id@ is empty in @prodbox-config.dhall@. See
+-- 'Prodbox.PublicEdge.resolveSubstrateHostedZoneId' for the doctrine-
+-- compliant resolution algorithm.
+acmeRuntimeManifestWith
+  :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> [Value]
+acmeRuntimeManifestWith _substrate settings hostedZoneId prodboxId labelValue =
   route53Secret : maybe [] pure maybeEabSecret ++ [clusterIssuer]
  where
   config = validatedConfig settings
@@ -3015,11 +3147,11 @@ acmeRuntimeManifest substrate settings prodboxId labelValue =
             , "annotations" .= object [Key.fromString prodboxAnnotationKey .= prodboxId]
             , "labels" .= object [Key.fromString prodboxLabelKey .= labelValue]
             ]
-      , "spec" .= object ["acme" .= acmeClusterIssuerSpec substrate settings]
+      , "spec" .= object ["acme" .= acmeClusterIssuerSpec settings hostedZoneId]
       ]
 
-acmeClusterIssuerSpec :: Substrate -> ValidatedSettings -> Value
-acmeClusterIssuerSpec substrate settings =
+acmeClusterIssuerSpec :: ValidatedSettings -> Text.Text -> Value
+acmeClusterIssuerSpec settings hostedZoneId =
   object $
     [ "server" .= Text.unpack (server acmeConfig)
     , "email" .= Text.unpack (email acmeConfig)
@@ -3031,7 +3163,7 @@ acmeClusterIssuerSpec substrate settings =
                      [ "route53"
                          .= object
                            [ "region" .= Text.unpack (region awsConfig)
-                           , "hostedZoneID" .= Text.unpack (substrateHostedZoneId settings substrate)
+                           , "hostedZoneID" .= Text.unpack hostedZoneId
                            , "accessKeyIDSecretRef"
                                .= object
                                  [ "name" .= route53CredentialsSecretName

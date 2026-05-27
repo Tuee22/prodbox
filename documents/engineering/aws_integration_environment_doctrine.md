@@ -415,6 +415,37 @@ Cleanup must always be attempted. Warning-only teardown is prohibited.
 If validation-owned Route 53 cleanup or Pulumi-owned stack destroy fails, the suite must abort with
 explicit target and error text.
 
+### 5.5 Cascade Drain Phase Against EKS
+
+The `prodbox rke2 delete --cascade --yes` drain phase
+([`lifecycle_reconciliation_doctrine.md` §5b](lifecycle_reconciliation_doctrine.md))
+must run against the **substrate's own kubeconfig**, not the operator-host
+RKE2 kubeconfig, when the cascade is tearing down resources on the AWS substrate.
+A drain that hard-codes `KUBECONFIG=/etc/rancher/rke2/rke2.yaml` walks the
+local cluster's namespaces (which do not contain the EKS-side LoadBalancer
+Services, ALB Ingresses, or Delete-reclaim PVCs), reports nothing to drain,
+and lets the next cascade phase (per-run Pulumi destroys) fail with
+`DependencyViolation: The subnet '<id>' has dependencies and cannot be deleted`
+because the EKS-side controllers (AWS Load Balancer Controller, EBS CSI
+driver) still have orphan ENIs / ALBs / EBS volumes attached to the subnets
+Pulumi is trying to delete.
+
+The canonical bracket is
+`Prodbox.PublicEdge.withSubstrateKubectlEnvironment` (exported from
+`src/Prodbox/PublicEdge.hs`). It sets `KUBECONFIG` to the substrate's
+kubeconfig path (`.prodbox-state/aws-eks-test/kubeconfig` for
+`SubstrateAws`) plus the `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
+`AWS_DEFAULT_REGION` / `AWS_SESSION_TOKEN` env vars that the EKS
+kubeconfig's `aws eks get-token` exec provider needs. Any kubectl
+subprocess that the cascade drain phase (or any other AWS-substrate-aware
+diagnostic) invokes must be wrapped in this bracket.
+
+A drain that reports `DrainSkipped` on the AWS substrate is **not**
+success-with-reason — it is a hard failure. The EKS cluster is the source
+of the AWS resources the per-run destroys will try to delete; skipping
+the drain because "the local cluster is unreachable" guarantees the
+next phase will fail.
+
 ## 6. Required Command Surfaces
 
 ### 6.1 Common Auth Probe

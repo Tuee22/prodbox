@@ -7,6 +7,12 @@ ARG GHC_VERSION=9.14.1
 ARG CABAL_VERSION=3.16.1.0
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH
+# Default container locale is C/POSIX with no UTF-8 support. The daemon's
+# Dhall decoder fails on UTF-8 byte sequences such as `§` (0xC2 0xA7) that
+# appear in chart-rendered config comments without this. See
+# documents/engineering/config_doctrine.md §6.
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

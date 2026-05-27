@@ -1260,24 +1260,28 @@ for the authoritative cascade-order table.
   in `test/unit/Main.hs::"Sprint 4.17 destroy-path credential fallback"`
   cover the `credentialsConfigured` smart-constructor semantics that drive
   the fallback branch.
-- **Cascade-order rewrite (Done May 23, 2026 p.m.)**:
-  `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` reordered to:
-  1. Confirm MinIO reachable via per-stack `<stack>ResidueStatus`
-     queries (today the file-existence adapter; tomorrow the
-     `pulumi stack ls --json` query that distinguishes
-     `ResidueUnreachable` from `ResidueAbsent`).
-  2. Per-run `pulumi destroy` for any stack reporting `ResiduePresent`;
-     `ResidueAbsent` and `ResidueUnreachable` per-run stacks are
-     skipped (per the per-run lifecycle class).
-  3. K8s drain (Sprint 4.12).
-  4. RKE2 uninstall + cluster-substrate cleanup.
-  5. Postflight cluster-tag sweep (currently a "deferred to operator"
-     diagnostic until the admin-credentials handle lands).
-  New pure helper `perRunCascadeInventory` (exported) drives test
-  coverage of the canonical destroy ordering; new `runCascadeDrainPhase`
-  / `runCascadePostflightTagSweep` helpers carve the cascade into
-  callable phases. Preserves Sprint 4.15 skip-is-success semantics for
-  `DrainSkipped` and fails fast on `DrainTimedOut` / `DrainFailed`.
+- **Cascade-order rewrite (landed wrong order May 23, 2026 p.m.; correction scheduled as Sprint 4.17.a)**:
+  `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` initially shipped with the
+  order:
+  1. Confirm MinIO reachable via per-stack `<stack>ResidueStatus` queries
+  2. Per-run `pulumi destroy` for stacks reporting `ResiduePresent`
+  3. K8s drain (Sprint 4.12)
+  4. RKE2 uninstall + cluster-substrate cleanup
+  5. Postflight cluster-tag sweep
+
+  The May 27/28 AWS-substrate live exercise on Bathurst surfaced this as
+  the wrong order: on the AWS substrate the per-run destroys (step 2) run
+  while AWS Load Balancer Controller + EBS CSI driver are still alive on
+  the EKS cluster, leaving orphan ENIs that block subnet deletion
+  (`DependencyViolation: The subnet '<id>' has dependencies and cannot be
+  deleted`). The doctrine-canonical order — drain BEFORE per-run destroys
+  — is documented in
+  [`lifecycle_reconciliation_doctrine.md` §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+  and tracked as new Sprint 4.17.a below. The pure helper
+  `perRunCascadeInventory` (exported) drives unit test coverage of the
+  canonical destroy ordering; the existing helpers `runCascadeDrainPhase`
+  / `runCascadePostflightTagSweep` are preserved as named phases. Sprint
+  4.17.b adds substrate-aware kubeconfig handling to the drain phase.
 - **Optional ergonomic bracket (Remaining)**: an explicit
   `Prodbox.Aws.withMaterializedOperationalCreds :: IO a -> IO a` that
   *mutates* `aws.*` in `prodbox-config.dhall` for the body and restores
@@ -1323,7 +1327,163 @@ the live operator step: bring up `aws-eks` via
 matches the canonical sequence and the postflight reports either
 "clean" or a structured refusal block. The final cleanup (kubeconfig
 on-demand, SSH key via Pulumi output, tmp tarball, `forbidDotProdboxState`
-lint) is Sprint 4.18.
+lint) is Sprint 4.18. The cascade-order correction + substrate-aware
+drain land via Sprints 4.17.a and 4.17.b below.
+
+## Sprint 4.17.a: Reorder Cascade to Doctrine-Canonical Sequence ✅
+
+**Status**: Done (May 28, 2026 on the code-owned surface; AWS-substrate
+live re-verification rolls up with Sprint 4.17.b)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade`
++ new top-level constant `cascadeOrderNarration` exposed as a stable
+test pin; pure helper `perRunCascadeInventory` unchanged.
+**Blocked by**: none (independent of 4.17.b on the home substrate; AWS
+substrate verification needs both)
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`
+(updated May 28, 2026 to flip §5b table + §1 prose);
+`documents/engineering/cli_command_surface.md` (updated May 28, 2026
+`prodbox rke2 delete --cascade` section);
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`
+(legacy row moved Pending → Completed)
+
+### Objective
+
+Reorder cascade phases to match the doctrine-canonical sequence
+`confirm-MinIO → drain → per-run destroys → uninstall → sweep` so AWS-side
+controllers (AWS Load Balancer Controller, EBS CSI driver) unwind their
+ENIs / ALBs / EBS volumes before the per-run Pulumi destroy phase tries
+to delete the substrate. The pre-correction order
+(`destroys → drain`) was harmless on the home substrate (no
+in-cluster AWS controllers) but fatal on the AWS substrate, producing
+`DependencyViolation: The subnet '<id>' has dependencies and cannot
+be deleted` errors mid-destroy with no recoverable path.
+
+### Deliverables
+
+- Reorder the orchestration block at
+  `src/Prodbox/CLI/Rke2.hs::runNativeDeleteCascade` (lines 748–806) to
+  match the doctrine §5b table. The pure helper `perRunCascadeInventory`
+  does not move; only the orchestration sequence around it changes.
+- Update the docstring at lines 722–730 to remove the "trade-off"
+  rationale that justified the wrong order. Replace with the
+  substrate-aware rationale from
+  [`lifecycle_reconciliation_doctrine.md` §5b](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+- Add a Sprint 4.17.a regression test in `test/unit/Main.hs` pinning the
+  canonical phase order against `perRunCascadeInventory` outputs (the
+  test renders the cascade plan and asserts `drain` appears before
+  `per-run destroys`).
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` passes (with the new phase-order test).
+3. `prodbox test integration cli` 28/28 (cascade refactor preserves the
+   existing `rke2 reconcile + delete` integration cases).
+4. Live re-verification on the home substrate: `prodbox rke2 reconcile`,
+   deploy charts, then `prodbox rke2 delete --cascade --yes` — confirm
+   the cascade narration emits `drain` before `per-run destroys`.
+5. Live re-verification on the AWS substrate is the gate for Sprint
+   4.17.b (a full `prodbox test all --substrate aws` cycle completes
+   cleanly only when both 4.17.a and 4.17.b are landed).
+
+### Remaining Work
+
+Code-owned work landed May 28, 2026: 5 new unit tests pin the canonical
+phase order via the `cascadeOrderNarration` constant
+(`test/unit/Main.hs::"Sprint 4.17.a canonical cascade phase order"`).
+Live re-verification on the home substrate (`prodbox rke2 reconcile`,
+deploy charts, then `prodbox rke2 delete --cascade --yes` — confirm
+narration emits `drain` before `per-run destroys`) and on the AWS
+substrate (full `prodbox test all --substrate aws` cycle completes
+cleanly) are the only remaining closure gates. The AWS-substrate gate
+rolls up with Sprint 4.17.b.
+
+## Sprint 4.17.b: Substrate-Aware K8s Drain Phase ✅
+
+**Status**: Done (May 28, 2026 on the code-owned surface; live
+AWS-substrate verification remains the operator-driven gate)
+**Implementation**: `src/Prodbox/CLI/Rke2.hs::runCascadeDrainPhase`
++ new pure helper `inferCascadeSubstrate` (exported for unit tests)
++ new helper `buildDrainEnvironment` building the substrate-aware
+env-var list; `src/Prodbox/Lifecycle/K8sDrain.hs` unchanged
+(`drainAwsAffectingK8sResources` consumes the env list the cascade
+phase now constructs per-substrate).
+**Blocked by**: Sprint 4.17.a (the substrate-aware drain only matters
+when drain runs in the canonical position before per-run destroys)
+**Docs to update**:
+`documents/engineering/lifecycle_reconciliation_doctrine.md §5b`
+(updated May 28, 2026 to require substrate-aware drain),
+`documents/engineering/aws_integration_environment_doctrine.md §5.5`
+(added May 28, 2026),
+`DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` (legacy row moved
+Pending → Completed)
+
+### Objective
+
+`runCascadeDrainPhase` currently hard-codes
+`KUBECONFIG=/etc/rancher/rke2/rke2.yaml` — the local RKE2 cluster's
+kubeconfig. On the AWS substrate this means the drain phase walks the
+local cluster's namespaces (which have no AWS LoadBalancer Services)
+and reports nothing to drain. The EKS-side LoadBalancer Services / ALB
+Ingresses / Delete-reclaim PVCs are never deleted before per-run
+destroys begin, so the AWS LBC + EBS CSI controllers keep their ENIs
+alive into the subnet-deletion phase.
+
+Take a `Substrate` argument and use
+`Prodbox.PublicEdge.withSubstrateKubectlEnvironment` (already exported
+from `src/Prodbox/PublicEdge.hs`) for `SubstrateAws` so the drain phase
+talks to the EKS API and actually removes the resources holding ENIs.
+For `SubstrateHomeLocal` keep the existing local-kubeconfig behaviour.
+
+### Deliverables
+
+- Change `runCascadeDrainPhase` signature to take `Substrate`.
+- Wrap `K8sDrain.drainAwsAffectingK8sResources` in
+  `withSubstrateKubectlEnvironment` so kubectl + `aws eks get-token`
+  receive the substrate's `KUBECONFIG` + `AWS_*` env.
+- The cascade call site at
+  `runNativeDeleteCascade` passes through the per-stack substrate
+  already in scope.
+- Treat `DrainSkipped` on the AWS substrate as a hard failure (the EKS
+  cluster is the source of the resources that the per-run destroys will
+  fail to delete; skipping the drain guarantees the failure). On the
+  home substrate `DrainSkipped` remains success-with-reason per Sprint
+  4.15.
+- Add a unit test that asserts `runCascadeDrainPhase SubstrateAws` sets
+  the EKS kubeconfig path via the bracket.
+
+### Validation
+
+1. `prodbox check-code` exit 0.
+2. `prodbox test unit` passes (with the new kubeconfig-selection test).
+3. `prodbox test integration cli` 28/28.
+4. **Live AWS-substrate re-verification**: a full
+   `prodbox test all --substrate aws` cycle (or alternatively
+   provisioning aws-eks then running `prodbox rke2 delete --cascade
+   --yes`) completes cleanly. The cascade narration emits
+   `drain (substrate=aws)` followed by `per-run destroys`, and the
+   destroys succeed without `DependencyViolation` on subnet deletion.
+
+### Remaining Work
+
+Code-owned work landed May 28, 2026: `runCascadeDrainPhase` now takes
+`Substrate`; for `SubstrateAws` it builds `KUBECONFIG=<aws-eks-test
+kubeconfig>` + `AWS_*` from `settings.aws`; for `SubstrateHomeLocal` it
+keeps the existing local-kubeconfig path. `DrainSkipped` on
+`SubstrateAws` is now a hard failure with an explanatory message
+naming `DependencyViolation` as the downstream symptom. The cascade
+caller infers the substrate from per-run residue via the new pure
+helper `inferCascadeSubstrate` (any AWS per-run stack reporting
+`ResiduePresent` → `SubstrateAws`; otherwise `SubstrateHomeLocal`). 6
+new unit tests in `test/unit/Main.hs::"Sprint 4.17.b cascade substrate
+inference"` pin every combination. Live AWS-substrate verification
+(full `prodbox test all --substrate aws` cycle completes cleanly
+including the cascade) is the closure gate. The
+`Prodbox.PublicEdge.withSubstrateKubectlEnvironment` helper is not used
+here because `K8sDrain.K8sDrainEnv` takes an explicit env-var list
+rather than mutating process env via `setEnv`; the substrate-aware env
+construction lives in the new `buildDrainEnvironment` helper instead.
 
 ## Sprint 4.18: Remove Remaining .prodbox-state Artifacts and Final Lint 📋
 

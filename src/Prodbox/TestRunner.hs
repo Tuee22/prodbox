@@ -335,7 +335,47 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
           publicEdgeReadyAttempts
           publicEdgeReadyDelayMicroseconds
       ]
+        ++ awsSubstrateBootstrapActions repoRoot environment suitePlan
     else []
+
+-- | AWS-substrate-specific bootstrap: provision the per-run AWS Pulumi
+-- stacks so substrate-aware validations (@charts-vscode --substrate aws@,
+-- @public-edge --substrate aws@, the cert-manager DNS01 ACME
+-- @ClusterIssuer@) can reach EKS, read the Route 53 subzone's hosted-zone
+-- ID, and talk to the validation EC2 nodes. The substrate-platform install
+-- in 'Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime'
+-- documents both as preconditions; the test harness owns the provisioning
+-- per [CLAUDE.md "AWS Substrate Provisioning Ownership"](../../CLAUDE.md).
+-- Idempotent: every @prodbox pulumi <stack>-resources@ entrypoint uses
+-- Pulumi's standard @up@ semantics, so repeated calls converge.
+--
+-- The canonical validation order (@canonicalNativeValidations@ in
+-- 'Prodbox.TestPlan') puts @charts-vscode@ first and @aws-eks@ /
+-- @ha-rke2-aws@ much later. On the home substrate that ordering is fine
+-- because @charts-vscode@ runs against the local cluster brought up by
+-- 'supportedRuntimeBootstrapActions'. On the AWS substrate
+-- @charts-vscode@ needs EKS already provisioned, so we provision aws-eks
+-- (and aws-test for the HA-RKE2 validation) here in the bootstrap rather
+-- than waiting for the validation-driven path.
+awsSubstrateBootstrapActions
+  :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
+awsSubstrateBootstrapActions repoRoot environment suitePlan =
+  case nativeSubstrate suitePlan of
+    SubstrateHomeLocal -> []
+    SubstrateAws ->
+      [ runNativeCliCommandForExitCode
+          repoRoot
+          environment
+          ["pulumi", "aws-subzone-resources"]
+      , runNativeCliCommandForExitCode
+          repoRoot
+          environment
+          ["pulumi", "eks-resources"]
+      , runNativeCliCommandForExitCode
+          repoRoot
+          environment
+          ["pulumi", "test-resources"]
+      ]
 
 -- | Post-success suite restore actions: reconcile the local cluster
 -- and re-deploy the canonical chart set so the operator's substrate

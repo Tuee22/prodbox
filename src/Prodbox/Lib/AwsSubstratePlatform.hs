@@ -59,7 +59,7 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
-  , acmeRuntimeManifest
+  , acmeRuntimeManifestWith
   , ensureGatewayImagesForSubstrate
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
@@ -83,6 +83,7 @@ import Prodbox.Lib.EksImageMirror
   , mirrorJobName
   , mirrorJobNamespace
   )
+import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ConfigFile (..)
@@ -453,46 +454,51 @@ waitForCertManagerDeployments = go deployments
 ensureAwsSubstrateAcmeRuntime :: FilePath -> ValidatedSettings -> String -> String -> IO ExitCode
 ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
   writeOutputLine "Applying AWS-substrate ACME ClusterIssuer + Route 53 DNS01 credentials"
-  let manifest = acmeRuntimeManifest SubstrateAws settings prodboxId labelValue
-      -- Wrap the manifest list in a `v1/List` so `kubectl apply -f` accepts
-      -- the file (kubectl does not accept bare JSON arrays at the top level).
-      -- Matches the home-substrate pattern in
-      -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
-      manifestList =
-        object
-          [ "apiVersion" .= ("v1" :: String)
-          , "kind" .= ("List" :: String)
-          , "items" .= manifest
-          ]
-  withTempJsonFile
-    repoRoot
-    "aws-substrate-acme-runtime"
-    (encode manifestList)
-    ( \manifestPath -> do
-        applyExit <-
-          runStreaming
-            Subprocess
-              { subprocessPath = "kubectl"
-              , subprocessArguments = ["apply", "-f", manifestPath]
-              , subprocessEnvironment = Nothing
-              , subprocessWorkingDirectory = Just repoRoot
-              }
-        case applyExit of
-          ExitFailure _ -> pure applyExit
-          ExitSuccess ->
-            runStreaming
-              Subprocess
-                { subprocessPath = "kubectl"
-                , subprocessArguments =
-                    [ "wait"
-                    , "--for=condition=Ready"
-                    , "clusterissuer/letsencrypt-http01"
-                    , "--timeout=300s"
-                    ]
-                , subprocessEnvironment = Nothing
-                , subprocessWorkingDirectory = Just repoRoot
-                }
-    )
+  hostedZoneResult <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
+  case hostedZoneResult of
+    Left err -> failWith err
+    Right hostedZoneId -> do
+      let manifest =
+            acmeRuntimeManifestWith SubstrateAws settings hostedZoneId prodboxId labelValue
+          -- Wrap the manifest list in a `v1/List` so `kubectl apply -f` accepts
+          -- the file (kubectl does not accept bare JSON arrays at the top level).
+          -- Matches the home-substrate pattern in
+          -- `Prodbox.CLI.Rke2::withTemporaryJsonManifest`.
+          manifestList =
+            object
+              [ "apiVersion" .= ("v1" :: String)
+              , "kind" .= ("List" :: String)
+              , "items" .= manifest
+              ]
+      withTempJsonFile
+        repoRoot
+        "aws-substrate-acme-runtime"
+        (encode manifestList)
+        ( \manifestPath -> do
+            applyExit <-
+              runStreaming
+                Subprocess
+                  { subprocessPath = "kubectl"
+                  , subprocessArguments = ["apply", "-f", manifestPath]
+                  , subprocessEnvironment = Nothing
+                  , subprocessWorkingDirectory = Just repoRoot
+                  }
+            case applyExit of
+              ExitFailure _ -> pure applyExit
+              ExitSuccess ->
+                runStreaming
+                  Subprocess
+                    { subprocessPath = "kubectl"
+                    , subprocessArguments =
+                        [ "wait"
+                        , "--for=condition=Ready"
+                        , "clusterissuer/letsencrypt-http01"
+                        , "--timeout=300s"
+                        ]
+                    , subprocessEnvironment = Nothing
+                    , subprocessWorkingDirectory = Just repoRoot
+                    }
+        )
 
 -- | Orchestrate the full AWS-substrate platform install: AWS Load
 -- Balancer Controller, Envoy Gateway, cert-manager, and the

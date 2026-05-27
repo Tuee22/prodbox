@@ -38,9 +38,15 @@ exactly one of these classes. Cleanup ownership is defined per class.
 
 The K8s drain phase plus the postflight tag sweep together make
 classes 2–5 leak-safe. The drain runs **before** any Pulumi destroy so
-the controllers are still alive to unwind their AWS-side state; the
-sweep runs **after** the destroys and fails the command with the leak
-list when anything cluster-tagged survives.
+the controllers are still alive to unwind their AWS-side state (see
+§5b for the canonical cascade order); the sweep runs **after** the
+destroys and fails the command with the leak list when anything
+cluster-tagged survives. On the AWS substrate the drain must target
+the EKS API server, not the local RKE2 cluster — see §5b
+"Substrate-aware drain". A drain that runs against the wrong cluster
+silently skips the in-cluster controller cleanup, and the subsequent
+Pulumi destroy fails with `DependencyViolation` on subnet deletion as
+ENIs / ALBs / EBS volumes block the underlying network teardown.
 
 ## 2. State-Lifetime Rule
 
@@ -282,24 +288,38 @@ backend / credentials are still up at the point of refusal).
 ### 5b. Canonical Cascade Order
 
 `prodbox rke2 delete --cascade --yes` orchestrates these phases in order. The order is
-deliberate: MinIO-tracked AWS resources are released **before** the local cluster is
-uninstalled, so the cascade always reaches AWS through a still-reachable Pulumi
-backend.
+deliberate and matches §1: the K8s drain runs **before** any per-run Pulumi destroy so
+the in-cluster controllers (AWS Load Balancer Controller, EBS CSI driver,
+cert-manager) are still alive to unwind their AWS-side state. Only then does Pulumi
+delete the substrate (VPC, subnets, EKS cluster), at which point the controller-owned
+ENIs / ALBs / EBS volumes are already gone and Pulumi's deletes have no dependencies
+to trip on.
 
 | # | Phase | What it does | Failure mode |
 |---|---|---|---|
 | 1 | Confirm MinIO reachable | `<stack>ResidueStatus` queries the MinIO backend for each per-run stack. If MinIO is reachable, the result is `ResidueAbsent` or `ResiduePresent`; if unreachable, the result is `ResidueUnreachable` and the cascade treats per-run residue as absent (the per-run state died with the cluster, per the per-run lifetime class). | Misclassification is impossible because `ResidueUnreachable` for a per-run stack is by definition the same outcome as "the state is gone". |
-| 2 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket fills `aws.*` from `aws_admin_for_test_simulation.*` when `aws.*` is empty and restores-to-empty on exit (success or exception). | Empty `aws.*` no longer refuses the destroy; the bracket fills it transparently. |
-| 3 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 4 — the controllers can't have created new AWS resources after the cluster died. | `DrainFailed` is the only failure path; `DrainSkipped` is success-with-reason. |
+| 2 | K8s drain | Delete LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs so the in-cluster controllers unwind their AWS-side state (Sprint 4.12). On the AWS substrate the drain MUST target the EKS API server, not the local RKE2 cluster — see "Substrate-aware drain" below. If the K8s API is unreachable, this phase emits `DrainSkipped` and the cascade proceeds to phase 3 only on the home substrate (where the absent cluster cannot have created new AWS resources). On the AWS substrate, `DrainSkipped` is a hard failure because the EKS cluster is the source of the resources Pulumi is about to fail to delete. | `DrainFailed` is the only failure path on the home substrate; `DrainSkipped` is success-with-reason there. On the AWS substrate, both `DrainSkipped` and `DrainFailed` are hard-failure paths. |
+| 3 | Per-run Pulumi destroys | For each per-run stack reporting `ResiduePresent`, run `pulumi destroy` against MinIO inside `withMaterializedOperationalCreds` (Sprint 4.17). The bracket fills `aws.*` from `aws_admin_for_test_simulation.*` when `aws.*` is empty and restores-to-empty on exit (success or exception). Because phase 2 already drained the controller-owned resources, every per-run subnet / VPC / cluster delete now has no live ENI / ALB / EBS dependency. | Empty `aws.*` no longer refuses the destroy; the bracket fills it transparently. `DependencyViolation` from AWS indicates phase 2 did not in fact drain (most often: drain ran against the wrong kubeconfig). |
 | 4 | RKE2 uninstall | `/usr/local/bin/rke2-uninstall.sh` under the lifecycle-local quiet path. Removes substrate + managed kubeconfig. `.data/` is preserved. | Non-zero uninstall exit is reported through `summarizeRke2DeleteFailure`. |
 | 5 | Postflight cluster-tag sweep | `discoverClusterTaggedAwsResources` against the AWS Resource Tagging API. Any surviving cluster-tagged resource fails the command with a structured leak list and the per-class remedy command. | Non-empty leak list is the hard-failure case. |
 
-The cascade order replaces the pre-Sprint-4.17 sequence (drain → destroys → uninstall),
-which had drain before destroys. The new order trades a small amount of "destroys may
-race the in-cluster LB controller's last cleanup" for the explicit guarantee that the
-operator-named cascade phrase "releases AWS resources before deleting the cluster"
-matches what actually happens. The postflight tag sweep is the backstop for any
-controller-created AWS resources that fail to drain in time.
+**Substrate-aware drain.** The drain phase (#2) MUST use the substrate's own
+kubeconfig — `KUBECONFIG=/etc/rancher/rke2/rke2.yaml` for `SubstrateHomeLocal`,
+`KUBECONFIG=<substrate-kubeconfig-path>` for `SubstrateAws`. The canonical bracket
+is `Prodbox.PublicEdge.withSubstrateKubectlEnvironment` which also sets the
+`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` /
+`AWS_SESSION_TOKEN` env vars that `aws eks get-token` (the EKS kubeconfig's exec
+provider) needs to authenticate. A drain phase that hard-codes the local-cluster
+kubeconfig on the AWS substrate walks the wrong cluster, reports nothing to drain,
+and lets phase 3 fail with `DependencyViolation` on subnet deletion.
+
+This is the doctrine-canonical order. The pre-Sprint-4.17.a sequence
+(destroys → drain) inverted phases 2 and 3 and was harmless on the home substrate
+(no in-cluster controllers create AWS resources) but fatal on the AWS substrate
+(LBC / EBS CSI controllers create ENIs / ALBs / EBS volumes; destroying the EKS
+cluster before draining them produces orphan resources that block subnet deletion).
+The postflight tag sweep (phase 5) is the backstop for any controller-created AWS
+resources that escape the drain, not a substitute for running the drain first.
 
 ## 6. Mandatory Postflight Tag Sweep
 

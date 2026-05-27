@@ -29,6 +29,219 @@ govern this plan suite.
 
 ## Closure Status
 
+**May 28, 2026 — AWS-substrate cascade `DependencyViolation` failure exposes
+doctrine-vs-code inversion in `prodbox rke2 delete --cascade --yes`.**
+A live cleanup attempt on Bathurst (Phase 7's AWS-substrate residue from
+killed `prodbox test all --substrate aws` runs) failed mid-way through the
+per-run Pulumi destroy phase with:
+
+```
+aws:ec2:Subnet publicSubnet1 deleting (1200s) error:
+DependencyViolation: The subnet 'subnet-00db2adeb400ca61f' has dependencies
+and cannot be deleted
+```
+
+Root-cause analysis identified two independent issues that share the same
+fix shape, both originating in the original Sprint 4.17 cascade-order
+landing (May 23, 2026):
+
+1. **Cascade phase order inverted vs. doctrine canonical order.** The
+   doctrine §1 prose at
+   [`lifecycle_reconciliation_doctrine.md`](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+   states "the drain runs **before** any Pulumi destroy so the controllers
+   are still alive to unwind their AWS-side state." However the doctrine
+   §5b table that Sprint 4.17 added (and that the code implements)
+   inverted the order to `destroys → drain`. On the home substrate the
+   inversion is harmless because no in-cluster controllers create AWS
+   resources; on the AWS substrate the inversion is fatal because AWS Load
+   Balancer Controller + EBS CSI driver are alive on the EKS cluster when
+   per-run destroys begin, leaving orphan ENIs that block subnet deletion.
+   The doctrine §5b table and §1 prose are updated May 28, 2026 to require
+   the canonical `drain → destroys` order; the code correction is
+   scheduled as **Sprint 4.17.a** in
+   [`phase-4-lifecycle-canonical-paths.md`](phase-4-lifecycle-canonical-paths.md).
+
+2. **K8s drain phase hardcodes the local-cluster kubeconfig.**
+   `src/Prodbox/CLI/Rke2.hs::runCascadeDrainPhase` (lines 840–855) sets
+   `KUBECONFIG=/etc/rancher/rke2/rke2.yaml` unconditionally. On the AWS
+   substrate the drain consequently walks the local cluster's namespaces
+   (which contain no AWS LoadBalancer Services / ALB Ingresses /
+   Delete-reclaim PVCs), reports nothing to drain, and lets the per-run
+   destroys hit the same `DependencyViolation` because the EKS-side
+   controllers' ENIs are never released. The fix wraps the drain call in
+   `Prodbox.PublicEdge.withSubstrateKubectlEnvironment` (already exported
+   from `src/Prodbox/PublicEdge.hs` from earlier Sprint 7.5.c.v follow-up
+   work) for `SubstrateAws`. Scheduled as **Sprint 4.17.b** blocked on
+   Sprint 4.17.a so the substrate-aware drain runs in the doctrine-
+   canonical position. The
+   [`aws_integration_environment_doctrine.md` §5.5](../documents/engineering/aws_integration_environment_doctrine.md)
+   section is added May 28, 2026 to document the substrate-aware drain
+   requirement.
+
+Both Sprints 4.17.a and 4.17.b landed code-side May 28, 2026 and are now
+`Done` on their owned surfaces. `runNativeDeleteCascade` reorders to the
+doctrine-canonical `confirm-MinIO → drain → per-run destroys → uninstall
+→ sweep` with `cascadeOrderNarration` exposed as a stable test pin (5 new
+unit tests pin the order). `runCascadeDrainPhase` now takes a `Substrate`
+argument and builds a substrate-aware env-var list via new helper
+`buildDrainEnvironment`; the cascade infers substrate from per-run
+residue via new pure helper `inferCascadeSubstrate` (6 new unit tests
+cover every substrate-inference combination). `DrainSkipped` on the AWS
+substrate is now a hard failure with an explanatory message. Test count:
+554/554 (up from 543). The corresponding rows in
+[`legacy-tracking-for-deletion.md`](legacy-tracking-for-deletion.md) are
+moved from `Pending Removal` to `Completed`. The
+[`cli_command_surface.md`](../documents/engineering/cli_command_surface.md)
+`prodbox rke2 delete --cascade` section is updated to document the
+corrected phase order.
+
+**Live verification on the home substrate closed May 28, 2026** with a
+clean `prodbox rke2 delete --cascade --yes` run on the Bathurst host
+after operator cleanup. The cascade narration emitted the canonical
+`confirm-MinIO → drain → per-run destroys → uninstall → sweep` order
+verbatim; `inferCascadeSubstrate` correctly returned `SubstrateHomeLocal`
+because no AWS per-run residue was present
+(`aws-eks=absent, aws-eks-subzone=absent, aws-test=absent`); the local
+RKE2 substrate was uninstalled cleanly with `.data/` preserved; the
+postflight tag sweep reported `clean (no cluster-tagged or
+prodbox-owned AWS residue)`. The orphan AWS resources from the May
+27/28 in-flight runs (3 `aws-test-node-*` EC2 instances,
+`aws-eks-test-vpc`, `aws-test-vpc`, the one orphan ENI in
+`subnet-00db2adeb400ca61f`) were cleaned up by the operator-driven
+procedure documented in the approved plan file, in dependency order:
+terminate instances → delete orphan ENI → delete subnets → detach +
+delete IGW → delete non-main route tables and non-default security
+groups → delete VPCs. EBS volumes auto-deleted with the root-volume
+flag on instance termination. Final AWS state: zero non-default VPCs,
+zero EC2 instances, zero ENIs, zero ELBs, zero EKS clusters.
+
+Live re-verification on the AWS substrate (full
+`prodbox test all --substrate aws` cycle completes cleanly including
+the cascade) remains the operator-driven closure gate for both Sprint
+4.17.a and 4.17.b on the AWS path. The home-substrate gate is satisfied.
+
+This is a distinct leak class from the May 27 "Pulumi state lost across
+`rke2 delete + rke2 reconcile`" failure documented below — that produced
+silent residue; this one produces a hard AWS API error mid-destroy. Both
+share the structural root cause that the cascade had no path to drain
+EKS-side K8s resources before destroying the EKS cluster.
+
+The orphan AWS resources from the May 27/28 runs (3 `aws-test-node-*` EC2
+instances, `aws-eks-test-vpc` + `aws-test-vpc` plus their orphan ENIs)
+are tracked as operator-driven cleanup. The cleanup procedure is
+operator-driven (`aws ec2 describe-network-interfaces` to identify ENI
+holders, then targeted `aws elbv2 delete-load-balancer` /
+`aws ec2 terminate-instances` / `aws ec2 delete-network-interface` /
+`aws ec2 delete-subnet` / `aws ec2 delete-vpc` in dependency order). This
+one-time deviation from CLAUDE.md's "harness is the exclusive AWS owner"
+rule is the bounded escape hatch the doctrine doesn't currently provide
+for cases where Pulumi state has diverged from live AWS state.
+
+**May 27, 2026 — Phase 2/3 live-exercise progress (`prodbox test all` home substrate).**
+Three latent code bugs surfaced by the live `prodbox test all` cycle on Bathurst and were
+fixed in-session, restoring the canonical-suite path past the previous closure gates:
+
+1. **`BS.readFile "/dev/urandom"` hang in
+   `src/Prodbox/CLI/Rke2.hs::resolveGatewayMinioCredentials`** (Sprint 2.19 follow-up):
+   `BS.readFile` reads until EOF, which never comes from the infinite character device, so
+   `prodbox rke2 reconcile` blocked indefinitely on the gateway-minio credential bootstrap
+   when the `gateway-minio-creds` Secret was absent. Fix: open the handle with
+   `openBinaryFile` and `BS.hGet handle 34` to read exactly the 34 bytes the suffix +
+   password derivation needs. Restored 28/28 integration cli/env passing (was 25/28 due to
+   ZeroSSL, Percona-mirror, and `rke2 reconcile + delete` tests timing out at ~70s on the
+   hung urandom read).
+2. **UTF-8 decode failure in the gateway daemon Pod** (Sprint 2.20/2.22 follow-up):
+   chart-rendered `config.dhall` contains `§` (`0xC2 0xA7`) in the Sprint 2.22 comment
+   block, which fails Dhall decoding under the container's default C/POSIX locale.
+   Fix: `setLocaleEncoding utf8` at the top of `src/Prodbox/App.hs::main`
+   (defense-in-depth at the binary boundary), plus `ENV LANG=C.UTF-8` and
+   `ENV LC_ALL=C.UTF-8` in `docker/gateway.Dockerfile` and `docker/prodbox.Dockerfile`
+   (defense-in-depth at the container boundary). With this fix the three gateway daemon
+   Pods (`gateway-node-a/b/c`) reach `Running 1/1` with 0 restarts and successfully emit
+   `gateway_starting`, `orders_loaded`, `rest_server_listening`,
+   `gateway_ownership_event_emitted`, `peer_listener_listening`, and
+   `dns_write_succeeded` against the live Route 53 zone.
+3. **`gateway-daemon` validation rendered JSON-format config** (Sprint 2.20 follow-up):
+   `src/Prodbox/TestValidation.hs::renderGatewayValidationConfig` /
+   `renderGatewayValidationOrders` still emitted JSON, which the post-Sprint-2.20 Dhall-
+   only daemon decoder rejects with `Invalid input: unexpected '"'`. Fix: replace both
+   renderers with `renderGatewayValidationConfigDhall` / `renderGatewayValidationOrdersDhall`
+   emitting the canonical `{ schemaVersion = 1, boot = {…}, live = {…} }` shape that
+   matches `Prodbox.Gateway.Settings.DaemonConfigDhall`; rename temp file extensions from
+   `.json` to `.dhall`; drop unused `encode`/`object`/`.=` imports from `Data.Aeson`. New
+   `dhallText` helper escapes string literals safely. The live re-run gate for the
+   gateway-daemon validation remains.
+
+The `prodbox test all` run-3 cycle (~1h32m) closed the Phase 2/3 live gates for every
+non-gateway-daemon canonical validation on the home substrate. Validations recorded
+`body exit=ExitSuccess` for `charts-vscode`, `charts-api`, `charts-websocket`,
+`admin-routes`, `public-dns`, `dns-aws`, `aws-iam`, `aws-eks`, `pulumi`, and
+`ha-rke2-aws`. Only `gateway-daemon` failed, due to the JSON-config bug above.
+
+**Run-4 (~1h35m) closed the gateway-daemon validation live too**, after the
+JSON→Dhall fix landed. Final run-4 validation roll-up: every named canonical
+validation on the home substrate recorded `body exit=ExitSuccess` —
+`charts-vscode`, `charts-api`, `charts-websocket`, `admin-routes`, `public-dns`,
+`dns-aws`, `aws-iam`, `aws-eks`, `pulumi`, `ha-rke2-aws`, `gateway-daemon`,
+`gateway-pods`, `gateway-partition`, `charts-platform`, `charts-storage`, and
+`lifecycle` (the destructive `rke2 delete + rke2 reconcile` cycle inside one
+run). The only failing validation was `keycloak-invite`, which is the documented
+Sprint 8.5 follow-up that requires live Keycloak credential-setup form-structure
+capture (operator-driven). Postflight cleared the operational `aws.*` block and
+deleted the dedicated IAM user.
+
+With run-4 closed, the home-substrate row in the Substrate Parity table below is
+✅ full canonical suite less keycloak-invite. The remaining live closure work
+narrows to: (a) Sprint 7.5.c.v's AWS-substrate canonical-suite re-run; (b)
+Sprint 8.5/8.6's live OIDC form-structure capture; (c) Sprint 4.10's live
+AwsSesStack admin-credential migrate-backend exercise; (d) Sprint 4.13's
+operator-driven `prodbox nuke` total-teardown exercise; (e) Sprint 4.16's
+live source-of-truth swap regression against MinIO/S3 backends. The home-
+substrate Sprints 2.19/2.21/2.22/3.14/4.11/4.12/4.15/4.17 live gates are
+satisfied on this host.
+
+The master-seed acquisition on the live gateway daemon emits
+`master_seed_unavailable` with a 403 from MinIO (the `prodbox-gateway-…` user can
+authenticate but the master-seed object HEAD returns Forbidden). Per
+[secret_derivation_doctrine.md §8](../documents/engineering/secret_derivation_doctrine.md),
+the daemon falls back to structured-503 responses on `/v1/secret/derive` rather than
+crashing — the contract is preserved. Full closure of Sprint 2.19 requires diagnosing
+why the dedicated `prodbox-gateway` MinIO user does not have the HeadObject grant the
+master-seed read needs and is tracked as a Sprint 2.19 follow-up.
+
+**Run-5 (AWS substrate, ~50m) revealed an operator-driven config gap on the
+Sprint 7.5.c.v live path.** `prodbox test all --substrate aws` provisioned the
+EKS cluster + Harbor + MinIO + Percona + Envoy Gateway + cert-manager + AWS LBC
++ workload charts and reached `CLASSIFICATION=ready-for-external-proof`, but the
+first AWS-substrate canonical validation (`charts-vscode --substrate aws`) failed
+immediately with `substrateHostedZoneId: aws_substrate.hosted_zone_id is empty;
+--substrate aws runs require aws_substrate.hosted_zone_id per
+development_plan_standards.md § M (no fallback)`. This is by design — the
+no-fallback contract requires the operator to supply the AWS subzone's hosted
+zone ID in `prodbox-config.dhall` before AWS-substrate validations can run.
+
+The operator-driven workflow to close this gap on a fresh AWS substrate run is:
+(1) provision the subzone once via `prodbox pulumi aws-subzone-resources --yes`;
+(2) extract the hosted zone ID from `pulumi stack output --show-secrets
+hosted_zone_id` on the `aws-eks-subzone` stack; (3) set
+`aws_substrate.hosted_zone_id = "Z…"` in `prodbox-config.dhall` and refreeze; (4)
+re-run `prodbox test all --substrate aws`. The harness postflight destroys the
+subzone with the rest of the per-run stacks, so the ID changes between runs —
+this manual step is required each time. (A code follow-up to read the subzone
+hosted zone ID from a stack-output cache when config is empty is out of scope
+for run-5 and would need explicit doctrine approval to override the no-fallback
+contract in [development_plan_standards.md § M](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).)
+
+The postflight cleanup left residual AWS resources (`aws-eks-test-vpc`,
+`aws-test-vpc`, and 3 `aws-test-node-*` EC2 instances) on the operator AWS account
+after `prodbox pulumi eks-destroy --yes` and `prodbox pulumi aws-test-destroy --yes`
+ran in the postflight sweep. This matches the file-existence residue-predicate
+failure class that Sprint 4.16's source-of-truth swap is meant to close — when the
+in-cluster MinIO backend's stack snapshot was lost across the rke2 wipe between
+runs, the per-stack destroy reported "nothing to destroy" while the underlying AWS
+resources persisted. The residue is recorded here as a known follow-up for Sprint
+4.16's live closure rather than a regression in the destroy code.
+
 **May 24, 2026 — Phase 0/1/2/3 reopened for the pure-Dhall config doctrine.** A new SSoT
 [config_doctrine.md](../documents/engineering/config_doctrine.md) consolidates every
 `prodbox` binary's configuration sourcing to a single Dhall file at `--config <path>`,
@@ -465,7 +678,7 @@ A sprint can move to `Done` only when all of the following are true:
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ Done (Sprints 1.1–1.28). Sprint 1.28 (May 24, 2026) closed the `dhall` allow-newer + env-var-read lint rule contract: existing `allow-newer: *:base, *:template-haskell` continues to satisfy the `dhall ^>=1.42` transitive deps under GHC 9.14.1; `src/Prodbox/CheckCode.hs::checkEnvVarConfigReads` wired into the doctrine-alignment check; `PRODBOX_LOG_LEVEL` / `PRODBOX_CONFIG_PATH` / `PRODBOX_PORT` env-var reads removed from `src/Prodbox/Gateway.hs`; daemon-lifecycle tests updated to the new sole-CLI-source contract. | [phase-1-runtime-cli-aws-foundations.md](phase-1-runtime-cli-aws-foundations.md) |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ Done (Sprints 2.1–2.16); ✅ Sprint 2.17 (native Haskell HTTP client replaces curl on the host-side CLI surface, May 23, 2026; TestValidation + RKE2-installer curl callers remain on the ledger as Sprint 4.18 follow-up); ✅ Sprint 2.18 (foundational host-side `host firewall gateway-restrict --port PORT` subcommand + pure rule helpers, May 23, 2026; chart-side NodePort + reconcile wiring land with Sprint 2.19); ✅ Sprint 2.20 (May 24, 2026 — full closure: `Prodbox.Gateway.Types.parseDaemonConfig` removed from the codebase; `Prodbox.Gateway.Settings.loadDaemonConfig` decodes Dhall exclusively via `Dhall.inputFile auto`; `renderGatewayConfigTemplate` emits Dhall (operator `gateway config-gen` produces `.dhall`); all JSON fixtures across `test/unit/Main.hs`, `test/integration/CliSuite.hs`, `test/daemon-lifecycle/Main.hs` migrate to Dhall; goldens updated; 543/543 unit tests, 28/28 integration cli, 28/28 integration env, 14/14 daemon-lifecycle); 🔄 Sprint 2.21 (May 24, 2026 — `fsnotify ^>=0.4` added; `configFileWatchLoop` worker watches the daemon's `--config` parent directory and feeds `envReloadSignals`; SIGHUP handler removed; BootConfig changes drain-and-exit per doctrine §8; `forbidFsnotify`/`forbidInotify`/forbid-mtime lint rules and matching markers removed; daemon-lifecycle stanza 14/14, live operator exercise gates closure); 🔄 Sprint 2.22 (May 24, 2026 — full code-owned chart-side closure: `configmap-config.yaml` + `configmap-orders.yaml` render Dhall; `secret-aws-credentials.yaml` + `secret-minio-creds.yaml` ship Dhall fragments at `/etc/gateway/secrets/{aws,minio}.dhall` (MinIO credentials persist across upgrades via `lookup` + `randAlphaNum`); `deployments.yaml` removes all `AWS_*` / `MINIO_*` / `GATEWAY_NODE_ID` env vars and mounts the new Dhall Secrets at the canonical paths. `DaemonConfigDhall` extended with `aws_creds` / `minio_creds` sub-records; `DaemonConfig` carries `daemonAwsCreds` / `daemonMinioCreds`; `writeDnsRecord` projects credentials into the aws CLI subprocess env instead of inheriting Pod env. Standalone live decode verified: `prodbox gateway start --config <rendered>.dhall --foreground` follows Dhall imports for aws/minio/orders and starts the daemon. Live RKE2 reconcile remains as the closure gate.); 🔄 Sprint 2.19 (master-seed wiring landed May 24, 2026: `Prodbox.Gateway.Daemon.acquireInitialMasterSeed` retrieves the seed at startup via `daemonMinioCreds`; `envMasterSeed` caches it on `DaemonEnv`; `/v1/secret/derive?context=<ctx>` is live-wired and returns a typed `DeriveResponse` (or structured 503 if seed unavailable); live verified on this host that the 503 fallback path fires correctly when MinIO is absent. **May 24, 2026 later session — reconcile/delete firewall wiring landed**: new `defaultGatewayNodePort = 30443` constant + `runHostFirewallGatewayRestrictOptional` (treats absent iptables and unprivileged caller as success-with-reason) in `Prodbox.Host`; `applyChartDeployWithPostHook` / `applyChartDeleteWithPostHook` chain restrict/unrestrict after gateway chart deploy/delete; safety-net unrestrict added to `runNativeDelete` and `runNativeDeleteCascade` step 4. **May 24, 2026 still-later session — MinIO endpoint plumbing + bucket bootstrap landed**: new `boot.minio_endpoint_url :: Maybe Text` sibling field on `DaemonBootDhall`; matching `daemonMinioEndpointUrl :: Maybe String` on `DaemonConfig`; new `Prodbox.Secret.MasterSeed.minioMasterSeedConfigFromUrl` that accepts a full endpoint URL; `acquireInitialMasterSeed` prefers the Dhall-bound endpoint and falls back to `127.0.0.1:9000` only for non-chart smoke runs. `charts/gateway/templates/configmap-config.yaml` renders the endpoint via `{{ .Values.minio.endpointUrl }}` (default `http://minio.prodbox.svc.cluster.local:9000` in `values.yaml`). New reconcile step `ensureGatewayMinioBucket` deploys a one-shot Job in the `minio` namespace that runs `mc mb --ignore-existing local/prodbox`. Transitional credential sourcing: `charts/gateway/templates/secret-minio-creds.yaml` resolves MinIO root credentials via cross-namespace Helm `lookup "v1" "Secret" "prodbox" "minio"` so the daemon authenticates as root until the dedicated `prodbox-gateway` IAM user + scoped policy land. Sprint 2.20 closure also cleared seven unused legacy JSON-parser helpers from `Prodbox.Gateway.Types` (`validateIntervals` / `validateMaxSkew` / `validateDrainDeadline` / `parseDnsWriteGate` / `rejectForbiddenCredKeys` / `readOptionalFloat` / `requireObject` / `readOptionalInt` / `readOptionalString` / `parseEventKeys` / `hasSuffix`). Validation: `prodbox check-code` exit 0; `prodbox test unit` 543/543; `prodbox test integration cli` 28/28; `prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14. Live RKE2 reconcile + gateway chart deploy + end-to-end master-seed exercise + dedicated `prodbox-gateway` IAM user/policy remain as the closure gate) — replaces ⏳ Sprint 2.19 (pure `Prodbox.Secret.Derive` landed May 23, 2026 + wire-contract layer `Prodbox.Secret.Wire` / typed `Prodbox.Gateway.Client.derive` / `ensureNamespace` / structured-503 daemon route stubs landed May 23, 2026 + chart-side scaffolding `charts/gateway/templates/secret-minio-creds.yaml` + `service-nodeport.yaml` + gateway pod `MINIO_*` env wiring landed May 23, 2026 + symmetric `runHostFirewallGatewayUnrestrict` helper + `prodbox host firewall gateway-unrestrict` subcommand landed May 23, 2026. **`Prodbox.Secret.MasterSeed` foundation landed May 23, 2026 later session** — new module shells out to `aws s3api` via `Prodbox.Service.runMinIOWithEnv` (no new `amazonka-s3` / `minio-hs` dep needed today); exposes `MinioMasterSeedConfig`, `MasterSeedError` ADT (6 constructors), `ensureMasterSeed` with `If-None-Match: *` concurrent-creation guard + post-PUT GET re-read, `generateFreshSeedBytes` (reads 32 bytes from `/dev/urandom`), pure `awsS3Api{Head,Get,Put}Args` helpers + AWS-CLI error-blob recognizers; 14 new unit tests pin the wire shape (test count 533/533, up from 519). MinIO IAM bootstrap + live daemon endpoint bodies (replacing the structured 503 stubs with `ensureMasterSeed` ∘ `derive` and the per-context `ensure-namespace` inventory) + automatic reconcile/delete firewall-rule wiring remain as coupled deliverables, **re-scoped May 24, 2026 to source MinIO endpoint + creds via the new pure-Dhall config doctrine** ([config_doctrine.md](../documents/engineering/config_doctrine.md)); the `MINIO_ENDPOINT_URL` env-var addition attempted earlier was rolled back the same day, and the remaining Sprint 2.19 deliverables block on Sprints 2.20/2.21/2.22 (daemon Dhall settings module, file-watch reload, chart-side Dhall ConfigMap + Secret-mounted credentials)); 📋 Sprint 2.20 (daemon Dhall settings module — new `src/Prodbox/Gateway/Settings.hs` mirroring the host `Settings.hs` pattern, replacing `parseDaemonConfig`'s JSON path; blocked on Sprint 0.8); 📋 Sprint 2.21 (file-watch reload trigger with drain-and-exit on boot-field changes — adds the file-watch library, replaces the SIGHUP handler, implements the BootConfig drain path; blocked on Sprint 2.20); 📋 Sprint 2.22 (chart-side Dhall ConfigMap + Secret-mounted credentials — rewrites `charts/gateway/templates/configmap-{config,orders}.yaml` to render Dhall content, adds the `gateway-secrets-*` Secrets mounted at `/etc/gateway/secrets/`, removes `AWS_*` / `MINIO_*` / `GATEWAY_NODE_ID` env vars from `deployments.yaml`; blocked on Sprints 2.20/2.21) | [phase-2-gateway-dns.md](phase-2-gateway-dns.md) |
 | 3 | Haskell Chart Platform and Public Workload Delivery | ✅ Done (Sprints 3.1–3.12); 🔄 Sprint 3.14 (May 24, 2026 — code-owned surface landed: new `Prodbox.Workload.Settings` Dhall decoder + `--config` flag on `workload start` + `WorkloadConfigDhall` covering `< Api | Websocket >` mode + optional log_level/port/redis/oidc; `runWorkloadServer` dispatches through `resolveWorkloadModeFromConfig` with env-var fallback; new `charts/api/templates/configmap-config.yaml` + `charts/websocket/templates/configmap-config.yaml` render Dhall content; `deployment.yaml` templates wire `--config /etc/workload/config.dhall` + matching ConfigMap volume mount; 3 new unit tests cover happy-path Api/Websocket decode + schemaVersion mismatch. **May 24, 2026 later session — full Dhall read-through landed**: `runWorkloadServer` now loads the Dhall config once via `resolveWorkloadDhallConfig` and threads `Maybe WorkloadConfigDhall` through every resolver; new `resolveWorkloadModeFromDhall` / `resolveHttpPortWithDhall` / `resolveWorkloadLogLevelWithDhall` plus refactored `resolveWebsocketRuntime`/`resolveRedisConfig`/`resolveOidcConfig` use the Dhall sub-records when `--config` is set; `PRODBOX_WORKLOAD_MODE` / `PRODBOX_HTTP_PORT` / `PRODBOX_REDIS_HOST` / `PRODBOX_REDIS_PORT` / `PRODBOX_OIDC_*` env vars removed from `charts/api/templates/deployment.yaml` and `charts/websocket/templates/deployment.yaml` — the Dhall ConfigMap is now the sole source on the chart-side surface. Validation: `prodbox check-code` exit 0; `prodbox test unit` 543/543; `prodbox test integration cli` 28/28; `prodbox test integration env` 28/28; `prodbox-daemon-lifecycle` 14/14. Live operator exercise (`prodbox rke2 reconcile` + `prodbox charts deploy api` / `prodbox charts deploy websocket`) is the closure gate.) | [phase-3-chart-platform-vscode.md](phase-3-chart-platform-vscode.md) |
-| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8); 🔄 Active Sprints 4.10–4.13 (code frameworks landed May 21, 2026: 4.10 Dhall types + Settings.hs decoder + `LongLivedPulumiBackend` module + `aws-ses-migrate-backend` CLI scaffold; 4.11 `Lifecycle/Preconditions` + `Lifecycle/TagSweep` + `rke2 delete --cascade` / `--allow-pulumi-residue` flags with mutual exclusion; 4.12 `Lifecycle/K8sDrain` module wired into cascade; 4.13 `prodbox nuke` CLI scaffold with TTY guard + typed-confirmation literal + dry-run plan renderer. Sprint 4.13's five-step nuke orchestration body landed May 21, 2026 (composes cascade arm → `aws-ses` destroy → operational IAM teardown → postflight tag sweep → long-lived state-bucket destroy in-process, prompting once for admin AWS credentials at the start); Sprint 4.10's `pulumi/aws-ses/Pulumi.yaml` long-lived S3 backend URL declaration landed the same day. AwsSesStack admin-credential switch + migrate-backend body + `aws teardown` predicate library reimplementation + every live operator validation remain pending.); ✅ Sprint 4.14 (operator vocabulary contract enforcement: `Sprint <digit>` leaks removed from CLI help / manpages / completions / generated CLI docs / test goldens; new `checkOperatorVocabulary` scan in `src/Prodbox/CheckCode.hs` refuses regressions; May 21, 2026); ✅ Sprint 4.15 (cascade tolerates absent cluster: new `DrainSkipped String` constructor on `DrainResult`; new `clusterReachable` probe; `runNativeDeleteCascade` treats `DrainSkipped` as success-with-reason and continues to per-run Pulumi destroys; verified live on a host without an rke2 cluster; May 21, 2026); 🔄 Sprint 4.16 (`ResidueStatus` ADT replaces file-existence predicates: new `src/Prodbox/Lifecycle/ResidueStatus.hs` with three-constructor ADT + per-lifecycle-class predicates; per-stack `<stack>ResidueStatus :: FilePath -> IO ResidueStatus` adapter on all four stack modules; caller migration in `Prodbox.Aws.checkPulumiResidueBeforeTeardown` + `Prodbox.Lifecycle.Preconditions.noLive{PerRun,LongLived}PulumiStacks`; 12 new unit tests; landed May 23, 2026 on the code-owned surface. **`Prodbox.Infra.StackOutputs` foundation landed May 23, 2026 (later session)**: new module exposes `StackName` newtype + `StackOutputsError` ADT + `listStacks` (shells `pulumi stack ls --json`) + `fetchOutputs` (shells `pulumi stack output --show-secrets --json`) + pure parsers `parseListStacksPayload` / `stackPresentInList` / `parseOutputsPayload`; 18 new unit tests pin the wire shape (test count 515/515, up from 497). The per-stack `<stack>ResidueStatus` swap to live `listStacks` (resolving MinIO credentials, sharing one port-forward across the three per-run queries) + snapshot file-IO removal + the live `prodbox test all --substrate aws` zero-`.prodbox-state/aws-*/` regression remain as coupled follow-up); 🔄 Sprint 4.17 (cascade canonical order rewrite landed May 23, 2026 p.m. — `runNativeDeleteCascade` reordered to confirm-MinIO → per-run destroys → drain → uninstall → postflight sweep; new pure helper `perRunCascadeInventory` drives 7 new unit tests; **the postflight tag sweep wiring landed May 23, 2026 later session** — `runCascadePostflightTagSweep` now loads admin credentials via `loadAdminAwsCredentials`, builds the admin AWS env via `adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `awsEksCanonicalClusterName` as the cluster filter; empty result reports "clean", non-empty result emits the full `renderTagSweepRefusal` block, cascade returns `ExitSuccess` either way per doctrine §6; 4 new tests cover refusal-block ARN/tag rendering, multi-resource bullet output, empty-list rendering, and `TagSweepInput` shape; live cascade exercise on this host remains as the closure gate); 📋 Sprint 4.18 (inventory audit landed May 23, 2026 later session: 26 `.prodbox-state` references remain in `src/`, `app/`, `test/`, `charts/`, `pulumi/`, `.gitignore`, `CLAUDE.md`, `prodbox.cabal`; 7 in the four per-stack modules removed by 4.16's source-of-truth swap, 19 elsewhere migrating with 3.13 / 4.16 / 4.17 closures; `forbidDotProdboxState` lint rule cannot land before those migrations because today's references are still legitimate) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ Done (Sprints 4.1–4.8); 🔄 Active Sprints 4.10–4.13 (code frameworks landed May 21, 2026: 4.10 Dhall types + Settings.hs decoder + `LongLivedPulumiBackend` module + `aws-ses-migrate-backend` CLI scaffold; 4.11 `Lifecycle/Preconditions` + `Lifecycle/TagSweep` + `rke2 delete --cascade` / `--allow-pulumi-residue` flags with mutual exclusion; 4.12 `Lifecycle/K8sDrain` module wired into cascade; 4.13 `prodbox nuke` CLI scaffold with TTY guard + typed-confirmation literal + dry-run plan renderer. ✅ Sprint 4.17.a (May 28, 2026 — reorder cascade to doctrine-canonical `confirm-MinIO → drain → per-run destroys → uninstall → sweep`; new `cascadeOrderNarration` constant + 5 unit tests pin the order; live AWS-substrate verification rolls up with Sprint 4.17.b). ✅ Sprint 4.17.b (May 28, 2026 — `runCascadeDrainPhase` substrate-aware via new `buildDrainEnvironment` helper; cascade infers substrate from per-run residue via new pure `inferCascadeSubstrate`; `DrainSkipped` on AWS substrate is now a hard failure; 6 unit tests cover the inference; live AWS-substrate verification is the remaining closure gate). Sprint 4.13's five-step nuke orchestration body landed May 21, 2026 (composes cascade arm → `aws-ses` destroy → operational IAM teardown → postflight tag sweep → long-lived state-bucket destroy in-process, prompting once for admin AWS credentials at the start); Sprint 4.10's `pulumi/aws-ses/Pulumi.yaml` long-lived S3 backend URL declaration landed the same day. AwsSesStack admin-credential switch + migrate-backend body + `aws teardown` predicate library reimplementation + every live operator validation remain pending.); ✅ Sprint 4.14 (operator vocabulary contract enforcement: `Sprint <digit>` leaks removed from CLI help / manpages / completions / generated CLI docs / test goldens; new `checkOperatorVocabulary` scan in `src/Prodbox/CheckCode.hs` refuses regressions; May 21, 2026); ✅ Sprint 4.15 (cascade tolerates absent cluster: new `DrainSkipped String` constructor on `DrainResult`; new `clusterReachable` probe; `runNativeDeleteCascade` treats `DrainSkipped` as success-with-reason and continues to per-run Pulumi destroys; verified live on a host without an rke2 cluster; May 21, 2026); 🔄 Sprint 4.16 (`ResidueStatus` ADT replaces file-existence predicates: new `src/Prodbox/Lifecycle/ResidueStatus.hs` with three-constructor ADT + per-lifecycle-class predicates; per-stack `<stack>ResidueStatus :: FilePath -> IO ResidueStatus` adapter on all four stack modules; caller migration in `Prodbox.Aws.checkPulumiResidueBeforeTeardown` + `Prodbox.Lifecycle.Preconditions.noLive{PerRun,LongLived}PulumiStacks`; 12 new unit tests; landed May 23, 2026 on the code-owned surface. **`Prodbox.Infra.StackOutputs` foundation landed May 23, 2026 (later session)**: new module exposes `StackName` newtype + `StackOutputsError` ADT + `listStacks` (shells `pulumi stack ls --json`) + `fetchOutputs` (shells `pulumi stack output --show-secrets --json`) + pure parsers `parseListStacksPayload` / `stackPresentInList` / `parseOutputsPayload`; 18 new unit tests pin the wire shape (test count 515/515, up from 497). The per-stack `<stack>ResidueStatus` swap to live `listStacks` (resolving MinIO credentials, sharing one port-forward across the three per-run queries) + snapshot file-IO removal + the live `prodbox test all --substrate aws` zero-`.prodbox-state/aws-*/` regression remain as coupled follow-up); 🔄 Sprint 4.17 (cascade canonical order rewrite landed May 23, 2026 p.m. — `runNativeDeleteCascade` reordered to confirm-MinIO → per-run destroys → drain → uninstall → postflight sweep; new pure helper `perRunCascadeInventory` drives 7 new unit tests; **the postflight tag sweep wiring landed May 23, 2026 later session** — `runCascadePostflightTagSweep` now loads admin credentials via `loadAdminAwsCredentials`, builds the admin AWS env via `adminAwsEnvironment`, and calls `Prodbox.Lifecycle.TagSweep.discoverClusterTaggedAwsResources` with `awsEksCanonicalClusterName` as the cluster filter; empty result reports "clean", non-empty result emits the full `renderTagSweepRefusal` block, cascade returns `ExitSuccess` either way per doctrine §6; 4 new tests cover refusal-block ARN/tag rendering, multi-resource bullet output, empty-list rendering, and `TagSweepInput` shape; live cascade exercise on this host remains as the closure gate); 📋 Sprint 4.18 (inventory audit landed May 23, 2026 later session: 26 `.prodbox-state` references remain in `src/`, `app/`, `test/`, `charts/`, `pulumi/`, `.gitignore`, `CLAUDE.md`, `prodbox.cabal`; 7 in the four per-stack modules removed by 4.16's source-of-truth swap, 19 elsewhere migrating with 3.13 / 4.16 / 4.17 closures; `forbidDotProdboxState` lint rule cannot land before those migrations because today's references are still legitimate) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | 5 | Canonical Test Suite | ✅ Done on owned surfaces (Sprints 5.1–5.5) | [phase-5-canonical-test-suite.md](phase-5-canonical-test-suite.md) |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ Done on owned surfaces | [phase-6-clean-room-handoff.md](phase-6-clean-room-handoff.md) |
 | 7 | AWS Substrate Foundations | ✅ Done on legacy surfaces (Sprints 7.1–7.4); 🔄 Active Sprint 7.5 (✅ 7.5.a–7.5.c.iv on their code-owned surfaces, May 17–19, 2026; ✅ 7.5.c.v.b in-cluster custom-image push, May 19, 2026; ✅ 7.5.c.v.c harness preflight residue policy `BypassAllResidueForHarnessRefresh`, May 20, 2026; ✅ 7.5.c.v.d operational IAM policy compaction + S3 grants on SES capture bucket, May 20, 2026; ✅ 7.5.c.v.e read-only SES grants for Sprint 8.4 prereqs, May 20, 2026; ✅ 7.5.c.v.f silent-exit closure on code-owned surface (substrate-aware `prodbox host public-edge --substrate {home-local,aws}` + stderr breadcrumbs on `runNativeValidation`), May 21, 2026; 🔄 Sprint 7.5.c.v live AWS-substrate canonical-suite re-run remains as the residual live operator step); ✅ Sprint 7.6 (orphan-safety refuse-path + auto-destroy postflight, May 19, 2026); ✅ Sprint 7.7 (generalized `aws teardown` + `PulumiResiduePolicy` ADT + admin-credential prompt UX, May 19, 2026) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
@@ -545,7 +758,7 @@ per-run stacks vs long-lived cross-substrate shared infrastructure) live in
 
 | Substrate | Provision | Teardown | Suite parity | Phase ownership |
 |-----------|-----------|----------|--------------|-----------------|
-| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com` | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
+| Home local | `prodbox rke2 reconcile` + `prodbox charts deploy ...` | `prodbox rke2 delete --yes` | ✅ Full canonical suite, including real Let's Encrypt, OIDC, WebSocket, and public-edge proofs on `test.resolvefintech.com`. Re-verified May 27, 2026 via `prodbox test all` run-4 (~1h35m, all 16 named canonical validations `ExitSuccess` except `keycloak-invite` which is the documented Sprint 8.5 follow-up requiring live Keycloak credential-setup form-structure capture) | [phase-4-lifecycle-canonical-paths.md](phase-4-lifecycle-canonical-paths.md) |
 | AWS | `prodbox pulumi eks-resources` + `prodbox pulumi aws-subzone-resources` + `prodbox pulumi test-resources` | `prodbox pulumi aws-subzone-destroy --yes` + `prodbox pulumi eks-destroy --yes` + `prodbox pulumi test-destroy --yes` | 🔄 Substrate-platform install (13 steps) lands on EKS; harness preflight and IAM policy compaction landed May 20, 2026; substrate-aware validation bodies + stderr-breadcrumb runner landed May 21, 2026 (Sprint `7.5.c.v.f`); live `prodbox test all --substrate aws` re-run rolls up into Sprint `7.5.c.v` | [phase-7-aws-substrate-foundations.md → Sprint 7.5](phase-7-aws-substrate-foundations.md) |
 
 ## Current Plan Status

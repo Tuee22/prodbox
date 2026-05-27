@@ -21,9 +21,6 @@ import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
-  , encode
-  , object
-  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -31,7 +28,7 @@ import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.CaseInsensitive qualified as CI
 import Data.Char (isAsciiUpper)
-import Data.List (isInfixOf, nub, sort)
+import Data.List (intercalate, isInfixOf, nub, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -1711,11 +1708,11 @@ runGatewayDaemonValidation repoRoot environment = do
                     Right localPeer -> do
                       localPort <- reserveLocalTcpPort
                       withGatewayPortForward repoRoot environment localPeer localPort $
-                        withTemporaryFilePath repoRoot "gateway-validation-orders.json" $ \ordersPath ->
-                          withTemporaryFilePath repoRoot "gateway-validation-config.json" $ \configPath -> do
+                        withTemporaryFilePath repoRoot "gateway-validation-orders.dhall" $ \ordersPath ->
+                          withTemporaryFilePath repoRoot "gateway-validation-config.dhall" $ \configPath -> do
                             ordersWriteResult <-
                               try
-                                (BL.writeFile ordersPath (renderGatewayValidationOrders orders (peerNodeId localPeer) localPort))
+                                (writeFile ordersPath (renderGatewayValidationOrdersDhall orders (peerNodeId localPeer) localPort))
                                 :: IO (Either IOException ())
                             case ordersWriteResult of
                               Left err ->
@@ -1723,9 +1720,9 @@ runGatewayDaemonValidation repoRoot environment = do
                               Right () -> do
                                 configWriteResult <-
                                   try
-                                    ( BL.writeFile
+                                    ( writeFile
                                         configPath
-                                        (renderGatewayValidationConfig settings (peerNodeId localPeer) ordersPath)
+                                        (renderGatewayValidationConfigDhall settings (peerNodeId localPeer) ordersPath)
                                     )
                                     :: IO (Either IOException ())
                                 case configWriteResult of
@@ -1755,29 +1752,45 @@ selectGatewayValidationPeer orders =
     [] -> Left "gateway validation requires at least one node in gateway-orders"
     peer : _ -> Right peer
 
-renderGatewayValidationOrders :: Orders -> String -> Int -> BL.ByteString
-renderGatewayValidationOrders orders localNodeId localPort =
-  encode $
-    object
-      [ "version_utc" .= ordersVersionUtc orders
-      , "nodes" .= map renderNode (ordersNodes orders)
-      , "gateway_rule"
-          .= object
-            [ "ranked_nodes" .= rankedNodes (ordersGatewayRule orders)
-            , "heartbeat_timeout_seconds" .= heartbeatTimeoutSeconds (ordersGatewayRule orders)
-            ]
-      ]
+-- | Sprint 2.20/2.22 closure follow-up: the gateway daemon decodes its config
+-- via 'Dhall.inputFile auto' against the schema in
+-- 'Prodbox.Gateway.Settings.DaemonConfigDhall'. The validation surface renders
+-- the same shape so the daemon accepts the file without falling back to a JSON
+-- decoder (which no longer exists on the supported path).
+renderGatewayValidationOrdersDhall :: Orders -> String -> Int -> String
+renderGatewayValidationOrdersDhall orders localNodeId localPort =
+  unlines
+    [ "{ version_utc = " ++ show (ordersVersionUtc orders)
+    , ", nodes = " ++ nodesList
+    , ", gateway_rule ="
+    , "    { ranked_nodes = " ++ rankedNodesList
+    , "    , heartbeat_timeout_seconds = " ++ show (heartbeatTimeoutSeconds (ordersGatewayRule orders))
+    , "    }"
+    , "}"
+    ]
  where
-  renderNode :: PeerEndpoint -> Value
+  nodesList = case ordersNodes orders of
+    [] ->
+      "([] : List { node_id : Text, stable_dns_name : Text, rest_host : Text, rest_port : Natural, socket_host : Text, socket_port : Natural })"
+    peers -> "[ " ++ intercalate "\n  , " (map renderNode peers) ++ " ]"
+  rankedNodesList = case rankedNodes (ordersGatewayRule orders) of
+    [] -> "([] : List Text)"
+    xs -> "[ " ++ intercalate ", " (map dhallText xs) ++ " ]"
+  renderNode :: PeerEndpoint -> String
   renderNode peer =
-    object
-      [ "node_id" .= peerNodeId peer
-      , "stable_dns_name" .= rewrittenStableDnsName
-      , "rest_host" .= rewrittenRestHost
-      , "rest_port" .= rewrittenRestPort
-      , "socket_host" .= peerSocketHost peer
-      , "socket_port" .= peerSocketPort peer
-      ]
+    "{ node_id = "
+      ++ dhallText (peerNodeId peer)
+      ++ ", stable_dns_name = "
+      ++ dhallText rewrittenStableDnsName
+      ++ ", rest_host = "
+      ++ dhallText rewrittenRestHost
+      ++ ", rest_port = "
+      ++ show rewrittenRestPort
+      ++ ", socket_host = "
+      ++ dhallText (peerSocketHost peer)
+      ++ ", socket_port = "
+      ++ show (peerSocketPort peer)
+      ++ " }"
    where
     isLocalNode = peerNodeId peer == localNodeId
     rewrittenStableDnsName =
@@ -1793,29 +1806,54 @@ renderGatewayValidationOrders orders localNodeId localPort =
         then localPort
         else peerRestPort peer
 
-renderGatewayValidationConfig :: ValidatedSettings -> String -> FilePath -> BL.ByteString
-renderGatewayValidationConfig settings nodeId ordersPath =
-  encode $
-    object
-      [ "node_id" .= nodeId
-      , "cert_file" .= ("unused.crt" :: String)
-      , "key_file" .= ("unused.key" :: String)
-      , "ca_file" .= ("unused-ca.crt" :: String)
-      , "orders_file" .= ordersPath
-      , "event_keys"
-          .= Object
-            (KeyMap.singleton (Key.fromString nodeId) (String "validation-key"))
-      , "heartbeat_interval_seconds" .= (1.0 :: Double)
-      , "reconnect_interval_seconds" .= (1.0 :: Double)
-      , "sync_interval_seconds" .= (5.0 :: Double)
-      , "dns_write_gate"
-          .= object
-            [ "zone_id" .= textValue (zone_id (route53 (validatedConfig settings)))
-            , "fqdn" .= publicFqdn settings
-            , "ttl" .= (fromIntegral (demo_ttl (domain (validatedConfig settings))) :: Integer)
-            , "aws_region" .= textValue (region (aws (validatedConfig settings)))
-            ]
-      ]
+renderGatewayValidationConfigDhall :: ValidatedSettings -> String -> FilePath -> String
+renderGatewayValidationConfigDhall settings nodeId ordersPath =
+  unlines
+    [ "{ schemaVersion = 1"
+    , ", boot ="
+    , "    { node_id = " ++ dhallText nodeId
+    , "    , cert_file = " ++ dhallText "unused.crt"
+    , "    , key_file = " ++ dhallText "unused.key"
+    , "    , ca_file = " ++ dhallText "unused-ca.crt"
+    , "    , orders_file = " ++ dhallText ordersPath
+    , "    , event_keys = [ { name = "
+        ++ dhallText nodeId
+        ++ ", value = "
+        ++ dhallText "validation-key"
+        ++ " } ]"
+    , "    , dns_write_gate = Some"
+    , "        { zone_id = " ++ dhallText (Text.unpack (zone_id (route53 (validatedConfig settings))))
+    , "        , fqdn = " ++ dhallText (publicFqdn settings)
+    , "        , ttl = " ++ show (demo_ttl (domain (validatedConfig settings)))
+    , "        , aws_region = " ++ dhallText (Text.unpack (region (aws (validatedConfig settings))))
+    , "        }"
+    , "    , aws_creds = None { access_key_id : Text, secret_access_key : Text, session_token : Optional Text, region : Text }"
+    , "    , minio_creds = None { minio_access_key : Text, minio_secret_key : Text }"
+    , "    , minio_endpoint_url = None Text"
+    , "    }"
+    , ", live ="
+    , "    { heartbeat_interval_seconds = 1.0"
+    , "    , reconnect_interval_seconds = 1.0"
+    , "    , sync_interval_seconds = 5.0"
+    , "    , max_clock_skew_seconds = 10.0"
+    , "    , drain_deadline_seconds = Some 30"
+    , "    , log_level = Some " ++ dhallText "info"
+    , "    }"
+    , "}"
+    ]
+
+-- | Render a Haskell 'String' as a Dhall double-quoted text literal, escaping
+-- the two characters Dhall's quoted-text grammar treats specially (backslash and
+-- double-quote). Used by 'renderGatewayValidationOrdersDhall' /
+-- 'renderGatewayValidationConfigDhall' so the rendered validation files round-
+-- trip through @Dhall.inputFile auto@ without further escaping.
+dhallText :: String -> String
+dhallText s = '"' : escape s ++ "\""
+ where
+  escape [] = []
+  escape ('\\' : rest) = '\\' : '\\' : escape rest
+  escape ('"' : rest) = '\\' : '"' : escape rest
+  escape (c : rest) = c : escape rest
 
 withGatewayPortForward :: FilePath -> [(String, String)] -> PeerEndpoint -> Int -> IO a -> IO a
 withGatewayPortForward repoRoot environment localPeer localPort action = do

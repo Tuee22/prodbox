@@ -289,6 +289,7 @@ cross-language types. The currently scheduled registry entries are:
 | CLI command reference | `command-registry`, `cli-help.*` | Sprint 1.6 / Sprint 1.10 |
 | Generated section index in this file | `documentation-standards.*` | Sprint 0.2 / Sprint 1.10 |
 | Public-edge route inventory rendered into chart manifests | `route-registry` | Sprint 3.12 |
+| Resource Lifecycle Classes table in `DEVELOPMENT_PLAN/substrates.md`, sourced from `Prodbox.Lifecycle.ResourceRegistry` | `resource-lifecycle-classes` | **Scheduled** — Sprint 4.22 (renderer + markers land then; hand-maintained until) |
 | Cross-language types (TypeScript / Go / PureScript mirrors) | `cross-language-types.*` | **Deferred** — no non-Haskell consumer in scope |
 
 The `prodbox lint docs --write` and `prodbox docs generate` surfaces share one Haskell

@@ -10,7 +10,10 @@
 `DEVELOPMENT_PLAN/README.md` is the authoritative source for target architecture, sprint status,
 and cleanup ownership. The authoritative CLI doctrine is distributed across per-surface
 engineering docs under [documents/engineering/](./documents/engineering/README.md): command
-topology and reconcilers in `cli_command_surface.md`; Plan / Apply and GADT-indexed state
+topology and reconcilers in `cli_command_surface.md`; the leak-proof, idempotent topology —
+the typed managed-resource registry every creatable AWS/cluster resource is registered in,
+and the `reconcileAbsent` teardown reconciler — in
+`lifecycle_reconciliation_doctrine.md` (§3.1); Plan / Apply and GADT-indexed state
 machines in `pure_fp_standards.md`; subprocesses, error handling, capability classes, and
 application environment in `haskell_code_guide.md`; generated artifacts and lint stack in
 `code_quality.md`; output rules and at-least-once event processing in `streaming_doctrine.md`;

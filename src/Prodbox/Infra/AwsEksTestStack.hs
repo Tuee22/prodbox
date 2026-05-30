@@ -7,10 +7,6 @@ module Prodbox.Infra.AwsEksTestStack
   , awsEksTestKubeconfigPath
   , ensureAwsEksTestStackResources
   , destroyAwsEksTestStack
-  , loadAwsEksTestStackSnapshot
-  , saveAwsEksTestStackSnapshot
-  , clearAwsEksTestStackSnapshot
-  , awsEksTestStackHasLiveResources
   , awsEksTestStackResidueStatus
   , materializeAwsEksKubeconfig
   , assertNoAwsEksTestStackResidue
@@ -20,6 +16,7 @@ module Prodbox.Infra.AwsEksTestStack
   , pulumiBackendBaseEnv
   , settingsAwsEnv
   , renderAwsEksTestStackReport
+  , parseAwsEksTestStackFromOutputs
   )
 where
 
@@ -27,16 +24,13 @@ import Control.Monad (foldM, forM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
-  , encode
-  , object
-  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper, toLower)
 import Data.List (isInfixOf)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment
@@ -62,6 +56,9 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Infra.StackOutputs qualified as StackOutputs
+import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
+import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -81,7 +78,6 @@ import Prodbox.Subprocess
 import System.Directory
   ( createDirectoryIfMissing
   , doesFileExist
-  , removeFile
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
@@ -96,30 +92,14 @@ awsEksTestPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-eks"
 awsEksTestStateDir :: FilePath -> FilePath
 awsEksTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksTestStackName
 
-awsEksTestSnapshotPath :: FilePath -> FilePath
-awsEksTestSnapshotPath repoRoot = awsEksTestStateDir repoRoot </> "stack-snapshot.json"
-
--- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
--- AWS EKS test stack. The snapshot is written only after a successful
--- 'ensureAwsEksTestStackResources' run and removed on
--- 'clearAwsEksTestStackSnapshot' (called by 'destroyAwsEksTestStack' on
--- success). The Sprint 7.6 orphan-safety refuse-path uses this
--- predicate to block 'prodbox aws teardown' when live resources still
--- exist.
-awsEksTestStackHasLiveResources :: FilePath -> IO Bool
-awsEksTestStackHasLiveResources repoRoot =
-  ResidueStatus.isResiduePresentOrUnknownPerRun
-    <$> awsEksTestStackResidueStatus repoRoot
-
--- | Sprint 4.16 typed residue status. Today this adapter wraps the
--- legacy file-existence check; a later sprint replaces it with a
--- source-of-truth @pulumi stack ls --json@ query against the in-cluster
--- MinIO backend.
+-- | Sprint 4.16 typed residue status. Delegates to the live
+-- @pulumi stack ls --json@ source-of-truth query through
+-- 'Prodbox.Lifecycle.LiveResidue'; callers that need all three
+-- per-run statuses should call 'queryPerRunResidueStatuses' directly
+-- to share the MinIO port-forward bracket.
 awsEksTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
-awsEksTestStackResidueStatus repoRoot = do
-  let snapshotPath = awsEksTestSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  pure (ResidueStatus.residuePresentByFileExistence awsEksTestStackName snapshotPath exists)
+awsEksTestStackResidueStatus repoRoot =
+  LiveResidue.perRunAwsEksTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
 
 awsEksTestKubeconfigPath :: FilePath -> FilePath
 awsEksTestKubeconfigPath repoRoot = awsEksTestStateDir repoRoot </> "kubeconfig"
@@ -168,89 +148,22 @@ data AwsEksCanonicalResidue = AwsEksCanonicalResidue
   }
   deriving (Eq, Show)
 
-saveAwsEksTestStackSnapshot :: FilePath -> AwsEksTestStackSnapshot -> IO ()
-saveAwsEksTestStackSnapshot repoRoot snapshot = do
-  let stateDir = awsEksTestStateDir repoRoot
-  createDirectoryIfMissing True stateDir
-  BL.writeFile (awsEksTestSnapshotPath repoRoot) (encode (snapshotToJson snapshot))
-
-loadAwsEksTestStackSnapshot :: FilePath -> IO (Maybe AwsEksTestStackSnapshot)
-loadAwsEksTestStackSnapshot repoRoot = do
-  let snapshotPath = awsEksTestSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if not exists
-    then pure Nothing
-    else do
-      contents <- BL.readFile snapshotPath
-      case eitherDecode contents of
-        Left _ -> pure Nothing
-        Right value ->
-          case snapshotFromJson value of
-            Left _ -> pure Nothing
-            Right snapshot -> pure (Just snapshot)
-
-clearAwsEksTestStackSnapshot :: FilePath -> IO ()
-clearAwsEksTestStackSnapshot repoRoot = do
-  let snapshotPath = awsEksTestSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if exists then removeFile snapshotPath else pure ()
-
-snapshotToJson :: AwsEksTestStackSnapshot -> Value
-snapshotToJson snapshot =
-  object
-    [ "stack_name" .= eksSnapshotStackName snapshot
-    , "backend_bucket" .= eksSnapshotBackendBucket snapshot
-    , "cluster_name" .= eksSnapshotClusterName snapshot
-    , "cluster_role_name" .= eksSnapshotClusterRoleName snapshot
-    , "node_group_name" .= eksSnapshotNodeGroupName snapshot
-    , "node_role_name" .= eksSnapshotNodeRoleName snapshot
-    , "vpc_id" .= eksSnapshotVpcId snapshot
-    , "subnet_ids" .= eksSnapshotSubnetIds snapshot
-    , "cluster_security_group_id" .= eksSnapshotClusterSecurityGroupId snapshot
-    , "cluster_oidc_issuer" .= eksSnapshotClusterOidcIssuer snapshot
-    , "oidc_provider_arn" .= eksSnapshotOidcProviderArn snapshot
-    , "aws_lb_controller_policy_arn" .= eksSnapshotAwsLbControllerPolicyArn snapshot
-    , "aws_lb_controller_role_arn" .= eksSnapshotAwsLbControllerRoleArn snapshot
-    , "aws_lb_controller_role_name" .= eksSnapshotAwsLbControllerRoleName snapshot
-    ]
-
-snapshotFromJson :: Value -> Either String AwsEksTestStackSnapshot
-snapshotFromJson (Object obj) = do
-  stackName <- requireString obj "stack_name"
-  backendBucket <- requireString obj "backend_bucket"
-  clusterName <- requireString obj "cluster_name"
-  clusterRoleName <- requireString obj "cluster_role_name"
-  nodeGroupName <- requireString obj "node_group_name"
-  nodeRoleName <- requireString obj "node_role_name"
-  vpcId <- requireString obj "vpc_id"
-  subnetIds <- requireStringList obj "subnet_ids"
-  clusterSecurityGroupId <- requireString obj "cluster_security_group_id"
-  -- Fields added in Sprint 7.5.b.ii.d.II. Tolerate older snapshots that lack
-  -- them by defaulting to empty strings; the AWS LB Controller install path
-  -- fails fast at runtime when these values are required but absent.
-  let clusterOidcIssuer = optionalString obj "cluster_oidc_issuer"
-      oidcProviderArn = optionalString obj "oidc_provider_arn"
-      awsLbControllerPolicyArn = optionalString obj "aws_lb_controller_policy_arn"
-      awsLbControllerRoleArn = optionalString obj "aws_lb_controller_role_arn"
-      awsLbControllerRoleName = optionalString obj "aws_lb_controller_role_name"
-  Right
-    AwsEksTestStackSnapshot
-      { eksSnapshotStackName = stackName
-      , eksSnapshotBackendBucket = backendBucket
-      , eksSnapshotClusterName = clusterName
-      , eksSnapshotClusterRoleName = clusterRoleName
-      , eksSnapshotNodeGroupName = nodeGroupName
-      , eksSnapshotNodeRoleName = nodeRoleName
-      , eksSnapshotVpcId = vpcId
-      , eksSnapshotSubnetIds = subnetIds
-      , eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
-      , eksSnapshotClusterOidcIssuer = clusterOidcIssuer
-      , eksSnapshotOidcProviderArn = oidcProviderArn
-      , eksSnapshotAwsLbControllerPolicyArn = awsLbControllerPolicyArn
-      , eksSnapshotAwsLbControllerRoleArn = awsLbControllerRoleArn
-      , eksSnapshotAwsLbControllerRoleName = awsLbControllerRoleName
-      }
-snapshotFromJson _ = Left "snapshot must be a JSON object"
+-- | Sprint 4.18: live source-of-truth read of the @aws-eks-test@
+-- stack snapshot from the in-cluster MinIO Pulumi backend. Returns
+-- 'Nothing' when the stack is absent, the backend is unreachable, or
+-- the outputs cannot be parsed — matching the @Maybe@ contract the
+-- ensure pre-check, destroy, and residue-assertion paths previously
+-- got from the file cache, so the absent path falls back to the
+-- canonical tag-based residue scan as before.
+fetchAwsEksTestSnapshotFromBackend :: FilePath -> IO (Maybe AwsEksTestStackSnapshot)
+fetchAwsEksTestSnapshotFromBackend repoRoot = do
+  outputsResult <-
+    LiveResidue.fetchPerRunStackOutputs
+      repoRoot
+      (StackOutputs.StackName (Text.pack awsEksTestStackName))
+  pure $ case outputsResult of
+    Left _ -> Nothing
+    Right outputs -> either (const Nothing) Just (parseAwsEksTestStackFromOutputs outputs)
 
 snapshotFromOutputs :: Value -> Either String AwsEksTestStackSnapshot
 snapshotFromOutputs (Object obj) = do
@@ -286,11 +199,87 @@ snapshotFromOutputs (Object obj) = do
       }
 snapshotFromOutputs _ = Left "pulumi output must be a JSON object"
 
-optionalString :: KeyMap.KeyMap Value -> String -> String
-optionalString obj key =
-  case KeyMap.lookup (Key.fromString key) obj of
-    Just (String text) -> Text.unpack text
-    _ -> ""
+-- | Sprint 4.18: decode an 'AwsEksTestStackSnapshot' record directly
+-- from the flat @Map Text Text@ returned by
+-- 'Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs'. Replaces
+-- the legacy @.prodbox-state\/aws-eks-test\/stack-snapshot.json@
+-- file-IO consumer on the substrate-platform install path. Complex
+-- outputs (e.g. @subnet_ids@) arrive as JSON-encoded strings and are
+-- decoded back to their structured form here.
+parseAwsEksTestStackFromOutputs
+  :: Map.Map Text.Text Text.Text -> Either String AwsEksTestStackSnapshot
+parseAwsEksTestStackFromOutputs outputs = do
+  backendBucket <- requireOutputString outputs "backend_bucket"
+  clusterName <- requireOutputString outputs "cluster_name"
+  clusterRoleName <- requireOutputString outputs "cluster_role_name"
+  nodeGroupName <- requireOutputString outputs "node_group_name"
+  nodeRoleName <- requireOutputString outputs "node_role_name"
+  vpcId <- requireOutputString outputs "vpc_id"
+  subnetIds <- requireOutputStringList outputs "subnet_ids"
+  clusterSecurityGroupId <- requireOutputString outputs "cluster_security_group_id"
+  clusterOidcIssuer <- requireOutputString outputs "cluster_oidc_issuer"
+  oidcProviderArn <- requireOutputString outputs "oidc_provider_arn"
+  awsLbControllerPolicyArn <- requireOutputString outputs "aws_lb_controller_policy_arn"
+  awsLbControllerRoleArn <- requireOutputString outputs "aws_lb_controller_role_arn"
+  awsLbControllerRoleName <- requireOutputString outputs "aws_lb_controller_role_name"
+  Right
+    AwsEksTestStackSnapshot
+      { eksSnapshotStackName = awsEksTestStackName
+      , eksSnapshotBackendBucket = backendBucket
+      , eksSnapshotClusterName = clusterName
+      , eksSnapshotClusterRoleName = clusterRoleName
+      , eksSnapshotNodeGroupName = nodeGroupName
+      , eksSnapshotNodeRoleName = nodeRoleName
+      , eksSnapshotVpcId = vpcId
+      , eksSnapshotSubnetIds = subnetIds
+      , eksSnapshotClusterSecurityGroupId = clusterSecurityGroupId
+      , eksSnapshotClusterOidcIssuer = clusterOidcIssuer
+      , eksSnapshotOidcProviderArn = oidcProviderArn
+      , eksSnapshotAwsLbControllerPolicyArn = awsLbControllerPolicyArn
+      , eksSnapshotAwsLbControllerRoleArn = awsLbControllerRoleArn
+      , eksSnapshotAwsLbControllerRoleName = awsLbControllerRoleName
+      }
+
+requireOutputString
+  :: Map.Map Text.Text Text.Text -> Text.Text -> Either String String
+requireOutputString outputs key =
+  case Map.lookup key outputs of
+    Nothing -> Left ("aws-eks-test Pulumi outputs missing required field '" ++ Text.unpack key ++ "'")
+    Just text ->
+      let s = Text.unpack text
+       in if null s
+            then Left ("aws-eks-test Pulumi output '" ++ Text.unpack key ++ "' is empty")
+            else Right s
+
+requireOutputStringList
+  :: Map.Map Text.Text Text.Text -> Text.Text -> Either String [String]
+requireOutputStringList outputs key =
+  case Map.lookup key outputs of
+    Nothing -> Left ("aws-eks-test Pulumi outputs missing required field '" ++ Text.unpack key ++ "'")
+    Just text ->
+      case eitherDecode (BL8.pack (Text.unpack text)) of
+        Left err ->
+          Left
+            ( "aws-eks-test Pulumi output '"
+                ++ Text.unpack key
+                ++ "' is not valid JSON: "
+                ++ err
+            )
+        Right (Array arr) -> mapM (asString key) (Vector.toList arr)
+        Right _ ->
+          Left
+            ( "aws-eks-test Pulumi output '"
+                ++ Text.unpack key
+                ++ "' must be a JSON array"
+            )
+ where
+  asString k v = case v of
+    String t ->
+      let s = Text.unpack t
+       in if null s
+            then Left ("aws-eks-test Pulumi output '" ++ Text.unpack k ++ "' contains an empty string")
+            else Right s
+    _ -> Left ("aws-eks-test Pulumi output '" ++ Text.unpack k ++ "' must contain strings only")
 
 requireString :: KeyMap.KeyMap Value -> String -> Either String String
 requireString obj key =
@@ -1143,7 +1132,7 @@ assertNoAwsEksTestStackResidue :: FilePath -> Maybe AwsEksTestStackSnapshot -> I
 assertNoAwsEksTestStackResidue repoRoot maybeSnapshot = do
   snapshot <- case maybeSnapshot of
     Just s -> pure (Just s)
-    Nothing -> loadAwsEksTestStackSnapshot repoRoot
+    Nothing -> fetchAwsEksTestSnapshotFromBackend repoRoot
   case snapshot of
     Nothing -> do
       discoveredResidueResult <- discoverCanonicalAwsEksResidue repoRoot
@@ -1216,7 +1205,7 @@ checkResidueItems repoRoot snapshot = do
 
 ensureAwsEksTestStackResources :: FilePath -> IO ExitCode
 ensureAwsEksTestStackResources repoRoot = do
-  snapshot <- loadAwsEksTestStackSnapshot repoRoot
+  snapshot <- fetchAwsEksTestSnapshotFromBackend repoRoot
   case snapshot of
     Nothing -> do
       purgeResult <- purgeCanonicalAwsEksResidueIfPresent repoRoot
@@ -1270,7 +1259,6 @@ ensureAwsEksTestStackResources repoRoot = do
                                               case snapshotFromOutputs outputs of
                                                 Left err -> pure (Left err)
                                                 Right snapshot -> do
-                                                  saveAwsEksTestStackSnapshot repoRoot snapshot
                                                   kubeconfigResult <- materializeAwsEksKubeconfig repoRoot snapshot
                                                   case kubeconfigResult of
                                                     Left err -> pure (Left err)
@@ -1301,7 +1289,7 @@ destroyAwsEksTestStack repoRoot summary = do
 
 destroyAwsEksTestStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsEksTestStackStatus repoRoot summary = do
-  currentSnapshot <- loadAwsEksTestStackSnapshot repoRoot
+  currentSnapshot <- fetchAwsEksTestSnapshotFromBackend repoRoot
   let projectDir = awsEksTestPulumiProjectDir repoRoot
   portForwardResult <- withMinioPortForward $ \localPort -> do
     credsResult <- readMinioCredentials
@@ -1340,6 +1328,28 @@ destroyAwsEksTestStackStatus repoRoot summary = do
                             case syncExit of
                               ExitFailure _ -> pure (Left "pulumi config set failed")
                               ExitSuccess -> do
+                                -- Sprint 4.23: drain the EKS cluster's
+                                -- AWS-affecting K8s resources (LoadBalancer
+                                -- Services, ALB Ingresses, Delete-reclaim
+                                -- PVCs) before the Pulumi destroy so the AWS
+                                -- Load Balancer Controller + EBS CSI driver
+                                -- release their ELB / CNI / EBS ENIs while
+                                -- still alive. This gives AWS time to free the
+                                -- subnet's ENIs so `pulumi destroy` doesn't hit
+                                -- DependencyViolation on subnet deletion (the
+                                -- May 28/29 incidents). Best-effort + safe when
+                                -- the cluster is unreachable: a missing /
+                                -- unreachable cluster logs a diagnostic and
+                                -- proceeds to the destroy (the destroy is the
+                                -- goal). Extends Sprint 4.17.b's cascade drain
+                                -- to the per-run eks-destroy path, which both
+                                -- the harness postflight
+                                -- (`prodbox pulumi eks-destroy --yes`) and the
+                                -- cascade (`reconcileAbsent` -> PulumiEksDestroy)
+                                -- route through.
+                                drainAwsEksClusterBeforeDestroy
+                                  repoRoot
+                                  operationalCredentials
                                 destroyResult <- pulumiDestroyEither projectDir providerEnvironment summary
                                 case destroyResult of
                                   Left _ -> do
@@ -1379,6 +1389,119 @@ completeDestroy repoRoot projectDir environment currentSnapshot summary = do
   _ <- pulumiStackRemoveEither projectDir environment False summary
   finalizeDestroy repoRoot currentSnapshot
 
+-- | Sprint 4.23: best-effort K8s drain of the per-run @aws-eks-test@
+-- cluster's AWS-affecting resources, run immediately before the
+-- @pulumi destroy@ so the AWS Load Balancer Controller and EBS CSI
+-- driver release their ELB / CNI / EBS ENIs while their controllers are
+-- still alive. Mirrors the Sprint 4.17.b cascade drain
+-- ('Prodbox.CLI.Rke2.runCascadeDrainPhase') but targets the per-run EKS
+-- cluster directly via its own kubeconfig instead of the host
+-- substrate's cluster, and is wired into the eks-destroy path so it
+-- covers BOTH the harness postflight
+-- (@prodbox pulumi eks-destroy --yes@) and the cascade
+-- (@reconcileAbsent@ -> @PulumiEksDestroy@).
+--
+-- The drain is **best-effort and safe when the cluster is
+-- unreachable**: if the EKS kubeconfig file is absent (e.g. the stack is
+-- already partially gone, or this is a fresh process that never
+-- materialized it) the drain is skipped with a diagnostic and the
+-- destroy proceeds. 'K8sDrain.drainAwsAffectingK8sResources' itself
+-- probes reachability first, so an unreachable-but-present kubeconfig
+-- yields 'K8sDrain.DrainSkipped'. A drain failure / timeout NEVER
+-- hard-fails the destroy — the destroy is the goal; the worst case is
+-- the pre-Sprint-4.23 behavior where the destroy races AWS's async ENI
+-- cleanup and may hit @DependencyViolation@ (which Sprint 7.10 then
+-- preserves operational creds for, so the orphans can be destroyed on
+-- retry).
+--
+-- Limitation: the kubeconfig is materialized during
+-- 'ensureAwsEksTestStackResources' (Sprint 4.18) and persists on disk at
+-- 'awsEksTestKubeconfigPath'. Within a single @prodbox test all@ run
+-- (bootstrap -> validations -> postflight destroy) it is present, so the
+-- harness postflight path drains. A standalone
+-- @prodbox pulumi eks-destroy --yes@ invocation in a process that never
+-- ran the ensure step will find no kubeconfig and skip the drain (then
+-- destroy) rather than re-materialize it from the backend snapshot —
+-- the smallest safe version that does not add a backend round-trip just
+-- to drain.
+drainAwsEksClusterBeforeDestroy :: FilePath -> Credentials -> IO ()
+drainAwsEksClusterBeforeDestroy repoRoot operationalCredentials = do
+  let kubeconfigPath = awsEksTestKubeconfigPath repoRoot
+  kubeconfigPresent <- doesFileExist kubeconfigPath
+  if not kubeconfigPresent
+    then
+      writeDiagnosticLine
+        ( "Per-run EKS drain skipped: kubeconfig not present at "
+            ++ kubeconfigPath
+            ++ " (the EKS cluster may already be gone, or this process never "
+            ++ "materialized it). Proceeding directly to `pulumi destroy`."
+        )
+    else do
+      writeOutputLine
+        ( "Per-run EKS drain (cluster="
+            ++ awsEksCanonicalClusterName
+            ++ "): deleting LoadBalancer Services, ALB Ingresses, and "
+            ++ "Delete-reclaim PVCs before `pulumi destroy` so AWS releases "
+            ++ "the ELB / CNI ENIs (DependencyViolation guard)."
+        )
+      parentEnv <- getEnvironment
+      let drainEnvVars = buildAwsEksDrainEnv kubeconfigPath operationalCredentials parentEnv
+          drainEnv =
+            K8sDrain.K8sDrainEnv
+              { K8sDrain.drainEnvironment = drainEnvVars
+              , K8sDrain.drainWorkingDirectory = Just repoRoot
+              }
+      drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
+      case drainResult of
+        K8sDrain.DrainSucceeded ->
+          writeOutputLine
+            "Per-run EKS drain complete; proceeding to `pulumi destroy`."
+        K8sDrain.DrainSkipped reason ->
+          writeDiagnosticLine
+            ( "Per-run EKS drain skipped: "
+                ++ reason
+                ++ " Proceeding to `pulumi destroy` (best-effort)."
+            )
+        K8sDrain.DrainTimedOut survivors ->
+          writeDiagnosticLine
+            ( "Per-run EKS drain timed out before `pulumi destroy` "
+                ++ "(survivors: "
+                ++ joinComma survivors
+                ++ "); proceeding to destroy anyway. AWS may not have "
+                ++ "released every ENI yet, so the destroy could still hit "
+                ++ "DependencyViolation."
+            )
+        K8sDrain.DrainFailed err ->
+          writeDiagnosticLine
+            ( "Per-run EKS drain failed before `pulumi destroy`: "
+                ++ err
+                ++ "; proceeding to destroy anyway (the destroy is the goal)."
+            )
+
+-- | Sprint 4.23 helper: build the @KUBECONFIG@ + @AWS_*@ environment for
+-- the per-run EKS drain's kubectl subprocesses. Mirrors
+-- 'Prodbox.CLI.Rke2.buildDrainEnvironment' for @SubstrateAws@ but takes
+-- already-resolved 'Credentials' (operational, with the
+-- admin-simulation fallback from 'loadOperationalAwsCredentials') so the
+-- drain reuses the same credential the destroy will use. @KUBECONFIG@
+-- and the @AWS_*@ overrides are prepended so they take precedence over
+-- any inherited values when @aws eks get-token@ authenticates.
+buildAwsEksDrainEnv
+  :: FilePath -> Credentials -> [(String, String)] -> [(String, String)]
+buildAwsEksDrainEnv kubeconfigPath creds parentEnv =
+  baseOverrides ++ tokenOverrides ++ parentEnv
+ where
+  baseOverrides =
+    [ ("KUBECONFIG", kubeconfigPath)
+    , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id creds))
+    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key creds))
+    , ("AWS_DEFAULT_REGION", Text.unpack (region creds))
+    , ("AWS_REGION", Text.unpack (region creds))
+    ]
+  tokenOverrides = case session_token creds of
+    Nothing -> []
+    Just tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]
+
 finalizeDestroy :: FilePath -> Maybe AwsEksTestStackSnapshot -> IO (Either String String)
 finalizeDestroy repoRoot currentSnapshot = do
   purgeResult <- purgeCanonicalAwsEksResidueIfPresent repoRoot
@@ -1388,9 +1511,7 @@ finalizeDestroy repoRoot currentSnapshot = do
       residueResult <- assertNoAwsEksTestStackResidue repoRoot currentSnapshot
       case residueResult of
         Left err -> pure (Left err)
-        Right () -> do
-          clearAwsEksTestStackSnapshot repoRoot
-          pure (Right "destroyed and residue check passed")
+        Right () -> pure (Right "destroyed and residue check passed")
 
 failWith :: String -> IO ExitCode
 failWith message = do

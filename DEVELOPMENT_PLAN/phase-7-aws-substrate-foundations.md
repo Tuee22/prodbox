@@ -1698,7 +1698,10 @@ documented as harness-internal only and never CLI-settable);
 `src/Prodbox/Aws.hs` (`applyAwsTeardown` case-of extended with the
 new constructor; `runAwsIamHarnessSetup` preflight switched from
 `BypassPerRunResidueOnly` to `BypassAllResidueForHarnessRefresh`;
-`runAwsIamHarnessTeardown` postflight keeps `BypassPerRunResidueOnly`);
+`runAwsIamHarnessTeardown` postflight kept `BypassPerRunResidueOnly`
+at this sprint — **later switched to `BypassAllResidueForHarnessRefresh`
+by Sprint 7.9**, which corrected the stale "preserve `aws.*` to destroy
+`aws-ses`" premise);
 `test/unit/Main.hs` (Sprint 7.7 residue-policy describe block extended
 with Scenarios M and N covering the `aws-ses`-live and
 all-four-stacks-present cases).
@@ -1728,8 +1731,12 @@ test-harness run because `aws-ses` is the intended steady state.
   the new constructor.
 - `runAwsIamHarnessSetup` preflight teardown switched to
   `BypassAllResidueForHarnessRefresh`; `runAwsIamHarnessTeardown`
-  (postflight) keeps `BypassPerRunResidueOnly` so the operator may
-  legitimately preserve `aws.*` to destroy `aws-ses` at end-of-run.
+  (postflight) keeps `BypassPerRunResidueOnly` at this sprint on the
+  premise that the operator may preserve `aws.*` to destroy `aws-ses`
+  at end-of-run. **(Superseded by Sprint 7.9: that premise was a
+  pre-Sprint-4.10 artifact — `aws-ses` is admin-credentialed post-4.10,
+  so the postflight was switched to `BypassAllResidueForHarnessRefresh`
+  to stop stranding the operational IAM user.)**
 - Two new unit tests in
   `test/unit/Main.hs::"Sprint 7.7 applyAwsTeardown residue policy"`:
   Scenario M (`aws-ses` live only, policy proceeds) and Scenario N
@@ -2254,6 +2261,249 @@ step `7` remain as deferred live regressions — they exercise paths (mutual-exc
 nothing-to-do exit, `--destroy-pulumi-residue` with `aws-ses` live) that the unit suite
 covers via pure helpers and structural assertions but cannot exercise end-to-end without
 real AWS credentials in the operator's hands.
+
+## Sprint 7.8: Operational-Credential Lifecycle via the Managed-Resource Registry 🔄
+
+**Status**: Active — operational-coverage core landed on the code-owned surface
+(2026-05-28). The two `Operational` resources are now registered and reconciled
+through `reconcileAbsent` inside `prodbox aws teardown`, with `Unreachable` failing
+closed. Not Done: no live `prodbox test all --substrate aws` roll-up has run, and the
+broader `PerRun` ∪ `Operational` merge of the teardown path is deferred to a tracked
+follow-on (the per-run Pulumi residue gating in `applyAwsTeardown` is unchanged).
+**Unblocked by**: Sprint 4.20, Sprint 4.21 (the registry + `reconcileAbsent` now exist
+and are reused here)
+**Implementation**: `src/Prodbox/Aws.hs`, `src/Prodbox/Lifecycle/ResourceRegistry.hs`
+**Docs to update**: `documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md` (§3.1 cross-ref)
+
+### Why Phase 7 reopened
+
+Phase 7 owns the `prodbox aws setup` / `aws teardown` command surface and the operational
+`prodbox` IAM-user lifecycle. The managed-resource-registry doctrine
+([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+scheduled in Phase 4 Sprints 4.20–4.22) re-expresses teardown as a uniform reconciliation over
+a typed registry. Because that changes how this phase's own commands behave, Phase 7 reopens
+for this one sprint to adopt the registry. Phases 5 and 6, and the rest of Phase 7's owned
+surfaces (Sprints 7.1–7.7, and the Sprint 7.5 AWS-substrate parity work), remain closed/active
+on their own surfaces and are not contradicted — `aws setup`/`teardown` keep their behavior;
+they are simply expressed through the registry rather than as a bespoke imperative sequence.
+This is the documented motivation for the in-session leak incident: the operational IAM user
+and operational `aws.*` config block were created by `aws setup` but had no registered
+discover/destroy, so an interrupted run leaked both undetected.
+
+### Objective
+
+Register the two `Operational`-class resources and reconcile them through the registry, closing
+the coverage half of the IAM blind spot
+([lifecycle_reconciliation_doctrine.md § 6a](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
+
+### Deliverables
+
+Landed (operational-coverage core):
+
+- The operational `prodbox` IAM user and the operational `aws.*` config block are registered
+  `Operational` `ManagedResource` entries defined in `src/Prodbox/Aws.hs`
+  (`operationalManagedResources`), reusing the existing
+  `deleteExistingOperationalKeys` / `deleteUserPolicyIfPresent` /
+  `deleteOperationalUserIfPresent` IAM-delete paths and the factored-out
+  `clearOperationalAwsConfig` for the `aws.*` clear. The entries are defined in `Aws.hs`
+  (not `ResourceRegistry.hs`) to keep `ResourceRegistry` from importing `Aws` — it reuses the
+  shared `ManagedResource` type + `reconcileAbsent`.
+- Discover is pure-mapped from existing probes: `operationalIamUserResidueFromExists`
+  (over `operationalIamUserExists`) and `operationalAwsConfigResidueFromKey` (over the
+  configured `aws.access_key_id`), assembled by the IO `discoverOperationalResidue`.
+- `prodbox aws teardown` destroys the operational resources via `reconcileAbsent` over the
+  `Operational` pairs — idempotent on re-run (already-absent → no-op), and **fails closed** on
+  any `Operational`-class `ResidueUnreachable` (e.g. AWS IAM unobservable): a separate gate in
+  `runTeardown` refuses with a named-resource message rather than letting `reconcileAbsent`'s
+  cascade graceful-degradation silently skip an unreachable operational resource. The
+  read-only `listOperationalAccessKeyIds` records the pre-reconcile keys so
+  `IamTeardownResult` keeps reporting `DELETED_ACCESS_KEYS` / `USER_DELETED`.
+
+Deferred to a tracked follow-on (NOT this sprint):
+
+- The broader re-expression of `prodbox aws teardown` as `reconcileAbsent` over the
+  **`PerRun` ∪ `Operational`** subset. The existing `PulumiResiduePolicy` branching and
+  per-run residue handling in `applyAwsTeardown` are left byte-identical; only the operational
+  half is registry-driven.
+- `prodbox aws setup` recording its created resources through the registry.
+
+### Validation
+
+Done (fast gates, no live AWS):
+
+- `prodbox check-code` → exit 0 (warning-clean build + lint + the Sprint 4.22 totality scan).
+- `prodbox test unit` → 594 examples pass (was 585; +9 in the new
+  `Sprint 7.8 operational-resource registry` group exercising the pure residue-mappers and the
+  two-entry `operationalManagedResources` table, asserting the names match
+  `resourceNamesOfClass Operational`).
+- `prodbox test integration cli` / `env` → 30/30 each. The fake AWS CLI learned an
+  `iam get-user` case so teardown's new discover probe observes the operational user's
+  presence/absence accurately (instead of mapping the unhandled command to `Unreachable` and
+  refusing); re-running `aws teardown` converges and stale `aws.*` creds reconcile to empty.
+
+Remaining (not run here): live `prodbox test all --substrate aws` roll-up.
+
+### Remaining Work
+
+- Live `prodbox test all --substrate aws` exercise (rolls up the operational teardown on a real
+  account).
+- The `PerRun` ∪ `Operational` teardown merge (tracked follow-on; per-run residue gating
+  unchanged by this sprint).
+
+**2026-05-30 — reaffirmation.** `prodbox test all` run #6 on the home substrate exercised the
+registry-driven `aws teardown` cleanly: the postflight reconciled both `Operational`-class
+entries (the operational `prodbox` IAM user and the operational `aws.*` config block) to absent
+without incident; post-run AWS state verified clean (operational `aws.*` empty, only the retained
+admin-managed IAM users `prodbox-admin-temp` and `prodbox-ses-smtp` remain).
+
+## Sprint 7.9: Harness Postflight Teardown No Longer Gates on Admin-Managed `aws-ses` ✅
+
+**Status**: Done on the code-owned surface (2026-05-29)
+**Implementation**: `src/Prodbox/Aws.hs` (`runAwsIamHarnessTeardown` postflight switched from
+`BypassPerRunResidueOnly` to `BypassAllResidueForHarnessRefresh`, with the post-4.10 rationale
+in the comment; new pure SSoT helper `harnessPostflightResiduePolicy` exported so the choice is
+unit-testable without IO; the stale "destroy aws-ses first" refusal message replaced with the
+accurate Sprint 7.8 fail-closed-gate message); `test/unit/Main.hs` (new
+`Sprint 7.9 harness postflight no longer gates on admin-managed aws-ses` describe block);
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` (`BypassPerRunResidueOnly` now
+harness-internal-but-unused).
+**Docs to update**: `documents/engineering/aws_admin_credentials.md` (§4.1, §5),
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Close an operational-user stranding bug: every `prodbox test all` run that has the long-lived
+`aws-ses` stack alive (its retained-by-design steady state) ended with the harness postflight
+**refusing** to clear operational `aws.*`, stranding the freshly-created operational `prodbox`
+IAM user — the opposite of the leak-free goal.
+
+### History (why the refusal was correct, then went stale)
+
+1. **Sprint 7.7 (May 19, 2026)** introduced the `aws-ses` refusal (`BypassPerRunResidueOnly`).
+   At that time — *before* Sprint 4.10 — the `aws-ses` stack was managed with **operational**
+   `aws.*` creds, so clearing `aws.*` genuinely stranded `aws-ses` from its destroy surface.
+   The refusal was correct then.
+2. **Sprint 4.10 (May 21, 2026)** moved `aws-ses` to **admin** creds
+   (`aws_admin_for_test_simulation.*`) and the long-lived S3 backend.
+   `ensureAwsSesStackResources` / `destroyAwsSesStackStatus` now authenticate via
+   `pulumiSesAdminBaseEnv` / `loadAdminAwsCredentials` (admin), never operational. After this,
+   clearing operational `aws.*` can no longer strand `aws-ses`.
+3. **Sprint 7.5.c.v.c (May 20, 2026)** fixed the *preflight* `runAwsIamHarnessSetup` the same
+   way (switched it to the new `BypassAllResidueForHarnessRefresh` constructor) but deliberately
+   left the *postflight* `runAwsIamHarnessTeardown` on `BypassPerRunResidueOnly` "because at
+   end-of-run the operator may legitimately need `aws.*` preserved to destroy `aws-ses`" — a
+   pre-4.10 premise that is now false.
+4. **Sprint 7.9 (this sprint)** corrects the postflight: it is the same admin-managed `aws-ses`,
+   so clearing operational `aws.*` cannot strand it; per-run stacks are destroyed separately by
+   `awsPostflightDestroyActions` before teardown. The postflight bypasses all residue and clears
+   `aws.*` unconditionally, matching the preflight.
+
+This **supersedes** the Sprint 7.5.c.v.c "postflight keeps `BypassPerRunResidueOnly`" decision
+and the Sprint 7.7 postflight refusal on long-lived `aws-ses` residue.
+
+### The fix
+
+One-line policy swap in `runAwsIamHarnessTeardown`:
+`awsTeardownResiduePolicy = BypassPerRunResidueOnly` →
+`awsTeardownResiduePolicy = BypassAllResidueForHarnessRefresh` (the constructor already exists
+with the correct `-> runTeardown` branch in `applyAwsTeardown`). The `BypassPerRunResidueOnly`
+constructor and its `applyAwsTeardown` case branch are retained as a valid ADT member (it still
+refuses on long-lived residue) but have no production caller after this sprint; it is tracked in
+[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) `Pending Removal`. The
+preflight `runAwsIamHarnessSetup` is unchanged (already `BypassAllResidueForHarnessRefresh`).
+
+### Deferred follow-on (NOT addressed here)
+
+The lost `aws-ses` Pulumi state (the long-lived S3 backend bucket `prodbox-pulumi-state-long-lived`
+missing, leaving `aws-ses` Pulumi-unmanageable until re-imported / re-provisioned) is a
+**separate** issue. Sprint 7.9 only stops the operational-user stranding; it does not address the
+lost-`aws-ses`-state problem.
+
+### Validation
+
+Fast gates (no live AWS):
+
+- `prodbox check-code` → exit 0.
+- `prodbox test unit` → all pass (new `Sprint 7.9` describe block added).
+- `prodbox test integration cli` / `env` → exit 0 each.
+- `prodbox docs check` / `prodbox lint docs` → exit 0 (governed docs reconciled).
+
+Not run here: live `prodbox test all --substrate aws` roll-up (confirms an `aws-ses`-live run
+ends with operational `aws.*` cleared and the operational `prodbox` IAM user deleted).
+
+### Remaining Work
+
+- Live `prodbox test all --substrate aws` exercise confirming the postflight clears operational
+  `aws.*` while `aws-ses` is live.
+- Eventual removal of the now-unused `BypassPerRunResidueOnly` constructor (tracked in
+  `legacy-tracking-for-deletion.md`).
+
+**2026-05-30 — reaffirmation.** `prodbox test all` run #6 on the home substrate completed
+postflight without the stale `aws-ses` refusal: the postflight cleared operational `aws.*` and
+deleted the operational `prodbox` IAM user cleanly while the long-lived `aws-ses` stack was
+retained as-is (untouched, by design).
+
+## Sprint 7.10: Harness Postflight Preserves Operational Creds When the Per-Run Auto-Destroy Fails ✅
+
+**Status**: Done (2026-05-29), fast-gate-validated
+**Implementation**: `src/Prodbox/TestRunner.hs`
+(`runWithAwsHarnessCleanup` now runs the operational-credential teardown
+`runManagedAwsHarnessTeardown` **only when the per-run destroy succeeded**, gated by the new
+pure helper `clearOperationalCredsAfterPostflight :: ExitCode -> Bool` — `True` iff
+`ExitSuccess`, exported for unit testing; on a per-run destroy failure the teardown is held, the
+operational `aws.*` + operational `prodbox` IAM user are preserved, and a diagnostic explains
+the retry path); `test/unit/Main.hs` (new
+`Sprint 7.10 harness preserves creds on per-run destroy failure` describe block).
+**Docs to update**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/00-overview.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`.
+
+### Objective
+
+Close a leak amplifier observed on the May 28/29 live `prodbox test all` run: the per-run
+`aws-eks-test` Pulumi destroy failed with `DependencyViolation` (orphan ENIs lagging async
+cleanup — the root cause of which Sprint 4.23 addresses), but the harness postflight then went
+on to clear operational `aws.*` and delete the operational `prodbox` IAM user **anyway**,
+stranding the orphaned per-run stacks without the operational credentials needed to destroy them
+on retry.
+
+### The fix
+
+`runWithAwsHarnessCleanup` already runs the per-run Pulumi destroys
+(`awsPostflightDestroyActions`) on every exit path — success, failure, and async exception
+(Ctrl-C) — per Sprint 7.6, and that stays. What changes is the **operational-credential
+teardown**: it now runs only when `clearOperationalCredsAfterPostflight destroyExit` is `True`
+(i.e. the per-run destroy succeeded). On `ExitFailure`, the teardown is skipped, the operational
+`aws.*` + operational `prodbox` user are preserved, and a diagnostic (via `writeDiagnosticLine`)
+names the recovery path: resolve the destroy failure (e.g. wait out / clean up the orphan ENIs
+behind the `DependencyViolation`), then `prodbox pulumi <stack>-destroy --yes` for each remaining
+per-run stack, then `prodbox aws teardown`. The change applies on **both** the normal (`Right`)
+and async-exception (`Left exc`) paths. A per-run destroy failure is still surfaced as a non-zero
+exit via `preferEarlierFailure` composition.
+
+### Relationship to Sprint 7.9
+
+This is the per-run analog of Sprint 7.9. Sprint 7.9 said "don't **block** the teardown on
+admin-managed `aws-ses` residue" (clearing operational creds cannot strand the admin-credential
+`aws-ses` stack). Sprint 7.10 says "**DO hold** the teardown when the per-run auto-destroy —
+which *does* need operational creds — failed." The two are complementary: 7.9 stops the teardown
+from refusing when it safely could proceed; 7.10 stops the teardown from proceeding when doing so
+would strand operational-credential-owned orphans.
+
+### Validation
+
+Fast gates (no live AWS):
+
+- `prodbox check-code` → exit 0.
+- `prodbox test unit` → all pass (new `Sprint 7.10` describe block, 2 new tests).
+- `prodbox test integration cli` / `env` → exit 0 each.
+- `prodbox docs check` / `prodbox lint docs` → exit 0.
+
+The pure decision (`clearOperationalCredsAfterPostflight`) is fully unit-tested; the IO wiring in
+`runWithAwsHarnessCleanup` is thin (one gated call). No live AWS required.
 
 ## Documentation Requirements
 

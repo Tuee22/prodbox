@@ -34,6 +34,13 @@ state-machine, output, and one-shot `App` foundations are code-backed and test-c
 standardized library audit is documented against the retained dependency set. Sprints `1.6`–`1.27`
 are implemented in code, doc-aligned, and validated locally.
 
+Phase `1` remains `Done` and is not reopened by the managed-resource-registry doctrine
+([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md),
+scheduled in Phase `4` Sprints `4.20`–`4.22`). That registry is a Phase `4` lifecycle
+abstraction **built on** these Phase `1` foundations — the `Plan` / `Apply` discipline
+(Sprint `1.7`), the declare-and-interpret Effect DAG (`src/Prodbox/EffectDAG.hs`), and the
+capability classes + `AsServiceError` (Sprints `1.12`/`1.13`) — not a change to them.
+
 ## Phase Summary
 
 This phase establishes the Haskell `prodbox` binary, the canonical Cabal build topology, the

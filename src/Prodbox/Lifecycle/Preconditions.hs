@@ -25,6 +25,8 @@ module Prodbox.Lifecycle.Preconditions
   , noLiveLongLivedPulumiStacks
   , noUndrainedK8sAwsResources
   , renderPreconditionFailures
+  , perRunSummaryLine
+  , renderPerRunRefusal
   )
 where
 
@@ -35,13 +37,14 @@ import Prodbox.Aws
   , operationalIamUserExists
   , prodboxIamUserName
   )
-import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
-import Prodbox.Infra.AwsEksTestStack (awsEksTestStackResidueStatus)
-import Prodbox.Infra.AwsSesStack (awsSesStackResidueStatus)
-import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
 import Prodbox.Lifecycle.K8sDrain
   ( K8sDrainEnv
   , collectSurvivors
+  )
+import Prodbox.Lifecycle.LiveResidue
+  ( PerRunResidueStatuses (..)
+  , queryAwsSesResidueStatus
+  , queryPerRunResidueStatuses
   )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.TagSweep
@@ -113,47 +116,89 @@ noLivePerRunPulumiStacks repoRoot =
   Precondition
     { preconditionLabel = "noLivePerRunPulumiStacks"
     , preconditionCheck = do
-        eksStatus <- awsEksTestStackResidueStatus repoRoot
-        subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
-        testStatus <- awsTestStackResidueStatus repoRoot
-        let live =
-              [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-              | ResidueStatus.isResiduePresentOrUnknownPerRun eksStatus
+        perRun <- queryPerRunResidueStatuses repoRoot
+        let stacks =
+              [ ("aws-eks", "prodbox pulumi eks-destroy --yes", perRunAwsEksTest perRun)
+              , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes", perRunAwsEksSubzone perRun)
+              , ("aws-test", "prodbox pulumi test-destroy --yes", perRunAwsTest perRun)
               ]
-                ++ [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-                   | ResidueStatus.isResiduePresentOrUnknownPerRun subzoneStatus
-                   ]
-                ++ [ ("aws-test", "prodbox pulumi test-destroy --yes")
-                   | ResidueStatus.isResiduePresentOrUnknownPerRun testStatus
-                   ]
-        pure $ case live of
-          [] -> Right ()
+            -- Sprint 4.19: branch on the constructor so the two failure
+            -- modes get distinct, actionable refusals. `ResiduePresent`
+            -- means we read live resources and the operator can destroy
+            -- them; `ResidueUnreachable` means we could NOT read the
+            -- per-run Pulumi state backend at all, so we must refuse
+            -- rather than silently assume the resources are gone.
+            live =
+              [ (name, cmd)
+              | (name, cmd, status) <- stacks
+              , ResidueStatus.isResiduePresent status
+              ]
+            unreadable =
+              [ (name, ResidueStatus.renderResidueStatus status)
+              | (name, _, status) <- stacks
+              , ResidueStatus.isResidueUnreachable status
+              ]
+        pure $ case (live, unreadable) of
+          ([], []) -> Right ()
           _ ->
             Left
               StructuredError
                 { errorPreconditionLabel = "noLivePerRunPulumiStacks"
-                , errorSummaryLine =
-                    "Per-run Pulumi-managed AWS stacks still have live resources."
-                , errorOffendingItems = live
-                , errorNarrative = renderPerRunRefusal live
+                , errorSummaryLine = perRunSummaryLine live unreadable
+                , errorOffendingItems =
+                    live
+                      ++ [ (name, "per-run Pulumi state backend unreachable: " ++ detail)
+                         | (name, detail) <- unreadable
+                         ]
+                , errorNarrative = renderPerRunRefusal live unreadable
                 }
     }
 
-renderPerRunRefusal :: [(String, String)] -> String
-renderPerRunRefusal live =
-  unlines
-    ( [ "Refused: per-run Pulumi-managed AWS stacks still have live resources."
-      , ""
-      , "Run the canonical destroy command for each stack below first:"
-      , ""
-      ]
-        ++ map (\(name, cmd) -> "  - " ++ name ++ " → " ++ cmd) live
-        ++ [ ""
-           , "Or re-run with `--cascade` to orchestrate the full teardown"
-           , "(K8s drain → per-run Pulumi destroys → uninstall → postflight"
-           , "tag sweep) as one atomic operator action."
-           ]
-    )
+perRunSummaryLine :: [(String, String)] -> [(String, String)] -> String
+perRunSummaryLine live unreadable
+  | not (null live) && not (null unreadable) =
+      "Per-run Pulumi-managed AWS stacks still have live resources, and some per-run state backends are unreachable."
+  | not (null live) =
+      "Per-run Pulumi-managed AWS stacks still have live resources."
+  | otherwise =
+      "Per-run Pulumi state backend is unreachable; cannot confirm per-run AWS resources are destroyed."
+
+renderPerRunRefusal :: [(String, String)] -> [(String, String)] -> String
+renderPerRunRefusal live unreadable =
+  unlines (liveSection ++ unreadableSection)
+ where
+  liveSection
+    | null live = []
+    | otherwise =
+        [ "Refused: per-run Pulumi-managed AWS stacks still have live resources."
+        , ""
+        , "Run the canonical destroy command for each stack below first:"
+        , ""
+        ]
+          ++ map (\(name, cmd) -> "  - " ++ name ++ " → " ++ cmd) live
+          ++ [ ""
+             , "Or re-run with `--cascade` to orchestrate the full teardown"
+             , "(K8s drain → per-run Pulumi destroys → uninstall → postflight"
+             , "tag sweep) as one atomic operator action."
+             , ""
+             ]
+  unreadableSection
+    | null unreadable = []
+    | otherwise =
+        [ "Refused: the per-run Pulumi state backend (in-cluster MinIO) could not"
+        , "be read, so per-run AWS resources cannot be confirmed destroyed:"
+        , ""
+        ]
+          ++ map (\(name, detail) -> "  - " ++ name ++ " → " ++ detail) unreadable
+          ++ [ ""
+             , "An unreachable state backend usually means the cluster (or its MinIO"
+             , "pod) is not running. The per-run Pulumi state may still be intact on"
+             , "`.data/` — do NOT delete `.data/` until it is confirmed destroyed."
+             , ""
+             , "Bring the cluster/MinIO back up so the per-run stacks can be read and"
+             , "destroyed, or — if you accept the orphan risk — re-run with"
+             , "`--allow-pulumi-residue` to proceed without this check."
+             ]
 
 -- | Long-lived cross-substrate shared Pulumi stacks. Today this is
 -- @aws-ses@. @prodbox aws teardown@ refuses on these; @prodbox nuke@
@@ -163,10 +208,10 @@ noLiveLongLivedPulumiStacks repoRoot =
   Precondition
     { preconditionLabel = "noLiveLongLivedPulumiStacks"
     , preconditionCheck = do
-        sesStatus <- awsSesStackResidueStatus repoRoot
+        sesStatus <- queryAwsSesResidueStatus repoRoot
         let live =
               [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
-              | ResidueStatus.isResiduePresentOrUnknownLongLived sesStatus
+              | ResidueStatus.residueBlocksTeardownGate sesStatus
               ]
         pure $ case live of
           [] -> Right ()

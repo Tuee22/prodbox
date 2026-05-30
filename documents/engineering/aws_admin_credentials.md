@@ -118,17 +118,46 @@ After you finish the native IAM validation task:
 The repository accepts an empty `aws_admin_for_test_simulation` section specifically so temporary
 admin credentials can be short-lived.
 
-### 4.1 Harness Teardown Long-Lived Residue Refusal (Sprint 7.7)
+### 4.1 Harness Teardown Residue Policy (Sprint 7.7 → superseded for the postflight by Sprint 7.9)
 
-Step 6 above now refuses to clear operational `aws.*` when long-lived cross-substrate shared
-infrastructure (today: the `aws-ses` Pulumi stack) is still alive. The harness-internal
-teardown path uses `BypassPerRunResidueOnly` (not the operator-driven `AcceptOrphanResidue`
-that `--allow-pulumi-residue` selects), which means per-run stacks (`aws-eks`,
-`aws-eks-subzone`, `aws-test`) are silently bypassed because `awsPostflightDestroyActions`
-handles them in the same suite-exit unwind, but `aws-ses` causes an actionable refusal.
+**Sprint 7.7 history (correct pre-Sprint-4.10).** When Sprint 7.7 (May 19, 2026) introduced
+the harness-internal `BypassPerRunResidueOnly` policy, the long-lived `aws-ses` Pulumi stack
+was managed with *operational* `aws.*` credentials, so clearing operational `aws.*` at the end
+of a run genuinely stranded `aws-ses` from its destroy surface. Refusing to clear `aws.*`
+while `aws-ses` was live was therefore the correct behavior at that time: per-run stacks
+(`aws-eks`, `aws-eks-subzone`, `aws-test`) were bypassed because `awsPostflightDestroyActions`
+handles them in the same suite-exit unwind, but `aws-ses` caused an actionable refusal.
 
-If a pre-Sprint-7.7 run stranded your operational creds (the May 19, 2026 reproduction
-scenario), `aws-ses` resources in AWS are unaffected — only `prodbox-config.dhall::aws.*`
+**Sprint 4.10 invalidated the premise.** Sprint 4.10 (May 21, 2026) moved `aws-ses` to *admin*
+credentials (`aws_admin_for_test_simulation.*`) and the long-lived S3 state backend.
+`ensureAwsSesStackResources` / `destroyAwsSesStackStatus` now authenticate via
+`pulumiSesAdminBaseEnv` / `loadAdminAwsCredentials` (admin), never operational `aws.*`. After
+this change, clearing operational `aws.*` can no longer strand `aws-ses` — the admin
+credentials that drive `aws-ses` outlive any single run and are never cleared by any teardown
+command (see [lifecycle_reconciliation_doctrine.md §2](./lifecycle_reconciliation_doctrine.md)).
+
+**Sprint 7.5.c.v.c fixed the preflight only.** Sprint 7.5.c.v.c (May 20, 2026) switched the
+harness *preflight* (`runAwsIamHarnessSetup`) to the new `BypassAllResidueForHarnessRefresh`
+policy (bypass both per-run AND long-lived residue) but deliberately left the *postflight*
+(`runAwsIamHarnessTeardown`) on `BypassPerRunResidueOnly`, on the now-stale premise that the
+operator might need operational `aws.*` preserved to destroy `aws-ses`.
+
+**Sprint 7.9 corrects the postflight.** Because the Sprint 7.5.c.v.c "preserve `aws.*` to
+destroy `aws-ses`" rationale was a pre-4.10 premise that is now false, the postflight stranded
+a freshly-created operational `prodbox` IAM user on every run where `aws-ses` was live (its
+retained-by-design steady state) — the opposite of the leak-free goal. Sprint 7.9
+(2026-05-29) switches `runAwsIamHarnessTeardown` to `BypassAllResidueForHarnessRefresh`,
+matching the preflight: the postflight now clears operational `aws.*` and deletes the
+operational `prodbox` IAM user unconditionally with respect to Pulumi residue. Per-run stacks
+are still destroyed separately by `awsPostflightDestroyActions` before the teardown runs; the
+long-lived `aws-ses` stack is correctly *not* stranded because it is admin-credentialed. The
+`BypassPerRunResidueOnly` constructor remains a valid ADT member (it still refuses on long-lived
+residue) but no longer has a production caller. See
+[DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md → Sprint 7.9](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md).
+
+If a pre-Sprint-7.9 run stranded your operational creds (the May 19, 2026 reproduction
+scenario was the pre-7.7 variant; the pre-7.9 variant is an `aws-ses`-live postflight
+refusal), `aws-ses` resources in AWS are unaffected — only `prodbox-config.dhall::aws.*`
 was emptied. Recovery:
 
 1. `prodbox aws setup` (interactive) — paste the temporary admin key. `prodbox` recreates
@@ -136,9 +165,10 @@ was emptied. Recovery:
    be retained as designed.
 2. Optional, only if you want `aws-ses` destroyed (note the 5–30 min SES DKIM
    re-verification cost on next reprovision and the ~24-hour S3 bucket name reuse
-   cooldown): either `prodbox pulumi aws-ses-destroy --yes` followed by `prodbox aws
-   teardown`, or — Sprint 7.7 — `prodbox aws teardown --destroy-pulumi-residue` in one
-   step (warns about the SES costs before dispatching).
+   cooldown): either `prodbox pulumi aws-ses-destroy --yes` (admin-credentialed; does not
+   require operational `aws.*`) followed by `prodbox aws teardown`, or — Sprint 7.7 —
+   `prodbox aws teardown --destroy-pulumi-residue` in one step (warns about the SES costs
+   before dispatching).
 
 ---
 
@@ -148,8 +178,8 @@ Operational `prodbox.aws.*` is the steady-state credential surface for every AWS
 `prodbox` command. It is consumed by, at minimum:
 
 - `prodbox rke2 reconcile` (cert-manager Route 53 DNS01 issuance)
-- `prodbox pulumi <stack>-resources` and `prodbox pulumi <stack>-destroy` (every Pulumi stack
-  under `pulumi/`: `aws-eks`, `aws-eks-subzone`, `aws-test`, `aws-ses`)
+- `prodbox pulumi <stack>-resources` and `prodbox pulumi <stack>-destroy` for the **per-run**
+  stacks under `pulumi/`: `aws-eks`, `aws-eks-subzone`, `aws-test`
 - `prodbox charts deploy ... --substrate aws` and `prodbox charts delete ... --substrate aws`
 - `prodbox host public-edge` when the host's substrate selection points at AWS
 - every named validation under `prodbox test integration <name> --substrate aws`
@@ -158,6 +188,17 @@ All of the above fail fast with `aws.access_key_id must not be empty` when the o
 section is unpopulated. There is no fallback to host AWS state, host profiles, or instance
 metadata — see [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md)
 for the no-ambient-auth rule.
+
+The **long-lived** stack `aws-ses` is the exception: per Sprint 4.10 it is admin-credentialed
+(`aws_admin_for_test_simulation.*` + the long-lived S3 state backend), not operationally
+credentialed. `prodbox pulumi aws-ses-resources` and `prodbox pulumi aws-ses-destroy`
+authenticate through `loadAdminAwsCredentials` / `pulumiSesAdminBaseEnv` and therefore do
+**not** require operational `aws.*` to be populated — they do not fail fast on an empty
+operational section. This is why the Sprint 7.9 harness postflight can clear operational
+`aws.*` even while `aws-ses` is live without stranding it (§4.1). The credential-class
+assignment is owned by
+[lifecycle_reconciliation_doctrine.md §2](./lifecycle_reconciliation_doctrine.md) (long-lived
+stacks + bucket bootstrap → admin creds; per-run stacks → operational `aws.*`).
 
 Two supported population paths exist; pick exactly one per workflow shape:
 

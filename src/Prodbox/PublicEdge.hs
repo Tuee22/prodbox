@@ -26,11 +26,13 @@ module Prodbox.PublicEdge
 where
 
 import Control.Exception (bracket_)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Infra.AwsEksSubzoneStack
-  ( AwsEksSubzoneStackSnapshot (..)
-  , loadAwsEksSubzoneStackSnapshot
+import Prodbox.Infra.StackOutputs (StackName (..))
+import Prodbox.Lifecycle.LiveResidue
+  ( awsEksSubzoneStackName
+  , fetchPerRunStackOutputs
   )
 import Prodbox.Settings
   ( AwsSubstrateSection (..)
@@ -174,16 +176,23 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
       if not (Text.null configured)
         then pure (Right configured)
         else do
-          snapshotResult <- loadAwsEksSubzoneStackSnapshot repoRoot
-          pure $ case snapshotResult of
-            Just snap -> Right (Text.pack (subzoneSnapshotSubzoneId snap))
-            Nothing ->
+          -- Sprint 4.18: read the hosted zone ID from the live
+          -- aws-eks-subzone Pulumi outputs rather than the legacy
+          -- `.prodbox-state/aws-eks-subzone/stack-snapshot.json` file.
+          outputsResult <-
+            fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksSubzoneStackName))
+          pure $ case outputsResult of
+            Right outputs
+              | Just subzoneId <- Map.lookup "subzone_id" outputs
+              , not (Text.null subzoneId) ->
+                  Right subzoneId
+            _ ->
               Left
                 "resolveSubstrateHostedZoneId: aws_substrate.hosted_zone_id is \
-                \empty and no live aws-eks-subzone Pulumi stack snapshot is \
-                \available. Run `prodbox pulumi aws-subzone-resources --yes` \
-                \to provision the subzone, or set aws_substrate.hosted_zone_id \
-                \in prodbox-config.dhall."
+                \empty and the live aws-eks-subzone Pulumi backend has no \
+                \subzone_id output. Run `prodbox pulumi aws-subzone-resources \
+                \--yes` to provision the subzone, or set \
+                \aws_substrate.hosted_zone_id in prodbox-config.dhall."
 
 substrateKubeconfigPath :: FilePath -> Substrate -> Maybe FilePath
 substrateKubeconfigPath repoRoot substrate =

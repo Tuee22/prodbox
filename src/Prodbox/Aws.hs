@@ -11,10 +11,15 @@ module Prodbox.Aws
   , applyAwsTeardown
   , buildIamPolicyDocument
   , buildIamPolicyJson
+  , categorizePulumiResidue
   , checkPulumiResidueBeforeTeardown
+  , harnessPostflightResiduePolicy
   , longLivedStackNames
+  , operationalAwsConfigResidueFromKey
   , operationalBootstrapDnsRecordExists
   , operationalIamUserExists
+  , operationalIamUserResidueFromExists
+  , operationalManagedResources
   , partitionResidueByLifecycle
   , perRunStackNames
   , promptAdminCredentialsWithRegionChoice
@@ -102,11 +107,17 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.Error (fatalError)
-import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
-import Prodbox.Infra.AwsEksTestStack (awsEksTestStackResidueStatus)
-import Prodbox.Infra.AwsSesStack (awsSesStackResidueStatus)
-import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
+import Prodbox.Lifecycle.LiveResidue
+  ( PerRunResidueStatuses (..)
+  , queryAwsSesResidueStatus
+  , queryPerRunResidueStatuses
+  )
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
+import Prodbox.Lifecycle.ResourceRegistry
+  ( ManagedResource (..)
+  , reconcileAbsent
+  )
 import Prodbox.Repo
   ( ConfigPaths (..)
   , canonicalConfigPaths
@@ -283,15 +294,19 @@ sessionTokenPromptShape accessKeyId
 -- stacks are auto-managed by the test runner's
 -- 'awsPostflightDestroyActions' and may safely be bypassed by the
 -- harness-internal 'BypassPerRunResidueOnly' policy.
+-- Sprint 4.20: derived from the managed-resource registry facts in
+-- 'Prodbox.Lifecycle.ResourceClass' so this list cannot drift from the
+-- single source of truth (the per-run Pulumi stacks are exactly the
+-- 'PerRun'-class entries).
 perRunStackNames :: [String]
-perRunStackNames = ["aws-eks", "aws-eks-subzone", "aws-test"]
+perRunStackNames = ResourceClass.resourceNamesOfClass ResourceClass.PerRun
 
 -- | Long-lived cross-substrate shared Pulumi stack names per
 -- @DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes@. These
 -- are retained by design; the harness must NEVER bypass residue refusal
--- for them.
+-- for them. Sprint 4.20: derived from the registry facts.
 longLivedStackNames :: [String]
-longLivedStackNames = ["aws-ses"]
+longLivedStackNames = ResourceClass.resourceNamesOfClass ResourceClass.LongLived
 
 -- | Sprint 7.7 — partition residue tuples into (per-run, long-lived)
 -- buckets using 'perRunStackNames'. The partition keys must match the
@@ -300,6 +315,23 @@ longLivedStackNames = ["aws-ses"]
 partitionResidueByLifecycle
   :: [(String, String)] -> ([(String, String)], [(String, String)])
 partitionResidueByLifecycle = partition (\(name, _) -> name `elem` perRunStackNames)
+
+-- | Sprint 7.9 — the residue policy used by the end-of-run harness
+-- postflight teardown ('runAwsIamHarnessTeardown'). Named as a pure
+-- single source of truth so the postflight's policy choice is testable
+-- without exercising IO.
+--
+-- It is 'BypassAllResidueForHarnessRefresh' (not the Sprint 7.7
+-- 'BypassPerRunResidueOnly'): post-Sprint-4.10 the long-lived @aws-ses@
+-- stack is admin-credentialed (@aws_admin_for_test_simulation.*@ + the
+-- long-lived S3 state backend), so clearing operational @aws.*@ cannot
+-- strand it from its destroy surface. The postflight therefore bypasses
+-- both per-run AND long-lived residue and clears @aws.*@ unconditionally,
+-- matching the preflight ('runAwsIamHarnessSetup', Sprint 7.5.c.v.c).
+-- This supersedes the Sprint 7.7 postflight refusal and the Sprint
+-- 7.5.c.v.c decision to keep the postflight on 'BypassPerRunResidueOnly'.
+harnessPostflightResiduePolicy :: PulumiResiduePolicy
+harnessPostflightResiduePolicy = BypassAllResidueForHarnessRefresh
 
 -- | Sprint 7.7 — canonical destroy order for
 -- 'DestroyPulumiResidueFirst'. Mirrors 'awsPostflightDestroyActions':
@@ -1116,23 +1148,45 @@ runAwsIamHarnessTeardown repoRoot = do
       repoRoot
       AwsTeardownInput
         { awsTeardownAdminCredentials = credentials
-        , -- Sprint 7.7: BypassPerRunResidueOnly (was unconditional True).
-          -- The harness refuses on long-lived aws-ses residue rather
-          -- than silently clearing aws.* and stranding the stack from
-          -- the supported destroy surface. Per-run residue is still
-          -- bypassed because awsPostflightDestroyActions handles those
-          -- stacks in the same suite-exit unwind.
-          awsTeardownResiduePolicy = BypassPerRunResidueOnly
+        , -- Sprint 7.9: BypassAllResidueForHarnessRefresh (was
+          -- BypassPerRunResidueOnly from Sprint 7.7). Post-Sprint-4.10,
+          -- the long-lived aws-ses stack is admin-managed: its resources
+          -- (ensureAwsSesStackResources / destroyAwsSesStackStatus)
+          -- authenticate via pulumiSesAdminBaseEnv / loadAdminAwsCredentials
+          -- (aws_admin_for_test_simulation.*) against the long-lived S3
+          -- state backend, never operational aws.*. So clearing operational
+          -- aws.* here can no longer strand aws-ses from its destroy
+          -- surface, and the old long-lived refusal (correct pre-4.10, when
+          -- aws-ses was operationally credentialed) is now stale. Per-run
+          -- stacks are destroyed separately by awsPostflightDestroyActions
+          -- before this teardown runs. Therefore the postflight bypasses
+          -- ALL residue and clears aws.* unconditionally, matching the
+          -- preflight (Sprint 7.5.c.v.c). This supersedes the Sprint 7.7
+          -- postflight refusal and the Sprint 7.5.c.v.c decision to keep
+          -- the postflight on BypassPerRunResidueOnly. The policy is named
+          -- in 'harnessPostflightResiduePolicy' as a pure SSoT so the
+          -- choice is unit-testable without IO.
+          awsTeardownResiduePolicy = harnessPostflightResiduePolicy
         }
   result <- case teardownResult of
     Left err ->
+      -- Sprint 7.9: with BypassAllResidueForHarnessRefresh the teardown no
+      -- longer refuses on long-lived Pulumi residue (aws-ses is
+      -- admin-managed; see the policy comment above). The only remaining
+      -- refusal sources are the Sprint 7.8 operational fail-closed gate
+      -- (AWS IAM unreachable, so the operational user's live state cannot
+      -- be observed and "cannot observe" is never treated as "destroyed")
+      -- or a failed managed-resource reconcile. Surface the underlying
+      -- message rather than a stale "destroy aws-ses first" instruction.
       throwAws
-        ( "AWS IAM harness teardown refused while a long-lived shared "
-            ++ "Pulumi stack still has live resources. Operator must "
-            ++ "either destroy the stack (e.g. `prodbox pulumi "
-            ++ "aws-ses-destroy --yes`) or accept the orphan via the "
-            ++ "operator-driven `prodbox aws teardown "
-            ++ "--allow-pulumi-residue`. Underlying refusal message:\n"
+        ( "AWS IAM harness postflight teardown refused. The operational "
+            ++ "aws.* credentials and the operational `prodbox` IAM user "
+            ++ "were NOT torn down. This is the Sprint 7.8 fail-closed gate "
+            ++ "(AWS IAM unreachable, or a managed-resource reconcile "
+            ++ "failure) — not a long-lived Pulumi residue refusal, which "
+            ++ "Sprint 7.9 removed from the postflight. Resolve AWS "
+            ++ "connectivity / admin credentials and re-run `prodbox aws "
+            ++ "teardown`. Underlying refusal message:\n"
             ++ err
         )
     Right value -> pure value
@@ -1481,52 +1535,236 @@ applyAwsTeardown repoRoot input = do
   -- via 'perRunStackNames' / 'longLivedStackNames').
   let (_perRunResidue, longLivedResidue) = partitionResidueByLifecycle residue
   case awsTeardownResiduePolicy input of
-    AcceptOrphanResidue -> Right <$> runTeardown
-    BypassAllResidueForHarnessRefresh -> Right <$> runTeardown
+    AcceptOrphanResidue -> runTeardown
+    BypassAllResidueForHarnessRefresh -> runTeardown
     RefuseOnAnyResidue
-      | null residue -> Right <$> runTeardown
+      | null residue -> runTeardown
       | otherwise -> pure (Left (renderPulumiResidueRefusal residue))
     BypassPerRunResidueOnly
-      | null longLivedResidue -> Right <$> runTeardown
+      | null longLivedResidue -> runTeardown
       | otherwise -> pure (Left (renderPulumiResidueLongLivedRefusal longLivedResidue))
     DestroyPulumiResidueFirst
-      | null residue -> Right <$> runTeardown
+      | null residue -> runTeardown
       | otherwise -> do
           let destroyPlan = pulumiDestroyPlanForResidue residue
           destroyExit <- dispatchPulumiDestroysForResidue repoRoot destroyPlan
           case destroyExit of
             Left err -> pure (Left err)
-            Right () -> Right <$> runTeardown
+            Right () -> runTeardown
  where
-  runTeardown :: IO IamTeardownResult
+  adminCreds = awsTeardownAdminCredentials input
+
+  -- Sprint 7.8: reconcile the two 'Operational'-class managed resources
+  -- (the operational @prodbox@ IAM user and the operational @aws.*@ config
+  -- block) toward absent through the managed-resource registry, instead of
+  -- the previous inline delete sequence. Behavior is preserved for the
+  -- present and already-absent cases (same keys + inline policy + user
+  -- deleted, same @aws.*@ clear). The NEW soundness improvement is the
+  -- fail-closed gate: if either operational resource's residue is
+  -- 'ResidueUnreachable' (AWS IAM cannot be observed), teardown refuses
+  -- rather than treating "cannot observe" as "destroyed"
+  -- (@lifecycle_reconciliation_doctrine.md § 3.1@). 'reconcileAbsent'
+  -- deliberately skips 'ResidueUnreachable' for cascade graceful
+  -- degradation, so this gate is required here for the operational class.
+  runTeardown :: IO (Either String IamTeardownResult)
   runTeardown = do
-    deletedAccessKeys <- deleteExistingOperationalKeys repoRoot (awsTeardownAdminCredentials input)
-    deleteUserPolicyIfPresent repoRoot (awsTeardownAdminCredentials input)
-    userDeleted <- deleteOperationalUserIfPresent repoRoot (awsTeardownAdminCredentials input)
-    currentConfig <- loadConfigForWrite repoRoot
-    let currentRegion =
-          if Text.null (Text.strip (region (aws currentConfig)))
-            then region (awsTeardownAdminCredentials input)
-            else region (aws currentConfig)
-        updatedConfig =
-          currentConfig
-            { aws =
-                Credentials
-                  { access_key_id = ""
-                  , secret_access_key = ""
-                  , session_token = Nothing
-                  , region = currentRegion
-                  }
-            }
-        paths = canonicalConfigPaths repoRoot
-    writeConfigFile (configDhallPath paths) updatedConfig
-    pure
-      IamTeardownResult
-        { iamTeardownUserName = prodboxIamUserName
-        , iamTeardownDeletedAccessKeys = deletedAccessKeys
-        , iamTeardownUserDeleted = userDeleted
-        , iamTeardownDhallPath = configDhallPath paths
+    operationalPairs <- discoverOperationalResidue repoRoot adminCreds
+    let unreachable =
+          [ resourceName resource
+          | (resource, status) <- operationalPairs
+          , ResidueStatus.isResidueUnreachable status
+          ]
+    if not (null unreachable)
+      then
+        pure
+          ( Left
+              ( "AWS operational teardown refused: cannot observe the live state of "
+                  ++ intercalate ", " unreachable
+                  ++ " (AWS IAM unreachable). Teardown will not proceed, because "
+                  ++ "\"cannot observe\" is never treated as \"destroyed\" — that "
+                  ++ "would strand the operational IAM user. Resolve AWS connectivity "
+                  ++ "/ admin credentials and re-run `prodbox aws teardown`."
+              )
+          )
+      else do
+        -- Capture the keys that existed BEFORE the reconcile destroys them
+        -- (read-only) and whether the IAM user was present, so the result
+        -- record reflects what was torn down even though the destroy is now
+        -- driven through 'reconcileAbsent'.
+        deletedAccessKeys <- listOperationalAccessKeyIds repoRoot adminCreds
+        let userWasPresent =
+              any
+                ( \(resource, status) ->
+                    resourceName resource == "operational-iam-user"
+                      && ResidueStatus.isResiduePresent status
+                )
+                operationalPairs
+        reconcileExit <- reconcileAbsent repoRoot operationalPairs
+        case reconcileExit of
+          ExitFailure code ->
+            pure
+              ( Left
+                  ( "AWS operational teardown failed: the managed-resource "
+                      ++ "reconcile exited with code "
+                      ++ show code
+                      ++ " while destroying the operational IAM user / clearing "
+                      ++ "aws.* config."
+                  )
+              )
+          ExitSuccess ->
+            pure
+              ( Right
+                  IamTeardownResult
+                    { iamTeardownUserName = prodboxIamUserName
+                    , iamTeardownDeletedAccessKeys = deletedAccessKeys
+                    , iamTeardownUserDeleted = userWasPresent
+                    , iamTeardownDhallPath = configDhallPath (canonicalConfigPaths repoRoot)
+                    }
+              )
+
+-- | Sprint 7.8: pure mapping from the 'operationalIamUserExists' probe
+-- result to a typed 'ResidueStatus' for the @operational-iam-user@
+-- managed resource. 'Right True' → present (with @iam:get-user@
+-- evidence); 'Right False' → absent; 'Left' (any AWS error observing
+-- the user) → unreachable, so the teardown gate refuses rather than
+-- presuming the user is gone. Unit-testable, no IO.
+operationalIamUserResidueFromExists :: Either String Bool -> ResidueStatus.ResidueStatus
+operationalIamUserResidueFromExists existsResult = case existsResult of
+  Right True ->
+    ResidueStatus.ResiduePresent
+      ResidueStatus.ResidueDetails
+        { ResidueStatus.residueEvidence = "iam:get-user " ++ Text.unpack prodboxIamUserName
+        , ResidueStatus.residueStackName = "operational-iam-user"
         }
+  Right False -> ResidueStatus.ResidueAbsent
+  Left err -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
+
+-- | Sprint 7.8: pure mapping from the configured @aws.access_key_id@ to
+-- a typed 'ResidueStatus' for the @operational-aws-config@ managed
+-- resource. A non-empty (after strip) key means the operational
+-- credential block is still populated (present); empty means already
+-- cleared (absent). There is no unreachable case — the config is read
+-- locally. Unit-testable, no IO.
+operationalAwsConfigResidueFromKey :: Text -> ResidueStatus.ResidueStatus
+operationalAwsConfigResidueFromKey accessKeyId
+  | Text.null (Text.strip accessKeyId) = ResidueStatus.ResidueAbsent
+  | otherwise =
+      ResidueStatus.ResiduePresent
+        ResidueStatus.ResidueDetails
+          { ResidueStatus.residueEvidence = "aws.access_key_id set in prodbox-config.dhall"
+          , ResidueStatus.residueStackName = "operational-aws-config"
+          }
+
+-- | Sprint 7.8: the two 'Operational'-class managed resources, with
+-- their idempotent destroy closures over the admin credentials. The
+-- canonical 'resourceName's MUST match the
+-- 'Prodbox.Lifecycle.ResourceClass' SSoT
+-- (@operational-iam-user@, @operational-aws-config@). The destroy
+-- actions are exactly the inline delete / clear logic that
+-- @prodbox aws teardown@ ran before this sprint, so wiring them in is
+-- behavior-preserving:
+--
+-- * @operational-iam-user@: delete every operational access key, delete
+--   the inline user policy if present, then delete the user if present.
+-- * @operational-aws-config@: clear the operational @aws.*@ block in
+--   @prodbox-config.dhall@ (region preserved, falling back to the admin
+--   region).
+operationalManagedResources :: Credentials -> [ManagedResource]
+operationalManagedResources adminCreds =
+  [ ManagedResource
+      { resourceName = "operational-iam-user"
+      , resourceClass = ResourceClass.Operational
+      , resourceDestroy = \repoRoot -> do
+          _ <- deleteExistingOperationalKeys repoRoot adminCreds
+          deleteUserPolicyIfPresent repoRoot adminCreds
+          _ <- deleteOperationalUserIfPresent repoRoot adminCreds
+          pure ExitSuccess
+      }
+  , ManagedResource
+      { resourceName = "operational-aws-config"
+      , resourceClass = ResourceClass.Operational
+      , resourceDestroy = \repoRoot -> clearOperationalAwsConfig repoRoot adminCreds
+      }
+  ]
+
+-- | Sprint 7.8: clear the operational @aws.*@ credential block in
+-- @prodbox-config.dhall@ (factored out of the previous inline
+-- @runTeardown@ body so it can serve as the @operational-aws-config@
+-- managed resource's destroy action). Idempotent: writing empty
+-- credentials over already-empty ones is a no-op write. The region is
+-- preserved from the current config, falling back to the admin
+-- credential's region when the config region is blank. Returns
+-- 'ExitSuccess'.
+clearOperationalAwsConfig :: FilePath -> Credentials -> IO ExitCode
+clearOperationalAwsConfig repoRoot adminCreds = do
+  currentConfig <- loadConfigForWrite repoRoot
+  let currentRegion =
+        if Text.null (Text.strip (region (aws currentConfig)))
+          then region adminCreds
+          else region (aws currentConfig)
+      updatedConfig =
+        currentConfig
+          { aws =
+              Credentials
+                { access_key_id = ""
+                , secret_access_key = ""
+                , session_token = Nothing
+                , region = currentRegion
+                }
+          }
+      paths = canonicalConfigPaths repoRoot
+  writeConfigFile (configDhallPath paths) updatedConfig
+  pure ExitSuccess
+
+-- | Sprint 7.8: discover the live 'ResidueStatus' of each of the two
+-- 'operationalManagedResources', paired in registry order. The IAM-user
+-- status comes from 'operationalIamUserExists' piped through
+-- 'operationalIamUserResidueFromExists'; the @aws.*@-config status from
+-- the configured @aws.access_key_id@ via
+-- 'operationalAwsConfigResidueFromKey' (a failed config load is treated
+-- as unreachable so the fail-closed gate refuses rather than presuming
+-- the block is clear).
+discoverOperationalResidue
+  :: FilePath -> Credentials -> IO [(ManagedResource, ResidueStatus.ResidueStatus)]
+discoverOperationalResidue repoRoot adminCreds = do
+  iamUserExists <- operationalIamUserExists repoRoot adminCreds
+  configResult <- loadConfigFile repoRoot
+  let iamUserStatus = operationalIamUserResidueFromExists iamUserExists
+      awsConfigStatus = case configResult of
+        Left err -> ResidueStatus.ResidueUnreachable (ResidueStatus.ResidueQueryFailed err)
+        Right config -> operationalAwsConfigResidueFromKey (access_key_id (aws config))
+  pure (zip (operationalManagedResources adminCreds) [iamUserStatus, awsConfigStatus])
+
+-- | Sprint 7.8: read-only listing of the operational IAM user's
+-- access-key IDs, factored from 'deleteExistingOperationalKeys' so
+-- 'applyAwsTeardown' can record the keys that existed BEFORE the
+-- registry reconcile destroys them (preserving the
+-- 'iamTeardownDeletedAccessKeys' result field). Returns @[]@ when the
+-- user does not exist.
+listOperationalAccessKeyIds :: FilePath -> Credentials -> IO [Text]
+listOperationalAccessKeyIds repoRoot adminCredentials = do
+  listKeysOutput <-
+    runAwsCliCompleted
+      repoRoot
+      adminCredentials
+      [ "iam"
+      , "list-access-keys"
+      , "--user-name"
+      , Text.unpack prodboxIamUserName
+      ]
+  if processExitCode listKeysOutput == ExitSuccess
+    then do
+      listPayloadValue <-
+        liftAwsEither (decodeJsonPayload "list-access-keys" (processStdout listKeysOutput))
+      listPayloadObject <- liftAwsEither (requireObject "list-access-keys" listPayloadValue)
+      accessKeysArray <-
+        liftAwsEither (requireArrayField "list-access-keys" "AccessKeyMetadata" listPayloadObject)
+      forM (Vector.toList accessKeysArray) $ \item -> do
+        metadataObject <- liftAwsEither (requireObject "AccessKeyMetadata" item)
+        liftAwsEither (requireTextField "AccessKeyMetadata" "AccessKeyId" metadataObject)
+    else case awsErrorCode (errorDetail listKeysOutput) of
+      Just "NoSuchEntity" -> pure []
+      _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
 
 -- | Sprint 7.7 — destroy-first dispatch helper. Invokes
 -- @prodbox pulumi \<stack>-destroy --yes@ for each stack in the plan,
@@ -1600,32 +1838,52 @@ dispatchPulumiDestroysForResidue repoRoot plan = go plan
       other -> ["pulumi", other ++ "-destroy", "--yes"]
 
 -- | Sprint 7.6 refuse-path generalized to typed Pulumi-stack residue
--- queries per Sprint 4.16: each stack's 'ResidueStatus' is consulted
--- through the per-lifecycle-class predicate
--- ('isResiduePresentOrUnknownPerRun' for per-run stacks,
--- 'isResiduePresentOrUnknownLongLived' for the long-lived @aws-ses@
--- stack). Returns the list of live stacks paired with the canonical
--- destroy command operators should run to clean them up. An empty list
--- means it is safe to delete the operational IAM user.
+-- queries per Sprint 4.16. Returns the list of live stacks paired with
+-- the canonical destroy command operators should run to clean them up.
+-- An empty list means it is safe to delete the operational IAM user.
+--
+-- Implementation note: this is the IO wrapper around the pure
+-- 'categorizePulumiResidue' helper. The IO half reaches into the
+-- in-cluster MinIO backend (via one shared port-forward across the
+-- three per-run stacks) and the operator-account S3 backend (admin
+-- credentials) so the residue listing reflects what is actually in
+-- the Pulumi backends, not stale file-existence approximations.
 checkPulumiResidueBeforeTeardown :: FilePath -> IO [(String, String)]
 checkPulumiResidueBeforeTeardown repoRoot = do
-  eksStatus <- awsEksTestStackResidueStatus repoRoot
-  subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
-  testStatus <- awsTestStackResidueStatus repoRoot
-  sesStatus <- awsSesStackResidueStatus repoRoot
-  pure $
-    [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-    | ResidueStatus.isResiduePresentOrUnknownPerRun eksStatus
-    ]
-      ++ [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-         | ResidueStatus.isResiduePresentOrUnknownPerRun subzoneStatus
-         ]
-      ++ [ ("aws-test", "prodbox pulumi test-destroy --yes")
-         | ResidueStatus.isResiduePresentOrUnknownPerRun testStatus
-         ]
-      ++ [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
-         | ResidueStatus.isResiduePresentOrUnknownLongLived sesStatus
-         ]
+  perRun <- queryPerRunResidueStatuses repoRoot
+  ses <- queryAwsSesResidueStatus repoRoot
+  pure (categorizePulumiResidue perRun ses)
+
+-- | Pure categorization of the four 'ResidueStatus' values into the
+-- canonical @(stack-name, destroy-command)@ list the refuse-path
+-- consumes. Exposed for unit testing because the IO query is hard to
+-- exercise without a live cluster.
+--
+-- Sprint 4.19/4.20: both per-run and long-lived 'ResidueUnreachable'
+-- count as blocking residue for this teardown gate. "Cannot read the
+-- Pulumi state backend" is not a confirmation that the AWS resources
+-- are gone, so @prodbox aws teardown@ must refuse rather than delete
+-- the operational IAM user and strand unreadable stacks. The single
+-- soundness combinator 'ResidueStatus.residueBlocksTeardownGate'
+-- (Sprint 4.20, superseding the per-class
+-- @isResiduePresentOrUnknown*@ booleans) encodes "present OR unreachable
+-- → block." (The @--cascade@ path keeps its own graceful-degradation
+-- handling in 'Prodbox.Lifecycle.ResourceRegistry.resourcesToDestroy'.)
+categorizePulumiResidue
+  :: PerRunResidueStatuses -> ResidueStatus.ResidueStatus -> [(String, String)]
+categorizePulumiResidue perRun sesStatus =
+  [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+  | ResidueStatus.residueBlocksTeardownGate (perRunAwsEksTest perRun)
+  ]
+    ++ [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+       | ResidueStatus.residueBlocksTeardownGate (perRunAwsEksSubzone perRun)
+       ]
+    ++ [ ("aws-test", "prodbox pulumi test-destroy --yes")
+       | ResidueStatus.residueBlocksTeardownGate (perRunAwsTest perRun)
+       ]
+    ++ [ ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+       | ResidueStatus.residueBlocksTeardownGate sesStatus
+       ]
 
 renderPulumiResidueRefusal :: [(String, String)] -> String
 renderPulumiResidueRefusal residue =

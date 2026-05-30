@@ -5,6 +5,7 @@ module Prodbox.CLI.Rke2
   , acmeRuntimeManifestWith
   , acmeClusterIssuerSpec
   , ensureGatewayImagesForSubstrate
+  , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
   , ensureMinioRuntime
@@ -13,7 +14,6 @@ module Prodbox.CLI.Rke2
   , MinioImageSource (..)
   , cascadeOrderNarration
   , inferCascadeSubstrate
-  , perRunCascadeInventory
   , renderNativeInstallPlan
   , renderMinioChartArgs
   , runNativeDeleteWithResiduePolicy
@@ -91,12 +91,7 @@ import Prodbox.Host
   , detectLanAddressing
   , runHostFirewallGatewayUnrestrict
   )
-import Prodbox.Infra.AwsEksSubzoneStack (awsEksSubzoneStackResidueStatus)
-import Prodbox.Infra.AwsEksTestStack
-  ( awsEksCanonicalClusterName
-  , awsEksTestStackResidueStatus
-  )
-import Prodbox.Infra.AwsTestStack (awsTestStackResidueStatus)
+import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
   ( keycloakVscodeClientId
@@ -109,8 +104,13 @@ import Prodbox.Lib.EksCustomImagePush
   , rewriteChartRefForInClusterPush
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
+import Prodbox.Lifecycle.LiveResidue
+  ( PerRunResidueStatuses (..)
+  , queryPerRunResidueStatuses
+  )
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
+import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.PostgresPlatform
   ( patroniOperatorDeploymentName
@@ -769,15 +769,17 @@ cascadeOrderNarration =
 runNativeDeleteCascade :: FilePath -> IO ExitCode
 runNativeDeleteCascade repoRoot = do
   writeOutputLine cascadeOrderNarration
-  -- Step 1: confirm-MinIO — query typed residue status per per-run stack.
-  eksStatus <- awsEksTestStackResidueStatus repoRoot
-  subzoneStatus <- awsEksSubzoneStackResidueStatus repoRoot
-  testStatus <- awsTestStackResidueStatus repoRoot
-  let perRunStackInventory = perRunCascadeInventory eksStatus subzoneStatus testStatus
-      perRunDestroyActions =
-        [ runPulumiCommand repoRoot command
-        | (_, command) <- perRunStackInventory
-        ]
+  -- Step 1: confirm-MinIO — live source-of-truth query against the
+  -- per-run MinIO backend (one shared port-forward across the three
+  -- per-run stacks).
+  perRun <- queryPerRunResidueStatuses repoRoot
+  let eksStatus = perRunAwsEksTest perRun
+      subzoneStatus = perRunAwsEksSubzone perRun
+      testStatus = perRunAwsTest perRun
+      -- Sprint 4.21: pair the per-run managed resources with their
+      -- already-batched statuses; `reconcileAbsent` destroys the present
+      -- ones (canonical order) using the same PulumiCommands as before.
+      perRunPairs = ResourceRegistry.pairPerRunResidue eksStatus subzoneStatus testStatus
       liveSummary =
         intercalate
           ", "
@@ -800,19 +802,11 @@ runNativeDeleteCascade repoRoot = do
     ExitSuccess -> do
       -- Step 3: per-run Pulumi destroys (fail-fast). Controller-owned
       -- AWS resources are now drained, so subnet / VPC deletes succeed
-      -- without DependencyViolation.
-      destroyExit <-
-        if null perRunDestroyActions
-          then do
-            writeOutputLine "Per-run Pulumi destroys: skipped (no live per-run residue)."
-            pure ExitSuccess
-          else do
-            writeOutputLine
-              ( "Per-run Pulumi destroys: running "
-                  ++ show (length perRunDestroyActions)
-                  ++ " destroy(s) against MinIO..."
-              )
-            runSequentially perRunDestroyActions
+      -- without DependencyViolation. Sprint 4.21: routed through the
+      -- managed-resource registry's `reconcileAbsent` (destroys the
+      -- present per-run stacks; skips absent/unreachable per the
+      -- per-run graceful-degradation rule).
+      destroyExit <- ResourceRegistry.reconcileAbsent repoRoot perRunPairs
       case destroyExit of
         ExitFailure _ -> pure destroyExit
         ExitSuccess -> do
@@ -833,33 +827,11 @@ runNativeDeleteCascade repoRoot = do
               runCascadePostflightTagSweep repoRoot
               pure ExitSuccess
 
--- | Sprint 4.17 pure helper: given the typed 'ResidueStatus' of each
--- per-run stack, return the canonical-order inventory of per-run
--- destroy commands the cascade must run. A stack is included when
--- 'ResidueStatus.isResiduePresent' is True; per the per-run lifecycle
--- class, 'ResidueUnreachable' is treated as absent (the per-run state
--- died with the cluster). The canonical order is
--- @aws-eks → aws-eks-subzone → aws-test@ so dependent VPC / subnet
--- residue tears down before the broader network substrate, matching
--- the order operators use when running the destroys by hand.
-perRunCascadeInventory
-  :: ResidueStatus.ResidueStatus
-  -- ^ Residue status for the @aws-eks@ stack.
-  -> ResidueStatus.ResidueStatus
-  -- ^ Residue status for the @aws-eks-subzone@ stack.
-  -> ResidueStatus.ResidueStatus
-  -- ^ Residue status for the @aws-test@ stack.
-  -> [(String, PulumiCommand)]
-perRunCascadeInventory eksStatus subzoneStatus testStatus =
-  [ ("aws-eks", PulumiEksDestroy True (PlanOptions False Nothing))
-  | ResidueStatus.isResiduePresent eksStatus
-  ]
-    ++ [ ("aws-eks-subzone", PulumiAwsSubzoneDestroy True (PlanOptions False Nothing))
-       | ResidueStatus.isResiduePresent subzoneStatus
-       ]
-    ++ [ ("aws-test", PulumiTestDestroy True (PlanOptions False Nothing))
-       | ResidueStatus.isResiduePresent testStatus
-       ]
+-- Sprint 4.21: the per-run cascade inventory (which present stacks to
+-- destroy, in canonical order) moved into the managed-resource registry
+-- as 'Prodbox.Lifecycle.ResourceRegistry.pairPerRunResidue' +
+-- 'resourcesToDestroy', and the destroy dispatch into
+-- 'Prodbox.Lifecycle.ResourceRegistry.reconcileAbsent'.
 
 -- | Sprint 4.17.b: derive the cascade's substrate from per-run residue
 -- presence. Any per-run AWS stack with @ResiduePresent@ residue means
@@ -1698,6 +1670,19 @@ extractMinioCredsFromDhall dhallText =
 -- the gateway namespace with the canonical Dhall fragment shape. Uses
 -- the @kubectl create secret --dry-run | apply@ idiom so the Secret
 -- is created on first reconcile and updated on subsequent reconciles.
+--
+-- Sprint 2.19 closure (2026-05-29): also stamps
+-- @helm.sh/resource-policy: keep@ so a subsequent
+-- @prodbox charts delete gateway@ (the suite bootstrap's helm
+-- uninstall) does NOT delete this Secret. Together with the chart-side
+-- consume-only template (no @randAlphaNum@), this makes
+-- 'ensureGatewayMinioBootstrap' the single source of truth for the
+-- gateway MinIO credentials: the Secret persists across
+-- @charts delete gateway@ + @charts deploy gateway@ cycles, so the
+-- daemon's mounted credentials always match the user that the
+-- bootstrap Job registered in MinIO (closing the master-seed 403
+-- multi-writer credential divergence diagnosed live on 2026-05-29).
+-- @kubectl annotate --overwrite@ is idempotent.
 writeGatewayMinioCredsSecret :: FilePath -> String -> String -> IO ExitCode
 writeGatewayMinioCredsSecret repoRoot gwUser gwPass = do
   let dhallContent =
@@ -1717,7 +1702,12 @@ writeGatewayMinioCredsSecret repoRoot gwUser gwPass = do
               ++ shellQuote dhallContent
               ++ " -n "
               ++ gatewayNamespace
-              ++ " --dry-run=client -o yaml | kubectl apply -f -"
+              ++ " --dry-run=client -o yaml | kubectl apply -f - && "
+              ++ "kubectl annotate secret "
+              ++ gatewayMinioCredsSecretName
+              ++ " -n "
+              ++ gatewayNamespace
+              ++ " helm.sh/resource-policy=keep --overwrite"
           ]
       , subprocessEnvironment = Nothing
       , subprocessWorkingDirectory = Just repoRoot
@@ -3686,9 +3676,12 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
   let cfg = defaultEksCustomImagePushConfig
       podNs = customPushPodNamespace cfg
       podNm = customPushPodName cfg
-      tarDir = repoRoot </> ".prodbox-state" </> "tmp"
-      tarPath = tarDir </> "prodbox-custom-image.tar"
       podPath = "/data/image.tar"
+  -- Sprint 4.18: stage the docker-save tarball in the system temp
+  -- directory rather than under @.prodbox-state\/tmp\/@ so the repo
+  -- root is no longer polluted with scratch state.
+  tarDir <- getTemporaryDirectory
+  let tarPath = tarDir </> "prodbox-custom-image.tar"
   writeOutputLine
     ( "Publishing custom image via in-cluster crane pod ("
         ++ podNs
@@ -3697,14 +3690,6 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
         ++ "): "
         ++ primaryRef
     )
-  _ <-
-    runCommand
-      Subprocess
-        { subprocessPath = "mkdir"
-        , subprocessArguments = ["-p", tarDir]
-        , subprocessEnvironment = Nothing
-        , subprocessWorkingDirectory = Just repoRoot
-        }
   saveExit <-
     runCommand
       Subprocess

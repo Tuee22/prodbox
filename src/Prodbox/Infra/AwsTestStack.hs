@@ -6,14 +6,12 @@ module Prodbox.Infra.AwsTestStack
   , awsTestStackName
   , ensureAwsTestStackResources
   , destroyAwsTestStack
-  , loadAwsTestStackSnapshot
-  , saveAwsTestStackSnapshot
-  , clearAwsTestStackSnapshot
-  , awsTestStackHasLiveResources
   , awsTestStackResidueStatus
   , assertNoAwsTestStackResidue
   , renderAwsTestStackReport
   , ensureAwsTestSshKey
+  , parseAwsTestNodesFromOutputs
+  , parseAwsTestStackFromOutputs
   )
 where
 
@@ -21,16 +19,13 @@ import Control.Monad (foldM, forM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
-  , encode
-  , object
-  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isAsciiUpper, toLower)
 import Data.List (isInfixOf)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.AwsEnvironment
@@ -56,6 +51,8 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Infra.StackOutputs qualified as StackOutputs
+import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -75,7 +72,6 @@ import Prodbox.Subprocess
 import System.Directory
   ( createDirectoryIfMissing
   , doesFileExist
-  , removeFile
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
@@ -87,32 +83,23 @@ awsTestStackName = "aws-test"
 awsTestPulumiProjectDir :: FilePath -> FilePath
 awsTestPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-test"
 
+-- | Sprint 4.18: the per-run @aws-test@ stack snapshot is no longer
+-- cached on disk — the destroy and residue-assertion paths read it
+-- live from the Pulumi backend via 'fetchAwsTestSnapshotFromBackend'.
+-- This directory survives only as the home for the HA-RKE2 validation
+-- SSH keypair (see 'awsTestPrivateKeyPath'), pending its own migration
+-- to a @mktemp@ + Pulumi-stored-secret bracket.
 awsTestStateDir :: FilePath -> FilePath
 awsTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsTestStackName
 
-awsTestSnapshotPath :: FilePath -> FilePath
-awsTestSnapshotPath repoRoot = awsTestStateDir repoRoot </> "stack-snapshot.json"
-
--- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
--- AWS HA-RKE2 test stack. Sprint 7.6 orphan-safety predicate. Kept as a
--- thin alias over 'awsTestStackResidueStatus' for callers that have not
--- yet migrated to the typed 'ResidueStatus' surface introduced by
--- Sprint 4.16.
-awsTestStackHasLiveResources :: FilePath -> IO Bool
-awsTestStackHasLiveResources repoRoot =
-  ResidueStatus.isResiduePresentOrUnknownPerRun
-    <$> awsTestStackResidueStatus repoRoot
-
--- | Sprint 4.16 typed residue status. Today this adapter wraps the
--- legacy file-existence check; a later sprint replaces it with a
--- source-of-truth @pulumi stack ls --json@ query against the in-cluster
--- MinIO backend. The 'ResidueStatus' surface is already exported so
--- callers can migrate before the underlying source-of-truth swap.
+-- | Sprint 4.16 typed residue status. Delegates to the live
+-- @pulumi stack ls --json@ source-of-truth query through
+-- 'Prodbox.Lifecycle.LiveResidue'; callers that need all three
+-- per-run statuses should call 'queryPerRunResidueStatuses' directly
+-- to share the MinIO port-forward bracket.
 awsTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
-awsTestStackResidueStatus repoRoot = do
-  let snapshotPath = awsTestSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  pure (ResidueStatus.residuePresentByFileExistence awsTestStackName snapshotPath exists)
+awsTestStackResidueStatus repoRoot =
+  LiveResidue.perRunAwsTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
 
 awsTestPrivateKeyPath :: FilePath -> FilePath
 awsTestPrivateKeyPath repoRoot = awsTestStateDir repoRoot </> "id_ed25519"
@@ -171,73 +158,6 @@ ensureAwsTestSshKey repoRoot = do
             ExitSuccess -> pure (Right privateKeyPath)
             ExitFailure _ -> pure (Left ("ssh-keygen failed: " ++ trim (processStderr output)))
 
-saveAwsTestStackSnapshot :: FilePath -> AwsTestStackSnapshot -> IO ()
-saveAwsTestStackSnapshot repoRoot snapshot = do
-  let stateDir = awsTestStateDir repoRoot
-  createDirectoryIfMissing True stateDir
-  BL.writeFile (awsTestSnapshotPath repoRoot) (encode (snapshotToJson snapshot))
-
-loadAwsTestStackSnapshot :: FilePath -> IO (Maybe AwsTestStackSnapshot)
-loadAwsTestStackSnapshot repoRoot = do
-  let snapshotPath = awsTestSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if not exists
-    then pure Nothing
-    else do
-      contents <- BL.readFile snapshotPath
-      case eitherDecode contents of
-        Left _ -> pure Nothing
-        Right value ->
-          case snapshotFromJson value of
-            Left _ -> pure Nothing
-            Right snapshot -> pure (Just snapshot)
-
-clearAwsTestStackSnapshot :: FilePath -> IO ()
-clearAwsTestStackSnapshot repoRoot = do
-  let snapshotPath = awsTestSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if exists then removeFile snapshotPath else pure ()
-
-snapshotToJson :: AwsTestStackSnapshot -> Value
-snapshotToJson snapshot =
-  object
-    [ "stack_name" .= testSnapshotStackName snapshot
-    , "backend_bucket" .= testSnapshotBackendBucket snapshot
-    , "vpc_id" .= testSnapshotVpcId snapshot
-    , "subnet_ids" .= testSnapshotSubnetIds snapshot
-    , "security_group_id" .= testSnapshotSecurityGroupId snapshot
-    , "nodes" .= map nodeToJson (testSnapshotNodes snapshot)
-    ]
-
-nodeToJson :: AwsTestNode -> Value
-nodeToJson node =
-  object
-    [ "name" .= testNodeName node
-    , "availability_zone" .= testNodeAvailabilityZone node
-    , "instance_id" .= testNodeInstanceId node
-    , "private_ip" .= testNodePrivateIp node
-    , "public_ip" .= testNodePublicIp node
-    ]
-
-snapshotFromJson :: Value -> Either String AwsTestStackSnapshot
-snapshotFromJson (Object obj) = do
-  stackName <- requireString obj "stack_name"
-  backendBucket <- requireString obj "backend_bucket"
-  vpcId <- requireString obj "vpc_id"
-  subnetIds <- requireStringList obj "subnet_ids"
-  securityGroupId <- requireString obj "security_group_id"
-  nodes <- requireNodeList obj "nodes"
-  Right
-    AwsTestStackSnapshot
-      { testSnapshotStackName = stackName
-      , testSnapshotBackendBucket = backendBucket
-      , testSnapshotVpcId = vpcId
-      , testSnapshotSubnetIds = subnetIds
-      , testSnapshotSecurityGroupId = securityGroupId
-      , testSnapshotNodes = nodes
-      }
-snapshotFromJson _ = Left "snapshot must be a JSON object"
-
 nodeFromJson :: Value -> Either String AwsTestNode
 nodeFromJson (Object obj) = do
   name <- requireString obj "name"
@@ -254,6 +174,87 @@ nodeFromJson (Object obj) = do
       , testNodePublicIp = publicIp
       }
 nodeFromJson _ = Left "node must be a JSON object"
+
+-- | Sprint 4.18: decode the @nodes@ Pulumi output (a JSON-encoded
+-- array of node objects) from the live @aws-test@ stack outputs map
+-- returned by 'Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs'.
+-- Replaces the legacy @.prodbox-state/aws-test/stack-snapshot.json@
+-- file-IO path on the test-validation surface.
+parseAwsTestNodesFromOutputs
+  :: Map.Map Text.Text Text.Text -> Either String [AwsTestNode]
+parseAwsTestNodesFromOutputs outputs =
+  case Map.lookup (Text.pack "nodes") outputs of
+    Nothing -> Left "aws-test Pulumi outputs missing required field 'nodes'"
+    Just rawText ->
+      case eitherDecode (BL8.pack (Text.unpack rawText)) of
+        Left err -> Left ("aws-test Pulumi output 'nodes' is not valid JSON: " ++ err)
+        Right (Array arr) -> mapM nodeFromJson (Vector.toList arr)
+        Right _ -> Left "aws-test Pulumi output 'nodes' must be a JSON array"
+
+-- | Sprint 4.18: decode a full 'AwsTestStackSnapshot' from the live
+-- @Map Text Text@ outputs returned by
+-- 'Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs'. Mirrors the
+-- ensure-path 'snapshotFromOutputs' but reads the flat map shape where
+-- complex outputs (@subnet_ids@, @nodes@) arrive as JSON-encoded
+-- strings. Replaces the legacy file-snapshot read in the destroy and
+-- residue-assertion paths.
+parseAwsTestStackFromOutputs
+  :: Map.Map Text.Text Text.Text -> Either String AwsTestStackSnapshot
+parseAwsTestStackFromOutputs outputs = do
+  backendBucket <- requireMapString outputs "backend_bucket"
+  vpcId <- requireMapString outputs "vpc_id"
+  subnetIds <- requireMapStringList outputs "subnet_ids"
+  securityGroupId <- requireMapString outputs "security_group_id"
+  nodes <- parseAwsTestNodesFromOutputs outputs
+  Right
+    AwsTestStackSnapshot
+      { testSnapshotStackName = awsTestStackName
+      , testSnapshotBackendBucket = backendBucket
+      , testSnapshotVpcId = vpcId
+      , testSnapshotSubnetIds = subnetIds
+      , testSnapshotSecurityGroupId = securityGroupId
+      , testSnapshotNodes = nodes
+      }
+
+-- | Sprint 4.18: live source-of-truth read of the @aws-test@ stack's
+-- snapshot from the in-cluster MinIO Pulumi backend. Returns 'Nothing'
+-- when the stack is absent, the backend is unreachable, or the outputs
+-- cannot be parsed — matching the @Maybe@ contract the destroy and
+-- residue-assertion paths previously got from the file cache, so the
+-- absent path falls back to the tag-based residue scan as before.
+fetchAwsTestSnapshotFromBackend :: FilePath -> IO (Maybe AwsTestStackSnapshot)
+fetchAwsTestSnapshotFromBackend repoRoot = do
+  outputsResult <-
+    LiveResidue.fetchPerRunStackOutputs
+      repoRoot
+      (StackOutputs.StackName (Text.pack awsTestStackName))
+  pure $ case outputsResult of
+    Left _ -> Nothing
+    Right outputs -> either (const Nothing) Just (parseAwsTestStackFromOutputs outputs)
+
+requireMapString :: Map.Map Text.Text Text.Text -> String -> Either String String
+requireMapString outputs key =
+  case Map.lookup (Text.pack key) outputs of
+    Nothing -> Left ("aws-test Pulumi outputs missing required field '" ++ key ++ "'")
+    Just text ->
+      let s = Text.unpack text
+       in if null s then Left ("aws-test Pulumi output '" ++ key ++ "' is empty") else Right s
+
+requireMapStringList :: Map.Map Text.Text Text.Text -> String -> Either String [String]
+requireMapStringList outputs key =
+  case Map.lookup (Text.pack key) outputs of
+    Nothing -> Left ("aws-test Pulumi outputs missing required field '" ++ key ++ "'")
+    Just text ->
+      case eitherDecode (BL8.pack (Text.unpack text)) of
+        Left err -> Left ("aws-test Pulumi output '" ++ key ++ "' is not valid JSON: " ++ err)
+        Right (Array arr) -> mapM (mapEntryString key) (Vector.toList arr)
+        Right _ -> Left ("aws-test Pulumi output '" ++ key ++ "' must be a JSON array")
+ where
+  mapEntryString k v = case v of
+    String t ->
+      let s = Text.unpack t
+       in if null s then Left ("aws-test Pulumi output '" ++ k ++ "' contains an empty string") else Right s
+    _ -> Left ("aws-test Pulumi output '" ++ k ++ "' must contain strings only")
 
 requireString :: KeyMap.KeyMap Value -> String -> Either String String
 requireString obj key =
@@ -763,7 +764,7 @@ assertNoAwsTestStackResidue :: FilePath -> Maybe AwsTestStackSnapshot -> IO (Eit
 assertNoAwsTestStackResidue repoRoot maybeSnapshot = do
   snapshot <- case maybeSnapshot of
     Just s -> pure (Just s)
-    Nothing -> loadAwsTestStackSnapshot repoRoot
+    Nothing -> fetchAwsTestSnapshotFromBackend repoRoot
   case snapshot of
     Nothing -> pure (Right ())
     Just current -> do
@@ -878,7 +879,6 @@ ensureAwsTestStackResources repoRoot = do
                                             case snapshotFromOutputs outputs of
                                               Left err -> pure (Left err)
                                               Right snapshot -> do
-                                                saveAwsTestStackSnapshot repoRoot snapshot
                                                 objectCountResult <- bucketObjectCount localPort accessKey secretKey
                                                 case objectCountResult of
                                                   Left err -> pure (Left err)
@@ -905,7 +905,7 @@ destroyAwsTestStack repoRoot summary = do
 
 destroyAwsTestStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsTestStackStatus repoRoot summary = do
-  currentSnapshot <- loadAwsTestStackSnapshot repoRoot
+  currentSnapshot <- fetchAwsTestSnapshotFromBackend repoRoot
   let projectDir = awsTestPulumiProjectDir repoRoot
   portForwardResult <- withMinioPortForward $ \localPort -> do
     credsResult <- readMinioCredentials
@@ -988,9 +988,7 @@ finalizeDestroy repoRoot currentSnapshot = do
   residueResult <- assertNoAwsTestStackResidue repoRoot currentSnapshot
   case residueResult of
     Left err -> pure (Left err)
-    Right () -> do
-      clearAwsTestStackSnapshot repoRoot
-      pure (Right ("destroyed and residue check passed" :: String))
+    Right () -> pure (Right ("destroyed and residue check passed" :: String))
 
 failWith :: String -> IO ExitCode
 failWith message = do

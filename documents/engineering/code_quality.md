@@ -92,6 +92,20 @@ Current enforced quality surfaces:
 - daemon hook and lifecycle-test guardrails: production gateway startup constructs the daemon
   `Env` with literal `noopDaemonHooks`, hook reads flow through the injected `envHooks env`,
   and the daemon-lifecycle stanza cannot use raw `threadDelay` or raw `terminateProcess`
+- managed-resource-registry totality (Sprint `4.22`, both halves landed): a registry ↔
+  [`DEVELOPMENT_PLAN/substrates.md` Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+  parity scan (the same code↔doc-parity mechanism as the generated-section registry and the
+  `perRunStackNames`↔doc rule), plus a create-call-site coverage scan
+  (`checkCreateCallSiteCoverage`) that covers the two — deliberately narrow — surfaces where
+  `prodbox` actually originates a new AWS/cluster resource: (1) every `Pulumi<Word>Resources`
+  constructor in `src/Prodbox/CLI/Command.hs` must map (via `pulumiCreateSiteOwners`) to a
+  registered `PerRun`/`LongLived` stack name; (2) the operational-IAM creation verbs
+  (`create-user`, `create-access-key`, `put-user-policy`) may appear only in the
+  `operational-iam-user` owner module `src/Prodbox/Aws.hs`. Broader generic-`create*` /
+  `change-resource-record-sets` / `create-bucket` scanning is deliberately excluded to avoid
+  false positives (those resources are Pulumi-managed or specially-handled bootstrap
+  operations). Together these make "a creatable-but-undiscoverable resource" unrepresentable per
+  [lifecycle_reconciliation_doctrine.md § 3.1](./lifecycle_reconciliation_doctrine.md)
 - warning-clean Haskell compilation through `cabal build --builddir=.build all --ghc-options=-Werror`
 - operator-binary sync to `.build/prodbox`
 - doctrine alignment described by the governed docs in this directory

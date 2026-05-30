@@ -50,8 +50,11 @@ library
         Prodbox.Infra.StackOutputs
         Prodbox.CLI.Nuke
         Prodbox.Lifecycle.K8sDrain
+        Prodbox.Lifecycle.LiveResidue
         Prodbox.Lifecycle.Preconditions
         Prodbox.Lifecycle.ResidueStatus
+        Prodbox.Lifecycle.ResourceClass
+        Prodbox.Lifecycle.ResourceRegistry
         Prodbox.Lifecycle.TagSweep
         Prodbox.Keycloak.Admin
         Prodbox.Keycloak.CredentialSetupForm

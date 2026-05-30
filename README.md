@@ -155,6 +155,12 @@ The current worktree closes on the supported edge architecture. Today:
 - MetalLB supports config-selected L2 or BGP advertisement through repo-owned settings
 - `host public-edge`, `charts-api`, `charts-websocket`, and `admin-routes` extend the external
   proof surface across the shared-host application and admin paths
+- resource lifecycle is reconciled over a typed **managed-resource registry** — every AWS or
+  cluster resource prodbox can create is registered with a `discover` + `destroy`, teardown is
+  one idempotent reconciler with "cannot observe" never silently treated as "absent", and
+  `check-code` makes a creatable-but-undiscoverable resource unrepresentable (doctrine:
+  [lifecycle_reconciliation_doctrine.md § 3.1](./documents/engineering/lifecycle_reconciliation_doctrine.md);
+  scheduled in Phase 4 Sprints 4.20–4.22 and Phase 7 Sprint 7.8)
 
 Closure, validation ownership, and phase history are tracked in
 [DEVELOPMENT_PLAN/README.md](./DEVELOPMENT_PLAN/README.md).

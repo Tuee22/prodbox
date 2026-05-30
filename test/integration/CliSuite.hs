@@ -777,6 +777,57 @@ integrationCliSuite = do
           `shouldContain` "AWS test stack: no local Pulumi backend or saved residue snapshot; nothing to destroy"
         deleteStdout `shouldContain` "Preserved host state:"
 
+    it "Sprint 4.19: rke2 delete --yes refuses when the per-run Pulumi state backend is unreachable" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        baseEnvVars <- fakeRke2Environment tmpDir
+        -- Drop the absent-bypass and force the unreachable-bypass so the gate
+        -- sees ResidueUnreachable (MinIO state backend cannot be read).
+        let envVars =
+              ("PRODBOX_TEST_RESIDUE_UNREACHABLE", "1")
+                : filter ((/= "PRODBOX_TEST_RESIDUE_ABSENT") . fst) baseEnvVars
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["rke2", "delete", "--yes"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let deleteOutput = unlines ["delete stdout:", deleteStdout, "delete stderr:", deleteStderr]
+            combined = deleteStdout ++ deleteStderr
+        when
+          (deleteExitCode == ExitSuccess)
+          (expectationFailure ("expected refusal, got success:\n" ++ deleteOutput))
+        deleteExitCode `shouldBe` ExitFailure 1
+        -- It must NOT claim a clean teardown.
+        combined `shouldNotContain` "Deleting local RKE2 environment..."
+        -- It must explain the unreadable state and name the explicit escape.
+        combined `shouldContain` "per-run Pulumi state backend"
+        combined `shouldContain` "do NOT delete `.data/`"
+        combined `shouldContain` "--allow-pulumi-residue"
+
+    it "Sprint 4.19: rke2 delete --yes --allow-pulumi-residue still proceeds when state is unreachable" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath
+        writeRepoMarkers tmpDir
+        writeFile (tmpDir </> "prodbox-config.dhall") validConfigWithBlankOperationalAwsAndConfiguredAdmin
+        baseEnvVars <- fakeRke2Environment tmpDir
+        let envVars =
+              ("PRODBOX_TEST_RESIDUE_UNREACHABLE", "1")
+                : filter ((/= "PRODBOX_TEST_RESIDUE_ABSENT") . fst) baseEnvVars
+
+        (deleteExitCode, deleteStdout, _deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["rke2", "delete", "--yes", "--allow-pulumi-residue"])
+              { cwd = Just tmpDir
+              , env = Just envVars
+              }
+            ""
+
+        deleteExitCode `shouldBe` ExitSuccess
+        deleteStdout `shouldContain` "Deleting local RKE2 environment..."
+
     it "projects ZeroSSL external account binding into the supported ClusterIssuer reconcile" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath
@@ -1105,11 +1156,16 @@ fakeAwsEnvironment repoRoot = do
       updatedPath = fakeBin ++ ":" ++ existingPath
       filtered =
         filter
-          (\(k, _) -> k /= "PATH" && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE")
+          ( \(k, _) ->
+              k /= "PATH"
+                && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
+                && k /= "PRODBOX_TEST_RESIDUE_ABSENT"
+          )
           currentEnvironment
   pure
     ( ("PATH", updatedPath)
         : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
+        : ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
         : filtered
     )
 
@@ -1122,11 +1178,16 @@ fakeAwsHarnessEnvironment repoRoot binaryPath = do
       updatedPath = fakeBin ++ ":" ++ existingPath
       filtered =
         filter
-          (\(k, _) -> k /= "PATH" && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE")
+          ( \(k, _) ->
+              k /= "PATH"
+                && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
+                && k /= "PRODBOX_TEST_RESIDUE_ABSENT"
+          )
           currentEnvironment
   pure
     ( ("PATH", updatedPath)
         : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
+        : ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
         : filtered
     )
 
@@ -1406,6 +1467,8 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_FAKE_RKE2_RECORD_DIR"
                           , "PRODBOX_RKE2_CONTAINERD_SOCKET"
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
+                          , "PRODBOX_TEST_RESIDUE_ABSENT"
+                          , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
                           , "HOME"
                           ]
           )
@@ -1415,6 +1478,11 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_FAKE_RKE2_RECORD_DIR", recordDir)
       , ("PRODBOX_RKE2_CONTAINERD_SOCKET", socketPath)
       , ("PRODBOX_RKE2_ENDPOINT_STATUS_ROOT", endpointStatusRoot)
+      , -- These reconcile/delete tests model a no-AWS-substrate host where the
+        -- per-run Pulumi stacks are genuinely absent. Declare that so the
+        -- Sprint 4.19 fail-closed delete gate sees ResidueAbsent (pass) rather
+        -- than ResidueUnreachable (refuse) from the fake/unreachable MinIO.
+        ("PRODBOX_TEST_RESIDUE_ABSENT", "1")
       , ("HOME", repoRoot)
       ]
         ++ baseEnvironment
@@ -2081,6 +2149,13 @@ fakeAwsScript stateDir =
     , "    printf '%s\\n' \"${AWS_ACCESS_KEY_ID:-}\" > \"$STATE_DIR/iam_create_user_access_key_id\""
     , "    touch \"$(user_exists_file \"$user_name\")\""
     , "    printf '{}\\n'"
+    , "    ;;"
+    , "  \"iam get-user\")"
+    , "    user_name=${4:-}"
+    , "    if [[ ! -f \"$(user_exists_file \"$user_name\")\" ]]; then"
+    , "      aws_error 'NoSuchEntity' 'GetUser' \"The user with name $user_name cannot be found.\""
+    , "    fi"
+    , "    printf '{\"User\":{\"UserName\":\"%s\",\"Arn\":\"arn:aws:iam::123456789012:user/%s\"}}\\n' \"$user_name\" \"$user_name\""
     , "    ;;"
     , "  \"iam list-access-keys\")"
     , "    user_name=${4:-}"

@@ -52,8 +52,13 @@ import Prodbox.Aws
   , ConfigSetupInput (..)
   , SessionTokenPromptShape (..)
   , buildIamPolicyDocument
+  , categorizePulumiResidue
   , checkPulumiResidueBeforeTeardown
+  , harnessPostflightResiduePolicy
   , longLivedStackNames
+  , operationalAwsConfigResidueFromKey
+  , operationalIamUserResidueFromExists
+  , operationalManagedResources
   , partitionResidueByLifecycle
   , perRunStackNames
   , pulumiDestroyPlanForResidue
@@ -131,7 +136,6 @@ import Prodbox.CLI.Rke2
   ( MinioImageSource (..)
   , cascadeOrderNarration
   , inferCascadeSubstrate
-  , perRunCascadeInventory
   , renderMinioChartArgs
   , renderNativeInstallPlan
   )
@@ -146,8 +150,10 @@ import Prodbox.CheckCode
   ( DoctrineViolation (..)
   , doctrineViolationsInPaths
   , extractStringLiterals
+  , iamCreateSiteViolations
   , listRepoOwnedPaths
   , matchesSprintToken
+  , pulumiCreateSiteViolations
   )
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.Daemon.Events qualified as DaemonEvents
@@ -271,8 +277,12 @@ import Prodbox.Lifecycle.K8sDrain
   , K8sDrainEnv (..)
   , cascadeDecisionFromDrainResult
   )
+import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
+import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
 import Prodbox.Lifecycle.ResidueStatus qualified as Residue
+import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
+import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Naming
   ( boundedResourceName
@@ -343,6 +353,9 @@ import Prodbox.TestPlan
   , TestExecutionPlan (..)
   , nativeValidationId
   , testExecutionPlan
+  )
+import Prodbox.TestRunner
+  ( clearOperationalCredsAfterPostflight
   )
 import Prodbox.TestValidation
   ( verifyAwsTestSshReachability
@@ -1633,15 +1646,18 @@ main = mainWithSuite "prodbox-unit" $ do
     it "round-trips persisted signed gateway events through JSON" $ do
       parseEvent (encodeEvent sampleSignedEvent) `shouldBe` Right sampleSignedEvent
 
-    it "round-trips saved AWS validation snapshots through their on-disk JSON contracts" $
-      withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        AwsTest.saveAwsTestStackSnapshot tmpDir sampleAwsTestStackSnapshot
-        AwsEks.saveAwsEksTestStackSnapshot tmpDir sampleAwsEksTestStackSnapshot
+    -- Sprint 4.18: the on-disk snapshot cache is removed; the destroy,
+    -- residue-assertion, and substrate-platform install paths now read
+    -- the stack snapshot live from the Pulumi backend. These round-trips
+    -- exercise the live-output parsers against the flat `Map Text Text`
+    -- shape the backend emits (complex outputs as JSON-encoded strings).
+    it "round-trips the aws-test snapshot through the live-output parser" $
+      AwsTest.parseAwsTestStackFromOutputs sampleAwsTestStackOutputsMap
+        `shouldBe` Right sampleAwsTestStackSnapshot
 
-        AwsTest.loadAwsTestStackSnapshot tmpDir
-          `shouldReturn` Just sampleAwsTestStackSnapshot
-        AwsEks.loadAwsEksTestStackSnapshot tmpDir
-          `shouldReturn` Just sampleAwsEksTestStackSnapshot
+    it "round-trips the aws-eks-test snapshot through the live-output parser" $
+      AwsEks.parseAwsEksTestStackFromOutputs sampleAwsEksTestStackOutputsMap
+        `shouldBe` Right sampleAwsEksTestStackSnapshot
 
     it "sanitizes resource names into DNS-1123 labels" $ do
       sanitizeResourceName "Hello, World_123"
@@ -2914,19 +2930,14 @@ main = mainWithSuite "prodbox-unit" $ do
       Residue.isResidueUnreachable Residue.ResidueAbsent `shouldBe` False
       Residue.isResidueUnreachable (Residue.ResiduePresent residueFixtureDetails) `shouldBe` False
 
-    it "per-run treats unreachable as absent (graceful MinIO-down degradation)" $ do
-      Residue.isResiduePresentOrUnknownPerRun (Residue.ResidueUnreachable residueFixtureMinioReason)
-        `shouldBe` False
-      Residue.isResiduePresentOrUnknownPerRun Residue.ResidueAbsent `shouldBe` False
-      Residue.isResiduePresentOrUnknownPerRun (Residue.ResiduePresent residueFixtureDetails)
+    it "Sprint 4.20 residueBlocksTeardownGate: present OR unreachable blocks, only absent passes" $ do
+      Residue.residueBlocksTeardownGate (Residue.ResidueUnreachable residueFixtureMinioReason)
         `shouldBe` True
-
-    it "long-lived treats unreachable as still-present (refuse when S3 cannot be queried)" $ do
-      Residue.isResiduePresentOrUnknownLongLived (Residue.ResidueUnreachable residueFixtureS3Reason)
+      Residue.residueBlocksTeardownGate (Residue.ResidueUnreachable residueFixtureS3Reason)
         `shouldBe` True
-      Residue.isResiduePresentOrUnknownLongLived Residue.ResidueAbsent `shouldBe` False
-      Residue.isResiduePresentOrUnknownLongLived (Residue.ResiduePresent residueFixtureDetails)
+      Residue.residueBlocksTeardownGate (Residue.ResiduePresent residueFixtureDetails)
         `shouldBe` True
+      Residue.residueBlocksTeardownGate Residue.ResidueAbsent `shouldBe` False
 
     it "renderResidueStatus produces operator-readable evidence per constructor" $ do
       Residue.renderResidueStatus Residue.ResidueAbsent `shouldBe` "absent"
@@ -2962,39 +2973,116 @@ main = mainWithSuite "prodbox-unit" $ do
     it "residueAbsent constructor matches the ResidueAbsent value" $
       Residue.residueAbsent `shouldBe` Residue.ResidueAbsent
 
-  describe "Sprint 4.17 cascade per-run inventory" $ do
-    it "all-absent produces an empty inventory (cascade skips per-run destroys)" $
-      perRunCascadeInventory Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent
-        `shouldBe` []
+  describe "Sprint 4.21 registry per-run reconcile (resourcesToDestroy / pairPerRunResidue)" $ do
+    let presentNames eks sub test =
+          map
+            ResourceRegistry.resourceName
+            ( ResourceRegistry.resourcesToDestroy
+                (ResourceRegistry.pairPerRunResidue eks sub test)
+            )
 
-    it "all-present produces every per-run destroy in canonical order" $
-      map fst (perRunCascadeInventory residueFixturePresent residueFixturePresent residueFixturePresent)
+    it "pairPerRunResidue lists the per-run resources in canonical order" $
+      map
+        (ResourceRegistry.resourceName . fst)
+        (ResourceRegistry.pairPerRunResidue Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent)
         `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
-    it "all-present pairs each stack with its PulumiCommand" $
-      perRunCascadeInventory residueFixturePresent residueFixturePresent residueFixturePresent
-        `shouldBe` [ ("aws-eks", PulumiEksDestroy True (PlanOptions False Nothing))
-                   , ("aws-eks-subzone", PulumiAwsSubzoneDestroy True (PlanOptions False Nothing))
-                   , ("aws-test", PulumiTestDestroy True (PlanOptions False Nothing))
-                   ]
+    it "all-absent destroys nothing (cascade skips per-run destroys)" $
+      presentNames Residue.ResidueAbsent Residue.ResidueAbsent Residue.ResidueAbsent `shouldBe` []
+
+    it "all-present destroys every per-run stack in canonical order" $
+      presentNames residueFixturePresent residueFixturePresent residueFixturePresent
+        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
 
     it "only-middle-present preserves the canonical ordering position" $
-      map fst (perRunCascadeInventory Residue.ResidueAbsent residueFixturePresent Residue.ResidueAbsent)
+      presentNames Residue.ResidueAbsent residueFixturePresent Residue.ResidueAbsent
         `shouldBe` ["aws-eks-subzone"]
 
-    it "only-eks-present yields a single aws-eks destroy" $
-      map fst (perRunCascadeInventory residueFixturePresent Residue.ResidueAbsent Residue.ResidueAbsent)
+    it "only-eks-present destroys only aws-eks" $
+      presentNames residueFixturePresent Residue.ResidueAbsent Residue.ResidueAbsent
         `shouldBe` ["aws-eks"]
 
-    it "only-test-present yields a single aws-test destroy" $
-      map fst (perRunCascadeInventory Residue.ResidueAbsent Residue.ResidueAbsent residueFixturePresent)
+    it "only-test-present destroys only aws-test" $
+      presentNames Residue.ResidueAbsent Residue.ResidueAbsent residueFixturePresent
         `shouldBe` ["aws-test"]
 
-    it "ResidueUnreachable on any per-run stack is treated as absent (per-run lifecycle class)" $ do
+    it "ResidueUnreachable on any per-run stack is skipped (per-run graceful degradation)" $ do
       let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
-      perRunCascadeInventory minioDown minioDown minioDown `shouldBe` []
-      map fst (perRunCascadeInventory residueFixturePresent minioDown residueFixturePresent)
+      presentNames minioDown minioDown minioDown `shouldBe` []
+      presentNames residueFixturePresent minioDown residueFixturePresent
         `shouldBe` ["aws-eks", "aws-test"]
+
+    it "reconcileAbsent destroys present resources in order and stops fast on failure" $ do
+      destroyed <- newIORef ([] :: [String])
+      let mk name code =
+            ResourceRegistry.ManagedResource
+              { ResourceRegistry.resourceName = name
+              , ResourceRegistry.resourceClass = ResourceClass.PerRun
+              , ResourceRegistry.resourceDestroy = \_ -> do
+                  modifyIORef' destroyed (++ [name])
+                  pure code
+              }
+          pairs =
+            [ (mk "first" ExitSuccess, residueFixturePresent)
+            , (mk "skipped-absent" ExitSuccess, Residue.ResidueAbsent)
+            , (mk "boom" (ExitFailure 1), residueFixturePresent)
+            , (mk "after-failure" ExitSuccess, residueFixturePresent)
+            ]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      outcome `shouldBe` ExitFailure 1
+      readIORef destroyed `shouldReturn` ["first", "boom"]
+
+  describe "Sprint 7.8 operational-resource registry" $ do
+    let sampleCreds =
+          Credentials
+            { access_key_id = "AKIAADMIN"
+            , secret_access_key = "admin-secret"
+            , session_token = Nothing
+            , region = "us-west-2"
+            }
+
+    it "operationalIamUserResidueFromExists maps Right True to present" $
+      operationalIamUserResidueFromExists (Right True)
+        `shouldBe` Residue.ResiduePresent
+          Residue.ResidueDetails
+            { Residue.residueEvidence = "iam:get-user prodbox"
+            , Residue.residueStackName = "operational-iam-user"
+            }
+
+    it "operationalIamUserResidueFromExists maps Right False to absent" $
+      operationalIamUserResidueFromExists (Right False) `shouldBe` Residue.ResidueAbsent
+
+    it "operationalIamUserResidueFromExists maps Left to unreachable (fail-closed)" $
+      operationalIamUserResidueFromExists (Left "boom")
+        `shouldBe` Residue.ResidueUnreachable (Residue.ResidueQueryFailed "boom")
+
+    it "operationalAwsConfigResidueFromKey maps a non-empty key to present" $
+      operationalAwsConfigResidueFromKey "AKIAOPERATIONAL"
+        `shouldBe` Residue.ResiduePresent
+          Residue.ResidueDetails
+            { Residue.residueEvidence = "aws.access_key_id set in prodbox-config.dhall"
+            , Residue.residueStackName = "operational-aws-config"
+            }
+
+    it "operationalAwsConfigResidueFromKey maps an empty key to absent" $
+      operationalAwsConfigResidueFromKey "" `shouldBe` Residue.ResidueAbsent
+
+    it "operationalAwsConfigResidueFromKey treats whitespace-only as absent" $
+      operationalAwsConfigResidueFromKey "   \t  " `shouldBe` Residue.ResidueAbsent
+
+    it "operationalManagedResources registers exactly the two operational resources" $
+      map ResourceRegistry.resourceName (operationalManagedResources sampleCreds)
+        `shouldBe` ["operational-iam-user", "operational-aws-config"]
+
+    it "operationalManagedResources entries are all the Operational lifecycle class" $
+      all
+        ((== ResourceClass.Operational) . ResourceRegistry.resourceClass)
+        (operationalManagedResources sampleCreds)
+        `shouldBe` True
+
+    it "operationalManagedResources names match the ResourceClass SSoT Operational class" $
+      map ResourceRegistry.resourceName (operationalManagedResources sampleCreds)
+        `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.Operational
 
   describe "Sprint 4.17.a canonical cascade phase order" $ do
     it "narration lists drain before per-run destroys (doctrine §5b)" $
@@ -3163,6 +3251,195 @@ main = mainWithSuite "prodbox-unit" $ do
 
     it "StackName preserves the wrapped Text identity" $
       StackOutputs.unStackName (StackOutputs.StackName "aws-ses") `shouldBe` "aws-ses"
+
+  describe "Sprint 4.16 LiveResidue error mapping + listing translation" $ do
+    it "residueReasonFromMinioError maps subprocess failure to MinIO unreachable" $
+      LiveResidue.residueReasonFromMinioError (StackOutputs.StackOutputsSubprocessFailed "fork")
+        `shouldBe` Residue.ResidueBackendMinioUnreachable "fork"
+
+    it "residueReasonFromMinioError maps command failure to MinIO unreachable" $
+      LiveResidue.residueReasonFromMinioError (StackOutputs.StackOutputsCommandFailed "denied")
+        `shouldBe` Residue.ResidueBackendMinioUnreachable "denied"
+
+    it "residueReasonFromMinioError maps parse failure to ResidueQueryFailed" $
+      LiveResidue.residueReasonFromMinioError (StackOutputs.StackOutputsParseFailed "bad json")
+        `shouldBe` Residue.ResidueQueryFailed "bad json"
+
+    it "residueReasonFromS3Error maps subprocess failure to S3 unreachable" $
+      LiveResidue.residueReasonFromS3Error (StackOutputs.StackOutputsSubprocessFailed "fork")
+        `shouldBe` Residue.ResidueBackendS3Unreachable "fork"
+
+    it "residueReasonFromS3Error maps command failure to S3 unreachable" $
+      LiveResidue.residueReasonFromS3Error (StackOutputs.StackOutputsCommandFailed "expired")
+        `shouldBe` Residue.ResidueBackendS3Unreachable "expired"
+
+    it "residueReasonFromS3Error maps parse failure to ResidueQueryFailed" $
+      LiveResidue.residueReasonFromS3Error (StackOutputs.StackOutputsParseFailed "bad json")
+        `shouldBe` Residue.ResidueQueryFailed "bad json"
+
+    it "residueStatusFromListing returns ResidueAbsent when the stack is not in the listing" $
+      LiveResidue.residueStatusFromListing
+        "aws-eks-test"
+        LiveResidue.residueReasonFromMinioError
+        (Right [])
+        `shouldBe` Residue.ResidueAbsent
+
+    it "residueStatusFromListing returns ResiduePresent when the stack name matches" $
+      let entries =
+            [ StackOutputs.StackListEntry
+                { StackOutputs.stackListEntryName = "aws-eks-test"
+                , StackOutputs.stackListEntryCurrent = True
+                }
+            ]
+          status =
+            LiveResidue.residueStatusFromListing
+              "aws-eks-test"
+              LiveResidue.residueReasonFromMinioError
+              (Right entries)
+       in case status of
+            Residue.ResiduePresent details -> do
+              Residue.residueStackName details `shouldBe` "aws-eks-test"
+              Residue.residueEvidence details `shouldContain` "pulumi stack ls"
+            other ->
+              expectationFailure
+                ("expected ResiduePresent, got: " ++ show other)
+
+    it "residueStatusFromListing matches the qualified org/project/stack form (suffix-aware)" $
+      let entries =
+            [ StackOutputs.StackListEntry
+                { StackOutputs.stackListEntryName = "organization/prodbox-aws-eks-test/aws-eks-test"
+                , StackOutputs.stackListEntryCurrent = False
+                }
+            ]
+          status =
+            LiveResidue.residueStatusFromListing
+              "aws-eks-test"
+              LiveResidue.residueReasonFromMinioError
+              (Right entries)
+       in case status of
+            Residue.ResiduePresent _ -> pure ()
+            other ->
+              expectationFailure
+                ("expected ResiduePresent for qualified form, got: " ++ show other)
+
+    it "residueStatusFromListing returns ResidueUnreachable when the backend errors" $
+      let err = StackOutputs.StackOutputsCommandFailed "connection refused"
+          status =
+            LiveResidue.residueStatusFromListing
+              "aws-eks-test"
+              LiveResidue.residueReasonFromMinioError
+              (Left err)
+       in status
+            `shouldBe` Residue.ResidueUnreachable
+              (Residue.ResidueBackendMinioUnreachable "connection refused")
+
+    it "canonical stack-name constants match the production names" $ do
+      LiveResidue.awsEksTestStackName `shouldBe` "aws-eks-test"
+      LiveResidue.awsEksSubzoneStackName `shouldBe` "aws-eks-subzone"
+      LiveResidue.awsTestStackName `shouldBe` "aws-test"
+      LiveResidue.awsSesStackName `shouldBe` "aws-ses"
+
+  describe "Sprint 4.18 live-output parsers for per-run AWS stacks" $ do
+    it "parseAwsTestNodesFromOutputs decodes the three-node Pulumi outputs" $ do
+      let nodesJson =
+            "[ {\"name\":\"aws-test-node-0\""
+              ++ ", \"availability_zone\":\"us-east-1a\""
+              ++ ", \"instance_id\":\"i-aaaa\""
+              ++ ", \"private_ip\":\"10.0.0.10\""
+              ++ ", \"public_ip\":\"203.0.113.10\"}"
+              ++ ", {\"name\":\"aws-test-node-1\""
+              ++ ", \"availability_zone\":\"us-east-1b\""
+              ++ ", \"instance_id\":\"i-bbbb\""
+              ++ ", \"private_ip\":\"10.0.0.11\""
+              ++ ", \"public_ip\":\"203.0.113.11\"}"
+              ++ ", {\"name\":\"aws-test-node-2\""
+              ++ ", \"availability_zone\":\"us-east-1c\""
+              ++ ", \"instance_id\":\"i-cccc\""
+              ++ ", \"private_ip\":\"10.0.0.12\""
+              ++ ", \"public_ip\":\"203.0.113.12\"} ]"
+          outputs = Map.fromList [("nodes", Text.pack nodesJson)]
+      case AwsTest.parseAwsTestNodesFromOutputs outputs of
+        Left err -> expectationFailure ("expected Right, got Left: " ++ err)
+        Right nodes -> do
+          length nodes `shouldBe` 3
+          map AwsTest.testNodeName nodes
+            `shouldBe` ["aws-test-node-0", "aws-test-node-1", "aws-test-node-2"]
+          map AwsTest.testNodePublicIp nodes
+            `shouldBe` ["203.0.113.10", "203.0.113.11", "203.0.113.12"]
+
+    it "parseAwsTestNodesFromOutputs fails when the 'nodes' field is missing" $
+      case AwsTest.parseAwsTestNodesFromOutputs Map.empty of
+        Left err -> err `shouldContain` "missing required field 'nodes'"
+        Right _ -> expectationFailure "expected Left for missing 'nodes' field"
+
+    it "parseAwsTestNodesFromOutputs fails when the 'nodes' field is not JSON" $ do
+      let outputs = Map.fromList [("nodes", Text.pack "not-json")]
+      case AwsTest.parseAwsTestNodesFromOutputs outputs of
+        Left err -> err `shouldContain` "is not valid JSON"
+        Right _ -> expectationFailure "expected Left for non-JSON 'nodes'"
+
+    it "parseAwsTestNodesFromOutputs fails when 'nodes' is not a JSON array" $ do
+      let outputs = Map.fromList [("nodes", Text.pack "{\"shape\":\"object\"}")]
+      case AwsTest.parseAwsTestNodesFromOutputs outputs of
+        Left err -> err `shouldContain` "must be a JSON array"
+        Right _ -> expectationFailure "expected Left for non-array 'nodes'"
+
+    it "parseAwsEksTestStackFromOutputs builds an AwsEksTestStackSnapshot from the live outputs map" $ do
+      let outputs =
+            Map.fromList
+              [ ("backend_bucket", "prodbox-test-pulumi-backends")
+              , ("cluster_name", "prodbox-aws-eks-test-cluster")
+              , ("cluster_role_name", "prodbox-aws-eks-test-cluster-role")
+              , ("node_group_name", "prodbox-aws-eks-test-nodes")
+              , ("node_role_name", "prodbox-aws-eks-test-node-role")
+              , ("vpc_id", "vpc-123")
+              , ("subnet_ids", Text.pack "[\"subnet-aaa\",\"subnet-bbb\"]")
+              , ("cluster_security_group_id", "sg-1234")
+              , ("cluster_oidc_issuer", "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE")
+              ,
+                ( "oidc_provider_arn"
+                , "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+                )
+              , ("aws_lb_controller_policy_arn", "arn:aws:iam::123:policy/lbc")
+              , ("aws_lb_controller_role_arn", "arn:aws:iam::123:role/lbc")
+              , ("aws_lb_controller_role_name", "prodbox-lbc-role")
+              ]
+      case AwsEks.parseAwsEksTestStackFromOutputs outputs of
+        Left err -> expectationFailure ("expected Right, got Left: " ++ err)
+        Right snapshot -> do
+          AwsEks.eksSnapshotStackName snapshot `shouldBe` "aws-eks-test"
+          AwsEks.eksSnapshotClusterName snapshot `shouldBe` "prodbox-aws-eks-test-cluster"
+          AwsEks.eksSnapshotVpcId snapshot `shouldBe` "vpc-123"
+          AwsEks.eksSnapshotSubnetIds snapshot `shouldBe` ["subnet-aaa", "subnet-bbb"]
+          AwsEks.eksSnapshotAwsLbControllerRoleArn snapshot
+            `shouldBe` "arn:aws:iam::123:role/lbc"
+
+    it "parseAwsEksTestStackFromOutputs fails when a required scalar is missing" $ do
+      let outputs = Map.fromList [("cluster_name", "x")]
+      case AwsEks.parseAwsEksTestStackFromOutputs outputs of
+        Left err -> err `shouldContain` "missing required field"
+        Right _ -> expectationFailure "expected Left for missing required field"
+
+    it "parseAwsEksTestStackFromOutputs fails when subnet_ids is not a JSON array" $ do
+      let outputs =
+            Map.fromList
+              [ ("backend_bucket", "bucket")
+              , ("cluster_name", "cluster")
+              , ("cluster_role_name", "role")
+              , ("node_group_name", "nodes")
+              , ("node_role_name", "node-role")
+              , ("vpc_id", "vpc")
+              , ("subnet_ids", "not-an-array")
+              , ("cluster_security_group_id", "sg")
+              , ("cluster_oidc_issuer", "oidc")
+              , ("oidc_provider_arn", "arn")
+              , ("aws_lb_controller_policy_arn", "policy")
+              , ("aws_lb_controller_role_arn", "role-arn")
+              , ("aws_lb_controller_role_name", "role-name")
+              ]
+      case AwsEks.parseAwsEksTestStackFromOutputs outputs of
+        Left err -> err `shouldContain` "subnet_ids"
+        Right _ -> expectationFailure "expected Left for malformed subnet_ids"
 
   describe "Sprint 4.17 postflight tag sweep wiring" $ do
     it "renderTagSweepRefusal includes the cluster-tagged resource ARN and matched tag" $ do
@@ -3647,40 +3924,41 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "native validation helpers" $ do
     it "retries AWS test-stack SSH validation until a node accepts connections" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
+        -- Sprint 4.18: SSH validation reads the live aws-test Pulumi
+        -- outputs rather than .prodbox-state/aws-test/stack-snapshot.json,
+        -- so the test injects the outputs via the
+        -- PRODBOX_TEST_PER_RUN_OUTPUTS_DIR override on
+        -- 'fetchPerRunStackOutputs'. The SSH keypair still lives under
+        -- AwsTest.ensureAwsTestSshKey's state directory until that side
+        -- of Sprint 4.18 migrates to a mktemp + pulumi-stack-output
+        -- bracket.
         let stateDir = tmpDir </> ".prodbox-state" </> AwsTest.awsTestStackName
             privateKeyPath = stateDir </> "id_ed25519"
             publicKeyPath = stateDir </> "id_ed25519.pub"
             sshStateDir = tmpDir </> "ssh-state"
             binDir = tmpDir </> "bin"
             fakeSshPath = binDir </> "ssh"
-            snapshot =
-              AwsTest.AwsTestStackSnapshot
-                { AwsTest.testSnapshotStackName = AwsTest.awsTestStackName
-                , AwsTest.testSnapshotBackendBucket = "prodbox-test-pulumi-backends"
-                , AwsTest.testSnapshotVpcId = "vpc-1234567890"
-                , AwsTest.testSnapshotSubnetIds = ["subnet-1", "subnet-2", "subnet-3"]
-                , AwsTest.testSnapshotSecurityGroupId = "sg-1234567890"
-                , AwsTest.testSnapshotNodes =
-                    [ AwsTest.AwsTestNode
-                        { AwsTest.testNodeName = "aws-test-node-0"
-                        , AwsTest.testNodeAvailabilityZone = "us-west-2a"
-                        , AwsTest.testNodeInstanceId = "i-1234567890"
-                        , AwsTest.testNodePrivateIp = "10.0.0.10"
-                        , AwsTest.testNodePublicIp = "203.0.113.10"
-                        }
-                    ]
-                }
+            mockOutputsDir = tmpDir </> "pulumi-outputs"
+            mockOutputsPath = mockOutputsDir </> (AwsTest.awsTestStackName ++ ".json")
+            mockOutputsJson =
+              "{\"nodes\":\"[ {\\\"name\\\":\\\"aws-test-node-0\\\""
+                ++ ", \\\"availability_zone\\\":\\\"us-west-2a\\\""
+                ++ ", \\\"instance_id\\\":\\\"i-1234567890\\\""
+                ++ ", \\\"private_ip\\\":\\\"10.0.0.10\\\""
+                ++ ", \\\"public_ip\\\":\\\"203.0.113.10\\\"} ]\"}"
         createDirectoryIfMissing True stateDir
         createDirectoryIfMissing True sshStateDir
         createDirectoryIfMissing True binDir
+        createDirectoryIfMissing True mockOutputsDir
         writeFile privateKeyPath "fake-private-key\n"
         writeFile publicKeyPath "fake-public-key\n"
-        AwsTest.saveAwsTestStackSnapshot tmpDir snapshot
+        writeFile mockOutputsPath mockOutputsJson
         writeFile fakeSshPath (unlines fakeAwsTestSshScript)
         makeExecutable fakeSshPath
 
         originalPath <- lookupEnv "PATH"
         originalSshStateDir <- lookupEnv "PRODBOX_TEST_SSH_STATE_DIR"
+        originalOutputsDir <- lookupEnv "PRODBOX_TEST_PER_RUN_OUTPUTS_DIR"
         let restoreEnv key previous =
               case previous of
                 Just value -> setEnv key value
@@ -3692,11 +3970,13 @@ main = mainWithSuite "prodbox-unit" $ do
 
         setEnv "PATH" configuredPath
         setEnv "PRODBOX_TEST_SSH_STATE_DIR" sshStateDir
+        setEnv "PRODBOX_TEST_PER_RUN_OUTPUTS_DIR" mockOutputsDir
         validationResult <-
           verifyAwsTestSshReachability tmpDir
             `finally` do
               restoreEnv "PATH" originalPath
               restoreEnv "PRODBOX_TEST_SSH_STATE_DIR" originalSshStateDir
+              restoreEnv "PRODBOX_TEST_PER_RUN_OUTPUTS_DIR" originalOutputsDir
 
         validationResult `shouldBe` ExitSuccess
         readFile (sshStateDir </> "count") `shouldReturn` "3"
@@ -3931,50 +4211,187 @@ main = mainWithSuite "prodbox-unit" $ do
       any ("image.repository=127.0.0.1:30080" `isPrefixOf`) args `shouldBe` True
       any ("persistence.existingClaim=" `isPrefixOf`) args `shouldBe` False
 
-  describe "Sprint 7.6 AWS harness orphan-safety" $ do
+  describe "Sprint 7.6 AWS harness orphan-safety (Sprint 4.16 source-of-truth pure layer)" $ do
     it
-      "Scenario A — direct teardown footgun: aws-eks snapshot present → residue refuses with eks-destroy hint"
-      $ withSystemTempDirectory "prodbox-hs-7.6-a"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
+      "Scenario A — direct teardown footgun: aws-eks present → residue refuses with eks-destroy hint"
+      $ do
+        let perRun = absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"}
+            residue = categorizePulumiResidue perRun Residue.ResidueAbsent
         residue `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
         let refusal = renderPulumiResidueRefusal residue
         refusal `shouldContain` "aws-eks → prodbox pulumi eks-destroy --yes"
         refusal `shouldContain` "--allow-pulumi-residue"
-    it "Scenario B — interrupted suite: no snapshots → residue empty so cleanup proceeds" $
-      withSystemTempDirectory "prodbox-hs-7.6-b" $ \tmpDir -> do
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        residue `shouldBe` []
-    it "Scenario C — partial residue: aws-eks-subzone + aws-test snapshots present → refusal lists both" $
-      withSystemTempDirectory "prodbox-hs-7.6-c" $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
-        writeFakeStackSnapshot tmpDir "aws-test"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        residue
-          `shouldBe` [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-                     , ("aws-test", "prodbox pulumi test-destroy --yes")
-                     ]
-    it "Scenario D — SES present: aws-ses snapshot present → refusal names aws-ses-destroy as recovery" $
-      withSystemTempDirectory "prodbox-hs-7.6-d" $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        residue `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
-        let refusal = renderPulumiResidueRefusal residue
-        refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
-    it "Scenario all-four — every stack present → all four canonical destroy commands surface in order" $
-      withSystemTempDirectory "prodbox-hs-7.6-all" $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
-        writeFakeStackSnapshot tmpDir "aws-test"
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        residue
-          `shouldBe` [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
-                     , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
-                     , ("aws-test", "prodbox pulumi test-destroy --yes")
-                     , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
-                     ]
+    it "Scenario B — interrupted suite: no live residue → list empty so cleanup proceeds" $ do
+      let residue = categorizePulumiResidue absentPerRunStatuses Residue.ResidueAbsent
+      residue `shouldBe` []
+    it "Scenario C — partial residue: aws-eks-subzone + aws-test present → refusal lists both" $ do
+      let perRun =
+            absentPerRunStatuses
+              { perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
+              , perRunAwsTest = residuePresentFor "aws-test"
+              }
+          residue = categorizePulumiResidue perRun Residue.ResidueAbsent
+      residue
+        `shouldBe` [ ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+                   , ("aws-test", "prodbox pulumi test-destroy --yes")
+                   ]
+    it "Scenario D — SES present: aws-ses live → refusal names aws-ses-destroy as recovery" $ do
+      let residue = categorizePulumiResidue absentPerRunStatuses (residuePresentFor "aws-ses")
+      residue `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+      let refusal = renderPulumiResidueRefusal residue
+      refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+    it "Scenario all-four — every stack present → all four canonical destroy commands in order" $ do
+      let perRun =
+            PerRunResidueStatuses
+              { perRunAwsEksTest = residuePresentFor "aws-eks-test"
+              , perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
+              , perRunAwsTest = residuePresentFor "aws-test"
+              }
+          residue = categorizePulumiResidue perRun (residuePresentFor "aws-ses")
+      residue
+        `shouldBe` [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+                   , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+                   , ("aws-test", "prodbox pulumi test-destroy --yes")
+                   , ("aws-ses", "prodbox pulumi aws-ses-destroy --yes")
+                   ]
+    it "Sprint 4.19 unreachable per-run: MinIO down → gate refuses (cannot confirm gone)" $ do
+      let unreachable =
+            Residue.ResidueUnreachable
+              (Residue.ResidueBackendMinioUnreachable "MinIO unreachable")
+          perRun =
+            PerRunResidueStatuses
+              { perRunAwsEksTest = unreachable
+              , perRunAwsEksSubzone = unreachable
+              , perRunAwsTest = unreachable
+              }
+          residue = categorizePulumiResidue perRun Residue.ResidueAbsent
+      residue
+        `shouldBe` [ ("aws-eks", "prodbox pulumi eks-destroy --yes")
+                   , ("aws-eks-subzone", "prodbox pulumi aws-subzone-destroy --yes")
+                   , ("aws-test", "prodbox pulumi test-destroy --yes")
+                   ]
+    it "Sprint 4.16 unreachable long-lived: S3 down → aws-ses treated as still-present (doctrine §3)" $ do
+      let unreachable =
+            Residue.ResidueUnreachable
+              (Residue.ResidueBackendS3Unreachable "admin credentials missing")
+          residue = categorizePulumiResidue absentPerRunStatuses unreachable
+      residue `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
+
+  describe "Sprint 4.19 per-run delete-gate refusal messages" $ do
+    it "unreadable-only refusal names the escape hatch and warns against deleting .data" $ do
+      let summary =
+            Preconditions.perRunSummaryLine [] [("aws-eks", "unreachable (MinIO backend unreachable: refused)")]
+          narrative =
+            Preconditions.renderPerRunRefusal
+              []
+              [("aws-eks", "unreachable (MinIO backend unreachable: refused)")]
+      summary `shouldContain` "unreachable"
+      summary `shouldContain` "cannot confirm"
+      narrative `shouldContain` "could not"
+      narrative `shouldContain` "do NOT delete `.data/`"
+      narrative `shouldContain` "--allow-pulumi-residue"
+
+    it "live-only refusal lists the canonical destroy command and the cascade alternative" $ do
+      let narrative = Preconditions.renderPerRunRefusal [("aws-eks", "prodbox pulumi eks-destroy --yes")] []
+      narrative `shouldContain` "aws-eks → prodbox pulumi eks-destroy --yes"
+      narrative `shouldContain` "--cascade"
+
+    it "summary distinguishes the present-and-unreachable combination" $ do
+      let summary =
+            Preconditions.perRunSummaryLine
+              [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+              [("aws-test", "unreachable (MinIO backend unreachable: refused)")]
+      summary `shouldContain` "live resources"
+      summary `shouldContain` "unreachable"
+
+  describe "Sprint 4.20 managed-resource registry facts" $ do
+    it "every per-run stack the lifecycle classes declares is a Pulumi stack" $
+      ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+        `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+
+    it "the long-lived class is exactly aws-ses" $
+      ResourceClass.resourceNamesOfClass ResourceClass.LongLived `shouldBe` ["aws-ses"]
+
+    it "the operational class registers the IAM user and the aws.* config block" $
+      ResourceClass.resourceNamesOfClass ResourceClass.Operational
+        `shouldBe` ["operational-iam-user", "operational-aws-config"]
+
+    it "perRunStackNames is derived from the registry (matches the prior literal)" $
+      perRunStackNames `shouldBe` ["aws-eks", "aws-eks-subzone", "aws-test"]
+
+    it "longLivedStackNames is derived from the registry (matches the prior literal)" $
+      longLivedStackNames `shouldBe` ["aws-ses"]
+
+    it "derived stack-name lists equal the PerRun/LongLived registry classes" $ do
+      perRunStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+      longLivedStackNames `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+
+    it "Sprint 4.22 renderRegisteredResourcesMarkdown renders every registered resource + class" $ do
+      let rendered =
+            ResourceClass.renderRegisteredResourcesMarkdown ResourceClass.resourceLifecycleClasses
+      rendered `shouldContain` "| Resource | Lifecycle class |"
+      rendered `shouldContain` "| `aws-eks` | PerRun |"
+      rendered `shouldContain` "| `aws-ses` | LongLived |"
+      rendered `shouldContain` "| `operational-iam-user` | Operational |"
+      rendered `shouldContain` "| `operational-aws-config` | Operational |"
+
+  describe "Sprint 4.22 create-call-site coverage lint" $ do
+    let registeredNames =
+          ResourceClass.resourceNamesOfClass ResourceClass.PerRun
+            ++ ResourceClass.resourceNamesOfClass ResourceClass.LongLived
+        commandWithKnownConstructors =
+          unlines
+            [ "data PulumiCommand"
+            , "  = PulumiEksResources PlanOptions"
+            , "  | PulumiTestResources PlanOptions"
+            , "  | PulumiAwsSubzoneResources PlanOptions"
+            , "  | PulumiAwsSesResources PlanOptions"
+            ]
+        commandWithBogusConstructor =
+          commandWithKnownConstructors
+            ++ unlines ["  | PulumiFooResources PlanOptions"]
+        contentsWithCreateUser =
+          unlines
+            [ "      [ \"iam\""
+            , "      , \"create-user\""
+            , "      , \"--user-name\""
+            , "      ]"
+            ]
+        contentsWithoutVerbs =
+          unlines
+            [ "      [ \"sts\""
+            , "      , \"get-caller-identity\""
+            , "      ]"
+            ]
+
+    it "real registered names + the 4 known Pulumi constructors yields no violations" $
+      pulumiCreateSiteViolations registeredNames commandWithKnownConstructors `shouldBe` []
+
+    it "a bogus PulumiFooResources constructor yields exactly one violation naming it" $ do
+      let violations =
+            pulumiCreateSiteViolations registeredNames commandWithBogusConstructor
+      length violations `shouldBe` 1
+      head violations `shouldContain` "PulumiFooResources"
+
+    it "a mapped stack absent from the registered names yields a violation naming that stack" $ do
+      let registeredWithoutSes = filter (/= "aws-ses") registeredNames
+          violations =
+            pulumiCreateSiteViolations registeredWithoutSes commandWithKnownConstructors
+      length violations `shouldBe` 1
+      head violations `shouldContain` "aws-ses"
+
+    it "iamCreateSiteViolations allows the owner module src/Prodbox/Aws.hs" $
+      iamCreateSiteViolations "src/Prodbox/Aws.hs" contentsWithCreateUser `shouldBe` []
+
+    it "iamCreateSiteViolations flags an IAM create verb outside the owner module" $ do
+      let violations =
+            iamCreateSiteViolations "src/Prodbox/Other.hs" contentsWithCreateUser
+      length violations `shouldBe` 1
+      head violations `shouldContain` "create-user"
+      head violations `shouldContain` "src/Prodbox/Aws.hs"
+
+    it "iamCreateSiteViolations ignores a non-owner module with no IAM create verbs" $
+      iamCreateSiteViolations "src/Prodbox/Other.hs" contentsWithoutVerbs `shouldBe` []
 
   describe "Sprint 4.15 cascade decision from drain result" $ do
     it "DrainSucceeded maps to CascadeContinue Nothing" $
@@ -4335,121 +4752,149 @@ main = mainWithSuite "prodbox-unit" $ do
             { awsTeardownAdminCredentials = awsSetupAdminCredentials sampleAwsSetupInput
             , awsTeardownResiduePolicy = policy
             }
+        perRunOnlyResidue =
+          categorizePulumiResidue
+            (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
+            Residue.ResidueAbsent
+        sesOnlyResidue =
+          categorizePulumiResidue
+            absentPerRunStatuses
+            (residuePresentFor "aws-ses")
+        perRunAndSesResidue =
+          categorizePulumiResidue
+            (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
+            (residuePresentFor "aws-ses")
+        allFourResidue =
+          categorizePulumiResidue
+            ( PerRunResidueStatuses
+                { perRunAwsEksTest = residuePresentFor "aws-eks-test"
+                , perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
+                , perRunAwsTest = residuePresentFor "aws-test"
+                }
+            )
+            (residuePresentFor "aws-ses")
     it
-      "Scenario E — BypassPerRunResidueOnly with per-run residue only proceeds (no IO writes because runTeardown would touch live AWS, so we assert the policy short-circuit by file-state alone)"
-      $
-      -- The runTeardown body would invoke AWS — for this unit scenario
-      -- we rely on the fact that the policy decision in applyAwsTeardown
-      -- runs the file-based residue check, partitions, and only on the
-      -- refuse paths returns Left WITHOUT touching AWS. Here we verify
-      -- the partition + policy compute the "no long-lived residue"
-      -- predicate that gates the proceed branch.
-      withSystemTempDirectory "prodbox-hs-7.7-e"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        let (_, longLived) = partitionResidueByLifecycle residue
+      "Scenario E — BypassPerRunResidueOnly with per-run residue only proceeds (long-lived empty)"
+      $ do
+        let (_, longLived) = partitionResidueByLifecycle perRunOnlyResidue
         null longLived `shouldBe` True
-        -- Smoke that the input type carries the policy we'd dispatch on.
         awsTeardownResiduePolicy (teardownInputWith BypassPerRunResidueOnly)
           `shouldBe` BypassPerRunResidueOnly
     it
       "Scenario F — BypassPerRunResidueOnly with aws-ses present refuses naming aws-ses-destroy (May 19 bug fix)"
-      $ withSystemTempDirectory "prodbox-hs-7.7-f"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        let (_, longLived) = partitionResidueByLifecycle residue
+      $ do
+        let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
         let refusal = renderPulumiResidueLongLivedRefusal longLived
         refusal `shouldContain` "long-lived cross-substrate shared"
         refusal `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
     it
       "Scenario G — BypassPerRunResidueOnly with both per-run and long-lived: refusal lists only long-lived"
-      $ withSystemTempDirectory "prodbox-hs-7.7-g"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        let (_, longLived) = partitionResidueByLifecycle residue
+      $ do
+        let (_, longLived) = partitionResidueByLifecycle perRunAndSesResidue
         map fst longLived `shouldBe` ["aws-ses"]
         let refusal = renderPulumiResidueLongLivedRefusal longLived
         refusal `shouldContain` "aws-ses"
-        -- The long-lived refusal does NOT mention aws-eks (per-run is
-        -- intentionally bypassed and handled by awsPostflightDestroyActions).
         ("aws-eks " `isPrefixOf` refusal) `shouldBe` False
     it
-      "Scenario H — AcceptOrphanResidue with per-run residue: applyAwsTeardown short-circuits to proceed (no refusal text)"
-      $ withSystemTempDirectory "prodbox-hs-7.7-h"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        null residue `shouldBe` False
-        -- The policy enum carries the operator's acknowledgement; the
-        -- proceed/refuse branch in applyAwsTeardown is exercised by the
-        -- integration suite (it touches AWS).
+      "Scenario H — AcceptOrphanResidue with per-run residue: applyAwsTeardown short-circuits to proceed"
+      $ do
+        null perRunOnlyResidue `shouldBe` False
         awsTeardownResiduePolicy (teardownInputWith AcceptOrphanResidue)
           `shouldBe` AcceptOrphanResidue
-    it "Scenario I — AcceptOrphanResidue with all four stacks: same proceed semantics" $
-      withSystemTempDirectory "prodbox-hs-7.7-i" $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
-        writeFakeStackSnapshot tmpDir "aws-test"
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        length residue `shouldBe` 4
-        awsTeardownResiduePolicy (teardownInputWith AcceptOrphanResidue)
-          `shouldBe` AcceptOrphanResidue
+    it "Scenario I — AcceptOrphanResidue with all four stacks: same proceed semantics" $ do
+      length allFourResidue `shouldBe` 4
+      awsTeardownResiduePolicy (teardownInputWith AcceptOrphanResidue)
+        `shouldBe` AcceptOrphanResidue
     it
       "Scenario M — BypassAllResidueForHarnessRefresh with aws-ses live proceeds (Sprint 7.5.c.v.c harness preflight)"
-      $ withSystemTempDirectory "prodbox-hs-7.5-c-v-c-m"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        let (_, longLived) = partitionResidueByLifecycle residue
-        -- The harness preflight policy must NOT refuse on long-lived
-        -- residue: the preflight is paired with an immediate aws.*
-        -- re-materialization in the same function call, so neither
-        -- per-run nor long-lived residue strands anything.
+      $ do
+        let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
         map fst longLived `shouldBe` ["aws-ses"]
         awsTeardownResiduePolicy (teardownInputWith BypassAllResidueForHarnessRefresh)
           `shouldBe` BypassAllResidueForHarnessRefresh
     it
       "Scenario N — BypassAllResidueForHarnessRefresh with all four stacks: still proceeds"
-      $ withSystemTempDirectory "prodbox-hs-7.5-c-v-c-n"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
-        writeFakeStackSnapshot tmpDir "aws-test"
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        length residue `shouldBe` 4
+      $ do
+        length allFourResidue `shouldBe` 4
         awsTeardownResiduePolicy (teardownInputWith BypassAllResidueForHarnessRefresh)
           `shouldBe` BypassAllResidueForHarnessRefresh
 
+  describe "Sprint 7.9 harness postflight no longer gates on admin-managed aws-ses" $ do
+    let sesOnlyResidue =
+          categorizePulumiResidue
+            absentPerRunStatuses
+            (residuePresentFor "aws-ses")
+    it
+      "harnessPostflightResiduePolicy is BypassAllResidueForHarnessRefresh (was BypassPerRunResidueOnly in Sprint 7.7)"
+      $ harnessPostflightResiduePolicy `shouldBe` BypassAllResidueForHarnessRefresh
+    it
+      "the postflight policy matches the preflight policy (both bypass all residue post-Sprint-4.10)"
+      $ harnessPostflightResiduePolicy `shouldBe` BypassAllResidueForHarnessRefresh
+    it
+      "the postflight policy is NOT the old Sprint 7.7 BypassPerRunResidueOnly (which still refuses on aws-ses)"
+      $ (harnessPostflightResiduePolicy == BypassPerRunResidueOnly) `shouldBe` False
+    it
+      "with aws-ses live, the postflight policy proceeds rather than refusing (no operational-user stranding)"
+      $ do
+        -- aws-ses live is the retained-by-design steady state; the
+        -- Sprint 7.7 BypassPerRunResidueOnly path would refuse here
+        -- (renderPulumiResidueLongLivedRefusal names aws-ses-destroy),
+        -- stranding the freshly-created operational prodbox IAM user.
+        -- The Sprint 7.9 postflight policy proceeds: aws-ses is
+        -- admin-managed post-4.10, so clearing operational aws.* cannot
+        -- strand it.
+        let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
+        map fst longLived `shouldBe` ["aws-ses"]
+        -- The old policy would have produced a long-lived refusal here:
+        renderPulumiResidueLongLivedRefusal longLived
+          `shouldContain` "aws-ses → prodbox pulumi aws-ses-destroy --yes"
+        -- The postflight policy is one of the two proceed-on-everything
+        -- policies (BypassAllResidueForHarnessRefresh / AcceptOrphanResidue),
+        -- so applyAwsTeardown short-circuits past that refusal.
+        ( harnessPostflightResiduePolicy
+            `elem` [BypassAllResidueForHarnessRefresh, AcceptOrphanResidue]
+          )
+          `shouldBe` True
+
+  describe "Sprint 7.10 harness preserves creds on per-run destroy failure" $ do
+    it
+      "clearOperationalCredsAfterPostflight returns True on ExitSuccess (per-run destroy succeeded)"
+      $ clearOperationalCredsAfterPostflight ExitSuccess `shouldBe` True
+    it
+      "clearOperationalCredsAfterPostflight returns False on ExitFailure (preserve creds for orphan retry)"
+      $ do
+        clearOperationalCredsAfterPostflight (ExitFailure 1) `shouldBe` False
+        clearOperationalCredsAfterPostflight (ExitFailure 124) `shouldBe` False
+
   describe "Sprint 7.7 DestroyPulumiResidueFirst dispatch plan (Scenarios J/K/L)" $ do
-    it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $
-      withSystemTempDirectory "prodbox-hs-7.7-j" $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        pulumiDestroyPlanForResidue residue
-          `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
+    it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $ do
+      let residue =
+            categorizePulumiResidue
+              (absentPerRunStatuses {perRunAwsEksTest = residuePresentFor "aws-eks-test"})
+              Residue.ResidueAbsent
+      pulumiDestroyPlanForResidue residue
+        `shouldBe` [("aws-eks", "prodbox pulumi eks-destroy --yes")]
     it
       "Scenario K — aws-ses only: destroy plan names aws-ses-destroy (long-lived warning fires at dispatch)"
-      $ withSystemTempDirectory "prodbox-hs-7.7-k"
-      $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
+      $ do
+        let residue =
+              categorizePulumiResidue
+                absentPerRunStatuses
+                (residuePresentFor "aws-ses")
         pulumiDestroyPlanForResidue residue
           `shouldBe` [("aws-ses", "prodbox pulumi aws-ses-destroy --yes")]
-    it "Scenario L — all four: destroy plan dispatches in canonical order subzone -> eks -> test -> ses" $
-      withSystemTempDirectory "prodbox-hs-7.7-l" $ \tmpDir -> do
-        writeFakeStackSnapshot tmpDir "aws-eks-test"
-        writeFakeStackSnapshot tmpDir "aws-eks-subzone"
-        writeFakeStackSnapshot tmpDir "aws-test"
-        writeFakeStackSnapshot tmpDir "aws-ses"
-        residue <- checkPulumiResidueBeforeTeardown tmpDir
-        map fst (pulumiDestroyPlanForResidue residue)
-          `shouldBe` ["aws-eks-subzone", "aws-eks", "aws-test", "aws-ses"]
+    it "Scenario L — all four: destroy plan dispatches in canonical order subzone -> eks -> test -> ses" $ do
+      let residue =
+            categorizePulumiResidue
+              ( PerRunResidueStatuses
+                  { perRunAwsEksTest = residuePresentFor "aws-eks-test"
+                  , perRunAwsEksSubzone = residuePresentFor "aws-eks-subzone"
+                  , perRunAwsTest = residuePresentFor "aws-test"
+                  }
+              )
+              (residuePresentFor "aws-ses")
+      map fst (pulumiDestroyPlanForResidue residue)
+        `shouldBe` ["aws-eks-subzone", "aws-eks", "aws-test", "aws-ses"]
 
   describe "Sprint 7.7 promptAdminCredentials UX (sessionTokenPromptShape)" $ do
     it "AKIA prefix -> SkipPrompt (long-lived IAM user key; no session token)" $
@@ -4732,19 +5177,6 @@ indexPrecedes :: Maybe Int -> Maybe Int -> Bool
 indexPrecedes (Just earlier) (Just later) = earlier < later
 indexPrecedes _ _ = False
 
--- | Sprint 7.6 fixture: write a minimal `stack-snapshot.json` under
--- `<repoRoot>/.prodbox-state/<stack>/` so that the corresponding
--- `<stack>HasLiveResources` predicate reports `True`. The body of the
--- file does not need to be valid JSON — the predicate only checks
--- file existence (matching the real harness contract:
--- `clearAwsSesStackSnapshot` and friends remove the file on
--- `pulumi destroy`).
-writeFakeStackSnapshot :: FilePath -> String -> IO ()
-writeFakeStackSnapshot repoRoot stackName = do
-  let stateDir = repoRoot </> ".prodbox-state" </> stackName
-  createDirectoryIfMissing True stateDir
-  writeFile (stateDir </> "stack-snapshot.json") "{\"_fixture\":\"sprint-7.6\"}"
-
 fakeAwsTestSshScript :: [String]
 fakeAwsTestSshScript =
   [ "#!/usr/bin/env bash"
@@ -4872,6 +5304,29 @@ residueFixtureS3Reason = Residue.ResidueBackendS3Unreachable "credentials missin
 -- is asserted at the consumer rather than inside the fixture.
 residueFixturePresent :: Residue.ResidueStatus
 residueFixturePresent = Residue.ResiduePresent residueFixtureDetails
+
+-- | Sprint 4.16 helper: 'ResiduePresent' value with the given stack
+-- name embedded in the details. Suitable for tests that need to assert
+-- on the canonical destroy command list returned by
+-- 'categorizePulumiResidue'.
+residuePresentFor :: String -> Residue.ResidueStatus
+residuePresentFor stackName =
+  Residue.ResiduePresent
+    Residue.ResidueDetails
+      { Residue.residueEvidence = "test fixture: stack present"
+      , Residue.residueStackName = stackName
+      }
+
+-- | Sprint 4.16 helper: zero-residue per-run statuses (all three
+-- per-run stacks absent). Tests override individual fields when the
+-- scenario requires presence.
+absentPerRunStatuses :: PerRunResidueStatuses
+absentPerRunStatuses =
+  PerRunResidueStatuses
+    { perRunAwsEksTest = Residue.ResidueAbsent
+    , perRunAwsEksSubzone = Residue.ResidueAbsent
+    , perRunAwsTest = Residue.ResidueAbsent
+    }
 
 pulumiStateBackendDhallFragment :: String
 pulumiStateBackendDhallFragment =
@@ -5134,6 +5589,53 @@ sampleAwsEksTestStackSnapshot =
         "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller"
     , AwsEks.eksSnapshotAwsLbControllerRoleName = "aws-eks-test-aws-lb-controller"
     }
+
+-- | Sprint 4.18: the flat @Map Text Text@ shape the Pulumi backend
+-- emits for the @aws-test@ stack — scalar outputs verbatim, complex
+-- outputs (@subnet_ids@, @nodes@) as JSON-encoded strings. Decodes
+-- back to 'sampleAwsTestStackSnapshot' via 'parseAwsTestStackFromOutputs'.
+sampleAwsTestStackOutputsMap :: Map.Map Text.Text Text.Text
+sampleAwsTestStackOutputsMap =
+  Map.fromList
+    [ ("backend_bucket", "prodbox-test-pulumi-backends")
+    , ("vpc_id", "vpc-1234567890")
+    , ("subnet_ids", Text.pack "[\"subnet-1\",\"subnet-2\",\"subnet-3\"]")
+    , ("security_group_id", "sg-1234567890")
+    ,
+      ( "nodes"
+      , Text.pack
+          ( "[{\"name\":\"aws-test-node-0\""
+              ++ ",\"availability_zone\":\"us-west-2a\""
+              ++ ",\"instance_id\":\"i-1234567890\""
+              ++ ",\"private_ip\":\"10.0.0.10\""
+              ++ ",\"public_ip\":\"203.0.113.10\"}]"
+          )
+      )
+    ]
+
+-- | Sprint 4.18: the flat @Map Text Text@ shape the Pulumi backend
+-- emits for the @aws-eks-test@ stack. Decodes back to
+-- 'sampleAwsEksTestStackSnapshot' via 'parseAwsEksTestStackFromOutputs'.
+sampleAwsEksTestStackOutputsMap :: Map.Map Text.Text Text.Text
+sampleAwsEksTestStackOutputsMap =
+  Map.fromList
+    [ ("backend_bucket", "prodbox-test-pulumi-backends")
+    , ("cluster_name", "aws-eks-test-cluster")
+    , ("cluster_role_name", "aws-eks-test-cluster-role")
+    , ("node_group_name", "aws-eks-test-node-group")
+    , ("node_role_name", "aws-eks-test-node-role")
+    , ("vpc_id", "vpc-1234567890")
+    , ("subnet_ids", Text.pack "[\"subnet-a\",\"subnet-b\"]")
+    , ("cluster_security_group_id", "sg-0987654321")
+    , ("cluster_oidc_issuer", "https://oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE")
+    ,
+      ( "oidc_provider_arn"
+      , "arn:aws:iam::123456789012:oidc-provider/oidc.eks.us-east-1.amazonaws.com/id/EXAMPLE"
+      )
+    , ("aws_lb_controller_policy_arn", "arn:aws:iam::123456789012:policy/aws-eks-test-aws-lb-controller")
+    , ("aws_lb_controller_role_arn", "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller")
+    , ("aws_lb_controller_role_name", "aws-eks-test-aws-lb-controller")
+    ]
 
 daemonConfigJsonValue :: DaemonConfig -> Value
 daemonConfigJsonValue config =

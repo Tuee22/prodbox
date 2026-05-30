@@ -1,5 +1,6 @@
 module Prodbox.TestRunner
   ( runTests
+  , clearOperationalCredsAfterPostflight
   )
 where
 
@@ -35,6 +36,7 @@ import Prodbox.CLI.Output
   , writeOutput
   , writeOutputLine
   )
+import Prodbox.CLI.Rke2 (ensureGatewayMinioBootstrap)
 import Prodbox.CheckCode (runCheckCode)
 import Prodbox.EffectDAG
   ( fromRootIds
@@ -200,15 +202,31 @@ runNativeSuite repoRoot environment haskellSuites suitePlan = do
                 suitePlan
                 (runNativeSuiteBody repoRoot environment haskellSuites suitePlan)
 
--- | Sprint 7.6 orphan-safety: run the suite body, then unconditionally
--- destroy every per-run Pulumi stack the suite may have provisioned
--- before clearing operational @aws.*@ via the harness teardown. The
--- destroys run on success, failure, and async exception (Ctrl-C)
--- alike, so no `prodbox test all` exit path can strand
+-- | Sprint 7.6 orphan-safety: run the suite body, then destroy every
+-- per-run Pulumi stack the suite may have provisioned before clearing
+-- operational @aws.*@ via the harness teardown. The destroys run on
+-- success, failure, and async exception (Ctrl-C) alike, so no
+-- `prodbox test all` exit path can strand
 -- @aws-eks@ / @aws-eks-subzone@ / @aws-test@ resources in AWS. The
 -- @aws-ses@ stack is explicitly excluded per the long-lived
 -- cross-substrate shared-infrastructure class in
 -- @DEVELOPMENT_PLAN/substrates.md@ § Resource Lifecycle Classes.
+--
+-- Sprint 7.10 credential-preservation: the per-run destroys still run
+-- on every exit path, but the *operational-credential teardown*
+-- ('runManagedAwsHarnessTeardown', which clears @aws.*@ + deletes the
+-- operational @prodbox@ IAM user) now runs **only when the per-run
+-- destroy succeeded** ('clearOperationalCredsAfterPostflight'). When a
+-- per-run @pulumi <stack>-destroy@ fails (e.g. the May 28/29
+-- @DependencyViolation@ on subnet deletion from lagging orphan ENIs),
+-- the orphaned per-run stacks still exist in AWS and need operational
+-- creds to be destroyed on retry. Tearing the creds down here would
+-- strand those orphans without the credentials required to delete them,
+-- so the teardown is held and a diagnostic explains the recovery path.
+-- This is the per-run analog of Sprint 7.9 (which made the teardown not
+-- gate on admin-managed @aws-ses@): 7.9 said "don't block teardown on
+-- aws-ses"; 7.10 says "DO hold the teardown when the per-run
+-- auto-destroy — which needs operational creds — failed."
 runWithAwsHarnessCleanup
   :: FilePath
   -> [(String, String)]
@@ -218,7 +236,7 @@ runWithAwsHarnessCleanup
 runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
   result <- try body :: IO (Either SomeException ExitCode)
   destroyExit <- runSequentially (awsPostflightDestroyActions repoRoot environment suitePlan)
-  cleanupExit <- runManagedAwsHarnessTeardown repoRoot
+  cleanupExit <- runConditionalHarnessTeardown destroyExit
   case result of
     Left exc -> do
       writeDiagnosticLine
@@ -232,6 +250,36 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
             (preferEarlierFailure destroyExit cleanupExit)
         )
  where
+  -- Sprint 7.10: clear operational @aws.*@ + delete the operational
+  -- @prodbox@ user only when the per-run destroy succeeded. On a
+  -- per-run destroy failure, preserve the operational credentials so the
+  -- orphaned per-run stacks can be destroyed on retry, and explain the
+  -- recovery path.
+  runConditionalHarnessTeardown :: ExitCode -> IO ExitCode
+  runConditionalHarnessTeardown destroyExit
+    | clearOperationalCredsAfterPostflight destroyExit =
+        runManagedAwsHarnessTeardown repoRoot
+    | otherwise = do
+        writeDiagnosticLine
+          ( "Per-run Pulumi destroy failed ("
+              ++ show destroyExit
+              ++ "); the per-run AWS stacks (aws-eks, aws-eks-subzone, "
+              ++ "aws-test) may still hold live resources. PRESERVING "
+              ++ "operational aws.* and the operational `prodbox` IAM "
+              ++ "user so the orphaned per-run stacks can be destroyed on "
+              ++ "retry. Skipping the operational-credential teardown to "
+              ++ "avoid stranding the orphans without the credentials "
+              ++ "required to delete them. Recover with: resolve the "
+              ++ "destroy failure (e.g. wait out / clean up the orphan "
+              ++ "ENIs behind a DependencyViolation), then "
+              ++ "`prodbox pulumi <stack>-destroy --yes` for each "
+              ++ "remaining per-run stack, then `prodbox aws teardown` to "
+              ++ "clear the operational credentials."
+          )
+        -- The per-run destroy failure is already surfaced as the
+        -- composed exit code; the held teardown is not itself a failure.
+        pure ExitSuccess
+
   writeReason :: ExitCode -> ExitCode -> IO ()
   writeReason destroyExit cleanupExit =
     case (destroyExit, cleanupExit) of
@@ -243,6 +291,22 @@ runWithAwsHarnessCleanup repoRoot environment suitePlan body = do
               ++ ", harnessTeardown="
               ++ show cleanupExit
           )
+
+-- | Sprint 7.10 pure decision: should the operational-credential
+-- teardown ('runManagedAwsHarnessTeardown') run after the per-run
+-- Pulumi destroy postflight?
+--
+-- Returns 'True' iff the per-run destroy succeeded ('ExitSuccess'). On
+-- any 'ExitFailure' the orphaned per-run stacks still hold live AWS
+-- resources that require operational creds to destroy on retry, so the
+-- teardown is held and the operational @aws.*@ + @prodbox@ IAM user are
+-- preserved. Extracted as a pure helper so the decision matrix is
+-- unit-testable without harness IO.
+clearOperationalCredsAfterPostflight :: ExitCode -> Bool
+clearOperationalCredsAfterPostflight destroyExit =
+  case destroyExit of
+    ExitSuccess -> True
+    ExitFailure _ -> False
 
 awsPostflightDestroyActions
   :: FilePath -> [(String, String)] -> NativeSuitePlan -> [IO ExitCode]
@@ -324,6 +388,17 @@ supportedRuntimeBootstrapActions repoRoot environment suitePlan =
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
+      , -- Sprint 2.19 closure (2026-05-29): re-ensure the gateway-minio
+        -- Secret + the matching MinIO user AFTER `charts delete gateway`
+        -- (helm uninstall + atomic rollback can delete the Secret despite
+        -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
+        -- `charts deploy gateway` so the Deployment's volume mount can
+        -- bind to a present Secret and the daemon authenticates as a
+        -- user that exists in MinIO. Idempotent: reuses existing Secret
+        -- when present, regenerates when absent; the Job's
+        -- `mc admin user add` / `mc admin policy attach` are no-ops on
+        -- re-run.
+        ensureGatewayMinioBootstrap repoRoot
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]
@@ -394,6 +469,17 @@ supportedRuntimePostflightActions repoRoot environment suitePlan =
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "api", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "vscode", "--yes"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "delete", "gateway", "--yes"]
+      , -- Sprint 2.19 closure (2026-05-29): re-ensure the gateway-minio
+        -- Secret + the matching MinIO user AFTER `charts delete gateway`
+        -- (helm uninstall + atomic rollback can delete the Secret despite
+        -- the `helm.sh/resource-policy: keep` annotation) and BEFORE
+        -- `charts deploy gateway` so the Deployment's volume mount can
+        -- bind to a present Secret and the daemon authenticates as a
+        -- user that exists in MinIO. Idempotent: reuses existing Secret
+        -- when present, regenerates when absent; the Job's
+        -- `mc admin user add` / `mc admin policy attach` are no-ops on
+        -- re-run.
+        ensureGatewayMinioBootstrap repoRoot
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "gateway"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "vscode"]
       , runNativeCliCommandForExitCode repoRoot environment ["charts", "deploy", "api"]

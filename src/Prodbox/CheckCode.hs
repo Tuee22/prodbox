@@ -5,8 +5,12 @@ module Prodbox.CheckCode
   , extractStringLiterals
   , generatedSectionRules
   , haskellStyleViolations
+  , iamCreateSiteViolations
+  , iamCreateVerbs
   , listRepoOwnedPaths
   , matchesSprintToken
+  , pulumiCreateSiteOwners
+  , pulumiCreateSiteViolations
   , renderGeneratedSection
   , renderTrackedGeneratedPath
   , rendererDeterminismViolations
@@ -45,6 +49,12 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
 import Prodbox.Error (fatalError)
+import Prodbox.Lifecycle.ResourceClass
+  ( LifecycleClass (..)
+  , renderRegisteredResourcesMarkdown
+  , resourceLifecycleClasses
+  , resourceNamesOfClass
+  )
 import Prodbox.Lint
   ( ensureSandboxedStyleTools
   , missingStyleToolViolations
@@ -136,6 +146,17 @@ generatedSectionRules =
       , generatedSectionEndMarker = "{{/* prodbox:route-registry:end */}}"
       , generatedSectionRender = const renderHelmRouteInventory
       , generatedSectionRendererSources = ["src/Prodbox/PublicEdge.hs"]
+      }
+  , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
+    -- are rendered into substrates.md so `prodbox docs check` fails the
+    -- build if the doc drifts from the registry SSoT.
+    GeneratedSectionRule
+      { generatedSectionKey = "resource-lifecycle-classes"
+      , generatedSectionPath = "DEVELOPMENT_PLAN/substrates.md"
+      , generatedSectionStartMarker = "<!-- prodbox:resource-lifecycle-classes:start -->"
+      , generatedSectionEndMarker = "<!-- prodbox:resource-lifecycle-classes:end -->"
+      , generatedSectionRender = const (renderRegisteredResourcesMarkdown resourceLifecycleClasses)
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/ResourceClass.hs"]
       }
   ]
 
@@ -385,6 +406,7 @@ haskellStyleViolations repoRoot = do
   operatorVocabularyViolations <- checkOperatorVocabulary repoRoot
   envVarConfigViolations <- checkEnvVarConfigReads repoRoot
   testSuiteTypeViolations <- checkTestSuiteInterfaces repoRoot
+  createCallSiteViolations <- checkCreateCallSiteCoverage repoRoot
   pure
     ( either pure (const []) thinMainResult
         ++ hlintConfigViolations
@@ -398,6 +420,7 @@ haskellStyleViolations repoRoot = do
         ++ operatorVocabularyViolations
         ++ envVarConfigViolations
         ++ testSuiteTypeViolations
+        ++ createCallSiteViolations
     )
 
 checkHlintDoctrineCoverage :: FilePath -> IO [String]
@@ -813,6 +836,138 @@ checkEnvVarConfigReads repoRoot =
     , "src/Prodbox/Gateway/Settings.hs"
     , "src/Prodbox/Gateway.hs"
     ]
+
+-- | Sprint 4.22 follow-on: the create-call-site coverage scan that
+-- enforces the managed-resource registry totality invariant
+-- (@documents/engineering/lifecycle_reconciliation_doctrine.md § 3.1@,
+-- invariant 1: "No prodbox code path may create an AWS or cluster
+-- resource that is not in the registry"). Registry ↔ doc parity is
+-- already machine-enforced via the @resource-lifecycle-classes@
+-- generated section; this scan covers the *other* half — the create
+-- call sites themselves — across the two deliberately narrow surfaces
+-- where prodbox actually originates new AWS/cluster resources:
+--
+--   1. Pulumi stack creation: the @Pulumi<Word>Resources@ constructors
+--      of the @PulumiCommand@ ADT in @src/Prodbox/CLI/Command.hs@. Each
+--      must map (via 'pulumiCreateSiteOwners') to a registered stack
+--      name.
+--   2. Operational IAM user creation: the AWS CLI verbs in
+--      'iamCreateVerbs', which may appear only in the
+--      @operational-iam-user@ owner module @src/Prodbox/Aws.hs@.
+--
+-- Broader generic-@create*@ / @change-resource-record-sets@ /
+-- @create-bucket@ / @mc mb@ scanning is *deliberately out of scope*:
+-- those resources are Pulumi-managed (covered transitively by the
+-- stack scan) or specially-handled bootstrap operations, and scanning
+-- them by raw substring would false-positive on legitimate code. The
+-- scan stays narrow on purpose.
+checkCreateCallSiteCoverage :: FilePath -> IO [String]
+checkCreateCallSiteCoverage repoRoot = do
+  let registeredNames =
+        resourceNamesOfClass PerRun ++ resourceNamesOfClass LongLived
+  commandContents <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Command.hs")
+  let pulumiViolations = pulumiCreateSiteViolations registeredNames commandContents
+  repoPaths <- listRepoOwnedPaths repoRoot
+  iamViolations <-
+    concat
+      <$> forM
+        [ path
+        | path <- repoPaths
+        , "src/Prodbox/" `isPrefixOf` path
+        , ".hs" `isSuffixOf` path
+        , path /= "src/Prodbox/CheckCode.hs"
+        ]
+        ( \relativePath -> do
+            contents <- readFile (repoRoot </> relativePath)
+            pure (iamCreateSiteViolations relativePath contents)
+        )
+  pure (pulumiViolations ++ iamViolations)
+
+-- | The explicit map from a Pulumi stack-creation constructor name to
+-- the registered stack name it provisions. Every entry's value must be
+-- present in 'resourceLifecycleClasses' (enforced by
+-- 'pulumiCreateSiteViolations'). Adding a new @Pulumi<Word>Resources@
+-- constructor without a matching entry here fails the lint. Exposed for
+-- unit tests; consumed by 'pulumiCreateSiteViolations'.
+pulumiCreateSiteOwners :: [(String, String)]
+pulumiCreateSiteOwners =
+  [ ("PulumiEksResources", "aws-eks")
+  , ("PulumiTestResources", "aws-test")
+  , ("PulumiAwsSubzoneResources", "aws-eks-subzone")
+  , ("PulumiAwsSesResources", "aws-ses")
+  ]
+
+-- | Sprint 4.22 follow-on (pure). Given the registered resource names
+-- (from the registry) and the contents of @CLI/Command.hs@, emit a
+-- violation for any Pulumi stack-creation constructor that is not
+-- covered by the registry.
+--
+-- A stack-creation site is any token of the shape @Pulumi<Word>Resources@
+-- (starts with @"Pulumi"@, ends with @"Resources"@). Two failure modes:
+--
+--   * a creation constructor with no entry in 'pulumiCreateSiteOwners'
+--     (an unregistered create site), and
+--   * a mapped constructor whose stack name is absent from the supplied
+--     registered names (the registry lost the entry).
+pulumiCreateSiteViolations :: [String] -> String -> [String]
+pulumiCreateSiteViolations registeredNames commandContents =
+  unregisteredConstructorViolations ++ missingRegistryViolations
+ where
+  creationConstructors =
+    dedupeSorted
+      [ token
+      | token <- tokenizeSource commandContents
+      , "Pulumi" `isPrefixOf` token
+      , "Resources" `isSuffixOf` token
+      ]
+  unregisteredConstructorViolations =
+    [ constructorName
+        ++ " is a Pulumi stack-creation site with no registered managed resource; "
+        ++ "add its stack to resourceLifecycleClasses and pulumiCreateSiteOwners "
+        ++ "(lifecycle_reconciliation_doctrine.md §3.1 totality)."
+    | constructorName <- creationConstructors
+    , constructorName `notElem` map fst pulumiCreateSiteOwners
+    ]
+  missingRegistryViolations =
+    [ constructorName
+        ++ " maps to Pulumi stack `"
+        ++ stackName
+        ++ "`, which is not in the managed-resource registry; add `"
+        ++ stackName
+        ++ "` to resourceLifecycleClasses (lifecycle_reconciliation_doctrine.md §3.1 totality)."
+    | (constructorName, stackName) <- pulumiCreateSiteOwners
+    , constructorName `elem` creationConstructors
+    , stackName `notElem` registeredNames
+    ]
+
+-- | The operational-IAM creation verbs. These appear (as subprocess
+-- string-literal args) only in the @operational-iam-user@ owner module
+-- @src/Prodbox/Aws.hs@. Exposed for unit tests; consumed by
+-- 'iamCreateSiteViolations'.
+iamCreateVerbs :: [String]
+iamCreateVerbs =
+  ["create-user", "create-access-key", "put-user-policy"]
+
+-- | Sprint 4.22 follow-on (pure). Given a scanned file's relative path
+-- and its raw contents, emit a violation if any 'iamCreateVerbs' verb
+-- appears in a file other than the @operational-iam-user@ owner module
+-- @src/Prodbox/Aws.hs@. The verbs are matched as raw substrings because
+-- they are subprocess string-literal arguments (e.g. @aws iam
+-- create-user@). @CheckCode.hs@ is excluded from the scan by the path
+-- filter in 'checkCreateCallSiteCoverage', so its own occurrences of
+-- these verb literals do not self-trigger.
+iamCreateSiteViolations :: FilePath -> String -> [String]
+iamCreateSiteViolations relativePath contents =
+  [ relativePath
+      ++ " shells out an operational-IAM creation verb ("
+      ++ intercalate ", " matchedVerbs
+      ++ ") outside the operational-iam-user owner module src/Prodbox/Aws.hs; "
+      ++ "register the created resource or move it into the owner."
+  | relativePath /= "src/Prodbox/Aws.hs"
+  , not (null matchedVerbs)
+  ]
+ where
+  matchedVerbs = [verb | verb <- iamCreateVerbs, verb `isInfixOf` contents]
 
 -- | Sprint 4.14: enforce the operator vocabulary contract defined in
 -- @documents/engineering/cli_command_surface.md § 2A@. Sprint

@@ -78,6 +78,11 @@ For the lifecycle-command predicate / reconciler / phase-ADT layering that
 extends this pattern across `prodbox rke2 delete`, `prodbox aws teardown`,
 `prodbox pulumi <stack>-destroy`, and `prodbox nuke`, see
 [lifecycle_reconciliation_doctrine.md](lifecycle_reconciliation_doctrine.md).
+That doctrine's managed-resource registry (§3.1) is the data-oriented
+endpoint of this discipline: the registry is pure data (a `[ManagedResource]`
+list), and the `reconcileAbsent` reconciler is "data in, data out" — chosen
+deliberately over a global state machine, which would couple to external state
+that cannot be refreshed transactionally.
 
 ### 2.2 Pattern Match Exhaustively
 

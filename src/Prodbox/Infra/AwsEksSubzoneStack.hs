@@ -8,7 +8,6 @@ module Prodbox.Infra.AwsEksSubzoneStack
   , loadAwsEksSubzoneStackSnapshot
   , saveAwsEksSubzoneStackSnapshot
   , clearAwsEksSubzoneStackSnapshot
-  , awsEksSubzoneStackHasLiveResources
   , awsEksSubzoneStackResidueStatus
   , assertNoAwsEksSubzoneStackResidue
   , renderAwsEksSubzoneStackReport
@@ -52,6 +51,7 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
@@ -90,25 +90,14 @@ awsEksSubzoneStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksSubzone
 awsEksSubzoneSnapshotPath :: FilePath -> FilePath
 awsEksSubzoneSnapshotPath repoRoot = awsEksSubzoneStateDir repoRoot </> "stack-snapshot.json"
 
--- | Returns 'True' when a Pulumi stack snapshot exists on disk for the
--- AWS EKS subzone stack. Sprint 7.6 orphan-safety predicate. Kept as a
--- thin alias over 'awsEksSubzoneStackResidueStatus' for callers that
--- have not yet migrated to the typed 'ResidueStatus' surface introduced
--- by Sprint 4.16.
-awsEksSubzoneStackHasLiveResources :: FilePath -> IO Bool
-awsEksSubzoneStackHasLiveResources repoRoot =
-  ResidueStatus.isResiduePresentOrUnknownPerRun
-    <$> awsEksSubzoneStackResidueStatus repoRoot
-
--- | Sprint 4.16 typed residue status. Today this adapter wraps the
--- legacy file-existence check; a later sprint replaces it with a
--- source-of-truth @pulumi stack ls --json@ query against the in-cluster
--- MinIO backend.
+-- | Sprint 4.16 typed residue status. Delegates to the live
+-- @pulumi stack ls --json@ source-of-truth query through
+-- 'Prodbox.Lifecycle.LiveResidue'; callers that need all three
+-- per-run statuses should call 'queryPerRunResidueStatuses' directly
+-- to share the MinIO port-forward bracket.
 awsEksSubzoneStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
-awsEksSubzoneStackResidueStatus repoRoot = do
-  let snapshotPath = awsEksSubzoneSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  pure (ResidueStatus.residuePresentByFileExistence awsEksSubzoneStackName snapshotPath exists)
+awsEksSubzoneStackResidueStatus repoRoot =
+  LiveResidue.perRunAwsEksSubzone <$> LiveResidue.queryPerRunResidueStatuses repoRoot
 
 data AwsEksSubzoneStackSnapshot = AwsEksSubzoneStackSnapshot
   { subzoneSnapshotStackName :: String

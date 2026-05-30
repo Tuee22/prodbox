@@ -97,8 +97,14 @@ import Prodbox.Gateway.Types
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
+import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.Email qualified
 import Prodbox.Lib.ChartPlatform (resolveChartSecrets)
+import Prodbox.Lifecycle.LiveResidue
+  ( awsEksTestStackName
+  , awsTestStackName
+  , fetchPerRunStackOutputs
+  )
 import Prodbox.PublicEdge
   ( PublicEdgeRoute (..)
   , identityIssuerUrl
@@ -1894,38 +1900,60 @@ reserveLocalTcpPort =
             _ -> fail "failed to reserve a local TCP port for gateway validation"
       )
 
+-- | Sprint 4.18: AWS EKS validation reads the live Pulumi outputs
+-- from the in-cluster MinIO backend rather than the legacy
+-- @.prodbox-state\/aws-eks-test\/stack-snapshot.json@ file.
 verifyAwsEksSnapshot :: FilePath -> IO ExitCode
 verifyAwsEksSnapshot repoRoot = do
-  snapshot <- AwsEks.loadAwsEksTestStackSnapshot repoRoot
-  case snapshot of
-    Nothing -> failWith "AWS EKS validation did not produce a saved stack snapshot"
-    Just current ->
-      if null (AwsEks.eksSnapshotClusterName current) || null (AwsEks.eksSnapshotSubnetIds current)
-        then failWith "AWS EKS snapshot was incomplete"
-        else pure ExitSuccess
+  outputsResult <-
+    fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksTestStackName))
+  case outputsResult of
+    Left err ->
+      failWith ("AWS EKS validation could not read Pulumi outputs: " ++ err)
+    Right outputs ->
+      let clusterName = maybe "" Text.unpack (Map.lookup "cluster_name" outputs)
+          subnetIdsRaw = Map.lookup "subnet_ids" outputs
+       in if null clusterName || maybe True Text.null subnetIdsRaw
+            then failWith "AWS EKS Pulumi outputs are incomplete"
+            else pure ExitSuccess
 
+-- | Sprint 4.18: AWS test-stack validation reads the live Pulumi
+-- @nodes@ output from the in-cluster MinIO backend rather than the
+-- legacy @.prodbox-state\/aws-test\/stack-snapshot.json@ file.
 verifyAwsTestSnapshot :: FilePath -> IO ExitCode
 verifyAwsTestSnapshot repoRoot = do
-  snapshot <- AwsTest.loadAwsTestStackSnapshot repoRoot
-  case snapshot of
-    Nothing -> failWith "AWS test-stack validation did not produce a saved stack snapshot"
-    Just current ->
-      if length (AwsTest.testSnapshotNodes current) /= 3
-        then failWith "AWS test-stack snapshot did not contain the expected three-node topology"
+  nodesResult <- fetchAwsTestNodes repoRoot
+  case nodesResult of
+    Left err -> failWith err
+    Right nodes ->
+      if length nodes /= 3
+        then failWith "AWS test-stack Pulumi outputs did not contain the expected three-node topology"
         else pure ExitSuccess
 
 verifyAwsTestSshReachability :: FilePath -> IO ExitCode
 verifyAwsTestSshReachability repoRoot = do
   keyResult <- AwsTest.ensureAwsTestSshKey repoRoot
-  snapshot <- AwsTest.loadAwsTestStackSnapshot repoRoot
-  case (keyResult, snapshot) of
+  nodesResult <- fetchAwsTestNodes repoRoot
+  case (keyResult, nodesResult) of
     (Left err, _) -> failWith err
-    (_, Nothing) -> failWith "AWS test-stack SSH validation requires an existing saved stack snapshot"
-    (Right privateKeyPath, Just current) ->
+    (_, Left err) -> failWith err
+    (Right privateKeyPath, Right nodes) ->
       foldM
         (verifyAwsTestNodeSsh repoRoot privateKeyPath)
         ExitSuccess
-        (AwsTest.testSnapshotNodes current)
+        nodes
+
+-- | Sprint 4.18: shared live-fetch helper for the AWS test-stack
+-- validation suite. Reads the live @aws-test@ Pulumi outputs and
+-- decodes the @nodes@ array via
+-- 'AwsTest.parseAwsTestNodesFromOutputs'.
+fetchAwsTestNodes :: FilePath -> IO (Either String [AwsTest.AwsTestNode])
+fetchAwsTestNodes repoRoot = do
+  outputsResult <-
+    fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsTestStackName))
+  pure $ case outputsResult of
+    Left err -> Left ("AWS test-stack validation could not read Pulumi outputs: " ++ err)
+    Right outputs -> AwsTest.parseAwsTestNodesFromOutputs outputs
 
 verifyAwsTestNodeSsh :: FilePath -> FilePath -> ExitCode -> AwsTest.AwsTestNode -> IO ExitCode
 verifyAwsTestNodeSsh repoRoot privateKeyPath exitCode node =

@@ -151,11 +151,28 @@ no shared in-memory state.
    `Unreachable` is the credential-free "we cannot tell" signal that
    the pre-Sprint-4.16 file-existence predicate
    (`<stack>HasLiveResources = doesFileExist .prodbox-state/<stack>/
-   stack-snapshot.json`) used to approximate. The new ADT exposes the
-   distinction explicitly: per-run callers treat `Unreachable` as
-   absent (per-run state dies with the cluster); long-lived callers
-   treat `Unreachable` as a refusal (S3 unreachable is a real failure
-   that needs operator attention). Other discoverers added by Sprints
+   stack-snapshot.json`) used to approximate. How callers interpret
+   `Unreachable` depends on whether they are a **gate** or the
+   **cascade orchestration**, and this is deliberate:
+
+   - **Gate callers fail closed** (Sprint 4.19). The refuse-path
+     preconditions for `prodbox rke2 delete` (default) and
+     `prodbox aws teardown` treat per-run `Unreachable` as a refusal:
+     "I could not read the per-run Pulumi state" is **not** the same
+     as "the resources are gone." Treating it as absent previously let
+     `rke2 delete --yes` silently pass on a degraded cluster (MinIO pod
+     down, per-run state still intact on `.data/`); the subsequent
+     operator `rm .data` then destroyed the only record of live AWS
+     resources. Long-lived `Unreachable` (S3) has always failed closed
+     for the same reason.
+   - **The cascade degrades gracefully.** `prodbox rke2 delete
+     --cascade`'s own `perRunCascadeInventory` treats per-run
+     `Unreachable` as absent — the cascade is tearing the cluster down
+     regardless, and the postflight tag sweep (§6) is its backstop for
+     any AWS-side residue. The cascade does not route through the gate
+     preconditions.
+
+   Other discoverers added by Sprints
    4.11–4.12: `discoverClusterTaggedAwsResources` (AWS Resource
    Tagging API), `discoverK8sAwsAffectingResources` (kubectl).
 
@@ -237,15 +254,95 @@ independently testable, each `Precondition` composes, and the doctrine
 generalizes to any new resource class by adding one `discover` and one
 `Precondition`. No existing command needs to know about new commands.
 
+The data-oriented strengthening of this — chosen deliberately *instead
+of* a state machine — is the managed-resource registry below: it keeps
+"data in, data out," adds no shared in-memory state, and makes the
+"add one `discover` + one destroy per resource" rule **total and
+machine-enforced** rather than a convention.
+
+### 3.1 The managed-resource registry (the reconciler substrate)
+
+Every leak we have hit was one of two failures, neither of which a
+state machine fixes: (a) a **fail-open predicate** — a `discover` whose
+"cannot observe" outcome silently collapsed to "absent/clean" (e.g. the
+pre-Sprint-4.19 per-run gate, and the file-existence proxy before
+Sprint 4.16); or (b) **incomplete coverage** — a resource the system can
+create that has no registered `discover`/destroy at all (the operational
+`prodbox` IAM user, the operational `aws.*` config block, fixed-name IAM
+left by a partial `pulumi up`; see §6a). The registry closes both
+structurally.
+
+**The registry is a single, pure list of typed managed resources** — the
+SSoT for "everything prodbox can create, and how to observe and destroy
+it." Conceptual shape (canonical names land with the implementation
+sprint):
+
+```haskell
+-- Example: the registry entry shape
+data LifecycleClass = PerRun | LongLived | Operational
+data ManagedResource = ManagedResource
+  { resourceName     :: String
+  , resourceClass    :: LifecycleClass
+  , resourceDiscover :: IO ResidueStatus   -- Present | Absent | Unreachable (§3 layer 1)
+  , resourceDestroy  :: IO (Either StructuredError ())
+  }
+managedResources :: [ManagedResource]      -- the single source of truth
+```
+
+It reuses, not replaces, the existing pieces: the three-valued
+`ResidueStatus` (§3 layer 1), the composable `Precondition`/`checkAll`
+algebra (§3 layer 2), the `Plan`/`Apply` discipline, and the
+declare-and-interpret shape of the Effect DAG. The per-class stack-name
+lists (`Prodbox.Aws.perRunStackNames` / `longLivedStackNames`, §2) are
+**derived from** the registry by class so they cannot drift from it.
+
+Three invariants make the topology leak-proof and idempotent:
+
+1. **Totality.** No prodbox code path may create an AWS or cluster
+   resource that is not in the registry with a `discover` and a
+   `destroy`. This is enforced in `check-code` (registry ↔
+   [`substrates.md` Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
+   parity, plus a create-call-site coverage scan), the same mechanism
+   that already enforces the generated-section registry and the
+   subprocess boundary. "A creatable-but-undiscoverable resource" is
+   made unrepresentable.
+2. **Soundness.** `Unreachable` ("cannot observe") is never silently a
+   passing decision. A single combinator maps a `discover` result to a
+   gate decision with `Unreachable → refuse` (the Sprint 4.19 rule,
+   generalized to every gate). The cascade keeps its documented
+   graceful-degradation exception (`perRunCascadeInventory`, §5b).
+3. **Idempotent reconciliation.** Teardown is one reconciler,
+   `reconcileAbsent`, over a class subset of the registry: for each
+   resource `Present → destroy → re-observe`, `Absent → skip`,
+   `Unreachable → refuse`. `prodbox rke2 delete` reconciles `PerRun`;
+   `prodbox aws teardown` reconciles `PerRun` ∪ `Operational`;
+   `prodbox nuke` reconciles all classes. Re-running converges instead
+   of erroring; built on `Plan`/`runPlanWithOptions` so `--dry-run`
+   works uniformly.
+
+This is the data-oriented "make illegal states unrepresentable"
+answer, not a global state machine: the registry is pure data, every
+`discover` queries the appropriate external authority at the moment of
+use, and crash recovery is just "re-run the reconciler."
+
+The scheduling of this doctrine into code is owned by
+[DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md](../../DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md)
+Sprints 4.20–4.22 and
+[phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md)
+Sprint 7.8.
+
 ## 4. Predicate Library Inventory
 
 Named `Precondition` values every destructive lifecycle command may
 compose. The library lives at `src/Prodbox/Lifecycle/Preconditions.hs`
-(introduced in Sprint 4.11).
+(introduced in Sprint 4.11). Sprints 4.20–4.21 (§3.1) generalize these
+into the registry's `reconcileAbsent` reconciler — each predicate
+becomes a class subset of the managed-resource registry — so this table
+is the per-resource view of one uniform mechanism, not a parallel one.
 
 | Predicate | Returns `Left` when | Used by |
 |---|---|---|
-| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` returns `ResiduePresent` against its MinIO backend. `ResidueUnreachable` is treated as absent for per-run stacks because their state lives with the cluster. | `prodbox rke2 delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
+| `noLivePerRunPulumiStacks` | Any of `aws-eks`, `aws-eks-subzone`, `aws-test` returns `ResiduePresent` (live resources — refuse with the per-stack destroy command) **or** `ResidueUnreachable` (the per-run MinIO state backend could not be read — refuse with a distinct "cannot confirm destroyed; do not delete `.data/`; re-run with `--allow-pulumi-residue` to accept the orphan risk" message). Sprint 4.19 made this gate **fail closed on `ResidueUnreachable`**: "cannot read the state" is not "the resources are gone." | `prodbox rke2 delete` (default), `prodbox aws teardown` (default; see also `noLiveLongLivedPulumiStacks`) |
 | `noLiveLongLivedPulumiStacks` | `aws-ses` returns `ResiduePresent` against its S3 backend, **or** `ResidueUnreachable` (S3 unreachable is a real failure for long-lived stacks; failing closed is the correct behavior) | `prodbox aws teardown` (default); `prodbox nuke` (handled by destroying not refusing) |
 | `noLiveClusterTaggedAws` | The AWS Resource Tagging API returns any resource carrying `kubernetes.io/cluster/<cluster-name>` | Postflight of `prodbox rke2 delete --cascade` and `prodbox nuke` |
 | `noUndrainedK8sAwsResources` | `kubectl` reports any LoadBalancer Service, ALB Ingress, or Delete-reclaim PVC that hasn't been drained, **and** the cluster was reachable on the pre-drain `kubectl cluster-info --request-timeout=5s` probe | Postflight of K8s drain (Sprint 4.12); preflight of per-run Pulumi destroys when `--cascade` is set |
@@ -321,6 +418,56 @@ cluster before draining them produces orphan resources that block subnet deletio
 The postflight tag sweep (phase 5) is the backstop for any controller-created AWS
 resources that escape the drain, not a substitute for running the drain first.
 
+### 5c. Per-Run EKS Destroy Drains the Cluster First (Sprint 4.23)
+
+The drain-before-destroy invariant of §5b applies not only to the `--cascade`
+orchestration but to the **per-run `aws-eks-test` Pulumi destroy itself**. As of
+Sprint 4.23, `Prodbox.Infra.AwsEksTestStack.destroyAwsEksTestStackStatus` runs a
+best-effort K8s drain (LoadBalancer Services, ALB Ingresses, Delete-reclaim PVCs)
+against the per-run EKS cluster's own kubeconfig immediately **before** `pulumi
+destroy`. Because both the harness postflight (`prodbox pulumi eks-destroy --yes`
+from `awsPostflightDestroyActions`) and the cascade
+(`Prodbox.Lifecycle.ResourceRegistry.reconcileAbsent` → `PulumiEksDestroy`) route
+through this destroy, the drain covers both paths — closing the gap where the
+harness postflight's per-run EKS destroy raced AWS's async ENI cleanup and hit
+`DependencyViolation: subnet … has dependencies and cannot be deleted` (the May
+28/29 incidents). This extends Sprint 4.17.b's substrate-aware cascade drain to the
+per-run destroy path, targeting the per-run EKS cluster rather than the host
+substrate's cluster.
+
+The per-run drain is **best-effort and safe when the cluster is unreachable**: an
+absent EKS kubeconfig or an unreachable cluster skips the drain with a diagnostic
+and proceeds to the destroy, and a drain failure / timeout never hard-fails the
+destroy (the destroy is the goal). This differs from the cascade's AWS-substrate
+`DrainSkipped`-is-hard-failure rule (§5b phase 2) because the per-run destroy is the
+last line of defense and must always attempt to run; the worst case on a skipped
+drain is the pre-4.23 `DependencyViolation`, which §5d's credential-preservation
+then makes recoverable.
+
+### 5d. Harness Postflight Preserves Operational Creds on Per-Run Destroy Failure (Sprint 7.10)
+
+The `prodbox test ...` harness postflight (`Prodbox.TestRunner.runWithAwsHarnessCleanup`)
+runs the per-run Pulumi destroys on every exit path (Sprint 7.6 orphan-safety) and
+then, historically, always cleared operational `aws.*` and deleted the operational
+`prodbox` IAM user via `runManagedAwsHarnessTeardown`. As of Sprint 7.10 the
+operational-credential teardown runs **only when the per-run destroy succeeded**
+(pure decision `clearOperationalCredsAfterPostflight :: ExitCode -> Bool`, `True`
+iff `ExitSuccess`). When a per-run destroy fails (e.g. the §5c
+`DependencyViolation` before Sprint 4.23 fully closes it), the orphaned per-run
+stacks still hold live AWS resources whose destroy path requires operational creds;
+clearing those creds would strand the orphans. The postflight therefore **holds**
+the teardown, preserves operational `aws.*` + the operational user, and emits a
+diagnostic naming the recovery path: resolve the destroy failure (e.g. wait out /
+clean up the orphan ENIs), then `prodbox pulumi <stack>-destroy --yes` for each
+remaining per-run stack, then `prodbox aws teardown`. The per-run destroy failure is
+still surfaced as a non-zero exit.
+
+This is the per-run analog of §5's Sprint 7.9 change: Sprint 7.9 stopped the
+teardown from **refusing** on admin-managed `aws-ses` residue (clearing operational
+creds cannot strand the admin-credential `aws-ses` stack); Sprint 7.10 **holds** the
+teardown when the per-run auto-destroy — which *does* need operational creds —
+failed. The two are complementary safety rules on the same teardown.
+
 ## 6. Mandatory Postflight Tag Sweep
 
 Every destructive lifecycle command must end with a call to
@@ -332,6 +479,58 @@ that catches K8s-operator-created AWS resources that escape the drain.
 
 The tag sweep lives at `src/Prodbox/Lifecycle/TagSweep.hs` (introduced
 in Sprint 4.11; extended for the full cluster-tag scan in Sprint 4.12).
+
+### 6a. The Tag Sweep Does Not Cover IAM (known blind spot)
+
+The postflight tag sweep queries the **AWS Resource Groups Tagging API**,
+which does **not** return IAM resources (policies, roles, users) — and
+even if it did, the per-run IAM resources are not cluster-tagged. So the
+tag sweep is **not** a backstop for orphaned IAM residue. The IAM residue
+class is:
+
+- Fixed-name per-run IAM (`aws-eks-test-aws-lb-controller` policy/role,
+  `aws-eks-test-ebs-csi-driver` role) and auto-named EKS cluster/node
+  roles (`clusterRole-*`, `nodeRole-*`) left when a `pulumi up` partially
+  succeeds and its state is then lost (the create-then-crash window, or a
+  `.data/` wipe / cluster crash before the per-run `pulumi destroy`).
+- The operational `prodbox` IAM user, owned by `prodbox aws setup` /
+  `aws teardown` (not by `rke2 delete`); an interrupted run can leave it.
+
+How the doctrine handles this class without scanning AWS behind Pulumi
+(an anti-pattern) and without an auto-sweep (which would mask genuine
+leaks):
+
+1. **Register the durable classes (§3.1).** The operational `prodbox`
+   IAM user and the operational `aws.*` config block become registered
+   `Operational` resources in the managed-resource registry, each with
+   a `discover` (`aws iam get-user` / config-non-empty) and a `destroy`
+   (the existing delete/clear paths) — so `aws teardown`'s
+   `reconcileAbsent` pass observes and reconciles them like any other
+   resource, and `check-code` totality refuses any future create without
+   a registered counterpart. This closes the *coverage* half of the
+   blind spot for everything except the irreducible residual below.
+2. **Prevent new silent leaks.** Sprint 4.19's fail-closed delete gate
+   (§3 layer 1, §4) — generalized by §3.1's soundness invariant —
+   refuses `rke2 delete` / `aws teardown` when the per-run Pulumi state
+   backend is unreachable, so an interrupted-state teardown can no
+   longer report "clean" and let `.data/` be wiped out from under live
+   resources. New divergence is surfaced, not hidden.
+3. **The irreducible residual is operator-cleaned.** The one case the
+   registry cannot observe is a fixed-name resource created by a partial
+   `pulumi up` whose state was then lost (create-then-crash; a Pulumi
+   atomicity gap, not a prodbox one) — because its only intended
+   `discover` is "query Pulumi state," which is gone. This is removed
+   via the bounded escape hatch (targeted `aws iam delete-policy` /
+   `delete-role` / `delete-user`), the documented exception to the
+   "harness owns AWS" rule. A live operator cleanup of this class was
+   performed 2026-05-28 (see
+   [DEVELOPMENT_PLAN/README.md](../../DEVELOPMENT_PLAN/README.md) Closure
+   Status). It is deliberately **not** closed with an AWS-name-scanning
+   detector (an anti-pattern) or an auto-sweep (which would mask genuine
+   leaks).
+
+This residual is recorded as a class in
+[DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](../../DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes).
 
 ## 7. What Is Out of Scope for `rke2 delete`
 

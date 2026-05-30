@@ -7,14 +7,25 @@
 -- structured details, or 'ResidueUnreachable' when the backend cannot
 -- be queried (MinIO down, S3 credentials missing, etc.).
 --
--- Per the lifecycle reconciliation doctrine, callers treat per-run
--- 'ResidueUnreachable' as residue-absent (graceful degradation when the
--- in-cluster MinIO backend is gone) and long-lived 'ResidueUnreachable'
--- as a refusal (the operator-owned S3 backend must be reachable before
--- the long-lived @aws-ses@ stack can be presumed safe to destroy or
--- bypass). The helpers 'isResiduePresentOrUnknownPerRun' /
--- 'isResiduePresentOrUnknownLongLived' encode that asymmetry so call
--- sites do not branch on the constructor directly.
+-- Sprint 4.19: the destructive-teardown **gates** treat per-run
+-- 'ResidueUnreachable' as a refusal, not as absent. "I cannot read the
+-- per-run Pulumi state backend (MinIO)" is not the same as "the
+-- resources are gone" — treating it as absent let @prodbox rke2 delete
+-- --yes@ silently pass on a degraded cluster (MinIO pod down, state
+-- intact on @.data/@), after which @rm .data@ orphaned the live AWS
+-- resources. Long-lived 'ResidueUnreachable' has always been a refusal
+-- (the operator-owned S3 backend must be reachable before the
+-- long-lived @aws-ses@ stack can be presumed safe to destroy or
+-- bypass). Sprint 4.20 unifies that gate decision into the single
+-- combinator 'residueBlocksTeardownGate' ("present OR unreachable →
+-- block"), superseding the per-class @isResiduePresentOrUnknown*@
+-- booleans.
+--
+-- The @--cascade@ path is the deliberate exception: it keeps its own
+-- graceful-degradation handling in
+-- 'Prodbox.Lifecycle.ResourceRegistry.resourcesToDestroy' (the cluster is being torn
+-- down regardless, with the postflight tag sweep as the backstop), and
+-- does not route through this gate combinator.
 module Prodbox.Lifecycle.ResidueStatus
   ( ResidueStatus (..)
   , ResidueDetails (..)
@@ -27,8 +38,7 @@ module Prodbox.Lifecycle.ResidueStatus
   , isResiduePresent
   , isResidueAbsent
   , isResidueUnreachable
-  , isResiduePresentOrUnknownPerRun
-  , isResiduePresentOrUnknownLongLived
+  , residueBlocksTeardownGate
   )
 where
 
@@ -75,10 +85,11 @@ residueAbsent :: ResidueStatus
 residueAbsent = ResidueAbsent
 
 -- | Promote a boolean file-existence check into a 'ResidueStatus'.
--- The adapter layer used by Sprint 4.16's initial landing wraps the
--- legacy @<stack>HasLiveResources@ predicate; later sprints will
--- replace this with real backend queries that produce
--- 'ResidueUnreachable' when the backend is down.
+-- Retained for the unit-test scaffolding that exercises the
+-- 'ResiduePresent' / 'ResidueAbsent' constructors with a synthetic
+-- evidence string; the production residue path went live in Sprint
+-- 4.16 and queries Pulumi backends directly via
+-- 'Prodbox.Lifecycle.LiveResidue'.
 residuePresentByFileExistence
   :: String
   -- ^ Canonical Pulumi stack name.
@@ -125,15 +136,22 @@ isResidueUnreachable :: ResidueStatus -> Bool
 isResidueUnreachable (ResidueUnreachable _) = True
 isResidueUnreachable _ = False
 
--- | Per-run callers treat unreachable backends as residue-absent — if
--- MinIO is gone the in-cluster stack snapshot cannot survive, so the
--- safe assumption is that there is nothing left to refuse on.
-isResiduePresentOrUnknownPerRun :: ResidueStatus -> Bool
-isResiduePresentOrUnknownPerRun = isResiduePresent
-
--- | Long-lived callers treat unreachable backends as still-present —
--- the S3-backed @aws-ses@ stack must be confirmed gone before any
--- refusal can be relaxed.
-isResiduePresentOrUnknownLongLived :: ResidueStatus -> Bool
-isResiduePresentOrUnknownLongLived status =
+-- | Sprint 4.20: the single soundness combinator every destructive
+-- teardown gate uses to decide whether a resource blocks the command.
+-- A resource blocks when it is 'ResiduePresent' (live resources to
+-- destroy first) OR 'ResidueUnreachable' (the backend could not be read
+-- — "cannot observe" is never silently treated as "absent," because it
+-- is not a confirmation that the resources are gone). Only
+-- 'ResidueAbsent' (positively observed gone) passes.
+--
+-- This replaces the pre-Sprint-4.20 per-class booleans
+-- (@isResiduePresentOrUnknownPerRun@ / @…LongLived@), which had drifted
+-- to different implementations and let the per-run gate silently pass
+-- on an unreadable backend (Sprint 4.19 incident). Per-run and
+-- long-lived gates now share this decision; they differ only in the
+-- refusal *message*, rendered at the call site. The @--cascade@ path
+-- keeps its own graceful-degradation handling in
+-- 'Prodbox.Lifecycle.ResourceRegistry.resourcesToDestroy' and does not use this gate.
+residueBlocksTeardownGate :: ResidueStatus -> Bool
+residueBlocksTeardownGate status =
   isResiduePresent status || isResidueUnreachable status

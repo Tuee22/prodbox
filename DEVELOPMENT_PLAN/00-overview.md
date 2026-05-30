@@ -158,6 +158,34 @@ prerequisites.
 
 ## Alignment Status
 
+**2026-05-28 — § 3.1 totality enforcement complete.** Sprint `4.22`'s create-call-site
+coverage lint landed (the follow-on to the already-landed registry ↔ doc parity), completing
+the `check-code` totality enforcement of
+[lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md):
+registry ↔ doc parity **plus** create-site coverage. The new `checkCreateCallSiteCoverage`
+scan is deliberately narrow — it covers only the `Pulumi<Word>Resources` constructors in
+`src/Prodbox/CLI/Command.hs` (each must map to a registered stack) and the operational-IAM
+creation verbs confined to `src/Prodbox/Aws.hs` — with broader generic-`create*`/DNS-record
+scanning excluded to avoid false positives.
+
+**2026-05-28 — managed-resource-registry doctrine.** Phase `4` is extended (it is already
+Active) with Sprints `4.20`–`4.22` for the typed managed-resource registry + idempotent
+`reconcileAbsent` reconciler + `check-code` totality enforcement
+([lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md));
+**Phase `7` reopened** for Sprint `7.8` because the registry re-expresses its owned
+`aws setup`/`teardown` surface. **Phase `1` stays `Done`** — the registry is built on its
+`Plan`/Apply, Effect DAG, and capability-class foundations, not a change to them — and
+Phases `5`, `6`, and the rest of Phase `7` remain closed on their owned surfaces. The
+registry **generalizes** the existing Phase `4` reconciler work (Sprints `4.11`/`4.16`/`4.19`
+become instances of one pattern and stay `Done`); nothing earlier is contradicted.
+**Sprint `7.8`'s operational-coverage core landed 2026-05-28**: the registry now covers the
+operational `prodbox` IAM user and the operational `aws.*` config block (defined in
+`Prodbox.Aws` to avoid a `ResourceRegistry`→`Aws` import cycle), and `prodbox aws teardown`
+reconciles them through `reconcileAbsent` — with operational `Unreachable` failing closed via
+a dedicated gate rather than the cascade graceful-degradation skip. Code-owned surface status
+is **Active**, not Done: the `PerRun` ∪ `Operational` teardown merge (per-run residue gating
+unchanged) and the live `prodbox test all --substrate aws` roll-up remain tracked follow-ons.
+
 Phase `0` reopened through Sprints `0.2`–`0.7` to adopt
 [the engineering doctrine docs](../documents/engineering/README.md) as the canonical CLI doctrine, align the
 governed docs and plan suite with that doctrine, schedule every currently known code-level
@@ -312,7 +340,8 @@ The reopened ranges close on the following sprint sets:
 | Optional realtime-state model | Redis-backed shared state for supported WebSocket workloads today and any later explicit external rate-limit service | Haskell chart platform plus application workload doctrine |
 | Interactive onboarding | `prodbox config setup` | Haskell CLI plus prompt-driven temporary admin AWS credentials and AWS CLI subprocesses |
 | AWS IAM and quota management | `prodbox aws policy|setup|teardown|check-quotas|request-quotas` | Haskell CLI plus AWS CLI subprocesses; `aws teardown` carries the Sprint `7.6`/`7.7` `PulumiResiduePolicy` contract (default refuse, `--destroy-pulumi-residue` to destroy live stacks first, `--allow-pulumi-residue` operator-acknowledged orphan escape; mutually exclusive at parse time). `aws setup` auto-detects `AKIA…` vs `ASIA…` access keys to conditionally prompt for the session token (Sprint `7.7`). |
-| AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup. Sprint `7.6` orphan-safety guards: the harness postflight auto-destroys per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) on success / failure / Ctrl-C before clearing operational `aws.*`. Sprint `7.7` `BypassPerRunResidueOnly` mode: the harness teardown still refuses on long-lived `aws-ses` residue (was unconditionally bypassed before Sprint `7.7`). |
+| AWS IAM validation harness | `prodbox test integration aws-iam`, `prodbox test integration all`, `prodbox test all` | Shared Haskell validation harness with idempotent IAM-user and config cleanup. Sprint `7.6` orphan-safety guards: the harness postflight auto-destroys per-run Pulumi stacks (`aws-eks`, `aws-eks-subzone`, `aws-test`) on success / failure / Ctrl-C. Sprint `7.10` (2026-05-29): the operational-credential teardown (clearing operational `aws.*` + deleting the operational `prodbox` IAM user) runs **only when the per-run destroy succeeded** (pure `clearOperationalCredsAfterPostflight`); on a per-run destroy failure it is **held** so the orphaned per-run stacks keep the operational creds needed to destroy them on retry. The per-run EKS destroy itself now drains the cluster's AWS-affecting K8s resources before `pulumi destroy` (Sprint `4.23`), closing the May 28/29 `DependencyViolation` root cause. Sprint `7.9` (2026-05-29): the harness postflight teardown (`runAwsIamHarnessTeardown`) no longer refuses on long-lived `aws-ses` residue. The Sprint `7.7` `BypassPerRunResidueOnly` refusal was correct only pre-Sprint-4.10, when `aws-ses` was operationally credentialed; post-4.10 `aws-ses` is admin-credentialed (`aws_admin_for_test_simulation.*`), so clearing operational `aws.*` cannot strand it. The postflight now uses `BypassAllResidueForHarnessRefresh`, matching the preflight (Sprint `7.5.c.v.c`), so an `aws-ses`-live run no longer strands the freshly-created operational `prodbox` IAM user. |
+| Leak-proof resource lifecycle | `Prodbox.Lifecycle.ResourceRegistry` (scheduled Sprints `4.20`–`4.22`, `7.8`) | Typed managed-resource registry — the SSoT for every AWS/cluster resource prodbox can create and how to `discover`/`destroy` it. Teardown (`rke2 delete`, `aws teardown`, `nuke`) is one idempotent `reconcileAbsent` reconciler over the registry with `Unreachable` never silently passing; `check-code` makes a creatable-but-undiscoverable resource unrepresentable. Doctrine: [lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md). |
 | Formal verification | `prodbox tla-check` | Haskell CLI invoking the TLA+ toolchain |
 | Code quality gate | `prodbox check-code` | Haskell CLI plus governed doctrine-alignment enforcement |
 | Status and blockers | `DEVELOPMENT_PLAN/` | This plan suite |

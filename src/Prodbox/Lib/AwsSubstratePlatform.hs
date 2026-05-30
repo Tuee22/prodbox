@@ -71,8 +71,9 @@ import Prodbox.ContainerImage (requiredPublicImagePairs)
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
-  , loadAwsEksTestStackSnapshot
+  , parseAwsEksTestStackFromOutputs
   )
+import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lib.EksContainerdMirror
   ( defaultProdboxMirrorConfig
   , eksContainerdMirrorDaemonSetManifest
@@ -82,6 +83,10 @@ import Prodbox.Lib.EksImageMirror
   , eksImageMirrorJobManifest
   , mirrorJobName
   , mirrorJobNamespace
+  )
+import Prodbox.Lifecycle.LiveResidue
+  ( awsEksTestStackName
+  , fetchPerRunStackOutputs
   )
 import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
@@ -98,9 +103,8 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..))
-import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Directory (getTemporaryDirectory, removeFile)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
 import System.IO (hClose, openTempFile)
 
 awsLoadBalancerControllerRepoName :: String
@@ -507,9 +511,11 @@ ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue = do
 -- converge to the desired state.
 --
 -- Preconditions:
---   * `prodbox pulumi eks-resources` has been run, populating
---     `.prodbox-state/aws-eks-test/stack-snapshot.json` with the IAM/IRSA
---     output fields added in Sprint `7.5.b.ii.b`.
+--   * `prodbox pulumi eks-resources` has been run, so the live
+--     `aws-eks-test` Pulumi stack carries the IAM/IRSA output fields
+--     added in Sprint `7.5.b.ii.b`. Sprint 4.18: this step reads those
+--     fields live from the MinIO Pulumi backend via
+--     `fetchPerRunStackOutputs`, not from a host-side snapshot cache.
 --   * `prodbox pulumi aws-subzone-resources` has been run, so
 --     `aws_substrate.hosted_zone_id` and `aws_substrate.subzone_name` in
 --     `prodbox-config.dhall` point at a live Route 53 subzone.
@@ -522,14 +528,20 @@ ensureAwsSubstratePlatformRuntime repoRoot settings prodboxId labelValue = do
     ( "Reconciling AWS-substrate platform (LB Controller + Envoy Gateway "
         ++ "+ cert-manager + ACME + containerd registry mirror + MinIO + Harbor)"
     )
-  snapshotMaybe <- loadAwsEksTestStackSnapshot repoRoot
-  case snapshotMaybe of
-    Nothing ->
+  outputsResult <-
+    fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksTestStackName))
+  case outputsResult of
+    Left err ->
       failWith
-        ( "AWS-substrate platform install requires an existing AWS EKS Pulumi snapshot at "
-            ++ ".prodbox-state/aws-eks-test/stack-snapshot.json. Run `prodbox pulumi eks-resources` first."
+        ( "AWS-substrate platform install could not read aws-eks-test Pulumi "
+            ++ "outputs from the in-cluster MinIO backend: "
+            ++ err
+            ++ ". Run `prodbox pulumi eks-resources` first."
         )
-    Just snapshot -> runSequentially (steps snapshot)
+    Right outputs ->
+      case parseAwsEksTestStackFromOutputs outputs of
+        Left err -> failWith ("AWS-substrate platform install could not parse aws-eks-test Pulumi outputs: " ++ err)
+        Right snapshot -> runSequentially (steps snapshot)
  where
   defaultRegion :: String
   defaultRegion =
@@ -728,11 +740,14 @@ failWith message = do
   writeError (fatalError (Text.pack message))
   pure (ExitFailure 1)
 
+-- | Sprint 4.18: scratch JSON payloads stage under the system temp
+-- directory so they do not contribute to the repo-local
+-- @.prodbox-state\/@ surface. The file is removed after the action
+-- completes.
 withTempJsonFile :: FilePath -> String -> BL.ByteString -> (FilePath -> IO ExitCode) -> IO ExitCode
-withTempJsonFile repoRoot prefix payload action = do
-  let tempDir = repoRoot </> ".prodbox-state" </> "tmp"
-  createDirectoryIfMissing True tempDir
-  (path, handle) <- openTempFile tempDir (prefix ++ "-")
+withTempJsonFile _repoRoot prefix payload action = do
+  systemTemp <- getTemporaryDirectory
+  (path, handle) <- openTempFile systemTemp (prefix ++ "-")
   BL.hPut handle payload
   hClose handle
   exitCode <- action path

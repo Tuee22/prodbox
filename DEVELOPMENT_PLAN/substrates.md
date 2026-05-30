@@ -15,6 +15,7 @@
 [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md),
 [phase-8-email-invite-auth.md](phase-8-email-invite-auth.md),
 [the engineering doctrine docs](../documents/engineering/README.md)
+**Generated sections**: resource-lifecycle-classes
 
 > **Purpose**: Inventory the substrates against which the canonical test suite runs, the
 > provision and teardown surface each substrate owns, and the current parity status of each
@@ -95,12 +96,26 @@ table below). Pulumi state lifetime must also match resource lifetime per class;
 The per-run vs long-lived partition is mirrored in code by `Prodbox.Aws.perRunStackNames`
 and `Prodbox.Aws.longLivedStackNames` (Sprint `7.7`), which the
 `Prodbox.Aws.partitionResidueByLifecycle` predicate and the `PulumiResiduePolicy`
-`BypassPerRunResidueOnly` arm consume. The lists in this doc and the lists in
-`src/Prodbox/Aws.hs` must match verbatim — adding a new stack to any `prodbox` code path
-requires updating both this section and the code-side helpers in the same change. The
-`prodbox aws teardown` flag surface (`--destroy-pulumi-residue`, `--allow-pulumi-residue`)
-and the harness-internal `BypassPerRunResidueOnly` mode both depend on the partition being
-authoritative here.
+`BypassPerRunResidueOnly` arm consume. The `prodbox aws teardown` flag surface
+(`--destroy-pulumi-residue`, `--allow-pulumi-residue`) and the harness-internal
+`BypassPerRunResidueOnly` mode both depend on the partition being authoritative here.
+
+The registry SSoT is `Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses` (Sprint
+`4.20`); `perRunStackNames` / `longLivedStackNames` are derived from it. The table below is
+**generated** from that registry by `prodbox docs generate` (Sprint `4.22`) — do not hand-edit
+between the markers; `prodbox docs check` fails the build if it drifts from the code, so a new
+resource cannot be added to the registry without this inventory updating in lockstep:
+
+<!-- prodbox:resource-lifecycle-classes:start -->
+| Resource | Lifecycle class |
+|----------|-----------------|
+| `aws-eks` | PerRun |
+| `aws-eks-subzone` | PerRun |
+| `aws-test` | PerRun |
+| `aws-ses` | LongLived |
+| `operational-iam-user` | Operational |
+| `operational-aws-config` | Operational |
+<!-- prodbox:resource-lifecycle-classes:end -->
 
 ### Per-run stacks (auto-managed by the harness)
 
@@ -155,12 +170,54 @@ tag sweep that fails any destructive lifecycle command if cluster-tagged resourc
 see
 [../documents/engineering/lifecycle_reconciliation_doctrine.md](../documents/engineering/lifecycle_reconciliation_doctrine.md).
 
+### Orphaned IAM residue (operator-cleaned residual class)
+
+| Resource | Origin | Why it orphans | Cleanup owner |
+|----------|--------|----------------|---------------|
+| `aws-eks-test-aws-lb-controller` policy/role, `aws-eks-test-ebs-csi-driver` role (fixed-name), and auto-named `clusterRole-*` / `nodeRole-*` | The `aws-eks` Pulumi program (per-run) | A `pulumi up` partially succeeds (IAM created early), then its state is lost — the create-then-crash window, or a `.data/` wipe / cluster crash before the per-run `pulumi destroy` | Operator, via the bounded escape hatch (targeted `aws iam delete-policy` / `delete-role`) |
+| Operational `prodbox` IAM user + access key + `prodbox-inline` policy | `prodbox aws setup` / the test-harness IAM bootstrap | An interrupted run leaves it; `rke2 delete` does not own it (`aws teardown` / the harness postflight does) | `prodbox aws teardown`, or operator via `aws iam delete-user` |
+
+This IAM residue is the one leak class with **no automated detection backstop**: the AWS
+Resource Groups Tagging API does not return IAM resources, so the postflight tag sweep cannot
+see it (see
+[lifecycle_reconciliation_doctrine.md § 6a](../documents/engineering/lifecycle_reconciliation_doctrine.md)).
+It is handled by **prevention, not auto-cleanup**: Sprint `4.19`'s fail-closed delete gate
+stops `rke2 delete` / `aws teardown` from silently reporting "clean" when the per-run Pulumi
+state backend is unreachable (the condition that let this residue accumulate undetected),
+and pre-existing IAM orphans are removed by operator action. A deliberate decision was made
+**not** to add an AWS-name-scanning detector (scanning live AWS behind Pulumi is an
+anti-pattern) and **not** to add an auto-sweep (silent cleanup would mask genuine logical
+leaks). A live operator cleanup of accumulated IAM orphans (1 policy + 3 roles + the
+operational `prodbox` user, dated 2026-04-25 through 2026-05-28) was performed 2026-05-28 —
+see [README.md → Closure Status](README.md).
+
+### Operational resources (registered, ephemeral per run)
+
+| Resource | Created by | Discover | Destroyed by |
+|----------|------------|----------|--------------|
+| Operational `prodbox` IAM user (+ access key + `prodbox-inline` policy) | `prodbox aws setup` / the test-harness IAM bootstrap | `aws iam get-user` | `prodbox aws teardown` (`reconcileAbsent`) |
+| Operational `aws.*` block in `prodbox-config.dhall` | `prodbox aws setup` materializing from `aws_admin_for_test_simulation.*` | config-block-non-empty | `prodbox aws teardown` clears it to empty |
+
+These are **registered `Operational`-class resources** in the managed-resource registry
+(scheduled in Phase `4` Sprint `4.20` and Phase `7` Sprint `7.8`). Before the registry they
+were created by `aws setup` with no registered discover/destroy, which is why an interrupted
+run leaked both undetected. The registry gives each a `discover` + `destroy` so `aws teardown`'s
+`reconcileAbsent` pass reconciles them like any other resource.
+
 ### Lifecycle ownership rule
 
-No new AWS resource type may be added by any `prodbox` code path without first appearing in
-one of these three classes, and no new Pulumi stack may be added without first declaring its
-state-lifetime class (per-run MinIO backend vs long-lived S3 backend) in this section and in
-the matching code-side list (`Prodbox.Aws.perRunStackNames` / `longLivedStackNames`).
+No new AWS or cluster resource type may be added by any `prodbox` code path without a
+corresponding **managed-resource registry** entry (typed `discover` + `destroy`, with a
+`LifecycleClass` of `PerRun` / `LongLived` / `Operational`). The registry
+(`Prodbox.Lifecycle.ResourceRegistry`, scheduled in Phase `4` Sprint `4.20`) is the
+machine-enforced single source of truth: `Prodbox.Aws.perRunStackNames` /
+`longLivedStackNames` are **derived from** it, and `prodbox check-code` (Sprint `4.22`)
+fails the build if this Resource Lifecycle Classes section drifts from the registry or if
+any `aws`/`pulumi` create call site has no registered counterpart. The doctrine SSoT is
+[../documents/engineering/lifecycle_reconciliation_doctrine.md § 3.1](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+This Resource Lifecycle Classes table becomes a registry-sourced **generated section** when
+Sprint `4.22` lands its renderer; until then it is maintained by hand and checked against the
+registry by review.
 
 ## Cross-Substrate Shared Resources
 

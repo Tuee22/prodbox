@@ -24,7 +24,7 @@ prodbox check-code
 sequence:
 
 1. repository-owned workflow and hook policy scan
-2. thin-`Main.hs`, committed-Dhall-freeze, and tracked-generated-artifact policy scan
+2. thin-`Main.hs` and tracked-generated-artifact policy scan
 3. sandboxed `fourmolu --mode check app src test`
 4. sandboxed `hlint app src test --hint=.hlint.yaml --with-group=default --with-group=extra`
 5. `cabal build --builddir=.build all --ghc-options=-Werror`
@@ -64,8 +64,6 @@ Current enforced quality surfaces:
 
 - repository-owned workflow and hook policy surfaces forbidden by
   [Section 2A](#2a-development-tooling-policy)
-- committed repo-root Dhall imports must carry `sha256:` annotations produced by
-  `dhall freeze --all --inplace`
 - thin-`app/prodbox/Main.hs` and tracked generated-path drift
 - direct `System.Process` / `System.Process.Typed` imports and smart-constructor symbols
   (`callProcess`, `readCreateProcess`, `readCreateProcessWithExitCode`, `createProcess`,

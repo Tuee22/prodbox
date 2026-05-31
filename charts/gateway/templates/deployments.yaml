@@ -25,6 +25,7 @@ spec:
         {{- include "gateway.labels" $ | nindent 8 }}
         gateway-node: {{ $nodeId | quote }}
     spec:
+      serviceAccountName: prodbox-gateway-daemon
       {{- if $.Values.podAntiAffinity.enabled }}
       affinity:
         podAntiAffinity:

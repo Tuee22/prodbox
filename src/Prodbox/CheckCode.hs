@@ -291,13 +291,7 @@ runFileLint repoRoot = do
       thinMainResult <- verifyThinMainEntrypoint repoRoot
       case thinMainResult of
         Left err -> failWith err
-        Right () -> do
-          dhallViolations <- checkFrozenDhallImports repoRoot
-          case dhallViolations of
-            [] -> runTrackedGeneratedPathLint repoRoot
-            _ ->
-              failWith
-                (unlines ("Dhall freeze lint failed:" : map ("- " ++) dhallViolations))
+        Right () -> runTrackedGeneratedPathLint repoRoot
 
 runGeneratedArtifactLint :: FilePath -> Bool -> IO ExitCode
 runGeneratedArtifactLint repoRoot writeEnabled = do
@@ -1124,47 +1118,6 @@ checkTestSuiteInterfaces repoRoot = do
                    in go nextViolations (Just (suiteName, True)) remaining
                 _ -> go violations currentSuite remaining
               else go violations currentSuite remaining
-
-checkFrozenDhallImports :: FilePath -> IO [String]
-checkFrozenDhallImports repoRoot = do
-  repoPaths <- listRepoOwnedPaths repoRoot
-  concat
-    <$> forM
-      [ path
-      | path <- repoPaths
-      , ".dhall" `isSuffixOf` path
-      ]
-      ( \relativePath -> do
-          contents <- readFile (repoRoot </> relativePath)
-          pure (unfrozenDhallImportViolations relativePath contents)
-      )
-
-unfrozenDhallImportViolations :: FilePath -> String -> [String]
-unfrozenDhallImportViolations relativePath contents =
-  let fileLines = lines contents
-   in [ relativePath
-          ++ " contains an unfrozen Dhall import on line "
-          ++ show lineNumber
-          ++ ". Run `dhall freeze --all --inplace "
-          ++ relativePath
-          ++ "`."
-      | (lineNumber, lineText) <- zip [1 :: Int ..] fileLines
-      , let trimmedLine = trimLeft lineText
-      , not ("--" `isPrefixOf` trimmedLine)
-      , containsLocalDhallImport lineText
-      , not (dhallImportIsFrozen fileLines lineNumber)
-      ]
-
-containsLocalDhallImport :: String -> Bool
-containsLocalDhallImport =
-  any isLocalImportToken . words
- where
-  isLocalImportToken token =
-    "./" `isPrefixOf` token || "../" `isPrefixOf` token || "~/" `isPrefixOf` token
-
-dhallImportIsFrozen :: [String] -> Int -> Bool
-dhallImportIsFrozen fileLines lineNumber =
-  any ("sha256:" `isInfixOf`) (take 3 (drop (lineNumber - 1) fileLines))
 
 rendererDeterminismViolations :: FilePath -> IO [String]
 rendererDeterminismViolations repoRoot =

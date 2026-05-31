@@ -91,7 +91,7 @@ import Prodbox.Host
   , detectLanAddressing
   , runHostFirewallGatewayUnrestrict
   )
-import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName)
+import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Lib.ChartPlatform
   ( keycloakVscodeClientId
@@ -126,7 +126,6 @@ import Prodbox.PublicEdge
   , publicFqdn
   , publicRouteUrl
   , substrateHostedZoneId
-  , substrateKubeconfigPath
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Retry
@@ -879,83 +878,112 @@ runCascadeDrainPhase repoRoot substrate = do
         ++ substrateId substrate
         ++ "): deleting LoadBalancer Services, ALB Ingresses, and Delete-reclaim PVCs..."
     )
-  drainEnvVars <- buildDrainEnvironment repoRoot substrate
-  let drainEnv =
-        K8sDrain.K8sDrainEnv
-          { K8sDrain.drainEnvironment = drainEnvVars
-          , K8sDrain.drainWorkingDirectory = Just repoRoot
-          }
-  drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
-  case K8sDrain.cascadeDecisionFromDrainResult drainResult of
-    K8sDrain.CascadeContinue Nothing -> do
-      writeOutputLine
-        "K8s drain phase complete. Proceeding with per-run destroys + uninstall + postflight sweep."
-      pure ExitSuccess
-    K8sDrain.CascadeContinue (Just reason) -> case substrate of
-      SubstrateHomeLocal -> do
-        writeOutputLine
-          ( "K8s drain skipped: "
-              ++ reason
-              ++ " Proceeding with per-run destroys + uninstall + postflight sweep."
-          )
-        pure ExitSuccess
-      SubstrateAws -> do
-        -- Sprint 4.17.b: skipped drain on AWS substrate is a hard failure.
-        -- The EKS cluster is the source of the AWS resources the per-run
-        -- destroys would need to delete; skipping the drain guarantees
-        -- the next phase will fail with DependencyViolation on subnet
-        -- deletion. See lifecycle_reconciliation_doctrine.md §5b.
-        writeOutputLine
-          ( "K8s drain phase failed on the AWS substrate: "
-              ++ reason
-              ++ " Cascade aborts because the EKS cluster's in-cluster controllers (AWS LBC, EBS CSI) could not be drained; per-run Pulumi destroys would fail with DependencyViolation on subnet deletion."
-          )
-        pure (ExitFailure 1)
-    K8sDrain.CascadeAbort reason -> do
-      case drainResult of
-        K8sDrain.DrainTimedOut survivors ->
-          writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
-        _ -> writeOutputLine reason
-      pure (ExitFailure 1)
-
--- | Sprint 4.17.b helper: build the env-var list passed to
--- 'K8sDrain.K8sDrainEnv' per substrate. For home-local, prepends
--- @KUBECONFIG=\/etc\/rancher\/rke2\/rke2.yaml@ when that file exists. For
--- AWS, prepends @KUBECONFIG=<substrate kubeconfig>@ + @AWS_*@ projected
--- from @settings.aws@. On AWS substrate the function falls back to the
--- parent environment if substrate config cannot be loaded — downstream
--- kubectl invocations will then fail loudly rather than silently
--- talking to the wrong cluster.
-buildDrainEnvironment :: FilePath -> Substrate -> IO [(String, String)]
-buildDrainEnvironment repoRoot substrate = do
-  parentEnv <- getEnvironment
+  let drainAndDecide drainEnvVars = do
+        let drainEnv =
+              K8sDrain.K8sDrainEnv
+                { K8sDrain.drainEnvironment = drainEnvVars
+                , K8sDrain.drainWorkingDirectory = Just repoRoot
+                }
+        drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
+        case K8sDrain.cascadeDecisionFromDrainResult drainResult of
+          K8sDrain.CascadeContinue Nothing -> do
+            writeOutputLine
+              "K8s drain phase complete. Proceeding with per-run destroys + uninstall + postflight sweep."
+            pure ExitSuccess
+          K8sDrain.CascadeContinue (Just reason) -> case substrate of
+            SubstrateHomeLocal -> do
+              writeOutputLine
+                ( "K8s drain skipped: "
+                    ++ reason
+                    ++ " Proceeding with per-run destroys + uninstall + postflight sweep."
+                )
+              pure ExitSuccess
+            SubstrateAws -> do
+              -- Sprint 4.17.b: skipped drain on AWS substrate is a hard failure.
+              -- The EKS cluster is the source of the AWS resources the per-run
+              -- destroys would need to delete; skipping the drain guarantees
+              -- the next phase will fail with DependencyViolation on subnet
+              -- deletion. See lifecycle_reconciliation_doctrine.md §5b.
+              writeOutputLine
+                ( "K8s drain phase failed on the AWS substrate: "
+                    ++ reason
+                    ++ " Cascade aborts because the EKS cluster's in-cluster controllers (AWS LBC, EBS CSI) could not be drained; per-run Pulumi destroys would fail with DependencyViolation on subnet deletion."
+                )
+              pure (ExitFailure 1)
+          K8sDrain.CascadeAbort reason -> do
+            case drainResult of
+              K8sDrain.DrainTimedOut survivors ->
+                writeOutputLine (K8sDrain.renderDrainTimeoutRefusal survivors)
+              _ -> writeOutputLine reason
+            pure (ExitFailure 1)
   case substrate of
     SubstrateHomeLocal -> do
+      drainEnvVars <- buildDrainEnvironment repoRoot SubstrateHomeLocal Nothing
+      drainAndDecide drainEnvVars
+    SubstrateAws -> do
+      -- Sprint 4.18 fifth chunk: re-derive the EKS kubeconfig via
+      -- 'withEksKubeconfig' so the drain's kubectl subprocesses don't
+      -- rely on the legacy `.prodbox-state/` persisted path. A bracket
+      -- setup failure (live MinIO backend unreachable, snapshot missing,
+      -- aws eks update-kubeconfig fails) is a hard cascade failure on
+      -- AWS — same severity as a skipped drain — because the destroy
+      -- phase would otherwise hit DependencyViolation on subnet
+      -- deletion.
+      bracketResult <-
+        try
+          ( withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+              drainEnvVars <- buildDrainEnvironment repoRoot SubstrateAws (Just kubeconfigPath)
+              drainAndDecide drainEnvVars
+          ) ::
+          IO (Either SomeException ExitCode)
+      case bracketResult of
+        Left exc -> do
+          writeOutputLine
+            ( "K8s drain phase failed on the AWS substrate: kubeconfig "
+                ++ "materialization failed ("
+                ++ show exc
+                ++ "). Cascade aborts because the per-run Pulumi destroys "
+                ++ "would fail with DependencyViolation on subnet deletion."
+            )
+          pure (ExitFailure 1)
+        Right ec -> pure ec
+
+-- | Sprint 4.17.b helper, re-shaped for Sprint 4.18 fifth chunk: build
+-- the env-var list passed to 'K8sDrain.K8sDrainEnv' per substrate. For
+-- home-local, prepends @KUBECONFIG=\/etc\/rancher\/rke2\/rke2.yaml@ when
+-- that file exists. For AWS, the caller materializes the kubeconfig via
+-- 'withEksKubeconfig' and threads the resulting scoped temp path in via
+-- the third argument. @KUBECONFIG@ + @AWS_*@ are projected from
+-- @settings.aws@.
+buildDrainEnvironment
+  :: FilePath -> Substrate -> Maybe FilePath -> IO [(String, String)]
+buildDrainEnvironment repoRoot substrate maybeAwsKubeconfig = do
+  parentEnv <- getEnvironment
+  case (substrate, maybeAwsKubeconfig) of
+    (SubstrateHomeLocal, _) -> do
       rke2KubeconfigPresent <- doesFileExist rke2KubeconfigPath
       pure $
         if rke2KubeconfigPresent
           then ("KUBECONFIG", rke2KubeconfigPath) : parentEnv
           else parentEnv
-    SubstrateAws -> do
-      case substrateKubeconfigPath repoRoot SubstrateAws of
-        Nothing -> pure parentEnv
-        Just kubeconfigPath -> do
-          settingsResult <- validateAndLoadSettings repoRoot
-          case settingsResult of
-            Left _ -> pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
-            Right settings ->
-              let awsCreds = aws (validatedConfig settings)
-                  baseOverrides =
-                    [ ("KUBECONFIG", kubeconfigPath)
-                    , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-                    , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-                    , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-                    , ("AWS_REGION", Text.unpack (region awsCreds))
-                    ]
-                  tokenOverrides = case session_token awsCreds of
-                    Nothing -> []
-                    Just tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]
-               in pure (baseOverrides ++ tokenOverrides ++ parentEnv)
+    (SubstrateAws, Nothing) -> pure parentEnv
+    (SubstrateAws, Just kubeconfigPath) -> do
+      settingsResult <- validateAndLoadSettings repoRoot
+      case settingsResult of
+        Left _ -> pure (("KUBECONFIG", kubeconfigPath) : parentEnv)
+        Right settings ->
+          let awsCreds = aws (validatedConfig settings)
+              baseOverrides =
+                [ ("KUBECONFIG", kubeconfigPath)
+                , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
+                , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
+                , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
+                , ("AWS_REGION", Text.unpack (region awsCreds))
+                ]
+              tokenOverrides = case session_token awsCreds of
+                Nothing -> []
+                Just tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]
+           in pure (baseOverrides ++ tokenOverrides ++ parentEnv)
 
 -- | Sprint 4.17 helper: the postflight cluster-tag sweep extracted from
 -- the canonical cascade. Best-effort: a non-zero sweep exit is reported

@@ -1,0 +1,46 @@
+{{- /*
+Sprint 3.13 sixth chunk: per-target-namespace Role + RoleBinding pairs
+granting the gateway daemon's ServiceAccount the
+`secrets:get,create,patch` verbs in every namespace whose chart pre-install
+Job calls `POST /v1/secret/ensure-namespace`. The Role lives in the
+target namespace (so the binding is scoped narrowly) but binds the
+ServiceAccount in the gateway namespace.
+
+Currently only the `keycloak` namespace has any derived-secret inventory
+entries (the three Patroni roles + the Keycloak admin password — see
+`Prodbox.Secret.Inventory.derivedSecretInventoryFor`). When the gateway
+per-node event-key inventory lands and gateway/vscode/api/websocket gain
+derived entries, add their namespaces to the `targetNamespaces` list in
+`values.yaml` and this template emits one Role + RoleBinding pair per
+entry.
+*/ -}}
+{{- range $.Values.rbac.targetNamespaces }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prodbox-gateway-secret-writer
+  namespace: {{ . }}
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prodbox-gateway-secret-writer
+  namespace: {{ . }}
+  labels:
+    {{- include "gateway.labels" $ | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: prodbox-gateway-daemon
+    namespace: {{ $.Values.global.namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: prodbox-gateway-secret-writer
+{{- end }}

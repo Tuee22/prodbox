@@ -685,11 +685,242 @@ inventory through marker-delimited generation rather than hand-maintained YAML.
 
 None.
 
-## Sprint 3.13: Chart Secrets Derived by the Gateway Service 📋
+## Sprint 3.13: Chart Secrets Derived by the Gateway Service 🔄
 
-**Status**: Planned
-**Blocked by**: Sprint 2.19 (gateway daemon as secret-derivation service)
-**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs` (gut `resolveChartSecrets`), `charts/<release>/templates/secret-bootstrap-job.yaml` (new pre-install Jobs), `charts/<release>/templates/secret.yaml` (lookup-guarded patterns), new in-cluster bootstrap binary or kubectl-via-ServiceAccount approach
+**Status**: Active. First chunk landed 2026-05-30 on top of Sprint
+2.19's daemon-side derivation foundation: new
+`src/Prodbox/Secret/Inventory.hs` exposes the doctrine-§6 derived-secret
+inventory in code via `derivedSecretInventoryFor :: Text -> Text -> [DerivedSecretEntry]`.
+Currently enumerates the three Patroni roles for
+`(keycloak, keycloak-postgres)` (`prodbox-keycloak-pg-pguser-keycloak` /
+`-pg-pguser-postgres` / `-primaryuser` against the
+`patroni:keycloak:keycloak-postgres:{app,superuser,standby}` context
+strings) and the Keycloak admin field for `(keycloak, keycloak)`
+(`keycloak-runtime.KEYCLOAK_ADMIN_PASSWORD` against
+`keycloak:keycloak:admin`); returns `[]` for releases whose chart-side
+Secrets are non-derived (`vscode`, `api`, `websocket`). Gateway per-node
+event-key Secrets are intentionally not in the static table — their
+count is a function of the live gateway node inventory, so the daemon's
+`ensure-namespace` handler will inject them dynamically when
+materializing the gateway release. Seven new unit tests in
+`test/unit/Main.hs::"Sprint 3.13 derived-secret inventory"` cover the
+keycloak-postgres + keycloak rows, the empty-fallthrough cases, and the
+purity invariant. **Implementation choice (replaces the "new in-cluster
+bootstrap binary OR ServiceAccount-via-kubectl" fork in the original
+Sprint 3.13 scope)**: the chart pre-install Jobs will POST to
+`/v1/secret/ensure-namespace`; the daemon itself owns the
+kubectl-apply via its in-cluster ServiceAccount, so no new bootstrap
+binary or chart-side Secret-create RBAC is needed. The pre-install Job
+is a thin `curl`-equivalent + wait pattern. `prodbox check-code` 0,
+`prodbox test unit` 613/613, `prodbox test integration cli` 30/30,
+`prodbox docs check` 0, `prodbox lint docs` 0.
+
+Second chunk landed 2026-05-30: new `src/Prodbox/K8s/InCluster.hs`
+exposes the foundational K8s API client surface the daemon's
+`ensure-namespace` handler will consume — pod ServiceAccount
+credentials (`loadInClusterCredentials :: IO (Either String
+InClusterCredentials)` reads token + ca.crt path + namespace from the
+standard `/var/run/secrets/kubernetes.io/serviceaccount/` projected
+mount), the canonical kube-apiserver Service URL
+(`secretApiBaseUrl = "https://kubernetes.default.svc.cluster.local:443"`),
+the namespaced @v1.Secret@ REST path renderer (`secretApiPath ::
+namespace -> name -> String`), and the pure JSON manifest builder
+(`secretManifestJson :: namespace -> name -> Map Text Text -> Value`
+that emits `apiVersion: v1`, `kind: Secret`, `type: Opaque`, and a
+lexically-ordered `stringData` block — deterministic per the doctrine
+generated-artifact rule). Seven new unit tests in
+`"Sprint 3.13 in-cluster K8s API client pure helpers"` cover the
+ServiceAccount paths, the kube-apiserver URL, the REST-path renderer,
+manifest field encoding, deterministic key ordering, purity, and the
+empty-stringData edge case. `prodbox check-code` 0, `prodbox test
+unit` 620/620 (+7), `prodbox test integration cli` 30/30, `prodbox
+docs check` 0, `prodbox lint docs` 0.
+
+Third chunk landed 2026-05-30: the `applyDerivedSecrets` pipeline +
+the `K8sSecretOps` capability that decouples the handler logic from
+the TLS-backed HTTPS implementation.
+
+- New `K8sSecretOps` record on `Prodbox.K8s.InCluster` bundles the
+  two namespaced @v1.Secret@ operations the handler needs:
+  `secretOpsGet :: Text -> Text -> IO (Either String (Maybe Value))`
+  and `secretOpsPut :: Text -> Text -> Value -> IO (Either String ())`.
+  Lets the handler logic be unit-tested against an in-process mock
+  without spinning up an HTTPS stack.
+- New `src/Prodbox/Secret/EnsureNamespace.hs` exposes
+  `applyDerivedSecrets :: K8sSecretOps -> MasterSeed -> Text -> [DerivedSecretEntry] -> IO (Either String [SecretSha256Entry])`
+  — the doctrine-§4 idempotent materialization loop: for each entry,
+  derive the value via `deriveBase64Url` over the master seed +
+  context, build the `v1.Secret` manifest via
+  `InCluster.secretManifestJson`, PUT through `secretOpsPut`, then
+  compute the SHA-256 of the derived value for the response inventory.
+  Short-circuits on the first PUT failure with a structured error
+  naming the offending Secret + namespace + reason. Also exposes
+  pure `deriveSecretValueText` (base64url Text wrapper) +
+  `deriveSecretSha256Hex` (lowercase-hex SHA-256 wrapper) so unit tests
+  can pin the wire encoding independent of the I/O loop.
+- Six new unit tests in
+  `"Sprint 3.13 applyDerivedSecrets pipeline"` cover: PUT-per-entry
+  ordering against the keycloak-postgres inventory triple; the full
+  v1/Secret/Opaque manifest shape for the single keycloak-runtime
+  entry; that the response inventory carries SHA-256-of-derived
+  (verified against a freshly-recomputed expected value); the
+  determinism + lowercase-hex + 64-char-length invariants of
+  `deriveSecretSha256Hex`; first-failure short-circuit behavior with
+  no further PUT calls; and the empty-list passthrough.
+
+The handler logic is now testable end-to-end via a mock
+`K8sSecretOps`. The TLS-backed `K8sSecretOps` constructor (with the
+in-pod CA store + bearer-token bearer-auth via `http-client-tls`) is
+the next chunk's target. `prodbox check-code` 0, `prodbox test unit`
+626/626 (+6), `prodbox test integration cli` 30/30, `prodbox docs
+check` 0, `prodbox lint docs` 0.
+
+Fourth chunk landed 2026-05-30: TLS-backed `K8sSecretOps` constructor
+ready to drop into the daemon handler.
+
+- New `inClusterK8sSecretOps :: InClusterCredentials -> IO (Either
+  String K8sSecretOps)` on `Prodbox.K8s.InCluster`: reads the in-pod
+  CA at 'inClusterCredentialsCaCertPath' via
+  `Data.X509.CertificateStore.readCertificateStore`, configures a
+  `Network.TLS.ClientParams` whose `clientShared.sharedCAStore` is
+  the in-pod store (so the API server's serving cert verifies against
+  the cluster's internal CA, not the system trust store), wraps in a
+  `Network.Connection.TLSSettings`, and creates an HTTP `Manager` via
+  `Network.HTTP.Client.TLS.mkManagerSettings`. The `secretOpsGet` and
+  `secretOpsPut` closures inject the ServiceAccount bearer token as
+  the `Authorization` header on every request. GET returns @Right
+  Nothing@ on 404, @Right (Just value)@ on 200, @Left@ otherwise; PUT
+  accepts 200 and 201 as success (API server picks create-vs-update
+  server-side), structured-error on anything else with a truncated
+  response-body suffix for diagnostics.
+- New cabal deps to enable this (and resolved the `tls`-vs-`connection`
+  version conflict by switching to the modern fork): `tls ^>=2.1`,
+  `crypton-connection ^>=0.4` (replaces the old `connection` package),
+  `crypton-x509-store ^>=1.6` (for `readCertificateStore`), and a
+  bump of `http-client-tls` to `^>=0.3.6.4` so its newer release pulls
+  `crypton-connection` instead of legacy `connection`.
+
+Inert until the daemon handler dispatch chunk wires it in — the
+TLS-backed constructor lives as a pure factory that the next chunk
+imports. `prodbox check-code` 0, `prodbox test unit` 626/626 (no new
+tests added; the TLS path is exercise-gated, not unit-gated), `prodbox
+test integration cli` 30/30, `prodbox docs check` 0, `prodbox lint
+docs` 0.
+
+Fifth chunk landed 2026-05-30: daemon handler dispatch wires all four
+prior chunks together. The hardcoded 503 stub at
+`Gateway/Daemon.hs:855` is replaced by a real
+`handleSecretEnsureNamespace` that:
+
+1. Returns 503 when `envMasterSeed` is `Nothing` (same gate as
+   `/v1/secret/derive`).
+2. Extracts the HTTP request body via a new pure
+   `extractRequestBody :: BS.ByteString -> BS.ByteString` helper
+   (splits on `\\r\\n\\r\\n`, returns empty on missing separator).
+3. Decodes the body to `SecretWire.EnsureNamespaceRequest`; returns
+   400 with structured JSON on malformed input.
+4. Loads in-pod ServiceAccount credentials via
+   `InCluster.loadInClusterCredentials`; returns 503 when the
+   ServiceAccount projection is missing (e.g. running outside
+   Kubernetes).
+5. Constructs the TLS-backed K8s API client via
+   `InCluster.inClusterK8sSecretOps`; returns 503 with the structured
+   reason on CA-cert load failure.
+6. Looks up the doctrine-§6 inventory via
+   `Inventory.derivedSecretInventoryFor namespace release`.
+7. Invokes `EnsureNamespace.applyDerivedSecrets ops seed namespace
+   inventory`; returns 500 with the structured reason on first PUT
+   failure.
+8. On success: returns 200 with the
+   `SecretWire.EnsureNamespaceResponse` carrying the per-Secret
+   SHA-256 inventory.
+
+The daemon endpoint is now fully wired end-to-end on the code surface;
+the only remaining moving parts are the chart-side RBAC (so the daemon
+Pod actually has `secrets:create` permission in target namespaces)
+and the chart pre-install Jobs (the in-cluster callers). Live
+exercise — chart pre-install Job → endpoint → derived Secret applied
+to a target namespace — is the closure gate. `prodbox check-code` 0,
+`prodbox test unit` 626/626, `prodbox test integration cli` 30/30,
+`prodbox docs check` 0, `prodbox lint docs` 0.
+
+Sixth chunk landed 2026-05-30: gateway-chart RBAC so the daemon's
+in-pod ServiceAccount actually has `secrets:get,create,patch` in the
+namespaces it writes to.
+
+- New `charts/gateway/templates/serviceaccount.yaml` declares the
+  `prodbox-gateway-daemon` ServiceAccount in the gateway namespace.
+- New `charts/gateway/templates/rbac.yaml` emits one `Role` +
+  `RoleBinding` pair per entry in the new
+  `rbac.targetNamespaces` values list. Each Role lives in the target
+  namespace (so the grant is narrowly scoped) and grants
+  `secrets:get,create,patch`; each RoleBinding binds the
+  gateway-namespace ServiceAccount to the target-namespace Role.
+- `charts/gateway/values.yaml` adds the `rbac.targetNamespaces` list;
+  currently `[keycloak]` (the only namespace with derived inventory
+  entries today). The comment block documents the expansion rule for
+  when the gateway per-node event-key inventory + vscode/api/websocket
+  derived entries land.
+- `charts/gateway/templates/deployments.yaml` binds the daemon Pod
+  spec to the new ServiceAccount via `serviceAccountName:
+  prodbox-gateway-daemon` — this is what makes
+  `/var/run/secrets/kubernetes.io/serviceaccount/{token,ca.crt,namespace}`
+  project the gateway-daemon token (instead of the namespace's
+  `default` SA token) into the Pod for
+  `InCluster.loadInClusterCredentials` to read.
+
+The chart-side daemon-secret-write path is fully wired now. The
+remaining Sprint 3.13 work is the chart pre-install Jobs (the
+in-cluster callers) and the host-side `resolveChartSecrets` rewrite.
+`prodbox check-code` 0, `prodbox test unit` 626/626, `prodbox test
+integration cli` 30/30, `prodbox docs check` 0, `prodbox lint docs` 0.
+
+Seventh chunk landed 2026-05-30: unified gateway ClusterIP + chart
+pre-install Jobs for the two releases with derived inventory entries
+(`keycloak-postgres` and `keycloak`).
+
+- New `charts/gateway/templates/service-clusterip.yaml` exposes an
+  unsuffixed `gateway` ClusterIP Service in the gateway namespace,
+  selecting any gateway pod (selector intentionally omits the
+  `gateway-node` label). This is the third Service shape per
+  [doctrine §5](../documents/engineering/secret_derivation_doctrine.md#5-host-cluster-boundary)
+  — the in-cluster RPC entrypoint at
+  `gateway.gateway.svc.cluster.local:8443`. The per-node `gateway-<nodeId>`
+  ClusterIPs (peer-gossip event channel) and the `gateway-nodeport`
+  Service (host-CLI access) remain unchanged.
+- New `charts/keycloak-postgres/templates/secret-bootstrap-job.yaml`
+  + `charts/keycloak/templates/secret-bootstrap-job.yaml`: Helm
+  `pre-install,pre-upgrade` hooks (`hook-weight: -10`,
+  `hook-delete-policy: before-hook-creation,hook-succeeded`) that
+  POST `{"namespace":"<release-ns>","release":"<release-name>"}` to
+  the gateway's `/v1/secret/ensure-namespace` endpoint via
+  `curlimages/curl:8.10.1` (small + curl-only image). `--retry 5
+  --retry-delay 2 --retry-connrefused` covers transient daemon-pod
+  readiness flaps; `--max-time 30` bounds the wait. The Job's
+  successful completion is the gate that lets the chart's actual
+  Secret manifests (which `lookup` the daemon-applied Secrets)
+  render.
+- `charts/{keycloak,keycloak-postgres}/values.yaml` add the new
+  `prodboxGateway.restPort: 8443` key (separate top-level to avoid
+  collision with keycloak's existing Envoy-Gateway `gateway:` block).
+
+The end-to-end Sprint 3.13 pipeline is now fully assembled on the
+cluster side: chart pre-install Job → POST to gateway ClusterIP →
+`handleSecretEnsureNamespace` → master-seed derivation →
+`applyDerivedSecrets` via the in-pod RBAC'd K8s API client → derived
+Secrets land in the target namespace before the chart's own resources
+install. The only remaining work is the host-side `resolveChartSecrets`
+rewrite (gut the `.prodbox-state` cache, call
+`Prodbox.Gateway.Client.ensureNamespace` from the operator host, drop
+the silent-reset arm of `shouldResetPatroniStorage`). Live exercise on
+this host (the four-block preserved-data + recovery-escape-hatch +
+original-failure-mode path from the approved plan Part 3) is the
+closure gate. `prodbox check-code` 0, `prodbox test unit` 626/626,
+`prodbox test integration cli` 30/30, `prodbox docs check` 0, `prodbox
+lint docs` 0.
+
+**Blocked by**: ~~Sprint 2.19~~ unblocked — `/v1/secret/ensure-namespace` is no longer a structured-503 stub; the daemon handler dispatch is live.
+**Implementation**: ✅ `src/Prodbox/Secret/Inventory.hs` (doctrine-§6 inventory; 2026-05-30); ✅ `src/Prodbox/K8s/InCluster.hs` (in-pod credentials loader + REST-path / manifest helpers + `K8sSecretOps` capability + TLS-backed `inClusterK8sSecretOps` constructor; 2026-05-30); ✅ `src/Prodbox/Secret/EnsureNamespace.hs` (`applyDerivedSecrets` pipeline + sha256/base64url wire helpers; 2026-05-30); ✅ `src/Prodbox/Gateway/Daemon.hs::handleSecretEnsureNamespace` (replaces the 503 stub with the full request-body parse + master-seed gate + ServiceAccount load + TLS client construction + `applyDerivedSecrets` invocation + structured response; 2026-05-30); ✅ `charts/gateway/templates/serviceaccount.yaml` + `rbac.yaml` + `service-clusterip.yaml` + `deployments.yaml::serviceAccountName` (per-target-namespace Role + RoleBinding pairs for `secrets:get,create,patch` + unsuffixed in-cluster ClusterIP; 2026-05-30); ✅ `charts/keycloak-postgres/templates/secret-bootstrap-job.yaml` + `charts/keycloak/templates/secret-bootstrap-job.yaml` (Helm pre-install Jobs that POST to ensure-namespace via the gateway ClusterIP; 2026-05-30); 🔄 `src/Prodbox/Lib/ChartPlatform.hs` (gut `resolveChartSecrets`); 🔄 `charts/<release>/templates/secret.yaml` (lookup-guarded patterns for non-derived fields).
 **Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/secret_derivation_doctrine.md`, `documents/engineering/distributed_gateway_architecture.md`, [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
 
 ### Objective

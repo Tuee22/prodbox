@@ -1,8 +1,6 @@
 config:
   operatorCidr:
     type: string
-  publicKey:
-    type: string
 
 variables:
   stackName: ${pulumi.stack}
@@ -35,13 +33,18 @@ variables:
     users:
       - default
     ssh_authorized_keys:
-      - ${publicKey}
+      - ${sshKey.publicKeyOpenssh}
     package_update: true
     packages:
       - curl
       - jq
 
 resources:
+  sshKey:
+    type: tls:PrivateKey
+    properties:
+      algorithm: ED25519
+
   awsProvider:
     type: pulumi:providers:aws
     defaultProvider: true
@@ -213,6 +216,7 @@ outputs:
     - ${publicSubnet1.id}
     - ${publicSubnet2.id}
   security_group_id: ${securityGroup.id}
+  ssh_private_key: ${sshKey.privateKeyOpenssh}
   nodes:
     - name: ${stackName}-node-0
       instance_id: ${node0.id}

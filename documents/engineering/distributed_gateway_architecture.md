@@ -342,8 +342,8 @@ shape as compatibility input, but structured config schema mismatches fail as
 `config_schema_mismatch` and preserve the running live config during reload.
 
 The structured `schemaVersion` / `boot` / `live` template is the implemented gateway-daemon
-runtime shape. Repository-root Dhall import freezing and config-schema hygiene remain governed by
-the shared config discipline rather than by a separate gateway-local defaults file.
+runtime shape. Config-schema hygiene remains governed by the shared config discipline rather
+than by a separate gateway-local defaults file.
 
 ### Structured Logging
 

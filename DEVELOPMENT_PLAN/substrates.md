@@ -48,9 +48,10 @@ consumes only that substrate's operator-supplied config (`Required Config` row i
 substrate's table) and provisioned infrastructure, and fails fast if any required field is
 missing. There is no silent substitution of home-substrate values for missing AWS-substrate
 config, and no silent substitution of AWS values for missing home config. The substrate-aware
-helpers `substratePublicFqdn`, `substrateHostedZoneId`, and `substrateKubeconfigPath` in
-`src/Prodbox/PublicEdge.hs`, together with the prerequisite DAG and the lifecycle gates,
-enforce this contract.
+helpers `substratePublicFqdn` and `substrateHostedZoneId` in
+`src/Prodbox/PublicEdge.hs` (alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig`
+for substrate-aware kubeconfig materialization), together with the prerequisite DAG and
+the lifecycle gates, enforce this contract.
 
 See
 [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback)
@@ -82,7 +83,7 @@ for the authoritative doctrine.
 | Required Config | `aws_substrate.hosted_zone_id` (the AWS-substrate Route 53 subzone ID, after `prodbox pulumi aws-subzone-resources` provisions it), `aws_substrate.subzone_name` (the AWS-substrate public FQDN, e.g. `aws.test.resolvefintech.com`), `ses.*` (sender_domain, receive_subdomain, capture_bucket — shared cross-substrate; same values as home substrate), AWS operator credentials, plus the same `acme.*` settings the home substrate uses. Missing any required field fails fast; the AWS substrate does not fall back to `route53.zone_id` or `domain.demo_fqdn` from the home substrate. |
 | Prerequisites satisfied today | `aws_credentials_valid`, `route53_accessible`, `route53_lifecycle_capable`, `pulumi_logged_in`, the AWS-stack snapshot prereqs |
 | Phase ownership (provision/teardown) | [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md) |
-| Suite parity | 🔄 Provisioning + SSH reachability only. As of Sprint `7.5.b.i` (May 17, 2026) the supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, and per-validation routing layer are in place; EKS kubeconfig extraction (`materializeAwsEksKubeconfig`), substrate-aware helpers (`substrateKubeconfigPath`, `substrateHostedZoneId`, `substratePublicFqdn`), and the `aws_substrate` Dhall block (`hosted_zone_id`, `subzone_name`) are wired. `prodbox test integration ... --substrate aws` still surfaces an explicit "not yet implemented" remedy for chart-deploy / public-edge / WebSocket validations because the AWS LB Controller, per-substrate Route 53 subzone, cert-manager DNS01 ClusterIssuer, and chart-deploy substrate branching land in Sprint `7.5.b.ii`. Live canonical-suite proof on the AWS substrate lands in Sprint `7.5.c`. Parity sprint is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md). |
+| Suite parity | 🔄 Provisioning + SSH reachability only. As of Sprint `7.5.b.i` (May 17, 2026) the supported `Substrate` ADT, `--substrate {home-local\|aws}` CLI surface, and per-validation routing layer are in place; EKS kubeconfig extraction (per-invocation via `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig`; Sprint `4.18` fifth chunk), substrate-aware helpers (`substrateHostedZoneId`, `substratePublicFqdn`), and the `aws_substrate` Dhall block (`hosted_zone_id`, `subzone_name`) are wired. `prodbox test integration ... --substrate aws` still surfaces an explicit "not yet implemented" remedy for chart-deploy / public-edge / WebSocket validations because the AWS LB Controller, per-substrate Route 53 subzone, cert-manager DNS01 ClusterIssuer, and chart-deploy substrate branching land in Sprint `7.5.b.ii`. Live canonical-suite proof on the AWS substrate lands in Sprint `7.5.c`. Parity sprint is tracked in [phase-7-aws-substrate-foundations.md](phase-7-aws-substrate-foundations.md). |
 | Notes | The AWS substrate is exclusively a test substrate. There is no production EKS cluster that `prodbox` manages. The literal stack names (`aws-eks-test`, `aws-test`) reflect that. |
 
 ## Resource Lifecycle Classes

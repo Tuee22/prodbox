@@ -35,8 +35,8 @@ deliverable lists of Sprints `2.9`–`2.12` with the doctrine items surfaced by 
 audit: the default 30 s drain deadline plus explicit `bracketOnError` for resources with
 external side effects (2.9), the `envMetrics :: MetricsRegistry` typed daemon `Env` field
 backing `/metrics` (2.10), the STM broadcast channel for `LiveConfig` subscribers plus the
-prescribed on-disk Dhall file shape with frozen `types.dhall` / `defaults.dhall` imports and
-top-level `schemaVersion` / `boot` / `live` records (2.11), and the daemon log level
+prescribed on-disk Dhall file shape with top-level `schemaVersion` / `boot` / `live`
+records (2.11), and the daemon log level
 refreshed from `LiveConfig` on every hot reload (2.12). Current worktree evidence now puts
 Sprints `2.9`–`2.16` in `Done` state: the gateway daemon launches from one structured async
 entrypoint with bounded drain and endpoint coverage, acquire gating flows through the prerequisite
@@ -737,10 +737,9 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
   through `Env`; subscribers `atomically` block on it inside their own loops without
   polling.
 - The on-disk Dhall configuration file follows the prescribed shape per
-  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle): a frozen `./types.dhall` plus
+  [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engineering/distributed_gateway_architecture.md#daemon-lifecycle): a `./types.dhall` plus
   `./defaults.dhall` import, a top-level `schemaVersion : Natural`, and `boot` / `live`
-  sub-records mirroring the `BootConfig` / `LiveConfig` Haskell split. This composes
-  with Sprint 1.23's `dhall freeze` discipline so the imports carry SHA-256 hashes.
+  sub-records mirroring the `BootConfig` / `LiveConfig` Haskell split.
   Operators editing the prodbox-config.dhall now produce a doctrine-conformant shape
   without ad-hoc layout drift.
 - Sprint 0.4 round-3 extension: add `fsnotify`, `inotify`, and `mtime` polling to
@@ -802,9 +801,7 @@ Adopt [distributed_gateway_architecture.md#daemon-lifecycle](../documents/engine
   mismatched versions surface as `config_schema_mismatch` through the reload path.
 - `src/Prodbox/Gateway.hs` emits the structured gateway config template with boot-only
   `dns_write_gate` fields and live reloadable timing or log-level fields.
-- The implemented runtime shape is the supported daemon config contract for this phase; Dhall
-  schema/default freezing remains governed by the repository-root config discipline in Sprint
-  `1.23`.
+- The implemented runtime shape is the supported daemon config contract for this phase.
 
 ### Remaining Work
 

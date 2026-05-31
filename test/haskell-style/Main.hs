@@ -127,11 +127,6 @@ main = mainWithSuite "prodbox-haskell-style" $ do
       commandDoc `shouldContain` "<!-- prodbox:command-registry.markdown:start -->"
       commandDoc `shouldContain` "<!-- prodbox:command-registry.markdown:end -->"
 
-    it "keeps the committed repo-root Dhall import frozen" $ do
-      repoRoot <- getCurrentDirectory
-      configDhall <- readFile (repoRoot </> "prodbox-config.dhall")
-      configDhall `shouldContain` "sha256:"
-
     it "keeps daemon paths free of self-daemonization primitives" $ do
       repoRoot <- getCurrentDirectory
       mapM_

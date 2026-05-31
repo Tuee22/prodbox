@@ -485,7 +485,7 @@ The operator-driven workflow to close this gap on a fresh AWS substrate run is:
 (1) provision the subzone once via `prodbox pulumi aws-subzone-resources --yes`;
 (2) extract the hosted zone ID from `pulumi stack output --show-secrets
 hosted_zone_id` on the `aws-eks-subzone` stack; (3) set
-`aws_substrate.hosted_zone_id = "Z…"` in `prodbox-config.dhall` and refreeze; (4)
+`aws_substrate.hosted_zone_id = "Z…"` in `prodbox-config.dhall`; (4)
 re-run `prodbox test all --substrate aws`. The harness postflight destroys the
 subzone with the rest of the per-run stacks, so the ID changes between runs —
 this manual step is required each time. (A code follow-up to read the subzone
@@ -742,9 +742,9 @@ Reopened sprints by phase:
   symbol rules refusing `forkIO`, `unsafePerformIO`, and module-level `IORef` in daemon paths;
   aggregate `prodbox test lint` dispatch with lint-first ordering of `prodbox test all`;
   `trackingGeneratedPaths` registry plus renderer determinism contract; standardized library
-  audit of `prodbox.cabal`; `dhall freeze` discipline on the committed repo-root config path
-  plus the `lint docs` ↔ `docs check`/`docs generate` naming-consolidation decision and the
-  parser `--foreground` default plus self-daemonization-forbidden rule; and — added by Sprint
+  audit of `prodbox.cabal`; the `lint docs` ↔ `docs check`/`docs generate` naming-consolidation
+  decision and the parser `--foreground` default plus self-daemonization-forbidden rule; and —
+  added by Sprint
   0.3 — durable CLI documentation artifacts under `documents/cli/`, `share/man/`, and
   `share/completion/` registered in `trackingGeneratedPaths`; the `execParserPure`
   parser-test category in the `prodbox-unit` stanza; and the `renderError` error-rendering

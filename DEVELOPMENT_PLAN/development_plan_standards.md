@@ -260,8 +260,9 @@ substrate's operator-supplied config and provisioned infrastructure, and fails f
 its required substrate config (FQDN, hosted zone, kubeconfig, credentials, prerequisites) is
 missing. There is no silent substitution of home-substrate values for missing AWS-substrate
 config, and no silent substitution of AWS values for missing home config. The substrate-aware
-helpers (`substratePublicFqdn`, `substrateHostedZoneId`, `substrateKubeconfigPath` in
-`src/Prodbox/PublicEdge.hs`), the prerequisite DAG, and the lifecycle gates all enforce this
+helpers (`substratePublicFqdn`, `substrateHostedZoneId` in `src/Prodbox/PublicEdge.hs`,
+alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig` for substrate-aware kubeconfig
+materialization), the prerequisite DAG, and the lifecycle gates all enforce this
 contract.
 
 "Substrate-agnostic suite content" means validation logic does not branch on substrate

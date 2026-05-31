@@ -933,9 +933,8 @@ integrationCliSuite = do
         stdoutText `shouldContain` "ROUTE53_ZONE_ID=Z1234567890ABC"
         stdoutText `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
         configText <- readFile (tmpDir </> "prodbox-config.dhall")
-        configText `shouldContain` "sha256:"
         configText `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
-        configText `shouldContain` "route53.zone_id = \"Z1234567890ABC\""
+        configText `shouldContain` "zone_id = \"Z1234567890ABC\""
         configText `shouldContain` "demo_fqdn = \"test.resolvefintech.com\""
         configText `shouldContain` "public_edge_advertisement_mode = Some \"l2\""
         jsonExists <- doesFileExist (tmpDir </> "prodbox-config.json")
@@ -963,7 +962,6 @@ integrationCliSuite = do
         setupStdout `shouldContain` "AWS_ACCESS_KEY_ID=AKIAFAKESETUP"
 
         configAfterSetup <- readFile (tmpDir </> "prodbox-config.dhall")
-        configAfterSetup `shouldContain` "sha256:"
         configAfterSetup `shouldContain` "access_key_id = \"AKIAFAKESETUP\""
         setupAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_create_user_access_key_id")
         setupAdminKey `shouldContain` "ADMINKEY"
@@ -983,7 +981,6 @@ integrationCliSuite = do
         teardownStdout `shouldContain` "DELETED_ACCESS_KEYS=1"
 
         configAfterTeardown <- readFile (tmpDir </> "prodbox-config.dhall")
-        configAfterTeardown `shouldContain` "sha256:"
         configAfterTeardown `shouldContain` "access_key_id = \"\""
         configAfterTeardown `shouldContain` "secret_access_key = \"\""
         teardownAdminKey <- readFile (tmpDir </> "fake-aws-state" </> "iam_delete_user_access_key_id")

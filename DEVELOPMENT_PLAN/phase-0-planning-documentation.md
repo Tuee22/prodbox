@@ -212,7 +212,7 @@ not yet honor was owned by an explicit sprint block, per
   - Sprint 2.11 adds the STM broadcast channel (`TChan` / `TBQueue`) for `LiveConfig`
     subscribers per the reload procedure's step 8 (doctrine §1528–1531) and the
     prescribed on-disk Dhall file shape with top-level `schemaVersion` / `boot` / `live`
-    records and frozen `./types.dhall` / `./defaults.dhall` imports (doctrine §1551–1574).
+    records (doctrine §1551–1574).
   - Sprint 2.12 names "log level set by `BootConfig` at startup and refreshed from
     `LiveConfig` on every hot reload" as a deliverable, with the reload worker scheduled
     by Sprint 2.11 setting the new level on the `co-log` logger inside its atomic-swap

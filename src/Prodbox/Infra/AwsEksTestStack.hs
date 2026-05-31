@@ -4,11 +4,10 @@ module Prodbox.Infra.AwsEksTestStack
   ( AwsEksTestStackSnapshot (..)
   , awsEksTestStackName
   , awsEksCanonicalClusterName
-  , awsEksTestKubeconfigPath
   , ensureAwsEksTestStackResources
   , destroyAwsEksTestStack
   , awsEksTestStackResidueStatus
-  , materializeAwsEksKubeconfig
+  , withEksKubeconfig
   , assertNoAwsEksTestStackResidue
   , credentialsConfigured
   , loadOperationalAwsCredentials
@@ -20,7 +19,7 @@ module Prodbox.Infra.AwsEksTestStack
   )
 where
 
-import Control.Monad (foldM, forM)
+import Control.Monad (foldM, forM, when)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -75,22 +74,22 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   , runSubprocessStreaming
   )
+import Control.Exception (IOException, SomeException, bracket, catch, try)
 import System.Directory
-  ( createDirectoryIfMissing
-  , doesFileExist
+  ( doesFileExist
+  , getTemporaryDirectory
+  , removeFile
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
 
 awsEksTestStackName :: String
 awsEksTestStackName = "aws-eks-test"
 
 awsEksTestPulumiProjectDir :: FilePath -> FilePath
 awsEksTestPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-eks"
-
-awsEksTestStateDir :: FilePath -> FilePath
-awsEksTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksTestStackName
 
 -- | Sprint 4.16 typed residue status. Delegates to the live
 -- @pulumi stack ls --json@ source-of-truth query through
@@ -100,9 +99,6 @@ awsEksTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksTestStackN
 awsEksTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsEksTestStackResidueStatus repoRoot =
   LiveResidue.perRunAwsEksTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
-
-awsEksTestKubeconfigPath :: FilePath -> FilePath
-awsEksTestKubeconfigPath repoRoot = awsEksTestStateDir repoRoot </> "kubeconfig"
 
 awsEksCanonicalClusterName :: String
 awsEksCanonicalClusterName = awsEksTestStackName ++ "-cluster"
@@ -765,50 +761,77 @@ isPulumiLoginCommand arguments =
     "login" : _ -> True
     _ -> False
 
-materializeAwsEksKubeconfig
-  :: FilePath -> AwsEksTestStackSnapshot -> IO (Either String FilePath)
-materializeAwsEksKubeconfig repoRoot snapshot = do
+-- | Sprint 4.18 fifth chunk: materialize the EKS kubeconfig into a scoped
+-- temp file (via @aws eks update-kubeconfig --kubeconfig \<tempfile\>@),
+-- hand the path to the action, then clean up on exit. Replaces the
+-- legacy cross-invocation persistent file at
+-- @.prodbox-state\/aws-eks-test\/kubeconfig@.
+--
+-- Internally re-derives the cluster name from the live MinIO backend
+-- snapshot and the region from settings. Throws via 'error' when:
+--
+--   * 'validateAndLoadSettings' fails;
+--   * @aws.region@ is empty;
+--   * the live backend has no @aws-eks-test@ snapshot to read; or
+--   * @aws eks update-kubeconfig@ fails / exits non-zero.
+--
+-- The bracket guarantees the temp file is removed on all exit paths
+-- including async exceptions in the action.
+withEksKubeconfig :: FilePath -> (FilePath -> IO a) -> IO a
+withEksKubeconfig repoRoot action = do
   settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
-    Left err -> pure (Left err)
-    Right settings -> do
-      let regionText = Text.unpack (Text.strip (region (aws (validatedConfig settings))))
-          clusterName = eksSnapshotClusterName snapshot
-          kubeconfigPath = awsEksTestKubeconfigPath repoRoot
-      if null regionText
-        then
-          pure
-            ( Left
-                "aws.region must be set in prodbox-config.dhall before materializing the AWS EKS kubeconfig"
-            )
-        else do
-          createDirectoryIfMissing True (awsEksTestStateDir repoRoot)
-          outputResult <-
-            runAwsCommandWithSettings
-              repoRoot
-              [ "eks"
-              , "update-kubeconfig"
-              , "--region"
-              , regionText
-              , "--name"
-              , clusterName
-              , "--kubeconfig"
-              , kubeconfigPath
-              ]
-          pure $
-            case outputResult of
-              Left err -> Left ("failed to materialize AWS EKS kubeconfig: " ++ err)
-              Right output ->
-                case processExitCode output of
-                  ExitSuccess -> Right kubeconfigPath
-                  ExitFailure _ ->
-                    let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
-                     in Left
-                          ( "aws eks update-kubeconfig failed for cluster `"
-                              ++ clusterName
-                              ++ "`: "
-                              ++ detail
-                          )
+  settings <- case settingsResult of
+    Left err -> error ("withEksKubeconfig: settings load failed: " ++ err)
+    Right s -> pure s
+  let regionText = Text.unpack (Text.strip (region (aws (validatedConfig settings))))
+  when (null regionText) $
+    error
+      "withEksKubeconfig: aws.region must be set in prodbox-config.dhall before materializing the AWS EKS kubeconfig"
+  snapshotMaybe <- fetchAwsEksTestSnapshotFromBackend repoRoot
+  snapshot <- case snapshotMaybe of
+    Nothing ->
+      error
+        "withEksKubeconfig: aws-eks-test stack snapshot unavailable from the live MinIO Pulumi backend; cannot materialize EKS kubeconfig"
+    Just s -> pure s
+  let clusterName = eksSnapshotClusterName snapshot
+  systemTemp <- getTemporaryDirectory
+  bracket
+    (openTempFile systemTemp "prodbox-eks-kubeconfig-")
+    ( \(path, handle) -> do
+        hClose handle `catch` \(_ :: IOException) -> pure ()
+        removeFile path `catch` \(_ :: IOException) -> pure ()
+    )
+    ( \(tempPath, handle) -> do
+        -- aws eks update-kubeconfig writes the YAML body itself; close
+        -- the empty Haskell-side handle so the AWS CLI can overwrite.
+        hClose handle
+        outputResult <-
+          runAwsCommandWithSettings
+            repoRoot
+            [ "eks"
+            , "update-kubeconfig"
+            , "--region"
+            , regionText
+            , "--name"
+            , clusterName
+            , "--kubeconfig"
+            , tempPath
+            ]
+        case outputResult of
+          Left err ->
+            error ("withEksKubeconfig: aws eks update-kubeconfig failed to start: " ++ err)
+          Right output ->
+            case processExitCode output of
+              ExitFailure _ ->
+                let detail = trim (processStderr output) ++ " " ++ trim (processStdout output)
+                 in error
+                      ( "withEksKubeconfig: aws eks update-kubeconfig failed for cluster `"
+                          ++ clusterName
+                          ++ "`: "
+                          ++ detail
+                      )
+              ExitSuccess -> action tempPath
+    )
 
 runAwsCommandWithSettings :: FilePath -> [String] -> IO (Either String ProcessOutput)
 runAwsCommandWithSettings repoRoot arguments = do
@@ -1259,16 +1282,12 @@ ensureAwsEksTestStackResources repoRoot = do
                                               case snapshotFromOutputs outputs of
                                                 Left err -> pure (Left err)
                                                 Right snapshot -> do
-                                                  kubeconfigResult <- materializeAwsEksKubeconfig repoRoot snapshot
-                                                  case kubeconfigResult of
+                                                  objectCountResult <- bucketObjectCount localPort accessKey secretKey
+                                                  case objectCountResult of
                                                     Left err -> pure (Left err)
-                                                    Right _ -> do
-                                                      objectCountResult <- bucketObjectCount localPort accessKey secretKey
-                                                      case objectCountResult of
-                                                        Left err -> pure (Left err)
-                                                        Right objectCount -> do
-                                                          writeOutput (renderAwsEksTestStackReport snapshot objectCount)
-                                                          pure (Right ())
+                                                    Right objectCount -> do
+                                                      writeOutput (renderAwsEksTestStackReport snapshot objectCount)
+                                                      pure (Right ())
                                 PulumiStackMissing ->
                                   pure (Left "pulumi stack select reported a missing stack after --create")
                                 PulumiStackSelectFailed detail ->
@@ -1426,57 +1445,66 @@ completeDestroy repoRoot projectDir environment currentSnapshot summary = do
 -- to drain.
 drainAwsEksClusterBeforeDestroy :: FilePath -> Credentials -> IO ()
 drainAwsEksClusterBeforeDestroy repoRoot operationalCredentials = do
-  let kubeconfigPath = awsEksTestKubeconfigPath repoRoot
-  kubeconfigPresent <- doesFileExist kubeconfigPath
-  if not kubeconfigPresent
-    then
-      writeDiagnosticLine
-        ( "Per-run EKS drain skipped: kubeconfig not present at "
-            ++ kubeconfigPath
-            ++ " (the EKS cluster may already be gone, or this process never "
-            ++ "materialized it). Proceeding directly to `pulumi destroy`."
-        )
-    else do
-      writeOutputLine
-        ( "Per-run EKS drain (cluster="
-            ++ awsEksCanonicalClusterName
-            ++ "): deleting LoadBalancer Services, ALB Ingresses, and "
-            ++ "Delete-reclaim PVCs before `pulumi destroy` so AWS releases "
-            ++ "the ELB / CNI ENIs (DependencyViolation guard)."
-        )
-      parentEnv <- getEnvironment
-      let drainEnvVars = buildAwsEksDrainEnv kubeconfigPath operationalCredentials parentEnv
-          drainEnv =
-            K8sDrain.K8sDrainEnv
-              { K8sDrain.drainEnvironment = drainEnvVars
-              , K8sDrain.drainWorkingDirectory = Just repoRoot
-              }
-      drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
-      case drainResult of
-        K8sDrain.DrainSucceeded ->
+  -- Sprint 4.18 fifth chunk: re-derive the kubeconfig into a scoped temp
+  -- file via 'withEksKubeconfig'. A bracket-setup failure (snapshot
+  -- unreachable, aws eks update-kubeconfig fails) is converted via 'try'
+  -- to a skip-with-diagnostic, preserving the pre-migration best-effort
+  -- semantic where a missing kubeconfig means "the cluster may already
+  -- be gone" and the destroy proceeds anyway.
+  drainAttempt <-
+    try
+      ( withEksKubeconfig repoRoot $ \kubeconfigPath -> do
           writeOutputLine
-            "Per-run EKS drain complete; proceeding to `pulumi destroy`."
-        K8sDrain.DrainSkipped reason ->
-          writeDiagnosticLine
-            ( "Per-run EKS drain skipped: "
-                ++ reason
-                ++ " Proceeding to `pulumi destroy` (best-effort)."
+            ( "Per-run EKS drain (cluster="
+                ++ awsEksCanonicalClusterName
+                ++ "): deleting LoadBalancer Services, ALB Ingresses, and "
+                ++ "Delete-reclaim PVCs before `pulumi destroy` so AWS releases "
+                ++ "the ELB / CNI ENIs (DependencyViolation guard)."
             )
-        K8sDrain.DrainTimedOut survivors ->
-          writeDiagnosticLine
-            ( "Per-run EKS drain timed out before `pulumi destroy` "
-                ++ "(survivors: "
-                ++ joinComma survivors
-                ++ "); proceeding to destroy anyway. AWS may not have "
-                ++ "released every ENI yet, so the destroy could still hit "
-                ++ "DependencyViolation."
-            )
-        K8sDrain.DrainFailed err ->
-          writeDiagnosticLine
-            ( "Per-run EKS drain failed before `pulumi destroy`: "
-                ++ err
-                ++ "; proceeding to destroy anyway (the destroy is the goal)."
-            )
+          parentEnv <- getEnvironment
+          let drainEnvVars = buildAwsEksDrainEnv kubeconfigPath operationalCredentials parentEnv
+              drainEnv =
+                K8sDrain.K8sDrainEnv
+                  { K8sDrain.drainEnvironment = drainEnvVars
+                  , K8sDrain.drainWorkingDirectory = Just repoRoot
+                  }
+          drainResult <- K8sDrain.drainAwsAffectingK8sResources drainEnv K8sDrain.defaultDrainTimeout
+          case drainResult of
+            K8sDrain.DrainSucceeded ->
+              writeOutputLine
+                "Per-run EKS drain complete; proceeding to `pulumi destroy`."
+            K8sDrain.DrainSkipped reason ->
+              writeDiagnosticLine
+                ( "Per-run EKS drain skipped: "
+                    ++ reason
+                    ++ " Proceeding to `pulumi destroy` (best-effort)."
+                )
+            K8sDrain.DrainTimedOut survivors ->
+              writeDiagnosticLine
+                ( "Per-run EKS drain timed out before `pulumi destroy` "
+                    ++ "(survivors: "
+                    ++ joinComma survivors
+                    ++ "); proceeding to destroy anyway. AWS may not have "
+                    ++ "released every ENI yet, so the destroy could still hit "
+                    ++ "DependencyViolation."
+                )
+            K8sDrain.DrainFailed err ->
+              writeDiagnosticLine
+                ( "Per-run EKS drain failed before `pulumi destroy`: "
+                    ++ err
+                    ++ "; proceeding to destroy anyway (the destroy is the goal)."
+                )
+      ) ::
+      IO (Either SomeException ())
+  case drainAttempt of
+    Left exc ->
+      writeDiagnosticLine
+        ( "Per-run EKS drain skipped: kubeconfig materialization failed ("
+            ++ show exc
+            ++ "); the EKS cluster may already be gone, or the live MinIO "
+            ++ "backend is unreachable. Proceeding directly to `pulumi destroy`."
+        )
+    Right () -> pure ()
 
 -- | Sprint 4.23 helper: build the @KUBECONFIG@ + @AWS_*@ environment for
 -- the per-run EKS drain's kubectl subprocesses. Mirrors

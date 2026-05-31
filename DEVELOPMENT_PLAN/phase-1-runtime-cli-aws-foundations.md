@@ -16,7 +16,7 @@
 is reopened by Sprint 0.2 (see
 [phase-0-planning-documentation.md](phase-0-planning-documentation.md)) to schedule Sprints
 `1.6`–`1.23`, which adopt the CLI doctrine across the CLI surface, runtime, configuration, test
-harness, and lint stack and close the residual doctrine cleanup items (Dhall freeze, parser
+harness, and lint stack and close the residual doctrine cleanup items (parser
 `--foreground` default plus self-daemonization-forbidden rule, and the cross-language types
 generation deferral). Sprint 0.3 extends the reopen to **Sprints `1.24`–`1.26`**, adding the
 doctrine items surfaced by the May 2026 audit: durable CLI documentation artifacts, the
@@ -68,9 +68,8 @@ migrate the test stanzas from `hspec` to `tasty`, introduce capability classes a
 retry policies, encode the `Recoverable | Fatal` error axis, centralize naming helpers and
 smart-constructor patterns, re-encode multi-state workflows as GADT-indexed state machines,
 reaffirm the GHC `9.14.1` / Cabal `3.16.1.0` toolchain pin, and schedule the residual doctrine
-cleanup in Sprint `1.23` (committed repo-root Dhall import freeze enforcement, parser
-`--foreground` default plus self-daemonization-forbidden rule, and the explicit cross-language-types
-generation deferral). Sprints `1.24` through `1.26` schedule the residual doctrine gaps surfaced
+cleanup in Sprint `1.23` (parser `--foreground` default plus self-daemonization-forbidden
+rule, and the explicit cross-language-types generation deferral). Sprints `1.24` through `1.26` schedule the residual doctrine gaps surfaced
 by the May 2026 doctrine-vs-plan audit: Sprint `1.24` schedules the durable CLI documentation
 artifacts (Markdown command reference, manpages, shell completion scripts) derived from the
 `CommandSpec` registry; Sprint `1.25` schedules the `execParserPure` parser-test category;
@@ -1272,30 +1271,23 @@ non-doctrine library on the supported path.
 
 None.
 
-## Sprint 1.23: Dhall Freeze, Daemon CLI Negative-Space Rule, and Cross-Language Generation Deferral ✅
+## Sprint 1.23: Daemon CLI Negative-Space Rule and Cross-Language Generation Deferral ✅
 
 **Status**: Done
-**Implementation**: `src/Prodbox/CheckCode.hs`, `src/Prodbox/Aws.hs`, `src/Prodbox/CLI/Parser.hs`, `prodbox-config.dhall`, `prodbox-config-types.dhall`, `test/haskell-style/Main.hs`, `test/integration/CliSuite.hs`
+**Implementation**: `src/Prodbox/CLI/Parser.hs`, `test/haskell-style/Main.hs`
 **Docs to update**: `documents/engineering/cli_command_surface.md`,
-`documents/engineering/code_quality.md`, `documents/documentation_standards.md`
+`documents/documentation_standards.md`
 
 ### Objective
 
 Close the residual doctrine items from
 [the engineering doctrine docs](../documents/engineering/README.md) that are not owned by an earlier sprint in
-this phase: the `dhall freeze` reproducibility discipline on the committed Dhall schema
-(§1571–1574), the parser `--foreground` default plus the explicit
+this phase: the parser `--foreground` default plus the explicit
 self-daemonization-forbidden rule (§1591–1599), and the explicit deferral of cross-language
 type generation (§341–343) until a non-Haskell consumer enters scope.
 
 ### Deliverables
 
-- The committed repo-root Dhall config import is frozen via `dhall freeze`, so the supported
-  `prodbox-config.dhall` file carries a SHA-256-pinned local import. `src/Prodbox/CheckCode.hs`
-  now refuses any unfrozen committed `.dhall` import it finds under the repo-owned surface.
-  `src/Prodbox/Aws.hs` freezes the config immediately after `config setup`, `aws setup`, or
-  `aws teardown` rewrite it, so supported write paths stay compliant instead of relying on a
-  later manual cleanup step.
 - `src/Prodbox/CLI/Parser.hs` exposes `--foreground` as the default on every daemon-launching
   command introduced by Sprint 2.15; `src/Prodbox/Gateway/Daemon.hs` and
   `src/Prodbox/Workload.hs` refuse any double-fork or `setsid` branch. A
@@ -1307,17 +1299,14 @@ type generation (§341–343) until a non-Haskell consumer enters scope.
   enters scope, but no such consumer exists today and no sprint schedules one. The
   `generatedSectionRule` registry stays empty for cross-language types until a future plan
   revision opens that surface.
-- Enqueue the pre-doctrine unfrozen Dhall imports, the missing
-  self-daemonization-forbidden assertion, and any host-installed
-  `dhall freeze` workflow in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- Enqueue the missing self-daemonization-forbidden assertion in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ### Validation
 
-1. `prodbox check-code` fails when a committed Dhall import is missing its `sha256:`
-   hash.
-2. Adding a `forkProcess` or `setsid` call inside `src/Prodbox/Gateway/Daemon.hs` or
+1. Adding a `forkProcess` or `setsid` call inside `src/Prodbox/Gateway/Daemon.hs` or
    `src/Prodbox/Workload.hs` fails `prodbox-haskell-style`.
-3. `documents/engineering/cli_command_surface.md` lists the cross-language-types deferral as
+2. `documents/engineering/cli_command_surface.md` lists the cross-language-types deferral as
    an explicit doctrine-aware no-op rather than as a silent gap.
 
 ### Remaining Work

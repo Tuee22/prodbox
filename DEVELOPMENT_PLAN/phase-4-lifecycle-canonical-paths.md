@@ -571,8 +571,7 @@ per class.
   (`bucket_name : Text`, `region : Text`, `key_prefix : Text`) and a
   matching empty default. `prodbox-config.dhall` overrides
   `bucket_name = "prodbox-pulumi-state-long-lived"`,
-  `region = "us-west-2"`, `key_prefix = "pulumi/"`. The repository import
-  sha256 is refrozen.
+  `region = "us-west-2"`, `key_prefix = "pulumi/"`.
 - `src/Prodbox/Infra/LongLivedPulumiBackend.hs` (new) exports
   `longLivedPulumiBackendUrl`, `ensureLongLivedPulumiStateBucket`
   (idempotent: head-bucket; on miss create with versioning, AES256 SSE,
@@ -1558,26 +1557,110 @@ integration env` 28/28. Live validation (`prodbox test all` on the home
 substrate, exercising the `aws-eks` + `ha-rke2-aws` provision/destroy
 paths against the migrated code) is the closure gate and is in progress.
 
+Fourth chunk landed 2026-05-30: the remaining two per-run + long-lived
+stacks (`aws-eks-subzone`, `aws-ses`) drop their on-disk snapshot caches
+to match chunks 1–3.
+
+- New pure parsers `parseAwsEksSubzoneStackFromOutputs` and
+  `parseAwsSesStackFromOutputs` decode the flat `Map Text Text` returned
+  by `fetchPerRunStackOutputs` / `fetchAwsSesStackOutputs` into the
+  existing `AwsEksSubzoneStackSnapshot` / `AwsSesStackSnapshot` records;
+  matching `fetchAwsEksSubzoneStackSnapshotFromBackend` /
+  `fetchAwsSesStackSnapshotFromBackend` IO wrappers return the same
+  `Maybe <Snapshot>` shape the file cache used to. The destroy paths
+  read the live snapshot pre-destroy (stack still present); absent /
+  unreachable / unparseable reads fall back to the canonical residue
+  scan, matching the old `Nothing` arm.
+- All `saveAwsEksSubzoneStackSnapshot` / `loadAwsEksSubzoneStackSnapshot`
+  / `clearAwsEksSubzoneStackSnapshot` callsites removed; ditto the
+  `aws-ses` equivalents. The file-IO helpers deleted entirely:
+  `save`/`load`/`clear`, `awsEksSubzoneStateDir`,
+  `awsEksSubzoneSnapshotPath`, `awsSesStateDir`, `awsSesSnapshotPath`,
+  `snapshotToJson` / `snapshotFromJson` on both modules.
+- `assertNoAwsEksSubzoneStackResidue` / `assertNoAwsSesStackResidue`
+  drop the now-unused `Maybe <Snapshot>` parameter (both functions did
+  their own AWS-CLI residue check against config-resolved identifiers,
+  ignoring the snapshot).
+- `finalizeDestroy` on both modules simplifies to `pure (Right
+  "destroyed")` — no local file to clear.
+
+Fifth chunk landed 2026-05-30: the cross-invocation kubeconfig file at
+`.prodbox-state/aws-eks-test/kubeconfig` is replaced with a per-call
+`withEksKubeconfig` bracket; every consumer re-derives the kubeconfig
+on demand via `aws eks update-kubeconfig --kubeconfig <mktemp>` rather
+than relying on file persistence.
+
+- New `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig :: FilePath -> (FilePath -> IO a) -> IO a`
+  internally resolves region from settings + cluster name from the live
+  MinIO backend snapshot (`fetchAwsEksTestSnapshotFromBackend`),
+  `openTempFile`'s a scoped path, runs `aws eks update-kubeconfig
+  --kubeconfig <temp>`, hands the path to the action, and cleans up on
+  all exit paths (including async exceptions in the action) via
+  `Control.Exception.bracket`. Setup failures (snapshot absent, region
+  empty, aws CLI failure) throw via `error` so the bracket's cleanup
+  fires and the top-level error handler surfaces a clean failure;
+  consumers that want the pre-migration "best-effort" semantic
+  (drain skips if kubeconfig unavailable) wrap the bracket in `try`.
+- `materializeAwsEksKubeconfig` deleted; the only caller
+  (`ensureAwsEksTestStackResources` after the Pulumi up) ignored the
+  returned path (the call was purely for cross-invocation file
+  persistence, which is gone).
+- `awsEksTestKubeconfigPath` + `awsEksTestStateDir` exports removed;
+  `PublicEdge.substrateKubeconfigPath` (the hardcoded `.prodbox-state`
+  path producer) deleted entirely.
+- `drainAwsEksClusterBeforeDestroy` wraps the drain in
+  `try (withEksKubeconfig ...)`, preserving the pre-migration
+  "skip-with-diagnostic on missing kubeconfig" best-effort semantic.
+- `PublicEdge.withSubstrateKubectlEnvironment`,
+  `CLI/Charts.withSubstrateEnvironment`,
+  `TestValidation.withSubstrateKubeconfigEnv` rewritten to wrap their
+  actions in `withEksKubeconfig` on AWS substrate; `KUBECONFIG` +
+  `AWS_*` overrides project the temp path instead of the legacy
+  `.prodbox-state` path.
+- `CLI/Rke2.buildDrainEnvironment` re-shaped to take the
+  AWS-kubeconfig path as a `Maybe FilePath` parameter;
+  `runCascadeDrainPhase` on AWS substrate wraps the drain in
+  `try (withEksKubeconfig ...)` and treats bracket-setup failure as a
+  hard cascade failure (same severity as a skipped drain — the EKS
+  cluster is the source of the AWS resources the per-run destroys would
+  delete, so unreachable kubeconfig = guaranteed
+  `DependencyViolation` on subnet deletion).
+
+Sixth chunk landed 2026-05-30: the @aws-test@ HA-RKE2 validation SSH
+keypair is migrated off `.prodbox-state/aws-test/id_ed25519{,.pub}`.
+Ownership flipped to Pulumi: `pulumi/aws-test/Main.yaml` now declares a
+`tls:PrivateKey` resource (ED25519), threads `sshKey.publicKeyOpenssh`
+into the cloud-init `ssh_authorized_keys`, and exports
+`ssh_private_key: ${sshKey.privateKeyOpenssh}` as a Pulumi output. The
+host-side `ssh-keygen` invocation is gone.
+
+- Pulumi side: `publicKey` config input removed; `tls:PrivateKey`
+  resource added; `ssh_private_key` output added.
+- New `Prodbox.Infra.AwsTestStack.withAwsTestSshPrivateKey :: FilePath -> (FilePath -> IO a) -> IO a`
+  fetches `ssh_private_key` from the live MinIO Pulumi backend via
+  `LiveResidue.fetchPerRunStackOutputs`, writes the PEM body to an
+  `openTempFile` path, chmod 600 via `System.Posix.Files.setFileMode`
+  (ssh refuses to use private-key files with group/other-readable
+  modes), hands the path to the action, and cleans up via
+  `Control.Exception.bracket` on all exit paths including async
+  exceptions. Throws via `error` when the backend is unreachable or
+  `ssh_private_key` is missing / empty.
+- `ensureAwsTestSshKey`, `readSshPublicKey`, `awsTestPrivateKeyPath`,
+  `awsTestPublicKeyPath`, `awsTestStateDir`, and the
+  `testStackPublicKey` field on `AwsTestStackConfig` all deleted. The
+  `publicKey` `pulumi config set --secret` entry in
+  `syncAwsTestStackConfig` removed — the Pulumi resource owns the
+  keypair end-to-end now, so the host no longer pushes a public key
+  through stack config.
+- Single consumer (`TestValidation.verifyAwsTestSshReachability`)
+  rewritten to wrap the per-node SSH retry loop in
+  `AwsTest.withAwsTestSshPrivateKey`.
+- Unit test `retries AWS test-stack SSH validation until a node accepts
+  connections` updated: the mock outputs JSON now includes
+  `ssh_private_key`, the pre-migration `.prodbox-state/aws-test/`
+  fixture setup is gone.
+
 **Remaining (code-owned)**:
-- Apply the same snapshot-read migration + file-IO removal to the
-  `aws-eks-subzone` and `aws-ses` stacks (`destroyAwsEksSubzoneStackStatus`
-  / `destroyAwsSesStackStatus` read live outputs via
-  `fetchPerRunStackOutputs` / `fetchAwsSesStackOutputs`). Validated by
-  the AWS-substrate run (subzone) and an explicit `aws-ses-destroy`
-  (long-lived).
-- Replace `awsEksTestKubeconfigPath` (currently
-  `.prodbox-state/aws-eks-test/kubeconfig`) with a
-  `withEksKubeconfig :: ... -> (FilePath -> IO a) -> IO a` bracket
-  that `aws eks update-kubeconfig --kubeconfig <mktemp>`'s into a
-  scoped temp file. Note: the kubeconfig is currently a cross-invocation
-  persistent artifact (written by `pulumi eks-resources`, read by later
-  `charts deploy` / validation / `destroy` runs), so the bracket must
-  re-derive on demand in every consumer rather than being a one-shot
-  scratch file.
-- Replace SSH key paths under `.prodbox-state/aws-test/id_ed25519{,.pub}`
-  with `mktemp` + `pulumi stack output --show-secrets ssh_private_key`
-  (requires a corresponding Pulumi stack change to expose the private
-  key as a secret output).
 - Add `forbidDotProdboxState` lint rule to `src/Prodbox/CheckCode.hs`
   after the chart-secret cache (`src/Prodbox/Lib/ChartPlatform.hs` +
   `UsersAdmin.hs` + `Keycloak/Admin.hs` + `AwsSesStack.hs` SMTP secrets
@@ -1587,7 +1670,7 @@ paths against the migrated code) is the closure gate and is in progress.
 **Blocked by**: Sprint 3.13 (chart-secret cache references must close
 before `forbidDotProdboxState` lint can land).
 
-**Implementation**: `src/Prodbox/Lib/AwsSubstratePlatform.hs::withTempJsonFile` (system tmp dir; 2026-05-27); `src/Prodbox/CLI/Rke2.hs::pushCustomImageVariantsViaInClusterCrane` (system tmp dir; 2026-05-27); `src/Prodbox/Lifecycle/LiveResidue.hs` (new `fetchPerRunStackOutputs` + `fetchAwsSesStackOutputs` exports + `PRODBOX_TEST_PER_RUN_OUTPUTS_DIR` test override; 2026-05-27); `src/Prodbox/PublicEdge.hs::resolveSubstrateHostedZoneId` (live `subzone_id` read; 2026-05-27); `src/Prodbox/TestValidation.hs::verifyAwsEksSnapshot` (live `cluster_name` + `subnet_ids` read; 2026-05-27); `src/Prodbox/Infra/AwsTestStack.hs::parseAwsTestNodesFromOutputs` (new pure decoder; 2026-05-27 later session); `src/Prodbox/Infra/AwsEksTestStack.hs::parseAwsEksTestStackFromOutputs` (new pure decoder; 2026-05-27 later session); `src/Prodbox/TestValidation.hs::verifyAwsTestSnapshot` + `verifyAwsTestSshReachability` + `fetchAwsTestNodes` (live read; 2026-05-27 later session). Third chunk (2026-05-27 later session): `src/Prodbox/Infra/AwsTestStack.hs::parseAwsTestStackFromOutputs` + `fetchAwsTestSnapshotFromBackend` (full-snapshot live read; `save`/`load`/`clear`/`snapshotToJson`/`snapshotFromJson`/`nodeToJson`/`awsTestSnapshotPath` removed); `src/Prodbox/Infra/AwsEksTestStack.hs::fetchAwsEksTestSnapshotFromBackend` (live read; `save`/`load`/`clear`/`snapshotToJson`/`snapshotFromJson`/`optionalString`/`awsEksTestSnapshotPath` removed); `src/Prodbox/Lib/AwsSubstratePlatform.hs::ensureAwsSubstratePlatformRuntime` (live read; 2026-05-27 later session).
+**Implementation**: `src/Prodbox/Lib/AwsSubstratePlatform.hs::withTempJsonFile` (system tmp dir; 2026-05-27); `src/Prodbox/CLI/Rke2.hs::pushCustomImageVariantsViaInClusterCrane` (system tmp dir; 2026-05-27); `src/Prodbox/Lifecycle/LiveResidue.hs` (new `fetchPerRunStackOutputs` + `fetchAwsSesStackOutputs` exports + `PRODBOX_TEST_PER_RUN_OUTPUTS_DIR` test override; 2026-05-27); `src/Prodbox/PublicEdge.hs::resolveSubstrateHostedZoneId` (live `subzone_id` read; 2026-05-27); `src/Prodbox/TestValidation.hs::verifyAwsEksSnapshot` (live `cluster_name` + `subnet_ids` read; 2026-05-27); `src/Prodbox/Infra/AwsTestStack.hs::parseAwsTestNodesFromOutputs` (new pure decoder; 2026-05-27 later session); `src/Prodbox/Infra/AwsEksTestStack.hs::parseAwsEksTestStackFromOutputs` (new pure decoder; 2026-05-27 later session); `src/Prodbox/TestValidation.hs::verifyAwsTestSnapshot` + `verifyAwsTestSshReachability` + `fetchAwsTestNodes` (live read; 2026-05-27 later session). Third chunk (2026-05-27 later session): `src/Prodbox/Infra/AwsTestStack.hs::parseAwsTestStackFromOutputs` + `fetchAwsTestSnapshotFromBackend` (full-snapshot live read; `save`/`load`/`clear`/`snapshotToJson`/`snapshotFromJson`/`nodeToJson`/`awsTestSnapshotPath` removed); `src/Prodbox/Infra/AwsEksTestStack.hs::fetchAwsEksTestSnapshotFromBackend` (live read; `save`/`load`/`clear`/`snapshotToJson`/`snapshotFromJson`/`optionalString`/`awsEksTestSnapshotPath` removed); `src/Prodbox/Lib/AwsSubstratePlatform.hs::ensureAwsSubstratePlatformRuntime` (live read; 2026-05-27 later session). Fourth chunk (2026-05-30): `src/Prodbox/Infra/AwsEksSubzoneStack.hs::parseAwsEksSubzoneStackFromOutputs` + `fetchAwsEksSubzoneStackSnapshotFromBackend` (live read; `save`/`load`/`clear`/`snapshotToJson`/`snapshotFromJson`/`awsEksSubzoneStateDir`/`awsEksSubzoneSnapshotPath` removed; `assertNoAwsEksSubzoneStackResidue` drops the unused `Maybe <Snapshot>` parameter); `src/Prodbox/Infra/AwsSesStack.hs::parseAwsSesStackFromOutputs` + `fetchAwsSesStackSnapshotFromBackend` (live read via long-lived S3 backend; `save`/`load`/`clear`/`snapshotToJson`/`snapshotFromJson`/`awsSesStateDir`/`awsSesSnapshotPath` removed; `assertNoAwsSesStackResidue` drops the unused `Maybe <Snapshot>` parameter). Fifth chunk (2026-05-30): `src/Prodbox/Infra/AwsEksTestStack.hs::withEksKubeconfig` (new `Control.Exception.bracket`-based scoped-temp-file materializer; `materializeAwsEksKubeconfig` + `awsEksTestKubeconfigPath` + `awsEksTestStateDir` removed; `drainAwsEksClusterBeforeDestroy` wraps in `try`); `src/Prodbox/PublicEdge.hs::substrateKubeconfigPath` deleted; `src/Prodbox/PublicEdge.hs::withSubstrateKubectlEnvironment`, `src/Prodbox/CLI/Charts.hs::withSubstrateEnvironment`, `src/Prodbox/TestValidation.hs::withSubstrateKubeconfigEnv` rewritten to wrap their actions in `withEksKubeconfig` on the AWS substrate; `src/Prodbox/CLI/Rke2.hs::buildDrainEnvironment` re-shaped to take a `Maybe FilePath` AWS-kubeconfig parameter, `runCascadeDrainPhase` wraps the AWS drain in `try (withEksKubeconfig ...)` and treats bracket-setup failure as a hard cascade failure. Sixth chunk (2026-05-30): `pulumi/aws-test/Main.yaml` flips SSH-keypair ownership to Pulumi via a new `tls:PrivateKey` resource + `ssh_private_key` secret output (removes the `publicKey` config input); `src/Prodbox/Infra/AwsTestStack.hs::withAwsTestSshPrivateKey` (new `bracket`-based scoped temp file + `setFileMode` chmod 600 materializer reading `ssh_private_key` from the live MinIO backend; `ensureAwsTestSshKey` / `readSshPublicKey` / `awsTestPrivateKeyPath` / `awsTestPublicKeyPath` / `awsTestStateDir` removed; `AwsTestStackConfig` loses `testStackPublicKey`; the `publicKey` `pulumi config set --secret` entry in `syncAwsTestStackConfig` removed); `src/Prodbox/TestValidation.hs::verifyAwsTestSshReachability` wraps the per-node SSH retry loop in `withAwsTestSshPrivateKey`; the `retries AWS test-stack SSH validation` unit test now injects `ssh_private_key` through the `PRODBOX_TEST_PER_RUN_OUTPUTS_DIR` mock.
 
 **Docs to update**: ✅ `DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`, ⏳ `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` (full closure row when remaining work lands).
 

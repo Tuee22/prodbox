@@ -16,7 +16,6 @@ module Prodbox.PublicEdge
   , sharedPublicHostFqdns
   , resolveSubstrateHostedZoneId
   , substrateHostedZoneId
-  , substrateKubeconfigPath
   , substratePublicFqdn
   , withSubstrateKubectlEnvironment
   , vscodePathPrefix
@@ -44,9 +43,9 @@ import Prodbox.Settings
   , aws
   , validatedConfig
   )
+import Prodbox.Infra.AwsEksTestStack (withEksKubeconfig)
 import Prodbox.Substrate (Substrate (..))
 import System.Environment (lookupEnv, setEnv, unsetEnv)
-import System.FilePath ((</>))
 
 data PublicEdgeRoute
   = PublicRouteAuth
@@ -194,43 +193,36 @@ resolveSubstrateHostedZoneId repoRoot settings substrate =
                 \--yes` to provision the subzone, or set \
                 \aws_substrate.hosted_zone_id in prodbox-config.dhall."
 
-substrateKubeconfigPath :: FilePath -> Substrate -> Maybe FilePath
-substrateKubeconfigPath repoRoot substrate =
-  case substrate of
-    SubstrateHomeLocal -> Nothing
-    SubstrateAws ->
-      Just (repoRoot </> ".prodbox-state" </> "aws-eks-test" </> "kubeconfig")
-
--- | Sprint 7.5.c.v follow-up: bracket an IO action with the
--- substrate-specific @KUBECONFIG@ + @AWS_*@ environment so kubectl and
--- @aws eks get-token@ subprocesses speak to the correct cluster. Returns
--- the action unchanged on the home substrate (kubectl uses the ambient
--- kubeconfig from @/etc/rancher/rke2/rke2.yaml@ or @~\/.kube\/config@,
--- and no AWS creds are needed). On the AWS substrate this mirrors the
--- @withSubstrateEnvironment@ helper in @Prodbox.CLI.Charts@ so the
--- @prodbox host public-edge --substrate aws@ diagnostic walks the
--- EKS-side @envoy-gateway-system@ / @vscode@ / @cert-manager@
--- namespaces instead of the local cluster's.
+-- | Sprint 7.5.c.v follow-up (Sprint 4.18 fifth chunk re-migration):
+-- bracket an IO action with the substrate-specific @KUBECONFIG@ + @AWS_*@
+-- environment so kubectl and @aws eks get-token@ subprocesses speak to
+-- the correct cluster. Returns the action unchanged on the home
+-- substrate (kubectl uses the ambient kubeconfig from
+-- @/etc/rancher/rke2/rke2.yaml@ or @~\/.kube\/config@, and no AWS creds
+-- are needed). On the AWS substrate materializes a scoped kubeconfig via
+-- 'withEksKubeconfig' (replaces the legacy @.prodbox-state@ persistent
+-- path) and projects @AWS_*@ from @settings.aws@ around the action.
 withSubstrateKubectlEnvironment
   :: FilePath -> ValidatedSettings -> Substrate -> IO a -> IO a
 withSubstrateKubectlEnvironment repoRoot settings substrate action =
-  case substrateKubeconfigPath repoRoot substrate of
-    Nothing -> action
-    Just kubeconfigPath -> do
-      let awsCreds = aws (validatedConfig settings)
-          envOverrides =
-            [ ("KUBECONFIG", kubeconfigPath)
-            , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
-            , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
-            , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
-            , ("AWS_REGION", Text.unpack (region awsCreds))
-            ]
-              ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
-      previousValues <- mapM (lookupEnv . fst) envOverrides
-      bracket_
-        (mapM_ (uncurry setEnv) envOverrides)
-        (mapM_ restoreOne (zip envOverrides previousValues))
-        action
+  case substrate of
+    SubstrateHomeLocal -> action
+    SubstrateAws ->
+      withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+        let awsCreds = aws (validatedConfig settings)
+            envOverrides =
+              [ ("KUBECONFIG", kubeconfigPath)
+              , ("AWS_ACCESS_KEY_ID", Text.unpack (access_key_id awsCreds))
+              , ("AWS_SECRET_ACCESS_KEY", Text.unpack (secret_access_key awsCreds))
+              , ("AWS_DEFAULT_REGION", Text.unpack (region awsCreds))
+              , ("AWS_REGION", Text.unpack (region awsCreds))
+              ]
+                ++ maybe [] (\tok -> [("AWS_SESSION_TOKEN", Text.unpack tok)]) (session_token awsCreds)
+        previousValues <- mapM (lookupEnv . fst) envOverrides
+        bracket_
+          (mapM_ (uncurry setEnv) envOverrides)
+          (mapM_ restoreOne (zip envOverrides previousValues))
+          action
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name

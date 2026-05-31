@@ -2,6 +2,18 @@ global:
   namespace: gateway
   rootChart: gateway
 
+# Sprint 3.13 sixth chunk: namespaces in which the gateway daemon's
+# `POST /v1/secret/ensure-namespace` handler creates derived k8s
+# Secrets. One Role + RoleBinding pair is emitted per entry so the
+# daemon's ServiceAccount has `secrets:get,create,patch` scoped to
+# only the namespaces it actually writes to (per
+# `Prodbox.Secret.Inventory.derivedSecretInventoryFor`). Currently only
+# `keycloak` has any derived inventory; add namespaces here when
+# vscode / api / websocket / gateway gain derived entries.
+rbac:
+  targetNamespaces:
+    - keycloak
+
 # Pod anti-affinity for HA defaults. Dev mode (suppressing anti-affinity)
 # is controlled by chart_platform.py via _ha_values().
 podAntiAffinity:

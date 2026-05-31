@@ -235,8 +235,7 @@ The reopened ranges close on the following sprint sets:
   nesting warnings and daemon-path negative-space symbol rules refusing
   `forkIO`, `unsafePerformIO`, and module-level `IORef`
   ([the engineering doctrine docs](../documents/engineering/README.md)§1370, §1450). Sprint 1.23 adds
-  `dhall freeze` discipline on the committed repo-root `prodbox-config.dhall` path, the
-  parser `--foreground` default plus self-daemonization-forbidden rule (§1591–1599), and the
+  the parser `--foreground` default plus self-daemonization-forbidden rule (§1591–1599) and the
   explicit cross-language-types generation deferral (§341–343).
   Sprints 1.24–1.26 close the audit-driven residue: durable CLI documentation artifacts
   derived from `CommandSpec` per [the engineering doctrine docs](../documents/engineering/README.md)and
@@ -565,9 +564,8 @@ and `8.5`–`8.6` carry the remaining operator-driven live OIDC closure work.
   aggregate `prodbox test lint` dispatch with lint-first ordering, the
   `trackingGeneratedPaths` registry plus renderer determinism property test, the
   standardized library audit of `prodbox.cabal`, the residual doctrine cleanup in
-  Sprint 1.23 covering `dhall freeze` discipline on the committed repo-root config path, the
-  parser `--foreground` default plus self-daemonization-forbidden rule, and the explicit
-  cross-language-types generation deferral, and — added by Sprint 0.3 —
+  Sprint 1.23 covering the parser `--foreground` default plus self-daemonization-forbidden
+  rule and the explicit cross-language-types generation deferral, and — added by Sprint 0.3 —
   the durable CLI documentation artifacts under `documents/cli/`, `share/man/`, and
   `share/completion/` (Sprint 1.24), the `execParserPure` parser-test category in the
   `prodbox-unit` stanza (Sprint 1.25), and the `renderError` error-rendering boundary

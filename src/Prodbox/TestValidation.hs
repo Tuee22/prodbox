@@ -111,7 +111,6 @@ import Prodbox.PublicEdge
   , publicFqdn
   , publicRoutePathPrefix
   , publicRouteUrl
-  , substrateKubeconfigPath
   )
 import Prodbox.Result (Result (..))
 import Prodbox.Ses.Capture qualified
@@ -327,24 +326,25 @@ runNativeValidation substrate repoRoot environment validation = do
 -- credentials for the AWS substrate.
 --
 -- For `SubstrateHomeLocal` the operator's default kubeconfig is in scope
--- already (no-op). For `SubstrateAws` the EKS kubeconfig materialized by
--- `Prodbox.Infra.AwsEksTestStack.materializeAwsEksKubeconfig` is exported
--- alongside `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION`
+-- already (no-op). For `SubstrateAws` (Sprint 4.18 fifth chunk
+-- re-migration) the EKS kubeconfig is materialized into a scoped temp
+-- file via 'AwsEks.withEksKubeconfig' and exported alongside
+-- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION`
 -- (and optionally `AWS_SESSION_TOKEN`) from `settings.aws.*`, so every
--- kubectl/helm subprocess that inherits the parent process environment can
--- both target the EKS substrate and successfully resolve the kubeconfig's
--- `aws eks get-token` exec provider.
+-- kubectl/helm subprocess that inherits the parent process environment
+-- can both target the EKS substrate and successfully resolve the
+-- kubeconfig's `aws eks get-token` exec provider.
 withSubstrateKubeconfigEnv :: FilePath -> Substrate -> IO ExitCode -> IO ExitCode
 withSubstrateKubeconfigEnv repoRoot substrate action =
-  case substrateKubeconfigPath repoRoot substrate of
-    Nothing -> action
-    Just kubeconfigPath -> do
+  case substrate of
+    SubstrateHomeLocal -> action
+    SubstrateAws -> do
       settingsResult <- validateAndLoadSettings repoRoot
       case settingsResult of
         Left err -> do
           writeError (fatalError (Text.pack err))
           pure (ExitFailure 1)
-        Right settings -> do
+        Right settings -> AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
           let awsCreds = aws (validatedConfig settings)
               envOverrides =
                 [ ("KUBECONFIG", kubeconfigPath)
@@ -1932,16 +1932,15 @@ verifyAwsTestSnapshot repoRoot = do
 
 verifyAwsTestSshReachability :: FilePath -> IO ExitCode
 verifyAwsTestSshReachability repoRoot = do
-  keyResult <- AwsTest.ensureAwsTestSshKey repoRoot
   nodesResult <- fetchAwsTestNodes repoRoot
-  case (keyResult, nodesResult) of
-    (Left err, _) -> failWith err
-    (_, Left err) -> failWith err
-    (Right privateKeyPath, Right nodes) ->
-      foldM
-        (verifyAwsTestNodeSsh repoRoot privateKeyPath)
-        ExitSuccess
-        nodes
+  case nodesResult of
+    Left err -> failWith err
+    Right nodes ->
+      AwsTest.withAwsTestSshPrivateKey repoRoot $ \privateKeyPath ->
+        foldM
+          (verifyAwsTestNodeSsh repoRoot privateKeyPath)
+          ExitSuccess
+          nodes
 
 -- | Sprint 4.18: shared live-fetch helper for the AWS test-stack
 -- validation suite. Reads the live @aws-test@ Pulumi outputs and

@@ -154,10 +154,6 @@ import System.Environment (getEnvironment)
 import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
-import System.FilePath
-  ( takeDirectory
-  , takeFileName
-  )
 import System.IO
   ( hFlush
   , hGetEcho
@@ -2800,39 +2796,7 @@ loadConfigForWrite repoRoot = do
     else pure defaultConfigFile
 
 writeConfigFile :: FilePath -> ConfigFile -> IO ()
-writeConfigFile path config = do
-  maybeDhall <- findExecutable "dhall"
-  case maybeDhall of
-    Nothing ->
-      throwAws
-        "The `dhall` CLI is required to freeze `prodbox-config.dhall` after writing it."
-    Just _ -> do
-      writeFile path (renderConfigDhall config)
-      freezeResult <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "dhall"
-            , subprocessArguments = ["freeze", "--all", "--inplace", takeFileName path]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Just (freezeWorkingDirectory path)
-            }
-      case freezeResult of
-        Failure err ->
-          throwAws ("Failed to freeze `" ++ path ++ "` after writing it: " ++ err)
-        Success output ->
-          case processExitCode output of
-            ExitSuccess -> pure ()
-            ExitFailure _ ->
-              throwAws
-                ( "Failed to freeze `"
-                    ++ path
-                    ++ "` after writing it: "
-                    ++ errorDetail output
-                )
- where
-  freezeWorkingDirectory configPath =
-    let directory = takeDirectory configPath
-     in if directory == "" then "." else directory
+writeConfigFile path config = writeFile path (renderConfigDhall config)
 
 subprocessBaseEnvironment :: IO [(String, String)]
 subprocessBaseEnvironment = do

@@ -5,13 +5,11 @@ module Prodbox.Infra.AwsSesStack
   , awsSesStackName
   , ensureAwsSesStackResources
   , destroyAwsSesStack
-  , loadAwsSesStackSnapshot
-  , saveAwsSesStackSnapshot
-  , clearAwsSesStackSnapshot
   , awsSesStackResidueStatus
   , assertNoAwsSesStackResidue
   , migrateAwsSesStackBackend
   , renderAwsSesStackReport
+  , parseAwsSesStackFromOutputs
   )
 where
 
@@ -20,9 +18,6 @@ import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
-  , encode
-  , object
-  , (.=)
   )
 import Data.Aeson.Encode.Pretty qualified as Pretty
 import Data.Aeson.Key qualified as Key
@@ -102,12 +97,6 @@ awsSesStackName = "aws-ses"
 awsSesPulumiProjectDir :: FilePath -> FilePath
 awsSesPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-ses"
 
-awsSesStateDir :: FilePath -> FilePath
-awsSesStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsSesStackName
-
-awsSesSnapshotPath :: FilePath -> FilePath
-awsSesSnapshotPath repoRoot = awsSesStateDir repoRoot </> "stack-snapshot.json"
-
 -- | Sprint 4.16 typed residue status. Delegates to the live
 -- @pulumi stack ls --json@ source-of-truth query against the
 -- long-lived S3 backend through 'Prodbox.Lifecycle.LiveResidue'.
@@ -144,70 +133,43 @@ data AwsSesStackConfig = AwsSesStackConfig
   }
   deriving (Eq, Show)
 
-saveAwsSesStackSnapshot :: FilePath -> AwsSesStackSnapshot -> IO ()
-saveAwsSesStackSnapshot repoRoot snapshot = do
-  createDirectoryIfMissing True (awsSesStateDir repoRoot)
-  BL.writeFile (awsSesSnapshotPath repoRoot) (encode (snapshotToJson snapshot))
+-- | Sprint 4.18: live source-of-truth read of the @aws-ses@ stack's snapshot
+-- from the operator-account long-lived S3 Pulumi backend. Returns 'Nothing'
+-- when the stack is absent, the backend is unreachable, or the outputs
+-- cannot be parsed — matching the @Maybe@ contract the destroy path
+-- previously got from the file cache.
+fetchAwsSesStackSnapshotFromBackend
+  :: FilePath -> IO (Maybe AwsSesStackSnapshot)
+fetchAwsSesStackSnapshotFromBackend repoRoot = do
+  outputsResult <- LiveResidue.fetchAwsSesStackOutputs repoRoot
+  pure $ case outputsResult of
+    Left _ -> Nothing
+    Right outputs -> either (const Nothing) Just (parseAwsSesStackFromOutputs outputs)
 
-loadAwsSesStackSnapshot :: FilePath -> IO (Maybe AwsSesStackSnapshot)
-loadAwsSesStackSnapshot repoRoot = do
-  let snapshotPath = awsSesSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if not exists
-    then pure Nothing
-    else do
-      contents <- BL.readFile snapshotPath
-      case eitherDecode contents of
-        Left _ -> pure Nothing
-        Right value ->
-          case snapshotFromJson value of
-            Left _ -> pure Nothing
-            Right snapshot -> pure (Just snapshot)
-
-clearAwsSesStackSnapshot :: FilePath -> IO ()
-clearAwsSesStackSnapshot repoRoot = do
-  let snapshotPath = awsSesSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if exists then removeFile snapshotPath else pure ()
-
-snapshotToJson :: AwsSesStackSnapshot -> Value
-snapshotToJson snapshot =
-  object
-    [ "stack_name" .= sesSnapshotStackName snapshot
-    , "backend_bucket" .= sesSnapshotBackendBucket snapshot
-    , "sending_domain" .= sesSnapshotSendingDomain snapshot
-    , "receive_subdomain" .= sesSnapshotReceiveSubdomain snapshot
-    , "receive_subdomain_mx_fqdn" .= sesSnapshotReceiveSubdomainMxFqdn snapshot
-    , "receive_rule_set_name" .= sesSnapshotReceiveRuleSetName snapshot
-    , "receive_rule_name" .= sesSnapshotReceiveRuleName snapshot
-    , "capture_bucket_name" .= sesSnapshotCaptureBucketName snapshot
-    , "capture_bucket_arn" .= sesSnapshotCaptureBucketArn snapshot
-    , "capture_bucket_key_prefix" .= sesSnapshotCaptureBucketKeyPrefix snapshot
-    , "smtp_endpoint" .= sesSnapshotSmtpEndpoint snapshot
-    , "smtp_iam_user_name" .= sesSnapshotSmtpIamUserName snapshot
-    , "smtp_iam_user_arn" .= sesSnapshotSmtpIamUserArn snapshot
-    , "smtp_iam_access_key_id" .= sesSnapshotSmtpIamAccessKeyId snapshot
-    ]
-
-snapshotFromJson :: Value -> Either String AwsSesStackSnapshot
-snapshotFromJson (Object obj) = do
-  stackName <- requireString obj "stack_name"
-  backendBucket <- requireString obj "backend_bucket"
-  sendingDomain <- requireString obj "sending_domain"
-  receiveSubdomain <- requireString obj "receive_subdomain"
-  receiveSubdomainMxFqdn <- requireString obj "receive_subdomain_mx_fqdn"
-  receiveRuleSetName <- requireString obj "receive_rule_set_name"
-  receiveRuleName <- requireString obj "receive_rule_name"
-  captureBucketName <- requireString obj "capture_bucket_name"
-  captureBucketArn <- requireString obj "capture_bucket_arn"
-  captureBucketKeyPrefix <- requireString obj "capture_bucket_key_prefix"
-  smtpEndpoint <- requireString obj "smtp_endpoint"
-  smtpIamUserName <- requireString obj "smtp_iam_user_name"
-  smtpIamUserArn <- requireString obj "smtp_iam_user_arn"
-  smtpIamAccessKeyId <- requireString obj "smtp_iam_access_key_id"
+-- | Sprint 4.18: decode an 'AwsSesStackSnapshot' record directly from the
+-- flat @Map Text Text@ returned by
+-- 'Prodbox.Lifecycle.LiveResidue.fetchAwsSesStackOutputs'. Replaces the
+-- legacy @.prodbox-state\/aws-ses\/stack-snapshot.json@ file-IO consumer
+-- on the destroy and residue paths.
+parseAwsSesStackFromOutputs
+  :: Map Text.Text Text.Text -> Either String AwsSesStackSnapshot
+parseAwsSesStackFromOutputs outputs = do
+  backendBucket <- requireMapString outputs "backend_bucket"
+  sendingDomain <- requireMapString outputs "sending_domain"
+  receiveSubdomain <- requireMapString outputs "receive_subdomain"
+  receiveSubdomainMxFqdn <- requireMapString outputs "receive_subdomain_mx_fqdn"
+  receiveRuleSetName <- requireMapString outputs "receive_rule_set_name"
+  receiveRuleName <- requireMapString outputs "receive_rule_name"
+  captureBucketName <- requireMapString outputs "capture_bucket_name"
+  captureBucketArn <- requireMapString outputs "capture_bucket_arn"
+  captureBucketKeyPrefix <- requireMapString outputs "capture_bucket_key_prefix"
+  smtpEndpoint <- requireMapString outputs "smtp_endpoint"
+  smtpIamUserName <- requireMapString outputs "smtp_iam_user_name"
+  smtpIamUserArn <- requireMapString outputs "smtp_iam_user_arn"
+  smtpIamAccessKeyId <- requireMapString outputs "smtp_iam_access_key_id"
   Right
     AwsSesStackSnapshot
-      { sesSnapshotStackName = stackName
+      { sesSnapshotStackName = awsSesStackName
       , sesSnapshotBackendBucket = backendBucket
       , sesSnapshotSendingDomain = sendingDomain
       , sesSnapshotReceiveSubdomain = receiveSubdomain
@@ -222,7 +184,16 @@ snapshotFromJson (Object obj) = do
       , sesSnapshotSmtpIamUserArn = smtpIamUserArn
       , sesSnapshotSmtpIamAccessKeyId = smtpIamAccessKeyId
       }
-snapshotFromJson _ = Left "aws-ses snapshot must be a JSON object"
+
+requireMapString :: Map Text.Text Text.Text -> String -> Either String String
+requireMapString outputs key =
+  case Map.lookup (Text.pack key) outputs of
+    Nothing -> Left ("aws-ses Pulumi outputs missing required field '" ++ key ++ "'")
+    Just text ->
+      let str = Text.unpack text
+       in if null str
+            then Left ("aws-ses Pulumi outputs field '" ++ key ++ "' is empty")
+            else Right str
 
 snapshotFromOutputs :: Value -> Either String AwsSesStackSnapshot
 snapshotFromOutputs (Object obj) = do
@@ -741,7 +712,6 @@ runEnsureAwsSesPulumiCycle repoRoot projectDir baseEnvironment stackConfig = do
                       case snapshotFromOutputs outputs of
                         Left err -> pure (Left err)
                         Right snapshot -> do
-                          saveAwsSesStackSnapshot repoRoot snapshot
                           persistResult <-
                             persistKeycloakSmtpChartSecrets
                               repoRoot
@@ -772,7 +742,7 @@ destroyAwsSesStack repoRoot summary = do
 -- exists; otherwise it is an actionable failure.
 destroyAwsSesStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsSesStackStatus repoRoot summary = do
-  currentSnapshot <- loadAwsSesStackSnapshot repoRoot
+  currentSnapshot <- fetchAwsSesStackSnapshotFromBackend repoRoot
   let projectDir = awsSesPulumiProjectDir repoRoot
   adminResult <- loadAdminAwsCredentials repoRoot
   settingsResult <- validateAndLoadSettings repoRoot
@@ -822,20 +792,18 @@ runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot 
         PulumiStackMissing ->
           case currentSnapshot of
             Nothing -> pure (Right "already absent from the long-lived Pulumi backend")
-            Just _ -> finalizeDestroy repoRoot
+            Just _ -> finalizeDestroy
         PulumiStackSelectFailed detail ->
           pure (Left ("pulumi stack select failed: " ++ detail))
 
 completeDestroy
   :: FilePath -> FilePath -> [(String, String)] -> Bool -> IO (Either String String)
-completeDestroy repoRoot projectDir environment summary = do
+completeDestroy _repoRoot projectDir environment summary = do
   _ <- pulumiStackRemoveEither projectDir environment False summary
-  finalizeDestroy repoRoot
+  finalizeDestroy
 
-finalizeDestroy :: FilePath -> IO (Either String String)
-finalizeDestroy repoRoot = do
-  clearAwsSesStackSnapshot repoRoot
-  pure (Right "destroyed and snapshot cleared")
+finalizeDestroy :: IO (Either String String)
+finalizeDestroy = pure (Right "destroyed")
 
 pulumiLoginEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
 pulumiLoginEither projectDir environment summary
@@ -873,9 +841,8 @@ exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ s
 -- Residue assertion. After teardown there should be no SES sending domain identity, no
 -- active receive rule set referencing the receive subdomain, and no capture S3 bucket on
 -- the supported AWS account.
-assertNoAwsSesStackResidue
-  :: FilePath -> Maybe AwsSesStackSnapshot -> IO (Either String ())
-assertNoAwsSesStackResidue repoRoot maybeSnapshot = do
+assertNoAwsSesStackResidue :: FilePath -> IO (Either String ())
+assertNoAwsSesStackResidue repoRoot = do
   configResult <- resolveAwsSesStackConfig repoRoot
   case configResult of
     Left err -> pure (Left err)
@@ -893,8 +860,6 @@ assertNoAwsSesStackResidue repoRoot maybeSnapshot = do
                 )
             )
         Right False -> pure (Right ())
- where
-  _ = maybeSnapshot
 
 discoverBucketResidue :: FilePath -> String -> IO (Either String Bool)
 discoverBucketResidue repoRoot bucketName = do

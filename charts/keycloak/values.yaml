@@ -2,6 +2,15 @@ global:
   namespace: default
   rootChart: keycloak
 
+# Sprint 3.13 seventh chunk: prodbox-gateway daemon's in-cluster
+# endpoint the pre-install Job in `secret-bootstrap-job.yaml` calls to
+# materialize the `keycloak-runtime` admin-password Secret before the
+# chart's `secret.yaml` renders. Separate top-level key (not nested
+# under the existing `gateway:` block) so it doesn't collide with the
+# Envoy Gateway HTTPRoute configuration below.
+prodboxGateway:
+  restPort: 8443
+
 replicaCount: 1
 
 podAntiAffinity:

@@ -5,12 +5,10 @@ module Prodbox.Infra.AwsEksSubzoneStack
   , awsEksSubzoneStackName
   , ensureAwsEksSubzoneStackResources
   , destroyAwsEksSubzoneStack
-  , loadAwsEksSubzoneStackSnapshot
-  , saveAwsEksSubzoneStackSnapshot
-  , clearAwsEksSubzoneStackSnapshot
   , awsEksSubzoneStackResidueStatus
   , assertNoAwsEksSubzoneStackResidue
   , renderAwsEksSubzoneStackReport
+  , parseAwsEksSubzoneStackFromOutputs
   )
 where
 
@@ -18,16 +16,13 @@ import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
-  , encode
-  , object
-  , (.=)
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
-import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (toLower)
 import Data.List (isInfixOf)
+import Data.Map.Strict qualified as Map
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.CLI.Output
@@ -51,6 +46,7 @@ import Prodbox.Infra.MinioBackend
   , readMinioCredentials
   , withMinioPortForward
   )
+import Prodbox.Infra.StackOutputs qualified as StackOutputs
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Result (Result (..))
@@ -70,9 +66,7 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import System.Directory
-  ( createDirectoryIfMissing
-  , doesFileExist
-  , removeFile
+  ( doesFileExist
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
@@ -83,12 +77,6 @@ awsEksSubzoneStackName = "aws-eks-subzone"
 
 awsEksSubzonePulumiProjectDir :: FilePath -> FilePath
 awsEksSubzonePulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-eks-subzone"
-
-awsEksSubzoneStateDir :: FilePath -> FilePath
-awsEksSubzoneStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsEksSubzoneStackName
-
-awsEksSubzoneSnapshotPath :: FilePath -> FilePath
-awsEksSubzoneSnapshotPath repoRoot = awsEksSubzoneStateDir repoRoot </> "stack-snapshot.json"
 
 -- | Sprint 4.16 typed residue status. Delegates to the live
 -- @pulumi stack ls --json@ source-of-truth query through
@@ -116,56 +104,41 @@ data AwsEksSubzoneStackConfig = AwsEksSubzoneStackConfig
   }
   deriving (Eq, Show)
 
-saveAwsEksSubzoneStackSnapshot :: FilePath -> AwsEksSubzoneStackSnapshot -> IO ()
-saveAwsEksSubzoneStackSnapshot repoRoot snapshot = do
-  createDirectoryIfMissing True (awsEksSubzoneStateDir repoRoot)
-  BL.writeFile (awsEksSubzoneSnapshotPath repoRoot) (encode (snapshotToJson snapshot))
+-- | Sprint 4.18: live source-of-truth read of the @aws-eks-subzone@ stack's
+-- snapshot from the in-cluster MinIO Pulumi backend. Returns 'Nothing' when
+-- the stack is absent, the backend is unreachable, or the outputs cannot
+-- be parsed — matching the @Maybe@ contract the destroy path previously
+-- got from the file cache.
+fetchAwsEksSubzoneStackSnapshotFromBackend
+  :: FilePath -> IO (Maybe AwsEksSubzoneStackSnapshot)
+fetchAwsEksSubzoneStackSnapshotFromBackend repoRoot = do
+  outputsResult <-
+    LiveResidue.fetchPerRunStackOutputs
+      repoRoot
+      (StackOutputs.StackName (Text.pack awsEksSubzoneStackName))
+  pure $ case outputsResult of
+    Left _ -> Nothing
+    Right outputs -> either (const Nothing) Just (parseAwsEksSubzoneStackFromOutputs outputs)
 
-loadAwsEksSubzoneStackSnapshot :: FilePath -> IO (Maybe AwsEksSubzoneStackSnapshot)
-loadAwsEksSubzoneStackSnapshot repoRoot = do
-  let snapshotPath = awsEksSubzoneSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if not exists
-    then pure Nothing
-    else do
-      contents <- BL.readFile snapshotPath
-      case eitherDecode contents of
-        Left _ -> pure Nothing
-        Right value ->
-          case snapshotFromJson value of
-            Left _ -> pure Nothing
-            Right snapshot -> pure (Just snapshot)
-
-clearAwsEksSubzoneStackSnapshot :: FilePath -> IO ()
-clearAwsEksSubzoneStackSnapshot repoRoot = do
-  let snapshotPath = awsEksSubzoneSnapshotPath repoRoot
-  exists <- doesFileExist snapshotPath
-  if exists then removeFile snapshotPath else pure ()
-
-snapshotToJson :: AwsEksSubzoneStackSnapshot -> Value
-snapshotToJson snapshot =
-  object
-    [ "stack_name" .= subzoneSnapshotStackName snapshot
-    , "backend_bucket" .= subzoneSnapshotBackendBucket snapshot
-    , "subzone_id" .= subzoneSnapshotSubzoneId snapshot
-    , "subzone_name" .= subzoneSnapshotSubzoneName snapshot
-    , "subzone_name_servers" .= subzoneSnapshotSubzoneNameServers snapshot
-    , "parent_zone_id" .= subzoneSnapshotParentZoneId snapshot
-    , "parent_ns_record_fqdn" .= subzoneSnapshotParentNsRecordFqdn snapshot
-    ]
-
-snapshotFromJson :: Value -> Either String AwsEksSubzoneStackSnapshot
-snapshotFromJson (Object obj) = do
-  stackName <- requireString obj "stack_name"
-  backendBucket <- requireString obj "backend_bucket"
-  subzoneId <- requireString obj "subzone_id"
-  subzoneName <- requireString obj "subzone_name"
-  subzoneNameServers <- requireStringList obj "subzone_name_servers"
-  parentZoneId <- requireString obj "parent_zone_id"
-  parentNsRecordFqdn <- requireString obj "parent_ns_record_fqdn"
+-- | Sprint 4.18: decode an 'AwsEksSubzoneStackSnapshot' record directly
+-- from the flat @Map Text Text@ returned by
+-- 'Prodbox.Lifecycle.LiveResidue.fetchPerRunStackOutputs'. Replaces the
+-- legacy @.prodbox-state\/aws-eks-subzone\/stack-snapshot.json@ file-IO
+-- consumer on the destroy and residue paths. Complex outputs (e.g.
+-- @subzone_name_servers@) arrive as JSON-encoded strings and are decoded
+-- back to their structured form here.
+parseAwsEksSubzoneStackFromOutputs
+  :: Map.Map Text.Text Text.Text -> Either String AwsEksSubzoneStackSnapshot
+parseAwsEksSubzoneStackFromOutputs outputs = do
+  backendBucket <- requireMapString outputs "backend_bucket"
+  subzoneId <- requireMapString outputs "subzone_id"
+  subzoneName <- requireMapString outputs "subzone_name"
+  subzoneNameServers <- requireMapStringList outputs "subzone_name_servers"
+  parentZoneId <- requireMapString outputs "parent_zone_id"
+  parentNsRecordFqdn <- requireMapString outputs "parent_ns_record_fqdn"
   Right
     AwsEksSubzoneStackSnapshot
-      { subzoneSnapshotStackName = stackName
+      { subzoneSnapshotStackName = awsEksSubzoneStackName
       , subzoneSnapshotBackendBucket = backendBucket
       , subzoneSnapshotSubzoneId = subzoneId
       , subzoneSnapshotSubzoneName = subzoneName
@@ -173,7 +146,27 @@ snapshotFromJson (Object obj) = do
       , subzoneSnapshotParentZoneId = parentZoneId
       , subzoneSnapshotParentNsRecordFqdn = parentNsRecordFqdn
       }
-snapshotFromJson _ = Left "subzone snapshot must be a JSON object"
+
+requireMapString :: Map.Map Text.Text Text.Text -> String -> Either String String
+requireMapString outputs key =
+  case Map.lookup (Text.pack key) outputs of
+    Nothing -> Left ("aws-eks-subzone Pulumi outputs missing required field '" ++ key ++ "'")
+    Just text ->
+      let str = Text.unpack text
+       in if null str
+            then Left ("aws-eks-subzone Pulumi outputs field '" ++ key ++ "' is empty")
+            else Right str
+
+requireMapStringList :: Map.Map Text.Text Text.Text -> String -> Either String [String]
+requireMapStringList outputs key =
+  case Map.lookup (Text.pack key) outputs of
+    Nothing -> Left ("aws-eks-subzone Pulumi outputs missing required field '" ++ key ++ "'")
+    Just text ->
+      case eitherDecode (BL8.pack (Text.unpack text)) of
+        Left err ->
+          Left ("aws-eks-subzone Pulumi outputs field '" ++ key ++ "' is not a JSON list: " ++ err)
+        Right (Array arr) -> mapM (requireStringListEntry key) (Vector.toList arr)
+        Right _ -> Left ("aws-eks-subzone Pulumi outputs field '" ++ key ++ "' must be a JSON list")
 
 snapshotFromOutputs :: Value -> Either String AwsEksSubzoneStackSnapshot
 snapshotFromOutputs (Object obj) = do
@@ -518,7 +511,6 @@ ensureAwsEksSubzoneStackResources repoRoot = do
                                             case snapshotFromOutputs outputs of
                                               Left err -> pure (Left err)
                                               Right snapshot -> do
-                                                saveAwsEksSubzoneStackSnapshot repoRoot snapshot
                                                 objectCountResult <-
                                                   bucketObjectCount localPort accessKey secretKey
                                                 case objectCountResult of
@@ -543,7 +535,7 @@ destroyAwsEksSubzoneStack repoRoot summary = do
 
 destroyAwsEksSubzoneStackStatus :: FilePath -> Bool -> IO (Either String String)
 destroyAwsEksSubzoneStackStatus repoRoot summary = do
-  currentSnapshot <- loadAwsEksSubzoneStackSnapshot repoRoot
+  currentSnapshot <- fetchAwsEksSubzoneStackSnapshotFromBackend repoRoot
   let projectDir = awsEksSubzonePulumiProjectDir repoRoot
   portForwardResult <- withMinioPortForward $ \localPort -> do
     credsResult <- readMinioCredentials
@@ -591,7 +583,7 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
                   PulumiStackMissing ->
                     case currentSnapshot of
                       Nothing -> pure (Right "already absent from the local Pulumi backend")
-                      Just _ -> finalizeDestroy repoRoot
+                      Just _ -> finalizeDestroy
                   PulumiStackSelectFailed detail ->
                     pure (Left ("pulumi stack select failed: " ++ detail))
   case portForwardResult of
@@ -611,14 +603,12 @@ destroyAwsEksSubzoneStackStatus repoRoot summary = do
 
 completeDestroy
   :: FilePath -> FilePath -> [(String, String)] -> Bool -> IO (Either String String)
-completeDestroy repoRoot projectDir environment summary = do
+completeDestroy _repoRoot projectDir environment summary = do
   _ <- pulumiStackRemoveEither projectDir environment False summary
-  finalizeDestroy repoRoot
+  finalizeDestroy
 
-finalizeDestroy :: FilePath -> IO (Either String String)
-finalizeDestroy repoRoot = do
-  clearAwsEksSubzoneStackSnapshot repoRoot
-  pure (Right "destroyed and snapshot cleared")
+finalizeDestroy :: IO (Either String String)
+finalizeDestroy = pure (Right "destroyed")
 
 pulumiLoginEither :: FilePath -> [(String, String)] -> Bool -> IO (Either String ())
 pulumiLoginEither projectDir environment summary
@@ -656,9 +646,8 @@ exitToEither label (ExitFailure code) = Left (label ++ " exited with code " ++ s
 -- Residue assertion. After teardown there should be no Route 53 hosted zone matching the
 -- subzone name on the supported AWS account; the parent zone's delegation record should
 -- also be absent.
-assertNoAwsEksSubzoneStackResidue
-  :: FilePath -> Maybe AwsEksSubzoneStackSnapshot -> IO (Either String ())
-assertNoAwsEksSubzoneStackResidue repoRoot maybeSnapshot = do
+assertNoAwsEksSubzoneStackResidue :: FilePath -> IO (Either String ())
+assertNoAwsEksSubzoneStackResidue repoRoot = do
   configResult <- resolveAwsEksSubzoneStackConfig repoRoot
   case configResult of
     Left err -> pure (Left err)
@@ -693,8 +682,6 @@ assertNoAwsEksSubzoneStackResidue repoRoot maybeSnapshot = do
                     )
                 )
             Right False -> pure (Right ())
- where
-  _ = maybeSnapshot
 
 discoverHostedZoneResidue :: FilePath -> String -> IO (Either String (Maybe String))
 discoverHostedZoneResidue repoRoot subzoneFqdn = do

@@ -303,7 +303,10 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
+import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Secret.Derive qualified
+import Prodbox.Secret.EnsureNamespace qualified as EnsureNamespace
+import Prodbox.Secret.Inventory qualified as Inventory
 import Prodbox.Secret.MasterSeed qualified as MasterSeed
 import Prodbox.Secret.Wire qualified
 import Prodbox.Service
@@ -2781,6 +2784,210 @@ main = mainWithSuite "prodbox-unit" $ do
       let Right seed = Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0xff)
       show seed `shouldBe` "MasterSeed <redacted>"
 
+  describe "Sprint 3.13 derived-secret inventory" $ do
+    it "returns the three Patroni roles for keycloak-postgres in the keycloak namespace" $ do
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      map Inventory.derivedSecretEntryName entries
+        `shouldBe` [ "prodbox-keycloak-pg-pguser-keycloak"
+                   , "prodbox-keycloak-pg-pguser-postgres"
+                   , "prodbox-keycloak-pg-primaryuser"
+                   ]
+
+    it "every keycloak-postgres entry writes its derived value into the `password` key" $ do
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      map Inventory.derivedSecretEntryKey entries `shouldBe` replicate 3 "password"
+
+    it "keycloak-postgres context strings match the doctrine §3 patroni shape" $ do
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      map Inventory.derivedSecretEntryContext entries
+        `shouldBe` [ "patroni:keycloak:keycloak-postgres:app"
+                   , "patroni:keycloak:keycloak-postgres:superuser"
+                   , "patroni:keycloak:keycloak-postgres:standby"
+                   ]
+
+    it "returns the keycloak admin entry for the keycloak release in the keycloak namespace" $ do
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak"
+      entries
+        `shouldBe` [ Inventory.DerivedSecretEntry
+                      { Inventory.derivedSecretEntryName = "keycloak-runtime"
+                      , Inventory.derivedSecretEntryKey = "KEYCLOAK_ADMIN_PASSWORD"
+                      , Inventory.derivedSecretEntryContext = "keycloak:keycloak:admin"
+                      }
+                   ]
+
+    it "returns an empty list for releases without static derived secrets (vscode / api / websocket)" $ do
+      Inventory.derivedSecretInventoryFor "vscode" "vscode" `shouldBe` []
+      Inventory.derivedSecretInventoryFor "api" "api" `shouldBe` []
+      Inventory.derivedSecretInventoryFor "websocket" "websocket" `shouldBe` []
+
+    it "returns an empty list for unknown (namespace, release) pairs" $ do
+      Inventory.derivedSecretInventoryFor "made-up" "also-made-up" `shouldBe` []
+
+    it "is deterministic across repeated calls (pure function over Text inputs)" $ do
+      Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+        `shouldBe` Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+
+  describe "Sprint 3.13 in-cluster K8s API client pure helpers" $ do
+    it "exposes the canonical in-pod ServiceAccount mount paths" $ do
+      InCluster.inClusterServiceAccountDir
+        `shouldBe` "/var/run/secrets/kubernetes.io/serviceaccount"
+      InCluster.inClusterTokenPath
+        `shouldBe` "/var/run/secrets/kubernetes.io/serviceaccount/token"
+      InCluster.inClusterCaCertPath
+        `shouldBe` "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+      InCluster.inClusterNamespacePath
+        `shouldBe` "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
+
+    it "secretApiBaseUrl points at the in-cluster kube-apiserver Service" $
+      InCluster.secretApiBaseUrl
+        `shouldBe` "https://kubernetes.default.svc.cluster.local:443"
+
+    it "secretApiPath renders the namespaced v1.Secret REST path" $ do
+      InCluster.secretApiPath "keycloak" "keycloak-runtime"
+        `shouldBe` "/api/v1/namespaces/keycloak/secrets/keycloak-runtime"
+      InCluster.secretApiPath "default" "prodbox-keycloak-pg-pguser-postgres"
+        `shouldBe` "/api/v1/namespaces/default/secrets/prodbox-keycloak-pg-pguser-postgres"
+
+    it "secretManifestJson encodes apiVersion / kind / type / metadata / stringData" $ do
+      let manifest =
+            InCluster.secretManifestJson
+              "keycloak"
+              "keycloak-runtime"
+              (Map.fromList [("KEYCLOAK_ADMIN_PASSWORD", "secret-value")])
+          rendered = BL8.unpack (encode manifest)
+      rendered `shouldContain` "\"apiVersion\":\"v1\""
+      rendered `shouldContain` "\"kind\":\"Secret\""
+      rendered `shouldContain` "\"type\":\"Opaque\""
+      rendered `shouldContain` "\"name\":\"keycloak-runtime\""
+      rendered `shouldContain` "\"namespace\":\"keycloak\""
+      rendered `shouldContain` "\"KEYCLOAK_ADMIN_PASSWORD\":\"secret-value\""
+
+    it "secretManifestStringData emits keys in ascending lexical order (deterministic)" $ do
+      let rendered =
+            BL8.unpack
+              ( encode
+                  ( InCluster.secretManifestStringData
+                      (Map.fromList [("z", "1"), ("a", "2"), ("m", "3")])
+                  )
+              )
+      rendered `shouldBe` "{\"a\":\"2\",\"m\":\"3\",\"z\":\"1\"}"
+
+    it "secretManifestStringData round-trips with itself (purity invariant)" $ do
+      let dataMap = Map.fromList [("user", "alice"), ("pass", "p@ss")]
+      InCluster.secretManifestStringData dataMap
+        `shouldBe` InCluster.secretManifestStringData dataMap
+
+    it "secretManifestStringData handles an empty stringData map" $ do
+      BL8.unpack (encode (InCluster.secretManifestStringData Map.empty))
+        `shouldBe` "{}"
+
+  describe "Sprint 3.13 applyDerivedSecrets pipeline" $ do
+    let testSeed = case Prodbox.Secret.Derive.masterSeed (BS.replicate 32 0x42) of
+          Right s -> s
+          Left err -> error ("test setup: " ++ err)
+
+    let recordingOps :: IO (InCluster.K8sSecretOps, IORef [(Text.Text, Text.Text, Value)])
+        recordingOps = do
+          calls <- newIORef []
+          let ops =
+                InCluster.K8sSecretOps
+                  { InCluster.secretOpsGet = \_ _ -> pure (Right Nothing)
+                  , InCluster.secretOpsPut = \ns name manifest -> do
+                      modifyIORef' calls ((ns, name, manifest) :)
+                      pure (Right ())
+                  }
+          pure (ops, calls)
+
+    it "submits one PUT per inventory entry in the supplied order" $ do
+      (ops, calls) <- recordingOps
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      result <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
+      case result of
+        Left err -> expectationFailure ("expected Right, got Left: " ++ err)
+        Right inventory -> do
+          length inventory `shouldBe` 3
+          map Prodbox.Secret.Wire.secretSha256EntryName inventory
+            `shouldBe` [ "prodbox-keycloak-pg-pguser-keycloak"
+                       , "prodbox-keycloak-pg-pguser-postgres"
+                       , "prodbox-keycloak-pg-primaryuser"
+                       ]
+      recordedCalls <- reverse <$> readIORef calls
+      length recordedCalls `shouldBe` 3
+      map (\(_, name, _) -> name) recordedCalls
+        `shouldBe` [ "prodbox-keycloak-pg-pguser-keycloak"
+                   , "prodbox-keycloak-pg-pguser-postgres"
+                   , "prodbox-keycloak-pg-primaryuser"
+                   ]
+
+    it "puts each manifest with apiVersion v1 + kind Secret + Opaque type" $ do
+      (ops, calls) <- recordingOps
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak"
+      _ <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
+      recordedCalls <- reverse <$> readIORef calls
+      case recordedCalls of
+        [(ns, name, manifest)] -> do
+          ns `shouldBe` "keycloak"
+          name `shouldBe` "keycloak-runtime"
+          let rendered = BL8.unpack (encode manifest)
+          rendered `shouldContain` "\"apiVersion\":\"v1\""
+          rendered `shouldContain` "\"kind\":\"Secret\""
+          rendered `shouldContain` "\"type\":\"Opaque\""
+          rendered `shouldContain` "\"KEYCLOAK_ADMIN_PASSWORD\":"
+        _ -> expectationFailure ("expected one call, got " ++ show (length recordedCalls))
+
+    it "returns SHA-256 of the derived value (never the plaintext) for each entry" $ do
+      (ops, _) <- recordingOps
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      result <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
+      case result of
+        Left err -> expectationFailure ("expected Right, got Left: " ++ err)
+        Right inventory -> do
+          let derivedAppValue =
+                EnsureNamespace.deriveSecretValueText
+                  testSeed
+                  "patroni:keycloak:keycloak-postgres:app"
+              expectedAppSha = EnsureNamespace.deriveSecretSha256Hex derivedAppValue
+          case inventory of
+            (firstEntry : _) ->
+              Prodbox.Secret.Wire.secretSha256EntrySha256 firstEntry `shouldBe` expectedAppSha
+            [] -> expectationFailure "expected at least one entry"
+
+    it "deriveSecretSha256Hex is deterministic and lowercase-hex of length 64" $ do
+      let value = "any-derived-value"
+          h1 = EnsureNamespace.deriveSecretSha256Hex value
+          h2 = EnsureNamespace.deriveSecretSha256Hex value
+      h1 `shouldBe` h2
+      Text.length h1 `shouldBe` 64
+      Text.all (\c -> (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) h1
+        `shouldBe` True
+
+    it "short-circuits on the first PUT failure (no further calls)" $ do
+      calls <- newIORef []
+      let ops =
+            InCluster.K8sSecretOps
+              { InCluster.secretOpsGet = \_ _ -> pure (Right Nothing)
+              , InCluster.secretOpsPut = \ns name manifest -> do
+                  modifyIORef' calls ((ns, name, manifest) :)
+                  pure (Left "simulated 403 Forbidden")
+              }
+      let entries = Inventory.derivedSecretInventoryFor "keycloak" "keycloak-postgres"
+      result <- EnsureNamespace.applyDerivedSecrets ops testSeed "keycloak" entries
+      case result of
+        Right _ -> expectationFailure "expected Left on PUT failure"
+        Left err -> do
+          err `shouldContain` "failed to apply Secret"
+          err `shouldContain` "prodbox-keycloak-pg-pguser-keycloak"
+          err `shouldContain` "simulated 403 Forbidden"
+      recordedCalls <- readIORef calls
+      length recordedCalls `shouldBe` 1
+
+    it "returns an empty inventory when given an empty entry list" $ do
+      (ops, calls) <- recordingOps
+      result <- EnsureNamespace.applyDerivedSecrets ops testSeed "anywhere" []
+      result `shouldBe` Right []
+      recordedCalls <- readIORef calls
+      recordedCalls `shouldBe` []
+
   describe "Sprint 2.19 gateway secret-endpoint wire types" $ do
     it "DeriveResponse JSON round-trips through encode/decode" $ do
       let response =
@@ -3924,18 +4131,12 @@ main = mainWithSuite "prodbox-unit" $ do
   describe "native validation helpers" $ do
     it "retries AWS test-stack SSH validation until a node accepts connections" $
       withSystemTempDirectory "prodbox-hs-unit" $ \tmpDir -> do
-        -- Sprint 4.18: SSH validation reads the live aws-test Pulumi
-        -- outputs rather than .prodbox-state/aws-test/stack-snapshot.json,
-        -- so the test injects the outputs via the
-        -- PRODBOX_TEST_PER_RUN_OUTPUTS_DIR override on
-        -- 'fetchPerRunStackOutputs'. The SSH keypair still lives under
-        -- AwsTest.ensureAwsTestSshKey's state directory until that side
-        -- of Sprint 4.18 migrates to a mktemp + pulumi-stack-output
-        -- bracket.
-        let stateDir = tmpDir </> ".prodbox-state" </> AwsTest.awsTestStackName
-            privateKeyPath = stateDir </> "id_ed25519"
-            publicKeyPath = stateDir </> "id_ed25519.pub"
-            sshStateDir = tmpDir </> "ssh-state"
+        -- Sprint 4.18 fourth/sixth chunks: SSH validation reads BOTH the
+        -- aws-test nodes and ssh_private_key from the live Pulumi
+        -- outputs (rather than .prodbox-state). The test injects both
+        -- via the PRODBOX_TEST_PER_RUN_OUTPUTS_DIR override on
+        -- 'fetchPerRunStackOutputs'.
+        let sshStateDir = tmpDir </> "ssh-state"
             binDir = tmpDir </> "bin"
             fakeSshPath = binDir </> "ssh"
             mockOutputsDir = tmpDir </> "pulumi-outputs"
@@ -3945,13 +4146,11 @@ main = mainWithSuite "prodbox-unit" $ do
                 ++ ", \\\"availability_zone\\\":\\\"us-west-2a\\\""
                 ++ ", \\\"instance_id\\\":\\\"i-1234567890\\\""
                 ++ ", \\\"private_ip\\\":\\\"10.0.0.10\\\""
-                ++ ", \\\"public_ip\\\":\\\"203.0.113.10\\\"} ]\"}"
-        createDirectoryIfMissing True stateDir
+                ++ ", \\\"public_ip\\\":\\\"203.0.113.10\\\"} ]\""
+                ++ ", \"ssh_private_key\":\"fake-private-key\"}"
         createDirectoryIfMissing True sshStateDir
         createDirectoryIfMissing True binDir
         createDirectoryIfMissing True mockOutputsDir
-        writeFile privateKeyPath "fake-private-key\n"
-        writeFile publicKeyPath "fake-public-key\n"
         writeFile mockOutputsPath mockOutputsJson
         writeFile fakeSshPath (unlines fakeAwsTestSshScript)
         makeExecutable fakeSshPath

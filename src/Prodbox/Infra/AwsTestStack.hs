@@ -9,13 +9,14 @@ module Prodbox.Infra.AwsTestStack
   , awsTestStackResidueStatus
   , assertNoAwsTestStackResidue
   , renderAwsTestStackReport
-  , ensureAwsTestSshKey
+  , withAwsTestSshPrivateKey
   , parseAwsTestNodesFromOutputs
   , parseAwsTestStackFromOutputs
   )
 where
 
-import Control.Monad (foldM, forM)
+import Control.Exception (IOException, bracket, catch)
+import Control.Monad (foldM, forM, when)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -70,27 +71,21 @@ import Prodbox.Subprocess
   , runSubprocessStreaming
   )
 import System.Directory
-  ( createDirectoryIfMissing
-  , doesFileExist
+  ( doesFileExist
+  , getTemporaryDirectory
+  , removeFile
   )
 import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
+import System.IO (hClose, hPutStr, openTempFile)
+import System.Posix.Files (ownerReadMode, ownerWriteMode, setFileMode, unionFileModes)
 
 awsTestStackName :: String
 awsTestStackName = "aws-test"
 
 awsTestPulumiProjectDir :: FilePath -> FilePath
 awsTestPulumiProjectDir repoRoot = repoRoot </> "pulumi" </> "aws-test"
-
--- | Sprint 4.18: the per-run @aws-test@ stack snapshot is no longer
--- cached on disk — the destroy and residue-assertion paths read it
--- live from the Pulumi backend via 'fetchAwsTestSnapshotFromBackend'.
--- This directory survives only as the home for the HA-RKE2 validation
--- SSH keypair (see 'awsTestPrivateKeyPath'), pending its own migration
--- to a @mktemp@ + Pulumi-stored-secret bracket.
-awsTestStateDir :: FilePath -> FilePath
-awsTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsTestStackName
 
 -- | Sprint 4.16 typed residue status. Delegates to the live
 -- @pulumi stack ls --json@ source-of-truth query through
@@ -100,12 +95,6 @@ awsTestStateDir repoRoot = repoRoot </> ".prodbox-state" </> awsTestStackName
 awsTestStackResidueStatus :: FilePath -> IO ResidueStatus.ResidueStatus
 awsTestStackResidueStatus repoRoot =
   LiveResidue.perRunAwsTest <$> LiveResidue.queryPerRunResidueStatuses repoRoot
-
-awsTestPrivateKeyPath :: FilePath -> FilePath
-awsTestPrivateKeyPath repoRoot = awsTestStateDir repoRoot </> "id_ed25519"
-
-awsTestPublicKeyPath :: FilePath -> FilePath
-awsTestPublicKeyPath repoRoot = awsTestStateDir repoRoot </> "id_ed25519.pub"
 
 data AwsTestNode = AwsTestNode
   { testNodeName :: String
@@ -126,37 +115,64 @@ data AwsTestStackSnapshot = AwsTestStackSnapshot
   }
   deriving (Eq, Show)
 
-data AwsTestStackConfig = AwsTestStackConfig
+newtype AwsTestStackConfig = AwsTestStackConfig
   { testStackOperatorCidr :: String
-  , testStackPublicKey :: String
   }
   deriving (Eq, Show)
 
-ensureAwsTestSshKey :: FilePath -> IO (Either String FilePath)
-ensureAwsTestSshKey repoRoot = do
-  let stateDir = awsTestStateDir repoRoot
-      privateKeyPath = awsTestPrivateKeyPath repoRoot
-      publicKeyPath = awsTestPublicKeyPath repoRoot
-  createDirectoryIfMissing True stateDir
-  privateExists <- doesFileExist privateKeyPath
-  publicExists <- doesFileExist publicKeyPath
-  if privateExists && publicExists
-    then pure (Right privateKeyPath)
-    else do
-      result <-
-        captureSubprocessResult
-          Subprocess
-            { subprocessPath = "ssh-keygen"
-            , subprocessArguments = ["-q", "-t", "ed25519", "-N", "", "-f", privateKeyPath]
-            , subprocessEnvironment = Nothing
-            , subprocessWorkingDirectory = Nothing
-            }
-      case result of
-        Failure err -> pure (Left ("ssh-keygen failed: " ++ err))
-        Success output ->
-          case processExitCode output of
-            ExitSuccess -> pure (Right privateKeyPath)
-            ExitFailure _ -> pure (Left ("ssh-keygen failed: " ++ trim (processStderr output)))
+-- | Sprint 4.18 sixth chunk: materialize the Pulumi-owned @aws-test@
+-- SSH private key into a scoped temp file (chmod 600), hand the path
+-- to the action, then clean up on exit. Replaces the legacy host-side
+-- @ssh-keygen@ + @.prodbox-state\/aws-test\/id_ed25519@ persistent
+-- file. The keypair now lives entirely in the Pulumi stack state: the
+-- @aws-test@ Pulumi program declares a @tls:PrivateKey@ resource and
+-- exports the private key as @ssh_private_key@ (secret-protected).
+--
+-- Throws via 'error' when:
+--
+--   * the live MinIO backend has no @aws-test@ snapshot to read, or
+--   * the @ssh_private_key@ output is missing / empty.
+--
+-- The bracket guarantees the temp file is removed on all exit paths
+-- including async exceptions in the action.
+withAwsTestSshPrivateKey :: FilePath -> (FilePath -> IO a) -> IO a
+withAwsTestSshPrivateKey repoRoot action = do
+  outputsResult <-
+    LiveResidue.fetchPerRunStackOutputs
+      repoRoot
+      (StackOutputs.StackName (Text.pack awsTestStackName))
+  outputs <- case outputsResult of
+    Left err ->
+      error
+        ( "withAwsTestSshPrivateKey: aws-test Pulumi outputs unavailable from the live MinIO backend: "
+            ++ err
+        )
+    Right o -> pure o
+  privateKey <- case Map.lookup (Text.pack "ssh_private_key") outputs of
+    Nothing ->
+      error
+        "withAwsTestSshPrivateKey: aws-test Pulumi outputs missing required field 'ssh_private_key'"
+    Just text ->
+      let s = Text.unpack text
+       in if null s
+            then
+              error
+                "withAwsTestSshPrivateKey: aws-test Pulumi outputs field 'ssh_private_key' is empty"
+            else pure s
+  systemTemp <- getTemporaryDirectory
+  bracket
+    (openTempFile systemTemp "prodbox-aws-test-ssh-key-")
+    ( \(path, handle) -> do
+        hClose handle `catch` \(_ :: IOException) -> pure ()
+        removeFile path `catch` \(_ :: IOException) -> pure ()
+    )
+    ( \(tempPath, handle) -> do
+        hPutStr handle privateKey
+        when (not (null privateKey) && last privateKey /= '\n') (hPutStr handle "\n")
+        hClose handle
+        setFileMode tempPath (unionFileModes ownerReadMode ownerWriteMode)
+        action tempPath
+    )
 
 nodeFromJson :: Value -> Either String AwsTestNode
 nodeFromJson (Object obj) = do
@@ -421,28 +437,27 @@ credentialsConfigured creds =
     && not (Text.null (Text.strip (region creds)))
 
 resolveAwsTestStackConfig :: FilePath -> IO (Either String AwsTestStackConfig)
-resolveAwsTestStackConfig repoRoot = do
-  publicKeyResult <- readSshPublicKey repoRoot
+resolveAwsTestStackConfig _repoRoot = do
   publicIpResult <- fetchPublicIpv4
-  case (publicKeyResult, publicIpResult) of
-    (Left err, _) -> pure (Left err)
-    (_, Left err) -> pure (Left err)
-    (Right publicKey, Right publicIp) ->
+  case publicIpResult of
+    Left err -> pure (Left err)
+    Right publicIp ->
       pure
         ( Right
             AwsTestStackConfig
               { testStackOperatorCidr = publicIp ++ "/32"
-              , testStackPublicKey = publicKey
               }
         )
 
+-- | Sprint 4.18 sixth chunk: @publicKey@ is no longer a config input —
+-- the Pulumi stack owns the keypair via a @tls:PrivateKey@ resource and
+-- exposes @ssh_private_key@ as a secret output.
 syncAwsTestStackConfig :: FilePath -> [(String, String)] -> AwsTestStackConfig -> IO ExitCode
 syncAwsTestStackConfig projectDir environment stackConfig =
   foldM runConfigSet ExitSuccess configEntries
  where
   configEntries =
     [ (False, "operatorCidr", testStackOperatorCidr stackConfig)
-    , (False, "publicKey", testStackPublicKey stackConfig)
     ]
 
   runConfigSet :: ExitCode -> (Bool, String, String) -> IO ExitCode
@@ -455,16 +470,6 @@ syncAwsTestStackConfig projectDir environment stackConfig =
           ++ ["--secret" | secretValue]
           ++ [key, value]
       )
-
-readSshPublicKey :: FilePath -> IO (Either String String)
-readSshPublicKey repoRoot = do
-  keyResult <- ensureAwsTestSshKey repoRoot
-  case keyResult of
-    Left err -> pure (Left err)
-    Right _ -> do
-      let publicKeyPath = awsTestPublicKeyPath repoRoot
-      contents <- readFile publicKeyPath
-      pure (Right (trim contents))
 
 pulumiLogin :: FilePath -> [(String, String)] -> IO ExitCode
 pulumiLogin projectDir environment = do

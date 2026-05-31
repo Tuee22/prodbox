@@ -122,8 +122,7 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
   : Text, capture_bucket : Text }` block with empty defaults.
 - `src/Prodbox/Settings.hs` exposes `SesSection`, the matching `ses` `ConfigFile` field,
   defaults, and surfaces the new fields in `renderConfigDhall` plus `renderSettingsDisplay`.
-- `prodbox-config.dhall` is re-frozen against the current `prodbox-config-types.dhall`
-  hash and populated with `ses.sender_domain = "test.resolvefintech.com"`,
+- `prodbox-config.dhall` is populated with `ses.sender_domain = "test.resolvefintech.com"`,
   `ses.receive_subdomain = "inbox.test.resolvefintech.com"`,
   `ses.capture_bucket = "prodbox-ses-capture"`.
 - Test fixtures (`test/unit/Main.hs::validConfig` and `invalidZeroSslConfig`) updated for
@@ -133,8 +132,11 @@ Provision the long-lived, account-scoped SES resources both substrates depend on
 
 - `src/Prodbox/Infra/AwsSesStack.hs` exports `AwsSesStackSnapshot`,
   `awsSesStackName`, `ensureAwsSesStackResources`, `destroyAwsSesStack`,
-  `loadAwsSesStackSnapshot`, `saveAwsSesStackSnapshot`, `clearAwsSesStackSnapshot`,
-  `assertNoAwsSesStackResidue`, and `renderAwsSesStackReport`. The reconcile path
+  `parseAwsSesStackFromOutputs`, `assertNoAwsSesStackResidue`, and
+  `renderAwsSesStackReport`. (The legacy `save`/`load`/`clear`
+  file-cache helpers were removed by Sprint `4.18` fourth chunk; the
+  snapshot is now read live from the long-lived S3 backend via
+  `Prodbox.Lifecycle.LiveResidue.fetchAwsSesStackOutputs`.) The reconcile path
   brings up `pulumi/aws-ses/` against the dedicated long-lived S3 backend (per
   Sprint `4.10`), syncs `parentZoneId` / `senderDomain` / `receiveSubdomain` /
   `captureBucket` to the stack, runs `pulumi up`, and emits a `STACK=…` report.

@@ -470,11 +470,15 @@ Pulumi is trying to delete.
 
 The canonical bracket is
 `Prodbox.PublicEdge.withSubstrateKubectlEnvironment` (exported from
-`src/Prodbox/PublicEdge.hs`). It sets `KUBECONFIG` to the substrate's
-kubeconfig path (`.prodbox-state/aws-eks-test/kubeconfig` for
-`SubstrateAws`) plus the `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` /
-`AWS_DEFAULT_REGION` / `AWS_SESSION_TOKEN` env vars that the EKS
-kubeconfig's `aws eks get-token` exec provider needs. Any kubectl
+`src/Prodbox/PublicEdge.hs`). On `SubstrateAws` it wraps the action in
+`Prodbox.Infra.AwsEksTestStack.withEksKubeconfig`, which materializes
+the EKS kubeconfig per-invocation into a scoped temp file via
+`aws eks update-kubeconfig --kubeconfig <openTempFile>` (Sprint
+`4.18` fifth chunk; no cross-invocation file persistence), then sets
+`KUBECONFIG` to the temp path plus the `AWS_ACCESS_KEY_ID` /
+`AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION` / `AWS_SESSION_TOKEN`
+env vars that the EKS kubeconfig's `aws eks get-token` exec provider
+needs. Any kubectl
 subprocess that the cascade drain phase (or any other AWS-substrate-aware
 diagnostic) invokes must be wrapped in this bracket.
 

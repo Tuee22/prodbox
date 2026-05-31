@@ -68,7 +68,7 @@ deliverables are sized for sequential, separately validatable sessions:
 - **Sprint `7.5.c`** (🔄 Active) — code follow-up landed May 18, 2026
   (`substratePublicFqdn` / `substrateHostedZoneId` fail-fast,
   `resolveAwsEksSubzoneStackConfig` pre-provision gate loosened, `isAwsSubstrateConfigured`
-  removed, `prodbox-config.dhall` re-frozen with the operator-supplied
+  removed, `prodbox-config.dhall` updated with the operator-supplied
   `aws_substrate.subzone_name`, ledger row moved from Pending to Completed). Live
   AWS-substrate canonical-suite validation (`charts-vscode`, `charts-api`,
   `charts-websocket`, `public-dns`, `admin-routes`, public-edge readiness) plus
@@ -563,8 +563,7 @@ infrastructure yet: EKS kubeconfig extraction, substrate-aware path/zone/FQDN he
   [development_plan_standards.md → M. Substrate coverage and independence (no fallback)](development_plan_standards.md#substrate-coverage-and-independence-no-fallback).
 - `prodbox-config-types.dhall` adds the `aws_substrate : { hosted_zone_id : Text, subzone_name
   : Text }` block. The schema defaults are empty for type-system reasons, but a populated
-  block is required for any `--substrate aws` canonical-suite run; `prodbox-config.dhall` has
-  its `sha256:` import hash re-frozen against the updated schema.
+  block is required for any `--substrate aws` canonical-suite run.
 - `src/Prodbox/Settings.hs` exposes `AwsSubstrateSection`, the matching `aws_substrate`
   `ConfigFile` field, the `isAwsSubstrateConfigured` helper, and surfaces the new fields in
   `renderConfigDhall` plus `renderSettingsDisplay`.
@@ -1088,8 +1087,8 @@ The substrate-aware code surface satisfies the no-fallback doctrine:
   its rendered `[Value]` manifest list as a `v1/List` object before
   `kubectl apply -f`, matching the home-substrate
   `Prodbox.CLI.Rke2::withTemporaryJsonManifest` pattern.
-- `prodbox-config.dhall` is frozen against the current `prodbox-config-types.dhall`
-  hash so `aws_substrate` is materialized by the native `dhall` decoder.
+- `prodbox-config.dhall` imports `prodbox-config-types.dhall` so `aws_substrate`
+  is materialized by the native `dhall` decoder.
 
 The AWS-substrate platform install (`Prodbox.Lib.AwsSubstratePlatform.ensureAwsSubstratePlatformRuntime`)
 currently lays down the lower-layer ingress + TLS pieces on EKS:

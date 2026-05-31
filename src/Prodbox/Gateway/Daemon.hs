@@ -37,6 +37,7 @@ import Control.Monad (forever, void, when)
 import Crypto.Hash.SHA256 (hash, hmac)
 import Data.Aeson
   ( Value (..)
+  , eitherDecode
   , encode
   , object
   , toJSON
@@ -140,7 +141,10 @@ import Prodbox.Retry
   ( RetryPolicy (..)
   , retryDelayMicros
   )
+import Prodbox.K8s.InCluster qualified as InCluster
 import Prodbox.Secret.Derive qualified
+import Prodbox.Secret.EnsureNamespace qualified as EnsureNamespace
+import Prodbox.Secret.Inventory qualified as Inventory
 import Prodbox.Secret.MasterSeed qualified as MasterSeed
 import Prodbox.Secret.Wire qualified as SecretWire
 import Prodbox.Subprocess
@@ -853,17 +857,7 @@ handleRestClient sock env = do
       path
         | "/v1/secret/derive" `isPrefixOf` path -> handleSecretDerive env sock path
         | path == "/v1/secret/ensure-namespace" ->
-            -- Sprint 2.19: same wire-contract placeholder as
-            -- /v1/secret/derive above. The route is reserved at the
-            -- daemon-router level so callers receive a deterministic
-            -- "not yet wired" response with stable JSON shape rather
-            -- than a generic 404.
-            sendHttpResponse
-              sock
-              503
-              "application/json"
-              ( "{\"error\":\"master-seed unavailable\",\"reason\":\"Prodbox.Secret.MasterSeed not yet wired (Sprint 2.19 remaining); see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
-              )
+            handleSecretEnsureNamespace env sock rawRequest
       _ ->
         sendHttpResponse sock 404 "text/plain" "not found\n"
 
@@ -992,6 +986,110 @@ handleSecretDerive env sock path =
                   , SecretWire.deriveResponseEncoding = SecretWire.deriveEncodingBase64Url
                   }
           sendLazyHttpResponse sock 200 "application/json" (encode response)
+
+-- | Sprint 3.13 fifth chunk: serve @POST /v1/secret/ensure-namespace@.
+-- Idempotently materializes every derived @v1.Secret@ for a release per
+-- the doctrine §6 inventory. Returns 200 with the SHA-256 inventory on
+-- success; 400 on malformed body; 503 when the master seed is
+-- unavailable or the in-pod K8s API client cannot be constructed.
+handleSecretEnsureNamespace :: DaemonEnv -> Socket -> BS.ByteString -> IO ()
+handleSecretEnsureNamespace env sock rawRequest =
+  case envMasterSeed env of
+    Nothing ->
+      sendHttpResponse
+        sock
+        503
+        "application/json"
+        "{\"error\":\"master-seed unavailable\",\"reason\":\"daemon has not yet acquired the master seed from MinIO; see documents/engineering/secret_derivation_doctrine.md \\u00a78.\"}\n"
+    Just seed -> do
+      let body = extractRequestBody rawRequest
+      case eitherDecode (BL.fromStrict body) of
+        Left err ->
+          sendLazyHttpResponse
+            sock
+            400
+            "application/json"
+            ( encode
+                ( object
+                    [ "error" .= ("malformed request body" :: Text.Text)
+                    , "reason" .= Text.pack ("JSON decode failed: " ++ err)
+                    ]
+                )
+            )
+        Right (request :: SecretWire.EnsureNamespaceRequest) -> do
+          credsResult <- InCluster.loadInClusterCredentials
+          case credsResult of
+            Left credsErr ->
+              sendLazyHttpResponse
+                sock
+                503
+                "application/json"
+                ( encode
+                    ( object
+                        [ "error" .= ("in-pod ServiceAccount unavailable" :: Text.Text)
+                        , "reason" .= Text.pack credsErr
+                        ]
+                    )
+                )
+            Right creds -> do
+              opsResult <- InCluster.inClusterK8sSecretOps creds
+              case opsResult of
+                Left opsErr ->
+                  sendLazyHttpResponse
+                    sock
+                    503
+                    "application/json"
+                    ( encode
+                        ( object
+                            [ "error" .= ("K8s API client construction failed" :: Text.Text)
+                            , "reason" .= Text.pack opsErr
+                            ]
+                        )
+                    )
+                Right ops -> do
+                  let namespace = SecretWire.ensureNamespaceRequestNamespace request
+                      release = SecretWire.ensureNamespaceRequestRelease request
+                      inventory = Inventory.derivedSecretInventoryFor namespace release
+                  applyResult <- EnsureNamespace.applyDerivedSecrets ops seed namespace inventory
+                  case applyResult of
+                    Left applyErr ->
+                      sendLazyHttpResponse
+                        sock
+                        500
+                        "application/json"
+                        ( encode
+                            ( object
+                                [ "error" .= ("ensure-namespace materialization failed" :: Text.Text)
+                                , "reason" .= Text.pack applyErr
+                                ]
+                            )
+                        )
+                    Right secrets ->
+                      sendLazyHttpResponse
+                        sock
+                        200
+                        "application/json"
+                        ( encode
+                            SecretWire.EnsureNamespaceResponse
+                              { SecretWire.ensureNamespaceResponseNamespace = namespace
+                              , SecretWire.ensureNamespaceResponseRelease = release
+                              , SecretWire.ensureNamespaceResponseSecrets = secrets
+                              }
+                        )
+
+-- | Sprint 3.13 fifth chunk: extract the body of an HTTP request from
+-- the raw bytes received off the socket. Looks for the @\\r\\n\\r\\n@
+-- header/body separator and returns everything after it. Returns an
+-- empty 'ByteString' when the separator is absent (the request had
+-- only headers and the caller will surface a malformed-body error
+-- during JSON decode). Exposed at module scope so the unit suite can
+-- pin the byte-level contract without spinning up a socket.
+extractRequestBody :: BS.ByteString -> BS.ByteString
+extractRequestBody raw =
+  let sep = BS8.pack "\r\n\r\n"
+   in case BS.breakSubstring sep raw of
+        (_, rest) | BS.null rest -> BS.empty
+        (_, rest) -> BS.drop (BS.length sep) rest
 
 -- | Parse the @context@ query parameter from a path of the form
 -- @/v1/secret/derive?context=<value>@. Returns 'Nothing' when the parameter

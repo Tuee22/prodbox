@@ -2,6 +2,15 @@ global:
   namespace: default
   rootChart: keycloak
 
+# Sprint 3.13 seventh chunk: prodbox-gateway daemon's in-cluster
+# endpoint the pre-install Job in `secret-bootstrap-job.yaml` calls to
+# materialize the three Patroni-role Secrets before the chart's
+# `00-secrets.yaml` renders. The default targets the unsuffixed
+# ClusterIP Service emitted by `charts/gateway/templates/service-clusterip.yaml`
+# in the `gateway` namespace on the daemon's REST port (8443).
+prodboxGateway:
+  restPort: 8443
+
 cluster:
   name: prodbox-keycloak-pg
   instances: 3

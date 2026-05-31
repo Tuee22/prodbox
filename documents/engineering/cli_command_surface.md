@@ -628,9 +628,7 @@ double-fork, `setsid`, `forkProcess`) is forbidden per
 every value the daemon needs lives in the Dhall file. Environment-variable precedence is
 forbidden on supported paths: no `PRODBOX_*` startup fallback ladder. See
 [config_doctrine.md §10](./config_doctrine.md#10-forbidden-surfaces) for the authoritative
-forbidden-surface list. The committed repo-root Dhall config keeps its local imports
-frozen with `dhall freeze --all --inplace`; `prodbox check-code` refuses unfrozen committed
-imports after intentional schema or defaults edits.
+forbidden-surface list.
 
 ### One-shot output flags
 
